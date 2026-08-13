@@ -357,7 +357,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let canonicalJSON = #"{"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0]]}"#
+        let canonicalJSON = #"{"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0]]}"#
         let documentHTML = "<html><head></head><body><m-m id=\"a\">A</m-m></body></html>"
 
         let result = externalizingReaderSegmentSidecar(
@@ -391,7 +391,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
         let result = externalizingReaderSegmentSidecar(
             documentHTML: Array(documentHTML.utf8),
-            canonicalSidecar: Data(#"{"v":9,"t":{},"s":[]}"#.utf8),
+            canonicalSidecar: Data(#"{"v":10,"t":{},"s":[]}"#.utf8),
             scheme: .ebook,
             store: store
         )
@@ -425,13 +425,13 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let documentHTML = "<html><head><title>Test</title></head><body>本文</body></html>"
         let first = externalizingReaderSegmentSidecar(
             documentHTML: Array(documentHTML.utf8),
-            canonicalSidecar: Data(#"{"v":9,"t":{},"s":[]}"#.utf8),
+            canonicalSidecar: Data(#"{"v":10,"t":{},"s":[]}"#.utf8),
             scheme: .ebook,
             store: store
         )
         let second = externalizingReaderSegmentSidecar(
             documentHTML: Array(first.documentHTML),
-            canonicalSidecar: Data(#"{"v":9,"t":{"sid":["replacement"]},"s":[]}"#.utf8),
+            canonicalSidecar: Data(#"{"v":10,"t":{"sid":["replacement"]},"s":[]}"#.utf8),
             scheme: .ebook,
             store: store
         )
@@ -450,7 +450,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
         let documentHTML = "<html><head></head><body><m-m>A</m-m></body></html>"
-        let invalidJSON = #"{"v":9,"t":{"sid":[]},"s":[["!a"]]}"#
+        let invalidJSON = #"{"v":10,"t":{"sid":[]},"s":[["!a"]]}"#
         let invalid = externalizingReaderSegmentSidecar(
             documentHTML: Array(documentHTML.utf8),
             canonicalSidecar: Data(invalidJSON.utf8),
@@ -472,7 +472,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let canonicalJSON = #"{"v":9,"t":{"j":[[1001]],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,0,null,null,null,null,null,null,0,0]]}"#
+        let canonicalJSON = #"{"v":10,"t":{"j":[[1001]],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,0,null,null,null,null,null,null,0,0]]}"#
         let result = externalizingReaderSegmentSidecar(
             documentHTML: Data("<html><head></head><body><m-m id=\"a\">A</m-m></body></html>".utf8),
             canonicalSidecar: Data(canonicalJSON.utf8),
@@ -507,7 +507,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let canonicalJSON = #"{"v":9,"t":{},"s":[]}"#
+        let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
         let aggregateJSON = #"{"count":0}"#
         let html = """
         <html><head><title>Test</title></head><body>
@@ -550,7 +550,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let canonicalJSON = #"{"v":9,"t":{},"s":[]}"#
+        let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
         let html = """
         <html><head></head><body>
         <script>window.decoy = 'id="mnb-segment-metadata"';</script>
@@ -586,7 +586,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let canonicalJSON = #"{"v":9,"t":{},"s":[]}"#
+        let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
         let html = """
         <html><head></head><body>
         <!-- <script id="mnb-segment-metadata">{"decoy":true}</script> -->
@@ -620,8 +620,8 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     func testExternalizingCanonicalSidecarRejectsMultipleCanonicalOwners() {
         let html = """
         <html><body>
-        <script id="mnb-segment-metadata">{"v":9,"t":{},"s":[]}</script>
-        <script id="mnb-segment-metadata">{"v":9,"t":{},"s":[]}</script>
+        <script id="mnb-segment-metadata">{"v":10,"t":{},"s":[]}</script>
+        <script id="mnb-segment-metadata">{"v":10,"t":{},"s":[]}</script>
         </body></html>
         """
 
@@ -648,7 +648,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         <script id="mnb-segment-metadata">{"old":2}</script>
         </body></html>
         """
-        let canonicalJSON = #"{"v":9,"t":{},"s":[]}"#
+        let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
 
         let output = String(decoding: inliningReaderSegmentSidecar(
             documentHTML: Data(html.utf8),
@@ -672,7 +672,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
         let firstHTML = """
         <html><head></head><body>
-        <script id="mnb-segment-metadata">{"v":9,"t":{},"s":[]}</script>
+        <script id="mnb-segment-metadata">{"v":10,"t":{},"s":[]}</script>
         </body></html>
         """
         let first = externalizingCanonicalReaderSegmentSidecar(
@@ -684,7 +684,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
         let secondHTML = """
         <html><body>
-        <script id="mnb-segment-metadata">{"v":9,"t":{},"s":[["1"]]}</script>
+        <script id="mnb-segment-metadata">{"v":10,"t":{},"s":[["1"]]}</script>
         </body></html>
         """
         _ = externalizingCanonicalReaderSegmentSidecar(
@@ -756,7 +756,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testProcessTextResponseKeepsCanonicalSidecarInlineForBlobDocument() throws {
-        let canonicalJSON = #"{"v":9,"t":{},"s":[]}"#
+        let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
         let html = """
         <html><head></head><body>
         <script id="mnb-segment-metadata">\(canonicalJSON)</script>
@@ -812,19 +812,19 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let valid = """
         <html><body><m-m id="a">A</m-m><m-m id="b">B</m-m>
         <script id="mnb-segment-metadata" type="application/json">
-        {"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash-a","hash-b"],"sid":["sentence-a","sentence-b"],"pid":["paragraph-a"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0],["!b",1,null,null,null,null,null,null,null,1,0]]}
+        {"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash-a","hash-b"],"sid":["sentence-a","sentence-b"],"pid":["paragraph-a"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0],["!b",1,null,null,null,null,null,null,null,1,0]]}
         </script></body></html>
         """
         let missingStableIdentity = """
         <html><body><m-m id="a">A</m-m>
         <script id="mnb-segment-metadata" type="application/json">
-        {"v":9,"t":{"sid":[]},"s":[["!a"]]}
+        {"v":10,"t":{"sid":[]},"s":[["!a"]]}
         </script></body></html>
         """
         let incompleteCoverage = """
         <html><body><m-m id="a">A</m-m><m-m id="b">B</m-m>
         <script id="mnb-segment-metadata" type="application/json">
-        {"v":9,"t":{"h":["hash-a"],"sid":["sentence-a"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}
+        {"v":10,"t":{"h":["hash-a"],"sid":["sentence-a"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}
         </script></body></html>
         """
 
@@ -840,7 +840,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             bodyHTML: """
             <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="runtime">猫</m-m></m-s></m-c>
             """,
-            sidecar: #"{"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#
+            sidecar: #"{"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#
         )
 
         let encoded = encodedEbookProcessedSectionCacheValue(payload)
@@ -950,7 +950,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertNil(decodedEbookProcessedSectionCacheValue(Array(encoded.dropLast())))
     }
 
-    func testProcessedSectionDurabilityRequiresExactV9SegmentCoverage() {
+    func testProcessedSectionDurabilityRequiresCurrentSchemaSegmentCoverage() {
         let oneSegmentBody = """
         <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="a">猫</m-m></m-s></m-c>
         """
@@ -961,7 +961,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         """
         let incomplete = ebookPretransformedTestPayload(
             bodyHTML: twoSegmentBody,
-            sidecar: #"{"v":9,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}"#
+            sidecar: #"{"v":10,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}"#
         )
         let legacy = ebookPretransformedTestPayload(
             bodyHTML: twoSegmentBody,
@@ -969,11 +969,11 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
         let duplicateRuntimeIdentifier = ebookPretransformedTestPayload(
             bodyHTML: twoSegmentBody,
-            sidecar: #"{"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0],["!a",0,null,null,null,null,null,null,null,0,0]]}"#
+            sidecar: #"{"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0],["!a",0,null,null,null,null,null,null,null,0,0]]}"#
         )
         let transitionalTenFieldTuple = ebookPretransformedTestPayload(
             bodyHTML: oneSegmentBody,
-            sidecar: #"{"v":9,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}"#
+            sidecar: #"{"v":10,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}"#
         )
         let canonicalBareToken = ebookPretransformedTestPayload(
             bodyHTML: """
@@ -981,7 +981,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             <m-m id="mnb-sAb09">猫</m-m></m-s></m-c>
             """,
             sidecar: #"""
-            {"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},
+            {"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},
              "s":[["Ab09",0,null,null,null,null,null,null,0,0,0]]}
             """#
         )
@@ -991,7 +991,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             <m-m id="mnb-sAb09">猫</m-m></m-s></m-c>
             """,
             sidecar: #"""
-            {"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},
+            {"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},
              "s":[["Ab09",0,null,null,null,null,null,null,null,0,0],
                   ["!mnb-sAb09",0,null,null,null,null,null,null,null,0,0]]}
             """#
@@ -1011,15 +1011,15 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
         let fractionalMandatoryIndex = ebookPretransformedTestPayload(
             bodyHTML: oneSegmentBody,
-            sidecar: #"{"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0.5,null,null,null,null,null,null,null,0,0]]}"#
+            sidecar: #"{"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0.5,null,null,null,null,null,null,null,0,0]]}"#
         )
         let booleanOptionalIndex = ebookPretransformedTestPayload(
             bodyHTML: oneSegmentBody,
-            sidecar: #"{"v":9,"t":{"j":[[1001]],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,true,null,null,null,null,null,null,0,0]]}"#
+            sidecar: #"{"v":10,"t":{"j":[[1001]],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,true,null,null,null,null,null,null,0,0]]}"#
         )
         let fractionalVersion = ebookPretransformedTestPayload(
             bodyHTML: oneSegmentBody,
-            sidecar: #"{"v":9.5,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0]]}"#
+            sidecar: #"{"v":10.5,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0]]}"#
         )
 
         XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(incomplete))
@@ -1040,7 +1040,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testProcessedSectionDurabilityRequiresExactPretransformedTransportContract() {
-        let sidecar = #"{"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,0,0,0]]}"#
+        let sidecar = #"{"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,0,0,0]]}"#
         let validBody = """
         <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="a">猫</m-m></m-s></m-c>
         """
@@ -1078,7 +1078,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testProcessedSectionDurabilityRequiresProducerOwnedDOMHierarchy() {
-        let sidecar = #"{"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,0,0,0]]}"#
+        let sidecar = #"{"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,0,0,0]]}"#
         let wrongSentence = """
         <m-c pid="paragraph"><m-s sid="other" o="true"><m-m id="a">猫</m-m></m-s></m-c>
         """
@@ -1131,7 +1131,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="a">猫</m-m></m-s></m-c>
                 """,
                 sidecar: """
-                {"v":9,"t":{"j":[[\(entryID)]],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,0,null,null,null,null,\(jlptLevel),0,0,0]]}
+                {"v":10,"t":{"j":[[\(entryID)]],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,0,null,null,null,null,\(jlptLevel),0,0,0]]}
                 """
             )
         }
@@ -1148,7 +1148,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let regeneratedHTML = """
         <html><body><m-m id="fresh">fresh</m-m>
         <script id="mnb-segment-metadata" type="application/json">
-        {"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!fresh",0,null,null,null,null,null,null,null,0,0]]}
+        {"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!fresh",0,null,null,null,null,null,null,null,0,0]]}
         </script></body></html>
         """
         let actor = EBookProcessingActor(
@@ -2060,7 +2060,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         ]
         let sectionURL = try XCTUnwrap(sectionComponents.url)
         let sidecar = """
-        {"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],\
+        {"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],\
         "h":["hash"],"sid":["sentence"],"pid":["paragraph"]},\
         "s":[["!a",0,null,null,null,null,null,null,null,0,0]]}
         """
@@ -2699,7 +2699,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let expectedHTML = """
         <html><body><m-m id="persisted">persisted</m-m>
         <script id="mnb-segment-metadata" type="application/json">
-        {"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!persisted",0,null,null,null,null,null,null,null,0,0]]}
+        {"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!persisted",0,null,null,null,null,null,null,null,0,0]]}
         </script></body></html>
         """
         let actor = EBookProcessingActor(

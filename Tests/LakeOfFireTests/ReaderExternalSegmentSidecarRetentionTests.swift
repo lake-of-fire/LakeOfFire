@@ -168,7 +168,7 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
         let data = Data(
-            #"{"v":9,"t":{"j":[[1001]],"n":[],"s":["term"],"ns":[],"p":[],"h":["hash"],"x":["</script><m-m id=\"injected\">"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime-0",0,0,null,0,null,null,null,0,0,0]]}"#.utf8
+            #"{"v":10,"t":{"j":[[1001]],"n":[],"s":["term"],"ns":[],"p":[],"h":["hash"],"x":["</script><m-m id=\"injected\">"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime-0",0,0,null,0,null,null,null,0,0,0]]}"#.utf8
         )
 
         let result = externalizingReaderSegmentSidecar(
