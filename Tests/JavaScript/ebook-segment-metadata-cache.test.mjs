@@ -6,9 +6,12 @@ import {
     createEbookSegmentMetadataLookup,
     ebookSegmentSidecarRevision,
 } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-segment-metadata-cache.js'
+import { compactEbookSegmentSidecarVersion } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-segment-identity.js'
+
+globalThis.manabi_compactSegmentSidecarSchemaVersion = compactEbookSegmentSidecarVersion
 
 const payload = (runtimeID, entryID, hash) => JSON.stringify({
-    v: 9,
+    v: 10,
     t: {
         j: [[entryID]],
         n: [],
@@ -240,4 +243,18 @@ test('ignores malformed payloads while preserving valid dynamic sidecars', () =>
     ])
 
     assert.deepEqual(lookup.metadataForNode(segmentNode('runtime', document)).j, [1001])
+})
+
+test('rejects current payloads when native and parser schema versions disagree', () => {
+    const lookup = createEbookSegmentMetadataLookup({ nativeSchemaVersion: 9 })
+    const document = documentWithSidecars([
+        sidecar('mnb-segment-metadata', payload('runtime', 1001, 'hash')),
+    ])
+
+    assert.deepEqual(lookup.schemaDiagnostics, {
+        parserVersion: 10,
+        nativeVersion: 9,
+        nativeSchemaIsCompatible: false,
+    })
+    assert.equal(lookup.metadataForNode(segmentNode('runtime', document)), null)
 })
