@@ -1,5 +1,8 @@
 import CryptoKit
+import CoreFoundation
 import Foundation
+import SwiftSoup
+import SwiftUtilities
 
 public enum ReaderCompactSegmentSidecarSchema {
     public static let currentVersion = 9
@@ -29,37 +32,192 @@ public func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
     _ payload: EbookProcessedSectionPayload
 ) -> Bool {
     guard payload.isAuthoritativelyProcessed else { return false }
-    let documentSegmentCount = generatedReaderSegmentCount(in: payload.documentHTML)
-    guard !payload.segmentSidecar.isEmpty else { return documentSegmentCount == 0 }
-    return readerSegmentSidecarHasDurableSegmentIdentities(
-        payload.segmentSidecar,
-        generatedSegmentCount: documentSegmentCount
-    )
+    guard let html = String(data: payload.documentHTML, encoding: .utf8),
+          let document = try? SwiftSoup.parse(html),
+          let documentSegmentIdentifiers = generatedReaderSegmentIdentifiers(in: document) else {
+        return false
+    }
+
+    let canonicalSidecars = (try? document.select("script#mnb-segment-metadata").array()) ?? []
+    let transportMarkers = (try? document.getElementsByTag("meta").array().filter {
+        try $0.attr("name") == ReaderPretransformedEbookSidecarContract.transportMarkerName
+    }) ?? []
+    guard canonicalSidecars.isEmpty else { return false }
+    guard !payload.segmentSidecar.isEmpty else {
+        return documentSegmentIdentifiers.isEmpty && transportMarkers.isEmpty
+    }
+    guard documentSegmentIdentifiers.count > 0,
+          transportMarkers.count == 1,
+          let marker = transportMarkers.first,
+          readerPretransformedEbookTransportMarkerIsValid(
+              marker,
+              segmentSidecar: payload.segmentSidecar,
+              document: document,
+              documentSegmentIdentifiers: documentSegmentIdentifiers
+          ) else {
+        return false
+    }
+    return true
+}
+
+private enum ReaderPretransformedEbookSidecarContract {
+    static let transportMarkerName = "mnb-pretransformed-ebook-sidecar"
+    static let contractVersion = 1
+}
+
+private struct ReaderSegmentSidecarIdentityProjection {
+    let runtimeIdentifier: String
+    let segmentHash: String
+    let surfaceText: String?
+    let sentenceIdentifier: String
+    let paragraphIdentifier: String
+}
+
+private func readerPretransformedEbookTransportMarkerIsValid(
+    _ marker: Element,
+    segmentSidecar: Data,
+    document: SwiftSoup.Document,
+    documentSegmentIdentifiers: [String]
+) -> Bool {
+    guard let markerIsPretransformed = try? marker.attr("data-mnb-pretransformed-ebook"),
+          markerIsPretransformed == "true",
+          let schemaVersion = try? marker.attr("data-mnb-sidecar-schema-version"),
+          schemaVersion == String(ReaderCompactSegmentSidecarSchema.currentVersion),
+          let contractVersion = try? marker.attr("data-mnb-sidecar-contract-version"),
+          contractVersion == String(ReaderPretransformedEbookSidecarContract.contractVersion),
+          let revision = try? marker.attr("data-mnb-sidecar-revision"),
+          revision == String(stableHash(data: segmentSidecar), radix: 16, uppercase: true),
+          let segmentCountValue = try? marker.attr("data-mnb-sidecar-segment-count"),
+          let segmentCount = exactPositiveDecimalInteger(segmentCountValue),
+          segmentCount == documentSegmentIdentifiers.count,
+          let sentenceCountValue = try? marker.attr("data-mnb-sidecar-sentence-count"),
+          let sentenceCount = exactPositiveDecimalInteger(sentenceCountValue),
+          let projections = validatedReaderSegmentSidecarIdentityProjections(
+              segmentSidecar,
+              generatedSegmentIdentifiers: documentSegmentIdentifiers
+          ),
+          projections.count == segmentCount else {
+        return false
+    }
+
+    let sentenceElements = Array(document.getElementsByTag("m-s"))
+    guard sentenceElements.count == sentenceCount else { return false }
+    var sentenceIdentifiers = Set<String>()
+    for sentence in sentenceElements {
+        guard let sentenceIdentifier = try? sentence.attr("sid"),
+              !sentenceIdentifier.isEmpty,
+              sentenceIdentifiers.insert(sentenceIdentifier).inserted,
+              (try? sentence.attr("o")) == "true" else {
+            return false
+        }
+    }
+
+    var segmentElementsByIdentifier = [String: Element]()
+    for segment in document.getElementsByTag("m-m") {
+        guard let identifier = try? segment.attr("id"),
+              !identifier.isEmpty,
+              segmentElementsByIdentifier.updateValue(segment, forKey: identifier) == nil else {
+            return false
+        }
+    }
+    for projection in projections {
+        guard !projection.segmentHash.isEmpty,
+              let surfaceText = projection.surfaceText,
+              !surfaceText.isEmpty,
+              let segment = segmentElementsByIdentifier[projection.runtimeIdentifier],
+              let sentence = nearestReaderAncestor(named: "m-s", from: segment),
+              let paragraph = nearestReaderAncestor(named: "m-c", from: segment),
+              (try? sentence.attr("sid")) == projection.sentenceIdentifier,
+              (try? sentence.attr("o")) == "true",
+              (try? paragraph.attr("pid")) == projection.paragraphIdentifier else {
+            return false
+        }
+    }
+    return true
+}
+
+private func nearestReaderAncestor(named tagName: String, from element: Element) -> Element? {
+    var candidate = element.parent() as? Element
+    while let current = candidate {
+        if current.tagName() == tagName { return current }
+        candidate = current.parent() as? Element
+    }
+    return nil
+}
+
+private func exactPositiveDecimalInteger(_ value: String) -> Int? {
+    guard !value.isEmpty,
+          value.unicodeScalars.allSatisfy({
+              $0.isASCII && CharacterSet.decimalDigits.contains($0)
+          }),
+          let integer = Int(value),
+          integer > 0,
+          String(integer) == value else {
+        return nil
+    }
+    return integer
 }
 
 private func readerSegmentSidecarHasDurableSegmentIdentities(
     _ sidecar: Data,
-    generatedSegmentCount: Int
+    generatedSegmentIdentifiers: [String]
 ) -> Bool {
+    validatedReaderSegmentSidecarIdentityProjections(
+        sidecar,
+        generatedSegmentIdentifiers: generatedSegmentIdentifiers
+    ) != nil
+}
+
+private func validatedReaderSegmentSidecarIdentityProjections(
+    _ sidecar: Data,
+    generatedSegmentIdentifiers: [String]
+) -> [ReaderSegmentSidecarIdentityProjection]? {
     guard let object = try? JSONSerialization.jsonObject(with: sidecar),
           let root = object as? [String: Any],
-          (root["v"] as? NSNumber)?.intValue == ReaderCompactSegmentSidecarSchema.currentVersion,
+          exactNonnegativeInteger(root["v"]) == ReaderCompactSegmentSidecarSchema.currentVersion,
           let tables = root["t"] as? [String: Any],
-          let hashes = tables["h"] as? [String],
-          let sentenceIdentifiers = tables["sid"] as? [String],
-          let paragraphIdentifiers = tables["pid"] as? [String],
+          compactSidecarTablesAreValid(tables),
           let segments = root["s"] as? [[Any]],
-          segments.count == generatedSegmentCount else {
-        return false
+          segments.count == generatedSegmentIdentifiers.count else {
+        return nil
     }
 
-    func hasNonEmptyValue(_ table: [String], tuple: [Any], index: Int) -> Bool {
+    func tableValue(_ tableKey: String, tuple: [Any], index: Int) -> Any? {
         guard tuple.indices.contains(index),
-              let tableIndex = tuple[index] as? NSNumber,
-              table.indices.contains(tableIndex.intValue) else {
+              let tableIndex = exactNonnegativeInteger(tuple[index]),
+              let table = tables[tableKey] as? [Any],
+              table.indices.contains(tableIndex) else {
+            return nil
+        }
+        return table[tableIndex]
+    }
+
+    func hasNonEmptyString(_ tableKey: String, tuple: [Any], index: Int) -> Bool {
+        guard let value = tableValue(tableKey, tuple: tuple, index: index) as? String else {
             return false
         }
-        return !table[tableIndex.intValue].isEmpty
+        return !value.isEmpty
+    }
+
+    func optionalStringReferenceIsValid(_ tableKey: String, tuple: [Any], index: Int) -> Bool {
+        guard tuple.indices.contains(index) else { return false }
+        if tuple[index] is NSNull { return true }
+        return hasNonEmptyString(tableKey, tuple: tuple, index: index)
+    }
+
+    func optionalEntryIDReferenceIsValid(_ tableKey: String, tuple: [Any], index: Int) -> Bool {
+        guard tuple.indices.contains(index) else { return false }
+        if tuple[index] is NSNull { return true }
+        guard let entryIDs = tableValue(tableKey, tuple: tuple, index: index) as? [Any] else {
+            return false
+        }
+        return entryIDs.allSatisfy { exactPositiveInteger($0) != nil }
+    }
+
+    func optionalJLPTLevelIsValid(_ value: Any) -> Bool {
+        guard !(value is NSNull) else { return true }
+        guard let level = exactNonnegativeInteger(value) else { return false }
+        return ReaderJLPTLevelRange.validLevels.contains(level)
     }
 
     func expandedRuntimeIdentifier(from token: String) -> String? {
@@ -79,17 +237,181 @@ private func readerSegmentSidecarHasDurableSegmentIdentities(
     }
 
     var runtimeIdentifiers = Set<String>()
-    return segments.allSatisfy { tuple in
-        guard tuple.count == 11,
-              let runtimeIdentifierToken = tuple.first as? String,
+    var projections = [ReaderSegmentSidecarIdentityProjection]()
+    projections.reserveCapacity(segments.count)
+    for tuple in segments {
+        guard tuple.count == CompactSegmentTupleField.count,
+              let runtimeIdentifierToken = tuple[CompactSegmentTupleField.runtimeIdentifier] as? String,
               let runtimeIdentifier = expandedRuntimeIdentifier(from: runtimeIdentifierToken),
-              runtimeIdentifiers.insert(runtimeIdentifier).inserted else {
-            return false
+              runtimeIdentifiers.insert(runtimeIdentifier).inserted,
+              let segmentHash = tableValue(
+                  "h",
+                  tuple: tuple,
+                  index: CompactSegmentTupleField.segmentHash
+              ) as? String,
+              !segmentHash.isEmpty,
+              optionalEntryIDReferenceIsValid(
+                  "j",
+                  tuple: tuple,
+                  index: CompactSegmentTupleField.jmdictEntryIDs
+              ),
+              optionalEntryIDReferenceIsValid(
+                  "n",
+                  tuple: tuple,
+                  index: CompactSegmentTupleField.jmnedictEntryIDs
+              ),
+              optionalStringReferenceIsValid(
+                  "s",
+                  tuple: tuple,
+                  index: CompactSegmentTupleField.jmdictSearchString
+              ),
+              optionalStringReferenceIsValid(
+                  "ns",
+                  tuple: tuple,
+                  index: CompactSegmentTupleField.jmnedictSearchString
+              ),
+              optionalStringReferenceIsValid(
+                  "p",
+                  tuple: tuple,
+                  index: CompactSegmentTupleField.partOfSpeech
+              ),
+              optionalJLPTLevelIsValid(tuple[CompactSegmentTupleField.jlptLevel]),
+              optionalStringReferenceIsValid(
+                  "x",
+                  tuple: tuple,
+                  index: CompactSegmentTupleField.surfaceText
+              ),
+              let sentenceIdentifier = tableValue(
+                  "sid",
+                  tuple: tuple,
+                  index: CompactSegmentTupleField.sentenceIdentifier
+              ) as? String,
+              !sentenceIdentifier.isEmpty,
+              let paragraphIdentifier = tableValue(
+                  "pid",
+                  tuple: tuple,
+                  index: CompactSegmentTupleField.paragraphIdentifier
+              ) as? String,
+              !paragraphIdentifier.isEmpty else {
+            return nil
         }
-        return hasNonEmptyValue(hashes, tuple: tuple, index: 1)
-            && hasNonEmptyValue(sentenceIdentifiers, tuple: tuple, index: 9)
-            && hasNonEmptyValue(paragraphIdentifiers, tuple: tuple, index: 10)
+        projections.append(
+            ReaderSegmentSidecarIdentityProjection(
+                runtimeIdentifier: runtimeIdentifier,
+                segmentHash: segmentHash,
+                surfaceText: tableValue(
+                    "x",
+                    tuple: tuple,
+                    index: CompactSegmentTupleField.surfaceText
+                ) as? String,
+                sentenceIdentifier: sentenceIdentifier,
+                paragraphIdentifier: paragraphIdentifier
+            )
+        )
     }
+
+    let documentIdentifierSet = Set(generatedSegmentIdentifiers)
+    guard documentIdentifierSet.count == generatedSegmentIdentifiers.count,
+          runtimeIdentifiers == documentIdentifierSet else {
+        return nil
+    }
+    return projections
+}
+
+private enum CompactSegmentTupleField {
+    static let runtimeIdentifier = 0
+    static let segmentHash = 1
+    static let jmdictEntryIDs = 2
+    static let jmnedictEntryIDs = 3
+    static let jmdictSearchString = 4
+    static let jmnedictSearchString = 5
+    static let partOfSpeech = 6
+    static let jlptLevel = 7
+    static let surfaceText = 8
+    static let sentenceIdentifier = 9
+    static let paragraphIdentifier = 10
+    static let count = 11
+}
+
+private let maximumExactJSONInteger = 9_007_199_254_740_991
+
+private enum ReaderJLPTLevelRange {
+    static let validLevels = 1...5
+}
+
+private func exactNonnegativeInteger(_ value: Any?) -> Int? {
+    guard let number = value as? NSNumber,
+          CFGetTypeID(number) != CFBooleanGetTypeID() else {
+        return nil
+    }
+    let doubleValue = number.doubleValue
+    guard doubleValue.isFinite,
+          doubleValue >= 0,
+          doubleValue.rounded(.towardZero) == doubleValue,
+          doubleValue <= Double(maximumExactJSONInteger),
+          doubleValue < Double(Int.max) else {
+        return nil
+    }
+    return Int(doubleValue)
+}
+
+private func exactPositiveInteger(_ value: Any?) -> Int? {
+    guard let integer = exactNonnegativeInteger(value), integer > 0 else { return nil }
+    return integer
+}
+
+private func compactSidecarTablesAreValid(_ tables: [String: Any]) -> Bool {
+    func entryIDTableIsValid(_ key: String) -> Bool {
+        guard let rows = tables[key] as? [Any] else { return false }
+        return rows.allSatisfy { row in
+            guard let entryIDs = row as? [Any] else { return false }
+            return entryIDs.allSatisfy { exactPositiveInteger($0) != nil }
+        }
+    }
+
+    func stringTableIsValid(_ key: String) -> Bool {
+        guard let values = tables[key] as? [Any] else { return false }
+        return values.allSatisfy { value in
+            guard let string = value as? String else { return false }
+            return !string.isEmpty
+        }
+    }
+
+    guard entryIDTableIsValid("j"),
+          entryIDTableIsValid("n"),
+          stringTableIsValid("s"),
+          stringTableIsValid("ns"),
+          stringTableIsValid("p"),
+          stringTableIsValid("h"),
+          stringTableIsValid("sid"),
+          stringTableIsValid("pid") else {
+        return false
+    }
+    guard let surfaceTexts = tables["x"] else { return true }
+    if surfaceTexts is NSNull { return true }
+    return stringTableIsValid("x")
+}
+
+private func generatedReaderSegmentIdentifiers(in documentHTML: Data) -> [String]? {
+    guard let html = String(data: documentHTML, encoding: .utf8) else { return nil }
+    do {
+        let document = try SwiftSoup.parse(html)
+        return generatedReaderSegmentIdentifiers(in: document)
+    } catch {
+        return nil
+    }
+}
+
+private func generatedReaderSegmentIdentifiers(in document: SwiftSoup.Document) -> [String]? {
+    let segmentElements = document.getElementsByTag("m-m")
+    var identifiers = [String]()
+    identifiers.reserveCapacity(segmentElements.size())
+    for segmentElement in segmentElements {
+        let identifier = segmentElement.id()
+        guard !identifier.isEmpty else { return nil }
+        identifiers.append(identifier)
+    }
+    return identifiers
 }
 
 struct ReaderExternalSegmentSidecarEntry: Sendable {
@@ -102,13 +424,14 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
 
     private static let lowercaseHexDigits = Array("0123456789abcdef".utf8)
     private static let lowNibbleMask: UInt8 = 0x0F
+    private static let decimalDigitBytes = UInt8(ascii: "0")...UInt8(ascii: "9")
+    private static let lowercaseHexLetterBytes = UInt8(ascii: "a")...UInt8(ascii: "f")
 
     private let lock = NSLock()
     private let totalByteLimit: Int
     private let countLimit: Int
     private let directoryURL: URL
     private var entries = [String: ReaderExternalSegmentSidecarEntry]()
-    private var durableTokens = Set<String>()
     private var tokensInAccessOrder = [String]()
     private var totalBytes = 0
 
@@ -127,14 +450,14 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         try? resourceURL.setResourceValues(resourceValues)
     }
 
-    func insert(_ data: Data) -> (token: String, signature: String) {
+    func insert(_ data: Data) -> (token: String, signature: String)? {
         let token = Self.contentToken(for: data)
         let signature = "sha256:\(data.count):\(token)"
         let entry = ReaderExternalSegmentSidecarEntry(data: data, signature: signature)
-        let isDurable = persistIfNeeded(data, token: token)
+        guard persistIfNeeded(data, token: token) else { return nil }
 
         lock.lock()
-        insertIntoMemory(entry, token: token, isDurable: isDurable)
+        insertIntoMemory(entry, token: token)
         lock.unlock()
         return (token, signature)
     }
@@ -159,7 +482,7 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
             signature: "sha256:\(data.count):\(token)"
         )
         lock.lock()
-        insertIntoMemory(entry, token: token, isDurable: true)
+        insertIntoMemory(entry, token: token)
         lock.unlock()
         return entry
     }
@@ -180,20 +503,21 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
 
     private func insertIntoMemory(
         _ entry: ReaderExternalSegmentSidecarEntry,
-        token: String,
-        isDurable: Bool
+        token: String
     ) {
+        guard entry.data.count <= totalByteLimit else {
+            if let previous = entries.removeValue(forKey: token) {
+                totalBytes -= previous.data.count
+            }
+            tokensInAccessOrder.removeAll { $0 == token }
+            return
+        }
         if let previous = entries.updateValue(entry, forKey: token) {
             totalBytes -= previous.data.count
         }
-        if isDurable {
-            durableTokens.insert(token)
-        } else {
-            durableTokens.remove(token)
-        }
         touch(token)
         totalBytes += entry.data.count
-        evictDurableEntriesIfNeeded()
+        evictEntriesIfNeeded()
     }
 
     private func touch(_ token: String) {
@@ -201,13 +525,10 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         tokensInAccessOrder.append(token)
     }
 
-    private func evictDurableEntriesIfNeeded() {
-        while entries.count > countLimit || (totalBytes > totalByteLimit && entries.count > 1) {
-            guard let index = tokensInAccessOrder.firstIndex(where: durableTokens.contains) else {
-                break
-            }
-            let token = tokensInAccessOrder.remove(at: index)
-            durableTokens.remove(token)
+    private func evictEntriesIfNeeded() {
+        while entries.count > countLimit || totalBytes > totalByteLimit {
+            guard !tokensInAccessOrder.isEmpty else { break }
+            let token = tokensInAccessOrder.removeFirst()
             if let removed = entries.removeValue(forKey: token) {
                 totalBytes -= removed.data.count
             }
@@ -225,10 +546,10 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         return String(decoding: tokenBytes, as: UTF8.self)
     }
 
-    private static func isValidToken(_ token: String) -> Bool {
+    fileprivate static func isValidToken(_ token: String) -> Bool {
         token.utf8.count == SHA256.Digest.byteCount * 2
             && token.utf8.allSatisfy {
-                ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102)
+                decimalDigitBytes.contains($0) || lowercaseHexLetterBytes.contains($0)
             }
     }
 
@@ -258,6 +579,29 @@ enum ReaderExternalSegmentSidecarScheme: String, Sendable {
         case .internalReader: "/reader-sidecar/"
         }
     }
+
+    private var endpointHost: String {
+        switch self {
+        case .ebook: "ebook"
+        case .internalReader: "local"
+        }
+    }
+
+    func token(from url: URL) -> String? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme == rawValue,
+              components.host == endpointHost,
+              components.user == nil,
+              components.password == nil,
+              components.port == nil,
+              components.percentEncodedQuery == nil,
+              components.percentEncodedFragment == nil,
+              components.percentEncodedPath.hasPrefix(endpointPathPrefix) else {
+            return nil
+        }
+        let token = String(components.percentEncodedPath.dropFirst(endpointPathPrefix.count))
+        return ReaderExternalSegmentSidecarStore.isValidToken(token) ? token : nil
+    }
 }
 
 func readerExternalSegmentSidecarResponse(
@@ -265,9 +609,8 @@ func readerExternalSegmentSidecarResponse(
     scheme: ReaderExternalSegmentSidecarScheme,
     store: ReaderExternalSegmentSidecarStore = .shared
 ) -> (response: HTTPURLResponse, data: Data)? {
-    let prefix = scheme.endpointPathPrefix
-    guard url.path.hasPrefix(prefix),
-          let entry = store.entry(for: String(url.path.dropFirst(prefix.count))) else {
+    guard let token = scheme.token(from: url),
+          let entry = store.entry(for: token) else {
         return nil
     }
     let response = HTTPURLResponse(
@@ -299,22 +642,28 @@ struct ReaderPublishedSegmentSidecar: Sendable {
     let endpointURL: String?
 }
 
-// Version 4 invalidates processed-section cache entries written before raw
-// fallback payloads were prevented from becoming durable cache authority.
-private let readerProcessedSegmentSidecarEnvelopePrefix = Array("MNBPSC4".utf8)
+// Version 5 invalidates detached payloads that predate exact producer-contract
+// validation across the sidecar, transport marker, and generated DOM hierarchy.
+private let readerProcessedSegmentSidecarEnvelopePrefix = Array("MNBPSC5".utf8)
 private let readerProcessedSegmentSidecarEnvelopeLengthByteCount = MemoryLayout<UInt64>.size
 
 func splitCanonicalReaderSegmentSidecar(
     from htmlBytes: [UInt8]
 ) -> EbookProcessedSectionPayload? {
-    guard let ranges = canonicalReaderSegmentSidecarRanges(in: htmlBytes) else { return nil }
-    let sidecar = Data(htmlBytes[ranges.content])
+    splitCanonicalReaderSegmentSidecar(from: Data(htmlBytes))
+}
+
+func splitCanonicalReaderSegmentSidecar(
+    from htmlData: Data
+) -> EbookProcessedSectionPayload? {
+    guard let ranges = canonicalReaderSegmentSidecarRanges(in: htmlData) else { return nil }
+    let sidecar = Data(htmlData[ranges.content])
     guard !sidecar.isEmpty else { return nil }
 
     var documentHTML = Data()
-    documentHTML.reserveCapacity(htmlBytes.count - ranges.element.count)
-    documentHTML.append(contentsOf: htmlBytes[..<ranges.element.lowerBound])
-    documentHTML.append(contentsOf: htmlBytes[ranges.element.upperBound...])
+    documentHTML.reserveCapacity(htmlData.count - ranges.element.count)
+    documentHTML.append(htmlData[..<ranges.element.lowerBound])
+    documentHTML.append(htmlData[ranges.element.upperBound...])
     return EbookProcessedSectionPayload(documentHTML: documentHTML, segmentSidecar: sidecar)
 }
 
@@ -377,7 +726,15 @@ func publishingCanonicalReaderSegmentSidecar(
             endpointURL: nil
         )
     }
-    let stored = store.insert(payload.segmentSidecar)
+    guard let stored = store.insert(payload.segmentSidecar) else {
+        return ReaderPublishedSegmentSidecar(
+            documentHTML: payload.documentHTML,
+            headDescriptor: inlineCanonicalReaderSegmentSidecar(payload.segmentSidecar),
+            canonicalSidecarByteCount: payload.segmentSidecar.count,
+            signature: nil,
+            endpointURL: nil
+        )
+    }
     let endpointURL = scheme.endpointURL(token: stored.token)
     let descriptor = Data(
         "<meta name=\"mnb-segment-sidecar\" content=\"\(endpointURL)\" "
@@ -397,57 +754,36 @@ func ebookProcessedHTMLHasDurableSegmentIdentities(
     _ processedHTML: String,
     store: ReaderExternalSegmentSidecarStore = .shared
 ) -> Bool {
-    let htmlBytes = Array(processedHTML.utf8)
-    let generatedSegmentCount = generatedReaderSegmentCount(in: htmlBytes)
+    let htmlData = Data(processedHTML.utf8)
+    guard let generatedSegmentIdentifiers = generatedReaderSegmentIdentifiers(
+        in: htmlData
+    ) else {
+        return false
+    }
     let sidecarData: Data?
-    if let ranges = canonicalReaderSegmentSidecarRanges(in: htmlBytes) {
-        sidecarData = Data(htmlBytes[ranges.content])
-    } else if let token = externalReaderSegmentSidecarToken(in: htmlBytes) {
-        sidecarData = store.entry(for: token)?.data
+    let canonicalRanges = canonicalReaderSegmentSidecarRangeList(in: htmlData)
+    if canonicalRanges.count == 1, let ranges = canonicalRanges.first {
+        sidecarData = Data(htmlData[ranges.content])
+    } else if !canonicalRanges.isEmpty {
+        return false
     } else {
-        sidecarData = nil
+        guard let descriptor = externalReaderSegmentSidecarDescriptor(in: htmlData),
+              let endpointURL = URL(string: descriptor.endpointURL),
+              let token = ReaderExternalSegmentSidecarScheme.ebook.token(from: endpointURL),
+              let entry = store.entry(for: token),
+              entry.signature == descriptor.signature else {
+            return generatedSegmentIdentifiers.isEmpty
+                && !htmlDataContainsExternalReaderSegmentSidecarDescriptor(htmlData)
+        }
+        sidecarData = entry.data
     }
     guard let sidecarData else {
-        return generatedSegmentCount == 0
+        return generatedSegmentIdentifiers.isEmpty
     }
     return readerSegmentSidecarHasDurableSegmentIdentities(
         sidecarData,
-        generatedSegmentCount: generatedSegmentCount
+        generatedSegmentIdentifiers: generatedSegmentIdentifiers
     )
-}
-
-private func generatedReaderSegmentCount(in htmlBytes: [UInt8]) -> Int {
-    let openingTag = Array("<m-m".utf8)
-    let tagDelimiters: Set<UInt8> = [9, 10, 13, 32, 47, 62]
-    var count = 0
-    var index = htmlBytes.startIndex
-    while index + openingTag.count <= htmlBytes.endIndex {
-        guard htmlBytes[index..<(index + openingTag.count)].elementsEqual(openingTag) else {
-            index += 1
-            continue
-        }
-        let delimiterIndex = index + openingTag.count
-        if delimiterIndex == htmlBytes.endIndex || tagDelimiters.contains(htmlBytes[delimiterIndex]) {
-            count += 1
-        }
-        index = delimiterIndex
-    }
-    return count
-}
-
-private func generatedReaderSegmentCount(in documentHTML: Data) -> Int {
-    let openingTag = Data("<m-m".utf8)
-    let tagDelimiters: Set<UInt8> = [9, 10, 13, 32, 47, 62]
-    var count = 0
-    var searchRange = documentHTML.startIndex..<documentHTML.endIndex
-    while let match = documentHTML.range(of: openingTag, options: [], in: searchRange) {
-        if match.upperBound == documentHTML.endIndex
-            || tagDelimiters.contains(documentHTML[match.upperBound]) {
-            count += 1
-        }
-        searchRange = match.upperBound..<documentHTML.endIndex
-    }
-    return count
 }
 
 func externalizingCanonicalReaderSegmentSidecar(
@@ -455,30 +791,41 @@ func externalizingCanonicalReaderSegmentSidecar(
     scheme: ReaderExternalSegmentSidecarScheme,
     store: ReaderExternalSegmentSidecarStore = .shared
 ) -> ReaderExternalizedSegmentSidecarHTML {
-    guard let ranges = canonicalReaderSegmentSidecarRanges(in: htmlBytes) else {
+    externalizingCanonicalReaderSegmentSidecar(
+        in: Data(htmlBytes),
+        scheme: scheme,
+        store: store
+    )
+}
+
+func externalizingCanonicalReaderSegmentSidecar(
+    in htmlData: Data,
+    scheme: ReaderExternalSegmentSidecarScheme,
+    store: ReaderExternalSegmentSidecarStore = .shared
+) -> ReaderExternalizedSegmentSidecarHTML {
+    guard let ranges = canonicalReaderSegmentSidecarRanges(in: htmlData) else {
         return ReaderExternalizedSegmentSidecarHTML(
-            documentHTML: Data(htmlBytes),
+            documentHTML: htmlData,
             canonicalSidecarByteCount: 0,
             signature: nil,
             endpointURL: nil
         )
     }
-    let sidecar = Data(htmlBytes[ranges.content])
+    let sidecar = Data(htmlData[ranges.content])
     guard !sidecar.isEmpty else {
         return ReaderExternalizedSegmentSidecarHTML(
-            documentHTML: Data(htmlBytes),
+            documentHTML: htmlData,
             canonicalSidecarByteCount: 0,
             signature: nil,
             endpointURL: nil
         )
     }
-    let htmlData = Data(htmlBytes)
     var documentWithoutSidecar = Data()
-    documentWithoutSidecar.reserveCapacity(htmlBytes.count - ranges.element.count)
+    documentWithoutSidecar.reserveCapacity(htmlData.count - ranges.element.count)
     documentWithoutSidecar.append(htmlData[..<ranges.element.lowerBound])
     documentWithoutSidecar.append(htmlData[ranges.element.upperBound...])
     return externalizingReaderSegmentSidecar(
-        documentHTML: documentWithoutSidecar.map { $0 },
+        documentHTML: documentWithoutSidecar,
         canonicalSidecar: sidecar,
         scheme: scheme,
         store: store
@@ -491,25 +838,54 @@ func externalizingReaderSegmentSidecar(
     scheme: ReaderExternalSegmentSidecarScheme,
     store: ReaderExternalSegmentSidecarStore = .shared
 ) -> ReaderExternalizedSegmentSidecarHTML {
+    externalizingReaderSegmentSidecar(
+        documentHTML: Data(documentHTML),
+        canonicalSidecar: canonicalSidecar,
+        scheme: scheme,
+        store: store
+    )
+}
+
+func externalizingReaderSegmentSidecar(
+    documentHTML: Data,
+    canonicalSidecar: Data,
+    scheme: ReaderExternalSegmentSidecarScheme,
+    store: ReaderExternalSegmentSidecarStore = .shared
+) -> ReaderExternalizedSegmentSidecarHTML {
+    let cleanDocumentHTML = removingCanonicalReaderSegmentSidecars(from: documentHTML)
     guard !canonicalSidecar.isEmpty else {
         return ReaderExternalizedSegmentSidecarHTML(
-            documentHTML: Data(documentHTML),
+            documentHTML: ebookHTMLDataReplacingHeadMetaElement(
+                named: "mnb-segment-sidecar",
+                with: Data(),
+                in: cleanDocumentHTML
+            ),
             canonicalSidecarByteCount: 0,
             signature: nil,
             endpointURL: nil
         )
     }
-    let stored = store.insert(canonicalSidecar)
+    guard let stored = store.insert(canonicalSidecar) else {
+        return ReaderExternalizedSegmentSidecarHTML(
+            documentHTML: ebookHTMLDataReplacingHeadMetaElement(
+                named: "mnb-segment-sidecar",
+                with: inlineCanonicalReaderSegmentSidecar(canonicalSidecar),
+                in: cleanDocumentHTML
+            ),
+            canonicalSidecarByteCount: canonicalSidecar.count,
+            signature: nil,
+            endpointURL: nil
+        )
+    }
     let endpointURL = scheme.endpointURL(token: stored.token)
     let descriptorHTML = "<meta name=\"mnb-segment-sidecar\" content=\"\(endpointURL)\" "
         + "data-mnb-segment-sidecar-signature=\"\(stored.signature)\">"
     let descriptor = Data(descriptorHTML.utf8)
-    let documentWithoutSidecar = Data(documentHTML)
     return ReaderExternalizedSegmentSidecarHTML(
         documentHTML: ebookHTMLDataReplacingHeadMetaElement(
             named: "mnb-segment-sidecar",
             with: descriptor,
-            in: documentWithoutSidecar
+            in: cleanDocumentHTML
         ),
         canonicalSidecarByteCount: canonicalSidecar.count,
         signature: stored.signature,
@@ -517,48 +893,324 @@ func externalizingReaderSegmentSidecar(
     )
 }
 
-private func externalReaderSegmentSidecarToken(in htmlBytes: [UInt8]) -> String? {
-    let endpointPrefix = Array("content=\"ebook://ebook/processed-section-sidecar/".utf8)
-    guard let prefixRange = Data(htmlBytes).range(of: Data(endpointPrefix)) else { return nil }
-    let tokenStart = prefixRange.upperBound
-    guard tokenStart < htmlBytes.count,
-          let tokenEnd = htmlBytes[tokenStart...].firstIndex(of: UInt8(ascii: "\"")) else {
+func inliningReaderSegmentSidecar(
+    documentHTML: Data,
+    canonicalSidecar: Data
+) -> Data {
+    let documentWithoutCanonicalSidecars = removingCanonicalReaderSegmentSidecars(
+        from: documentHTML
+    )
+    return ebookHTMLDataReplacingHeadMetaElement(
+        named: "mnb-segment-sidecar",
+        with: canonicalSidecar.isEmpty
+            ? Data()
+            : inlineCanonicalReaderSegmentSidecar(canonicalSidecar),
+        in: documentWithoutCanonicalSidecars
+    )
+}
+
+private func inlineCanonicalReaderSegmentSidecar(_ sidecar: Data) -> Data {
+    let escapedSidecar = scriptSafeJSON(sidecar)
+    var element = Data(
+        "<script id=\"mnb-segment-metadata\" type=\"application/json\" data-mnb-seg-meta=\"true\">".utf8
+    )
+    element.reserveCapacity(element.count + escapedSidecar.count + "</script>".utf8.count)
+    element.append(escapedSidecar)
+    element.append(contentsOf: "</script>".utf8)
+    return element
+}
+
+private func scriptSafeJSON(_ data: Data) -> Data {
+    var escaped = Data()
+    escaped.reserveCapacity(data.count)
+    for byte in data {
+        switch byte {
+        case UInt8(ascii: "<"):
+            escaped.append(contentsOf: "\\u003C".utf8)
+        case UInt8(ascii: "&"):
+            escaped.append(contentsOf: "\\u0026".utf8)
+        default:
+            escaped.append(byte)
+        }
+    }
+    return escaped
+}
+
+private struct ReaderExternalSegmentSidecarDescriptor {
+    let endpointURL: String
+    let signature: String
+}
+
+private func externalReaderSegmentSidecarDescriptor(
+    in htmlData: Data
+) -> ReaderExternalSegmentSidecarDescriptor? {
+    guard let html = String(data: htmlData, encoding: .utf8),
+          let document = try? SwiftSoup.parse(html) else {
         return nil
     }
-    let token = String(decoding: htmlBytes[tokenStart..<tokenEnd], as: UTF8.self)
-    return token.isEmpty ? nil : token
+    let descriptors = document.getElementsByTag("meta").array().filter { element in
+        (try? element.attr("name").lowercased()) == "mnb-segment-sidecar"
+    }
+    guard descriptors.count == 1,
+          let descriptor = descriptors.first,
+          let endpointURL = try? descriptor.attr("content"),
+          !endpointURL.isEmpty,
+          let signature = try? descriptor.attr("data-mnb-segment-sidecar-signature"),
+          !signature.isEmpty else {
+        return nil
+    }
+    return ReaderExternalSegmentSidecarDescriptor(
+        endpointURL: endpointURL,
+        signature: signature
+    )
+}
+
+private func htmlDataContainsExternalReaderSegmentSidecarDescriptor(_ htmlData: Data) -> Bool {
+    guard let html = String(data: htmlData, encoding: .utf8),
+          let document = try? SwiftSoup.parse(html) else {
+        return false
+    }
+    return document.getElementsByTag("meta").array().contains { element in
+        (try? element.attr("name").lowercased()) == "mnb-segment-sidecar"
+    }
 }
 
 private func canonicalReaderSegmentSidecarRanges(
-    in htmlBytes: [UInt8]
+    in htmlData: Data
 ) -> (element: Range<Int>, content: Range<Int>)? {
-    let htmlData = Data(htmlBytes)
-    let identifierIndex = [
-        Data("id=\"mnb-segment-metadata\"".utf8),
-        Data("id='mnb-segment-metadata'".utf8),
-    ]
-        .compactMap { htmlData.range(of: $0)?.lowerBound }
-        .min()
-    guard let identifierIndex,
-          let openingTag = htmlData.range(
-            of: Data("<script".utf8),
-            options: .backwards,
-            in: htmlData.startIndex..<identifierIndex
-          ),
-          let openingTagEnd = htmlData.range(
-            of: Data(">".utf8),
-            in: identifierIndex..<htmlData.endIndex
-          )?.lowerBound,
-          let closingTag = htmlData.range(
-            of: Data("</script>".utf8),
-            in: (openingTagEnd + 1)..<htmlData.endIndex
-          ) else {
+    let ranges = canonicalReaderSegmentSidecarRangeList(in: htmlData)
+    return ranges.count == 1 ? ranges[0] : nil
+}
+
+private func canonicalReaderSegmentSidecarRangeList(
+    in htmlData: Data
+) -> [(element: Range<Int>, content: Range<Int>)] {
+    var ranges = [(element: Range<Int>, content: Range<Int>)]()
+    var searchStart = htmlData.startIndex
+
+    while searchStart < htmlData.endIndex,
+          let tagStart = htmlData[searchStart...].firstIndex(of: ReaderHTMLASCII.lessThan) {
+        if htmlASCIIMatches(
+            ReaderHTMLASCII.commentOpening,
+            in: htmlData,
+            at: tagStart,
+            caseInsensitive: false
+        ) {
+            guard let commentEnd = htmlASCIIRange(
+                of: ReaderHTMLASCII.commentClosing,
+                in: htmlData,
+                startingAt: tagStart + ReaderHTMLASCII.commentOpening.count,
+                caseInsensitive: false
+            ) else {
+                return []
+            }
+            searchStart = commentEnd.upperBound
+            continue
+        }
+        guard htmlIsScriptTag(in: htmlData, at: tagStart, isClosing: false) else {
+            if htmlMayStartTag(in: htmlData, at: tagStart),
+               let tagEnd = htmlTagEnd(in: htmlData, startingAt: tagStart) {
+                searchStart = tagEnd
+            } else {
+                searchStart = tagStart + 1
+            }
+            continue
+        }
+        guard let openingTagEnd = htmlTagEnd(in: htmlData, startingAt: tagStart),
+              let closingTagStart = htmlClosingScriptTagStart(
+                in: htmlData,
+                startingAt: openingTagEnd
+              ),
+              let closingTagEnd = htmlTagEnd(in: htmlData, startingAt: closingTagStart) else {
+            return []
+        }
+        let openingTagHTML = String(
+            decoding: htmlData[tagStart..<openingTagEnd],
+            as: UTF8.self
+        )
+        if let fragment = try? SwiftSoup.parseBodyFragment(openingTagHTML + "</script>"),
+           let script = try? fragment.getElementsByTag("script").first(),
+           script?.id() == "mnb-segment-metadata" {
+            ranges.append((
+                tagStart..<closingTagEnd,
+                openingTagEnd..<closingTagStart
+            ))
+        }
+        searchStart = closingTagEnd
+    }
+    return ranges
+}
+
+private func removingCanonicalReaderSegmentSidecars(from htmlData: Data) -> Data {
+    let ranges = canonicalReaderSegmentSidecarRangeList(in: htmlData).map(\.element)
+    guard !ranges.isEmpty else { return htmlData }
+    var result = Data()
+    result.reserveCapacity(htmlData.count - ranges.reduce(0) { $0 + $1.count })
+    var sourceIndex = htmlData.startIndex
+    for range in ranges {
+        result.append(htmlData[sourceIndex..<range.lowerBound])
+        sourceIndex = range.upperBound
+    }
+    result.append(htmlData[sourceIndex...])
+    return result
+}
+
+private enum ReaderHTMLASCII {
+    static let lessThan = UInt8(ascii: "<")
+    static let greaterThan = UInt8(ascii: ">")
+    static let forwardSlash = UInt8(ascii: "/")
+    static let singleQuote = UInt8(ascii: "'")
+    static let doubleQuote = UInt8(ascii: "\"")
+    static let space = UInt8(ascii: " ")
+    static let horizontalTab = UInt8(ascii: "\t")
+    static let lineFeed = UInt8(ascii: "\n")
+    static let carriageReturn = UInt8(ascii: "\r")
+    static let formFeed = UInt8(ascii: "\u{000C}")
+    static let uppercaseLetters = UInt8(ascii: "A")...UInt8(ascii: "Z")
+    static let lowercaseLetters = UInt8(ascii: "a")...UInt8(ascii: "z")
+    static let lowercaseOffset = UInt8(ascii: "a") - UInt8(ascii: "A")
+    static let exclamationMark = UInt8(ascii: "!")
+    static let questionMark = UInt8(ascii: "?")
+    static let scriptTagName = Array("script".utf8)
+    static let commentOpening = Array("<!--".utf8)
+    static let commentClosing = Array("-->".utf8)
+}
+
+private func htmlASCIILowercased(_ byte: UInt8) -> UInt8 {
+    ReaderHTMLASCII.uppercaseLetters.contains(byte)
+        ? byte + ReaderHTMLASCII.lowercaseOffset
+        : byte
+}
+
+private func htmlASCIIMatches(
+    _ pattern: [UInt8],
+    in data: Data,
+    at start: Int,
+    caseInsensitive: Bool = true
+) -> Bool {
+    guard start >= data.startIndex,
+          pattern.count <= data.endIndex - start else {
+        return false
+    }
+    for offset in pattern.indices {
+        let sourceByte = data[start + offset]
+        let patternByte = pattern[offset]
+        if caseInsensitive {
+            guard htmlASCIILowercased(sourceByte) == htmlASCIILowercased(patternByte) else {
+                return false
+            }
+        } else if sourceByte != patternByte {
+            return false
+        }
+    }
+    return true
+}
+
+private func htmlASCIIRange(
+    of pattern: [UInt8],
+    in data: Data,
+    startingAt start: Int,
+    caseInsensitive: Bool = true
+) -> Range<Int>? {
+    guard !pattern.isEmpty,
+          start >= data.startIndex,
+          pattern.count <= data.endIndex - start else {
         return nil
     }
-    return (
-        openingTag.lowerBound..<closingTag.upperBound,
-        (openingTagEnd + 1)..<closingTag.lowerBound
-    )
+    let finalStart = data.endIndex - pattern.count
+    for candidateStart in start...finalStart where htmlASCIIMatches(
+        pattern,
+        in: data,
+        at: candidateStart,
+        caseInsensitive: caseInsensitive
+    ) {
+        return candidateStart..<(candidateStart + pattern.count)
+    }
+    return nil
+}
+
+private func htmlIsWhitespace(_ byte: UInt8) -> Bool {
+    switch byte {
+    case ReaderHTMLASCII.space,
+         ReaderHTMLASCII.horizontalTab,
+         ReaderHTMLASCII.lineFeed,
+         ReaderHTMLASCII.carriageReturn,
+         ReaderHTMLASCII.formFeed:
+        true
+    default:
+        false
+    }
+}
+
+private func htmlIsTagNameBoundary(_ byte: UInt8) -> Bool {
+    htmlIsWhitespace(byte)
+        || byte == ReaderHTMLASCII.greaterThan
+        || byte == ReaderHTMLASCII.forwardSlash
+}
+
+private func htmlMayStartTag(in data: Data, at tagStart: Int) -> Bool {
+    let markerIndex = tagStart + 1
+    guard data.indices.contains(markerIndex) else { return false }
+    let marker = data[markerIndex]
+    return ReaderHTMLASCII.uppercaseLetters.contains(marker)
+        || ReaderHTMLASCII.lowercaseLetters.contains(marker)
+        || marker == ReaderHTMLASCII.forwardSlash
+        || marker == ReaderHTMLASCII.exclamationMark
+        || marker == ReaderHTMLASCII.questionMark
+}
+
+private func htmlIsScriptTag(
+    in data: Data,
+    at tagStart: Int,
+    isClosing: Bool
+) -> Bool {
+    guard data.indices.contains(tagStart), data[tagStart] == ReaderHTMLASCII.lessThan else {
+        return false
+    }
+    let slashByteCount = isClosing ? 1 : 0
+    let nameStart = tagStart + 1 + slashByteCount
+    if isClosing {
+        guard data.indices.contains(tagStart + 1),
+              data[tagStart + 1] == ReaderHTMLASCII.forwardSlash else {
+            return false
+        }
+    }
+    guard htmlASCIIMatches(ReaderHTMLASCII.scriptTagName, in: data, at: nameStart) else {
+        return false
+    }
+    let boundaryIndex = nameStart + ReaderHTMLASCII.scriptTagName.count
+    return data.indices.contains(boundaryIndex) && htmlIsTagNameBoundary(data[boundaryIndex])
+}
+
+private func htmlTagEnd(in data: Data, startingAt tagStart: Int) -> Int? {
+    var quote: UInt8?
+    var index = tagStart + 1
+    while index < data.endIndex {
+        let byte = data[index]
+        if let activeQuote = quote {
+            if byte == activeQuote {
+                quote = nil
+            }
+        } else if byte == ReaderHTMLASCII.singleQuote || byte == ReaderHTMLASCII.doubleQuote {
+            quote = byte
+        } else if byte == ReaderHTMLASCII.greaterThan {
+            return index + 1
+        }
+        index += 1
+    }
+    return nil
+}
+
+private func htmlClosingScriptTagStart(in data: Data, startingAt start: Int) -> Int? {
+    var searchStart = start
+    while searchStart < data.endIndex,
+          let candidate = data[searchStart...].firstIndex(of: ReaderHTMLASCII.lessThan) {
+        if htmlIsScriptTag(in: data, at: candidate, isClosing: true) {
+            return candidate
+        }
+        searchStart = candidate + 1
+    }
+    return nil
 }
 
 @inline(__always)

@@ -233,6 +233,23 @@ func ebookHTTPResponse(
     )!
 }
 
+func ebookProcessTextHTTPResponse(
+    url: URL,
+    data: Data,
+    isAuthoritativelyProcessed: Bool
+) -> HTTPURLResponse {
+    ebookHTTPResponse(
+        url: url,
+        mimeType: "text/plain",
+        byteCount: data.count,
+        textEncodingName: "utf-8",
+        additionalHeaderFields: [
+            "Cache-Control": "no-store",
+            "X-Manabi-Processing-Authoritative": isAuthoritativelyProcessed ? "true" : "false",
+        ]
+    )
+}
+
 func missingEbookViewerAssetResponse(for url: URL) -> HTTPURLResponse? {
     guard url.path.hasPrefix("/load/viewer-assets/") else { return nil }
     return HTTPURLResponse(
@@ -396,10 +413,14 @@ func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) ->
     if isCacheWarmer {
         return Data()
     }
-    return externalizingCanonicalReaderSegmentSidecar(
-        in: Array(processedText.utf8),
-        scheme: .ebook
-    ).documentHTML
+    let htmlData = Data(processedText.utf8)
+    guard let payload = splitCanonicalReaderSegmentSidecar(from: htmlData) else {
+        return htmlData
+    }
+    return inliningReaderSegmentSidecar(
+        documentHTML: payload.documentHTML,
+        canonicalSidecar: payload.segmentSidecar
+    )
 }
 
 actor EbookViewerAssetCache {
@@ -1094,23 +1115,15 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             cachedPayload = nil
                         }
                         if let cachedPayload,
-                           ebookProcessedSectionPayloadHasDurableSegmentIdentities(cachedPayload),
-                           let cachedData = ebookProcessTextResponseData(
-                            processedText: String(
-                                decoding: externalizingReaderSegmentSidecar(
-                                    documentHTML: Array(cachedPayload.documentHTML),
-                                    canonicalSidecar: cachedPayload.segmentSidecar,
-                                    scheme: .ebook
-                                ).documentHTML,
-                                as: UTF8.self
-                            ),
-                            isCacheWarmer: false
-                           ) {
-                            let resp = HTTPURLResponse(
+                           ebookProcessedSectionPayloadHasDurableSegmentIdentities(cachedPayload) {
+                            let cachedData = inliningReaderSegmentSidecar(
+                                documentHTML: cachedPayload.documentHTML,
+                                canonicalSidecar: cachedPayload.segmentSidecar
+                            )
+                            let resp = ebookProcessTextHTTPResponse(
                                 url: url,
-                                mimeType: nil,
-                                expectedContentLength: cachedData.count,
-                                textEncodingName: "utf-8"
+                                data: cachedData,
+                                isAuthoritativelyProcessed: cachedPayload.isAuthoritativelyProcessed
                             )
                             await { @MainActor in
                                 self.finishActiveTask(
@@ -1162,38 +1175,29 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             }()
                             return
                         }
-                        let responseText = String(
-                            decoding: externalizingReaderSegmentSidecar(
-                                documentHTML: Array(responsePayload.documentHTML),
-                                canonicalSidecar: responsePayload.segmentSidecar,
-                                scheme: .ebook
-                            ).documentHTML,
-                            as: UTF8.self
-                        )
-                        if let respData = ebookProcessTextResponseData(
-                            processedText: responseText,
-                            isCacheWarmer: isCacheWarmer
-                        ) {
-                            let resp = HTTPURLResponse(
-                                url: url,
-                                mimeType: nil,
-                                expectedContentLength: respData.count,
-                                textEncodingName: "utf-8"
+                        let responseData = isCacheWarmer
+                            ? Data()
+                            : inliningReaderSegmentSidecar(
+                                documentHTML: responsePayload.documentHTML,
+                                canonicalSidecar: responsePayload.segmentSidecar
                             )
-                            await { @MainActor in
-                                self.finishActiveTask(
-                                    urlSchemeTask,
-                                    response: resp,
-                                    data: respData
-                                )
-                            }()
-                        }
-                    } else if let respData = text.data(using: .utf8) {
-                        let resp = HTTPURLResponse(
+                        let response = ebookProcessTextHTTPResponse(
                             url: url,
-                            mimeType: nil,
-                            expectedContentLength: respData.count,
-                            textEncodingName: "utf-8"
+                            data: responseData,
+                            isAuthoritativelyProcessed: responsePayload.isAuthoritativelyProcessed
+                        )
+                        await { @MainActor in
+                            self.finishActiveTask(
+                                urlSchemeTask,
+                                response: response,
+                                data: responseData
+                            )
+                        }()
+                    } else if let respData = text.data(using: .utf8) {
+                        let resp = ebookProcessTextHTTPResponse(
+                            url: url,
+                            data: respData,
+                            isAuthoritativelyProcessed: false
                         )
                         await { @MainActor in
                             self.finishActiveTask(

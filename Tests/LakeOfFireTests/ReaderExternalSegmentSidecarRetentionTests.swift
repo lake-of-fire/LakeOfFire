@@ -86,7 +86,7 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
             countLimit: 1
         )
         let retainedData = validSidecarData(runtimeIDToken: "!retained")
-        let retained = firstStore.insert(retainedData)
+        let retained = try XCTUnwrap(firstStore.insert(retainedData))
         _ = firstStore.insert(validSidecarData(runtimeIDToken: "!evicting"))
 
         let recreatedStore = ReaderExternalSegmentSidecarStore(
@@ -99,55 +99,121 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         XCTAssertEqual(recreatedStore.entry(for: retained.token)?.signature, retained.signature)
     }
 
+    func testOversizedDurableSidecarIsNotRetainedAboveMemoryBudget() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let data = validSidecarData(runtimeIDToken: "!runtime-0")
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: data.count - 1,
+            countLimit: 1
+        )
+        let stored = try XCTUnwrap(store.insert(data))
+        let fileURL = directoryURL.appendingPathComponent(stored.token)
+
+        try Data("corrupt".utf8).write(to: fileURL, options: .atomic)
+
+        XCTAssertNil(store.entry(for: stored.token))
+    }
+
     func testCorruptDurableSidecarIsRejectedAndAtomicallyRegenerated() throws {
         let directoryURL = temporaryDirectoryURL()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let originalData = validSidecarData(runtimeIDToken: "!segment")
         let originalStore = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let stored = originalStore.insert(originalData)
+        let stored = try XCTUnwrap(originalStore.insert(originalData))
         let fileURL = directoryURL.appendingPathComponent(stored.token)
         try Data("corrupt".utf8).write(to: fileURL, options: .atomic)
 
         let corruptedStore = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
         XCTAssertNil(corruptedStore.entry(for: stored.token))
 
-        XCTAssertEqual(corruptedStore.insert(originalData).token, stored.token)
+        XCTAssertEqual(try XCTUnwrap(corruptedStore.insert(originalData)).token, stored.token)
         let recreatedStore = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
         XCTAssertEqual(recreatedStore.entry(for: stored.token)?.data, originalData)
     }
 
-    func testAdvertisedSidecarsRemainReachableWhenDurablePersistenceFails() throws {
+    func testPersistenceFailureKeepsCanonicalSidecarInlineWithoutAdvertisingURL() throws {
         let directoryURL = temporaryDirectoryURL()
         try Data("not a directory".utf8).write(to: directoryURL)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
-        let firstData = validSidecarData(runtimeIDToken: "!first")
-        let secondData = validSidecarData(runtimeIDToken: "!second")
+        let data = validSidecarData(runtimeIDToken: "!runtime-0")
         let store = ReaderExternalSegmentSidecarStore(
             directoryURL: directoryURL,
-            totalByteLimit: max(firstData.count, secondData.count),
-            countLimit: 10
+            totalByteLimit: data.count,
+            countLimit: 1
         )
-        let first = store.insert(firstData)
-        let second = store.insert(secondData)
+        let result = externalizingReaderSegmentSidecar(
+            documentHTML: Array("<html><body><m-m id=\"runtime-0\">猫</m-m></body></html>".utf8),
+            canonicalSidecar: data,
+            scheme: .internalReader,
+            store: store
+        )
 
-        XCTAssertEqual(store.entry(for: first.token)?.data, firstData)
-        XCTAssertEqual(store.entry(for: second.token)?.data, secondData)
+        XCTAssertNil(store.insert(data))
+        XCTAssertNil(result.endpointURL)
+        XCTAssertNil(result.signature)
+        XCTAssertTrue(String(decoding: result.documentHTML, as: UTF8.self).contains(
+            #"id="mnb-segment-metadata""#
+        ))
+        XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities(
+            String(decoding: result.documentHTML, as: UTF8.self),
+            store: store
+        ))
     }
 
-    func testOversizedNondurableAdvertisedSidecarRemainsReachable() throws {
+    func testInlinePersistenceFallbackEscapesScriptClosingContent() throws {
         let directoryURL = temporaryDirectoryURL()
         try Data("not a directory".utf8).write(to: directoryURL)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
-        let data = validSidecarData(runtimeIDToken: "!oversized")
-        let store = ReaderExternalSegmentSidecarStore(
-            directoryURL: directoryURL,
-            totalByteLimit: data.count - 1,
-            countLimit: 10
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let data = Data(
+            #"{"v":9,"t":{"j":[[1001]],"n":[],"s":["term"],"ns":[],"p":[],"h":["hash"],"x":["</script><m-m id=\"injected\">"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime-0",0,0,null,0,null,null,null,0,0,0]]}"#.utf8
         )
 
-        let stored = store.insert(data)
+        let result = externalizingReaderSegmentSidecar(
+            documentHTML: Array("<html><body><m-m id=\"runtime-0\">猫</m-m></body></html>".utf8),
+            canonicalSidecar: data,
+            scheme: .internalReader,
+            store: store
+        )
+        let html = String(decoding: result.documentHTML, as: UTF8.self)
 
-        XCTAssertEqual(store.entry(for: stored.token)?.data, data)
+        XCTAssertFalse(html.contains(#"</script><m-m id=\"injected\">"#))
+        XCTAssertTrue(html.contains(#"\u003C/script>"#))
+        XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities(html, store: store))
+    }
+
+    func testStreamingPublicationFallsBackToInlineCanonicalSidecar() throws {
+        let directoryURL = temporaryDirectoryURL()
+        try Data("not a directory".utf8).write(to: directoryURL)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let payload = EbookProcessedSectionPayload(
+            documentHTML: Data("<html><head></head><body><m-m id=\"runtime-0\">猫</m-m></body></html>".utf8),
+            segmentSidecar: validSidecarData(runtimeIDToken: "!runtime-0")
+        )
+
+        let publication = publishingCanonicalReaderSegmentSidecar(
+            payload,
+            scheme: .ebook,
+            store: store
+        )
+        let descriptor = try XCTUnwrap(publication.headDescriptor)
+        let publishedHTML = ebookHTMLDataByInjectingHeadMarkup(
+            descriptor,
+            into: publication.documentHTML
+        )
+
+        XCTAssertNil(publication.endpointURL)
+        XCTAssertNil(publication.signature)
+        XCTAssertTrue(String(decoding: descriptor, as: UTF8.self).hasPrefix(
+            #"<script id="mnb-segment-metadata""#
+        ))
+        XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities(
+            String(decoding: publishedHTML, as: UTF8.self),
+            store: store
+        ))
     }
 
     func testMissingExternalSidecarForcesProcessingRegeneration() async throws {
@@ -187,25 +253,25 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
 
     func testSchemaNineRequiresExplicitSentenceIdentityAndExactRuntimeMapping() {
         let validCloneSidecar = sidecarData(
-            runtimeIDTokens: ["!runtime-a", "!runtime-b"],
+            runtimeIDTokens: ["!runtime-0", "!runtime-1"],
             segmentHashIndexes: [0, 0],
             sentenceIdentifierIndexes: [0, 0],
             paragraphIdentifierIndexes: [0, 0]
         )
         let duplicateRuntimeSidecar = sidecarData(
-            runtimeIDTokens: ["!runtime-a", "!runtime-a"],
+            runtimeIDTokens: ["!runtime-0", "!runtime-0"],
             segmentHashIndexes: [0, 0],
             sentenceIdentifierIndexes: [0, 0],
             paragraphIdentifierIndexes: [0, 0]
         )
         let hashOnlySidecar = sidecarData(
-            runtimeIDTokens: ["!runtime"],
+            runtimeIDTokens: ["!runtime-0"],
             segmentHashIndexes: [0],
             sentenceIdentifierIndexes: [nil],
             paragraphIdentifierIndexes: [0]
         )
         let sentenceOnlySidecar = sidecarData(
-            runtimeIDTokens: ["!runtime"],
+            runtimeIDTokens: ["!runtime-0"],
             segmentHashIndexes: [0],
             sentenceIdentifierIndexes: [0],
             paragraphIdentifierIndexes: [nil]
@@ -263,6 +329,11 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         return try! JSONSerialization.data(withJSONObject: [
             "v": 9,
             "t": [
+                "j": [],
+                "n": [],
+                "s": [],
+                "ns": [],
+                "p": [],
                 "h": ["segment-hash"],
                 "sid": ["sentence-id"],
                 "pid": ["paragraph-id"],

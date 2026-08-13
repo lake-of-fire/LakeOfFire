@@ -330,14 +330,23 @@ public struct ReaderContentLoader {
     }
 
     @RealmBackgroundActor
-    public static func softDeleteTranscriptsIfNoRemainingOwners(contentURLs: [URL]) async throws {
+    public static func softDeleteTranscriptsIfNoRemainingOwners(
+        contentURLs: [URL],
+        explicitlyModified: Bool = true
+    ) async throws {
         for contentURL in Set(contentURLs) {
-            try await softDeleteTranscriptsIfNoRemainingOwners(contentURL: contentURL)
+            try await softDeleteTranscriptsIfNoRemainingOwners(
+                contentURL: contentURL,
+                explicitlyModified: explicitlyModified
+            )
         }
     }
 
     @RealmBackgroundActor
-    public static func softDeleteTranscriptsIfNoRemainingOwners(contentURL: URL) async throws {
+    public static func softDeleteTranscriptsIfNoRemainingOwners(
+        contentURL: URL,
+        explicitlyModified: Bool = true
+    ) async throws {
         let canonicalContentURL = MediaTranscript.canonicalContentURL(from: contentURL)
         recentLoadAllCache.removeAll()
         let ownerURLs = relatedURLStrings(for: canonicalContentURL)
@@ -350,6 +359,8 @@ public struct ReaderContentLoader {
               !hasLiveOwner(in: ownerRealm, type: ContentFile.self, ownerURLs: ownerURLs),
               !hasLiveOwner(in: feedRealm, type: FeedEntry.self, ownerURLs: ownerURLs)
         else { return }
+        let hasLiveAdditionalOwner = try await hasLiveAdditionalContentOwner(contentURL: canonicalContentURL)
+        guard !hasLiveAdditionalOwner else { return }
 
         let realm = try await Realm(configuration: transcriptRealmConfiguration, actor: RealmBackgroundActor.shared)
         await realm.asyncRefresh()
@@ -360,7 +371,7 @@ public struct ReaderContentLoader {
         try await realm.asyncWrite {
             for transcript in transcripts {
                 transcript.isDeleted = true
-                transcript.refreshChangeMetadata(explicitlyModified: true)
+                transcript.refreshChangeMetadata(explicitlyModified: explicitlyModified)
             }
         }
     }
@@ -388,6 +399,20 @@ public struct ReaderContentLoader {
             .where { $0.isDeleted == false }
             .filter(NSPredicate(format: "url IN %@", ownerURLs))
             .isEmpty == false
+    }
+
+    @RealmBackgroundActor
+    private static func hasLiveAdditionalContentOwner(contentURL: URL) async throws -> Bool {
+        for provider in additionalContentProviders {
+            try Task.checkCancellation()
+            for reference in try await provider.load(contentURL) {
+                guard let content = try await reference.resolveOnBackgroundActor() else { continue }
+                if !content.isDeleted {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     @RealmBackgroundActor
@@ -778,20 +803,10 @@ public struct ReaderContentLoader {
             "stage=contentLoader.loadContent.begin contentURL=\(contentURL.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault) readerAvailable=\(content.isReaderModeAvailable) hasHTML=\(content.hasHTML)"
         )
 
-        let htmlProbeStartedAt = Date()
-        let contentHasLocallyRetrievableHTML = try await hasLocallyRetrievableHTML(
-            for: content,
-            readerFileManager: readerFileManager
-        )
-        logReaderLoad(
-            "stage=contentLoader.loadContent.htmlProbe contentURL=\(contentURL.absoluteString) hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(htmlProbeStartedAt)))"
-        )
-
         if contentURL.isReaderBookURL, !contentURL.isEBookURL {
-            guard contentHasLocallyRetrievableHTML,
-                  let loaderURL = readerLoaderURL(for: contentURL) else {
+            guard let loaderURL = readerLoaderURL(for: contentURL) else {
                 logReaderLoad(
-                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=<nil> reason=readerBookMissingLocalHTML elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=<nil> reason=readerBookInvalidLoaderURL elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
                 )
                 return nil
             }
@@ -800,6 +815,15 @@ public struct ReaderContentLoader {
             )
             return loaderURL
         }
+
+        let htmlProbeStartedAt = Date()
+        let contentHasLocallyRetrievableHTML = try await hasLocallyRetrievableHTML(
+            for: content,
+            readerFileManager: readerFileManager
+        )
+        logReaderLoad(
+            "stage=contentLoader.loadContent.htmlProbe contentURL=\(contentURL.absoluteString) hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(htmlProbeStartedAt)))"
+        )
 
         if contentURL.isSnippetURL {
             if contentHasLocallyRetrievableHTML, let loaderURL = readerLoaderURL(for: contentURL) {

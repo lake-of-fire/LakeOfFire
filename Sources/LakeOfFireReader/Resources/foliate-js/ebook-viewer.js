@@ -19,12 +19,15 @@ import {
 import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
 import { applyEbookViewerWritingDirection } from './ebook-viewer-writing-direction.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
+import { ebookProcessTextResponseIsAuthoritative } from './ebook-process-text-response.js'
 import {
-    compactEbookSegmentRuntimeIDsAreUnique,
+    createEbookSegmentMetadataLookup,
+    ebookSegmentSidecarRevision,
+} from './ebook-segment-metadata-cache.js'
+import {
     ebookSentenceIdentifier,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
-    expandCompactEbookSegmentIDToken,
     indexUniqueEbookSegmentAlias,
 } from './ebook-segment-identity.js'
 import {
@@ -315,8 +318,7 @@ const makeReplaceText = (isCacheWarmer) => {
                     'data-mnb-has-sentences': sentenceCount > 0 ? 'true' : null,
                     'data-mnb-has-segments': segmentCount > 0 ? 'true' : null,
                 });
-                const isAuthoritative =
-                    response.headers?.get?.('x-manabi-processing-authoritative') !== 'false';
+                const isAuthoritative = ebookProcessTextResponseIsAuthoritative(response);
                 return { html, shouldRemember: isAuthoritative }
             } catch (error) {
                 if (error?.name !== 'AbortError') console.error("Error replacing text:", error)
@@ -2144,229 +2146,10 @@ const isDocumentLike = (value) =>
     && typeof value.querySelectorAll === 'function'
     && !!value.documentElement;
 
-const parseEntryIDs = (rawValue) => {
-    if (typeof rawValue !== 'string' || rawValue.length === 0) {
-        return [];
-    }
-    try {
-        const parsed = JSON.parse(rawValue);
-        return Array.isArray(parsed) ? parsed : [];
-    } catch (_error) {
-        return [];
-    }
-};
-
-// Mirrors manabi_reader.js sidecar expansion. The HTML sidecar stores table-compressed
-// segment tuples so EPUB sections do not repeat large lookup attrs thousands of times.
-const segmentMetadataSidecarSnapshot = (doc) => {
-    const primarySidecar = typeof doc?.getElementById === 'function'
-        ? doc.getElementById('mnb-segment-metadata')
-        : null;
-    let sidecars = primarySidecar
-        ? [primarySidecar]
-        : Array.from(doc?.getElementsByTagName?.('script') || [])
-            .filter((script) => script?.hasAttribute?.('data-mnb-seg-meta'));
-    const externalEntry = primarySidecar ? null : (doc?.manabiExternalSegmentSidecar ?? null);
-    if (sidecars.length === 0 && externalEntry?.sidecar) {
-        sidecars = [externalEntry.sidecar];
-    }
-    const sidecarTexts = sidecars.map((sidecar) => sidecar.textContent || '');
-    const sidecarSignature = externalEntry?.signature
-        ? `external:${externalEntry.signature}`
-        : sidecarTexts.map((text) => String(text.length)).join('|');
-    return { sidecars, sidecarTexts, sidecarSignature };
-};
-
-const segmentMetadataSidecarsMatchCache = (doc, snapshot) => (
-    Array.isArray(doc?.manabiSegmentMetadataSidecars)
-    && Array.isArray(doc?.manabiSegmentMetadataSidecarTexts)
-    && doc.manabiSegmentMetadataSidecars.length === snapshot.sidecars.length
-    && doc.manabiSegmentMetadataSidecarTexts.length === snapshot.sidecarTexts.length
-    && doc.manabiSegmentMetadataSidecarTexts.every((text, index) => text === snapshot.sidecarTexts[index])
-);
-
-const cacheSegmentMetadataSidecarSnapshot = (doc, snapshot) => {
-    doc.manabiSegmentMetadataSidecars = snapshot.sidecars;
-    doc.manabiSegmentMetadataSidecarTexts = snapshot.sidecarTexts;
-    doc.manabiSegmentMetadataSidecarSignature = snapshot.sidecarSignature;
-};
-
-const segmentMetadataPayloadsForSnapshot = (doc, snapshot) => {
-    const hasMatchingSidecars =
-        doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
-        && segmentMetadataSidecarsMatchCache(doc, snapshot);
-    if (hasMatchingSidecars && Array.isArray(doc.manabiSegmentMetadataSidecarPayloads)) {
-        return doc.manabiSegmentMetadataSidecarPayloads;
-    }
-    const payloads = snapshot.sidecars.map((sidecar) => {
-        try {
-            return JSON.parse(sidecar.textContent || '{}');
-        } catch (_error) {
-            return null;
-        }
-    });
-    doc.manabiSegmentMetadataSidecarPayloads = payloads;
-    cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
-    return payloads;
-};
-
-const resetSegmentMetadataCachesForSnapshot = (doc, snapshot) => {
-    doc.manabiSegmentMetadataByID = new Map();
-    doc.manabiSegmentMetadataSidecarPayloads = null;
-    cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
-};
-
-const segmentMetadataTableValue = (table, index, fallback = null) => (
-    Number.isInteger(index) && Array.isArray(table) && index >= 0 && index < table.length
-        ? table[index]
-        : fallback
-);
-
-const segmentMetadataParserVersion = 9;
-
-const segmentMetadataTableArray = (tables, shortKey) => (
-    Array.isArray(tables?.[shortKey])
-        ? tables[shortKey]
-        : []
-);
-
-const compactSegmentMetadataTables = (compactTables) => ({
-    h: segmentMetadataTableArray(compactTables, 'h'),
-    j: segmentMetadataTableArray(compactTables, 'j'),
-    n: segmentMetadataTableArray(compactTables, 'n'),
-    s: segmentMetadataTableArray(compactTables, 's'),
-    ns: segmentMetadataTableArray(compactTables, 'ns'),
-    p: segmentMetadataTableArray(compactTables, 'p'),
-    x: segmentMetadataTableArray(compactTables, 'x'),
-    sid: segmentMetadataTableArray(compactTables, 'sid'),
-    pid: segmentMetadataTableArray(compactTables, 'pid'),
-});
-
-const compactSegmentMetadataTupleIsExactV9 = (segment, tables) => {
-    if (!Array.isArray(segment) || segment.length !== 11) return false;
-    if (expandCompactEbookSegmentIDToken(segment[0]) === null) return false;
-    return [
-        segmentMetadataTableValue(tables.h, segment[1], null),
-        segmentMetadataTableValue(tables.sid, segment[9], null),
-        segmentMetadataTableValue(tables.pid, segment[10], null),
-    ].every((value) => typeof value === 'string' && value.length > 0);
-};
-
-const segmentMetadataFromCompactTuple = (segment, tables) => {
-    const segmentHash = segmentMetadataTableValue(tables.h, segment?.[1], null);
-    const sentenceIdentifier = segmentMetadataTableValue(tables.sid, segment?.[9], null);
-    const paragraphIdentifier = segmentMetadataTableValue(tables.pid, segment?.[10], null);
-    return {
-        i: expandCompactEbookSegmentIDToken(segment?.[0]),
-        h: segmentHash,
-        sid: sentenceIdentifier && segmentHash
-            ? `${sentenceIdentifier}-${segmentHash}`
-            : null,
-        sentenceID: sentenceIdentifier,
-        paragraphID: paragraphIdentifier,
-        pid: paragraphIdentifier,
-        j: segmentMetadataTableValue(tables.j, segment?.[2], []),
-        n: segmentMetadataTableValue(tables.n, segment?.[3], []),
-        s: segmentMetadataTableValue(tables.s, segment?.[4], null),
-        ns: segmentMetadataTableValue(tables.ns, segment?.[5], null),
-        p: segmentMetadataTableValue(tables.p, segment?.[6], null),
-        l: segment?.[7],
-        x: segmentMetadataTableValue(tables.x, segment?.[8], null),
-    };
-};
-
-const segmentMetadataPayloadLookupState = (payload) => {
-    if (!payload || typeof payload !== 'object') return null;
-    if (payload.__manabiSegmentMetadataLookupState) {
-        return payload.__manabiSegmentMetadataLookupState;
-    }
-    const state = {
-        byID: new Map(),
-        scannedThrough: -1,
-        complete: false,
-    };
-    try {
-        Object.defineProperty(payload, '__manabiSegmentMetadataLookupState', {
-            value: state,
-            configurable: true,
-        });
-    } catch (_error) {
-        payload.__manabiSegmentMetadataLookupState = state;
-    }
-    return state;
-};
-
-const findSegmentMetadataInPayload = (payload, segmentID) => {
-    const cacheSegmentMetadataRuntimeID = (metadata, index, state) => {
-        const runtimeID = metadata?.i;
-        if (state?.byID && typeof runtimeID === 'string' && runtimeID.length > 0) {
-            state.byID.set(runtimeID, index);
-        }
-    };
-    const compactSegments = payload?.s;
-    if (payload?.v === segmentMetadataParserVersion && payload?.t && Array.isArray(compactSegments)) {
-        const tables = compactSegmentMetadataTables(payload.t);
-        if (
-            !compactEbookSegmentRuntimeIDsAreUnique(compactSegments)
-            || !compactSegments.every((segment) => compactSegmentMetadataTupleIsExactV9(segment, tables))
-        ) {
-            return null;
-        }
-        const state = segmentMetadataPayloadLookupState(payload);
-        if (state?.byID?.has(segmentID)) {
-            const cachedIndex = state.byID.get(segmentID);
-            const cachedSegment = compactSegments[cachedIndex];
-            return cachedSegment ? segmentMetadataFromCompactTuple(cachedSegment, tables) : null;
-        }
-        if (state?.complete === true) {
-            return null;
-        }
-        for (let index = (state?.scannedThrough ?? -1) + 1; index < compactSegments.length; index += 1) {
-            const segment = compactSegments[index];
-            const metadata = segmentMetadataFromCompactTuple(segment, tables);
-            cacheSegmentMetadataRuntimeID(metadata, index, state);
-            if (state) state.scannedThrough = index;
-            if (metadata?.i !== segmentID) continue;
-            return metadata;
-        }
-        if (state) state.complete = true;
-        return null;
-    }
-    return null;
-};
-
-const lazySegmentMetadataByID = (doc, snapshot) => {
-    const hasMatchingSidecars =
-        doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
-        && segmentMetadataSidecarsMatchCache(doc, snapshot);
-    if (!hasMatchingSidecars) {
-        resetSegmentMetadataCachesForSnapshot(doc, snapshot);
-    } else if (!(doc.manabiSegmentMetadataByID instanceof Map)) {
-        doc.manabiSegmentMetadataByID = new Map();
-    }
-    return doc.manabiSegmentMetadataByID;
-};
-
-const segmentMetadataForNode = (segmentNode) => {
-    if (!segmentNode) return null;
-    const doc = segmentNode.ownerDocument || document;
-    const segmentID = segmentNode.id;
-    if (typeof segmentID !== 'string' || segmentID.length === 0 || !doc) return null;
-    const snapshot = segmentMetadataSidecarSnapshot(doc);
-    const byID = lazySegmentMetadataByID(doc, snapshot);
-    if (byID.has(segmentID)) {
-        return byID.get(segmentID) || null;
-    }
-    let matchingMetadata = null;
-    for (const payload of segmentMetadataPayloadsForSnapshot(doc, snapshot)) {
-        const metadata = findSegmentMetadataInPayload(payload, segmentID);
-        if (!metadata?.i) continue;
-        if (matchingMetadata !== null) return null;
-        matchingMetadata = metadata;
-    }
-    if (matchingMetadata !== null) byID.set(segmentID, matchingMetadata);
-    return matchingMetadata;
-};
+// Sidecar parsing stays generation-owned and lazy: validation scans each payload
+// once, while tuple projection advances only as far as requested runtime IDs.
+const segmentMetadataLookup = createEbookSegmentMetadataLookup();
+const segmentMetadataForNode = segmentNode => segmentMetadataLookup.metadataForNode(segmentNode);
 
 const segmentEntryIDsForNode = (segmentNode, kind = 'primary') => {
     const metadata = segmentMetadataForNode(segmentNode);
@@ -2976,7 +2759,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
 
 const visibleSegmentCollectionDocumentIdentity = (doc) => ({
     documentURL: doc?.location?.href || doc?.URL || null,
-    sidecarRevision: doc?.getElementById?.('mnb-segment-metadata')?.dataset?.mnbSidecarRevision || null,
+    sidecarRevision: ebookSegmentSidecarRevision(doc),
 });
 
 const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspecified') => {
@@ -3053,7 +2836,7 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         ambiguousSegmentIdentifiers,
         idsByEntryID,
         documentURL: doc?.location?.href || doc?.URL || null,
-        sidecarRevision: doc?.getElementById?.('mnb-segment-metadata')?.dataset?.mnbSidecarRevision || null,
+        sidecarRevision: ebookSegmentSidecarRevision(doc),
         lookupPayloadByElementID: new Map(),
         lookupPayloadPrepared: false,
         reason,

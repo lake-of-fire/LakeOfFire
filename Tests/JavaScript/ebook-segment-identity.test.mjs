@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+    compactEbookSegmentMetadataPayloadIsExactV9,
     compactEbookSegmentRuntimeIDsAreUnique,
     ebookSentenceIdentifier,
     ebookSegmentIdentity,
@@ -26,6 +27,54 @@ test('rejects compact token aliases that expand to the same runtime ID', () => {
     assert.equal(compactEbookSegmentRuntimeIDsAreUnique([tuple('Ab09'), tuple('Cd10')]), true)
     assert.equal(compactEbookSegmentRuntimeIDsAreUnique([tuple('Ab09'), tuple('Ab09')]), false)
     assert.equal(compactEbookSegmentRuntimeIDsAreUnique([tuple('Ab09'), tuple('!mnb-sAb09')]), false)
+})
+
+test('validates every compact v9 tuple reference without numeric coercion', () => {
+    const payload = {
+        v: 9,
+        t: {
+            h: ['hash'],
+            j: [[1001]],
+            n: [],
+            s: ['読む'],
+            ns: [],
+            p: ['動詞'],
+            x: ['読む'],
+            sid: ['sentence'],
+            pid: ['paragraph'],
+        },
+        s: [['Ab09', 0, 0, null, 0, null, 0, null, 0, 0, 0]],
+    }
+
+    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9(payload), true)
+    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+        ...payload,
+        s: [['Ab09', 0, 0.5, null, 0, null, 0, null, 0, 0, 0]],
+    }), false)
+    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+        ...payload,
+        s: [['Ab09', 0, true, null, 0, null, 0, null, 0, 0, 0]],
+    }), false)
+    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+        ...payload,
+        s: [['Ab09', 0, 0, null, 3, null, 0, null, 0, 0, 0]],
+    }), false)
+    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+        ...payload,
+        t: { ...payload.t, j: [[0]] },
+    }), false)
+    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+        ...payload,
+        s: [['Ab09', 0, 0, null, 0, null, 0, 0, 0, 0, 0]],
+    }), false)
+    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+        ...payload,
+        s: [['Ab09', 0, 0, null, 0, null, 0, 6, 0, 0, 0]],
+    }), false)
+    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+        ...payload,
+        s: [['Ab09', 0, 0, null, 0, null, 0, 5, 0, 0, 0]],
+    }), true)
 })
 
 test('uses only explicit sentence identity and never promotes a hash', () => {

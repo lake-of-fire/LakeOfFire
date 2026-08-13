@@ -191,6 +191,50 @@ private func ebookTestPayload(
     )
 }
 
+private enum EbookPretransformedSidecarTestContract {
+    static let stableHashSeed: UInt64 = 5_381
+    static let stableHashMask: UInt64 = 0x00ff_ffff_ffff_ffff
+    static let stableHashMultiplier: UInt64 = 127
+}
+
+private func ebookPretransformedSidecarRevision(_ sidecar: Data) -> String {
+    var result = EbookPretransformedSidecarTestContract.stableHashSeed
+    for byte in sidecar {
+        result = (result & EbookPretransformedSidecarTestContract.stableHashMask)
+            * EbookPretransformedSidecarTestContract.stableHashMultiplier
+            + UInt64(byte)
+    }
+    return String(result, radix: 16, uppercase: true)
+}
+
+private func ebookPretransformedTestPayload(
+    bodyHTML: String,
+    sidecar: String,
+    revision: String? = nil,
+    markerSegmentCount: Int? = nil,
+    markerSentenceCount: Int? = nil,
+    markerCopies: Int = 1
+) -> EbookProcessedSectionPayload {
+    let sidecarData = Data(sidecar.utf8)
+    let fragment = try! SwiftSoup.parseBodyFragment(bodyHTML)
+    let segmentCount = markerSegmentCount ?? fragment.getElementsByTag("m-m").size()
+    let sentenceCount = markerSentenceCount ?? fragment.getElementsByTag("m-s").size()
+    let marker = """
+        <meta name="mnb-pretransformed-ebook-sidecar"
+              data-mnb-pretransformed-ebook="true"
+              data-mnb-sidecar-schema-version="9"
+              data-mnb-sidecar-contract-version="1"
+              data-mnb-sidecar-revision="\(revision ?? ebookPretransformedSidecarRevision(sidecarData))"
+              data-mnb-sidecar-segment-count="\(segmentCount)"
+              data-mnb-sidecar-sentence-count="\(sentenceCount)">
+        """
+    let markers = String(repeating: marker, count: markerCopies)
+    return EbookProcessedSectionPayload(
+        documentHTML: Data("<html><head>\(markers)</head><body>\(bodyHTML)</body></html>".utf8),
+        segmentSidecar: sidecarData
+    )
+}
+
 private let nestedResourceDocumentHTML = """
 <!doctype html><html><head>
 <link id="book-style" rel="stylesheet" href="../Styles/book.css#theme">
@@ -313,8 +357,8 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let canonicalJSON = #"{"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0]]}"#
-        let documentHTML = "<html><head></head><body><m-m>A</m-m></body></html>"
+        let canonicalJSON = #"{"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0]]}"#
+        let documentHTML = "<html><head></head><body><m-m id=\"a\">A</m-m></body></html>"
 
         let result = externalizingReaderSegmentSidecar(
             documentHTML: Array(documentHTML.utf8),
@@ -423,6 +467,41 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(missingHTML, store: store))
     }
 
+    func testDescriptorBackedCacheValidationBindsEndpointAndSignatureExactly() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let canonicalJSON = #"{"v":9,"t":{"j":[[1001]],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,0,null,null,null,null,null,null,0,0]]}"#
+        let result = externalizingReaderSegmentSidecar(
+            documentHTML: Data("<html><head></head><body><m-m id=\"a\">A</m-m></body></html>".utf8),
+            canonicalSidecar: Data(canonicalJSON.utf8),
+            scheme: .ebook,
+            store: store
+        )
+        let validHTML = String(decoding: result.documentHTML, as: UTF8.self)
+        let signature = try XCTUnwrap(result.signature)
+
+        XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities(validHTML, store: store))
+        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(
+            validHTML.replacingOccurrences(
+                of: signature,
+                with: "sha256:\(canonicalJSON.utf8.count):\(String(repeating: "f", count: 64))"
+            ),
+            store: store
+        ))
+
+        let duplicatedDescriptorHTML = validHTML.replacingOccurrences(
+            of: "</head>",
+            with: "<meta name=\"mnb-segment-sidecar\" content=\"\(try XCTUnwrap(result.endpointURL))\" "
+                + "data-mnb-segment-sidecar-signature=\"\(signature)\"></head>"
+        )
+        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(
+            duplicatedDescriptorHTML,
+            store: store
+        ))
+    }
+
     func testExternalizingCanonicalSidecarPublishesContentAddressedJSON() throws {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
@@ -464,6 +543,122 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             served.response.value(forHTTPHeaderField: "X-Manabi-Sidecar-Signature"),
             result.signature
         )
+    }
+
+    func testExternalizingCanonicalSidecarIgnoresIdentifierTextInsideEarlierScript() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let canonicalJSON = #"{"v":9,"t":{},"s":[]}"#
+        let html = """
+        <html><head></head><body>
+        <script>window.decoy = 'id="mnb-segment-metadata"';</script>
+        <script type="application/json" data-mnb-seg-meta="true" id="mnb-segment-metadata">
+        \(canonicalJSON)
+        </script>
+        </body></html>
+        """
+
+        let result = externalizingCanonicalReaderSegmentSidecar(
+            in: Array(html.utf8),
+            scheme: .ebook,
+            store: store
+        )
+        let output = String(decoding: result.documentHTML, as: UTF8.self)
+
+        XCTAssertTrue(output.contains("window.decoy"))
+        XCTAssertFalse(output.contains("data-mnb-seg-meta"))
+        let endpoint = try XCTUnwrap(result.endpointURL.flatMap(URL.init(string:)))
+        let served = try XCTUnwrap(readerExternalSegmentSidecarResponse(
+            for: endpoint,
+            scheme: .ebook,
+            store: store
+        ))
+        XCTAssertEqual(
+            String(decoding: served.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
+            canonicalJSON
+        )
+    }
+
+    func testExternalizingCanonicalSidecarIgnoresCommentedScriptDecoy() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let canonicalJSON = #"{"v":9,"t":{},"s":[]}"#
+        let html = """
+        <html><head></head><body>
+        <!-- <script id="mnb-segment-metadata">{"decoy":true}</script> -->
+        <SCRIPT type="application/json" data-note="2 > 1" ID="mnb-segment-metadata">
+        \(canonicalJSON)
+        </SCRIPT>
+        </body></html>
+        """
+
+        let result = externalizingCanonicalReaderSegmentSidecar(
+            in: Data(html.utf8),
+            scheme: .ebook,
+            store: store
+        )
+        let output = String(decoding: result.documentHTML, as: UTF8.self)
+
+        XCTAssertTrue(output.contains("{\"decoy\":true}"))
+        XCTAssertFalse(output.contains("data-note=\"2 > 1\""))
+        let endpoint = try XCTUnwrap(result.endpointURL.flatMap(URL.init(string:)))
+        let served = try XCTUnwrap(readerExternalSegmentSidecarResponse(
+            for: endpoint,
+            scheme: .ebook,
+            store: store
+        ))
+        XCTAssertEqual(
+            String(decoding: served.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
+            canonicalJSON
+        )
+    }
+
+    func testExternalizingCanonicalSidecarRejectsMultipleCanonicalOwners() {
+        let html = """
+        <html><body>
+        <script id="mnb-segment-metadata">{"v":9,"t":{},"s":[]}</script>
+        <script id="mnb-segment-metadata">{"v":9,"t":{},"s":[]}</script>
+        </body></html>
+        """
+
+        let result = externalizingCanonicalReaderSegmentSidecar(
+            in: Data(html.utf8),
+            scheme: .ebook
+        )
+
+        XCTAssertEqual(result.documentHTML, Data(html.utf8))
+        XCTAssertEqual(result.canonicalSidecarByteCount, 0)
+        XCTAssertNil(result.endpointURL)
+        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(html))
+    }
+
+    func testInliningCanonicalSidecarReplacesAllStaleCanonicalOwnersAndDescriptor() {
+        let oldToken = String(repeating: "0", count: 64)
+        let html = """
+        <html><head>
+        <meta name="mnb-segment-sidecar"
+              content="ebook://ebook/processed-section-sidecar/\(oldToken)"
+              data-mnb-segment-sidecar-signature="sha256:1:\(oldToken)">
+        </head><body>
+        <script id="mnb-segment-metadata">{"old":1}</script>
+        <script id="mnb-segment-metadata">{"old":2}</script>
+        </body></html>
+        """
+        let canonicalJSON = #"{"v":9,"t":{},"s":[]}"#
+
+        let output = String(decoding: inliningReaderSegmentSidecar(
+            documentHTML: Data(html.utf8),
+            canonicalSidecar: Data(canonicalJSON.utf8)
+        ), as: UTF8.self)
+
+        XCTAssertEqual(output.components(separatedBy: "id=\"mnb-segment-metadata\"").count - 1, 1)
+        XCTAssertTrue(output.contains(canonicalJSON))
+        XCTAssertFalse(output.contains("{\"old\":"))
+        XCTAssertFalse(output.contains("meta name=\"mnb-segment-sidecar\""))
     }
 
     func testExternalSidecarSurvivesMemoryEvictionAndStoreRestart() throws {
@@ -536,9 +731,31 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             scheme: .ebook,
             store: restartedStore
         ))
+
+        let rejectedURLs = [
+            "internal://local/reader-sidecar/\(token)",
+            "ebook://other/processed-section-sidecar/\(token)",
+            "ebook://ebook/processed-section-sidecar/\(token)/extra",
+            "ebook://ebook/processed-section-sidecar/\(token)?query=1",
+            "ebook://ebook/processed-section-sidecar/\(token)#fragment",
+            "ebook://user@ebook/processed-section-sidecar/\(token)",
+            "ebook://ebook:81/processed-section-sidecar/\(token)",
+            "ebook://ebook/processed-section-sidecar/\(token.uppercased())",
+        ]
+        for rejectedURLString in rejectedURLs {
+            let rejectedURL = try XCTUnwrap(URL(string: rejectedURLString))
+            XCTAssertNil(
+                readerExternalSegmentSidecarResponse(
+                    for: rejectedURL,
+                    scheme: .ebook,
+                    store: restartedStore
+                ),
+                rejectedURLString
+            )
+        }
     }
 
-    func testProcessTextResponseExternalizesOnlyCanonicalSidecar() throws {
+    func testProcessTextResponseKeepsCanonicalSidecarInlineForBlobDocument() throws {
         let canonicalJSON = #"{"v":9,"t":{},"s":[]}"#
         let html = """
         <html><head></head><body>
@@ -552,29 +769,60 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         ))
         let responseHTML = String(decoding: response, as: UTF8.self)
 
-        XCTAssertFalse(responseHTML.contains("id=\"mnb-segment-metadata\""))
-        XCTAssertTrue(responseHTML.contains("meta name=\"mnb-segment-sidecar\""))
+        XCTAssertTrue(responseHTML.contains("id=\"mnb-segment-metadata\""))
+        XCTAssertTrue(responseHTML.contains(canonicalJSON))
+        XCTAssertFalse(responseHTML.contains("meta name=\"mnb-segment-sidecar\""))
         XCTAssertEqual(
             ebookProcessTextResponseData(processedText: html, isCacheWarmer: true),
             Data()
         )
     }
 
+    func testProcessTextResponseExplicitlyDeclaresAuthoritativeCacheability() throws {
+        let url = try XCTUnwrap(URL(string: "ebook://ebook/process-text"))
+        let responseData = Data("<html></html>".utf8)
+
+        let authoritative = ebookProcessTextHTTPResponse(
+            url: url,
+            data: responseData,
+            isAuthoritativelyProcessed: true
+        )
+        let fallback = ebookProcessTextHTTPResponse(
+            url: url,
+            data: responseData,
+            isAuthoritativelyProcessed: false
+        )
+
+        XCTAssertEqual(
+            authoritative.value(forHTTPHeaderField: "X-Manabi-Processing-Authoritative"),
+            "true"
+        )
+        XCTAssertEqual(
+            fallback.value(forHTTPHeaderField: "X-Manabi-Processing-Authoritative"),
+            "false"
+        )
+        XCTAssertEqual(authoritative.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+        XCTAssertEqual(
+            authoritative.value(forHTTPHeaderField: "Content-Type"),
+            "text/plain; charset=utf-8"
+        )
+    }
+
     func testProcessedHTMLCacheRequiresDurableIdentityForEveryGeneratedSegment() {
         let valid = """
-        <html><body><m-m>A</m-m><m-m>B</m-m>
+        <html><body><m-m id="a">A</m-m><m-m id="b">B</m-m>
         <script id="mnb-segment-metadata" type="application/json">
-        {"v":9,"t":{"h":["hash-a","hash-b"],"sid":["sentence-a","sentence-b"],"pid":["paragraph-a"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0],["!b",1,null,null,null,null,null,null,null,1,0]]}
+        {"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash-a","hash-b"],"sid":["sentence-a","sentence-b"],"pid":["paragraph-a"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0],["!b",1,null,null,null,null,null,null,null,1,0]]}
         </script></body></html>
         """
         let missingStableIdentity = """
-        <html><body><m-m>A</m-m>
+        <html><body><m-m id="a">A</m-m>
         <script id="mnb-segment-metadata" type="application/json">
         {"v":9,"t":{"sid":[]},"s":[["!a"]]}
         </script></body></html>
         """
         let incompleteCoverage = """
-        <html><body><m-m>A</m-m><m-m>B</m-m>
+        <html><body><m-m id="a">A</m-m><m-m id="b">B</m-m>
         <script id="mnb-segment-metadata" type="application/json">
         {"v":9,"t":{"h":["hash-a"],"sid":["sentence-a"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}
         </script></body></html>
@@ -583,16 +831,16 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities(valid))
         XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(missingStableIdentity))
         XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(incompleteCoverage))
-        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities("<m-m>A</m-m>"))
+        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities("<m-m id=\"a\">A</m-m>"))
         XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities("<mnb-segment-metadata></mnb-segment-metadata>"))
     }
 
     func testProcessedSectionEnvelopeRoundTripsSeparatedDocumentAndSidecar() throws {
-        let payload = EbookProcessedSectionPayload(
-            documentHTML: Data("<html><body><m-m id=\"runtime\">猫</m-m></body></html>".utf8),
-            segmentSidecar: Data(
-                #"{"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,null,0,0]]}"#.utf8
-            )
+        let payload = ebookPretransformedTestPayload(
+            bodyHTML: """
+            <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="runtime">猫</m-m></m-s></m-c>
+            """,
+            sidecar: #"{"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#
         )
 
         let encoded = encodedEbookProcessedSectionCacheValue(payload)
@@ -703,49 +951,75 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testProcessedSectionDurabilityRequiresExactV9SegmentCoverage() {
-        let document = Data("<m-m id=\"a\">猫</m-m><m-m id=\"b\">犬</m-m>".utf8)
-        let incomplete = EbookProcessedSectionPayload(
-            documentHTML: document,
-            segmentSidecar: Data(
-                #"{"v":9,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}"#.utf8
-            )
+        let oneSegmentBody = """
+        <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="a">猫</m-m></m-s></m-c>
+        """
+        let twoSegmentBody = """
+        <m-c pid="paragraph"><m-s sid="sentence" o="true">
+        <m-m id="a">猫</m-m><m-m id="b">犬</m-m>
+        </m-s></m-c>
+        """
+        let incomplete = ebookPretransformedTestPayload(
+            bodyHTML: twoSegmentBody,
+            sidecar: #"{"v":9,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}"#
         )
-        let legacy = EbookProcessedSectionPayload(
-            documentHTML: document,
-            segmentSidecar: Data(
-                #"{"v":3,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0],["!b",0,null,null,null,null,null,null,null,0]]}"#.utf8
-            )
+        let legacy = ebookPretransformedTestPayload(
+            bodyHTML: twoSegmentBody,
+            sidecar: #"{"v":3,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0],["!b",0,null,null,null,null,null,null,null,0]]}"#
         )
-        let duplicateRuntimeIdentifier = EbookProcessedSectionPayload(
-            documentHTML: document,
-            segmentSidecar: Data(
-                #"{"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0],["!a",0,null,null,null,null,null,null,null,0,0]]}"#.utf8
-            )
+        let duplicateRuntimeIdentifier = ebookPretransformedTestPayload(
+            bodyHTML: twoSegmentBody,
+            sidecar: #"{"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0],["!a",0,null,null,null,null,null,null,null,0,0]]}"#
         )
-        let transitionalTenFieldTuple = EbookProcessedSectionPayload(
-            documentHTML: Data("<m-m id=\"a\">猫</m-m>".utf8),
-            segmentSidecar: Data(
-                #"{"v":9,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}"#.utf8
-            )
+        let transitionalTenFieldTuple = ebookPretransformedTestPayload(
+            bodyHTML: oneSegmentBody,
+            sidecar: #"{"v":9,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}"#
         )
-        let canonicalBareToken = EbookProcessedSectionPayload(
-            documentHTML: Data("<m-m id=\"mnb-sAb09\">猫</m-m>".utf8),
-            segmentSidecar: Data(
-                #"""
-                {"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},
-                 "s":[["Ab09",0,null,null,null,null,null,null,null,0,0]]}
-                """#.utf8
-            )
+        let canonicalBareToken = ebookPretransformedTestPayload(
+            bodyHTML: """
+            <m-c pid="paragraph"><m-s sid="sentence" o="true">
+            <m-m id="mnb-sAb09">猫</m-m></m-s></m-c>
+            """,
+            sidecar: #"""
+            {"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},
+             "s":[["Ab09",0,null,null,null,null,null,null,0,0,0]]}
+            """#
         )
-        let collidingTokenAliases = EbookProcessedSectionPayload(
-            documentHTML: Data("<m-m id=\"mnb-sAb09\">猫</m-m>".utf8),
-            segmentSidecar: Data(
-                #"""
-                {"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},
-                 "s":[["Ab09",0,null,null,null,null,null,null,null,0,0],
-                      ["!mnb-sAb09",0,null,null,null,null,null,null,null,0,0]]}
-                """#.utf8
-            )
+        let collidingTokenAliases = ebookPretransformedTestPayload(
+            bodyHTML: """
+            <m-c pid="paragraph"><m-s sid="sentence" o="true">
+            <m-m id="mnb-sAb09">猫</m-m></m-s></m-c>
+            """,
+            sidecar: #"""
+            {"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},
+             "s":[["Ab09",0,null,null,null,null,null,null,null,0,0],
+                  ["!mnb-sAb09",0,null,null,null,null,null,null,null,0,0]]}
+            """#
+        )
+        let mismatchedDocumentIdentifier = ebookPretransformedTestPayload(
+            bodyHTML: """
+            <m-c pid="paragraph"><m-s sid="sentence" o="true">
+            <m-m id="different">猫</m-m></m-s></m-c>
+            """,
+            sidecar: String(decoding: canonicalBareToken.segmentSidecar, as: UTF8.self)
+        )
+        let markupInsideScript = EbookProcessedSectionPayload(
+            documentHTML: Data(
+                #"<html><body><script>const sample = '<m-m id=\"not-an-element\">';</script></body></html>"#.utf8
+            ),
+            segmentSidecar: Data()
+        )
+        let fractionalMandatoryIndex = ebookPretransformedTestPayload(
+            bodyHTML: oneSegmentBody,
+            sidecar: #"{"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0.5,null,null,null,null,null,null,null,0,0]]}"#
+        )
+        let booleanOptionalIndex = ebookPretransformedTestPayload(
+            bodyHTML: oneSegmentBody,
+            sidecar: #"{"v":9,"t":{"j":[[1001]],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,true,null,null,null,null,null,null,0,0]]}"#
+        )
+        let fractionalVersion = ebookPretransformedTestPayload(
+            bodyHTML: oneSegmentBody,
+            sidecar: #"{"v":9.5,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0]]}"#
         )
 
         XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(incomplete))
@@ -758,14 +1032,123 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
         XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(canonicalBareToken))
         XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(collidingTokenAliases))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(mismatchedDocumentIdentifier))
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(markupInsideScript))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(fractionalMandatoryIndex))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(booleanOptionalIndex))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(fractionalVersion))
+    }
+
+    func testProcessedSectionDurabilityRequiresExactPretransformedTransportContract() {
+        let sidecar = #"{"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,0,0,0]]}"#
+        let validBody = """
+        <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="a">猫</m-m></m-s></m-c>
+        """
+
+        XCTAssertTrue(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+                ebookPretransformedTestPayload(bodyHTML: validBody, sidecar: sidecar)
+            )
+        )
+        XCTAssertFalse(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+                ebookPretransformedTestPayload(bodyHTML: validBody, sidecar: sidecar, revision: "stale")
+            )
+        )
+        XCTAssertFalse(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+                ebookPretransformedTestPayload(bodyHTML: validBody, sidecar: sidecar, markerSegmentCount: 2)
+            )
+        )
+        XCTAssertFalse(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+                ebookPretransformedTestPayload(bodyHTML: validBody, sidecar: sidecar, markerSentenceCount: 2)
+            )
+        )
+        XCTAssertFalse(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+                ebookPretransformedTestPayload(bodyHTML: validBody, sidecar: sidecar, markerCopies: 0)
+            )
+        )
+        XCTAssertFalse(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+                ebookPretransformedTestPayload(bodyHTML: validBody, sidecar: sidecar, markerCopies: 2)
+            )
+        )
+    }
+
+    func testProcessedSectionDurabilityRequiresProducerOwnedDOMHierarchy() {
+        let sidecar = #"{"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,0,0,0]]}"#
+        let wrongSentence = """
+        <m-c pid="paragraph"><m-s sid="other" o="true"><m-m id="a">猫</m-m></m-s></m-c>
+        """
+        let wrongParagraph = """
+        <m-c pid="other"><m-s sid="sentence" o="true"><m-m id="a">猫</m-m></m-s></m-c>
+        """
+        let unownedSentence = """
+        <m-c pid="paragraph"><m-s sid="sentence"><m-m id="a">猫</m-m></m-s></m-c>
+        """
+        let embeddedCanonicalSidecar = """
+        <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="a">猫</m-m></m-s></m-c>
+        <script id="mnb-segment-metadata" type="application/json">\(sidecar)</script>
+        """
+
+        XCTAssertFalse(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+                ebookPretransformedTestPayload(bodyHTML: wrongSentence, sidecar: sidecar)
+            )
+        )
+        XCTAssertFalse(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+                ebookPretransformedTestPayload(bodyHTML: wrongParagraph, sidecar: sidecar)
+            )
+        )
+        XCTAssertFalse(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+                ebookPretransformedTestPayload(bodyHTML: unownedSentence, sidecar: sidecar)
+            )
+        )
+        XCTAssertFalse(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+                ebookPretransformedTestPayload(bodyHTML: embeddedCanonicalSidecar, sidecar: sidecar)
+            )
+        )
+    }
+
+    func testProcessedSectionWithoutSidecarRejectsStaleTransportMarker() {
+        let payload = ebookPretransformedTestPayload(
+            bodyHTML: "<p>Plain processed text</p>",
+            sidecar: ""
+        )
+
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+    }
+
+    func testProcessedSectionDurabilityRejectsOutOfDomainEntryIDsAndJLPTLevels() {
+        func payload(entryID: Int = 1001, jlptLevel: String = "null") -> EbookProcessedSectionPayload {
+            ebookPretransformedTestPayload(
+                bodyHTML: """
+                <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="a">猫</m-m></m-s></m-c>
+                """,
+                sidecar: """
+                {"v":9,"t":{"j":[[\(entryID)]],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,0,null,null,null,null,\(jlptLevel),0,0,0]]}
+                """
+            )
+        }
+
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload(entryID: 0)))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload(jlptLevel: "0")))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload(jlptLevel: "6")))
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload(jlptLevel: "1")))
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload(jlptLevel: "5")))
     }
 
     func testProcessingRegeneratesCachedHTMLWithoutDurableSegmentIdentity() async throws {
         let cachedPayload = ebookTestPayload("<html><body><m-m>stale</m-m></body></html>")
         let regeneratedHTML = """
-        <html><body><m-m>fresh</m-m>
+        <html><body><m-m id="fresh">fresh</m-m>
         <script id="mnb-segment-metadata" type="application/json">
-        {"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!fresh",0,null,null,null,null,null,null,null,0,0]]}
+        {"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!fresh",0,null,null,null,null,null,null,null,0,0]]}
         </script></body></html>
         """
         let actor = EBookProcessingActor(
@@ -1677,7 +2060,8 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         ]
         let sectionURL = try XCTUnwrap(sectionComponents.url)
         let sidecar = """
-        {"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},\
+        {"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],\
+        "h":["hash"],"sid":["sentence"],"pid":["paragraph"]},\
         "s":[["!a",0,null,null,null,null,null,null,null,0,0]]}
         """
 
@@ -2313,9 +2697,9 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
     func testForegroundUsesPersistedProcessedTextWithoutReprocessing() async throws {
         let expectedHTML = """
-        <html><body><m-m>persisted</m-m>
+        <html><body><m-m id="persisted">persisted</m-m>
         <script id="mnb-segment-metadata" type="application/json">
-        {"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!persisted",0,null,null,null,null,null,null,null,0,0]]}
+        {"v":9,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!persisted",0,null,null,null,null,null,null,null,0,0]]}
         </script></body></html>
         """
         let actor = EBookProcessingActor(
