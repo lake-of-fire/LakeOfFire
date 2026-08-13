@@ -7,8 +7,12 @@ import { processedSectionURLForHref } from './ebook-direct-section.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
+    compactEbookSegmentMetadataPayloadIsCurrent,
+    compactEbookSegmentSchemaVersionsAreCompatible,
+    compactEbookSegmentSidecarVersion,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
+    expandCompactEbookSegmentIDToken,
 } from './ebook-segment-identity.js'
 import {
     ebookDocumentFrameIdentity,
@@ -85,19 +89,18 @@ const manabiEventScreenPoint = event => {
     };
 };
 
-const manabiSegmentSidecarParserVersion = 10;
+const manabiSegmentSidecarParserVersion = compactEbookSegmentSidecarVersion;
 const manabiSegmentSidecarNativeVersion = Number.isSafeInteger(
     globalThis.manabi_compactSegmentSidecarSchemaVersion
 )
     ? globalThis.manabi_compactSegmentSidecarSchemaVersion
     : null;
-const manabiSegmentSidecarSchemaIsCompatible =
-    manabiSegmentSidecarNativeVersion === manabiSegmentSidecarParserVersion;
+const manabiSegmentSidecarSchemaIsCompatible = compactEbookSegmentSchemaVersionsAreCompatible(
+    manabiSegmentSidecarNativeVersion
+);
 const manabiCanParseCompactSegmentSidecar = (payload) => (
     manabiSegmentSidecarSchemaIsCompatible
-    && payload?.v === manabiSegmentSidecarParserVersion
-    && !!payload?.t
-    && Array.isArray(payload?.s)
+    && compactEbookSegmentMetadataPayloadIsCurrent(payload)
 );
 globalThis.manabi_segmentSidecarSchemaDiagnostics = Object.freeze({
     parserVersion: manabiSegmentSidecarParserVersion,
@@ -118,12 +121,7 @@ const manabiSidecarTableArray = (tables, shortKey) => (
         : []
 );
 
-const manabiExpandSegmentIDToken = (token) => {
-    if (typeof token !== 'string' || token.length === 0) return null;
-    if (token.startsWith('!')) return token.slice(1);
-    if (token.startsWith('~')) return `_m${token.slice(1)}`;
-    return `mnb-s${token}`;
-};
+const manabiExpandSegmentIDToken = expandCompactEbookSegmentIDToken;
 
 const manabiExpandCompactSegmentMetadata = (segment, tables) => {
     const segmentHash = manabiSidecarTableValue(tables.h, segment?.[1], null);
