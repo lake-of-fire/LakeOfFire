@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+import Combine
 import RealmSwift
 import RealmSwiftGaps
 @testable import LakeOfFireContent
@@ -11,9 +12,11 @@ private final class FakeReaderSpeechSynthesizer: ReaderSpeechSynthesizing {
     var isSpeaking = false
     var isPaused = false
     private(set) var spokenTexts = [String]()
+    private(set) var spokenUtterances = [AVSpeechUtterance]()
 
     func speak(_ utterance: AVSpeechUtterance) {
         spokenTexts.append(utterance.speechString)
+        spokenUtterances.append(utterance)
         isSpeaking = true
         isPaused = false
     }
@@ -89,6 +92,45 @@ final class ReaderMediaMetadataTests: XCTestCase {
         viewModel.playAITTS()
         XCTAssertTrue(synthesizer.isSpeaking)
         XCTAssertTrue(viewModel.isPlaying)
+    }
+
+    @MainActor
+    func testSpeechProgressPublishesOneCoherentChangeAndSkipsIdenticalCallbacks() throws {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let controller = ReaderReadAloudController(synthesizer: synthesizer)
+        let viewModel = ReaderMediaPlayerViewModel(readAloudController: controller)
+
+        XCTAssertTrue(viewModel.presentAITTS(
+            utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+            preferredLanguage: "en-US",
+            autoplay: true
+        ))
+        let utterance = try XCTUnwrap(synthesizer.spokenUtterances.first)
+        var publicationCount = 0
+        let cancellable = viewModel.objectWillChange.sink {
+            publicationCount += 1
+        }
+
+        let spokenRange = NSRange(location: 0, length: 2)
+        viewModel.speechSynthesizer(
+            AVSpeechSynthesizer(),
+            willSpeakRangeOfSpeechString: spokenRange,
+            utterance: utterance
+        )
+
+        XCTAssertEqual(publicationCount, 1)
+        XCTAssertEqual(viewModel.ttsProgressValue, 0.5)
+        XCTAssertEqual(viewModel.ttsProgressUpperBound, 1)
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "s1")
+        XCTAssertEqual(viewModel.ttsCurrentSentenceText, "One.")
+
+        viewModel.speechSynthesizer(
+            AVSpeechSynthesizer(),
+            willSpeakRangeOfSpeechString: spokenRange,
+            utterance: utterance
+        )
+        XCTAssertEqual(publicationCount, 1)
+        withExtendedLifetime(cancellable) {}
     }
 
     @MainActor
