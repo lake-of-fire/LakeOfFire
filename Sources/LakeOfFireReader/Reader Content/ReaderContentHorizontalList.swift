@@ -275,7 +275,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
     @ViewBuilder
     private var contentStack: some View {
         let items = readerContentIdentifiedItems(contents: filteredContents, ids: filteredContentIDs)
-        HStack(spacing: 15) {
+        LazyHStack(spacing: 15) {
             ForEach(items) { item in
                 let content = item.content
                 ReaderContentInnerHorizontalListItem(
