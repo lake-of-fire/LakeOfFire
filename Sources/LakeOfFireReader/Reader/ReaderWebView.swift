@@ -269,6 +269,7 @@ public struct ReaderWebView: View {
 
     private var ebookSchemeBindingState: String {
         [
+            "dependencyRevision=\(readerModeViewModel.processingDependencyRevision)",
             readerModeViewModel.ebookProcessedTextCacheReader != nil ? "cacheReader=1" : "cacheReader=0",
             readerModeViewModel.ebookProcessedTextCacheWriter != nil ? "cacheWriter=1" : "cacheWriter=0",
             readerModeViewModel.ebookProcessingVariantProvider != nil ? "processingVariant=1" : "processingVariant=0",

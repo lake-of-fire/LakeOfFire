@@ -44,6 +44,8 @@ fileprivate let readerImageProvider = CustomImageProvider { url in
 public struct ReaderImage: View {
     let url: URL
     let contentMode: ContentMode
+    /// An opt-in decode target measured in display points.
+    var thumbnailSize: CGSize? = nil
     var maxWidth: CGFloat? = nil
     var minHeight: CGFloat? = nil
     var maxHeight: CGFloat? = nil
@@ -52,6 +54,8 @@ public struct ReaderImage: View {
     public init(
         _ url: URL,
         contentMode: ContentMode = .fill,
+        /// An opt-in decode target measured in display points.
+        thumbnailSize: CGSize? = nil,
         maxWidth: CGFloat? = nil,
         minHeight: CGFloat? = nil,
         maxHeight: CGFloat? = nil,
@@ -59,6 +63,7 @@ public struct ReaderImage: View {
     ) {
         self.url = url
         self.contentMode = contentMode
+        self.thumbnailSize = thumbnailSize
         self.maxWidth = maxWidth
         self.minHeight = minHeight
         self.maxHeight = maxHeight
@@ -69,6 +74,7 @@ public struct ReaderImage: View {
         LakeImage(
             url,
             contentMode: contentMode,
+            thumbnailSize: thumbnailSize,
             maxWidth: maxWidth,
             minHeight: minHeight,
             maxHeight: maxHeight,

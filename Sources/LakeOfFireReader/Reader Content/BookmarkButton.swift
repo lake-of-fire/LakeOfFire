@@ -39,7 +39,7 @@ public final class BookmarkStatusCache: ObservableObject {
     @RealmBackgroundActor private var cancellables = Set<AnyCancellable>()
     private var hasStartedObservation = false
 
-    private init() { }
+    init() { }
 
     func startIfNeeded() {
         guard !hasStartedObservation else { return }
@@ -76,7 +76,8 @@ public final class BookmarkStatusCache: ObservableObject {
     private func refresh(from realm: Realm) async {
         let keys = Set(realm.objects(Bookmark.self).where { !$0.isDeleted }.map(\.compoundKey))
         await MainActor.run { [weak self] in
-            self?.bookmarkedCompoundKeys = keys
+            guard let self, bookmarkedCompoundKeys != keys else { return }
+            bookmarkedCompoundKeys = keys
         }
     }
 
@@ -85,6 +86,9 @@ public final class BookmarkStatusCache: ObservableObject {
     }
 
     public func setIsBookmarked(_ isBookmarked: Bool, for readerContent: any ReaderContentProtocol) {
+        guard bookmarkedCompoundKeys.contains(readerContent.compoundKey) != isBookmarked else {
+            return
+        }
         if isBookmarked {
             bookmarkedCompoundKeys.insert(readerContent.compoundKey)
         } else {

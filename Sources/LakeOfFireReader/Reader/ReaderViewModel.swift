@@ -39,6 +39,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published public private(set) var ebookNativeMarkReadIsBusy: Bool = false
     @Published public private(set) var ebookNativeMarkReadStateVersion: UInt64 = 0
     @Published public private(set) var ebookNativeMarkReadStateReason: String = ""
+    @Published public private(set) var ebookNativeMarkReadRequestOutcome: String = "none"
+    @Published public private(set) var ebookNativeMarkReadRequestErrorCode: String = ""
     public var scriptCaller = WebViewScriptCaller()
     @Published var webViewUserScripts: [WebViewUserScript]? = nil
     @Published var webViewSystemScripts: [WebViewUserScript]? = nil
@@ -146,10 +148,14 @@ public class ReaderViewModel: NSObject, ObservableObject {
         available: Bool,
         isRead: Bool,
         isBusy: Bool,
-        reason: String
+        reason: String,
+        requestOutcome: String = "none",
+        requestErrorCode: String = ""
     ) {
         ebookNativeMarkReadStateVersion &+= 1
         ebookNativeMarkReadStateReason = reason
+        ebookNativeMarkReadRequestOutcome = requestOutcome
+        ebookNativeMarkReadRequestErrorCode = requestErrorCode
         if ebookNativeMarkReadAvailable != available {
             ebookNativeMarkReadAvailable = available
         }

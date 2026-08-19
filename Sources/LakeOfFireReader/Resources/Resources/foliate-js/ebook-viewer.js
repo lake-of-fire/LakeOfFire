@@ -6,6 +6,7 @@ import { NavigationHUD } from './ebook-viewer-nav.js'
 import { processedSectionURLForHref } from './ebook-direct-section.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
+import { createNativeMarkReadRequestCoordinator } from './native-mark-read-request.js'
 import {
     compactEbookSegmentMetadataPayloadIsCurrent,
     compactEbookSegmentSchemaVersionsAreCompatible,
@@ -5026,13 +5027,20 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress, visibleRang
                 searchString = textSearchString;
                 recoveredTextSearchStringCount += 1;
             }
+            const identity = segmentIdentityForNode(item.node, bootstrap, metadata);
+            if (!identity.stableID) {
+                skippedMissingSearchStringCount += 1;
+                continue;
+            }
             const { sentenceHTML, sentenceJMDictIDs } = buildExampleSentenceForSegment(item.node, bootstrap, metadata);
-            dedupedSegments.set(item.segmentIdentifier, {
+            dedupedSegments.set(identity.stableID, {
                 jmdictEntryIds: segmentEntryIDsForMetadata(metadata, 'jmdict'),
                 jmnedictEntryIds: segmentEntryIDsForMetadata(metadata, 'jmnedict'),
                 searchString,
                 displayText: item.node.textContent?.trim?.() || searchString,
-                segmentIdentifier: item.segmentIdentifier,
+                runtimeElementID: identity.elementID,
+                stableSegmentID: identity.stableID,
+                segmentIdentifier: identity.stableID,
                 exampleSentence: sentenceHTML,
                 exampleSentenceJMDictIDs: sentenceJMDictIDs,
             });
@@ -5751,6 +5759,7 @@ class Reader {
         );
         this.#pageTurnInFlight = false;
 
+        this.nativeMarkReadRequestCoordinator?.cancelAll?.(`readerClosed:${reason}`);
         this.#resolveInitialDisplaySettled(`reader-closed:${reason}`);
         this.#resolveDisplaySettledWaiters(`reader-closed:${reason}`);
         this.#finishNavButtonOperations();
@@ -5914,6 +5923,7 @@ class Reader {
     pageReadMarkerAwaitingPageState = false;
     optimisticReadSegmentIdentifiers = new Set();
     optimisticSentenceIdentifiersRead = new Set();
+    nativeMarkReadRequestCoordinator = null;
     lastPageTrackingStateSignature = null;
     lastPageTrackingStateSnapshot = null;
     lastRenderedPageTrackingSignature = null;
@@ -6271,6 +6281,27 @@ class Reader {
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
+        this.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
+            postMessage: message => {
+                window.webkit.messageHandlers.markSectionAsRead.postMessage(message);
+            },
+            isOwnerCurrent: owner => {
+                if (!owner) return false;
+                if (!this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)) {
+                    return false;
+                }
+                if (
+                    owner.requireVisibleGeneration === true
+                    && owner.visiblePageCollectionGeneration !== this.visiblePageCollectionGeneration
+                ) {
+                    return false;
+                }
+                if (owner.document && this.#currentPageTrackingDocument(owner.document) !== owner.document) {
+                    return false;
+                }
+                return true;
+            },
+        });
         this.navHUD = new NavigationHUD({
             formatPercent: value => percentFormat.format(value),
             getRenderer: () => this.view?.renderer,
@@ -6567,7 +6598,7 @@ class Reader {
         this.#bindGlobal(window, 'manabiInvalidateVisiblePageSegmentSnapshot', (reason = 'manual') => {
             this.#invalidateVisiblePageSegmentSnapshot(reason);
         });
-        this.#bindGlobal(window, 'manabiRefreshVisibleTrackingStatuses', (reason = 'manual') => {
+        this.#bindGlobal(window, 'manabiRefreshVisibleTrackingStatuses', async (reason = 'manual') => {
             const docs = this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
             for (const doc of docs) {
                 const snapshot = this.visiblePageSegmentSnapshot;
@@ -6593,6 +6624,7 @@ class Reader {
                     postIfCached: false,
                 });
             }
+            await this.#syncPageTrackingButtons(`visible-status:${reason}`);
         });
         this.#listen(screen.orientation, 'change', () => {
             this.#invalidateVisiblePageSegmentSnapshot();
@@ -6954,6 +6986,113 @@ class Reader {
             segmentSource: snapshotVisibleSegments.length > 0 ? 'visible-snapshot' : 'document-scan',
         };
     }
+    #markReadOwner({
+        document = null,
+        requireVisibleGeneration = false,
+    } = {}) {
+        return {
+            lifecycleGeneration: this.#lifecycleGeneration,
+            renderer: this.view?.renderer ?? null,
+            document,
+            requireVisibleGeneration,
+            visiblePageCollectionGeneration: this.visiblePageCollectionGeneration,
+        };
+    }
+    #validatedMarkReadPayload(payload) {
+        const segments = Array.isArray(payload?.segments) ? payload.segments : [];
+        if (segments.length === 0) return null;
+        const stableSegments = new Map();
+        for (const segment of segments) {
+            const stableSegmentID = typeof segment?.stableSegmentID === 'string'
+                ? segment.stableSegmentID
+                : '';
+            if (!stableSegmentID) return null;
+            const normalized = {
+                ...segment,
+                stableSegmentID,
+                segmentIdentifier: stableSegmentID,
+                runtimeElementID: typeof segment?.runtimeElementID === 'string'
+                    ? segment.runtimeElementID
+                    : null,
+            };
+            const existing = stableSegments.get(stableSegmentID);
+            if (existing) {
+                if (JSON.stringify(existing) !== JSON.stringify(normalized)) return null;
+                continue;
+            }
+            stableSegments.set(stableSegmentID, normalized);
+        }
+        return {
+            ...payload,
+            segments: Array.from(stableSegments.values()),
+            sentenceIdentifiers: Array.from(new Set(
+                (Array.isArray(payload?.sentenceIdentifiers) ? payload.sentenceIdentifiers : [])
+                    .filter(identifier => typeof identifier === 'string' && identifier.length > 0)
+            )).sort(),
+        };
+    }
+    #applyCommittedMarkReadPayload(payload, reason, animateStateID = null) {
+        const validatedPayload = this.#validatedMarkReadPayload(payload);
+        if (!validatedPayload) return 0;
+        const payloadSegmentIdentifiers = validatedPayload.segments
+            .map(segment => segment.stableSegmentID);
+        for (const segmentIdentifier of payloadSegmentIdentifiers) {
+            this.optimisticReadSegmentIdentifiers.add(segmentIdentifier);
+        }
+        for (const sentenceIdentifier of validatedPayload.sentenceIdentifiers) {
+            this.optimisticSentenceIdentifiersRead.add(sentenceIdentifier);
+        }
+        if (animateStateID) {
+            this.pageTrackingAnimateReadStateIDs.add(animateStateID);
+        }
+        const committedProgress = normalizeArticleReadingProgress(this.articleReadingProgress);
+        committedProgress.readSegmentIdentifiers = Array.from(new Set([
+            ...committedProgress.readSegmentIdentifiers,
+            ...payloadSegmentIdentifiers,
+        ]));
+        committedProgress.sentenceIdentifiersRead = Array.from(new Set([
+            ...committedProgress.sentenceIdentifiersRead,
+            ...validatedPayload.sentenceIdentifiers,
+        ]));
+        this.applyBookReadingProgress(committedProgress, reason);
+        return validatedPayload.segments.length;
+    }
+    async #submitMarkReadPayload(payload, {
+        sectionID,
+        owner,
+        reason,
+        animateStateID = null,
+    }) {
+        const validatedPayload = this.#validatedMarkReadPayload(payload);
+        if (!validatedPayload) return false;
+        const outcome = await this.nativeMarkReadRequestCoordinator.request({
+            sectionID,
+            owner,
+            context: {
+                payload: validatedPayload,
+                reason,
+                animateStateID,
+            },
+            message: {
+                ...validatedPayload,
+                topWindowURL: window.top.location.href,
+            },
+        });
+        this.lastNativeMarkReadRequestOutcome = outcome.success === true
+            ? 'committed'
+            : 'failed';
+        this.lastNativeMarkReadRequestErrorCode = outcome.errorCode ?? '';
+        if (outcome.success !== true) return false;
+        this.#applyCommittedMarkReadPayload(
+            outcome.context.payload,
+            outcome.context.reason,
+            outcome.context.animateStateID
+        );
+        return true;
+    }
+    applyMarkSectionAsReadResult(result) {
+        return this.nativeMarkReadRequestCoordinator?.settle?.(result) ?? false;
+    }
     buildMarkAllSectionsAsReadPayload() {
         const doc = getPrimaryRendererContent(this.view?.renderer)?.doc;
         if (!isDocumentLike(doc)) {
@@ -6964,14 +7103,15 @@ class Reader {
         const segmentsByIdentifier = new Map();
         const sentenceIdentifiers = new Set();
         for (const segmentNode of segmentNodes) {
-            const segmentIdentifier = segmentIdentifierForNode(segmentNode);
-            if (typeof segmentIdentifier !== 'string' || segmentIdentifier.length === 0) {
-                continue;
-            }
-            if (segmentsByIdentifier.has(segmentIdentifier)) {
-                continue;
-            }
             const metadata = segmentMetadataForNode(segmentNode);
+            const identity = segmentIdentityForNode(segmentNode, null, metadata);
+            const stableSegmentID = identity.stableID;
+            if (typeof stableSegmentID !== 'string' || stableSegmentID.length === 0) {
+                return null;
+            }
+            if (segmentsByIdentifier.has(stableSegmentID)) {
+                continue;
+            }
             let searchString = metadata?.s || metadata?.ns;
             if (typeof searchString !== 'string' || searchString.length === 0) {
                 searchString = segmentNode.textContent?.trim?.() || '';
@@ -6984,13 +7124,19 @@ class Reader {
             if (sentenceIdentifier) {
                 sentenceIdentifiers.add(sentenceIdentifier);
             }
-            const { sentenceHTML, sentenceJMDictIDs } = buildExampleSentenceForSegment(segmentNode);
-            segmentsByIdentifier.set(segmentIdentifier, {
-                jmdictEntryIds: segmentEntryIDsForNode(segmentNode, 'jmdict'),
-                jmnedictEntryIds: segmentEntryIDsForNode(segmentNode, 'jmnedict'),
+            const { sentenceHTML, sentenceJMDictIDs } = buildExampleSentenceForSegment(
+                segmentNode,
+                null,
+                metadata
+            );
+            segmentsByIdentifier.set(stableSegmentID, {
+                jmdictEntryIds: segmentEntryIDsForNode(segmentNode, 'jmdict', null, metadata),
+                jmnedictEntryIds: segmentEntryIDsForNode(segmentNode, 'jmnedict', null, metadata),
                 searchString,
                 displayText: segmentNode.textContent?.trim?.() || searchString,
-                segmentIdentifier,
+                runtimeElementID: identity.elementID,
+                stableSegmentID,
+                segmentIdentifier: stableSegmentID,
                 exampleSentence: sentenceHTML,
                 exampleSentenceJMDictIDs: sentenceJMDictIDs,
             });
@@ -7005,80 +7151,67 @@ class Reader {
             sentenceIdentifiers: payloadSentenceIdentifiers,
         };
     }
-    applyOptimisticMarkAllSectionsAsReadPayload(payload) {
-        const payloadSegments = Array.isArray(payload?.segments) ? payload.segments : [];
-        const payloadSentenceIdentifiers = Array.isArray(payload?.sentenceIdentifiers) ? payload.sentenceIdentifiers : [];
-        const payloadSegmentIdentifiers = payloadSegments
-            .map((segment) => segment.segmentIdentifier)
-            .filter((segmentIdentifier) => typeof segmentIdentifier === 'string' && segmentIdentifier.length > 0);
-        for (const segmentIdentifier of payloadSegmentIdentifiers) {
-            this.optimisticReadSegmentIdentifiers.add(segmentIdentifier);
-        }
-        for (const sentenceIdentifier of payloadSentenceIdentifiers) {
-            this.optimisticSentenceIdentifiersRead.add(sentenceIdentifier);
-        }
-        const optimisticProgress = normalizeArticleReadingProgress(this.articleReadingProgress);
-        optimisticProgress.readSegmentIdentifiers = Array.from(new Set([
-            ...optimisticProgress.readSegmentIdentifiers,
-            ...payloadSegmentIdentifiers,
-        ]));
-        optimisticProgress.sentenceIdentifiersRead = Array.from(new Set([
-            ...optimisticProgress.sentenceIdentifiersRead,
-            ...payloadSentenceIdentifiers,
-        ]));
-        this.applyBookReadingProgress(optimisticProgress, 'optimistic-mark-all-read');
-        return payloadSegments.length;
+    applyCommittedMarkAllSectionsAsReadPayload(payload) {
+        return this.#applyCommittedMarkReadPayload(
+            payload,
+            'native-mark-all-read-committed'
+        );
+    }
+    // Retained only for older diagnostics. Optimistic publication is prohibited.
+    applyOptimisticMarkAllSectionsAsReadPayload(_payload) {
+        return 0;
     }
     async markAllSectionsAsRead() {
         const payload = this.buildMarkAllSectionsAsReadPayload();
-        if (!payload) {
+        const doc = getPrimaryRendererContent(this.view?.renderer)?.doc ?? null;
+        if (!payload || !isDocumentLike(doc)) {
             return 0;
         }
-        window.webkit.messageHandlers.markSectionAsRead.postMessage(payload);
-        return this.applyOptimisticMarkAllSectionsAsReadPayload(payload);
+        const success = await this.#submitMarkReadPayload(payload, {
+            sectionID: `ebook-mark-all:${this.#lifecycleGeneration}`,
+            owner: this.#markReadOwner({ document: doc }),
+            reason: 'native-mark-all-read-committed',
+        });
+        return success ? payload.segments.length : 0;
     }
     async #markPageClusterAsRead(stateID) {
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
         if (!pageTrackingState) {
-            return;
+            return false;
         }
         if (pageTrackingState.payload.segments.length === 0) {
-            return;
+            return false;
         }
         if (pageTrackingState.isRead) {
-            return;
+            return true;
         }
+        const doc = this.#currentPageTrackingDocument();
+        if (!isDocumentLike(doc)) return false;
         const advanceOwner = {
             lifecycleGeneration: this.#lifecycleGeneration,
             renderer: this.view?.renderer ?? null,
             visiblePageCollectionGeneration: this.visiblePageCollectionGeneration,
         };
+        this.lastNativeMarkReadRequestOutcome = 'pending';
         this.pageTrackingBusyStateIDs.add(stateID);
         this.#renderPageTrackingButtons('mark-read-busy');
-        window.webkit.messageHandlers.markSectionAsRead.postMessage(pageTrackingState.payload);
-        const payloadSegmentIdentifiers = pageTrackingState.payload.segments
-            .map((segment) => segment.segmentIdentifier)
-            .filter((segmentIdentifier) => typeof segmentIdentifier === 'string' && segmentIdentifier.length > 0);
-        const payloadSentenceIdentifiers = pageTrackingState.payload.sentenceIdentifiers
-            .filter((sentenceIdentifier) => typeof sentenceIdentifier === 'string' && sentenceIdentifier.length > 0);
-        for (const segmentIdentifier of payloadSegmentIdentifiers) {
-            this.optimisticReadSegmentIdentifiers.add(segmentIdentifier);
+        try {
+            const success = await this.#submitMarkReadPayload(pageTrackingState.payload, {
+                sectionID: `ebook-page:${stateID}:${this.visiblePageCollectionGeneration}`,
+                owner: this.#markReadOwner({
+                    document: doc,
+                    requireVisibleGeneration: true,
+                }),
+                reason: 'native-mark-read-committed',
+                animateStateID: stateID,
+            });
+            if (!success) return false;
+            await this.#advanceAfterMarkRead(advanceOwner);
+            return true;
+        } finally {
+            this.pageTrackingBusyStateIDs.delete(stateID);
+            this.#renderPageTrackingButtons('mark-read-finished');
         }
-        for (const sentenceIdentifier of payloadSentenceIdentifiers) {
-            this.optimisticSentenceIdentifiersRead.add(sentenceIdentifier);
-        }
-        const optimisticProgress = normalizeArticleReadingProgress(this.articleReadingProgress);
-        optimisticProgress.readSegmentIdentifiers = Array.from(new Set([
-            ...optimisticProgress.readSegmentIdentifiers,
-            ...payloadSegmentIdentifiers,
-        ]));
-        optimisticProgress.sentenceIdentifiersRead = Array.from(new Set([
-            ...optimisticProgress.sentenceIdentifiersRead,
-            ...payloadSentenceIdentifiers,
-        ]));
-        this.pageTrackingAnimateReadStateIDs.add(stateID);
-        this.applyBookReadingProgress(optimisticProgress, 'optimistic-mark-read');
-        await this.#advanceAfterMarkRead(advanceOwner);
     }
     async markVisiblePageAsRead(source = 'native') {
         const completionAction = this.completionAction;
@@ -7117,8 +7250,7 @@ class Reader {
         } else {
             ignoreNextIncomingHideNavigation('native-page-tracking-button');
         }
-        await this.#markPageClusterAsRead(stateID);
-        return true;
+        return await this.#markPageClusterAsRead(stateID);
     }
     async #ensureVisiblePageTrackingState(reason = 'native-demand', explicitDoc = null) {
         const doc = this.#currentPageTrackingDocument(explicitDoc);
@@ -7218,6 +7350,8 @@ class Reader {
                     hasAnyMarkedReadContent: !!state?.hasAnyMarkedReadContent,
                     stateID: state?.id ?? null,
                     reason,
+                    requestOutcome: this.lastNativeMarkReadRequestOutcome ?? 'none',
+                    requestErrorCode: this.lastNativeMarkReadRequestErrorCode ?? '',
                 });
             } catch (_error) {}
         };
@@ -13105,8 +13239,16 @@ window.manabi_buildMarkAllSectionsAsReadPayload = () => {
     return globalThis.reader?.buildMarkAllSectionsAsReadPayload?.() ?? null;
 }
 
-window.manabi_applyOptimisticMarkAllSectionsAsReadPayload = (payload) => {
-    return globalThis.reader?.applyOptimisticMarkAllSectionsAsReadPayload?.(payload) ?? 0;
+window.manabi_applyCommittedMarkAllSectionsAsReadPayload = (payload) => {
+    return globalThis.reader?.applyCommittedMarkAllSectionsAsReadPayload?.(payload) ?? 0;
+}
+
+// Compatibility hook retained as a fail-closed no-op. Read state is published
+// only after the matching native Realm transaction replies successfully.
+window.manabi_applyOptimisticMarkAllSectionsAsReadPayload = (_payload) => 0;
+
+window.manabi_applyMarkSectionAsReadResult = (result) => {
+    return globalThis.reader?.applyMarkSectionAsReadResult?.(result) ?? false;
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})

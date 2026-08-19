@@ -1,5 +1,6 @@
 import XCTest
 import RealmSwift
+import Combine
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
@@ -113,6 +114,70 @@ final class FeedStateIndicatorTests: XCTestCase {
         )
 
         XCTAssertTrue(feed.hasEntriesNewerThanLastViewedAt)
+    }
+
+    func testFeedUnreadBadgeUsesNewestLiveCanonicalHistoryDate() throws {
+        let identifier = UUID().uuidString
+        let configuration = makeConfiguration(identifier: identifier)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let feed = try makeManagedFeed(
+            entries: [(baseDate, baseDate.addingTimeInterval(60), false)],
+            lastViewedAt: baseDate,
+            identifier: identifier
+        )
+        let realm = try XCTUnwrap(feed.realm)
+        let entry = try XCTUnwrap(feed.getEntries()?.first)
+        let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: entry.url))
+
+        try realm.write {
+            let liveHistory = HistoryRecord()
+            liveHistory.url = loaderURL
+            liveHistory.updateCompoundKey()
+            liveHistory.lastVisitedAt = baseDate.addingTimeInterval(120)
+            realm.add(liveHistory)
+
+            let deletedNewerHistory = HistoryRecord()
+            deletedNewerHistory.url = entry.url
+            deletedNewerHistory.updateCompoundKey()
+            deletedNewerHistory.compoundKey += "-deleted"
+            deletedNewerHistory.lastVisitedAt = baseDate.addingTimeInterval(180)
+            deletedNewerHistory.isDeleted = true
+            realm.add(deletedNewerHistory)
+        }
+
+        try withReaderContentLoaderConfigurations(configuration: configuration) {
+            XCTAssertFalse(feed.hasEntriesNewerThanLastViewedAt)
+        }
+
+        try realm.write {
+            realm.objects(HistoryRecord.self).where { !$0.isDeleted }.first?.lastVisitedAt =
+                baseDate.addingTimeInterval(-120)
+        }
+
+        try withReaderContentLoaderConfigurations(configuration: configuration) {
+            XCTAssertTrue(feed.hasEntriesNewerThanLastViewedAt)
+        }
+    }
+
+    @MainActor
+    func testBookmarkStatusCachePublishesOnlyRealStateTransitions() {
+        let cache = BookmarkStatusCache()
+        let entry = FeedEntry()
+        entry.url = URL(string: "https://example.com/bookmark/\(UUID().uuidString)")!
+        entry.updateCompoundKey()
+        var publicationCount = 0
+        let cancellable = cache.objectWillChange.sink {
+            publicationCount += 1
+        }
+
+        cache.setIsBookmarked(false, for: entry)
+        cache.setIsBookmarked(true, for: entry)
+        cache.setIsBookmarked(true, for: entry)
+        cache.setIsBookmarked(false, for: entry)
+        cache.setIsBookmarked(false, for: entry)
+
+        XCTAssertEqual(publicationCount, 2)
+        withExtendedLifetime(cancellable) { }
     }
 
     func testFollowingEntriesInterleavesOneNewEntryPerFollowedFeedByRound() throws {

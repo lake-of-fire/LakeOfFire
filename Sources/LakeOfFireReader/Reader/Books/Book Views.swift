@@ -26,6 +26,9 @@ struct BookThumbnail: View {
             ReaderImage(
                 imageURL,
                 contentMode: .fit,
+                thumbnailSize: resolvedMaxWidth.map {
+                    CGSize(width: $0, height: cellHeight)
+                },
                 maxWidth: resolvedMaxWidth,
                 maxHeight: cellHeight,
                 cornerRadius: scaledImageWidth / 28

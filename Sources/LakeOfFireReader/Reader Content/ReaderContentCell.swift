@@ -1067,6 +1067,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
                 } else {
                     ReaderImage(
                         imageURL,
+                        thumbnailSize: CGSize(width: edgeLength, height: edgeLength),
                         maxWidth: edgeLength,
                         minHeight: edgeLength,
                         maxHeight: edgeLength
@@ -1399,6 +1400,7 @@ public struct BookCoverImageView: View {
                 ReaderImage(
                     imageURL,
                     contentMode: .fit,
+                    thumbnailSize: CGSize(width: dimension, height: dimension),
                     cornerRadius: max(4, dimension / 28)
                 )
                 .aspectRatio(contentMode: .fit)

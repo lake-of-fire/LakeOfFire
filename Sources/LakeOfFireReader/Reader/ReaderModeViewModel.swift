@@ -1189,15 +1189,57 @@ func readerModeReadyGenerationIsCurrent(
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
-    @Published public var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil
-    @Published public var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil
-    @Published public var ebookProcessingVariantProvider: EbookProcessingVariantProvider? = nil
-    @Published public var ebookSectionPresentationProvider: EbookSectionPresentationProvider? = nil
-    @Published public var nativeEbookSectionPrewarmer: ((URL, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil
-    @Published public var processReadabilityContent: ((String, URL, URL?, Bool, Bool, String?, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil
-    @Published public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil
-    @Published public var processHTMLBytes: (([UInt8], Bool) async -> [UInt8])? = nil
-    @Published public var processHTML: ((String, Bool) async -> String)? = nil
+    private var isBatchingProcessingDependencyChanges = false
+    internal private(set) var processingDependencyRevision: UInt64 = 0
+
+    private func processingDependencyWillChange() {
+        guard !isBatchingProcessingDependencyChanges else { return }
+        processingDependencyRevision &+= 1
+        objectWillChange.send()
+    }
+
+    /// Publishes one observable-object change for a logically atomic dependency
+    /// installation. ReaderWebView uses that publication to bind the complete
+    /// configuration to its URL-scheme handler instead of rebinding once per closure.
+    public func performBatchProcessingDependencyUpdate(_ update: () -> Void) {
+        guard !isBatchingProcessingDependencyChanges else {
+            update()
+            return
+        }
+        isBatchingProcessingDependencyChanges = true
+        defer { isBatchingProcessingDependencyChanges = false }
+        processingDependencyRevision &+= 1
+        objectWillChange.send()
+        update()
+    }
+
+    public var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var ebookProcessingVariantProvider: EbookProcessingVariantProvider? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var ebookSectionPresentationProvider: EbookSectionPresentationProvider? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var nativeEbookSectionPrewarmer: ((URL, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var processReadabilityContent: ((String, URL, URL?, Bool, Bool, String?, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var processHTMLBytes: (([UInt8], Bool) async -> [UInt8])? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var processHTML: ((String, Bool) async -> String)? = nil {
+        willSet { processingDependencyWillChange() }
+    }
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
     /// In-memory presentation state supplied by the app's settings owner.
