@@ -66,6 +66,7 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
             HistoryRecord.self,
             FeedEntry.self,
         ]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
         return configuration
     }
 

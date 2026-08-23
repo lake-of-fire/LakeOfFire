@@ -23,6 +23,7 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
             HistoryRecord.self,
             FeedEntry.self,
         ]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
         return configuration
     }
 
@@ -138,9 +139,16 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     private func assertEnsureImportedIndexesRealmMetadata(_ fixture: Fixture) async throws -> URL? {
         let importedURL = try await fixture.manager.ensureImported(downloadable: fixture.downloadable)
         let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
-        let contentFile = try XCTUnwrap(realm.objects(ContentFile.self).where {
-            !$0.isDeleted && $0.url == fixture.expectedReaderURL
-        }.first)
+        let contentFile = try XCTUnwrap(
+            realm.objects(ContentFile.self)
+                .filter(
+                    NSPredicate(
+                        format: "isDeleted == false AND url == %@",
+                        fixture.expectedReaderURL.absoluteString
+                    )
+                )
+                .first
+        )
         XCTAssertEqual(contentFile.mimeType, "application/epub+zip")
         return importedURL
     }

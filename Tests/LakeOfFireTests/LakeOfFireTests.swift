@@ -195,6 +195,7 @@ final class LakeOfFireTests: XCTestCase {
         XCTAssertFalse(transcriptWasDeleted)
     }
 
+    @RealmBackgroundActor
     func testSoftDeleteTranscriptsUsesDedicatedTranscriptRealmConfiguration() async throws {
         await ReaderContentLoader.resetTransientCachesForTesting()
         let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
@@ -213,9 +214,11 @@ final class LakeOfFireTests: XCTestCase {
         var ownerConfiguration = Realm.Configuration()
         ownerConfiguration.fileURL = directoryURL.appendingPathComponent("owners.realm")
         ownerConfiguration.objectTypes = [Bookmark.self, ContentFile.self, HistoryRecord.self]
+        configureLakeOfFireMutationTrackingForTesting(&ownerConfiguration)
         var transcriptConfiguration = Realm.Configuration()
         transcriptConfiguration.fileURL = directoryURL.appendingPathComponent("transcripts.realm")
         transcriptConfiguration.objectTypes = [MediaTranscript.self]
+        configureLakeOfFireMutationTrackingForTesting(&transcriptConfiguration)
         ReaderContentLoader.historyRealmConfiguration = ownerConfiguration
         ReaderContentLoader.feedEntryRealmConfiguration = ownerConfiguration
         ReaderContentLoader.transcriptRealmConfiguration = transcriptConfiguration
@@ -277,6 +280,7 @@ final class LakeOfFireTests: XCTestCase {
             FeedEntry.self,
             MediaTranscript.self,
         ]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
         ReaderContentLoader.bookmarkRealmConfiguration = configuration
         ReaderContentLoader.historyRealmConfiguration = configuration
         ReaderContentLoader.feedEntryRealmConfiguration = configuration

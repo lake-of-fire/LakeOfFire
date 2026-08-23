@@ -1,4 +1,5 @@
 import XCTest
+@testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
 final class ReaderProgressMessageSequenceGateTests: XCTestCase {

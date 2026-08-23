@@ -217,8 +217,10 @@ private func ebookPretransformedTestPayload(
 ) -> EbookProcessedSectionPayload {
     let sidecarData = Data(sidecar.utf8)
     let fragment = try! SwiftSoup.parseBodyFragment(bodyHTML)
-    let segmentCount = markerSegmentCount ?? fragment.getElementsByTag("m-m").size()
-    let sentenceCount = markerSentenceCount ?? fragment.getElementsByTag("m-s").size()
+    let segmentCount = markerSegmentCount
+        ?? (try! fragment.getElementsByTag("m-m").size())
+    let sentenceCount = markerSentenceCount
+        ?? (try! fragment.getElementsByTag("m-s").size())
     let marker = """
         <meta name="mnb-pretransformed-ebook-sidecar"
               data-mnb-pretransformed-ebook="true"

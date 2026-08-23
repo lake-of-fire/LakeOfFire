@@ -57,6 +57,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
             MediaTranscript.self,
             ExternalBookContent.self,
         ]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
         ReaderContentLoader.bookmarkRealmConfiguration = configuration
         ReaderContentLoader.historyRealmConfiguration = configuration
         ReaderContentLoader.feedEntryRealmConfiguration = configuration

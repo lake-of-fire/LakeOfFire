@@ -147,11 +147,8 @@ final class SyncMutationBoundaryTests: XCTestCase {
 
     private func makeConfiguration(objectTypes: [Object.Type]) -> Realm.Configuration {
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
-        configuration.objectTypes = objectTypes + [BigSyncPendingMutation.self]
-        BigSyncMutationTracking.install(
-            configurations: [configuration],
-            excludedClassNames: []
-        )
+        configuration.objectTypes = objectTypes
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
         return configuration
     }
 

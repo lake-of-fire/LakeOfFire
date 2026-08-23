@@ -104,6 +104,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             ContentPackageFile.self,
             HistoryRecord.self,
         ]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
         return configuration
     }
 
