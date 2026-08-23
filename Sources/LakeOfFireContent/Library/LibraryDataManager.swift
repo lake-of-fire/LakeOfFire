@@ -147,30 +147,6 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         return Array(getUserScripts()?.filter { !$0.isArchived }.compactMap { $0.getWebViewUserScriptDescriptor() } ?? [])
     }
 
-    private static func mergedUniqueIDs(
-        primary: [UUID],
-        orderedAdditions: [[UUID]]
-    ) -> [UUID] {
-        var merged = primary
-        var seen = Set(primary)
-        for additions in orderedAdditions {
-            for id in additions where !seen.contains(id) {
-                seen.insert(id)
-                merged.append(id)
-            }
-        }
-        return merged
-    }
-
-    private static func replaceListIfNeeded<T: RealmCollectionValue>(
-        _ list: RealmSwift.List<T>,
-        with values: [T]
-    ) {
-        let existing = Array(list)
-        guard existing != values else { return }
-        list.removeAll()
-        list.append(objectsIn: values)
-    }
 //    
 //    public static func get() throws -> LibraryConfiguration? {
 //        let realm = try Realm(configuration: LibraryDataManager.realmConfiguration)
@@ -197,75 +173,6 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
 //        }
 //        return nil
 //    }
-    
-    @RealmBackgroundActor
-    public static func getConsolidatedOrCreate(realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration) async throws -> LibraryConfiguration {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        
-        // Take oldest as primary. Consolidate newer ones into it.
-        let configurations = Array(realm.objects(LibraryConfiguration.self).where { !$0.isDeleted } .sorted(by: \.modifiedAt, ascending: true))
-        if let primaryConfiguration = configurations.first {
-            let otherConfigurations = configurations.dropFirst()
-
-            let activeCategoryID: (UUID) -> UUID? = { categoryID in
-                guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
-                      !category.isDeleted,
-                      !category.isArchived else {
-                    return nil
-                }
-                return categoryID
-            }
-            let activeUserScriptID: (UUID) -> UUID? = { scriptID in
-                guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
-                      !script.isDeleted,
-                      !script.isArchived else {
-                    return nil
-                }
-                return scriptID
-            }
-
-            let mergedCategoryIDs = Self.mergedUniqueIDs(
-                primary: primaryConfiguration.categoryIDs.compactMap(activeCategoryID),
-                orderedAdditions: Array(otherConfigurations).map { config in
-                    config.categoryIDs.compactMap(activeCategoryID)
-                } + [
-                    Array(realm.objects(FeedCategory.self).where {
-                        !$0.isDeleted && !$0.isArchived
-                    }.map(\.id))
-                ]
-            )
-            let mergedUserScriptIDs = Self.mergedUniqueIDs(
-                primary: primaryConfiguration.userScriptIDs.compactMap(activeUserScriptID),
-                orderedAdditions: Array(otherConfigurations).map { config in
-                    config.userScriptIDs.compactMap(activeUserScriptID)
-                }
-            )
-
-            let categoryIDsChanged = Array(primaryConfiguration.categoryIDs) != mergedCategoryIDs
-            let userScriptIDsChanged = Array(primaryConfiguration.userScriptIDs) != mergedUserScriptIDs
-            if categoryIDsChanged || userScriptIDsChanged || !otherConfigurations.isEmpty {
-                try realm.write {
-                    Self.replaceListIfNeeded(primaryConfiguration.categoryIDs, with: mergedCategoryIDs)
-                    Self.replaceListIfNeeded(primaryConfiguration.userScriptIDs, with: mergedUserScriptIDs)
-                    for otherConfig in otherConfigurations where !otherConfig.isDeleted {
-                        otherConfig.isDeleted = true
-                        otherConfig.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                    primaryConfiguration.refreshChangeMetadata(explicitlyModified: true)
-                }
-            }
-            
-            return primaryConfiguration
-        }
-        
-        let newConfiguration = LibraryConfiguration()
-//        await realm.asyncRefresh()
-        try realm.write {
-            realm.add(newConfiguration, update: .modified)
-            newConfiguration.refreshChangeMetadata(explicitlyModified: true)
-        }
-        return newConfiguration
-    }
     
     public override init() {
         super.init()
