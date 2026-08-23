@@ -1294,15 +1294,55 @@ func readerModeReadyGenerationIsCurrent(
 @MainActor
 public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
     public var readerFileManager: ReaderFileManager?
-    @Published public var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil
-    @Published public var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil
-    @Published public var ebookProcessingVariantProvider: EbookProcessingVariantProvider? = nil
-    @Published public var ebookSectionPresentationProvider: EbookSectionPresentationProvider? = nil
-    @Published public var nativeEbookSectionPrewarmer: (@Sendable (URL, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil
-    @Published public var processReadabilityContent: EbookReadabilityContentProcessor? = nil
-    @Published public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil
-    @Published public var processHTMLBytes: EbookHTMLBytesProcessor? = nil
-    @Published public var processHTML: EbookHTMLProcessor? = nil
+    private var isBatchingProcessingDependencyChanges = false
+    internal private(set) var processingDependencyRevision: UInt64 = 0
+
+    private func processingDependencyWillChange() {
+        guard !isBatchingProcessingDependencyChanges else { return }
+        processingDependencyRevision &+= 1
+        objectWillChange.send()
+    }
+
+    /// Publishes one observable change for a complete processing configuration.
+    public func performBatchProcessingDependencyUpdate(_ update: () -> Void) {
+        guard !isBatchingProcessingDependencyChanges else {
+            update()
+            return
+        }
+        isBatchingProcessingDependencyChanges = true
+        defer { isBatchingProcessingDependencyChanges = false }
+        processingDependencyRevision &+= 1
+        objectWillChange.send()
+        update()
+    }
+
+    public var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var ebookProcessingVariantProvider: EbookProcessingVariantProvider? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var ebookSectionPresentationProvider: EbookSectionPresentationProvider? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var nativeEbookSectionPrewarmer: (@Sendable (URL, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var processReadabilityContent: EbookReadabilityContentProcessor? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var processHTMLBytes: EbookHTMLBytesProcessor? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    public var processHTML: EbookHTMLProcessor? = nil {
+        willSet { processingDependencyWillChange() }
+    }
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
     @Published public var sharedFontCSSBase64: String?
