@@ -1029,6 +1029,9 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         let contentHeight = contentHeight ?? contentColumnHeight
         let physicalTargetWidth = max(1, edgeLength * 0.7)
         let physicalMaxHeight = edgeLength
+        let physicalThumbnailMaxHeight = edgeLength == thumbnailEdgeLength
+            ? physicalMediaThumbnailMaxHeight
+            : physicalMaxHeight
         switch thumbnailChoice {
         case .image(let imageUrl):
             if appearance.isEbookStyle {
@@ -1041,14 +1044,19 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
                         ReaderImage(
                             imageUrl,
                             contentMode: .fit,
+                            thumbnailSize: CGSize(
+                                width: physicalTargetWidth,
+                                height: physicalThumbnailMaxHeight
+                            ),
                             maxWidth: physicalTargetWidth,
-                            maxHeight: edgeLength == thumbnailEdgeLength ? physicalMediaThumbnailMaxHeight : physicalMaxHeight
+                            maxHeight: physicalThumbnailMaxHeight
                         )
                         .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
                     }
             } else {
                 ReaderImage(
                     imageUrl,
+                    thumbnailSize: CGSize(width: edgeLength, height: edgeLength),
                     maxWidth: edgeLength,
                     minHeight: edgeLength,
                     maxHeight: edgeLength
@@ -1275,6 +1283,7 @@ public struct BookCoverImageView: View {
                 ReaderImage(
                     imageURL,
                     contentMode: .fit,
+                    thumbnailSize: CGSize(width: dimension, height: dimension),
                     cornerRadius: dimension / 28
                 )
                 .aspectRatio(contentMode: .fit)

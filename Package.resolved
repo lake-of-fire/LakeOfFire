@@ -106,7 +106,7 @@
       "location" : "https://github.com/lake-of-fire/LakeImage.git",
       "state" : {
         "branch" : "main",
-        "revision" : "eff9b7186a02931325d70842717e2a4f262a7b5b"
+        "revision" : "32f42daa6993b68e607bc5afa29316477876831a"
       }
     },
     {
@@ -141,8 +141,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/kean/Nuke.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "76e780ad7100c224e5127822ff81915dd04880c5"
+        "revision" : "4a3dd00de49cb2536ee46cd648137ea3197684df"
       }
     },
     {

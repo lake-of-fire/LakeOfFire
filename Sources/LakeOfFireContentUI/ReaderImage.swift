@@ -108,14 +108,23 @@ fileprivate final class ReaderImageDataLoader: DataLoading, @unchecked Sendable 
 fileprivate struct ReaderAsyncImage: View {
     let url: URL
     let contentMode: ContentMode
+    let thumbnailSize: CGSize?
     let maxWidth: CGFloat?
     let minHeight: CGFloat?
     let maxHeight: CGFloat?
     let cornerRadius: CGFloat?
     let imagePipeline: ImagePipeline
 
+    private var imageRequest: ImageRequest {
+        makeReaderImageRequest(
+            url: url,
+            contentMode: contentMode,
+            thumbnailSize: thumbnailSize
+        )
+    }
+
     var body: some View {
-        LazyImage(url: url) { state in
+        LazyImage(request: imageRequest) { state in
             if let image = state.image {
                 image
                     .resizable()
@@ -139,6 +148,8 @@ fileprivate struct ReaderAsyncImage: View {
 public struct ReaderImage: View {
     let url: URL
     let contentMode: ContentMode
+    /// An opt-in decode target measured in display points.
+    var thumbnailSize: CGSize? = nil
     var maxWidth: CGFloat? = nil
     var minHeight: CGFloat? = nil
     var maxHeight: CGFloat? = nil
@@ -147,6 +158,8 @@ public struct ReaderImage: View {
     public init(
         _ url: URL,
         contentMode: ContentMode = .fill,
+        /// An opt-in decode target measured in display points.
+        thumbnailSize: CGSize? = nil,
         maxWidth: CGFloat? = nil,
         minHeight: CGFloat? = nil,
         maxHeight: CGFloat? = nil,
@@ -154,6 +167,7 @@ public struct ReaderImage: View {
     ) {
         self.url = url
         self.contentMode = contentMode
+        self.thumbnailSize = thumbnailSize
         self.maxWidth = maxWidth
         self.minHeight = minHeight
         self.maxHeight = maxHeight
@@ -164,6 +178,7 @@ public struct ReaderImage: View {
         ReaderAsyncImage(
             url: url,
             contentMode: contentMode,
+            thumbnailSize: thumbnailSize,
             maxWidth: maxWidth,
             minHeight: minHeight,
             maxHeight: maxHeight,
@@ -179,4 +194,35 @@ public struct ReaderImage: View {
         })
         return ImagePipeline(configuration: configuration)
     }()
+}
+
+func makeReaderImageRequest(
+    url: URL,
+    contentMode: ContentMode,
+    thumbnailSize: CGSize?
+) -> ImageRequest {
+    var request = ImageRequest(url: url)
+    guard let thumbnailSize,
+          thumbnailSize.width.isFinite,
+          thumbnailSize.height.isFinite,
+          thumbnailSize.width > 0,
+          thumbnailSize.height > 0 else {
+        return request
+    }
+
+    let thumbnailContentMode: ImageProcessingOptions.ContentMode
+    switch contentMode {
+    case .fit:
+        thumbnailContentMode = .aspectFit
+    case .fill:
+        thumbnailContentMode = .aspectFill
+    @unknown default:
+        thumbnailContentMode = .aspectFill
+    }
+    request.thumbnail = ImageRequest.ThumbnailOptions(
+        size: thumbnailSize,
+        unit: .points,
+        contentMode: thumbnailContentMode
+    )
+    return request
 }
