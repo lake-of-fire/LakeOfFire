@@ -54,10 +54,13 @@ public extension Feed {
     }
 
     var latestHistoryRecordLastVisitedAtForFeedEntries: Date? {
-        latestHistoryRecordLastVisitedAtForFeedEntries(getEntries() ?? [])
+        guard let realm else { return nil }
+        return latestHistoryRecordLastVisitedAtForFeedEntries(activeEntries(in: realm))
     }
 
-    private func latestHistoryRecordLastVisitedAtForFeedEntries(_ entries: [FeedEntry]) -> Date? {
+    private func latestHistoryRecordLastVisitedAtForFeedEntries(
+        _ entries: Results<FeedEntry>
+    ) -> Date? {
         guard let historyRealm = try? Realm(configuration: ReaderContentLoader.historyRealmConfiguration) else {
             return nil
         }
@@ -70,8 +73,7 @@ public extension Feed {
         return historyRealm.objects(HistoryRecord.self)
             .where { !$0.isDeleted }
             .filter(NSPredicate(format: "url IN %@", Array(entryURLStrings)))
-            .map { $0.lastVisitedAt }
-            .max()
+            .max(of: \.lastVisitedAt)
     }
 
     var effectiveFeedSeenDate: Date? {
@@ -97,14 +99,24 @@ public extension Feed {
 
     var hasEntriesNewerThanLastViewedAt: Bool {
         guard showsUnseenBadge else { return false }
-        let entries = getEntries() ?? []
+        guard let realm else { return false }
+        let entries = activeEntries(in: realm)
+        guard let newestEntryCreatedAt = entries.max(of: \.createdAt) else {
+            return false
+        }
+
+        let feedSeenDate = resolvedFeedSeenDate(latestHistoryLastVisitedAt: nil)
+        if let feedSeenDate, feedSeenDate >= newestEntryCreatedAt {
+            return false
+        }
+
         let latestHistoryLastVisitedAt = latestHistoryRecordLastVisitedAtForFeedEntries(entries)
         guard let effectiveLastViewedAt = resolvedFeedSeenDate(
             latestHistoryLastVisitedAt: latestHistoryLastVisitedAt
         ) else {
             return false
         }
-        return entries.contains { $0.createdAt > effectiveLastViewedAt }
+        return newestEntryCreatedAt > effectiveLastViewedAt
     }
 
     var shouldRefreshOnCategoryAppear: Bool {
