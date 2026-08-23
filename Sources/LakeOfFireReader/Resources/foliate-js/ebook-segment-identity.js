@@ -6,6 +6,9 @@ const compactMnbSegmentTokenPattern = /^[0-9A-Za-z]+$/
 
 export const compactEbookSegmentSidecarVersion = 10
 
+// Version the stable semantic IDs independently from the compact sidecar encoding.
+export const stableEbookSegmentIdentityVersion = 1
+
 export const compactEbookSegmentSchemaVersionsAreCompatible = nativeVersion => (
     Number.isSafeInteger(nativeVersion)
     && nativeVersion === compactEbookSegmentSidecarVersion

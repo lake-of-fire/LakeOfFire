@@ -20,11 +20,13 @@ import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
 import { applyEbookViewerWritingDirection } from './ebook-viewer-writing-direction.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import { ebookProcessTextResponseIsAuthoritative } from './ebook-process-text-response.js'
+import { createNativeMarkReadRequestCoordinator } from './native-mark-read-request.js'
 import {
     createEbookSegmentMetadataLookup,
     ebookSegmentSidecarRevision,
 } from './ebook-segment-metadata-cache.js'
 import {
+    stableEbookSegmentIdentityVersion,
     ebookSentenceIdentifier,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
@@ -73,6 +75,25 @@ const MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE = false;
 const MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES = false;
 const MANABI_DISABLE_DYNAMIC_CHROME_INSETS = true;
 const MANABI_ENABLE_EBOOK_PAGE_TRACKING_BUTTONS = false;
+
+const nativeMarkReadPayloadLimits = Object.freeze({
+    maximumSegments: 512,
+    maximumSentences: 512,
+    maximumEntryIDsPerList: 128,
+    maximumStableIDBytes: 256,
+    maximumSearchStringBytes: 2_048,
+    maximumDisplayTextBytes: 4_096,
+    maximumExampleSentenceBytes: 65_536,
+    maximumPayloadBytes: 1_048_576,
+});
+
+const utf8Length = value => new TextEncoder().encode(value).byteLength;
+const boundedExactString = (value, maximumBytes, { allowEmpty = false } = {}) => (
+    typeof value === 'string'
+    && value.trim() === value
+    && (allowEmpty || value.length > 0)
+    && utf8Length(value) <= maximumBytes
+);
 
 const ignoredWindowErrorMessages = new Set([
     'ResizeObserver loop completed with undelivered notifications.',
@@ -3009,6 +3030,7 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
         const states = [{
             id: 'visible-screen',
             payload: {
+                stableIdentityVersion: stableEbookSegmentIdentityVersion,
                 segments: [],
                 sentenceIdentifiers: [],
             },
@@ -3052,6 +3074,11 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
     for (const item of visibleSegments) {
         if (!dedupedSegments.has(item.segmentIdentifier)) {
             const metadata = segmentMetadataForNode(item.node);
+            const identity = segmentIdentityForNode(item.node);
+            if (!identity.stableID) {
+                skippedMissingSearchStringCount += 1;
+                continue;
+            }
             let searchString = metadata?.s || metadata?.ns;
             if (typeof searchString !== 'string' || searchString.length === 0) {
                 const textSearchString = item.node.textContent?.trim?.() || '';
@@ -3068,7 +3095,9 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
                 jmnedictEntryIds: segmentEntryIDsForNode(item.node, 'jmnedict'),
                 searchString,
                 displayText: item.node.textContent?.trim?.() || searchString,
-                segmentIdentifier: item.segmentIdentifier,
+                runtimeElementID: identity.elementID,
+                segmentIdentifier: identity.stableID,
+                sentenceIdentifier: item.sentenceIdentifier,
                 exampleSentence: sentenceHTML,
                 exampleSentenceJMDictIDs: sentenceJMDictIDs,
             });
@@ -3091,6 +3120,7 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
     const states = dedupedSegments.size > 0 ? [{
         id: 'visible-screen',
         payload: {
+            stableIdentityVersion: stableEbookSegmentIdentityVersion,
             segments: Array.from(dedupedSegments.values()),
             sentenceIdentifiers,
         },
@@ -3947,6 +3977,7 @@ class Reader {
         if (this.#closed) return false
         if (globalThis.reader === this) this.setLoadingIndicator(false)
         this.#closed = true
+        this.nativeMarkReadRequestCoordinator?.cancelAll?.(`readerClosed:${_reason}`)
         this.visiblePageCollectionGeneration += 1
         this.nativeLookupHitTargetRefreshGeneration += 1
         this.#deferredOpenWork.cancel()
@@ -4076,7 +4107,9 @@ class Reader {
     pageReadMarkerAwaitingPageState = false;
     optimisticReadSegmentIdentifiers = new Set();
     optimisticSentenceIdentifiersRead = new Set();
-    markReadSessionID = Math.random().toString(36).slice(2, 10);
+    nativeMarkReadRequestCoordinator = null;
+    lastNativeMarkReadRequestOutcome = 'none';
+    lastNativeMarkReadRequestErrorCode = '';
     lastPageTrackingVisibility = null;
     lastPageTrackingDiagnosticsKey = null;
     lastBookReadingProgressKey = null;
@@ -4399,6 +4432,12 @@ class Reader {
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
+        this.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
+            postMessage: message => {
+                window.webkit.messageHandlers.markSectionAsRead.postMessage(message);
+            },
+            isOwnerCurrent: owner => this.#markReadOwnerIsCurrent(owner),
+        });
         this.navHUD = new NavigationHUD({
             formatPercent: value => percentFormat.format(value),
             getRenderer: () => this.view?.renderer,
@@ -5036,133 +5075,301 @@ class Reader {
             optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
         };
     }
-    buildMarkAllSectionsAsReadPayload() {
-        const doc = getPrimaryRendererContent(this.view?.renderer)?.doc;
-        if (!isDocumentLike(doc)) {
+    #markReadOwner({ document = null, requireVisibleGeneration = false } = {}) {
+        return {
+            reader: this,
+            renderer: this.view?.renderer ?? null,
+            document,
+            documentURL: document?.URL || document?.location?.href || null,
+            sidecarRevision: document ? ebookSegmentSidecarRevision(document) : null,
+            requireVisibleGeneration,
+            visiblePageCollectionGeneration: this.visiblePageCollectionGeneration,
+        };
+    }
+    #markReadOwnerIsCurrent(owner) {
+        if (!owner || owner.reader !== this || this.#closed || globalThis.reader !== this) {
+            return false;
+        }
+        if (!owner.renderer || owner.renderer !== this.view?.renderer) {
+            return false;
+        }
+        if (owner.requireVisibleGeneration
+            && owner.visiblePageCollectionGeneration !== this.visiblePageCollectionGeneration) {
+            return false;
+        }
+        if (owner.document) {
+            const currentDocument = getPrimaryRendererContent(this.view?.renderer)?.doc ?? null;
+            if (currentDocument !== owner.document) return false;
+            const currentURL = currentDocument?.URL || currentDocument?.location?.href || null;
+            if (currentURL !== owner.documentURL) return false;
+            if (ebookSegmentSidecarRevision(currentDocument) !== owner.sidecarRevision) return false;
+        }
+        return true;
+    }
+    #validatedMarkReadPayload(payload, document) {
+        if (payload?.stableIdentityVersion !== stableEbookSegmentIdentityVersion) return null;
+        if (!isDocumentLike(document)) return null;
+        if (!Array.isArray(payload?.segments)
+            || payload.segments.length > nativeMarkReadPayloadLimits.maximumSegments
+            || !Array.isArray(payload?.sentenceIdentifiers)
+            || payload.sentenceIdentifiers.length > nativeMarkReadPayloadLimits.maximumSentences) {
             return null;
         }
+
+        const liveSegmentIdentifiers = new Set(
+            Array.from(document.querySelectorAll('m-m'))
+                .map(segmentIdentifierForNode)
+                .filter(Boolean)
+        );
+        const liveSentenceIdentifiers = new Set(
+            Array.from(document.querySelectorAll('m-s'))
+                .map(sentenceIdentifierForNode)
+                .filter(Boolean)
+        );
+        const normalizedSegments = [];
+        const seenSegmentIdentifiers = new Set();
+        const sentenceIdentifiers = new Set();
+        const entryIDsAreValid = values => Array.isArray(values)
+            && values.length <= nativeMarkReadPayloadLimits.maximumEntryIDsPerList
+            && values.every(value => Number.isSafeInteger(value) && value > 0);
+
+        for (const segment of payload.segments) {
+            const segmentIdentifier = segment?.segmentIdentifier;
+            const sentenceIdentifier = segment?.sentenceIdentifier ?? null;
+            const exampleSentence = segment?.exampleSentence ?? null;
+            const exampleSentenceJMDictIDs = segment?.exampleSentenceJMDictIDs ?? null;
+            const runtimeElementID = segment?.runtimeElementID ?? null;
+            if (!boundedExactString(
+                segmentIdentifier,
+                nativeMarkReadPayloadLimits.maximumStableIDBytes
+            ) || !liveSegmentIdentifiers.has(segmentIdentifier)
+                || !entryIDsAreValid(segment?.jmdictEntryIds)
+                || !entryIDsAreValid(segment?.jmnedictEntryIds)
+                || !boundedExactString(
+                    segment?.searchString,
+                    nativeMarkReadPayloadLimits.maximumSearchStringBytes
+                ) || !boundedExactString(
+                    segment?.displayText,
+                    nativeMarkReadPayloadLimits.maximumDisplayTextBytes
+                ) || (sentenceIdentifier != null && (
+                    !boundedExactString(
+                        sentenceIdentifier,
+                        nativeMarkReadPayloadLimits.maximumStableIDBytes
+                    ) || !liveSentenceIdentifiers.has(sentenceIdentifier)
+                )) || (exampleSentence != null && !boundedExactString(
+                    exampleSentence,
+                    nativeMarkReadPayloadLimits.maximumExampleSentenceBytes,
+                    { allowEmpty: true }
+                )) || (exampleSentenceJMDictIDs != null
+                    && !entryIDsAreValid(exampleSentenceJMDictIDs))
+                || (runtimeElementID != null && !boundedExactString(
+                    runtimeElementID,
+                    nativeMarkReadPayloadLimits.maximumStableIDBytes
+                ))) {
+                return null;
+            }
+            if (seenSegmentIdentifiers.has(segmentIdentifier)) return null;
+            seenSegmentIdentifiers.add(segmentIdentifier);
+            if (sentenceIdentifier) {
+                sentenceIdentifiers.add(sentenceIdentifier);
+                if (sentenceIdentifiers.size > nativeMarkReadPayloadLimits.maximumSentences) {
+                    return null;
+                }
+            }
+            normalizedSegments.push({
+                jmdictEntryIds: segment.jmdictEntryIds,
+                jmnedictEntryIds: segment.jmnedictEntryIds,
+                searchString: segment.searchString,
+                displayText: segment.displayText,
+                runtimeElementID,
+                segmentIdentifier,
+                sentenceIdentifier,
+                exampleSentence,
+                exampleSentenceJMDictIDs,
+            });
+        }
+        for (const sentenceIdentifier of payload.sentenceIdentifiers) {
+            if (!boundedExactString(
+                sentenceIdentifier,
+                nativeMarkReadPayloadLimits.maximumStableIDBytes
+            ) || !liveSentenceIdentifiers.has(sentenceIdentifier)) {
+                return null;
+            }
+            sentenceIdentifiers.add(sentenceIdentifier);
+            if (sentenceIdentifiers.size > nativeMarkReadPayloadLimits.maximumSentences) {
+                return null;
+            }
+        }
+        if (normalizedSegments.length === 0 && sentenceIdentifiers.size === 0) return null;
+
+        const normalized = {
+            stableIdentityVersion: stableEbookSegmentIdentityVersion,
+            segments: normalizedSegments,
+            sentenceIdentifiers: Array.from(sentenceIdentifiers),
+        };
+        try {
+            if (utf8Length(JSON.stringify(normalized))
+                > nativeMarkReadPayloadLimits.maximumPayloadBytes) {
+                return null;
+            }
+        } catch {
+            return null;
+        }
+        return normalized;
+    }
+    #applyCommittedMarkReadPayload(payload, reason, animateStateID = null) {
+        const payloadSegmentIdentifiers = payload.segments.map(segment => segment.segmentIdentifier);
+        for (const segmentIdentifier of payloadSegmentIdentifiers) {
+            this.optimisticReadSegmentIdentifiers.add(segmentIdentifier);
+        }
+        for (const sentenceIdentifier of payload.sentenceIdentifiers) {
+            this.optimisticSentenceIdentifiersRead.add(sentenceIdentifier);
+        }
+        if (animateStateID) this.pageTrackingAnimateReadStateIDs.add(animateStateID);
+        const committedProgress = normalizeArticleReadingProgress(this.articleReadingProgress);
+        committedProgress.readSegmentIdentifiers = Array.from(new Set([
+            ...committedProgress.readSegmentIdentifiers,
+            ...payloadSegmentIdentifiers,
+        ]));
+        committedProgress.sentenceIdentifiersRead = Array.from(new Set([
+            ...committedProgress.sentenceIdentifiersRead,
+            ...payload.sentenceIdentifiers,
+        ]));
+        this.applyBookReadingProgress(committedProgress, reason);
+        return payload.segments.length || payload.sentenceIdentifiers.length;
+    }
+    async #submitMarkReadPayload(payload, {
+        sectionID,
+        owner,
+        reason,
+        animateStateID = null,
+    }) {
+        const validatedPayload = this.#validatedMarkReadPayload(payload, owner?.document);
+        if (!validatedPayload) {
+            this.lastNativeMarkReadRequestOutcome = 'failed';
+            this.lastNativeMarkReadRequestErrorCode = 'invalidPayload';
+            return false;
+        }
+        this.lastNativeMarkReadRequestOutcome = 'pending';
+        this.lastNativeMarkReadRequestErrorCode = '';
+        const outcome = await this.nativeMarkReadRequestCoordinator.request({
+            sectionID,
+            owner,
+            context: { payload: validatedPayload, reason, animateStateID },
+            message: {
+                ...validatedPayload,
+                topWindowURL: window.top.location.href,
+                documentURL: owner.documentURL,
+                sidecarRevision: owner.sidecarRevision,
+            },
+        });
+        this.lastNativeMarkReadRequestOutcome = outcome.success ? 'committed' : 'failed';
+        this.lastNativeMarkReadRequestErrorCode = outcome.errorCode ?? '';
+        if (!outcome.success) return false;
+        this.#applyCommittedMarkReadPayload(
+            outcome.context.payload,
+            outcome.context.reason,
+            outcome.context.animateStateID
+        );
+        return true;
+    }
+    applyMarkSectionAsReadResult(result) {
+        return this.nativeMarkReadRequestCoordinator?.settle?.(result) ?? false;
+    }
+    buildMarkAllSectionsAsReadPayload() {
+        const doc = getPrimaryRendererContent(this.view?.renderer)?.doc;
+        if (!isDocumentLike(doc)) return null;
         const segmentNodes = Array.from(doc.querySelectorAll('m-m'))
-            .filter((segmentNode) => !segmentNode.closest('.tippy-box'));
+            .filter(segmentNode => !segmentNode.closest('.tippy-box'));
         const segmentsByIdentifier = new Map();
         const sentenceIdentifiers = new Set();
-        let skippedMissingIdentifierCount = 0;
-        let skippedMissingSearchStringCount = 0;
+        for (const sentenceNode of doc.querySelectorAll('m-s')) {
+            const sentenceIdentifier = sentenceIdentifierForNode(sentenceNode);
+            if (sentenceIdentifier) sentenceIdentifiers.add(sentenceIdentifier);
+        }
         for (const segmentNode of segmentNodes) {
-            const segmentIdentifier = segmentIdentifierForNode(segmentNode);
-            if (typeof segmentIdentifier !== 'string' || segmentIdentifier.length === 0) {
-                skippedMissingIdentifierCount += 1;
-                continue;
-            }
-            if (segmentsByIdentifier.has(segmentIdentifier)) {
-                continue;
-            }
+            const identity = segmentIdentityForNode(segmentNode);
+            const segmentIdentifier = identity.stableID;
+            if (!segmentIdentifier || segmentsByIdentifier.has(segmentIdentifier)) continue;
             const metadata = segmentMetadataForNode(segmentNode);
             let searchString = metadata?.s || metadata?.ns;
             if (typeof searchString !== 'string' || searchString.length === 0) {
                 searchString = segmentNode.textContent?.trim?.() || '';
             }
-            if (searchString.length === 0) {
-                skippedMissingSearchStringCount += 1;
-                continue;
-            }
+            if (!searchString) continue;
             const sentenceNode = segmentNode.closest('m-s');
             const sentenceIdentifier = sentenceIdentifierForNode(sentenceNode);
-            if (sentenceIdentifier) {
-                sentenceIdentifiers.add(sentenceIdentifier);
-            }
+            if (sentenceIdentifier) sentenceIdentifiers.add(sentenceIdentifier);
             const { sentenceHTML, sentenceJMDictIDs } = buildExampleSentenceForSegment(segmentNode);
             segmentsByIdentifier.set(segmentIdentifier, {
                 jmdictEntryIds: segmentEntryIDsForNode(segmentNode, 'jmdict'),
                 jmnedictEntryIds: segmentEntryIDsForNode(segmentNode, 'jmnedict'),
                 searchString,
                 displayText: segmentNode.textContent?.trim?.() || searchString,
+                runtimeElementID: identity.elementID,
                 segmentIdentifier,
+                sentenceIdentifier,
                 exampleSentence: sentenceHTML,
                 exampleSentenceJMDictIDs: sentenceJMDictIDs,
             });
         }
-        const payloadSegments = Array.from(segmentsByIdentifier.values());
-        const payloadSentenceIdentifiers = Array.from(sentenceIdentifiers);
-        const payloadSegmentIdentifiers = payloadSegments
-            .map((segment) => segment.segmentIdentifier)
-            .filter((segmentIdentifier) => typeof segmentIdentifier === 'string' && segmentIdentifier.length > 0);
-        if (payloadSegments.length === 0) {
-            return null;
-        }
-        return {
-            segments: payloadSegments,
-            sentenceIdentifiers: payloadSentenceIdentifiers,
+        const payload = {
+            stableIdentityVersion: stableEbookSegmentIdentityVersion,
+            segments: Array.from(segmentsByIdentifier.values()),
+            sentenceIdentifiers: Array.from(sentenceIdentifiers),
         };
+        return this.#validatedMarkReadPayload(payload, doc);
     }
-    applyOptimisticMarkAllSectionsAsReadPayload(payload) {
-        const payloadSegments = Array.isArray(payload?.segments) ? payload.segments : [];
-        const payloadSentenceIdentifiers = Array.isArray(payload?.sentenceIdentifiers) ? payload.sentenceIdentifiers : [];
-        const payloadSegmentIdentifiers = payloadSegments
-            .map((segment) => segment.segmentIdentifier)
-            .filter((segmentIdentifier) => typeof segmentIdentifier === 'string' && segmentIdentifier.length > 0);
-        for (const segmentIdentifier of payloadSegmentIdentifiers) {
-            this.optimisticReadSegmentIdentifiers.add(segmentIdentifier);
-        }
-        for (const sentenceIdentifier of payloadSentenceIdentifiers) {
-            this.optimisticSentenceIdentifiersRead.add(sentenceIdentifier);
-        }
-        const optimisticProgress = normalizeArticleReadingProgress(this.articleReadingProgress);
-        optimisticProgress.readSegmentIdentifiers = Array.from(new Set([
-            ...optimisticProgress.readSegmentIdentifiers,
-            ...payloadSegmentIdentifiers,
-        ]));
-        optimisticProgress.sentenceIdentifiersRead = Array.from(new Set([
-            ...optimisticProgress.sentenceIdentifiersRead,
-            ...payloadSentenceIdentifiers,
-        ]));
-        this.applyBookReadingProgress(optimisticProgress, 'optimistic-mark-all-read');
-        return payloadSegments.length;
+    applyCommittedMarkAllSectionsAsReadPayload(payload) {
+        const doc = getPrimaryRendererContent(this.view?.renderer)?.doc;
+        const validatedPayload = this.#validatedMarkReadPayload(payload, doc);
+        return validatedPayload
+            ? this.#applyCommittedMarkReadPayload(validatedPayload, 'native-mark-all-read-committed')
+            : 0;
+    }
+    applyOptimisticMarkAllSectionsAsReadPayload(_payload) {
+        return 0;
     }
     async markAllSectionsAsRead() {
         const payload = this.buildMarkAllSectionsAsReadPayload();
-        if (!payload) {
-            return 0;
-        }
-        window.webkit.messageHandlers.markSectionAsRead.postMessage(payload);
-        return this.applyOptimisticMarkAllSectionsAsReadPayload(payload);
+        const doc = getPrimaryRendererContent(this.view?.renderer)?.doc ?? null;
+        if (!payload || !isDocumentLike(doc)) return 0;
+        const success = await this.#submitMarkReadPayload(payload, {
+            sectionID: `ebook-mark-all:${this.visiblePageCollectionGeneration}`,
+            owner: this.#markReadOwner({ document: doc }),
+            reason: 'native-mark-all-read-committed',
+        });
+        return success ? (payload.segments.length || payload.sentenceIdentifiers.length) : 0;
     }
     async #markPageClusterAsRead(stateID) {
-        const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
-        if (!pageTrackingState) {
-            return;
+        const pageTrackingState = this.pageTrackingStates.find(state => state.id === stateID);
+        if (!pageTrackingState || pageTrackingState.isRead) return false;
+        if (pageTrackingState.payload.segments.length === 0
+            && pageTrackingState.payload.sentenceIdentifiers.length === 0) {
+            return false;
         }
-        if (pageTrackingState.payload.segments.length === 0) {
-            return;
-        }
-        if (pageTrackingState.isRead) {
-            return;
-        }
+        const doc = getPrimaryRendererContent(this.view?.renderer)?.doc ?? null;
+        if (!isDocumentLike(doc)) return false;
+        const owner = this.#markReadOwner({
+            document: doc,
+            requireVisibleGeneration: true,
+        });
         this.pageTrackingBusyStateIDs.add(stateID);
         this.#renderPageTrackingButtons('mark-read-busy');
-        window.webkit.messageHandlers.markSectionAsRead.postMessage(pageTrackingState.payload);
-        const payloadSegmentIdentifiers = pageTrackingState.payload.segments
-            .map((segment) => segment.segmentIdentifier)
-            .filter((segmentIdentifier) => typeof segmentIdentifier === 'string' && segmentIdentifier.length > 0);
-        const payloadSentenceIdentifiers = pageTrackingState.payload.sentenceIdentifiers
-            .filter((sentenceIdentifier) => typeof sentenceIdentifier === 'string' && sentenceIdentifier.length > 0);
-        for (const segmentIdentifier of payloadSegmentIdentifiers) {
-            this.optimisticReadSegmentIdentifiers.add(segmentIdentifier);
+        try {
+            const success = await this.#submitMarkReadPayload(pageTrackingState.payload, {
+                sectionID: `ebook-page:${stateID}:${this.visiblePageCollectionGeneration}`,
+                owner,
+                reason: 'native-mark-read-committed',
+                animateStateID: stateID,
+            });
+            if (!success || !this.#markReadOwnerIsCurrent(owner)) return false;
+            await this.#advanceAfterMarkRead(owner);
+            return true;
+        } finally {
+            this.pageTrackingBusyStateIDs.delete(stateID);
+            this.#renderPageTrackingButtons('mark-read-finished');
         }
-        for (const sentenceIdentifier of payloadSentenceIdentifiers) {
-            this.optimisticSentenceIdentifiersRead.add(sentenceIdentifier);
-        }
-        const optimisticProgress = normalizeArticleReadingProgress(this.articleReadingProgress);
-        optimisticProgress.readSegmentIdentifiers = Array.from(new Set([
-            ...optimisticProgress.readSegmentIdentifiers,
-            ...payloadSegmentIdentifiers,
-        ]));
-        optimisticProgress.sentenceIdentifiersRead = Array.from(new Set([
-            ...optimisticProgress.sentenceIdentifiersRead,
-            ...payloadSentenceIdentifiers,
-        ]));
-        this.pageTrackingAnimateReadStateIDs.add(stateID);
-        this.applyBookReadingProgress(optimisticProgress, 'optimistic-mark-read');
-        await this.#advanceAfterMarkRead();
     }
     async markVisiblePageAsRead(source = 'native') {
         const completionAction = this.completionAction;
@@ -5201,8 +5408,7 @@ class Reader {
             globalThis.__manabiApplyIgnoredHideNavigationOnPageTrackingAdvance = true;
             ignoreNextIncomingHideNavigation('native-page-tracking-button');
         }
-        await this.#markPageClusterAsRead(stateID);
-        return true;
+        return await this.#markPageClusterAsRead(stateID);
     }
     #renderPageTrackingButtons(reason = 'unspecified') {
         const container = document.getElementById('page-tracking-container');
@@ -5215,6 +5421,8 @@ class Reader {
                     isBusy: !!isBusy,
                     hasAnyMarkedReadContent: !!state?.hasAnyMarkedReadContent,
                     stateID: state?.id ?? null,
+                    requestOutcome: this.lastNativeMarkReadRequestOutcome,
+                    errorCode: this.lastNativeMarkReadRequestErrorCode || null,
                     reason,
                 });
             } catch (_error) {}
@@ -5689,12 +5897,16 @@ class Reader {
             await this.#settleInitialPaginatorLayout(reason);
         });
     }
-    async #advanceAfterMarkRead() {
+    async #advanceAfterMarkRead(owner) {
+        if (!this.#markReadOwnerIsCurrent(owner)) return false;
         await new Promise((resolve) => setTimeout(resolve, 430));
+        if (!this.#markReadOwnerIsCurrent(owner)) return false;
         if (this.isRTL) {
-            await this.view?.goLeft?.();
+            if (!this.#markReadOwnerIsCurrent(owner)) return false;
+            return await this.view?.goLeft?.() === true;
         } else {
-            await this.view?.goRight?.();
+            if (!this.#markReadOwnerIsCurrent(owner)) return false;
+            return await this.view?.goRight?.() === true;
         }
     }
     #flashSideNavChevron(direction) {
@@ -8949,6 +9161,10 @@ window.manabi_buildMarkAllSectionsAsReadPayload = () => {
 
 window.manabi_applyOptimisticMarkAllSectionsAsReadPayload = (payload) => {
     return globalThis.reader?.applyOptimisticMarkAllSectionsAsReadPayload?.(payload) ?? 0;
+}
+
+window.manabi_applyMarkSectionAsReadResult = (result) => {
+    return globalThis.reader?.applyMarkSectionAsReadResult?.(result) ?? false;
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})
