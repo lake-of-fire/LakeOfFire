@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+import Combine
 import RealmSwift
 import RealmSwiftGaps
 @testable import LakeOfFireContent
@@ -50,6 +51,51 @@ private final class FakeReadAloudAudioSessionLease: ReaderReadAloudAudioSessionL
 }
 
 final class ReaderMediaMetadataTests: XCTestCase {
+    @MainActor
+    func testSpeechProgressPublishesOneCoherentChangeAndSkipsIdenticalCallbacks() throws {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let controller = ReaderReadAloudController(synthesizer: synthesizer)
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: controller,
+            readAloudAudioSessionLeaseFactory: { FakeReadAloudAudioSessionLease() }
+        )
+
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                preferredLanguage: "en-US",
+                autoplay: false
+            )
+        )
+        viewModel.playAITTS()
+        let utterance = try XCTUnwrap(synthesizer.spokenUtterances.first)
+        var publicationCount = 0
+        let cancellable = viewModel.objectWillChange.sink {
+            publicationCount += 1
+        }
+
+        let spokenRange = NSRange(location: 0, length: 2)
+        viewModel.speechSynthesizer(
+            AVSpeechSynthesizer(),
+            willSpeakRangeOfSpeechString: spokenRange,
+            utterance: utterance
+        )
+
+        XCTAssertEqual(publicationCount, 1)
+        XCTAssertEqual(viewModel.ttsProgressValue, 0.5)
+        XCTAssertEqual(viewModel.ttsProgressUpperBound, 1)
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "s1")
+        XCTAssertEqual(viewModel.ttsCurrentSentenceText, "One.")
+
+        viewModel.speechSynthesizer(
+            AVSpeechSynthesizer(),
+            willSpeakRangeOfSpeechString: spokenRange,
+            utterance: utterance
+        )
+        XCTAssertEqual(publicationCount, 1)
+        withExtendedLifetime(cancellable) { }
+    }
+
     func testReadAloudAvailabilityUsesEbookPageURLBeforeContentMetadataLoads() {
         XCTAssertTrue(
             ReaderReadAloudAvailability.isAvailable(
@@ -550,7 +596,7 @@ final class ReaderMediaMetadataTests: XCTestCase {
     }
 
     @MainActor
-    func testReadAloudVoiceResolutionIsReusedAcrossLookupStyleQueueResumes() {
+    func testReadAloudVoiceResolutionIsReusedAcrossLookupStyleQueueResumes() async {
         let synthesizer = FakeReaderSpeechSynthesizer()
         var resolutionCount = 0
         let viewModel = ReaderMediaPlayerViewModel(
@@ -581,6 +627,7 @@ final class ReaderMediaMetadataTests: XCTestCase {
             name: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
             object: nil
         )
+        await Task.yield()
         viewModel.seekAITTS(toSentenceIdentifier: "s7", shouldPlay: false)
         viewModel.playAITTS()
         XCTAssertEqual(resolutionCount, 2)

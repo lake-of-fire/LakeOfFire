@@ -14,6 +14,13 @@ private struct ReaderReadAloudVoiceConfiguration: Equatable {
     let language: String
 }
 
+private struct ReaderTTSProgressPresentation: Equatable {
+    var value: Double = 0
+    var upperBound: Double = 1
+    var sentenceIdentifier: String?
+    var sentenceText: String?
+}
+
 private func resolveReaderReadAloudVoice(
     selectedIdentifier: String,
     language: String
@@ -194,10 +201,11 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @Published public private(set) var shouldResumeAITTSAfterLookupDismissal = false
     @Published public var playbackSource: ReaderPlaybackSource = .recordedAudio
     @Published public var autoplayRequestToken: UUID?
-    @Published public private(set) var ttsProgressValue: Double = 0
-    @Published public private(set) var ttsProgressUpperBound: Double = 1
-    @Published public private(set) var ttsCurrentSentenceIdentifier: String?
-    @Published public private(set) var ttsCurrentSentenceText: String?
+    @Published private var ttsProgressPresentation = ReaderTTSProgressPresentation()
+    public var ttsProgressValue: Double { ttsProgressPresentation.value }
+    public var ttsProgressUpperBound: Double { ttsProgressPresentation.upperBound }
+    public var ttsCurrentSentenceIdentifier: String? { ttsProgressPresentation.sentenceIdentifier }
+    public var ttsCurrentSentenceText: String? { ttsProgressPresentation.sentenceText }
     @Published public private(set) var ttsUtteranceCount: Int = 0
     @Published public private(set) var hasPreparedAITTS = false
     @Published public private(set) var ttsQueueGeneration: Int = 0
@@ -676,14 +684,16 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             uniqueKeysWithValues: normalized.enumerated().map { ($0.element.sentenceIdentifier, $0.offset) }
         )
         ttsUtteranceCount = normalized.count
-        ttsProgressUpperBound = max(Double(normalized.count), 1)
         ttsVoiceLanguage = preferredLanguage
         hasPreparedAITTS = true
         ttsCurrentUtteranceIndex = 0
         ttsCurrentCharacterRange = nil
-        ttsCurrentSentenceIdentifier = normalized.first?.sentenceIdentifier
-        ttsCurrentSentenceText = normalized.first?.text
-        ttsProgressValue = 0
+        publishTTSProgress(
+            value: 0,
+            upperBound: max(Double(normalized.count), 1),
+            sentenceIdentifier: normalized.first?.sentenceIdentifier,
+            sentenceText: normalized.first?.text
+        )
         debugPrint(
             "# READALOUD ai.queue.ready",
             "utteranceCount=\(normalized.count)",
@@ -744,10 +754,6 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         if ttsProgressValue >= (upperBound - 0.0001) {
             ttsCurrentUtteranceIndex = 0
             ttsCurrentCharacterRange = nil
-            if let firstUtterance = ttsUtterances.first {
-                ttsCurrentSentenceIdentifier = firstUtterance.sentenceIdentifier
-                ttsCurrentSentenceText = firstUtterance.text
-            }
             updateAITTSProgress()
             debugPrint("# READALOUD ai.play.restartFromBeginning", "upperBound=\(upperBound)")
         }
@@ -817,9 +823,6 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         let boundedIndex = min(max(index, 0), ttsUtterances.count - 1)
         ttsCurrentUtteranceIndex = boundedIndex
         ttsCurrentCharacterRange = nil
-        let utterance = ttsUtterances[boundedIndex]
-        ttsCurrentSentenceIdentifier = utterance.sentenceIdentifier
-        ttsCurrentSentenceText = utterance.text
         updateAITTSProgress()
         persistReadAloudPosition()
 
@@ -839,8 +842,6 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         let lastIndex = ttsUtterances.count - 1
         ttsCurrentUtteranceIndex = lastIndex
         let utterance = ttsUtterances[lastIndex]
-        ttsCurrentSentenceIdentifier = utterance.sentenceIdentifier
-        ttsCurrentSentenceText = utterance.text
         ttsCurrentCharacterRange = NSRange(location: utterance.text.utf16.count, length: 0)
         stopAITTSSynthesizerForQueueSwap()
         deactivateReadAloudAudioSession()
@@ -913,10 +914,12 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             ttsUtteranceCount = 0
             ttsCurrentUtteranceIndex = 0
             ttsCurrentCharacterRange = nil
-            ttsCurrentSentenceIdentifier = nil
-            ttsCurrentSentenceText = nil
-            ttsProgressValue = 0
-            ttsProgressUpperBound = 1
+            publishTTSProgress(
+                value: 0,
+                upperBound: 1,
+                sentenceIdentifier: nil,
+                sentenceText: nil
+            )
             hasPreparedAITTS = false
             ttsPreparedEbookSectionIndex = nil
         } else {
@@ -928,9 +931,13 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     private func updateAITTSProgress(forceEndOfUtterance: Bool = false) {
         let upperBound = max(Double(ttsUtterances.count), 1)
-        ttsProgressUpperBound = upperBound
         guard !ttsUtterances.isEmpty else {
-            ttsProgressValue = 0
+            publishTTSProgress(
+                value: 0,
+                upperBound: upperBound,
+                sentenceIdentifier: nil,
+                sentenceText: nil
+            )
             return
         }
         let boundedIndex = min(max(ttsCurrentUtteranceIndex, 0), ttsUtterances.count - 1)
@@ -945,9 +952,29 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             )
         }
         let absoluteProgress = min(Double(boundedIndex) + locationFraction, upperBound)
-        ttsProgressValue = absoluteProgress
-        ttsCurrentSentenceIdentifier = ttsUtterances[boundedIndex].sentenceIdentifier
-        ttsCurrentSentenceText = ttsUtterances[boundedIndex].text
+        let utterance = ttsUtterances[boundedIndex]
+        publishTTSProgress(
+            value: absoluteProgress,
+            upperBound: upperBound,
+            sentenceIdentifier: utterance.sentenceIdentifier,
+            sentenceText: utterance.text
+        )
+    }
+
+    private func publishTTSProgress(
+        value: Double,
+        upperBound: Double,
+        sentenceIdentifier: String?,
+        sentenceText: String?
+    ) {
+        let presentation = ReaderTTSProgressPresentation(
+            value: value,
+            upperBound: upperBound,
+            sentenceIdentifier: sentenceIdentifier,
+            sentenceText: sentenceText
+        )
+        guard presentation != ttsProgressPresentation else { return }
+        ttsProgressPresentation = presentation
     }
 
     private var readAloudPositionStorageKey: String? {
@@ -984,8 +1011,6 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         let index = Int(floor(progress))
         ttsCurrentUtteranceIndex = index
         ttsCurrentCharacterRange = nil
-        ttsCurrentSentenceIdentifier = ttsUtterances[index].sentenceIdentifier
-        ttsCurrentSentenceText = ttsUtterances[index].text
         updateAITTSProgress()
     }
 
@@ -1155,7 +1180,9 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
         guard let index = ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(utterance)] else { return }
         ttsCurrentUtteranceIndex = index
         ttsCurrentCharacterRange = nil
-        isPlaying = true
+        if !isPlaying {
+            isPlaying = true
+        }
         registerPlaybackStart(contentKey: currentContentKey)
         updateAITTSProgress()
         persistReadAloudPosition()
@@ -1174,7 +1201,9 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
         guard let index = ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(utterance)] else { return }
         ttsCurrentUtteranceIndex = index
         ttsCurrentCharacterRange = characterRange
-        isPlaying = true
+        if !isPlaying {
+            isPlaying = true
+        }
         registerPlaybackStart(contentKey: currentContentKey)
         updateAITTSProgress()
     }
