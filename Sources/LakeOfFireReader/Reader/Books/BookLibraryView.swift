@@ -171,17 +171,20 @@ public struct BookLibraryView: View {
 
     @ViewBuilder
     private var myBooksHeader: some View {
-        if showsInlineAddButton {
-            HStack(alignment: .firstTextBaseline) {
-                Text("My \(viewModel.mediaTypeTitle)")
-                Spacer()
-                if !isMyBooksEmpty {
-                    inlineAddFileButton
+        Group {
+            if showsInlineAddButton {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("My \(viewModel.mediaTypeTitle)")
+                    Spacer()
+                    if !isMyBooksEmpty {
+                        inlineAddFileButton
+                    }
                 }
+            } else {
+                Text("My \(viewModel.mediaTypeTitle)")
             }
-        } else {
-            Text("My \(viewModel.mediaTypeTitle)")
         }
+        .accessibilityIdentifier("BookLibrary.MyBooks.Header")
     }
 
     private var editorsPicksHeader: some View {

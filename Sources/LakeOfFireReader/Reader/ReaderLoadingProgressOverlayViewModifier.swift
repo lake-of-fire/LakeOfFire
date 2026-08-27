@@ -82,6 +82,12 @@ private struct ReaderLoadingOverlay: View {
         .ignoresSafeArea(.all)
         .opacity(isVisible ? 1 : 0)
         .allowsHitTesting(isVisible)
+        .accessibilityIdentifier(
+            isVisible
+                ? "ReaderLoadingOverlay"
+                : "ReaderLoadingOverlay.Hidden"
+        )
+        .accessibilityHidden(!isVisible)
         .animation(showsImmediately ? nil : .easeInOut(duration: 0.2), value: isVisible)
         .onChange(of: isLoading) { newValue in
             latestIsLoading = newValue

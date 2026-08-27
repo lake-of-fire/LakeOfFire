@@ -14,6 +14,7 @@ import {
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
     expandCompactEbookSegmentIDToken,
+    stableEbookSegmentIdentityVersion,
 } from './ebook-segment-identity.js'
 import {
     ebookDocumentFrameIdentity,
@@ -4908,6 +4909,8 @@ const hydrateVisibleTrackingStatusesForVisibleSegments = (doc, visibleSegmentsRe
 };
 
 const buildVisiblePageTrackingStates = (doc, articleReadingProgress, visibleRange = null, visibleSegmentsResult = null) => {
+    const nativeSidecarContentFingerprint =
+        doc?.body?.dataset?.mnbNativeSidecarContentFingerprint || '';
     const normalizedProgress = normalizeArticleReadingProgress(articleReadingProgress);
     const readSegmentIdentifiers = new Set(normalizedProgress.readSegmentIdentifiers);
     const readSentenceIdentifiers = new Set(normalizedProgress.sentenceIdentifiersRead);
@@ -4974,6 +4977,8 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress, visibleRang
         const states = [{
             id: 'visible-screen',
             payload: {
+                stableIdentityVersion: stableEbookSegmentIdentityVersion,
+                nativeSidecarContentFingerprint,
                 segments: [],
                 sentenceIdentifiers: [],
             },
@@ -5037,10 +5042,11 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress, visibleRang
                 jmdictEntryIds: segmentEntryIDsForMetadata(metadata, 'jmdict'),
                 jmnedictEntryIds: segmentEntryIDsForMetadata(metadata, 'jmnedict'),
                 searchString,
-                displayText: item.node.textContent?.trim?.() || searchString,
+                displayText: metadata?.x || item.node.textContent?.trim?.() || searchString,
                 runtimeElementID: identity.elementID,
                 stableSegmentID: identity.stableID,
                 segmentIdentifier: identity.stableID,
+                sentenceIdentifier: item.sentenceIdentifier || metadata?.sentenceID || null,
                 exampleSentence: sentenceHTML,
                 exampleSentenceJMDictIDs: sentenceJMDictIDs,
             });
@@ -5068,6 +5074,8 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress, visibleRang
     const states = dedupedSegments.size > 0 ? [{
         id: 'visible-screen',
         payload: {
+            stableIdentityVersion: stableEbookSegmentIdentityVersion,
+            nativeSidecarContentFingerprint,
             segments: Array.from(dedupedSegments.values()),
             sentenceIdentifiers,
         },
@@ -6999,36 +7007,91 @@ class Reader {
         };
     }
     #validatedMarkReadPayload(payload) {
+        if (payload?.stableIdentityVersion !== stableEbookSegmentIdentityVersion) return null;
         const segments = Array.isArray(payload?.segments) ? payload.segments : [];
-        if (segments.length === 0) return null;
+        if (!Array.isArray(payload?.sentenceIdentifiers)) return null;
         const stableSegments = new Map();
+        const sameIntegerArray = (left, right) => left.length === right.length
+            && left.every((value, index) => Number.isInteger(value) && value === right[index]);
+        const sameOptionalIntegerArray = (left, right) => left == null || right == null
+            ? left === right
+            : sameIntegerArray(left, right);
         for (const segment of segments) {
             const stableSegmentID = typeof segment?.stableSegmentID === 'string'
                 ? segment.stableSegmentID
                 : '';
-            if (!stableSegmentID) return null;
+            if (
+                !stableSegmentID
+                || stableSegmentID.trim() !== stableSegmentID
+                || !Array.isArray(segment?.jmdictEntryIds)
+                || !Array.isArray(segment?.jmnedictEntryIds)
+                || !segment.jmdictEntryIds.every(value => Number.isInteger(value) && value > 0)
+                || !segment.jmnedictEntryIds.every(value => Number.isInteger(value) && value > 0)
+                || (
+                    segment.exampleSentenceJMDictIDs != null
+                    && (
+                        !Array.isArray(segment.exampleSentenceJMDictIDs)
+                        || !segment.exampleSentenceJMDictIDs.every(
+                            value => Number.isInteger(value) && value > 0
+                        )
+                    )
+                )
+                || typeof segment?.searchString !== 'string'
+            ) return null;
             const normalized = {
-                ...segment,
+                jmdictEntryIds: segment.jmdictEntryIds,
+                jmnedictEntryIds: segment.jmnedictEntryIds,
+                searchString: segment.searchString,
+                displayText: typeof segment.displayText === 'string'
+                    ? segment.displayText
+                    : segment.searchString,
                 stableSegmentID,
                 segmentIdentifier: stableSegmentID,
                 runtimeElementID: typeof segment?.runtimeElementID === 'string'
                     ? segment.runtimeElementID
                     : null,
+                sentenceIdentifier: typeof segment?.sentenceIdentifier === 'string'
+                    ? segment.sentenceIdentifier
+                    : null,
+                exampleSentence: typeof segment?.exampleSentence === 'string'
+                    ? segment.exampleSentence
+                    : null,
+                exampleSentenceJMDictIDs: Array.isArray(segment?.exampleSentenceJMDictIDs)
+                    ? segment.exampleSentenceJMDictIDs
+                    : null,
             };
             const existing = stableSegments.get(stableSegmentID);
             if (existing) {
-                if (JSON.stringify(existing) !== JSON.stringify(normalized)) return null;
+                const sameDurableFacts = sameIntegerArray(
+                    existing.jmdictEntryIds,
+                    normalized.jmdictEntryIds
+                ) && sameIntegerArray(
+                    existing.jmnedictEntryIds,
+                    normalized.jmnedictEntryIds
+                )
+                    && existing.searchString === normalized.searchString
+                    && existing.displayText === normalized.displayText
+                    && existing.sentenceIdentifier === normalized.sentenceIdentifier
+                    && existing.exampleSentence === normalized.exampleSentence
+                    && sameOptionalIntegerArray(
+                        existing.exampleSentenceJMDictIDs,
+                        normalized.exampleSentenceJMDictIDs
+                    );
+                if (!sameDurableFacts) return null;
                 continue;
             }
             stableSegments.set(stableSegmentID, normalized);
         }
+        const sentenceIdentifiers = Array.from(new Set(
+            payload.sentenceIdentifiers
+                .filter(identifier => typeof identifier === 'string'
+                    && identifier.length > 0)
+        ));
+        if (stableSegments.size === 0 && sentenceIdentifiers.length === 0) return null;
         return {
             ...payload,
             segments: Array.from(stableSegments.values()),
-            sentenceIdentifiers: Array.from(new Set(
-                (Array.isArray(payload?.sentenceIdentifiers) ? payload.sentenceIdentifiers : [])
-                    .filter(identifier => typeof identifier === 'string' && identifier.length > 0)
-            )).sort(),
+            sentenceIdentifiers,
         };
     }
     #applyCommittedMarkReadPayload(payload, reason, animateStateID = null) {
@@ -7064,7 +7127,11 @@ class Reader {
         animateStateID = null,
     }) {
         const validatedPayload = this.#validatedMarkReadPayload(payload);
-        if (!validatedPayload) return false;
+        if (!validatedPayload) {
+            this.lastNativeMarkReadRequestOutcome = 'failed';
+            this.lastNativeMarkReadRequestErrorCode = 'invalidPayload';
+            return false;
+        }
         const outcome = await this.nativeMarkReadRequestCoordinator.request({
             sectionID,
             owner,
@@ -7076,6 +7143,10 @@ class Reader {
             message: {
                 ...validatedPayload,
                 topWindowURL: window.top.location.href,
+                pageURL: owner?.document?.location?.href ?? null,
+                documentStartedAtMs: Number.isFinite(window.top?.performance?.timeOrigin)
+                    ? window.top.performance.timeOrigin
+                    : readerDocumentStartedAtMs(),
             },
         });
         this.lastNativeMarkReadRequestOutcome = outcome.success === true
@@ -7102,6 +7173,11 @@ class Reader {
             .filter((segmentNode) => !segmentNode.closest('.tippy-box'));
         const segmentsByIdentifier = new Map();
         const sentenceIdentifiers = new Set();
+        for (const sentenceNode of doc.querySelectorAll(manabiReaderSentenceSelector)) {
+            if (sentenceNode.closest?.('.tippy-box')) continue;
+            const sentenceIdentifier = sentenceIdentifierForNode(sentenceNode);
+            if (sentenceIdentifier) sentenceIdentifiers.add(sentenceIdentifier);
+        }
         for (const segmentNode of segmentNodes) {
             const metadata = segmentMetadataForNode(segmentNode);
             const identity = segmentIdentityForNode(segmentNode, null, metadata);
@@ -7133,9 +7209,10 @@ class Reader {
                 jmdictEntryIds: segmentEntryIDsForNode(segmentNode, 'jmdict', null, metadata),
                 jmnedictEntryIds: segmentEntryIDsForNode(segmentNode, 'jmnedict', null, metadata),
                 searchString,
-                displayText: segmentNode.textContent?.trim?.() || searchString,
+                displayText: metadata?.x || segmentNode.textContent?.trim?.() || searchString,
                 runtimeElementID: identity.elementID,
                 stableSegmentID,
+                sentenceIdentifier: sentenceIdentifier || null,
                 segmentIdentifier: stableSegmentID,
                 exampleSentence: sentenceHTML,
                 exampleSentenceJMDictIDs: sentenceJMDictIDs,
@@ -7143,10 +7220,13 @@ class Reader {
         }
         const payloadSegments = Array.from(segmentsByIdentifier.values());
         const payloadSentenceIdentifiers = Array.from(sentenceIdentifiers);
-        if (payloadSegments.length === 0) {
+        if (payloadSegments.length === 0 && payloadSentenceIdentifiers.length === 0) {
             return null;
         }
         return {
+            stableIdentityVersion: stableEbookSegmentIdentityVersion,
+            nativeSidecarContentFingerprint:
+                doc.body?.dataset?.mnbNativeSidecarContentFingerprint || '',
             segments: payloadSegments,
             sentenceIdentifiers: payloadSentenceIdentifiers,
         };
@@ -7172,14 +7252,17 @@ class Reader {
             owner: this.#markReadOwner({ document: doc }),
             reason: 'native-mark-all-read-committed',
         });
-        return success ? payload.segments.length : 0;
+        return success
+            ? (payload.segments.length || payload.sentenceIdentifiers.length)
+            : 0;
     }
     async #markPageClusterAsRead(stateID) {
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
         if (!pageTrackingState) {
             return false;
         }
-        if (pageTrackingState.payload.segments.length === 0) {
+        if (pageTrackingState.payload.segments.length === 0
+            && pageTrackingState.payload.sentenceIdentifiers.length === 0) {
             return false;
         }
         if (pageTrackingState.isRead) {
@@ -7396,6 +7479,8 @@ class Reader {
                 isRead: !!nativeMarkReadState?.isRead,
                 isBusy: !!nativeMarkReadBusy,
                 hasAnyMarkedReadContent: !!nativeMarkReadState?.hasAnyMarkedReadContent,
+                requestOutcome: this.lastNativeMarkReadRequestOutcome ?? 'none',
+                requestErrorCode: this.lastNativeMarkReadRequestErrorCode ?? '',
             },
         });
         if (this.lastRenderedPageTrackingSignature === renderSignature) {
@@ -12186,11 +12271,15 @@ window.loadEBook = ({
                         isRTL: !!globalThis.reader?.isRTL,
                     }) ?? null;
                     window.webkit.messageHandlers.ebookViewerLoaded.postMessage({
+                        topWindowURL: window.top.location.href,
                         probe,
                         initialRestoreResult,
                         initialRestoreHandled: initialRestoreResult?.restoreSatisfied ?? false,
                         initialRestoreCurrentFractionalCompletion: initialRestoreCurrentFraction,
                         initialRestoreFractionalCompletion: initialRestoreHandledFraction,
+                        documentStartedAtMs: Number.isFinite(window.top?.performance?.timeOrigin)
+                            ? window.top.performance.timeOrigin
+                            : readerDocumentStartedAtMs(),
                     });
                     return true;
                 },

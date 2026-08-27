@@ -3,7 +3,6 @@ import LakeOfFireFiles
 import SwiftUI
 import LakeOfFireContent
 import LakeOfFireCore
-import ZIPFoundation
 import Nuke
 import LakeImage
 
@@ -28,17 +27,17 @@ fileprivate let readerImageProvider = CustomImageProvider { url in
 
     var isDirectory: ObjCBool = false
     let fileExists = FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory)
-    if try isPackageFile(at: fileURL) || (fileExists && isDirectory.boolValue) {
-        let filePath = fileURL.appendingPathComponent(subpathValue)
-        return try? Data(contentsOf: filePath)
+    guard (try? isPackageFile(at: fileURL)) == true
+            || (fileExists && isDirectory.boolValue)
+            || zipArchiveExtensions.contains(url.pathExtension.lowercased()) else {
+        return nil
     }
 
-    guard zipArchiveExtensions.contains(url.pathExtension.lowercased()) else { return nil }
-    guard let archive = try Archive(url: fileURL, accessMode: .read) else { return nil }
-    guard let entry = archive[subpathValue], entry.type == .file else { return nil }
-    var imageData = Data()
-    try archive.extract(entry, consumer: { imageData.append($0) })
-    return imageData
+    // Package entries are untrusted input. ReaderPackageEntrySource validates
+    // the subpath and enforces both advertised and actual decompressed-byte
+    // limits before returning image data, for directories as well as ZIPs.
+    let source = try ReaderPackageEntrySource(localURL: fileURL, limits: .image)
+    return try? source.readEntry(subpath: subpathValue)
 }
 
 public struct ReaderImage: View {

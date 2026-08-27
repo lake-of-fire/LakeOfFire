@@ -162,6 +162,10 @@ public struct NativeLookupHitTargetsMessage {
                   let top = Self.number(payload["top"]),
                   let width = Self.number(payload["width"]),
                   let height = Self.number(payload["height"]),
+                  left.isFinite,
+                  top.isFinite,
+                  width.isFinite,
+                  height.isFinite,
                   width > 0,
                   height > 0 else {
                 return nil
@@ -329,9 +333,15 @@ public struct ReaderModeUnavailableMessage {
     public let windowURL: URL?
     
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any] else { return nil }
-        pageURL = URL(string: body["pageURL"] as! String)
-        windowURL = URL(string: body["windowURL"] as! String)
+        self.init(body: message.body)
+    }
+
+    init?(body rawBody: Any?) {
+        guard let body = rawBody as? [String: Any],
+              let pageURLString = body["pageURL"] as? String,
+              let windowURLString = body["windowURL"] as? String else { return nil }
+        pageURL = URL(string: pageURLString)
+        windowURL = URL(string: windowURLString)
     }
 }
 
@@ -348,9 +358,19 @@ public struct ReadabilityParsedMessage {
     public let outputHTML: String
     
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any] else { return nil }
-        pageURL = URL(string: body["pageURL"] as! String)
-        windowURL = URL(string: body["windowURL"] as! String)
+        self.init(body: message.body)
+    }
+
+    init?(body rawBody: Any?) {
+        guard let body = rawBody as? [String: Any],
+              let pageURLString = body["pageURL"] as? String,
+              let windowURLString = body["windowURL"] as? String,
+              let title = body["title"] as? String,
+              let byline = body["byline"] as? String,
+              let content = body["content"] as? String,
+              let inputHTML = body["inputHTML"] as? String else { return nil }
+        pageURL = URL(string: pageURLString)
+        windowURL = URL(string: windowURLString)
         
         readabilityContainerSelector = body["readabilityContainerSelector"] as? String
         readabilityContainerRootSelector = NestedDOMRootSelector(
@@ -358,11 +378,11 @@ public struct ReadabilityParsedMessage {
             layer1ShadowRootSelector: body["layer1ShadowRootSelector"] as? String,
             layer2ShadowRootSelector: body["layer2ShadowRootSelector"] as? String)
         
-        title = body["title"] as! String
-        byline = body["byline"] as! String
+        self.title = title
+        self.byline = byline
         publishedTime = body["publishedTime"] as? String
-        content = body["content"] as! String
-        inputHTML = body["inputHTML"] as! String
+        self.content = content
+        self.inputHTML = inputHTML
         outputHTML = body["outputHTML"] as? String ?? ""
     }
 }
@@ -402,9 +422,15 @@ public struct VideoStatusMessage {
     public let captionsOptions: [CaptionsOption]
     
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any] else { return nil }
-        pageURL = URL(string: body["pageURL"] as! String)
-        windowURL = URL(string: body["windowURL"] as! String)
+        self.init(body: message.body)
+    }
+
+    init?(body rawBody: Any?) {
+        guard let body = rawBody as? [String: Any],
+              let pageURLString = body["pageURL"] as? String,
+              let windowURLString = body["windowURL"] as? String else { return nil }
+        pageURL = URL(string: pageURLString)
+        windowURL = URL(string: windowURLString)
         providerVideoID = body["providerVideoID"] as? String
         
         if let captionsArray = body["captionsOptions"] as? [[String: Any]] {
@@ -422,13 +448,18 @@ public struct PageMetadataUpdatedMessage {
     public let url: URL?
     
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any],
+        self.init(body: message.body)
+    }
+
+    init?(body rawBody: Any?) {
+        guard let body = rawBody as? [String: Any],
               let title = body["title"] as? String,
-              let author = body["author"] as? String
+              let author = body["author"] as? String,
+              let urlString = body["url"] as? String
         else { return nil }
         self.title = title
         self.author = author
-        url = URL(string: body["url"] as! String)
+        url = URL(string: urlString)
     }
 }
 
@@ -474,7 +505,7 @@ public struct WritingDirectionMessage {
 //    
 //    public init?(fromMessage message: WebViewMessage) {
 //        guard let body = message.body as? [String: Any] else { return nil }
-////        rssURLs = body["rssURLs"] as! [[String]]
+////        rssURLs = body["rssURLs"] as? [[String]] ?? []
 //    }
 //}
 
@@ -502,7 +533,11 @@ public struct FractionalCompletionMessage: Sendable {
     }
 
     public init?(body rawBody: Any?) {
-        guard let body = rawBody as? [String: Any], let completion = body["fractionalCompletion"] as? Double, let cfi = body["cfi"] as? String, let reason = body["reason"] as? String else { return nil }
+        guard let body = rawBody as? [String: Any],
+              let completion = body["fractionalCompletion"] as? Double,
+              completion.isFinite,
+              let cfi = body["cfi"] as? String,
+              let reason = body["reason"] as? String else { return nil }
         fractionalCompletion = Float(completion)
         self.cfi = cfi
         self.reason = reason
@@ -510,39 +545,30 @@ public struct FractionalCompletionMessage: Sendable {
         if let rawPage = body["mainDocumentURL"] as? String, let pageURL = URL(string: rawPage) {
             mainDocumentURL = pageURL
         }
-        if let rawSectionIndex = body["sectionIndex"] as? Int {
-            sectionIndex = rawSectionIndex
-        } else if let doubleIndex = body["sectionIndex"] as? Double {
-            sectionIndex = Int(doubleIndex)
+        sectionIndex = Self.safeInteger(body["sectionIndex"])
+        currentPageNumber = Self.safeInteger(body["currentPageNumber"])
+        totalPages = Self.safeInteger(body["totalPages"])
+        visibleSegmentCount = Self.safeInteger(body["visibleSegmentCount"])
+        observedSegmentCount = Self.safeInteger(body["observedSegmentCount"])
+    }
+
+    private static func safeInteger(_ value: Any?) -> Int? {
+        if let value = value as? Int {
+            return value
         }
-        if let rawCurrentPageNumber = body["currentPageNumber"] as? Int {
-            currentPageNumber = rawCurrentPageNumber
-        } else if let doubleCurrentPageNumber = body["currentPageNumber"] as? Double {
-            currentPageNumber = Int(doubleCurrentPageNumber)
-        } else if let stringCurrentPageNumber = body["currentPageNumber"] as? String {
-            currentPageNumber = Int(stringCurrentPageNumber)
+        if let value = value as? String {
+            return Int(value)
         }
-        if let rawTotalPages = body["totalPages"] as? Int {
-            totalPages = rawTotalPages
-        } else if let doubleTotalPages = body["totalPages"] as? Double {
-            totalPages = Int(doubleTotalPages)
-        } else if let stringTotalPages = body["totalPages"] as? String {
-            totalPages = Int(stringTotalPages)
+        let doubleValue: Double?
+        if let value = value as? Double {
+            doubleValue = value
+        } else if let value = value as? NSNumber {
+            doubleValue = value.doubleValue
+        } else {
+            doubleValue = nil
         }
-        if let rawVisibleSegmentCount = body["visibleSegmentCount"] as? Int {
-            visibleSegmentCount = rawVisibleSegmentCount
-        } else if let doubleVisibleSegmentCount = body["visibleSegmentCount"] as? Double {
-            visibleSegmentCount = Int(doubleVisibleSegmentCount)
-        } else if let stringVisibleSegmentCount = body["visibleSegmentCount"] as? String {
-            visibleSegmentCount = Int(stringVisibleSegmentCount)
-        }
-        if let rawObservedSegmentCount = body["observedSegmentCount"] as? Int {
-            observedSegmentCount = rawObservedSegmentCount
-        } else if let doubleObservedSegmentCount = body["observedSegmentCount"] as? Double {
-            observedSegmentCount = Int(doubleObservedSegmentCount)
-        } else if let stringObservedSegmentCount = body["observedSegmentCount"] as? String {
-            observedSegmentCount = Int(stringObservedSegmentCount)
-        }
+        guard let doubleValue, doubleValue.isFinite else { return nil }
+        return Int(exactly: doubleValue.rounded(.towardZero))
     }
 }
 

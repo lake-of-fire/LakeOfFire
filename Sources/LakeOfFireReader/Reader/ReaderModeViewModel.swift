@@ -1377,6 +1377,20 @@ public class ReaderModeViewModel: ObservableObject {
         readerModeLoading(false)
     }
 
+    /// Cancels only the render still owned by `url` and releases its content
+    /// overlay. A stale callback cannot clear a newer page because both the
+    /// content URL and the pending reader-mode URL are checked.
+    @MainActor
+    func cancelReaderModeLoad(
+        for url: URL,
+        readerContent: ReaderContent
+    ) {
+        if readerContent.pageURL.matchesReaderURL(url) {
+            readerContent.isRenderingReaderHTML = false
+        }
+        cancelReaderModeLoad(for: url)
+    }
+
     @MainActor
     public func markReaderModeLoadComplete(for url: URL) {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
@@ -1441,7 +1455,8 @@ public class ReaderModeViewModel: ObservableObject {
     public func handleRenderedReaderDocumentReady(
         pageURL: URL,
         hasReaderContent: Bool,
-        renderGeneration: UUID? = nil
+        renderGeneration: UUID? = nil,
+        navigator committedNavigator: WebViewNavigator? = nil
     ) -> Bool {
         let canonicalURL = pageURL.canonicalReaderContentURLForHotfix()
         guard hasReaderContent, !pageURL.isReaderURLLoaderURL else { return false }
@@ -1456,7 +1471,7 @@ public class ReaderModeViewModel: ObservableObject {
             return false
         }
 
-        navigator?.forceClearLoadingIndicators(
+        (committedNavigator ?? navigator)?.forceClearLoadingIndicators(
             reason: "readerMode.syntheticLoad.renderReady",
             pageURL: canonicalURL
         )
@@ -1886,10 +1901,17 @@ public class ReaderModeViewModel: ObservableObject {
         expectedSyntheticReaderLoaderURL = baseURL
     }
 
+    func expectsSyntheticReaderLoaderCommit(for url: URL) -> Bool {
+        guard let expectedSyntheticReaderLoaderURL else { return false }
+        return urlsMatchWithoutHashForHotfix(
+            expectedSyntheticReaderLoaderURL,
+            url
+        )
+    }
+
     @discardableResult
     private func consumeSyntheticReaderLoaderExpectationIfNeeded(for url: URL) -> Bool {
-        guard let expectedSyntheticReaderLoaderURL else { return false }
-        if urlsMatchWithoutHashForHotfix(expectedSyntheticReaderLoaderURL, url) {
+        if expectsSyntheticReaderLoaderCommit(for: url) {
             self.expectedSyntheticReaderLoaderURL = nil
             return true
         }
@@ -1981,9 +2003,13 @@ public class ReaderModeViewModel: ObservableObject {
         )
     }
 
-    private func cancelReaderModeLoad(for url: URL, ifOwnedBy generation: UUID) {
+    private func cancelReaderModeLoad(
+        for url: URL,
+        ifOwnedBy generation: UUID,
+        readerContent: ReaderContent
+    ) {
         guard ownsRender(for: url, generation: generation) else { return }
-        cancelReaderModeLoad(for: url)
+        cancelReaderModeLoad(for: url, readerContent: readerContent)
     }
 
     private func markReaderModeLoadComplete(for url: URL, ifOwnedBy generation: UUID) {
@@ -2156,6 +2182,27 @@ public class ReaderModeViewModel: ObservableObject {
     
     @MainActor
     public func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
+        guard let navigator else {
+            let contentURL = readerContent.pageURL
+            cancelReaderModeLoad(
+                for: contentURL,
+                readerContent: readerContent
+            )
+            return
+        }
+        showReaderView(
+            readerContent: readerContent,
+            scriptCaller: scriptCaller,
+            navigator: navigator
+        )
+    }
+
+    @MainActor
+    private func showReaderView(
+        readerContent: ReaderContent,
+        scriptCaller: WebViewScriptCaller,
+        navigator: WebViewNavigator
+    ) {
         let contentURL = readerContent.pageURL
         let cachedReadabilityContent = readabilityContent
         let cachedContainerSelector = readabilityContainerSelector
@@ -2168,7 +2215,11 @@ public class ReaderModeViewModel: ObservableObject {
             }
             let currentPageURL = await MainActor.run { readerContent.pageURL }
             guard urlsMatchWithoutHashForHotfix(contentURL, currentPageURL) else {
-                await self.cancelReaderModeLoad(for: contentURL, ifOwnedBy: generation)
+                await self.cancelReaderModeLoad(
+                    for: contentURL,
+                    ifOwnedBy: generation,
+                    readerContent: readerContent
+                )
                 return
             }
             let routeDecision = await self.resolveReaderModeRouteDecision(readerContent: readerContent)
@@ -2180,6 +2231,7 @@ public class ReaderModeViewModel: ObservableObject {
                 await self.showReaderViewUsingSwiftProcessing(
                     readerContent: readerContent,
                     scriptCaller: scriptCaller,
+                    navigator: navigator,
                     renderURL: contentURL,
                     renderGeneration: generation,
                     prefetchedContent: routeDecision.prefetchedContent,
@@ -2187,7 +2239,11 @@ public class ReaderModeViewModel: ObservableObject {
                 )
             case .capturedReadability:
                 guard let cachedReadabilityContent else {
-                    await self.cancelReaderModeLoad(for: contentURL, ifOwnedBy: generation)
+                    await self.cancelReaderModeLoad(
+                        for: contentURL,
+                        ifOwnedBy: generation,
+                        readerContent: readerContent
+                    )
                     return
                 }
                 do {
@@ -2210,7 +2266,11 @@ public class ReaderModeViewModel: ObservableObject {
                         hideReaderTitleOverride: contentSnapshot?.isTitlePrefixOfContent
                     )
                     guard let resolvedReadabilityContent else {
-                        await self.cancelReaderModeLoad(for: contentURL, ifOwnedBy: generation)
+                        await self.cancelReaderModeLoad(
+                            for: contentURL,
+                            ifOwnedBy: generation,
+                            readerContent: readerContent
+                        )
                         return
                     }
                     try await self.showReadabilityContent(
@@ -2219,17 +2279,30 @@ public class ReaderModeViewModel: ObservableObject {
                         renderToSelector: cachedContainerSelector,
                         in: cachedContainerFrameInfo,
                         scriptCaller: scriptCaller,
+                        navigator: navigator,
                         renderURL: contentURL,
                         renderGeneration: generation
                     )
                 } catch is CancellationError {
-                    await self.cancelReaderModeLoad(for: contentURL, ifOwnedBy: generation)
+                    await self.cancelReaderModeLoad(
+                        for: contentURL,
+                        ifOwnedBy: generation,
+                        readerContent: readerContent
+                    )
                 } catch {
                     print(error)
-                    await self.cancelReaderModeLoad(for: contentURL, ifOwnedBy: generation)
+                    await self.cancelReaderModeLoad(
+                        for: contentURL,
+                        ifOwnedBy: generation,
+                        readerContent: readerContent
+                    )
                 }
             case .unavailable:
-                await self.cancelReaderModeLoad(for: contentURL, ifOwnedBy: generation)
+                await self.cancelReaderModeLoad(
+                    for: contentURL,
+                    ifOwnedBy: generation,
+                    readerContent: readerContent
+                )
             }
         }
     }
@@ -2256,6 +2329,7 @@ public class ReaderModeViewModel: ObservableObject {
     private func showReaderViewUsingSwiftProcessing(
         readerContent: ReaderContent,
         scriptCaller: WebViewScriptCaller,
+        navigator: WebViewNavigator,
         renderURL: URL,
         renderGeneration: UUID,
         prefetchedContent: (any ReaderContentProtocol)? = nil,
@@ -2266,7 +2340,11 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         guard urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL) else {
-            cancelReaderModeLoad(for: contentURL, ifOwnedBy: renderGeneration)
+            cancelReaderModeLoad(
+                for: contentURL,
+                ifOwnedBy: renderGeneration,
+                readerContent: readerContent
+            )
             return
         }
         do {
@@ -2275,7 +2353,11 @@ public class ReaderModeViewModel: ObservableObject {
                 content = prefetchedContent
             } else {
                 guard let resolvedContent = try await readerContent.getContent() else {
-                    cancelReaderModeLoad(for: contentURL, ifOwnedBy: renderGeneration)
+                    cancelReaderModeLoad(
+                        for: contentURL,
+                        ifOwnedBy: renderGeneration,
+                        readerContent: readerContent
+                    )
                     return
                 }
                 content = resolvedContent
@@ -2292,7 +2374,11 @@ public class ReaderModeViewModel: ObservableObject {
                     for: content,
                     readerFileManager: activeReaderFileManager
                 ) else {
-                    cancelReaderModeLoad(for: contentURL, ifOwnedBy: renderGeneration)
+                    cancelReaderModeLoad(
+                        for: contentURL,
+                        ifOwnedBy: renderGeneration,
+                        readerContent: readerContent
+                    )
                     return
                 }
                 html = resolvedHTML
@@ -2339,6 +2425,7 @@ public class ReaderModeViewModel: ObservableObject {
                     renderToSelector: nil,
                     in: nil,
                     scriptCaller: scriptCaller,
+                    navigator: navigator,
                     renderURL: contentURL,
                     renderGeneration: renderGeneration
                 )
@@ -2351,18 +2438,22 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
             if let htmlData = directHTML.data(using: .utf8) {
-                navigator?.load(
+                navigator.load(
                     htmlData,
                     mimeType: "text/html",
                     characterEncodingName: "UTF-8",
                     baseURL: content.url
                 )
             } else {
-                navigator?.loadHTML(directHTML, baseURL: content.url)
+                navigator.loadHTML(directHTML, baseURL: content.url)
             }
         } catch {
             print(error)
-            cancelReaderModeLoad(for: contentURL, ifOwnedBy: renderGeneration)
+            cancelReaderModeLoad(
+                for: contentURL,
+                ifOwnedBy: renderGeneration,
+                readerContent: readerContent
+            )
         }
     }
     
@@ -2374,6 +2465,7 @@ public class ReaderModeViewModel: ObservableObject {
         renderToSelector: String?,
         in frameInfo: WKFrameInfo?,
         scriptCaller: WebViewScriptCaller,
+        navigator: WebViewNavigator,
         renderURL: URL,
         renderGeneration: UUID
     ) async throws {
@@ -2382,12 +2474,20 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         guard urlsMatchWithoutHashForHotfix(requestedURL, readerContent.pageURL) else {
-            cancelReaderModeLoad(for: requestedURL, ifOwnedBy: renderGeneration)
+            cancelReaderModeLoad(
+                for: requestedURL,
+                ifOwnedBy: renderGeneration,
+                readerContent: readerContent
+            )
             return
         }
         guard let content = try await readerContent.getContent() else {
             print("No content set to show in reader mode")
-            cancelReaderModeLoad(for: requestedURL, ifOwnedBy: renderGeneration)
+            cancelReaderModeLoad(
+                for: requestedURL,
+                ifOwnedBy: renderGeneration,
+                readerContent: readerContent
+            )
             return
         }
         guard isCurrentRender(for: requestedURL, generation: renderGeneration) else {
@@ -2527,6 +2627,11 @@ public class ReaderModeViewModel: ObservableObject {
 
             guard let doc else {
                 print("Error: Unexpectedly failed to receive doc")
+                await self.cancelReaderModeLoad(
+                    for: requestedURL,
+                    ifOwnedBy: renderGeneration,
+                    readerContent: readerContent
+                )
                 return
             }
             let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
@@ -2700,7 +2805,11 @@ public class ReaderModeViewModel: ObservableObject {
                     return
                 }
                 guard url.matchesReaderURL(readerContent.pageURL) else {
-                    cancelReaderModeLoad(for: requestedURL, ifOwnedBy: renderGeneration)
+                    cancelReaderModeLoad(
+                        for: requestedURL,
+                        ifOwnedBy: renderGeneration,
+                        readerContent: readerContent
+                    )
                     return
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
@@ -2779,7 +2888,7 @@ public class ReaderModeViewModel: ObservableObject {
                         return
                     }
                     expectSyntheticReaderLoaderCommit(for: renderBaseURL)
-                    navigator?.load(
+                    navigator.load(
                         transformedHTMLData,
                         mimeType: "text/html",
                         characterEncodingName: "UTF-8",
@@ -2858,7 +2967,8 @@ public class ReaderModeViewModel: ObservableObject {
     public func onNavigationCommitted(
         readerContent: ReaderContent,
         newState: WebViewState,
-        scriptCaller: WebViewScriptCaller
+        scriptCaller: WebViewScriptCaller,
+        navigator: WebViewNavigator
     ) async throws {
         readabilityContainerFrameInfo = nil
         readabilityContent = nil
@@ -2868,7 +2978,10 @@ public class ReaderModeViewModel: ObservableObject {
 
         guard let content = readerContent.content else {
             print("No content to display in ReaderModeViewModel onNavigationCommitted")
-            cancelReaderModeLoad(for: newState.pageURL)
+            cancelReaderModeLoad(
+                for: newState.pageURL,
+                readerContent: readerContent
+            )
             return
         }
         try Task.checkCancellation()
@@ -2876,7 +2989,10 @@ public class ReaderModeViewModel: ObservableObject {
         let committedURL = content.url
         guard committedURL.matchesReaderURL(newState.pageURL) else {
             print("URL mismatch in ReaderModeViewModel onNavigationCommitted", committedURL, newState.pageURL)
-            cancelReaderModeLoad(for: committedURL)
+            cancelReaderModeLoad(
+                for: committedURL,
+                readerContent: readerContent
+            )
             return
         }
         try Task.checkCancellation()
@@ -2946,20 +3062,13 @@ public class ReaderModeViewModel: ObservableObject {
                     readerContent.isRenderingReaderHTML = true
                     showReaderView(
                         readerContent: readerContent,
-                        scriptCaller: scriptCaller
+                        scriptCaller: scriptCaller,
+                        navigator: navigator
                     )
                 } else {
-                    guard let navigator else {
-                        print("Error: No navigator set in ReaderModeViewModel onNavigationCommitted")
-                        return
-                    }
                     navigator.load(URLRequest(url: committedURL))
                 }
             } else {
-                guard let navigator else {
-                    print("Error: No navigator set in ReaderModeViewModel onNavigationCommitted")
-                    return
-                }
                 navigator.load(URLRequest(url: committedURL))
             }
         }

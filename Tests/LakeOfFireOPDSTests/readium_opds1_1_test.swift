@@ -52,4 +52,35 @@ final class readium_opds1_1_test: XCTestCase {
         XCTAssertEqual("2019-03-12T07:58:31".dateFromISO8601?.timeIntervalSince1970, 1_552_377_511)
         XCTAssertEqual("2019-03-12T07:58:31Z".dateFromISO8601?.timeIntervalSince1970, 1_552_377_511)
     }
+
+    func testRelativeLinksUseFinalResponseURLAfterRedirect() throws {
+        let xml = """
+        <feed>
+          <title>Redirected Catalog</title>
+          <link rel="next" href="next.atom"/>
+          <entry>
+            <title>Book</title>
+            <link rel="http://opds-spec.org/acquisition" href="books/book.epub"/>
+          </entry>
+        </feed>
+        """
+        let requestedURL = URL(string: "https://catalog.example.com/feed.xml")!
+        let finalURL = URL(string: "https://cdn.example.net/opds/catalog/feed.xml")!
+        let response = try XCTUnwrap(
+            HTTPURLResponse(url: finalURL, statusCode: 200, httpVersion: nil, headerFields: nil)
+        )
+
+        let parseData = try OPDS1Parser.parse(
+            xmlData: Data(xml.utf8),
+            url: requestedURL,
+            response: response
+        )
+        let feed = try XCTUnwrap(parseData.feed)
+
+        XCTAssertEqual(feed.links.first?.href, "https://cdn.example.net/opds/catalog/next.atom")
+        XCTAssertEqual(
+            feed.publications.first?.links.first?.href,
+            "https://cdn.example.net/opds/catalog/books/book.epub"
+        )
+    }
 }

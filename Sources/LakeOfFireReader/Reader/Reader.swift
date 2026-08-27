@@ -904,44 +904,61 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
 }
 
 fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
+    let isEnabled: Bool
+
     @EnvironmentObject var readerContent: ReaderContent
     @EnvironmentObject var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject var readerViewModel: ReaderViewModel
     
     func body(content: Content) -> some View {
-        let currentCanonicalURL = readerContent.pageURL.canonicalReaderContentURLForHotfix()
-        let renderedCanonicalURL = readerModeViewModel.lastRenderedURL?.canonicalReaderContentURLForHotfix()
-        let webViewPageURL = readerViewModel.state.pageURL
-        let webViewShowingNonLoaderPage = !webViewPageURL.isNativeReaderView && !webViewPageURL.isReaderURLLoaderURL
-        let expectsReaderModeCompletion = (readerContent.content?.isReaderModeByDefault ?? false)
-            || readerModeViewModel.pendingReaderModeURL != nil
-            || readerModeViewModel.expectedSyntheticReaderLoaderURL != nil
-            || readerModeViewModel.isReaderModeLoading
-            || readerContent.isRenderingReaderHTML
-        let webViewHasReaderRenderReady = readerViewModel.state.hasReaderRenderReady
-        let hasRenderedCurrentPage = renderedCanonicalURL == currentCanonicalURL
-            && renderedCanonicalURL != nil
-            && webViewShowingNonLoaderPage
-        let hasVisibleContent =
-            hasRenderedCurrentPage
-            || (
-                webViewShowingNonLoaderPage
-                && expectsReaderModeCompletion
-                && webViewHasReaderRenderReady
-            )
-            || (
-                readerContent.content != nil
-                && webViewShowingNonLoaderPage
-                && !readerContent.isReaderProvisionallyNavigating
-                && !readerContent.isRenderingReaderHTML
-            )
-        let shouldShowOverlay = readerModeViewModel.isReaderModeLoading && !hasVisibleContent
-        content
-            .modifier(
-                ReaderLoadingProgressOverlayViewModifier(
-                    isLoading: shouldShowOverlay
+        WithPerceptionTracking {
+            if isEnabled {
+                let currentCanonicalURL = readerContent.pageURL
+                    .canonicalReaderContentURLForHotfix()
+                let renderedCanonicalURL = readerModeViewModel.lastRenderedURL?
+                    .canonicalReaderContentURLForHotfix()
+                let webViewPageURL = readerViewModel.state.pageURL
+                let webViewShowingNonLoaderPage =
+                    !webViewPageURL.isNativeReaderView
+                    && !webViewPageURL.isReaderURLLoaderURL
+                let expectsReaderModeCompletion =
+                    (readerContent.content?.isReaderModeByDefault ?? false)
+                    || readerModeViewModel.pendingReaderModeURL != nil
+                    || readerModeViewModel.expectedSyntheticReaderLoaderURL
+                        != nil
+                    || readerModeViewModel.isReaderModeLoading
+                    || readerContent.isRenderingReaderHTML
+                let webViewHasReaderRenderReady = readerViewModel.state
+                    .hasReaderRenderReady
+                let hasRenderedCurrentPage =
+                    renderedCanonicalURL == currentCanonicalURL
+                    && renderedCanonicalURL != nil
+                    && webViewShowingNonLoaderPage
+                let hasVisibleContent =
+                    hasRenderedCurrentPage
+                    || (
+                        webViewShowingNonLoaderPage
+                        && expectsReaderModeCompletion
+                        && webViewHasReaderRenderReady
+                    )
+                    || (
+                        readerContent.content != nil
+                        && webViewShowingNonLoaderPage
+                        && !readerContent.isReaderProvisionallyNavigating
+                        && !readerContent.isRenderingReaderHTML
+                    )
+                let shouldShowOverlay =
+                    readerModeViewModel.isReaderModeLoading
+                    && !hasVisibleContent
+                content.modifier(
+                    ReaderLoadingProgressOverlayViewModifier(
+                        isLoading: shouldShowOverlay
+                    )
                 )
-            )
+            } else {
+                content
+            }
+        }
 //            .overlay { Text(readerModeViewModel.isReaderModeLoading ? "read" : "") }
 //            .overlay {
 //                Text(readerModeViewModel.isReaderModeLoading.description)
@@ -1060,6 +1077,7 @@ public struct Reader: View {
     var ebookChromeBottomSafeAreaInset: CGFloat? = nil
     var ignoresSampledTopObscuredInset = false
     var hidesTopScrollEdgeEffect = false
+    var showsLoadingOverlay = true
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
@@ -1093,6 +1111,7 @@ public struct Reader: View {
         ebookChromeBottomSafeAreaInset: CGFloat? = nil,
         ignoresSampledTopObscuredInset: Bool = false,
         hidesTopScrollEdgeEffect: Bool = false,
+        showsLoadingOverlay: Bool = true,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
@@ -1114,6 +1133,7 @@ public struct Reader: View {
         self.ebookChromeBottomSafeAreaInset = ebookChromeBottomSafeAreaInset
         self.ignoresSampledTopObscuredInset = ignoresSampledTopObscuredInset
         self.hidesTopScrollEdgeEffect = hidesTopScrollEdgeEffect
+        self.showsLoadingOverlay = showsLoadingOverlay
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
@@ -1295,7 +1315,9 @@ public struct Reader: View {
         //            .ignoresSafeArea(.all, edges: [.top, .bottom])
         //#endif
 //                .ignoresSafeArea(.all, edges: [.top, .bottom])
-        .modifier(ReaderLoadingOverlayModifier())
+        .modifier(ReaderLoadingOverlayModifier(
+            isEnabled: showsLoadingOverlay
+        ))
         .modifier(ReaderMessageHandlersViewModifier(
             forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
             hideNavigationDueToScroll: $hideNavigationDueToScroll

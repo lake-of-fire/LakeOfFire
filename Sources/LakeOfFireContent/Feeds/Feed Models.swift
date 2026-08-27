@@ -1449,10 +1449,48 @@ fileprivate func collapseRubyTags(doc: SwiftSoup.Document, restrictToReaderConte
 
 fileprivate let entryImageExtensions = ["jpg", "jpeg", "png", "webp", "gif"]
 
+/// Fences asynchronous feed refreshes against an A -> B -> A URL edit. URL
+/// equality alone cannot distinguish the first A request from the later one.
+struct FeedRefreshLease: Sendable, Equatable {
+    let feedID: UUID
+    let generation: UUID
+}
+
+final class FeedRefreshRegistry: @unchecked Sendable {
+    static let shared = FeedRefreshRegistry()
+
+    private let lock = NSLock()
+    private var currentGenerationByFeedID = [UUID: UUID]()
+
+    func begin(feedID: UUID) -> FeedRefreshLease {
+        let lease = FeedRefreshLease(feedID: feedID, generation: UUID())
+        lock.lock()
+        currentGenerationByFeedID[feedID] = lease.generation
+        lock.unlock()
+        return lease
+    }
+
+    func isCurrent(_ lease: FeedRefreshLease) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentGenerationByFeedID[lease.feedID] == lease.generation
+    }
+
+    func end(_ lease: FeedRefreshLease) {
+        lock.lock()
+        if currentGenerationByFeedID[lease.feedID] == lease.generation {
+            currentGenerationByFeedID.removeValue(forKey: lease.feedID)
+        }
+        lock.unlock()
+    }
+}
+
 public extension Feed {
     @MainActor
     private func persistFetchMetadata(
         _ metadata: FeedFetchMetadata,
+        expectedRSSURL: URL,
+        refreshLease: FeedRefreshLease,
         realmConfiguration: Realm.Configuration
     ) async throws {
         let feedID = id
@@ -1460,7 +1498,9 @@ public extension Feed {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             await realm.asyncRefresh()
             try await realm.asyncWrite {
-                guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
+                guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
+                      feed.rssUrl == expectedRSSURL,
+                      FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return }
                 feed.lastRefreshedEntriesAt = Date()
                 feed.lastFetchedETag = metadata.etag ?? feed.lastFetchedETag
                 feed.lastFetchedModifiedAt = metadata.lastModifiedAt ?? feed.lastFetchedModifiedAt
@@ -1469,9 +1509,14 @@ public extension Feed {
     }
 
     @MainActor
-    private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
+    private func persist(
+        rssItems: [RSSFeedItem],
+        expectedRSSURL: URL,
+        refreshLease: FeedRefreshLease,
+        realmConfiguration: Realm.Configuration,
+        deleteOrphans: Bool
+    ) async throws {
         let feedID = id
-        let feedTitle = title
         let iconUrl = iconUrl
         let entryContentKind = entryContentKind
         try await { @RealmBackgroundActor in
@@ -1548,31 +1593,34 @@ public extension Feed {
                 incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry
             }
-            if deleteOrphans {
-                await realm.asyncRefresh()
-                try await realm.asyncWrite {
-                    let orphans = realm.objects(FeedEntry.self)
-                        .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
-                    for orphan in orphans {
-                        orphan.isDeleted = true
-                        orphan.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
-            }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
             let payloads = entriesToPersist.map(FeedEntryPayload.init)
-            if !entriesToPersist.isEmpty {
+            var didCommit = false
+            if deleteOrphans || !entriesToPersist.isEmpty {
                 await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                didCommit = try await realm.asyncWrite {
+                    guard realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.rssUrl == expectedRSSURL else {
+                        return false
+                    }
+                    guard FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return false }
+                    let orphans = realm.objects(FeedEntry.self)
+                        .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
+                    if deleteOrphans {
+                        for orphan in orphans {
+                            orphan.isDeleted = true
+                            orphan.refreshChangeMetadata(explicitlyModified: true)
+                        }
+                    }
                     for entry in entriesToPersist {
                         if let existing = realm.object(ofType: FeedEntry.self, forPrimaryKey: entry.compoundKey) {
                             entry.createdAt = existing.createdAt
                         }
                     }
                     realm.add(entriesToPersist, update: .modified)
+                    return true
                 }
             }
-            for payload in payloads {
+            for payload in didCommit ? payloads : [] {
                 try await syncRelatedReaderContent(with: payload)
             }
         }()
@@ -1582,11 +1630,12 @@ public extension Feed {
     private func persist(
         atomItems: [AtomFeedEntry],
         collections: [ParsedFeedEntryCollection],
+        expectedRSSURL: URL,
+        refreshLease: FeedRefreshLease,
         realmConfiguration: Realm.Configuration,
         deleteOrphans: Bool
     ) async throws {
         let feedID = id
-        let feedTitle = title
         let sourceIconURL = iconUrl
         let entryContentKind = entryContentKind
         try await { @RealmBackgroundActor in
@@ -1738,9 +1787,14 @@ public extension Feed {
             }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
             let payloads = entriesToPersist.map(FeedEntryPayload.init)
+            var didCommit = false
             if !entriesToPersist.isEmpty || !collectionObjects.isEmpty || deleteOrphans {
                 await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                didCommit = try await realm.asyncWrite {
+                    guard realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.rssUrl == expectedRSSURL else {
+                        return false
+                    }
+                    guard FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return false }
                     for collection in collectionObjects {
                         if let existing = realm.object(ofType: FeedEntryCollection.self, forPrimaryKey: collection.compoundKey) {
                             collection.createdAt = existing.createdAt
@@ -1767,9 +1821,10 @@ public extension Feed {
                         }
                     }
                     realm.add(entriesToPersist, update: .modified)
+                    return true
                 }
             }
-            for payload in payloads {
+            for payload in didCommit ? payloads : [] {
                 try await syncRelatedReaderContent(with: payload)
             }
         }()
@@ -1777,8 +1832,19 @@ public extension Feed {
     
     @MainActor
     func fetch(realmConfiguration: Realm.Configuration) async throws {
+        let requestedRSSURL = rssUrl
+        let refreshLease = FeedRefreshRegistry.shared.begin(feedID: id)
+        defer { FeedRefreshRegistry.shared.end(refreshLease) }
+        func checkRequestIsCurrent() throws {
+            try Task.checkCancellation()
+            guard !isInvalidated,
+                  rssUrl == requestedRSSURL,
+                  FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
+                throw CancellationError()
+            }
+        }
         let shouldLogNiponica = title.localizedCaseInsensitiveContains("niponica")
-            || isNiponicaFeedURL(rssUrl)
+            || isNiponicaFeedURL(requestedRSSURL)
         if shouldLogNiponica {
             logNiponica(
                 "stage=feed.fetch.begin feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) lastViewedAt=\(lastViewedAt?.description ?? "nil") lastRefreshedEntriesAt=\(lastRefreshedEntriesAt?.description ?? "nil") lastFetchedModifiedAt=\(lastFetchedModifiedAt?.description ?? "nil") lastFetchedETag=\(lastFetchedETag ?? "nil")"
@@ -1787,7 +1853,7 @@ public extension Feed {
         var fetchResult: FeedFetchResult
         do {
             fetchResult = try await getRssData(
-                rssUrl: rssUrl,
+                rssUrl: requestedRSSURL,
                 lastFetchedETag: lastFetchedETag,
                 lastFetchedModifiedAt: lastFetchedModifiedAt
             )
@@ -1799,6 +1865,7 @@ public extension Feed {
             }
             throw error
         }
+        try checkRequestIsCurrent()
         if case .notModified = fetchResult,
            getEntries()?.isEmpty != false {
             // A validator can outlive a purged/failed local feed cache. Retry
@@ -1806,11 +1873,12 @@ public extension Feed {
             // accepting a second 304 that would leave the feed permanently
             // empty.
             fetchResult = try await getRssData(
-                rssUrl: rssUrl,
+                rssUrl: requestedRSSURL,
                 lastFetchedETag: nil,
                 lastFetchedModifiedAt: nil,
                 allowNotModified: false
             )
+            try checkRequestIsCurrent()
         }
         switch fetchResult {
         case .notModified(let metadata):
@@ -1819,7 +1887,13 @@ public extension Feed {
                     "stage=feed.fetch.notModified feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) etag=\(metadata.etag ?? "nil") lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
                 )
             }
-            try await persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+            try checkRequestIsCurrent()
+            try await persistFetchMetadata(
+                metadata,
+                expectedRSSURL: requestedRSSURL,
+                refreshLease: refreshLease,
+                realmConfiguration: realmConfiguration
+            )
             return
         case .fetched(var rssData, let metadata):
             if shouldLogNiponica {
@@ -1857,8 +1931,25 @@ public extension Feed {
                             }
                             Task { @MainActor in
                                 do {
-                                    try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: self.deleteOrphans)
-                                    try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+                                    guard !self.isInvalidated, self.rssUrl == requestedRSSURL else {
+                                        throw CancellationError()
+                                    }
+                                    try await self.persist(
+                                        rssItems: items,
+                                        expectedRSSURL: requestedRSSURL,
+                                        refreshLease: refreshLease,
+                                        realmConfiguration: realmConfiguration,
+                                        deleteOrphans: self.deleteOrphans
+                                    )
+                                    guard !self.isInvalidated, self.rssUrl == requestedRSSURL else {
+                                        throw CancellationError()
+                                    }
+                                    try await self.persistFetchMetadata(
+                                        metadata,
+                                        expectedRSSURL: requestedRSSURL,
+                                        refreshLease: refreshLease,
+                                        realmConfiguration: realmConfiguration
+                                    )
                                     if shouldLogNiponica {
                                         logNiponica(
                                             "stage=feed.fetch.persisted feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) feedType=rss items=\(items.count)"
@@ -1892,13 +1983,26 @@ public extension Feed {
                             }
                             Task { @MainActor in
                                 do {
+                                    guard !self.isInvalidated, self.rssUrl == requestedRSSURL else {
+                                        throw CancellationError()
+                                    }
                                     try await self.persist(
                                         atomItems: items,
                                         collections: atomCollections,
+                                        expectedRSSURL: requestedRSSURL,
+                                        refreshLease: refreshLease,
                                         realmConfiguration: realmConfiguration,
                                         deleteOrphans: self.deleteOrphans
                                     )
-                                    try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+                                    guard !self.isInvalidated, self.rssUrl == requestedRSSURL else {
+                                        throw CancellationError()
+                                    }
+                                    try await self.persistFetchMetadata(
+                                        metadata,
+                                        expectedRSSURL: requestedRSSURL,
+                                        refreshLease: refreshLease,
+                                        realmConfiguration: realmConfiguration
+                                    )
                                     if shouldLogNiponica {
                                         logNiponica(
                                             "stage=feed.fetch.persisted feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) feedType=atom entries=\(items.count) collections=\(atomCollections.count)"

@@ -46,7 +46,7 @@ enum OPDS1Parser {
     }
 
     static func parse(xmlData: Data, url: URL, response: URLResponse) throws -> ParseData {
-        let builder = OPDS1XMLParser(baseURL: url)
+        let builder = OPDS1XMLParser(baseURL: response.url ?? url)
         try builder.parse(data: xmlData)
 
         var parseData = ParseData(url: url, response: response, version: .OPDS1)
@@ -62,14 +62,19 @@ enum OPDS1Parser {
     }
 
     static func fetchOpenSearchTemplate(feed: Feed, completion: @escaping (String?, Error?) -> Void) {
-        guard let href = feed.links.first(withRel: .search)?.href,
-              let url = URL(string: href)
+        guard let href = feed.links.first(withRel: .search)?.href else {
+            completion(nil, OPDSParserOpenSearchHelperError.searchLinkNotFound)
+            return
+        }
+        let feedBaseURL = feed.links.first(withRel: .self).flatMap { URL(string: $0.href) }
+        guard let url = URL(string: href, relativeTo: feedBaseURL)?.absoluteURL,
+              url.scheme != nil
         else {
             completion(nil, OPDSParserOpenSearchHelperError.searchLinkNotFound)
             return
         }
 
-        URLSession.shared.dataTask(with: url) { data, _, error in
+        URLSession.shared.dataTask(with: url) { data, response, error in
             guard let data else {
                 completion(nil, error ?? OPDSParserOpenSearchHelperError.searchDocumentIsInvalid)
                 return
@@ -79,7 +84,7 @@ enum OPDS1Parser {
                 let parser = try OpenSearchXMLParser(data: data)
                 let template = parser.bestTemplate(
                     for: feed.links.first(withRel: .self)?.type,
-                    relativeTo: url
+                    relativeTo: response?.url ?? url
                 )
                 guard let template else {
                     completion(nil, OPDSParserOpenSearchHelperError.searchDocumentIsInvalid)

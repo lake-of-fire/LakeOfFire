@@ -181,29 +181,28 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             forReaderBackingURL: readerBackingURL
                         )
                         try Task.checkCancellation()
-                        if let archive = Archive(url: localArchiveURL, accessMode: .read),
-                           let entry = archive[subpathValue],
-                           entry.type == .file {
-                            var imageData = Data()
-                            try archive.extract(entry, consumer: { imageData.append($0) })
-                            try Task.checkCancellation()
+                        let packageSource = try ReaderPackageEntrySource(
+                            localURL: localArchiveURL,
+                            limits: .image
+                        )
+                        let imageData = try packageSource.readEntry(subpath: subpathValue)
+                        try Task.checkCancellation()
 
-                            let subpathExtension = (subpathValue as NSString).pathExtension.lowercased()
-                            let response = HTTPURLResponse(
-                                url: url,
-                                mimeType: "image/\(subpathExtension)",
-                                expectedContentLength: imageData.count,
-                                textEncodingName: nil
+                        let subpathExtension = (subpathValue as NSString).pathExtension.lowercased()
+                        let response = HTTPURLResponse(
+                            url: url,
+                            mimeType: "image/\(subpathExtension)",
+                            expectedContentLength: imageData.count,
+                            textEncodingName: nil
+                        )
+                        await { @MainActor in
+                            self.finishActiveTask(
+                                urlSchemeTask,
+                                response: response,
+                                data: imageData
                             )
-                            await { @MainActor in
-                                self.finishActiveTask(
-                                    urlSchemeTask,
-                                    response: response,
-                                    data: imageData
-                                )
-                            }()
-                            return
-                        }
+                        }()
+                        return
                     }
                     await { @MainActor in
                         self.failActiveTask(
@@ -262,6 +261,14 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
             } catch is CancellationError {
                 return
+            } catch let error as ReaderPackageEntrySourceError {
+                guard !Task.isCancelled else { return }
+                await { @MainActor in
+                    self.failActiveTask(
+                        urlSchemeTask,
+                        error: error
+                    )
+                }()
             } catch {
                 guard !Task.isCancelled else { return }
                 await { @MainActor in

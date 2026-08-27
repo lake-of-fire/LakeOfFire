@@ -86,6 +86,9 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
     private let lock = NSLock()
     private let totalByteLimit: Int
     private let countLimit: Int
+    private let diskByteLimit: Int
+    private let diskCountLimit: Int
+    private let maximumDiskAge: TimeInterval
     private let directoryURL: URL
     private var entries = [String: ReaderExternalSegmentSidecarEntry]()
     private var durableTokens = Set<String>()
@@ -95,11 +98,18 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
     init(
         directoryURL: URL = ReaderExternalSegmentSidecarStore.defaultDirectoryURL,
         totalByteLimit: Int = 24 * 1024 * 1024,
-        countLimit: Int = 32
+        countLimit: Int = 32,
+        diskByteLimit: Int = 256 * 1024 * 1024,
+        diskCountLimit: Int = 1_024,
+        maximumDiskAge: TimeInterval = 90 * 24 * 60 * 60,
+        now: Date = Date()
     ) {
         self.directoryURL = directoryURL
         self.totalByteLimit = max(totalByteLimit, 1)
         self.countLimit = max(countLimit, 1)
+        self.diskByteLimit = max(diskByteLimit, 1)
+        self.diskCountLimit = max(diskCountLimit, 1)
+        self.maximumDiskAge = max(maximumDiskAge, 0)
         try? FileManager.default.createDirectory(
             at: directoryURL,
             withIntermediateDirectories: true
@@ -108,6 +118,7 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         var resourceValues = URLResourceValues()
         resourceValues.isExcludedFromBackup = true
         try? resourceURL.setResourceValues(resourceValues)
+        pruneDiskCache(now: now)
     }
 
     func insert(_ data: Data) -> (token: String, signature: String) {
@@ -137,6 +148,7 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
               Self.contentToken(for: data) == token else {
             return nil
         }
+        touchDiskFile(fileURL)
         let entry = ReaderExternalSegmentSidecarEntry(
             data: data,
             signature: "sha256:\(data.count):\(token)"
@@ -152,6 +164,7 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         if FileManager.default.fileExists(atPath: fileURL.path) {
             if let storedData = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]),
                Self.contentToken(for: storedData) == token {
+                touchDiskFile(fileURL)
                 return true
             }
         }
@@ -197,6 +210,68 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
                 totalBytes -= removed.data.count
             }
         }
+    }
+
+    private func pruneDiskCache(now: Date) {
+        struct DiskEntry {
+            let url: URL
+            let byteCount: Int
+            let lastUsedAt: Date
+        }
+
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .fileSizeKey,
+            .contentModificationDateKey,
+        ]
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        var entries = urls.compactMap { url -> DiskEntry? in
+            guard Self.isValidToken(url.lastPathComponent),
+                  let values = try? url.resourceValues(forKeys: keys),
+                  values.isRegularFile == true else {
+                return nil
+            }
+            return DiskEntry(
+                url: url,
+                byteCount: max(values.fileSize ?? 0, 0),
+                lastUsedAt: values.contentModificationDate ?? .distantPast
+            )
+        }
+        entries.sort {
+            if $0.lastUsedAt != $1.lastUsedAt {
+                return $0.lastUsedAt < $1.lastUsedAt
+            }
+            return $0.url.lastPathComponent < $1.url.lastPathComponent
+        }
+
+        var totalDiskBytes = entries.reduce(into: 0) { total, entry in
+            let (sum, overflow) = total.addingReportingOverflow(entry.byteCount)
+            total = overflow ? Int.max : sum
+        }
+        var remainingCount = entries.count
+        let oldestAllowedDate = now.addingTimeInterval(-maximumDiskAge)
+        for entry in entries {
+            let isExpired = entry.lastUsedAt < oldestAllowedDate
+            let isOverBudget = remainingCount > diskCountLimit || totalDiskBytes > diskByteLimit
+            guard isExpired || isOverBudget else { continue }
+            guard (try? FileManager.default.removeItem(at: entry.url)) != nil else { continue }
+            remainingCount -= 1
+            totalDiskBytes = max(totalDiskBytes - entry.byteCount, 0)
+        }
+    }
+
+    private func touchDiskFile(_ fileURL: URL) {
+        try? FileManager.default.setAttributes(
+            [.modificationDate: Date()],
+            ofItemAtPath: fileURL.path
+        )
     }
 
     private static func contentToken(for data: Data) -> String {

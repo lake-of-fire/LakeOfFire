@@ -14,6 +14,7 @@ final class FeedStateIndicatorTests: XCTestCase {
             HistoryRecord.self,
             ContentFile.self,
         ]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
         return configuration
     }
 

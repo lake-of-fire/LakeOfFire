@@ -5,6 +5,7 @@ const nonEmptyString = value => typeof value === 'string' && value.length > 0
 const compactMnbSegmentTokenPattern = /^[0-9A-Za-z]+$/
 
 export const compactEbookSegmentSidecarVersion = 10
+export const stableEbookSegmentIdentityVersion = 1
 
 export const compactEbookSegmentSchemaVersionsAreCompatible = nativeVersion => (
     Number.isSafeInteger(nativeVersion)

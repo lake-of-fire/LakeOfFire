@@ -68,7 +68,7 @@ struct ReaderWebViewObscuredInsetResolver {
 // Lightweight callback adapter. ReaderWebView supplies one stable task manager
 // so SwiftUI value-view rebuilds cannot create independent navigation owners.
 @MainActor
-fileprivate class ReaderWebViewHandler {
+final class ReaderWebViewHandler {
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
     var onNavigationFailed: ((WebViewState) -> Void)?
@@ -80,6 +80,7 @@ fileprivate class ReaderWebViewHandler {
     var readerModeViewModel: ReaderModeViewModel
     var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     var scriptCaller: WebViewScriptCaller
+    let navigator: WebViewNavigator
     
     private let navigationTaskManager: NavigationTaskManager
     
@@ -94,7 +95,8 @@ fileprivate class ReaderWebViewHandler {
         readerViewModel: ReaderViewModel,
         readerModeViewModel: ReaderModeViewModel,
         readerMediaPlayerViewModel: ReaderMediaPlayerViewModel,
-        scriptCaller: WebViewScriptCaller
+        scriptCaller: WebViewScriptCaller,
+        navigator: WebViewNavigator
     ) {
         self.navigationTaskManager = navigationTaskManager
         self.onNavigationCommitted = onNavigationCommitted
@@ -107,34 +109,68 @@ fileprivate class ReaderWebViewHandler {
         self.readerModeViewModel = readerModeViewModel
         self.readerMediaPlayerViewModel = readerMediaPlayerViewModel
         self.scriptCaller = scriptCaller
+        self.navigator = navigator
     }
     
     func handleNavigationCommitted(state: WebViewState) async throws {
 //        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
 
         try Task.checkCancellation()
-        try await readerContent.load(url: state.pageURL)
-        try Task.checkCancellation()
-        guard let content = readerContent.content else {
-            return
+        if !readerModeViewModel.expectsSyntheticReaderLoaderCommit(
+            for: state.pageURL
+        ) {
+            // A different committed document no longer owns an older render
+            // overlay. The expected processed-HTML commit keeps it until its
+            // render-ready message arrives.
+            readerContent.isRenderingReaderHTML = false
         }
-        try await readerViewModel.onNavigationCommitted(content: content, newState: state)
-        try Task.checkCancellation()
-        try await readerModeViewModel.onNavigationCommitted(
-            readerContent: readerContent,
-            newState: state,
-            scriptCaller: scriptCaller
-        )
-        try Task.checkCancellation()
-        guard let content = readerContent.content,
-              content.url.matchesReaderURL(state.pageURL) else {
+        do {
+            try Task.checkCancellation()
+            try await readerContent.load(url: state.pageURL)
+            try Task.checkCancellation()
+            guard let content = readerContent.content else {
+                readerModeViewModel.cancelReaderModeLoad(
+                    for: state.pageURL,
+                    readerContent: readerContent
+                )
+                return
+            }
+            try await readerViewModel.onNavigationCommitted(
+                content: content,
+                newState: state
+            )
+            try Task.checkCancellation()
+            try await readerModeViewModel.onNavigationCommitted(
+                readerContent: readerContent,
+                newState: state,
+                scriptCaller: scriptCaller,
+                navigator: navigator
+            )
+            try Task.checkCancellation()
+            guard let content = readerContent.content,
+                  content.url.matchesReaderURL(state.pageURL) else {
+                throw CancellationError()
+            }
+            try await readerMediaPlayerViewModel.onNavigationCommitted(
+                content: content,
+                newState: state
+            )
+            try Task.checkCancellation()
+        } catch is CancellationError {
             throw CancellationError()
+        } catch {
+            // Replacement commits cancel the previous task. If an unrelated
+            // operation failed at the same time, its cleanup must not release a
+            // newer same-URL reader render.
+            guard !Task.isCancelled else {
+                throw CancellationError()
+            }
+            readerModeViewModel.cancelReaderModeLoad(
+                for: state.pageURL,
+                readerContent: readerContent
+            )
+            throw error
         }
-        try await readerMediaPlayerViewModel.onNavigationCommitted(
-            content: content,
-            newState: state
-        )
-        try Task.checkCancellation()
     }
 
     func handleNavigationFinished(state: WebViewState) async {
@@ -194,6 +230,9 @@ fileprivate class ReaderWebViewHandler {
             preservingCommittedDocument: preservesCommittedDocument
         ) { @MainActor in
             if !preservesCommittedDocument {
+                if self.readerContent.pageURL.matchesReaderURL(state.pageURL) {
+                    self.readerContent.isRenderingReaderHTML = false
+                }
                 self.readerModeViewModel.onNavigationFailed(newState: state)
             }
             self.onNavigationFailed?(state)
@@ -208,6 +247,9 @@ fileprivate class ReaderWebViewHandler {
         // asynchronous work that still belongs to the previous document.
         navigationTaskManager.cancelNavigationWork()
         if reason == .webContentProcessTerminated {
+            if readerContent.pageURL.matchesReaderURL(state.pageURL) {
+                readerContent.isRenderingReaderHTML = false
+            }
             readerModeViewModel.onNavigationFailed(newState: state)
             onNavigationFailed?(state)
         }
@@ -341,7 +383,8 @@ public struct ReaderWebView: View {
             readerViewModel: readerViewModel,
             readerModeViewModel: readerModeViewModel,
             readerMediaPlayerViewModel: readerMediaPlayerViewModel,
-            scriptCaller: scriptCaller
+            scriptCaller: scriptCaller,
+            navigator: navigator
         )
         ReaderWebViewInternal(
             persistentWebViewID: persistentWebViewID,

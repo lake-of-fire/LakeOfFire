@@ -101,6 +101,29 @@ fileprivate func ebookString(fromBase64URLToken token: String) -> String? {
     return String(data: data, encoding: .utf8)
 }
 
+func ebookURLStringHasValidPercentEncoding(_ value: String) -> Bool {
+    let bytes = Array(value.utf8)
+    func isHex(_ byte: UInt8) -> Bool {
+        (byte >= 48 && byte <= 57)
+            || (byte >= 65 && byte <= 70)
+            || (byte >= 97 && byte <= 102)
+    }
+    var index = 0
+    while index < bytes.count {
+        if bytes[index] == UInt8(ascii: "%") {
+            guard index + 2 < bytes.count,
+                  isHex(bytes[index + 1]),
+                  isHex(bytes[index + 2]) else {
+                return false
+            }
+            index += 3
+        } else {
+            index += 1
+        }
+    }
+    return true
+}
+
 fileprivate func ebookDirectorySubpath(for sectionHref: String) -> String {
     guard let slashIndex = sectionHref.lastIndex(of: "/") else { return "" }
     return String(sectionHref[..<sectionHref.index(after: slashIndex)])
@@ -118,6 +141,85 @@ fileprivate func ebookPathEscaped(_ path: String) -> String {
 fileprivate func ebookProcessedSectionBaseURL(contentURL: URL, sectionHref: String) -> String {
     let token = ebookBase64URLToken(for: contentURL.absoluteString)
     return "ebook://ebook/entry-source/\(token)/\(ebookPathEscaped(ebookDirectorySubpath(for: sectionHref)))"
+}
+
+/// Returns the canonical package URL only when it is a valid ebook backing URL.
+/// The reader file manager owns the path grammar and containment checks, so the
+/// scheme handler cannot accidentally accept a source URL that later resolves
+/// differently when it is opened from a drive.
+func ebookValidatedSourceURL(
+    _ url: URL,
+    readerFileManager: ReaderFileManager
+) -> URL? {
+    guard url.scheme == "ebook",
+          url.host == "ebook",
+          let canonicalReaderURL = readerFileManager.canonicalReaderBackingURL(for: url),
+          var components = URLComponents(url: canonicalReaderURL, resolvingAgainstBaseURL: false) else {
+        return nil
+    }
+    // Use the file manager's validated representation as the source of truth
+    // for path normalization, then retain ebook as the document scheme.
+    components.scheme = "ebook"
+    components.host = "ebook"
+    components.query = nil
+    components.fragment = nil
+    return components.url
+}
+
+/// Resolves the package source for an endpoint request. WebKit's main document
+/// URL is the capability: values supplied by page JavaScript are accepted only
+/// when they exactly identify that same package.
+func ebookAuthorizedMainDocumentURL(
+    for request: URLRequest,
+    activePackageURL: URL? = nil,
+    readerFileManager: ReaderFileManager
+) -> URL? {
+    func packageURL(from documentURL: URL?) -> URL? {
+        guard let documentURL else { return nil }
+        if let packageURL = ebookValidatedSourceURL(
+            documentURL,
+            readerFileManager: readerFileManager
+        ) {
+            return packageURL
+        }
+        guard documentURL.scheme == "ebook",
+              documentURL.host == "ebook",
+              documentURL.path == "/processed-section",
+              let rawSourceURL = URLComponents(url: documentURL, resolvingAgainstBaseURL: false)?
+                .queryItems?
+                .first(where: { $0.name == "sourceURL" })?
+                .value,
+              ebookURLStringHasValidPercentEncoding(rawSourceURL),
+              let sourceURL = URL(string: rawSourceURL) else {
+            return nil
+        }
+        return ebookValidatedSourceURL(sourceURL, readerFileManager: readerFileManager)
+    }
+
+    guard let documentPackageURL = packageURL(from: request.mainDocumentURL) else {
+        return nil
+    }
+    let authorizedPackageURL = activePackageURL ?? documentPackageURL
+    guard documentPackageURL == authorizedPackageURL else { return nil }
+
+    let requestedSourceURL = request.value(forHTTPHeaderField: "X-Ebook-Source-URL")
+    let requestSourceURL = URLComponents(
+        url: request.url ?? URL(fileURLWithPath: "/"),
+        resolvingAgainstBaseURL: false
+    )?
+        .queryItems?
+        .first(where: { $0.name == "sourceURL" })?
+        .value
+
+    for candidateString in [requestedSourceURL, requestSourceURL].compactMap({ $0 }) {
+        guard ebookURLStringHasValidPercentEncoding(candidateString),
+              let candidateURL = URL(string: candidateString),
+              ebookValidatedSourceURL(candidateURL, readerFileManager: readerFileManager)
+                == authorizedPackageURL else {
+            return nil
+        }
+    }
+    return authorizedPackageURL
 }
 
 func ebookHTTPResponse(
@@ -598,6 +700,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     
     private let schemeTaskCompletionOwnership = URLSchemeTaskCompletionOwnership()
     private let sectionProcessingDeduper = EBookSectionProcessingDeduper()
+    @EbookURLSchemeActor private var activePackageURL: URL?
     
     enum CustomSchemeHandlerError: Error {
         case fileNotFound
@@ -702,8 +805,25 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let workTask = Task.detached(priority: ebookURLSchemeTaskPriority(for: url)) { @EbookURLSchemeActor [weak self] in
             guard let self else { return }
             guard !Task.isCancelled else { return }
+            if let requestedPackageURL = ebookValidatedSourceURL(
+                url,
+                readerFileManager: readerFileManager
+            ) {
+                let mainDocumentPackageURL = urlSchemeTask.request.mainDocumentURL.flatMap {
+                    ebookValidatedSourceURL($0, readerFileManager: readerFileManager)
+                }
+                if urlSchemeTask.request.mainDocumentURL == nil
+                    || mainDocumentPackageURL == requestedPackageURL {
+                    // This handler belongs to one WebView. Only a top-level
+                    // package navigation may replace its package binding.
+                    self.activePackageURL = requestedPackageURL
+                }
+            }
             if url.path == "/processed-section" {
-                guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/processed-section"),
+                guard let mainDocumentURL = self.validatedMainDocumentURL(
+                    for: urlSchemeTask.request,
+                    readerFileManager: readerFileManager
+                ),
                       let sectionHref = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                     .queryItems?
                     .first(where: { $0.name == "subpath" })?
@@ -884,7 +1004,10 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }()
                 }
             } else if url.path == "/entries" {
-                guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entries") else {
+                guard let mainDocumentURL = self.validatedMainDocumentURL(
+                    for: urlSchemeTask.request,
+                    readerFileManager: readerFileManager
+                ) else {
                     await { @MainActor in
                         self.failActiveTask(
                             urlSchemeTask,
@@ -923,6 +1046,10 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
             } else if url.path == "/entry" || url.path.hasPrefix("/entry-source/") {
                 let entrySourcePathPrefix = "/entry-source/"
+                let authorizedMainDocumentURL = self.validatedMainDocumentURL(
+                    for: urlSchemeTask.request,
+                    readerFileManager: readerFileManager
+                )
                 let pathBackedEntry: (mainDocumentURL: URL, subpath: String)? = {
                     guard url.path.hasPrefix(entrySourcePathPrefix) else { return nil }
                     let path = String(url.path.dropFirst(entrySourcePathPrefix.count))
@@ -931,15 +1058,17 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     let rawSubpath = String(path[path.index(after: tokenEnd)...])
                     guard let sourceURLString = ebookString(fromBase64URLToken: token),
                           let mainDocumentURL = URL(string: sourceURLString),
-                          mainDocumentURL.scheme == "ebook",
-                          mainDocumentURL.host == "ebook",
-                          mainDocumentURL.pathComponents.starts(with: ["/", "load"]) else {
+                          let canonicalMainDocumentURL = ebookValidatedSourceURL(
+                            mainDocumentURL,
+                            readerFileManager: readerFileManager
+                          ),
+                          canonicalMainDocumentURL == authorizedMainDocumentURL else {
                         return nil
                     }
-                    return (mainDocumentURL, rawSubpath.removingPercentEncoding ?? rawSubpath)
+                    return (canonicalMainDocumentURL, rawSubpath.removingPercentEncoding ?? rawSubpath)
                 }()
                 guard let entryRequest = pathBackedEntry ?? {
-                    guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entry"),
+                    guard let mainDocumentURL = authorizedMainDocumentURL,
                           let subpath = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                         .queryItems?
                         .first(where: { $0.name == "subpath" })?
@@ -1100,29 +1229,15 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     @EbookURLSchemeActor
-    private func validatedMainDocumentURL(for request: URLRequest, route: String) -> URL? {
-        let requestedSourceURL = request.value(forHTTPHeaderField: "X-Ebook-Source-URL")
-        let requestSourceURL = URLComponents(url: request.url ?? URL(fileURLWithPath: "/"), resolvingAgainstBaseURL: false)?
-            .queryItems?
-            .first(where: { $0.name == "sourceURL" })?
-            .value
-
-        let candidateStrings = [
-            requestedSourceURL,
-            requestSourceURL,
-            request.mainDocumentURL?.absoluteString,
-        ].compactMap { $0 }
-
-        guard let resolvedSourceURLString = candidateStrings.first,
-              let mainDocumentURL = URL(string: resolvedSourceURLString) else {
-            return nil
-        }
-        guard mainDocumentURL.scheme == "ebook",
-              mainDocumentURL.host == "ebook",
-              mainDocumentURL.pathComponents.starts(with: ["/", "load"]) else {
-            return nil
-        }
-        return mainDocumentURL
+    private func validatedMainDocumentURL(
+        for request: URLRequest,
+        readerFileManager: ReaderFileManager
+    ) -> URL? {
+        return ebookAuthorizedMainDocumentURL(
+            for: request,
+            activePackageURL: activePackageURL,
+            readerFileManager: readerFileManager
+        )
     }
     
     nonisolated private static func mimeType(ofFileAtUrl url: URL) -> String? {

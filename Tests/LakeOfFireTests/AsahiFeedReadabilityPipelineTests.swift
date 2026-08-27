@@ -228,6 +228,99 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testFeedResponseDoesNotPublishAfterURLChanges() async throws {
+        let oldRSSURL = try XCTUnwrap(URL(string: "https://old.example/feed.xml"))
+        let newRSSURL = try XCTUnwrap(URL(string: "https://new.example/feed.xml"))
+        let rssData = Data(
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <rss version="2.0"><channel>
+              <title>Old Feed</title>
+              <link>https://old.example/</link>
+              <description>Old response</description>
+              <item><guid>old-entry</guid><title>Old Entry</title>
+                <link>https://old.example/article</link>
+              </item>
+            </channel></rss>
+            """.utf8
+        )
+        let configuration = makeRealmConfiguration()
+        let originalLibraryConfiguration = LibraryDataManager.realmConfiguration
+        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalFeedSessionOverride = makeFeedSessionOverrideForTesting
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibraryConfiguration
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            makeFeedSessionOverrideForTesting = originalFeedSessionOverride
+            FeedURLProtocol.requestHandler = nil
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = oldRSSURL
+        try realm.write { realm.add(feed) }
+        let feedID = feed.id
+        let frozenFeed = feed.freeze()
+
+        FeedURLProtocol.requestHandler = { request in
+            if request.httpMethod == "GET" {
+                let backgroundRealm = try! Realm(configuration: configuration)
+                try! backgroundRealm.write {
+                    backgroundRealm.object(ofType: Feed.self, forPrimaryKey: feedID)?.rssUrl = newRSSURL
+                }
+            }
+            return (
+                200,
+                [
+                    "Content-Type": "application/rss+xml; charset=utf-8",
+                    "Content-Length": String(rssData.count),
+                    "ETag": "\"old-response\"",
+                ],
+                request.httpMethod == "HEAD" ? Data() : rssData
+            )
+        }
+        makeFeedSessionOverrideForTesting = {
+            let sessionConfiguration = URLSessionConfiguration.ephemeral
+            sessionConfiguration.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: sessionConfiguration)
+        }
+
+        do {
+            try await frozenFeed.fetch(realmConfiguration: configuration)
+        } catch is CancellationError {
+            // URL replacement deliberately cancels publication of the old response.
+        }
+
+        await realm.asyncRefresh()
+        XCTAssertEqual(realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.rssUrl, newRSSURL)
+        XCTAssertNil(realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.lastFetchedETag)
+        XCTAssertTrue(realm.objects(FeedEntry.self).where { !$0.isDeleted }.isEmpty)
+    }
+
+    func testLaterFeedRefreshLeaseSupersedesEarlierLeaseForSameFeed() {
+        let registry = FeedRefreshRegistry()
+        let feedID = UUID()
+        let earlier = registry.begin(feedID: feedID)
+        let later = registry.begin(feedID: feedID)
+
+        XCTAssertFalse(registry.isCurrent(earlier))
+        XCTAssertTrue(registry.isCurrent(later))
+        registry.end(earlier)
+        XCTAssertTrue(registry.isCurrent(later))
+        registry.end(later)
+        XCTAssertFalse(registry.isCurrent(later))
+    }
+
     func testCanonicalReadabilityHTMLEscapesTextAndAttributes() throws {
         let contentURL = try XCTUnwrap(URL(string: "https://example.com/article?one=1&two=2"))
         let title = "A & <B> \"quoted\""

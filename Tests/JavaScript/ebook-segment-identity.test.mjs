@@ -6,6 +6,7 @@ import {
     compactEbookSegmentSidecarVersion,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
+    stableEbookSegmentIdentityVersion,
 } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-segment-identity.js'
 
 test('accepts only exact current-schema segment tuples', () => {
@@ -26,6 +27,7 @@ test('accepts only exact current-schema segment tuples', () => {
     }
 
     assert.equal(compactEbookSegmentSidecarVersion, 10)
+    assert.equal(stableEbookSegmentIdentityVersion, 1)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent(payload), true)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({ ...payload, v: 9 }), false)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({

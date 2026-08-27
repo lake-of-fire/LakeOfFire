@@ -1,5 +1,7 @@
 import XCTest
 import SwiftUI
+@testable import SwiftUIWebView
+@testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
 private actor ReaderCallbackGate {
@@ -27,7 +29,112 @@ private enum ReaderCallbackTestError: Error {
 }
 
 @MainActor
+private func makeReaderWebViewHandlerFixture() -> (
+    handler: ReaderWebViewHandler,
+    taskManager: NavigationTaskManager,
+    readerContent: ReaderContent,
+    readerModeViewModel: ReaderModeViewModel
+) {
+    let taskManager = NavigationTaskManager()
+    let readerContent = ReaderContent()
+    let readerModeViewModel = ReaderModeViewModel()
+    let handler = ReaderWebViewHandler(
+        navigationTaskManager: taskManager,
+        readerContent: readerContent,
+        readerViewModel: ReaderViewModel(systemScripts: []),
+        readerModeViewModel: readerModeViewModel,
+        readerMediaPlayerViewModel: ReaderMediaPlayerViewModel(),
+        scriptCaller: WebViewScriptCaller(),
+        navigator: WebViewNavigator()
+    )
+    return (handler, taskManager, readerContent, readerModeViewModel)
+}
+
+@MainActor
 final class ReaderWebViewCallbackContractTests: XCTestCase {
+    func testCancelledCommitCannotReleaseNewerReaderRender() async {
+        let fixture = makeReaderWebViewHandlerFixture()
+        fixture.readerContent.isRenderingReaderHTML = true
+        let task = Task { @MainActor in
+            try await fixture.handler.handleNavigationCommitted(state: .empty)
+        }
+
+        task.cancel()
+
+        do {
+            try await task.value
+            XCTFail("A canceled commit must stop before mutating reader state")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertTrue(
+            fixture.readerContent.isRenderingReaderHTML,
+            "An obsolete commit must not release the current render overlay"
+        )
+    }
+
+    func testTerminalNavigationFailureReleasesOwnedReaderRender() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let url = URL(string: "https://example.com/failed")!
+        fixture.readerContent.pageURL = url
+        fixture.readerContent.isRenderingReaderHTML = true
+        fixture.readerModeViewModel.beginReaderModeLoad(for: url)
+        var state = WebViewState.empty
+        state.pageURL = url
+
+        fixture.handler.onNavigationFailed(
+            state: state,
+            disposition: .terminal
+        )
+        try await fixture.taskManager.onNavigationFailedTask?.value
+
+        XCTAssertFalse(fixture.readerContent.isRenderingReaderHTML)
+        XCTAssertFalse(fixture.readerModeViewModel.isReaderModeLoading)
+        XCTAssertFalse(fixture.readerModeViewModel.isReaderModeLoadPending(for: url))
+    }
+
+    func testProvisionalNavigationFailurePreservesCommittedReaderRender()
+    async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let url = URL(string: "https://example.com/committed")!
+        fixture.readerContent.pageURL = url
+        fixture.readerContent.isRenderingReaderHTML = true
+        fixture.readerModeViewModel.beginReaderModeLoad(for: url)
+        var state = WebViewState.empty
+        state.pageURL = url
+
+        fixture.handler.onNavigationFailed(
+            state: state,
+            disposition: .preservedCommittedDocument
+        )
+        try await fixture.taskManager.onNavigationFailedTask?.value
+
+        XCTAssertTrue(fixture.readerContent.isRenderingReaderHTML)
+        XCTAssertTrue(fixture.readerModeViewModel.isReaderModeLoading)
+        XCTAssertTrue(fixture.readerModeViewModel.isReaderModeLoadPending(for: url))
+    }
+
+    func testWebContentProcessTerminationReleasesOwnedReaderRender() {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let url = URL(string: "https://example.com/terminated")!
+        fixture.readerContent.pageURL = url
+        fixture.readerContent.isRenderingReaderHTML = true
+        fixture.readerModeViewModel.beginReaderModeLoad(for: url)
+        var state = WebViewState.empty
+        state.pageURL = url
+
+        fixture.handler.onDocumentContextInvalidated(
+            state: state,
+            reason: .webContentProcessTerminated
+        )
+
+        XCTAssertFalse(fixture.readerContent.isRenderingReaderHTML)
+        XCTAssertFalse(fixture.readerModeViewModel.isReaderModeLoading)
+        XCTAssertFalse(fixture.readerModeViewModel.isReaderModeLoadPending(for: url))
+    }
+
     func testIPadReaderModeDoesNotUseSplitViewLeadingSafeAreaAsWebKitInset() {
         let resolved = ReaderWebViewObscuredInsetResolver.resolve(
             obscuredInsets: EdgeInsets(top: 0, leading: 450, bottom: 0, trailing: 0),

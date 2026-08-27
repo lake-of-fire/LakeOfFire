@@ -150,8 +150,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/kean/Nuke.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "76e780ad7100c224e5127822ff81915dd04880c5"
+        "revision" : "4a3dd00de49cb2536ee46cd648137ea3197684df"
       }
     },
     {
@@ -169,7 +168,7 @@
       "location" : "https://github.com/lake-of-fire/PersistedLRUCache.git",
       "state" : {
         "branch" : "main",
-        "revision" : "92c910e0223cb415a7bf0a72d0e5e01eaa95e5b7"
+        "revision" : "fc486ae9e566106de8c4a319b012117055791525"
       }
     },
     {
@@ -404,6 +403,15 @@
       "state" : {
         "branch" : "main",
         "revision" : "0a84ea27d394fe0ed92e9b7809d84cfaa1942442"
+      }
+    },
+    {
+      "identity" : "swiftsoup",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/scinfu/SwiftSoup.git",
+      "state" : {
+        "branch" : "master",
+        "revision" : "18b80329749eca5ea29fc50211dca5c7eff5bfec"
       }
     },
     {

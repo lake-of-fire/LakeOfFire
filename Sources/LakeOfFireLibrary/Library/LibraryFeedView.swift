@@ -357,6 +357,7 @@ struct LibraryFeedFormSections: View {
     @StateObject private var readerMediaPlayerViewModel = ReaderMediaPlayerViewModel()
     
     @State private var readerFeedEntry: FeedEntry?
+    @State private var metadataRefreshGeneration = UUID()
     
     @ScaledMetric(relativeTo: .headline) private var maxContentCellHeight: CGFloat = 100
     
@@ -409,12 +410,29 @@ struct LibraryFeedFormSections: View {
         } footer: {
             Text("Feeds use RSS or Atom syndication formats.").font(.footnote).foregroundColor(.secondary)
         }
-        .onChange(of: viewModel.feed.rssUrl, debounceTime: 1.5) { _ in
-            // Note: this runs every time on first load...
-            Task { @MainActor in
-                refreshFeed()
-                refreshIcon()
-                refreshFromOpenGraph()
+        .task(id: viewModel.feed.rssUrl) { @MainActor in
+            let expectedRSSURL = viewModel.feed.rssUrl
+            let expectedGeneration = UUID()
+            metadataRefreshGeneration = expectedGeneration
+            do {
+                try await Task.sleep(for: .seconds(1.5))
+                try Task.checkCancellation()
+                guard viewModel.feed.rssUrl == expectedRSSURL,
+                      metadataRefreshGeneration == expectedGeneration else { return }
+                async let feedRefresh: Void = refreshFeed(expectedRSSURL: expectedRSSURL)
+                async let iconRefresh: Void = refreshIcon(
+                    expectedRSSURL: expectedRSSURL,
+                    expectedGeneration: expectedGeneration
+                )
+                async let openGraphRefresh: Void = refreshFromOpenGraph(
+                    expectedRSSURL: expectedRSSURL,
+                    expectedGeneration: expectedGeneration
+                )
+                _ = await (feedRefresh, iconRefresh, openGraphRefresh)
+            } catch is CancellationError {
+                return
+            } catch {
+                return
             }
         }
     }
@@ -512,10 +530,15 @@ struct LibraryFeedFormSections: View {
         .onChange(of: viewModel.feedEntries ?? []) { [oldEntries = viewModel.feedEntries] entries in
             let entry = entries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) })
             let oldEntry = oldEntries?.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) })
+            let expectedRSSURL = viewModel.feed.rssUrl
+            let expectedGeneration = metadataRefreshGeneration
             Task { @MainActor in
                 if entry?.id != oldEntry?.id {
                     refresh(entries: Array(entries))
-                    refreshFromOpenGraph()
+                    await refreshFromOpenGraph(
+                        expectedRSSURL: expectedRSSURL,
+                        expectedGeneration: expectedGeneration
+                    )
                 }
             }
         }
@@ -571,80 +594,92 @@ struct LibraryFeedFormSections: View {
         readerModeViewModel.navigator = webNavigator
         readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
         
-        refreshFromOpenGraph()
-        if viewModel.feed.getEntries()?.isEmpty ?? true {
-            refreshFeed()
-        }
-        if viewModel.feed.iconUrl.isNativeReaderView {
-            refreshIcon()
-        }
         refresh(entries: Array(viewModel.feed.getEntries() ?? []))
     }
     
-    private func refreshFeed() {
-        Task {
-            try await viewModel.feed.fetch()
-        }
+    @MainActor
+    private func refreshFeed(expectedRSSURL: URL) async {
+        guard viewModel.feed.rssUrl == expectedRSSURL else { return }
+        try? await viewModel.feed.fetch()
     }
     
-    private func refreshFromOpenGraph() {
-        Task { @MainActor in
-            guard viewModel.feed.isUserEditable(), !viewModel.feed.rssUrl.isNativeReaderView else { return }
+    @MainActor
+    private func refreshFromOpenGraph(
+        expectedRSSURL rssURL: URL,
+        expectedGeneration: UUID
+    ) async {
+        guard viewModel.feed.rssUrl == rssURL,
+              metadataRefreshGeneration == expectedGeneration,
+              viewModel.feed.isUserEditable(),
+              !rssURL.isNativeReaderView else { return }
             
-            let rssURL = viewModel.feed.rssUrl
-            let baseDomain = rssURL.domainURL
-            var titleSet = !viewModel.feed.title.isEmpty
-            var descSet = viewModel.feed.markdownDescription != nil
+        let baseDomain = rssURL.domainURL
+        var titleSet = !viewModel.feed.title.isEmpty
+        var descSet = viewModel.feed.markdownDescription != nil
             
-            @MainActor
-            func applyOG(_ og: OpenGraph, allowDescription: Bool) {
-                if !titleSet, let name = og[.siteName] ?? og[.title], !name.isEmpty {
-                    viewModel.feedTitle = name
-                    titleSet = true
-                }
-                if allowDescription,
-                   !descSet,
-                   let description = og[.description]?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !description.isEmpty {
-                    viewModel.feedDescription = description
-                    descSet = true
-                }
+        @MainActor
+        func applyOG(_ og: OpenGraph, allowDescription: Bool) {
+            guard !Task.isCancelled,
+                  viewModel.feed.rssUrl == rssURL,
+                  metadataRefreshGeneration == expectedGeneration else { return }
+            if !titleSet, let name = og[.siteName] ?? og[.title], !name.isEmpty {
+                viewModel.feedTitle = name
+                titleSet = true
             }
-            
-            // 1. Try RSS URL with last path component removed (e.g. .../feed.rss -> .../newsroom/)
-            if !titleSet || !descSet {
-                let stripped = rssURL.deletingLastPathComponent()
-                if stripped != rssURL,
-                   let og = try? await OpenGraph.fetch(url: stripped),
-                   let raw = og[.url], let u = URL(string: raw), u.domainURL == baseDomain {
-                    applyOG(og, allowDescription: true)
-                }
-            }
-            
-            // 2. Fall back to first entry URL – title only (description will come from pure domain)
-            if !titleSet, let entryURL = viewModel.feed.getEntries()?.first?.url {
-                if let og = try? await OpenGraph.fetch(url: entryURL),
-                   let raw = og[.url], let u = URL(string: raw), u.domainURL == baseDomain {
-                    applyOG(og, allowDescription: false)
-                }
-            }
-            
-            // 3. Finally, fetch the bare domain for description (or still-missing title/desc)
-            if !descSet || !titleSet {
-                if let og = try? await OpenGraph.fetch(url: baseDomain),
-                   let raw = og[.url], let u = URL(string: raw), u.domainURL == baseDomain {
-                    applyOG(og, allowDescription: true)
-                }
+            if allowDescription,
+               !descSet,
+               let description = og[.description]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !description.isEmpty {
+                viewModel.feedDescription = description
+                descSet = true
             }
         }
+
+        // 1. Try RSS URL with last path component removed (e.g. .../feed.rss -> .../newsroom/)
+        if !titleSet || !descSet {
+            let stripped = rssURL.deletingLastPathComponent()
+            if stripped != rssURL,
+               let og = try? await OpenGraph.fetch(url: stripped),
+               let raw = og[.url], let u = URL(string: raw), u.domainURL == baseDomain {
+                applyOG(og, allowDescription: true)
+            }
+        }
+
+        // 2. Fall back to first entry URL – title only (description will come from pure domain)
+        if !titleSet,
+           !Task.isCancelled,
+           viewModel.feed.rssUrl == rssURL,
+           metadataRefreshGeneration == expectedGeneration,
+           let entryURL = viewModel.feed.getEntries()?.first?.url,
+           let og = try? await OpenGraph.fetch(url: entryURL),
+           let raw = og[.url], let u = URL(string: raw), u.domainURL == baseDomain {
+            applyOG(og, allowDescription: false)
+        }
+            
+        // 3. Finally, fetch the bare domain for description (or still-missing title/desc)
+        if (!descSet || !titleSet),
+           !Task.isCancelled,
+           viewModel.feed.rssUrl == rssURL,
+           metadataRefreshGeneration == expectedGeneration,
+           let og = try? await OpenGraph.fetch(url: baseDomain),
+           let raw = og[.url], let u = URL(string: raw), u.domainURL == baseDomain {
+            applyOG(og, allowDescription: true)
+        }
     }
-    
-    private func refreshIcon() {
-        guard viewModel.feed.iconUrl.isNativeReaderView, !viewModel.feed.rssUrl.isNativeReaderView else { return }
-        let url = viewModel.feed.rssUrl.domainURL
-        Task.detached {
-            do {
-                let favicon = try await FaviconFinder(
+
+    @MainActor
+    private func refreshIcon(
+        expectedRSSURL: URL,
+        expectedGeneration: UUID
+    ) async {
+        guard viewModel.feed.rssUrl == expectedRSSURL,
+              metadataRefreshGeneration == expectedGeneration,
+              viewModel.feed.iconUrl.isNativeReaderView,
+              !expectedRSSURL.isNativeReaderView else { return }
+        let url = expectedRSSURL.domainURL
+        do {
+            let favicon = try await Task.detached {
+                try await FaviconFinder(
                     url: url,
                     configuration: .init(
                         preferredSource: .html,
@@ -655,15 +690,19 @@ struct LibraryFeedFormSections: View {
                         ]
                     )
                 )
-                    .fetchFaviconURLs()
-                    .largest()
-                await Task { @MainActor in
-                    guard !favicon.source.isNativeReaderView else { return }
-                    viewModel.feedIconURL = favicon.source.absoluteString
-                }.value
-            } catch let error {
-                print("Error finding favicon: \(error)")
-            }
+                .fetchFaviconURLs()
+                .largest()
+            }.value
+            guard !Task.isCancelled,
+                  viewModel.feed.rssUrl == expectedRSSURL,
+                  metadataRefreshGeneration == expectedGeneration,
+                  viewModel.feed.iconUrl.isNativeReaderView,
+                  !favicon.source.isNativeReaderView else { return }
+            viewModel.feedIconURL = favicon.source.absoluteString
+        } catch is CancellationError {
+            return
+        } catch {
+            print("Error finding favicon: \(error)")
         }
     }
     

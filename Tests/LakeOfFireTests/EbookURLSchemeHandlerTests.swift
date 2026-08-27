@@ -52,6 +52,79 @@ private let ebookTestProcessingVariant = EbookProcessingVariant(
 )
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
+    func testEbookEndpointSourceRequiresTheRequestMainDocumentPackage() throws {
+        let manager = ReaderFileManager()
+        let bookURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/one.epub"))
+        let otherBookURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/two.epub"))
+
+        var request = URLRequest(
+            url: URL(string: "ebook://ebook/entries?sourceURL=\(bookURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)")!
+        )
+        request.mainDocumentURL = bookURL
+        request.setValue(bookURL.absoluteString, forHTTPHeaderField: "X-Ebook-Source-URL")
+        XCTAssertEqual(
+            ebookAuthorizedMainDocumentURL(for: request, readerFileManager: manager),
+            bookURL
+        )
+
+        request.setValue(otherBookURL.absoluteString, forHTTPHeaderField: "X-Ebook-Source-URL")
+        XCTAssertNil(ebookAuthorizedMainDocumentURL(for: request, readerFileManager: manager))
+
+        request.setValue(bookURL.absoluteString, forHTTPHeaderField: "X-Ebook-Source-URL")
+        request.mainDocumentURL = otherBookURL
+        XCTAssertNil(ebookAuthorizedMainDocumentURL(for: request, readerFileManager: manager))
+    }
+
+    func testEbookEndpointSourceCanonicalizesQueryAndFragmentBeforeComparing() throws {
+        let manager = ReaderFileManager()
+        let sourceURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/one.epub"))
+        let sourceWithDecorations = try XCTUnwrap(
+            URL(string: "ebook://ebook/load/local/Books/one.epub?subpath=OPS/chapter.xhtml#section")
+        )
+        var request = URLRequest(url: URL(string: "ebook://ebook/entries")!)
+        request.mainDocumentURL = sourceURL
+        request.setValue(sourceWithDecorations.absoluteString, forHTTPHeaderField: "X-Ebook-Source-URL")
+
+        XCTAssertEqual(
+            ebookAuthorizedMainDocumentURL(for: request, readerFileManager: manager),
+            sourceURL
+        )
+    }
+
+    func testEbookEndpointRejectsMalformedRawSourceEscapes() throws {
+        XCTAssertFalse(ebookURLStringHasValidPercentEncoding("ebook://ebook/load/local/bad%ZZ.epub"))
+        XCTAssertFalse(ebookURLStringHasValidPercentEncoding("ebook://ebook/load/local/bad%2.epub"))
+        XCTAssertTrue(ebookURLStringHasValidPercentEncoding("ebook://ebook/load/local/100%25.epub"))
+    }
+
+    func testEbookEndpointAuthorizesProcessedSectionSubresourcesAgainstActivePackage() throws {
+        let manager = ReaderFileManager()
+        let bookURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/one.epub"))
+        let otherBookURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/two.epub"))
+        let encodedSource = bookURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
+        let processedSectionURL = try XCTUnwrap(
+            URL(string: "ebook://ebook/processed-section?sourceURL=\(encodedSource)&subpath=OPS/chapter.xhtml")
+        )
+        var request = URLRequest(url: URL(string: "ebook://ebook/entry-source/token/OPS/image.png")!)
+        request.mainDocumentURL = processedSectionURL
+
+        XCTAssertEqual(
+            ebookAuthorizedMainDocumentURL(
+                for: request,
+                activePackageURL: bookURL,
+                readerFileManager: manager
+            ),
+            bookURL
+        )
+        XCTAssertNil(
+            ebookAuthorizedMainDocumentURL(
+                for: request,
+                activePackageURL: otherBookURL,
+                readerFileManager: manager
+            )
+        )
+    }
+
     func testExternalizingCanonicalSidecarKeepsAggregateAndPublishesRawJSON() throws {
         let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
         let aggregateJSON = #"{"c":0,"j":[],"n":[],"k":[],"sid":[]}"#
@@ -175,6 +248,40 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             )?.data,
             firstPayload.segmentSidecar
         )
+    }
+
+    func testSidecarStorePrunesOldDiskEntriesButKeepsRecentRestartData() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-prune-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let old = String(repeating: "a", count: 64)
+        let recent = String(repeating: "b", count: 64)
+        let oldURL = directoryURL.appendingPathComponent(old)
+        let recentURL = directoryURL.appendingPathComponent(recent)
+        try Data("old".utf8).write(to: oldURL)
+        try Data("recent".utf8).write(to: recentURL)
+        let now = Date()
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-1_000)],
+            ofItemAtPath: oldURL.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: now],
+            ofItemAtPath: recentURL.path
+        )
+
+        _ = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            diskByteLimit: 1_024,
+            diskCountLimit: 10,
+            maximumDiskAge: 100,
+            now: now
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recentURL.path))
     }
 
     func testSpeechProgressSaturatesOverflowingUTF16Range() {
@@ -711,6 +818,100 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertThrowsError(try source.readEntry(subpath: "OPS\\windows.xhtml"))
     }
 
+    func testReaderPackageResourceLimitsRejectArchiveEntryCountAndAggregateSize() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let archiveURL = temporaryRoot.appendingPathComponent("limited.epub")
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        guard let archive = Archive(url: archiveURL, accessMode: .create) else {
+            XCTFail("Expected archive to be created")
+            return
+        }
+        let first = Data(repeating: 1, count: 4)
+        let second = Data(repeating: 2, count: 4)
+        for (path, data) in [("one.xhtml", first), ("two.xhtml", second)] {
+            try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count)) { position, size in
+                data.subdata(in: Int(position)..<Int(position) + size)
+            }
+        }
+
+        let countLimited = try ReaderPackageEntrySource(
+            localURL: archiveURL,
+            limits: ReaderPackageResourceLimits(
+                maxEntryCount: 1,
+                maxEntryBytes: 10,
+                maxAggregateUncompressedBytes: 100
+            )
+        )
+        XCTAssertThrowsError(try countLimited.enumerateEntries()) { error in
+            guard case ReaderPackageEntrySourceError.entryCountExceeded(limit: 1) = error else {
+                XCTFail("Expected entry-count limit, received \(error)")
+                return
+            }
+        }
+
+        let aggregateLimited = try ReaderPackageEntrySource(
+            localURL: archiveURL,
+            limits: ReaderPackageResourceLimits(
+                maxEntryCount: 10,
+                maxEntryBytes: 10,
+                maxAggregateUncompressedBytes: 7
+            )
+        )
+        XCTAssertThrowsError(try aggregateLimited.enumerateEntries()) { error in
+            guard case ReaderPackageEntrySourceError.aggregateSizeExceeded(_, 7) = error else {
+                XCTFail("Expected aggregate-size limit, received \(error)")
+                return
+            }
+        }
+    }
+
+    func testReaderPackageDirectoryReadStreamsAndRejectsAdvertisedEntrySize() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot.appendingPathComponent("limited.epub", isDirectory: true)
+        try FileManager.default.createDirectory(at: packageRoot, withIntermediateDirectories: true)
+        try Data(repeating: 7, count: 8).write(to: packageRoot.appendingPathComponent("chapter.xhtml"))
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let source = try ReaderPackageEntrySource(
+            localURL: packageRoot,
+            limits: ReaderPackageResourceLimits(
+                maxEntryCount: 10,
+                maxEntryBytes: 4,
+                maxAggregateUncompressedBytes: 100
+            )
+        )
+        XCTAssertThrowsError(try source.readEntry(subpath: "chapter.xhtml")) { error in
+            guard case ReaderPackageEntrySourceError.entrySizeExceeded(
+                path: "chapter.xhtml",
+                size: 8,
+                limit: 4
+            ) = error else {
+                XCTFail("Expected per-entry limit, received \(error)")
+                return
+            }
+        }
+    }
+
+    func testReaderPackageSourceReportsCorruptArchiveAsTypedError() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let archiveURL = temporaryRoot.appendingPathComponent("corrupt.epub")
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        try Data("not a ZIP archive".utf8).write(to: archiveURL)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        XCTAssertThrowsError(try ReaderPackageEntrySource(localURL: archiveURL)) { error in
+            guard case ReaderPackageEntrySourceError.packageCorrupt = error else {
+                XCTFail("Expected typed corrupt-package error, received \(error)")
+                return
+            }
+        }
+    }
+
     func testCacheWarmerProcessingReturnsProcessedContent() async throws {
         let expectedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
         let actor = EBookProcessingActor(
@@ -1130,7 +1331,11 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
     func testProcessedSectionCacheProbeRejectsCancellationWithoutAReader() async throws {
         let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let gate = EbookTestGate()
+        let probeStarted = expectation(description: "probe starts")
         let probe = Task {
+            probeStarted.fulfill()
+            await gate.waitUntilReleased()
             try await probeEbookProcessedSectionCache(
                 reader: nil,
                 contentURL: contentURL,
@@ -1138,7 +1343,9 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 contentFingerprint: "fingerprint"
             )
         }
+        await fulfillment(of: [probeStarted], timeout: 1)
         probe.cancel()
+        await gate.release()
 
         do {
             _ = try await probe.value

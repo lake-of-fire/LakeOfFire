@@ -172,7 +172,7 @@ public func ebookTextProcessor(
             try Task.checkCancellation()
             payload = processedPayload
         } else {
-            var htmlBytes = try doc.outerHtmlUTF8FromCurrentTreeSplicingBody()
+            var htmlBytes = try doc.outerHtmlUTF8()
             if let processHTMLBytes {
                 htmlBytes = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                     await processHTMLBytes(

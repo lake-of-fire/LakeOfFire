@@ -98,6 +98,48 @@ final class opensearch_test: XCTestCase {
 
         waitForExpectations(timeout: 2)
     }
+
+    func testFetchOpenSearchTemplateUsesFinalSearchDocumentURL() {
+        MockURLProtocol.requestHandler = { request in
+            let xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <OpenSearchDescription xmlns="http://a9.com/-/spec/opensearch/1.1/">
+              <Url type="application/atom+xml;profile=opds-catalog;kind=acquisition" template="search?q={searchTerms}"/>
+            </OpenSearchDescription>
+            """
+            let response = HTTPURLResponse(
+                url: URL(string: "https://cdn.example.net/search/opensearch.xml")!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data(xml.utf8))
+        }
+
+        let feed = Feed(title: "Catalog")
+        feed.links = [
+            Link(
+                href: "https://catalog.example.com/feed.atom",
+                type: "application/atom+xml;profile=opds-catalog;kind=acquisition",
+                rel: .self
+            ),
+            Link(
+                href: "https://catalog.example.com/opensearch.xml",
+                type: "application/opensearchdescription+xml",
+                rel: .search
+            ),
+        ]
+
+        let expectation = expectation(description: "Final OpenSearch template")
+
+        OPDS1Parser.fetchOpenSearchTemplate(feed: feed) { template, error in
+            XCTAssertNil(error)
+            XCTAssertEqual(template, "https://cdn.example.net/search/search?q={searchTerms}")
+            expectation.fulfill()
+        }
+
+        waitForExpectations(timeout: 2)
+    }
 }
 
 private final class MockURLProtocol: URLProtocol {

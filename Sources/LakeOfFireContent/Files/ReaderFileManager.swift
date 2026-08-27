@@ -1,3 +1,5 @@
+import Foundation
+import CryptoKit
 import SwiftUI
 import Combine
 import LakeOfFireCore
@@ -238,15 +240,26 @@ public class ReaderFileManager: ObservableObject {
         guard let strippedURL = components.url else {
             return nil
         }
+
+        // Mokuro is retained as a legacy URL mapping. It is not part of the
+        // ebook request authorization path and keeps its historical conversion
+        // behavior while that feature remains disabled.
+        if strippedURL.scheme == "mokuro", strippedURL.host == "mokuro" {
+            let absoluteString = strippedURL.absoluteString
+            guard absoluteString.hasPrefix("mokuro://mokuro/load/") else { return nil }
+            return URL(string: absoluteString.replacingOccurrences(of: "mokuro://mokuro/load/", with: "reader-file://file/load/"))
+        }
+
+        guard Self.isValidReaderBackingPath(components: components) else {
+            return nil
+        }
         if strippedURL.isReaderFileURL {
             return strippedURL
         }
-        let absoluteString = strippedURL.absoluteString
-        if absoluteString.hasPrefix("ebook://ebook/load/") {
-            return URL(string: absoluteString.replacingOccurrences(of: "ebook://ebook/load/", with: "reader-file://file/load/"))
-        }
-        if absoluteString.hasPrefix("mokuro://mokuro/load/") {
-            return URL(string: absoluteString.replacingOccurrences(of: "mokuro://mokuro/load/", with: "reader-file://file/load/"))
+        if strippedURL.scheme == "ebook", strippedURL.host == "ebook" {
+            components.scheme = "reader-file"
+            components.host = "file"
+            return components.url
         }
         return nil
     }
@@ -388,11 +401,13 @@ public class ReaderFileManager: ObservableObject {
             guard let localDrive = localDrive else {
                 throw ReaderFileManagerError.driveMissing
             }
+            try Self.validateContainedPath(relativePath, within: localDrive.rootDirectory)
             return (localDrive, relativePath)
         case "icloud":
             guard let cloudDrive = cloudDrive else {
                 throw ReaderFileManagerError.driveMissing
             }
+            try Self.validateContainedPath(relativePath, within: cloudDrive.rootDirectory)
             return (cloudDrive, relativePath)
         default:
             throw ReaderFileManagerError.invalidFileURL
@@ -557,11 +572,23 @@ public class ReaderFileManager: ObservableObject {
         var targetExists = false
         var distinctTargetExists = false
         var originData: Data?
-        if targetURL.isFilePackage() {
+        let targetIsFilePackage = targetURL.isFilePackage()
+        if targetIsFilePackage {
             targetExists = true
             if fileURL.isFilePackage() {
-                originData = try fileURL.concatenateDataInDirectory()
-                distinctTargetExists = try targetURL != fileURL && targetURL.concatenateDataInDirectory() != originData
+                // Package comparison can involve thousands of files. Keep the
+                // main actor free while a deterministic manifest is streamed
+                // and hashed (path + type + size + bytes), and never follow a
+                // symlink outside the package root.
+                originData = try await Task.detached(priority: .utility) {
+                    try fileURL.packageManifestDigest()
+                }.value
+                if targetURL != fileURL {
+                    let targetDigest = try await Task.detached(priority: .utility) {
+                        try targetURL.packageManifestDigest()
+                    }.value
+                    distinctTargetExists = targetDigest != originData
+                }
             } else {
                 distinctTargetExists = true
             }
@@ -575,7 +602,11 @@ public class ReaderFileManager: ObservableObject {
             }
         }
         if distinctTargetExists, let originData = originData {
-            if try await drive.readFile(at: targetFilePath) != originData {
+            var needsUniqueName = targetIsFilePackage
+            if !needsUniqueName {
+                needsUniqueName = try await drive.readFile(at: targetFilePath) != originData
+            }
+            if needsUniqueName {
                 // Make a unique filename
                 var ext = fileURL.lakePathExtension
                 if !ext.isEmpty {
@@ -1000,9 +1031,13 @@ public class ReaderFileManager: ObservableObject {
 
                 if pathExtension.lowercased() == "zip",
                    let systemFileURL = try? localFileURL(forReaderFileURL: fileURL),
-                   let archive = try? Archive(url: systemFileURL, accessMode: .read) {
+                   let packageSource = try? ReaderPackageEntrySource(
+                       localURL: systemFileURL,
+                       limits: .metadata
+                   ),
+                   let packageEntries = try? packageSource.enumerateEntries() {
                     let filePaths = RealmSwift.MutableSet<String>()
-                    filePaths.insert(objectsIn: archive.map { $0.path })
+                    filePaths.insert(objectsIn: packageEntries.map(\.path))
                     contentFile.packageFilePaths = filePaths
                 }
             }
@@ -1075,9 +1110,92 @@ public class ReaderFileManager: ObservableObject {
     }
     
     private static func extractRelativePath(fileURL: URL) throws -> RootRelativePath {
-        //        try ReaderFileManager.validate(readerFileURL: fileURL)
-        let relativePath = RootRelativePath(path: String(fileURL.pathComponents.dropFirst(3).joined(separator: "/")))
-        return relativePath
+        guard let components = URLComponents(url: fileURL, resolvingAgainstBaseURL: false),
+              isValidReaderBackingPath(components: components) else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
+        let rawComponents = components.percentEncodedPath
+            .split(separator: "/", omittingEmptySubsequences: false)
+        guard rawComponents.count > 3 else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
+        let decodedComponents = try rawComponents.dropFirst(3).map { rawComponent -> String in
+            guard let component = String(rawComponent).removingPercentEncoding,
+                  !component.isEmpty else {
+                throw ReaderFileManagerError.invalidFileURL
+            }
+            return component
+        }
+        return RootRelativePath(path: decodedComponents.joined(separator: "/"))
+    }
+
+    /// Validates the URL grammar used by reader backing files.  URL.pathComponents
+    /// normalizes away empty components and leaves dot segments in place, so it is
+    /// intentionally not sufficient for validating a path received from a web view.
+    private static func isValidReaderBackingPath(components: URLComponents) -> Bool {
+        guard let scheme = components.scheme?.lowercased(),
+              let host = components.host?.lowercased(),
+              (scheme == "reader-file" && host == "file")
+                || (scheme == "ebook" && host == "ebook")
+                || (scheme == "mokuro" && host == "mokuro"),
+              components.user == nil,
+              components.password == nil,
+              components.port == nil,
+              components.percentEncodedPath.hasPrefix("/load/") else {
+            return false
+        }
+
+        let rawComponents = components.percentEncodedPath
+            .split(separator: "/", omittingEmptySubsequences: false)
+        // The leading empty component is followed by `load`, a storage location,
+        // and at least one component identifying the package.
+        guard rawComponents.count >= 4,
+              rawComponents[0].isEmpty,
+              rawComponents[1] == "load",
+              rawComponents[2] == "local" || rawComponents[2] == "icloud" else {
+            return false
+        }
+
+        for rawComponent in rawComponents.dropFirst(1) {
+            let rawComponent = String(rawComponent)
+            guard !rawComponent.isEmpty,
+                  !rawComponent.contains("\\"),
+                  let component = rawComponent.removingPercentEncoding,
+                  !component.isEmpty,
+                  component != ".",
+                  component != "..",
+                  !component.contains("/"),
+                  !component.contains("\\"),
+                  !component.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) else {
+                return false
+            }
+
+            // Reject encoded separators and dot segments, including mixed-case
+            // escapes. A second URL/path decoder must never be able to turn a
+            // valid component into a traversal component later.
+            let lowercased = rawComponent.lowercased()
+            guard !lowercased.contains("%2f"),
+                  !lowercased.contains("%5c"),
+                  !lowercased.contains("%2e") else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func validateContainedPath(
+        _ relativePath: RootRelativePath,
+        within rootURL: URL
+    ) throws {
+        let candidateURL = try relativePath.fileURL(forRoot: rootURL)
+        let resolvedRootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let resolvedCandidateURL = candidateURL.standardizedFileURL.resolvingSymlinksInPath()
+        let rootComponents = resolvedRootURL.pathComponents
+        let candidateComponents = resolvedCandidateURL.pathComponents
+        guard candidateComponents.count > rootComponents.count,
+              Array(candidateComponents.prefix(rootComponents.count)) == rootComponents else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
     }
 
     private func readerBackingPathContext(for readerBackingURL: URL) throws -> ReaderBackingPathContext {
@@ -1098,6 +1216,17 @@ public class ReaderFileManager: ObservableObject {
             activeRootURL = localRootURL
         case .icloud:
             activeRootURL = cloudRootURL
+        }
+
+        // `RootRelativePath` intentionally remains a lightweight string type;
+        // prove that each filesystem URL derived from the untrusted URL stays
+        // below its drive root before it is used for availability or reads.
+        try Self.validateContainedPath(
+            relativePath,
+            within: localDrive?.rootDirectory ?? Self.getDocumentsDirectory()
+        )
+        if let cloudDrive {
+            try Self.validateContainedPath(relativePath, within: cloudDrive.rootDirectory)
         }
 
         return ReaderBackingPathContext(
@@ -1323,22 +1452,14 @@ public class ReaderFileManager: ObservableObject {
     }
     
     public static func relativePath(for fileURL: URL, relativeTo rootDirectory: URL) -> String? {
-        let filePath = fileURL.path
-        let rootPath = rootDirectory.path
-        
-        // Check if the file path is within the root directory
-        guard filePath.hasPrefix(rootPath) else {
+        let rootComponents = rootDirectory.standardizedFileURL.pathComponents
+        let fileComponents = fileURL.standardizedFileURL.pathComponents
+        guard fileComponents.count >= rootComponents.count,
+              Array(fileComponents.prefix(rootComponents.count)) == rootComponents else {
             print("File is not within the root directory.")
             return nil
         }
-        
-        // Extract the relative path
-        let relativePath = String(filePath.dropFirst(rootPath.count))
-        
-        // Ensure the relative path does not start with a "/" to make it a true relative path
-        let trimmedRelativePath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        
-        return trimmedRelativePath
+        return fileComponents.dropFirst(rootComponents.count).joined(separator: "/")
     }
 
     private static func contentFileIndexDecision(at absoluteFileURL: URL) -> ContentFileIndexDecision {
@@ -1472,19 +1593,126 @@ extension URL {
         return false
 #endif
     }
-    
-    func concatenateDataInDirectory(_ directoryURL: URL? = nil) throws -> Data {
+
+    /// Streams a deterministic package manifest into SHA-256. Every record
+    /// contains its relative path, entry type, size, and (for regular files)
+    /// its bytes. This avoids the old quadratic Data concatenation and keeps
+    /// package comparison independent of directory enumeration order.
+    func packageManifestDigest() throws -> Data {
         let fileManager = FileManager.default
-        let sortedContents = try fileManager.contentsOfDirectory(at: (directoryURL ?? self), includingPropertiesForKeys: nil).sorted(by: { $0.path < $1.path })
-        
-        return try sortedContents.reduce(Data()) { result, fileURL in
-            if fileManager.isDirectory(atPath: fileURL.path) {
-                return try result + concatenateDataInDirectory(fileURL)
-            } else {
-                return try result + Data(contentsOf: fileURL)
-            }
+        let rootURL = standardizedFileURL
+        let resolvedRootURL = rootURL.resolvingSymlinksInPath().standardizedFileURL
+        let rootValues = try resolvedRootURL.resourceValues(forKeys: [.isDirectoryKey])
+        guard rootValues.isDirectory == true else {
+            throw PackageManifestError.invalidRoot
         }
+
+        var hasher = SHA256()
+        try appendPackageManifestEntries(
+            at: rootURL,
+            relativePath: "",
+            resolvedRootURL: resolvedRootURL,
+            fileManager: fileManager,
+            hasher: &hasher
+        )
+        return Data(hasher.finalize())
     }
+}
+
+private enum PackageManifestError: Swift.Error {
+    case invalidRoot
+}
+
+private func appendPackageManifestEntries(
+    at directoryURL: URL,
+    relativePath: String,
+    resolvedRootURL: URL,
+    fileManager: FileManager,
+    hasher: inout SHA256
+) throws {
+    let children = try fileManager.contentsOfDirectory(
+        at: directoryURL,
+        includingPropertiesForKeys: [
+            .isDirectoryKey,
+            .isRegularFileKey,
+            .fileSizeKey,
+        ],
+        options: []
+    ).sorted { lhs, rhs in
+        lhs.lastPathComponent.utf8.lexicographicallyPrecedes(rhs.lastPathComponent.utf8)
+    }
+
+    for childURL in children {
+        try Task.checkCancellation()
+        let childRelativePath = relativePath.isEmpty
+            ? childURL.lastPathComponent
+            : relativePath + "/" + childURL.lastPathComponent
+
+        // Asking FileManager for the link destination does not dereference
+        // the link. Record its target bytes and never read or recurse through
+        // it; this prevents a package-local symlink from exposing outside
+        // files during comparison.
+        if let symlinkTarget = try? fileManager.destinationOfSymbolicLink(atPath: childURL.path) {
+            let targetData = Data(symlinkTarget.utf8)
+            appendPackageManifestField("entry", hasher: &hasher)
+            appendPackageManifestField(childRelativePath, hasher: &hasher)
+            appendPackageManifestField("symlink", hasher: &hasher)
+            appendPackageManifestField(String(targetData.count), hasher: &hasher)
+            hasher.update(data: targetData)
+            hasher.update(data: Data([0]))
+            continue
+        }
+
+        let resolvedURL = childURL.resolvingSymlinksInPath().standardizedFileURL
+        guard isPackageManifestContained(resolvedURL, within: resolvedRootURL) else {
+            // A link may have been introduced between enumeration and this
+            // check. Do not follow an entry that escaped the package root.
+            continue
+        }
+
+        let values = try childURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey])
+        if values.isDirectory == true {
+            appendPackageManifestField("entry", hasher: &hasher)
+            appendPackageManifestField(childRelativePath, hasher: &hasher)
+            appendPackageManifestField("directory", hasher: &hasher)
+            appendPackageManifestField("0", hasher: &hasher)
+            try appendPackageManifestEntries(
+                at: childURL,
+                relativePath: childRelativePath,
+                resolvedRootURL: resolvedRootURL,
+                fileManager: fileManager,
+                hasher: &hasher
+            )
+            continue
+        }
+
+        guard values.isRegularFile == true else { continue }
+        let advertisedSize = Int64(values.fileSize ?? 0)
+        appendPackageManifestField("entry", hasher: &hasher)
+        appendPackageManifestField(childRelativePath, hasher: &hasher)
+        appendPackageManifestField("file", hasher: &hasher)
+        appendPackageManifestField(String(advertisedSize), hasher: &hasher)
+
+        let handle = try FileHandle(forReadingFrom: resolvedURL)
+        defer { try? handle.close() }
+        while let bytes = try handle.read(upToCount: 64 * 1024), !bytes.isEmpty {
+            try Task.checkCancellation()
+            hasher.update(data: bytes)
+        }
+        hasher.update(data: Data([0]))
+    }
+}
+
+private func appendPackageManifestField(_ value: String, hasher: inout SHA256) {
+    hasher.update(data: Data(value.utf8))
+    hasher.update(data: Data([0]))
+}
+
+private func isPackageManifestContained(_ url: URL, within rootURL: URL) -> Bool {
+    let rootComponents = rootURL.pathComponents
+    let components = url.pathComponents
+    return components.count > rootComponents.count
+        && Array(components.prefix(rootComponents.count)) == rootComponents
 }
 
 fileprivate extension FileManager {

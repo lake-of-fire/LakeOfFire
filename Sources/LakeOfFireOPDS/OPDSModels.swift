@@ -133,7 +133,7 @@ public struct Metadata: Hashable {
             modified: (json["modified"] as? String)?.dateFromISO8601,
             published: (json["published"] as? String)?.dateFromISO8601,
             languages: String.array(from: json["language"]),
-            subjects: try Subject.array(from: json["subject"]),
+            subjects: try Subject.array(from: json["subject"], normalizeHREF: normalizeHREF),
             authors: try Contributor.array(from: json["author"], normalizeHREF: normalizeHREF),
             publishers: try Contributor.array(from: json["publisher"], normalizeHREF: normalizeHREF),
             description: json["description"] as? String
@@ -214,20 +214,20 @@ public struct Subject: Hashable {
         self.links = links
     }
 
-    static func array(from json: Any?) throws -> [Subject] {
+    static func array(from json: Any?, normalizeHREF: (String) -> String = { $0 }) throws -> [Subject] {
         guard let json else {
             return []
         }
         if let array = json as? [Any] {
-            return try array.compactMap(Subject.init(json:))
+            return try array.compactMap { try Subject(json: $0, normalizeHREF: normalizeHREF) }
         }
-        if let subject = try Subject(json: json) {
+        if let subject = try Subject(json: json, normalizeHREF: normalizeHREF) {
             return [subject]
         }
         return []
     }
 
-    init?(json: Any) throws {
+    init?(json: Any, normalizeHREF: (String) -> String = { $0 }) throws {
         if let name = json as? String {
             self.init(name: name)
             return
@@ -242,7 +242,7 @@ public struct Subject: Hashable {
             sortAs: dict["sortAs"] as? String,
             scheme: dict["scheme"] as? String,
             code: dict["code"] as? String,
-            links: try Link.links(from: dict["links"])
+            links: try Link.links(from: dict["links"], normalizeHREF: normalizeHREF)
         )
     }
 }

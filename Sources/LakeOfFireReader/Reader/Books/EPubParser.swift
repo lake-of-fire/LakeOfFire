@@ -4,49 +4,72 @@ import LakeOfFireFiles
 import LakeOfFireContentUI
 import LakeOfFireContent
 import LakeOfFireCore
-import ZIPFoundation
 
 struct EPubParser {
     /// Parses the EPUB file at the given URL (either a ZIP archive with an epub extension or an unpacked EPUB directory)
     /// and returns a tuple with the book title, author (if found), cover image relative path, and publication date (if found).
     /// Returns nil if parsing fails.
     static func parseMetadataAndCover(from epubURL: URL) throws -> (title: String, author: String?, coverHref: String, publicationDate: Date?)? {
-        let opfData: Data?
-        let fileManager = FileManager.default
-        var opfRelativePath: String?
-        
-        if fileManager.isDirectory(epubURL) {
-            // Unpacked EPUB directory.
-            let containerURL = epubURL.appendingPathComponent("META-INF/container.xml")
-            guard let containerData = try? Data(contentsOf: containerURL),
-                  let containerOpfRelativePath = parseContainer(containerData) else { return nil }
-            opfRelativePath = containerOpfRelativePath
-            let opfURL = epubURL.appendingPathComponent(containerOpfRelativePath)
-            opfData = try? Data(contentsOf: opfURL)
-        } else {
-            // EPUB is stored as a ZIP archive.
-            guard let archive = Archive(url: epubURL, accessMode: .read) else { return nil }
-            guard let containerEntry = archive["META-INF/container.xml"] else { return nil }
-            var containerData = Data()
-            try archive.extract(containerEntry) { containerData.append($0) }
-            guard let containerOpfRelativePath = parseContainer(containerData),
-                  let opfEntry = archive[containerOpfRelativePath] else { return nil }
-            opfRelativePath = containerOpfRelativePath
-            var opfDataLocal = Data()
-            try archive.extract(opfEntry) { opfDataLocal.append($0) }
-            opfData = opfDataLocal
+        // Treat both unpacked and ZIP EPUBs as untrusted package sources. The
+        // source enforces metadata entry and aggregate limits before XMLParser
+        // sees any bytes, and resolves directory paths with root containment.
+        guard let source = try? ReaderPackageEntrySource(
+            localURL: epubURL,
+            limits: .metadata
+        ), (try? source.enumerateEntries()) != nil else {
+            return nil
         }
-        
-        guard let data = opfData, let opfRelPath = opfRelativePath else { return nil }
+        guard let containerData = try? source.readEntry(subpath: "META-INF/container.xml"),
+              let containerOpfRelativePath = parseContainer(containerData),
+              let opfRelPath = try? ReaderPackageEntrySource.sanitizeSubpath(containerOpfRelativePath),
+              let data = try? source.readEntry(subpath: opfRelPath) else {
+            return nil
+        }
         guard var (title, coverHref, author, pubDate) = parseOPF(data) else { return nil }
         
-        // Adjust the coverHref to be relative to the EPUB root.
-        let opfDir = (opfRelPath as NSString).deletingLastPathComponent
-        if !opfDir.isEmpty {
-            coverHref = (opfDir as NSString).appendingPathComponent(coverHref)
+        // Resolve the cover path without allowing an EPUB metadata file to
+        // escape the package root. A valid EPUB can use "../" here, so resolve
+        // components rather than passing the href directly to a filesystem API.
+        guard let resolvedCoverHref = resolvePackageRelativePath(
+            baseDirectory: (opfRelPath as NSString).deletingLastPathComponent,
+            href: coverHref
+        ) else {
+            return nil
         }
+        coverHref = resolvedCoverHref
         
         return (title: title, author: author, coverHref: coverHref, publicationDate: pubDate)
+    }
+
+    private static func resolvePackageRelativePath(baseDirectory: String, href: String) -> String? {
+        var href = href.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !href.isEmpty,
+              !href.hasPrefix("/"),
+              !href.contains("\\") else {
+            return nil
+        }
+        // A cover href is a resource path; fragment/query components are not
+        // part of the archive entry name.
+        if let delimiter = href.firstIndex(where: { $0 == "#" || $0 == "?" }) {
+            href = String(href[..<delimiter])
+        }
+        guard !href.isEmpty else { return nil }
+
+        var components: [String] = []
+        for component in (baseDirectory + "/" + href).split(separator: "/", omittingEmptySubsequences: false).map(String.init) {
+            switch component {
+            case "", ".":
+                continue
+            case "..":
+                guard !components.isEmpty else { return nil }
+                components.removeLast()
+            default:
+                components.append(component)
+            }
+        }
+        let result = components.joined(separator: "/")
+        guard !result.isEmpty else { return nil }
+        return try? ReaderPackageEntrySource.sanitizeSubpath(result)
     }
     
     // MARK: - Internal Parsing Helpers

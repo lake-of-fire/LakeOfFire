@@ -331,7 +331,8 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 let accepted = readerModeViewModel.handleRenderedReaderDocumentReady(
                     pageURL: pageURL,
                     hasReaderContent: true,
-                    renderGeneration: renderGeneration
+                    renderGeneration: renderGeneration,
+                    navigator: navigator
                 )
                 guard accepted else { return }
                 if !readerViewModel.state.hasReaderRenderReady {
