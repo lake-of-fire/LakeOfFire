@@ -126,7 +126,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testExternalizingCanonicalSidecarKeepsAggregateAndPublishesRawJSON() throws {
-        let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
+        let canonicalJSON = #"{"v":11,"t":{},"s":[]}"#
         let aggregateJSON = #"{"c":0,"j":[],"n":[],"k":[],"sid":[]}"#
         let html = """
         <html><head><title>Test</title></head><body><p>本文</p>
@@ -160,7 +160,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     func testExternalSidecarIdentityIsDeterministicAndCacheable() throws {
         let payload = EbookProcessedSectionPayload(
             documentHTML: Data("<html><head></head><body>本文</body></html>".utf8),
-            segmentSidecar: Data(#"{"v":10,"s":[]}"#.utf8)
+            segmentSidecar: Data(#"{"v":11,"s":[]}"#.utf8)
         )
 
         let first = publishingCanonicalReaderSegmentSidecar(payload, scheme: .ebook)
@@ -347,7 +347,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testProcessedSidecarCacheEnvelopeRoundTripsWithoutRescanningCombinedHTML() throws {
-        let canonicalJSON = #"{"v":10,"t":{"語":[1]},"s":[]}"#
+        let canonicalJSON = #"{"v":11,"t":{"語":[1]},"s":[]}"#
         let aggregateJSON = #"{"c":1,"j":["語"]}"#
         let html = """
         <html><head></head><body><p>本文</p>
@@ -387,11 +387,11 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     func testProcessedSidecarCacheRequiresDurableIdentityForEverySegment() {
         let valid = EbookProcessedSectionPayload(
             documentHTML: Data("<m-m id=runtime>text</m-m>".utf8),
-            segmentSidecar: Data(#"{"v":10,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!runtime",0,null,null,null,null,null,null,null,0]]}"#.utf8)
+            segmentSidecar: Data(#"{"v":11,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!runtime",0,null,null,null,null,null,null,null,0]]}"#.utf8)
         )
         let missingSentenceIdentity = EbookProcessedSectionPayload(
             documentHTML: Data("<m-m id=runtime>text</m-m>".utf8),
-            segmentSidecar: Data(#"{"v":10,"t":{"h":["hash"],"sid":[]},"s":[["!runtime",0]]}"#.utf8)
+            segmentSidecar: Data(#"{"v":11,"t":{"h":["hash"],"sid":[]},"s":[["!runtime",0]]}"#.utf8)
         )
         let previousSchemaVersion = EbookProcessedSectionPayload(
             documentHTML: Data("<m-m id=runtime>text</m-m>".utf8),
@@ -411,11 +411,11 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
         let emptySidecar = EbookProcessedSectionPayload(
             documentHTML: documentHTML,
-            segmentSidecar: Data(#"{"v":10,"t":{"h":[],"sid":[]},"s":[]}"#.utf8)
+            segmentSidecar: Data(#"{"v":11,"t":{"h":[],"sid":[]},"s":[]}"#.utf8)
         )
         let incompleteSidecar = EbookProcessedSectionPayload(
             documentHTML: documentHTML,
-            segmentSidecar: Data(#"{"v":10,"t":{"h":["hash"],"sid":["sentence"]},"s":[["a",0,null,null,null,null,null,null,null,0]]}"#.utf8)
+            segmentSidecar: Data(#"{"v":11,"t":{"h":["hash"],"sid":["sentence"]},"s":[["a",0,null,null,null,null,null,null,null,0]]}"#.utf8)
         )
         let segmentFreeDocument = EbookProcessedSectionPayload(
             documentHTML: Data("<html><body><m-metadata>Plain text</m-metadata></body></html>".utf8),
@@ -1555,7 +1555,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
     func testForegroundProcessingPopulatesDisplayReadyProcessedTextCache() async throws {
         let writerCalled = expectation(description: "display-ready cache writer runs")
-        let canonicalJSON = #"{"v":10,"t":{"h":[],"sid":[]},"s":[]}"#
+        let canonicalJSON = #"{"v":11,"t":{"h":[],"sid":[]},"s":[]}"#
         let processedHTML = "<html><body>foreground result<script id=\"mnb-segment-metadata\">\(canonicalJSON)</script></body></html>"
         let actor = EBookProcessingActor(
             ebookProcessedTextCacheWriter: { _, _, _, payload in
