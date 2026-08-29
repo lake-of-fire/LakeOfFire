@@ -2,9 +2,28 @@ import SwiftUI
 @preconcurrency import WebKit
 
 public typealias ReaderNavigationActionHandler = @Sendable (WKNavigationAction) async -> WKNavigationActionPolicy?
+public typealias ReaderNavigationActionContextHandler = @Sendable (ReaderNavigationActionContext) async -> WKNavigationActionPolicy?
+
+public struct ReaderNavigationActionContext: @unchecked Sendable {
+    public let action: WKNavigationAction
+    public let websiteDataStore: WKWebsiteDataStore
+
+    public init(action: WKNavigationAction, websiteDataStore: WKWebsiteDataStore) {
+        self.action = action
+        self.websiteDataStore = websiteDataStore
+    }
+}
 
 private struct ReaderNavigationActionHandlerKey: EnvironmentKey {
     static let defaultValue: ReaderNavigationActionHandler? = nil
+}
+
+private struct ReaderNavigationActionContextHandlerKey: EnvironmentKey {
+    static let defaultValue: ReaderNavigationActionContextHandler? = nil
+}
+
+private struct ReaderWebViewDataStoreKey: EnvironmentKey {
+    static let defaultValue: WKWebsiteDataStore? = nil
 }
 
 public struct ReaderNativeViewContext {
@@ -56,6 +75,16 @@ public extension EnvironmentValues {
         set { self[ReaderNavigationActionHandlerKey.self] = newValue }
     }
 
+    var readerNavigationActionContextHandler: ReaderNavigationActionContextHandler? {
+        get { self[ReaderNavigationActionContextHandlerKey.self] }
+        set { self[ReaderNavigationActionContextHandlerKey.self] = newValue }
+    }
+
+    var readerWebViewDataStore: WKWebsiteDataStore? {
+        get { self[ReaderWebViewDataStoreKey.self] }
+        set { self[ReaderWebViewDataStoreKey.self] = newValue }
+    }
+
     var readerNativeViewProvider: ReaderNativeViewProvider? {
         get { self[ReaderNativeViewProviderKey.self] }
         set { self[ReaderNativeViewProviderKey.self] = newValue }
@@ -65,6 +94,19 @@ public extension EnvironmentValues {
 public extension View {
     func readerNavigationActionHandler(_ handler: ReaderNavigationActionHandler?) -> some View {
         environment(\.readerNavigationActionHandler, handler)
+    }
+
+    /// Handles navigation with the exact data store used by the Reader web
+    /// view. Returning nil falls back to the action-only handler, if present.
+    func readerNavigationActionContextHandler(
+        _ handler: ReaderNavigationActionContextHandler?
+    ) -> some View {
+        environment(\.readerNavigationActionContextHandler, handler)
+    }
+
+    /// Supplies the data store used by Reader's web view and navigation context.
+    func readerWebViewDataStore(_ dataStore: WKWebsiteDataStore?) -> some View {
+        environment(\.readerWebViewDataStore, dataStore)
     }
 
     func readerNativeViewProvider(_ provider: ReaderNativeViewProvider?) -> some View {

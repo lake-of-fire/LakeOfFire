@@ -474,6 +474,8 @@ fileprivate struct ReaderWebViewInternal: View {
     @Environment(\.webViewMessageHandlers) private var webViewMessageHandlers
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @Environment(\.readerNavigationActionHandler) private var readerNavigationActionHandler
+    @Environment(\.readerNavigationActionContextHandler) private var readerNavigationActionContextHandler
+    @Environment(\.readerWebViewDataStore) private var readerWebViewDataStore
     @Environment(\.colorScheme) private var colorScheme
 
     private var readerThemeBackgroundColor: Color {
@@ -529,6 +531,7 @@ fileprivate struct ReaderWebViewInternal: View {
                 trailing: 0
             )
         )
+        let resolvedWebsiteDataStore = readerWebViewDataStore ?? WKWebsiteDataStore.default()
 
         let webViewConfig = WebViewConfig(
             dataDetectorsEnabled: false,
@@ -570,13 +573,23 @@ fileprivate struct ReaderWebViewInternal: View {
                 handler.onURLChanged(state: state)
             },
             onNavigationAction: { action in
-                await readerNavigationActionHandler?(action)
+                if let readerNavigationActionContextHandler,
+                   let policy = await readerNavigationActionContextHandler(
+                       ReaderNavigationActionContext(
+                           action: action,
+                           websiteDataStore: resolvedWebsiteDataStore
+                       )
+                   ) {
+                    return policy
+                }
+                return await readerNavigationActionHandler?(action)
             },
             buildMenu: { builder in
                 buildMenu?(builder)
             },
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
+            websiteDataStore: resolvedWebsiteDataStore,
             webViewPrewarmer: webViewPrewarmer
         )
         .environment(\.webViewMessageHandlers, readerWebViewMessageHandlersTransform(webViewMessageHandlers, scriptCaller))
