@@ -17,12 +17,10 @@ export const createNativeMarkReadRequestCoordinator = ({
     postMessage,
     isOwnerCurrent = () => true,
     makeRequestID = defaultRequestID,
-    // The native command may resolve content, wait for the Realm actor,
-    // commit the source/aggregate transaction, and read its committed
-    // postimage before replying. Keep this below the UI command's 30-second
-    // observation budget while allowing a cold simulator and a deliberately
-    // delayed native commit to complete without publishing a false failure.
-    timeoutMilliseconds = 30_000,
+    // Native classification expires at 12 seconds, leaving three seconds for
+    // final validation, synchronous commit, and bridge delivery before this
+    // request/reply owner fails closed at the UI's 15-second deadline.
+    timeoutMilliseconds = 15_000,
     scheduleTimeout = globalThis.setTimeout,
     cancelTimeout = globalThis.clearTimeout,
 } = {}) => {
