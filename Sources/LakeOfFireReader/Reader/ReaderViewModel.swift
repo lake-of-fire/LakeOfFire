@@ -294,24 +294,37 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    public func pageMetadataUpdated(title: String?, author: String? = nil) async throws {
+    public func pageMetadataUpdated(
+        title: String?,
+        author: String? = nil,
+        expectedDocumentURL: URL? = nil
+    ) async throws {
         let sanitizedIncomingTitle = title?
             .replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: "")
         if ReaderHTTPErrorRecoveryPolicy.isHTTPErrorStatus(state.mainFrameHTTPStatusCode) {
             return
         }
-        guard !state.pageURL.isNativeReaderView, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty else { return }
+        if let expectedDocumentURL,
+           !urlsMatchWithoutHash(expectedDocumentURL, state.pageURL) {
+            return
+        }
+        let targetURL = expectedDocumentURL ?? state.pageURL
+        guard !targetURL.isNativeReaderView, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty else { return }
         let newTitle: String
-        if state.pageURL.isEBookURL {
+        if targetURL.isEBookURL {
             newTitle = title
         } else {
-            newTitle = fixAnnoyingTitlesWithPipes(title: title, url: state.pageURL)
+            newTitle = fixAnnoyingTitlesWithPipes(title: title, url: targetURL)
         }
         let contentRefs = try await { @RealmBackgroundActor in
-            let contents = try await ReaderContentLoader.loadAll(url: state.pageURL)
+            let contents = try await ReaderContentLoader.loadAll(url: targetURL)
             return contents.compactMap { ReaderContentLoader.ContentReference(content: $0) }
         }()
         for contentRef in contentRefs {
+            if let expectedDocumentURL,
+               !urlsMatchWithoutHash(expectedDocumentURL, state.pageURL) {
+                return
+            }
             guard let content = try await contentRef.resolveOnMainActor() else { continue }
             let shouldStripClipboardIndicator = content.isFromClipboard || content.url.isSnippetURL
             let finalTitle = newTitle.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
@@ -319,13 +332,18 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 .replacingOccurrences(of: String("\u{fffc}"), with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !finalTitle.isEmpty, existingTitle != finalTitle || content.author != author ?? "" {
+                if let expectedDocumentURL,
+                   !urlsMatchWithoutHash(expectedDocumentURL, state.pageURL) {
+                    return
+                }
                 try await content.asyncWrite { _, content in
+                    guard !Task.isCancelled else { return }
                     content.title = finalTitle
                     content.author = author ?? ""
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }
                 try await refreshTitleInWebView(content: content)
-            } else if state.pageURL.isEBookURL {
+            } else if targetURL.isEBookURL {
                 try await refreshTitleInWebView(content: content)
             }
         }

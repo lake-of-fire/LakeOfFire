@@ -146,8 +146,7 @@ public func ebookTextProcessor(
             print("Error: Unexpectedly failed to receive doc")
             return EbookProcessedSectionPayload(
                 documentHTML: Data(content.utf8),
-                segmentSidecar: Data(),
-                isAuthoritativelyProcessed: false
+                segmentSidecar: Data()
             )
         }
         
@@ -166,14 +165,30 @@ public func ebookTextProcessor(
         
         var payload: EbookProcessedSectionPayload
         if let processHTMLDocument {
+            guard let completionProof = EbookReaderProcessingCompletionProof(
+                sourceDocument: doc
+            ) else {
+                return EbookProcessedSectionPayload(
+                    documentHTML: Data(try doc.outerHtmlUTF8()),
+                    segmentSidecar: Data()
+                )
+            }
             let processedPayload: EbookProcessedSectionPayload = try await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
-                try await processHTMLDocument(doc, isCacheWarmer)
+                try await processHTMLDocument(doc, isCacheWarmer, completionProof)
             }
             try Task.checkCancellation()
             payload = processedPayload
         } else {
             var htmlBytes = try doc.outerHtmlUTF8()
             if let processHTMLBytes {
+                guard let completionProof = EbookReaderProcessingCompletionProof(
+                    sourceDocument: doc
+                ) else {
+                    return EbookProcessedSectionPayload(
+                        documentHTML: Data(htmlBytes),
+                        segmentSidecar: Data()
+                    )
+                }
                 htmlBytes = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                     await processHTMLBytes(
                         htmlBytes,
@@ -181,12 +196,20 @@ public func ebookTextProcessor(
                     )
                 }
                 try Task.checkCancellation()
-            }
-            payload = splitCanonicalReaderSegmentSidecar(from: htmlBytes)
-                ?? EbookProcessedSectionPayload(
+                payload = splitCanonicalReaderSegmentSidecar(
+                    from: htmlBytes,
+                    completionProof: completionProof
+                ) ?? EbookProcessedSectionPayload(
                     documentHTML: Data(htmlBytes),
                     segmentSidecar: Data()
                 )
+            } else {
+                payload = splitCanonicalReaderSegmentSidecar(from: htmlBytes)
+                    ?? EbookProcessedSectionPayload(
+                        documentHTML: Data(htmlBytes),
+                        segmentSidecar: Data()
+                    )
+            }
         }
 
         if let processHTML {
@@ -197,11 +220,16 @@ public func ebookTextProcessor(
                 )
             }
             try Task.checkCancellation()
-            payload = EbookProcessedSectionPayload(
-                documentHTML: Data(html.utf8),
-                segmentSidecar: payload.segmentSidecar,
-                isAuthoritativelyProcessed: payload.isAuthoritativelyProcessed
-            )
+            let transformedDocumentHTML = Data(html.utf8)
+            if transformedDocumentHTML != payload.documentHTML {
+                // A downstream transform has no morphology coverage proof for
+                // text it may have introduced. Preserve the sidecar only as
+                // nonauthoritative diagnostic data and require reprocessing.
+                payload = EbookProcessedSectionPayload(
+                    documentHTML: transformedDocumentHTML,
+                    segmentSidecar: payload.segmentSidecar
+                )
+            }
         }
 
         try Task.checkCancellation()
@@ -218,7 +246,6 @@ public func ebookTextProcessor(
     }
     return EbookProcessedSectionPayload(
         documentHTML: Data(content.utf8),
-        segmentSidecar: Data(),
-        isAuthoritativelyProcessed: false
+        segmentSidecar: Data()
     )
 }

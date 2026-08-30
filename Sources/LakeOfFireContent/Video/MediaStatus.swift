@@ -45,10 +45,14 @@ public class MediaStatus: Object, UnownedSyncableObject, ChangeMetadataRecordabl
         if let mediaStatus = realm.object(ofType: MediaStatus.self, forPrimaryKey: MediaStatus.makeCompoundKey(url: url)) {
             if mediaStatus.isDeleted {
 //                await realm.asyncRefresh()
+                var didCommit = false
                 try await realm.asyncWrite {
+                    guard !Task.isCancelled else { return }
                     mediaStatus.isDeleted = false
                     mediaStatus.refreshChangeMetadata(explicitlyModified: true)
+                    didCommit = true
                 }
+                guard didCommit else { throw CancellationError() }
             }
             return mediaStatus
         }
@@ -57,10 +61,14 @@ public class MediaStatus: Object, UnownedSyncableObject, ChangeMetadataRecordabl
         mediaStatus.url = url
         mediaStatus.updateCompoundKey()
 //        await realm.asyncRefresh()
+        var didCommit = false
         try await realm.asyncWrite {
+            guard !Task.isCancelled else { return }
             realm.add(mediaStatus, update: .modified)
             mediaStatus.refreshChangeMetadata(explicitlyModified: true)
+            didCommit = true
         }
+        guard didCommit else { throw CancellationError() }
         return mediaStatus
     }
 }

@@ -105,4 +105,41 @@ final class ReaderJavascriptMessagesTests: XCTestCase {
         XCTAssertEqual(message?.visibleSegmentCount, 3)
         XCTAssertEqual(message?.observedSegmentCount, 7)
     }
+
+    func testFractionalCompletionBoundsDurablePositionInputs() throws {
+        let valid = try XCTUnwrap(FractionalCompletionMessage(body: [
+            "fractionalCompletion": 0.5,
+            "cfi": "epubcfi(/6/2)",
+            "reason": "scroll",
+            "mainDocumentURL": pageURL,
+            "documentStartedAtMs": 1234.5,
+        ]))
+        XCTAssertEqual(valid.documentStartedAtMilliseconds, 1234.5)
+
+        for invalidCompletion in [-0.1, 1.1] {
+            XCTAssertNil(FractionalCompletionMessage(body: [
+                "fractionalCompletion": invalidCompletion,
+                "cfi": "epubcfi(/6/2)",
+                "reason": "scroll",
+            ]))
+        }
+
+        for invalidTimestamp: Any in [NSNumber(value: true), Double.infinity] {
+            XCTAssertNil(FractionalCompletionMessage(body: [
+                "fractionalCompletion": 0.5,
+                "cfi": "epubcfi(/6/2)",
+                "reason": "scroll",
+                "documentStartedAtMs": invalidTimestamp,
+            ]))
+        }
+
+        XCTAssertNil(FractionalCompletionMessage(body: [
+            "fractionalCompletion": 0.5,
+            "cfi": String(
+                repeating: "x",
+                count: FractionalCompletionMessage.maximumCFIUTF8Bytes + 1
+            ),
+            "reason": "scroll",
+        ]))
+    }
 }

@@ -278,6 +278,10 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         }
         return try await ReaderViewModel.getContent(forURL: windowURL, source: source)
     }
+
+    private func documentIsStillCurrent(_ expectedURL: URL) -> Bool {
+        urlsMatchWithoutHash(expectedURL, readerViewModel.state.pageURL)
+    }
     
     lazy var webViewMessageHandlers = {
         WebViewMessageHandlers([
@@ -536,6 +540,12 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     pageURL: result.pageURL,
                     windowURL: result.windowURL,
                     isMainFrame: message.frameInfo.isMainFrame
+                ), ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                    claimedURL: result.windowURL,
+                    frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                    currentPageURL: readerViewModel.state.pageURL,
+                    requiresMainFrame: false,
+                    isMainFrame: message.frameInfo.isMainFrame
                 ) else {
                     return
                 }
@@ -551,6 +561,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 guard let content = try? await contentForWindowURL(url, source: "readabilityModeUnavailable") else {
                     return
                 }
+                guard documentIsStillCurrent(url) else { return }
                 if content.rssContainsFullContent && !content.isReaderModeByDefault {
                     try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
@@ -560,6 +571,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
                         """)
+                    guard documentIsStillCurrent(url) else { return }
                     try? await ReaderContentLoader.updateContent(url: url) { object in
                         var didChange = false
                         if !object.isReaderModeAvailable {
@@ -579,24 +591,28 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     return
                 }
                 guard !url.isReaderURLLoaderURL else { return }
-                
+
+                guard documentIsStillCurrent(url) else { return }
                 try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
                         """)
                 
+                guard documentIsStillCurrent(url) else { return }
                 if readerModeViewModel.isReaderMode {
                     readerModeViewModel.isReaderMode = false
                 }
                 
                 do {
+                    guard documentIsStillCurrent(url) else { return }
                     try await ReaderContentLoader.updateContent(url: url) { object in
                         guard object.isReaderModeAvailable else { return false }
                         object.isReaderModeAvailable = false
                         return true
                     }
                     
+                    guard documentIsStillCurrent(url) else { return }
                     try await { @RealmBackgroundActor in
                         if let historyRecord = try await HistoryRecord.getOpenedRecord(forURL: url) {
                             try await historyRecord.refreshDemotedStatus()
@@ -620,6 +636,12 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     pageURL: result.pageURL,
                     windowURL: result.windowURL,
                     isMainFrame: message.frameInfo.isMainFrame
+                ), ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                    claimedURL: result.windowURL,
+                    frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                    currentPageURL: readerViewModel.state.pageURL,
+                    requiresMainFrame: false,
+                    isMainFrame: message.frameInfo.isMainFrame
                 ) else {
                     return
                 }
@@ -633,8 +655,10 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     // Don't override a parent window readability result.
                     return
                 }
+                guard documentIsStillCurrent(url) else { return }
                 guard !result.outputHTML.isEmpty else {
                     if content.rssContainsFullContent && !content.isReaderModeByDefault {
+                        guard documentIsStillCurrent(url) else { return }
                         try? await ReaderContentLoader.updateContent(url: url) { object in
                             var didChange = false
                             if !object.isReaderModeAvailable {
@@ -649,6 +673,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                         }
                         return
                     }
+                    guard documentIsStillCurrent(url) else { return }
                     try? await ReaderContentLoader.updateContent(url: url) { object in
                         guard object.isReaderModeAvailable else { return false }
                         object.isReaderModeAvailable = false
@@ -662,6 +687,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 let publicationDateFallback = hasParsedPublicationDate
                     ? nil
                     : await readerContentPublicationDateFallback(for: content)
+                guard documentIsStillCurrent(url) else { return }
                 let resolvedOutputHTML = publicationDateFallback.map {
                     buildCanonicalReadabilityHTML(
                         title: result.title,
@@ -704,6 +730,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 }
                 
                 do {
+                    guard documentIsStillCurrent(url) else { return }
                     try await ReaderContentLoader.updateContent(url: url) { object in
                         var didChange = false
                         if !object.isReaderModeAvailable {
@@ -716,12 +743,15 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                         }
                         return didChange
                     }
+                    guard documentIsStillCurrent(url) else { return }
                     await readerContent.content?.realm?.asyncRefresh()
+                    guard documentIsStillCurrent(url) else { return }
                     if let observedObject = readerContent.content as? (Object & ReaderContentProtocol),
                        observedObject.url.matchesReaderURL(url),
-                       !observedObject.isReaderModeAvailable,
+                        !observedObject.isReaderModeAvailable,
                        let observedRealm = observedObject.realm {
                         try await observedRealm.asyncWrite {
+                            guard !Task.isCancelled else { return }
                             observedObject.isReaderModeAvailable = true
                             if shouldPreserveFullContentOriginal && !observedObject.isReaderModeOfferHidden {
                                 observedObject.isReaderModeOfferHidden = true
@@ -729,7 +759,8 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                             observedObject.refreshChangeMetadata(explicitlyModified: true)
                         }
                     }
-                    
+
+                    guard documentIsStillCurrent(url) else { return }
                     try await { @RealmBackgroundActor in
                         if let historyRecord = try await HistoryRecord.getOpenedRecord(forURL: url) {
                             try await historyRecord.refreshDemotedStatus()
@@ -738,7 +769,9 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 } catch {
                     print(error)
                 }
+                guard documentIsStillCurrent(url) else { return }
                 await readerContent.content?.realm?.asyncRefresh()
+                guard documentIsStillCurrent(url) else { return }
                 readerContent.refreshObservedContentState()
             }),
             ("showOriginal", { @MainActor [weak self] _ in
@@ -760,11 +793,19 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 do {
                     guard let result = RSSURLsMessage(fromMessage: message) else { return }
                     guard let windowURL = result.windowURL,
-                          !windowURL.isNativeReaderView,
-                          let _ = try await contentForWindowURL(windowURL, source: "rssURLs") else { return }
+                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                            claimedURL: windowURL,
+                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                            currentPageURL: readerViewModel.state.pageURL,
+                            requiresMainFrame: true,
+                            isMainFrame: message.frameInfo.isMainFrame
+                          ),
+                          let _ = try await contentForWindowURL(windowURL, source: "rssURLs"),
+                          documentIsStillCurrent(windowURL) else { return }
                     let pairs = result.rssURLs.prefix(10)
                     let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
                     let titles = pairs.map { $0.last ?? $0.first ?? "" }
+                    guard documentIsStillCurrent(windowURL) else { return }
                     try await ReaderContentLoader.updateContent(url: windowURL) { object in
                         let existingURLs = Array(object.rssURLs)
                         let existingTitles = Array(object.rssTitles)
@@ -789,25 +830,48 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 guard let self else { return }
                 do {
                     guard let result = PageMetadataUpdatedMessage(fromMessage: message) else { return }
-                    guard urlsMatchWithoutHash(result.url, readerViewModel.state.pageURL) else { return }
+                    guard ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                        claimedURL: result.url,
+                        frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                        currentPageURL: readerViewModel.state.pageURL,
+                        requiresMainFrame: true,
+                        isMainFrame: message.frameInfo.isMainFrame
+                    ), let expectedURL = result.url else { return }
                     try await readerViewModel.pageMetadataUpdated(
                         title: result.title,
-                        author: result.author
+                        author: result.author,
+                        expectedDocumentURL: expectedURL
                     )
                 } catch {
                     print(error)
                 }
             }),
-            ("imageUpdated", { @RealmBackgroundActor [weak self] message in
+            ("imageUpdated", { @MainActor [weak self] message in
                 guard let self else { return }
                 do {
                     guard let result = ImageUpdatedMessage(fromMessage: message) else { return }
-                    guard let url = result.mainDocumentURL, !url.isNativeReaderView else { return }
-                    let contents = try await ReaderContentLoader.loadAll(url: url)
-                    for content in contents {
+                    guard let url = result.mainDocumentURL,
+                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                            claimedURL: url,
+                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                            currentPageURL: readerViewModel.state.pageURL,
+                            requiresMainFrame: false,
+                            isMainFrame: message.frameInfo.isMainFrame
+                          ) else { return }
+                    let contentRefs = try await { @RealmBackgroundActor in
+                        let contents = try await ReaderContentLoader.loadAll(url: url)
+                        return contents.compactMap {
+                            ReaderContentLoader.ContentReference(content: $0)
+                        }
+                    }()
+                    guard documentIsStillCurrent(url) else { return }
+                    for contentRef in contentRefs {
+                        guard documentIsStillCurrent(url),
+                              let content = try await contentRef.resolveOnMainActor() else { return }
                         guard content.imageUrl != result.newImageURL else { continue }
-                        //                        await content.realm?.asyncRefresh()
-                        try await content.realm?.asyncWrite {
+                        guard documentIsStillCurrent(url) else { return }
+                        try await content.asyncWrite { _, content in
+                            guard !Task.isCancelled else { return }
                             content.imageUrl = result.newImageURL
                             content.refreshChangeMetadata(explicitlyModified: true)
                         }
@@ -865,19 +929,31 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 guard let result = FractionalCompletionMessage(fromMessage: message) else { return }
                 handleNavigationVisibility(for: result)
             }),
-            ("videoStatus", { @RealmBackgroundActor [weak self] message in
+            ("videoStatus", { @MainActor [weak self] message in
                 guard let self else { return }
                 do {
                     guard let result = VideoStatusMessage(fromMessage: message) else { return }
-                    //                    debugPrint("!!", result)
-                    if let pageURL = result.pageURL {
-                        _ = try await MediaStatus.getOrCreate(url: pageURL)
-                    }
+                    guard let windowURL = result.windowURL,
+                          let pageURL = result.pageURL,
+                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                            claimedURL: windowURL,
+                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                            currentPageURL: readerViewModel.state.pageURL,
+                            requiresMainFrame: false,
+                            isMainFrame: message.frameInfo.isMainFrame
+                          ),
+                          ReaderDocumentMutationAdmission.acceptsFrameTarget(
+                            claimedFrameURL: pageURL,
+                            frameRequestURL: message.frameInfo.request.url
+                          ),
+                          documentIsStillCurrent(windowURL) else { return }
+                    _ = try await MediaStatus.getOrCreate(url: pageURL)
                 } catch {
                     print(error)
                 }
             })
         ])
+        .requiringTrustedUserAction("showOriginal")
     }()
     
     init(

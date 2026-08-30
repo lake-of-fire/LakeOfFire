@@ -282,6 +282,10 @@ public struct ReaderContentLoader {
         for case let object as (Object & ReaderContentProtocol) in objects {
             guard let realm = object.realm else { continue }
             try await realm.asyncWrite {
+                // Realm's async transaction can begin after its caller was
+                // cancelled (for example by a superseding WebView document).
+                // Fence the actual commit, not only the preceding lookup.
+                guard !Task.isCancelled else { return }
                 if mutate(object) {
                     object.refreshChangeMetadata(explicitlyModified: true)
                 }

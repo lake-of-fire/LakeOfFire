@@ -943,7 +943,7 @@ const makeReplaceText = ({
                 const responseTextElapsedMs = performanceNowMs() - textStartedAt;
                 const responseTextLength = html.length;
                 const nativeCacheOutcome = response.headers?.get?.('x-manabi-process-cache') || null;
-                const isAuthoritativelyProcessed = response.headers?.get?.('x-manabi-processing-authoritative') !== 'false';
+                const isAuthoritativelyProcessed = response.headers?.get?.('x-manabi-processing-authoritative') === 'true';
                 const nativeResponseReadyElapsedMs = Number(response.headers?.get?.('x-manabi-response-ready-elapsed-ms'));
                 const nativeResponseEncodeElapsedMs = Number(response.headers?.get?.('x-manabi-response-encode-elapsed-ms'));
                 const nativeDidCoalesce = response.headers?.get?.('x-manabi-did-coalesce') || null;
@@ -6884,6 +6884,7 @@ class Reader {
                     window.webkit.messageHandlers.finishedReadingBook.postMessage({
                         topWindowURL: window.top.location.href,
                         allSectionsRead: sectionReadState.allSectionsRead,
+                        documentStartedAtMs: readerDocumentStartedAtMs(),
                         currentPageNumber: sectionReadState.currentPageNumber,
                         totalPages: sectionReadState.totalPages,
                         pagesLeft: sectionReadState.pagesLeft,
@@ -6893,7 +6894,10 @@ class Reader {
                     break;
                 case 'restart':
                     this.#clearOptimisticMarkReadState('restart');
-                    window.webkit.messageHandlers.startOver.postMessage({});
+                    window.webkit.messageHandlers.startOver.postMessage({
+                        topWindowURL: window.top.location.href,
+                        documentStartedAtMs: readerDocumentStartedAtMs(),
+                    });
                     await renderer?.firstSection?.();
                     break;
                 default:
@@ -11198,6 +11202,7 @@ class Reader {
             cfi: cfi,
             reason: reason,
             mainDocumentURL: mainDocumentURL,
+            documentStartedAtMs: readerDocumentStartedAtMs(),
             currentPageNumber: currentPageNumber,
             totalPages: totalPages,
             sectionIndex: sectionIndex,

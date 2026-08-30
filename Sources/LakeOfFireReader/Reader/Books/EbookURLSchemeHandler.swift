@@ -518,8 +518,7 @@ public actor EBookProcessingActor {
         guard let ebookTextProcessor else {
             return EbookProcessedSectionPayload(
                 documentHTML: Data(text.utf8),
-                segmentSidecar: Data(),
-                isAuthoritativelyProcessed: false
+                segmentSidecar: Data()
             )
         }
 
@@ -637,7 +636,32 @@ public actor EbookURLSchemeActor {
 
 public typealias EbookDocumentTransform = @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document
 public typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, Bool, String?, EbookDocumentTransform) async throws -> SwiftSoup.Document
-public typealias EbookHTMLDocumentProcessor = @Sendable (SwiftSoup.Document, Bool) async throws -> EbookProcessedSectionPayload
+public enum EbookReaderProcessingCompletion: UInt8, Sendable {
+    case incomplete
+    case completed
+}
+
+public struct EbookProcessedDocumentPayload: Sendable {
+    public let documentHTML: [UInt8]
+    public let canonicalSegmentSidecar: Data?
+    public let processingCompletion: EbookReaderProcessingCompletion
+
+    public init(
+        documentHTML: [UInt8],
+        canonicalSegmentSidecar: Data? = nil,
+        processingCompletion: EbookReaderProcessingCompletion = .incomplete
+    ) {
+        self.documentHTML = documentHTML
+        self.canonicalSegmentSidecar = canonicalSegmentSidecar
+        self.processingCompletion = processingCompletion
+    }
+}
+
+public typealias EbookHTMLDocumentProcessor = @Sendable (
+    SwiftSoup.Document,
+    Bool,
+    EbookReaderProcessingCompletionProof
+) async throws -> EbookProcessedSectionPayload
 public typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
 public typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
 public typealias EbookTextProcessor = @Sendable (URL, String, String, String?, Bool, EbookReadabilityContentProcessor?, EbookHTMLDocumentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> EbookProcessedSectionPayload

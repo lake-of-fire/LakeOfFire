@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 import CoreGraphics
 import WebKit
@@ -510,6 +511,10 @@ public struct WritingDirectionMessage {
 //}
 
 public struct FractionalCompletionMessage: Sendable {
+    public static let maximumCFIUTF8Bytes = 64 * 1_024
+    public static let maximumReasonUTF8Bytes = 512
+    public static let maximumURLUTF8Bytes = 16_384
+
     public var fractionalCompletion: Float
     public var cfi: String
     public var reason: String
@@ -520,6 +525,7 @@ public struct FractionalCompletionMessage: Sendable {
     public var hasVisibleJapaneseText: Bool?
     public var visibleSegmentCount: Int?
     public var observedSegmentCount: Int?
+    public var documentStartedAtMilliseconds: Double?
 
     public var representsKnownBlankViewport: Bool {
         visibleSegmentCount == 0
@@ -536,14 +542,30 @@ public struct FractionalCompletionMessage: Sendable {
         guard let body = rawBody as? [String: Any],
               let completion = body["fractionalCompletion"] as? Double,
               completion.isFinite,
+              (0...1).contains(completion),
               let cfi = body["cfi"] as? String,
-              let reason = body["reason"] as? String else { return nil }
+              cfi.utf8.count <= Self.maximumCFIUTF8Bytes,
+              let reason = body["reason"] as? String,
+              reason.utf8.count <= Self.maximumReasonUTF8Bytes else { return nil }
         fractionalCompletion = Float(completion)
         self.cfi = cfi
         self.reason = reason
         hasVisibleJapaneseText = body["hasVisibleJapaneseText"] as? Bool
-        if let rawPage = body["mainDocumentURL"] as? String, let pageURL = URL(string: rawPage) {
+        if let rawPageValue = body["mainDocumentURL"] {
+            guard let rawPage = rawPageValue as? String,
+                  rawPage.utf8.count <= Self.maximumURLUTF8Bytes,
+                  let pageURL = URL(string: rawPage) else {
+                return nil
+            }
             mainDocumentURL = pageURL
+        }
+        if let rawDocumentStartedAt = body["documentStartedAtMs"] {
+            guard !Self.isBoolean(rawDocumentStartedAt),
+                  let documentStartedAt = rawDocumentStartedAt as? Double,
+                  documentStartedAt.isFinite else {
+                return nil
+            }
+            documentStartedAtMilliseconds = documentStartedAt
         }
         sectionIndex = Self.safeInteger(body["sectionIndex"])
         currentPageNumber = Self.safeInteger(body["currentPageNumber"])
@@ -553,6 +575,7 @@ public struct FractionalCompletionMessage: Sendable {
     }
 
     private static func safeInteger(_ value: Any?) -> Int? {
+        guard !isBoolean(value) else { return nil }
         if let value = value as? Int {
             return value
         }
@@ -569,6 +592,11 @@ public struct FractionalCompletionMessage: Sendable {
         }
         guard let doubleValue, doubleValue.isFinite else { return nil }
         return Int(exactly: doubleValue.rounded(.towardZero))
+    }
+
+    private static func isBoolean(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
     }
 }
 
