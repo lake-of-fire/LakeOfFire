@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 public enum ReaderCompactSegmentSidecarSchema {
-    public static let currentVersion = 11
+    public static let currentVersion = 12
 }
 
 public struct EbookProcessedSectionPayload: Sendable {

@@ -930,20 +930,19 @@ public class LibraryDataManager: NSObject {
         
         // De-dupe scripts from library configuration (due to some bug...)
         try Task.checkCancellation()
-        var scriptIDsSeen = Set<UUID>()
-        var scriptsToRemove = IndexSet()
-        for (idx, scriptID) in configuration.userScriptIDs.enumerated() {
-            if scriptIDsSeen.contains(scriptID) {
-                scriptsToRemove.insert(idx)
-            } else {
-                scriptIDsSeen.insert(scriptID)
-            }
-        }
-        if !scriptsToRemove.isEmpty {
-//            await realm.asyncRefresh()
+        if Set(configuration.userScriptIDs).count != configuration.userScriptIDs.count {
             try await realm.asyncWrite {
-                configuration.userScriptIDs.remove(atOffsets: scriptsToRemove)
-                configuration.refreshChangeMetadata(explicitlyModified: true)
+                var scriptIDsSeen = Set<UUID>()
+                var scriptsToRemove = IndexSet()
+                for (idx, scriptID) in configuration.userScriptIDs.enumerated() {
+                    if !scriptIDsSeen.insert(scriptID).inserted {
+                        scriptsToRemove.insert(idx)
+                    }
+                }
+                if !scriptsToRemove.isEmpty {
+                    configuration.userScriptIDs.remove(atOffsets: scriptsToRemove)
+                    configuration.refreshChangeMetadata(explicitlyModified: true)
+                }
             }
         }
         
@@ -1070,20 +1069,19 @@ public class LibraryDataManager: NSObject {
         
         // De-dupe categories from library configuration (due to some bug...)
         try Task.checkCancellation()
-        var idsSeen = Set<UUID>()
-        var toRemove = IndexSet()
-        for (idx, categoryID) in configuration.categoryIDs.enumerated() {
-            if idsSeen.contains(categoryID) {
-                toRemove.insert(idx)
-            } else {
-                idsSeen.insert(categoryID)
-            }
-        }
-        if !toRemove.isEmpty {
-//            await realm.asyncRefresh()
+        if Set(configuration.categoryIDs).count != configuration.categoryIDs.count {
             try await realm.asyncWrite {
-                configuration.categoryIDs.remove(atOffsets: toRemove)
-                configuration.refreshChangeMetadata(explicitlyModified: true)
+                var idsSeen = Set<UUID>()
+                var toRemove = IndexSet()
+                for (idx, categoryID) in configuration.categoryIDs.enumerated() {
+                    if !idsSeen.insert(categoryID).inserted {
+                        toRemove.insert(idx)
+                    }
+                }
+                if !toRemove.isEmpty {
+                    configuration.categoryIDs.remove(atOffsets: toRemove)
+                    configuration.refreshChangeMetadata(explicitlyModified: true)
+                }
             }
         }
     }
