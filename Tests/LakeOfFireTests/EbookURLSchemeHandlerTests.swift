@@ -2,7 +2,7 @@ import XCTest
 import ZIPFoundation
 import SwiftSoup
 @testable import LakeOfFireContent
-@_spi(ReaderProcessing) @testable import LakeOfFireReader
+@_spi(ReaderProcessing) @_spi(TestSupport) @testable import LakeOfFireReader
 
 private actor EbookTestGate {
     private var releaseContinuation: CheckedContinuation<Void, Never>?
@@ -546,7 +546,9 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
     func testProcessedSidecarCacheEnvelopePreservesExplicitAuthority() throws {
         let successful = EbookProcessedSectionPayload.successfulReaderProcessing(
-            documentHTML: Data("<html><body>記号だけ。</body></html>".utf8),
+            documentHTML: Data(
+                "<html><body><m-c pid=\"p\"><m-s sid=\"s\" o=\"true\">記号だけ。</m-s></m-c></body></html>".utf8
+            ),
             segmentSidecar: Data()
         )
         let fallback = EbookProcessedSectionPayload(

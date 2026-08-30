@@ -22,7 +22,7 @@ public struct EbookProcessedSectionPayload: Sendable {
         isAuthoritativelyProcessed = false
     }
 
-    private init(
+    fileprivate init(
         validatedDocumentHTML documentHTML: Data,
         segmentSidecar: Data
     ) {
@@ -117,7 +117,10 @@ public final class EbookReaderProcessingCompletionProof: @unchecked Sendable {
         )
     }
 
-    static func forTesting(sourceHTML: String) -> EbookReaderProcessingCompletionProof {
+    @_spi(TestSupport)
+    public static func forTesting(
+        sourceHTML: String
+    ) -> EbookReaderProcessingCompletionProof {
         let document = try! SwiftSoup.parse(sourceHTML)
         return EbookReaderProcessingCompletionProof(sourceDocument: document)!
     }
@@ -789,8 +792,8 @@ private func validatedReaderSegmentSidecarIdentityProjections(
             paragraphIdentifier: paragraph
         ))
     }
-    let documentIdentifierSet = Set(documentSegmentIdentifiers)
-    guard documentIdentifierSet.count == documentSegmentIdentifiers.count,
+    let documentIdentifierSet = Set(generatedSegmentIdentifiers)
+    guard documentIdentifierSet.count == generatedSegmentIdentifiers.count,
           identifiers == documentIdentifierSet,
           projections.map(\.runtimeIdentifier) == generatedSegmentIdentifiers else {
         return nil
@@ -1330,7 +1333,15 @@ func externalizingCanonicalReaderSegmentSidecar(
     scheme: ReaderExternalSegmentSidecarScheme,
     store: ReaderExternalSegmentSidecarStore = .shared
 ) -> ReaderExternalizedSegmentSidecarHTML {
-    guard let payload = splitCanonicalReaderSegmentSidecar(from: htmlBytes) else {
+    guard let sourceHTML = String(bytes: htmlBytes, encoding: .utf8),
+          let sourceDocument = try? SwiftSoup.parse(sourceHTML),
+          let completionProof = EbookReaderProcessingCompletionProof(
+            sourceDocument: sourceDocument
+          ),
+          let payload = splitCanonicalReaderSegmentSidecar(
+            from: htmlBytes,
+            completionProof: completionProof
+          ) else {
         return ReaderExternalizedSegmentSidecarHTML(
             documentHTML: Data(htmlBytes),
             canonicalSidecarByteCount: 0,
