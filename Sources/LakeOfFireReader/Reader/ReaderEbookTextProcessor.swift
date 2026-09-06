@@ -199,7 +199,7 @@ public func ebookTextProcessor(
                 segmentSidecar: processed.canonicalSegmentSidecar ?? Data()
             )
         } else {
-            var htmlBytes = try doc.outerHtmlUTF8FromCurrentTreeSplicingBody()
+            var htmlBytes = try doc.outerHtmlUTF8ReusingSourceOutsideBody()
             if let processHTMLBytes {
                 htmlBytes = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                     await processHTMLBytes(
