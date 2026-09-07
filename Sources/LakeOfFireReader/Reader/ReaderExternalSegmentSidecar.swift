@@ -43,7 +43,7 @@ public struct EbookProcessedSectionPayload: Sendable {
             validatedDocumentHTML: documentHTML,
             segmentSidecar: segmentSidecar
         )
-        return ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload)
+        return deeplyValidatesEbookProcessedSectionPayload(payload)
             ? payload
             : nil
     }
@@ -159,6 +159,21 @@ private struct ReaderSegmentSidecarIdentityProjection {
 }
 
 public func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+    _ payload: EbookProcessedSectionPayload
+) -> Bool {
+    // Authoritative payloads are immutable capabilities. The only production
+    // constructors either validate the freshly processed document against the
+    // source-bound completion proof or deeply revalidate untrusted persisted
+    // bytes below. Repeating a full SwiftSoup parse at every downstream guard
+    // made one EPUB cache hit walk the same complete document several times.
+    payload.isAuthoritativelyProcessed
+}
+
+/// The one admission boundary for untrusted persisted payload bytes. Keep the
+/// structural, coverage, sidecar, and ownership checks here; callers holding
+/// an already-authoritative immutable payload use the cheap capability check
+/// above.
+private func deeplyValidatesEbookProcessedSectionPayload(
     _ payload: EbookProcessedSectionPayload
 ) -> Bool {
     guard payload.isAuthoritativelyProcessed else { return false }
