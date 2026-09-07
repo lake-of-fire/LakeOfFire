@@ -1828,10 +1828,51 @@ public class LibraryDataManager: NSObject {
             ])
         }))
         
+        func exportFeed(_ feed: Feed) -> OPMLEntry {
+            var attributes = [
+                Attribute(name: "uuid", value: feed.id.uuidString),
+                Attribute(name: "type", value: "rss"),
+                Attribute(name: "xmlUrl", value: feed.rssUrl.absoluteString),
+                Attribute(name: "extractImageFromContent", value: feed.extractImageFromContent ? "true" : "false"),
+                Attribute(name: "isReaderModeByDefault", value: feed.isReaderModeByDefault ? "true" : "false"),
+                Attribute(name: "iconUrl", value: feed.iconUrl.absoluteString),
+            ]
+            if let markdownDescription = feed.markdownDescription, !markdownDescription.isEmpty {
+                attributes.append(Attribute(name: "markdownDescription", value: markdownDescription))
+            }
+            attributes.append(Attribute(name: "rssContainsFullContent", value: feed.rssContainsFullContent ? "true" : "false"))
+            attributes.append(Attribute(name: "injectEntryImageIntoHeader", value: feed.injectEntryImageIntoHeader ? "true" : "false"))
+            attributes.append(Attribute(name: "displayPublicationDate", value: feed.displayPublicationDate ? "true" : "false"))
+            attributes.append(Attribute(name: "meaningfulContentMinLength", value: String(feed.meaningfulContentMinLength)))
+            return OPMLEntry(
+                text: feed.title,
+                title: feed.title,
+                attributes: attributes
+            )
+        }
+        func exportChildren(_ children: [FeedCollectionChild], ancestors: Set<UUID> = []) throws -> [OPMLEntry] {
+            try children.compactMap { child in
+                try Task.checkCancellation()
+                switch child {
+                case .feed(let feed):
+                    guard !feed.isArchived else { return nil }
+                    return exportFeed(feed)
+                case .directory(let directory):
+                    guard !directory.isArchived, !ancestors.contains(directory.id) else { return nil }
+                    return OPMLEntry(
+                        text: directory.title,
+                        attributes: [Attribute(name: "uuid", value: directory.id.uuidString)],
+                        children: try exportChildren(
+                            directory.getCollectionChildren() ?? [],
+                            ancestors: ancestors.union([directory.id])
+                        )
+                    )
+                }
+            }
+        }
+
         let categoryEntries: [OPMLEntry] = try userCategories.map { category in
             try Task.checkCancellation()
-
-            let feeds = try category.getFeeds() ?? []
             return OPMLEntry(
                 text: category.title,
                 attributes: [
@@ -1839,29 +1880,8 @@ public class LibraryDataManager: NSObject {
                     Attribute(name: "backgroundImageUrl", value: category.backgroundImageUrl.absoluteString),
                     Attribute(name: "isFeedCategory", value: "true"),
                 ],
-                children: try feeds.filter({ !$0.isArchived }).map { feed in
-                    try Task.checkCancellation()
-
-                    var attributes = [
-                        Attribute(name: "uuid", value: feed.id.uuidString),
-                        Attribute(name: "type", value: "rss"),
-                        Attribute(name: "xmlUrl", value: feed.rssUrl.absoluteString),
-                        Attribute(name: "extractImageFromContent", value: feed.extractImageFromContent ? "true" : "false"),
-                        Attribute(name: "isReaderModeByDefault", value: feed.isReaderModeByDefault ? "true" : "false"),
-                        Attribute(name: "iconUrl", value: feed.iconUrl.absoluteString),
-                    ]
-                    if let markdownDescription = feed.markdownDescription, !markdownDescription.isEmpty {
-                        attributes.append(Attribute(name: "markdownDescription", value: markdownDescription))
-                    }
-                    attributes.append(Attribute(name: "rssContainsFullContent", value: feed.rssContainsFullContent ? "true" : "false"))
-                    attributes.append(Attribute(name: "injectEntryImageIntoHeader", value: feed.injectEntryImageIntoHeader ? "true" : "false"))
-                    attributes.append(Attribute(name: "displayPublicationDate", value: feed.displayPublicationDate ? "true" : "false"))
-                    attributes.append(Attribute(name: "meaningfulContentMinLength", value: String(feed.meaningfulContentMinLength)))
-                    return OPMLEntry(
-                        text: feed.title,
-                        title: feed.title,
-                        attributes: attributes)
-                })
+                children: try exportChildren(category.getCollectionChildren() ?? [])
+            )
         }
 
         let opml = OPML(

@@ -215,21 +215,15 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                 .debounceLeadingTrailing(for: .seconds(0.3), scheduler: RunLoop.main)
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
-                        let currentConfigurationID = libraryConfiguration?.id
                         try await { @RealmBackgroundActor in
                             let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-                            let newLibraryConfigurationID = libraryConfiguration.id
                             let frozenLibraryConfiguration = libraryConfiguration.freeze()
                             await MainActor.run { [weak self] in
                                 guard let self else { return }
-                                if newLibraryConfigurationID != currentConfigurationID {
-                                    if self.isLibraryPresented {
-                                        self.objectWillChange.send()
-                                    }
-                                    self.libraryConfiguration = frozenLibraryConfiguration
-                                } else if self.isLibraryPresented {
+                                if self.isLibraryPresented {
                                     self.objectWillChange.send()
                                 }
+                                self.libraryConfiguration = frozenLibraryConfiguration
                             }
                         }()
                     }

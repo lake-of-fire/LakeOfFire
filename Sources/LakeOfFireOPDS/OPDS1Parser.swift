@@ -145,7 +145,7 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
 
     var rootKind: RootKind = .unknown
     private var stack: [String] = []
-    private var textBuffer = ""
+    private var textBuffers: [String] = []
 
     private var feedTitle: String?
     private var feedUpdated: Date?
@@ -342,7 +342,7 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
     ) {
         let name = localName(from: qName ?? elementName)
         stack.append(name)
-        textBuffer = ""
+        textBuffers.append("")
 
         switch name {
         case "feed":
@@ -376,7 +376,8 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
-        textBuffer += string
+        guard !textBuffers.isEmpty else { return }
+        textBuffers[textBuffers.count - 1] += string
     }
 
     func parser(
@@ -386,7 +387,8 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
         qualifiedName qName: String?
     ) {
         let name = localName(from: qName ?? elementName)
-        let text = textBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawText = textBuffers.popLast() ?? ""
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         let parent = stack.dropLast().last
 
         if let currentEntry {
@@ -446,7 +448,9 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
         }
 
         _ = stack.popLast()
-        textBuffer = ""
+        if !textBuffers.isEmpty {
+            textBuffers[textBuffers.count - 1] += rawText
+        }
     }
 
     func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {

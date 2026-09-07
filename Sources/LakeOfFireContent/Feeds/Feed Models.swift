@@ -1309,9 +1309,8 @@ fileprivate func isFeedUnchanged(
     lastFetchedModifiedAt: Date?
 ) -> Bool {
     if let remoteETag = remoteMetadata.etag,
-       let lastFetchedETag,
-       remoteETag == lastFetchedETag {
-        return true
+       let lastFetchedETag {
+        return remoteETag == lastFetchedETag
     }
 
     if let remoteLastModifiedAt = remoteMetadata.lastModifiedAt,
@@ -1361,6 +1360,9 @@ fileprivate func getRssData(
         )
     }
     switch headHTTPResponse.statusCode {
+    case 405, 501:
+        // Some feed endpoints implement GET but not HEAD.
+        break
     case 304:
         if allowNotModified {
             if shouldLogNiponica {

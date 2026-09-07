@@ -157,6 +157,22 @@ final class FeedDirectoryTests: XCTestCase {
         XCTAssertEqual(snapshot.12, 1)
         XCTAssertEqual(snapshot.13, nestedDirectoryID)
         XCTAssertEqual(snapshot.14, 0)
+        let exported = try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config)
+            let category = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+            try realm.write {
+                category.opmlOwnerName = nil
+                category.opmlURL = nil
+                category.refreshChangeMetadata(explicitlyModified: true)
+            }
+            return try await manager.exportUserOPML()
+        }()
+        let categoryOutline = try XCTUnwrap(exported.entries.first { $0.text == "News" })
+        let directoryOutline = try XCTUnwrap(categoryOutline.children?.first { $0.text == "Asahi Shimbun" })
+        XCTAssertTrue(directoryOutline.children?.contains { $0.text == "Breaking News" } == true)
+        let nestedOutline = try XCTUnwrap(directoryOutline.children?.first { $0.text == "Nested Directory" })
+        XCTAssertTrue(nestedOutline.children?.contains { $0.text == "Nested Feed" } == true)
+
     }
 
     private func verifyManagedOPMLImportMovesExistingRootFeedIntoNewDirectory() async throws {

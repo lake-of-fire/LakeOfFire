@@ -63,7 +63,10 @@ class LibraryCategoryViewModel: ObservableObject {
     
     init(category: FeedCategory, libraryConfiguration: LibraryConfiguration, selectedFeed: Binding<Feed?>) {
         self.category = category
-        self.libraryConfiguration = libraryConfiguration
+        // The StateObject survives parent snapshots; keep its menu source live.
+        self.libraryConfiguration = libraryConfiguration.isFrozen
+            ? (libraryConfiguration.thaw() ?? libraryConfiguration)
+            : libraryConfiguration
         _selectedFeed = selectedFeed
         categoryTitle = category.title
         categoryBackgroundImageURL = category.backgroundImageUrl.absoluteString == "about:blank" ? "" : category.backgroundImageUrl.absoluteString
