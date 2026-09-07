@@ -1089,7 +1089,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                           canonicalMainDocumentURL == authorizedMainDocumentURL else {
                         return nil
                     }
-                    return (canonicalMainDocumentURL, rawSubpath.removingPercentEncoding ?? rawSubpath)
+                    return (canonicalMainDocumentURL, rawSubpath)
                 }()
                 guard let entryRequest = pathBackedEntry ?? {
                     guard let mainDocumentURL = authorizedMainDocumentURL,

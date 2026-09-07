@@ -755,3 +755,18 @@ test('empty text resources still publish exact loader-owned blob URLs', async ()
         globalThis.__manabiBlobResourceMap = originalBlobMap
     }
 })
+
+
+test('concurrent reciprocal CSS imports finish without replacing pending owners', { timeout: 2000 }, async () => {
+    globalThis.window ??= { innerWidth: 800, innerHeight: 600 }
+    const manifest = ['a.css', 'b.css'].map(href => ({ href, mediaType: 'text/css' }))
+    const loader = new Loader({
+        resources: { manifest },
+        loadText: async href => `@import "${href === 'a.css' ? 'b.css' : 'a.css'}";`,
+        loadBlob: async () => new Blob(['body {}']),
+    })
+    const urls = await Promise.all(manifest.map(item => loader.loadItem(item)))
+    assert.ok(urls.every(url => url.startsWith('blob:')))
+    assert.equal(await loader.loadItem(manifest[0]), urls[0])
+    loader.destroy()
+})

@@ -587,6 +587,7 @@ export class Loader {
     #children = new Map()
     #refCount = new Map()
     #pendingLoads = new Map()
+    #loadDependencies = new Map()
     #destroyed = false
     allowScript = false
     constructor({
@@ -686,7 +687,37 @@ export class Loader {
         else this.#children.delete(parent)
     }
     // load manifest item, recursively loading all resources as needed
+    #dependsOn(from, target, visited = new Set()) {
+        if (from === target) return true
+        if (visited.has(from)) return false
+        visited.add(from)
+        for (const child of this.#loadDependencies.get(from)?.keys() ?? []) {
+            if (this.#dependsOn(child, target, visited)) return true
+        }
+        return false
+    }
     async loadItem(item, parents = []) {
+        if (this.#destroyed || !item) return null
+        const parent = parents[parents.length - 1]
+        if (!parent) return this.#loadItemCoalesced(item, parents)
+        if (this.#dependsOn(item.href, parent)) {
+            // Use the existing raw-resource recursion escape without publishing
+            // over the canonical URL owned by the pending outer request.
+            return this.#loadItemUncoalesced(item, parents, true)
+        }
+        let dependencies = this.#loadDependencies.get(parent)
+        if (!dependencies) this.#loadDependencies.set(parent, dependencies = new Map())
+        dependencies.set(item.href, (dependencies.get(item.href) ?? 0) + 1)
+        try {
+            return await this.#loadItemCoalesced(item, parents)
+        } finally {
+            const count = dependencies.get(item.href) - 1
+            if (count) dependencies.set(item.href, count)
+            else dependencies.delete(item.href)
+            if (!dependencies.size) this.#loadDependencies.delete(parent)
+        }
+    }
+    async #loadItemCoalesced(item, parents = []) {
         if (this.#destroyed || !item) return null
         const { href } = item
         const parent = parents[parents.length - 1]
@@ -729,7 +760,7 @@ export class Loader {
         }
         return this.#loadItemUncoalesced(item, parents)
     }
-    async #loadItemUncoalesced(item, parents = []) {
+    async #loadItemUncoalesced(item, parents = [], forceRaw = false) {
         if (this.#destroyed || !item) return null
         const {
             href,
@@ -740,7 +771,7 @@ export class Loader {
         const parent = parents[parents.length - 1]
         if (this.#cache.has(href)) return this.ref(href, parent)
 
-        const isRecursiveReference = parents.some(candidate => candidate === href)
+        const isRecursiveReference = forceRaw || parents.some(candidate => candidate === href)
         const shouldReplace =
             (isScript || [MIME.XHTML, MIME.HTML, MIME.CSS, MIME.SVG].includes(mediaType))
             // prevent circular references

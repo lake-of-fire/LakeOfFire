@@ -896,8 +896,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private func deactivateReadAloudAudioSession() {
 #if os(iOS)
         do {
-            try readAloudAudioSessionLease?.release()
+            let lease = readAloudAudioSessionLease
             readAloudAudioSessionLease = nil
+            try lease?.release()
         } catch {
             mediaDebugPrint("# READALOUD audioSession.deactivate.failed", error.localizedDescription)
         }
