@@ -7,6 +7,7 @@ import SwiftCloudDrive
 private final class CountingReaderFileManager: ReaderFileManager, @unchecked Sendable {
     private(set) var metadataScanCount = 0
     var scanError: (any Swift.Error)?
+    var scanDidStart: (() -> Void)?
 
     override func refreshFilesMetadata(
         drive: CloudDrive,
@@ -14,6 +15,7 @@ private final class CountingReaderFileManager: ReaderFileManager, @unchecked Sen
         realmConfiguration: Realm.Configuration? = nil
     ) async throws -> [ThreadSafeReference<ContentFile>]? {
         metadataScanCount += 1
+        scanDidStart?()
         if let scanError {
             throw scanError
         }
@@ -108,6 +110,67 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         } catch MetadataScanError.failed {
             XCTAssertEqual(manager.metadataScanCount, 1)
         }
+    }
+
+    @MainActor
+    func testRefreshAllFilesMetadataDoesNotJoinDifferentRealmConfigurationGenerations() async throws {
+        let rootURL = try temporaryDirectory()
+        let manager = CountingReaderFileManager()
+        let firstConfiguration = makeHistoryRealmConfiguration()
+        let secondConfiguration = makeHistoryRealmConfiguration()
+        manager.historyRealmConfigurationOverride = firstConfiguration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        let firstScanStarted = expectation(description: "first configuration scan started")
+        manager.scanDidStart = { firstScanStarted.fulfill() }
+
+        let firstRefresh = Task { @MainActor in
+            try await manager.refreshAllFilesMetadata()
+        }
+        await fulfillment(of: [firstScanStarted], timeout: 1)
+        manager.scanDidStart = nil
+        manager.historyRealmConfigurationOverride = secondConfiguration
+        try await manager.refreshAllFilesMetadata()
+
+        do {
+            try await firstRefresh.value
+            XCTFail("Expected the replaced configuration refresh to be rejected.")
+        } catch ReaderFileManagerError.refreshSuperseded {
+            // The second configuration owns its own scan and publication.
+        }
+        XCTAssertEqual(manager.metadataScanCount, 2)
+    }
+
+    @MainActor
+    func testDriveChangeDuringRefreshForcesACompleteReplacementInventory() async throws {
+        let rootURL = try temporaryDirectory()
+        let manager = CountingReaderFileManager()
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        let drive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        manager.localDrive = drive
+        let firstScanStarted = expectation(description: "first inventory scan started")
+        let replacementScanStarted = expectation(description: "replacement inventory scan started")
+        var observedScanCount = 0
+        manager.scanDidStart = {
+            observedScanCount += 1
+            switch observedScanCount {
+            case 1:
+                firstScanStarted.fulfill()
+            case 2:
+                replacementScanStarted.fulfill()
+            default:
+                break
+            }
+        }
+
+        let refresh = Task { @MainActor in
+            try await manager.refreshAllFilesMetadata()
+        }
+        await fulfillment(of: [firstScanStarted], timeout: 1)
+        manager.cloudDriveDidChange(drive, rootRelativePaths: [.root])
+        await fulfillment(of: [replacementScanStarted], timeout: 1)
+        try await refresh.value
+
+        XCTAssertEqual(manager.metadataScanCount, 2)
     }
 
     func testCanonicalReaderBackingURLStripsQueryAndFragmentFromReaderFileURL() {

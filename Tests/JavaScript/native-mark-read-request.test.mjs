@@ -10,6 +10,7 @@ const harness = ({
     postThrows = false,
     requestID = null,
     timeoutThrows = false,
+    maximumDeliveryAttempts = 2,
 } = {}) => {
     const posted = []
     const timeouts = new Map()
@@ -23,6 +24,7 @@ const harness = ({
         isOwnerCurrent: () => current,
         makeRequestID: () => requestID ?? `request-${++requestSequence}`,
         maximumRequestIDAttempts: 3,
+        maximumDeliveryAttempts,
         scheduleTimeout: callback => {
             if (timeoutThrows) throw new Error('timer unavailable')
             const identifier = ++timeoutSequence
@@ -121,15 +123,51 @@ test('bridge and timeout setup failures settle without pending work', async () =
     assert.equal(timer.coordinator.pendingCount, 0)
 })
 
-test('timeout and cancellation fail closed', async () => {
+test('lost reply retries the exact request and accepts the replayed result', async () => {
+    const h = harness()
+    const message = { segments: [{ stableSegmentID: 'segment-a' }] }
+    const completion = h.coordinator.request({
+        sectionID: 'section-a',
+        message,
+    })
+    message.segments[0].stableSegmentID = 'mutated-after-send'
+    const firstTimeout = [...h.timeouts.values()][0]
+    firstTimeout()
+
+    assert.equal(h.posted.length, 2)
+    assert.deepEqual(h.posted[1], h.posted[0])
+    assert.equal(h.coordinator.settle({
+        requestID: 'request-1',
+        sectionId: 'section-a',
+        success: true,
+    }), true)
+    assert.equal((await completion).success, true)
+})
+
+test('retry exhaustion and cancellation fail closed', async () => {
     const timeout = harness()
     const timedCompletion = timeout.coordinator.request({
         sectionID: 'section-a',
         message: { segments: [] },
     })
-    const timeoutCallback = [...timeout.timeouts.values()][0]
-    timeoutCallback()
+    const firstTimeoutCallback = [...timeout.timeouts.values()][0]
+    firstTimeoutCallback()
+    const finalTimeoutCallback = [...timeout.timeouts.values()].at(-1)
+    finalTimeoutCallback()
     assert.equal((await timedCompletion).errorCode, 'nativeCommitTimeout')
+
+    const stale = harness()
+    const staleCompletion = stale.coordinator.request({
+        sectionID: 'section-stale',
+        message: { segments: [] },
+    })
+    stale.setCurrent(false)
+    const staleTimeoutCallback = [...stale.timeouts.values()][0]
+    staleTimeoutCallback()
+    const staleResult = await staleCompletion
+    assert.equal(stale.posted.length, 1)
+    assert.equal(staleResult.stale, true)
+    assert.equal(staleResult.errorCode, 'nativeCommitTimeout')
 
     const cancelled = harness()
     const cancelledCompletion = cancelled.coordinator.request({
@@ -153,6 +191,12 @@ test('invalid inputs and exhausted request IDs fail without posting', async () =
     assert.equal((await invalid.coordinator.request({
         sectionID: 'section-a',
         message: [],
+    })).errorCode, 'invalidMessage')
+    const cyclicMessage = {}
+    cyclicMessage.self = cyclicMessage
+    assert.equal((await invalid.coordinator.request({
+        sectionID: 'section-a',
+        message: cyclicMessage,
     })).errorCode, 'invalidMessage')
     assert.equal((await invalid.coordinator.request({
         sectionID: 's'.repeat(513),

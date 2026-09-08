@@ -8,11 +8,12 @@
 
 /* Begin PBXBuildFile section */
 		004D5BAC292F3EABA0D44961 /* XCTestDynamicOverlay.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B8FEC5BC236BFE3D53661D5E /* XCTestDynamicOverlay.framework */; };
+		00CBF92EE66E1CC980BF0151 /* libRealmSwiftGaps.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 6F9CC28C85018D2C872F0F69 /* libRealmSwiftGaps.a */; };
 		01B6FF04D9371901DC0CAA56 /* RealmDatabase_RealmCoreResources.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = 197B226A7C5AD2C6872E5303 /* RealmDatabase_RealmCoreResources.bundle */; };
-		01B7982FB335CE1523EEC67B /* RealmSwiftGaps.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */; };
 		01EFDA9F827E56F28B89A8F5 /* String+StrippingHTML.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7864C63653918DC62961A70B /* String+StrippingHTML.swift */; };
 		02646CD602735E1ABD9626E1 /* SwiftCloudDrive.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F59DCA22F6A9A89879058FFA /* SwiftCloudDrive.framework */; };
 		02F6DB915875489675BEE0C4 /* Archive+Data.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885C5D3CABCD8999BB380AF /* Archive+Data.swift */; };
+		03FF070607E3D8FA9B3ABA31 /* ReaderImageRequestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C140591D11FB29DF5A45BA26 /* ReaderImageRequestTests.swift */; };
 		0444EA5C50C87D43827B918D /* ReaderFileURLSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93F5F5CC64BBF7FE53837251 /* ReaderFileURLSchemeHandler.swift */; };
 		04513CD5376C98A37B6FD7AD /* DownloadableBookLibraryImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3397E89D6D848ED6BC64FE7 /* DownloadableBookLibraryImportTests.swift */; };
 		04627DE8A414F8B0599686F4 /* AsyncView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3A7E4DAE4A84C6DF703E10EF /* AsyncView.framework */; };
@@ -34,7 +35,6 @@
 		0B362FB91B15A9174EC25E40 /* AsyncView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3A7E4DAE4A84C6DF703E10EF /* AsyncView.framework */; };
 		0C7266581BE523BF8A3AF885 /* ReaderFileOperationErrors.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFFE9488613FFB32DBF3B1CB /* ReaderFileOperationErrors.swift */; };
 		0E62420FAE12C3FDF45E5AEA /* StoreHelper_StoreHelper.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = CAC08C1EBCB337AF3721A076 /* StoreHelper_StoreHelper.bundle */; };
-		0E905AFAD8F6B2B385C54E59 /* SwiftUIDownloads.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */; };
 		0F5D3F619957F84EB622538D /* ReaderTTSProgressEvaluatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3803ADDD018BEAF5E277B06A /* ReaderTTSProgressEvaluatorTests.swift */; };
 		0F7BE6EF0465379A02A0002F /* foliate-js in Resources */ = {isa = PBXBuildFile; fileRef = CA92F856353D8F32BE2AA800 /* foliate-js */; };
 		1022BD0F40865A47691AD9EB /* DebouncedOnChange.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DD892CD97F506B30609A2CFA /* DebouncedOnChange.framework */; };
@@ -73,8 +73,8 @@
 		1BDADD5A3FB2E6FEA69BCFCD /* libPersistedLRUCacheCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 788FB2C71005DDEFF46BBB65 /* libPersistedLRUCacheCore.a */; };
 		1BE5FAE17CBA06BAE0602728 /* LakeOfFireCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
 		1BFF0D2C43CEA8AE8E5C1434 /* BigSyncKit_BigSyncKit.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 646E399FF73B28D956EABDAC /* BigSyncKit_BigSyncKit.bundle */; };
-		1C295B88374A33500435FFC1 /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
 		1C551985C9FD90FA794EDBB6 /* SwiftCloudDrive.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F59DCA22F6A9A89879058FFA /* SwiftCloudDrive.framework */; };
+		1CF5D5B10FA4B4C1CB94DEFF /* libRealmSwiftGaps.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 6F9CC28C85018D2C872F0F69 /* libRealmSwiftGaps.a */; };
 		1DD99F8B86F5139FAF89395A /* ContentBlockingEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CAF69D789FE196EF8EC4FDA /* ContentBlockingEnvironment.swift */; };
 		1E41738F0BB6E695C5925BD6 /* ReaderExternalSegmentSidecarRetentionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C35BAE76509F919037B83B6B /* ReaderExternalSegmentSidecarRetentionTests.swift */; };
 		1E9B41BEA8A2A503216EF7BE /* SmokeSummaryTestSupportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A6151850ACC0EB8F07264E9 /* SmokeSummaryTestSupportTests.swift */; };
@@ -82,10 +82,11 @@
 		2035E4B128481E027CD0FB24 /* LakeOfFireAdblock.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */; };
 		2119C3347FDE5EDD6828ED1A /* SwiftCloudDrive_SwiftCloudDrive.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = 4A75A6AECBB5679AAE6B2ECD /* SwiftCloudDrive_SwiftCloudDrive.bundle */; };
 		21373399C747A6D16BCE282B /* ReaderNativeContentEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69DD30D82D01A1F384553B21 /* ReaderNativeContentEnvironment.swift */; };
+		2138E740F31AB8A354974544 /* EbookHTMLResponseMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFD17083FF00574998607393 /* EbookHTMLResponseMetadata.swift */; };
 		2171123E2E5F5D2B2BA035EB /* swift-sharing_Sharing.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 51C0EEBF886293B2139B6FF3 /* swift-sharing_Sharing.bundle */; };
 		21C23126157B77D43BACF325 /* ReaderSnippetTitleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E50198207B2DB46B0C2121F3 /* ReaderSnippetTitleTests.swift */; };
-		221E5837DDF30B7164E59399 /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		22AF60D340476D2E33739FA0 /* CodeEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E267DA04D9DFBAE6197B193 /* CodeEditor.swift */; };
+		22DD2EB6EDB0EB312BE2C5B6 /* ReaderProgressMessageSequenceGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00BEE0B2992B42D01C783A1B /* ReaderProgressMessageSequenceGateTests.swift */; };
 		230759FF4A0CFEF36AB397A9 /* AdblockRulesModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23BCDA574ECC78281E3EAC5E /* AdblockRulesModel.swift */; };
 		232FD0784B8890F9CC067C33 /* SwiftReadability.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 1FB405D7349D3C50BEF4D8FF /* SwiftReadability.framework */; };
 		23305601DFD2417F147111BC /* libPersistedLRUSQLiteCache.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 7B6AAE8D8E6AA927DADE176C /* libPersistedLRUSQLiteCache.a */; };
@@ -108,8 +109,8 @@
 		2A96FA92A296158C3D31005B /* RealModule.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AC5C42A82E2B2F82E77DE798 /* RealModule.framework */; };
 		2AB81FF257AB7FD41566264D /* BigSyncKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6EDE2EDB73B67694E353D62A /* BigSyncKit.framework */; };
 		2B65A84F11BF127AA0FD36D6 /* LakeOfFireFiles.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2D68419CA5CC8F156867D74D /* LakeOfFireFiles.framework */; };
-		2BFA44983712707BC65BA6B8 /* ReaderShareUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69EA54B3EF4F8B69D803E51C /* ReaderShareUtilities.swift */; };
 		2C3B60B9B568106CAC673B5E /* ConcurrencyExtras.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2B72D8DD2B1EFFC2F2B45D37 /* ConcurrencyExtras.framework */; };
+		2C87F5BA634CB02C1692BBFA /* ReaderContentInitialImageRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D8B92EB6F1D3C9B83AF5A33 /* ReaderContentInitialImageRendererTests.swift */; };
 		2CCD2FEE2A9BCA3A5EDF9542 /* libPersistedLRUCache.a in Frameworks */ = {isa = PBXBuildFile; fileRef = ECB5D8AC75573E7D16ABCEEE /* libPersistedLRUCache.a */; };
 		2CD348C07D79D96EFE9AC542 /* StructuredQueriesCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F1176F350B6B2CFA8F3FB0F4 /* StructuredQueriesCore.framework */; };
 		2D10BD80893746DF051A5A4E /* SwiftUIDownloads.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */; };
@@ -118,7 +119,6 @@
 		2F9CB72BF6A3B328CEAF8AD4 /* libzstd.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 231D575B5E9B5C559FBD1B7E /* libzstd.framework */; };
 		2FBABC93D2B2F09FABB9DC75 /* libPersistedLRUFileCache.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 2BE281EA36E1E598074634F3 /* libPersistedLRUFileCache.a */; };
 		305F83BB87B36B6DEB98CFEE /* LakeOfFireTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05A535B5A3ABFA73238AB7FC /* LakeOfFireTests.swift */; };
-		30B73FC40236CC4050709463 /* VisionLiveText_SwiftUICompatible.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DC983C520BEB23CAE1BA0462 /* VisionLiveText_SwiftUICompatible.framework */; platformFilter = ios; };
 		31136630967BD87457B522FA /* GRDB.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F6173548AD5D86CEA97D8F50 /* GRDB.framework */; };
 		313D8204E62E26F1C9822A47 /* SwiftReadability.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1FB405D7349D3C50BEF4D8FF /* SwiftReadability.framework */; };
 		31468B7EF1F8A8831C8C3DE6 /* InjectionImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FAEB0ECDA76E201CCE82DF1 /* InjectionImport.swift */; };
@@ -176,6 +176,7 @@
 		4E4157851946E3BC7FF101BB /* IssueReporting.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1B0406713F5524718C10911C /* IssueReporting.framework */; };
 		4F26DC1C111DA0A92D29D13B /* StoreHelper.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D88B90A803D1ACA3896CAD38 /* StoreHelper.framework */; };
 		4FD97C04771C011392888102 /* GRDB_GRDB.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 4CD52EE74E9B77B953F35301 /* GRDB_GRDB.bundle */; };
+		50418A9755F3D8AC5CA8A7D0 /* SwiftUIWebView.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		50991454E84D13696AC51903 /* JapaneseLanguageTools_JapaneseLanguageTools.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 69799392CC509CD5B7CA711D /* JapaneseLanguageTools_JapaneseLanguageTools.bundle */; };
 		50ADD87FF6D2450CC8E2AD37 /* LakeOfFire_LakeOfFireAdblock.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = 5D4FDCAA6D7B4392857B128D /* LakeOfFire_LakeOfFireAdblock.bundle */; };
 		50E8C51C79DF640151744F19 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
@@ -189,10 +190,12 @@
 		538BDF65DAC6A4FBA71067DB /* libPersistedLRUFileCache.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 2BE281EA36E1E598074634F3 /* libPersistedLRUFileCache.a */; };
 		54D72986A3541A1DAD025671 /* StoreHelper.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D88B90A803D1ACA3896CAD38 /* StoreHelper.framework */; };
 		552EEA670491E9BC7253EC14 /* OPDS1Parser.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA602C324AB24D3A8B24474C /* OPDS1Parser.swift */; };
+		556B5EC2DDFFD752A8AF8EE7 /* Brotli.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6DD6D80CA51E2F52513C71E4 /* Brotli.framework */; };
 		55B3C919EB749CBABFDE1A78 /* LakeKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */; };
 		55FEB47958B8DEDCBF5F07D8 /* LakeOfFireContentUI.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 4C353C1052A57746AB75EB69 /* LakeOfFireContentUI.framework */; };
 		573C56DF2F5FE8279A3822B2 /* FeedKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5126A6F6B4DB514C3874C507 /* FeedKit.framework */; };
 		57CDAC1E1505D30728D9D8E0 /* Pow_Pow.bundle in Resources */ = {isa = PBXBuildFile; fileRef = A1C179BE8A90F664850C9605 /* Pow_Pow.bundle */; };
+		57F7EBFBCBED8A675B20F41E /* SwiftUIWebView.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		57FAEC17DA916FAE7F5B9252 /* swift-sharing_Sharing.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 51C0EEBF886293B2139B6FF3 /* swift-sharing_Sharing.bundle */; };
 		598438DF1D64F8A1828A0B71 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
 		598E881D58A0DF9D26F09D51 /* libzstd.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 231D575B5E9B5C559FBD1B7E /* libzstd.framework */; };
@@ -209,7 +212,6 @@
 		5F02C6DB385F1DEF4212ACA8 /* URL+EBook.swift in Sources */ = {isa = PBXBuildFile; fileRef = D88FA43EDACF313C14B7BDCC /* URL+EBook.swift */; };
 		5F1C08707556392FD1E9000C /* StructuredQueriesSQLiteCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 705740EFB60C15F24E81DF2B /* StructuredQueriesSQLiteCore.framework */; };
 		5F7E11601F82D88A3949831A /* ZIPFoundation.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
-		5FF92E4DF4CA42A53CDDBBD3 /* SwiftUIDownloads.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */; };
 		602A9980815C4D77EE598621 /* LibraryScriptFormSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 555FB666591E0A35784F8676 /* LibraryScriptFormSections.swift */; };
 		60E780BA18CF0DB6C6D7807E /* SwiftDOMPurify.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 252359C3746A321FE34487F6 /* SwiftDOMPurify.framework */; };
 		60ED02EE46222D64EB6AE1B8 /* LakeImage.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0A07E441969025DDD60958D1 /* LakeImage.framework */; };
@@ -228,8 +230,7 @@
 		66D0683AB772D738D785AF1F /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
 		67132D6A9585B7DAE5055254 /* WebViewNavigatorEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B55CD346F10F29329D0B7E6 /* WebViewNavigatorEnvironment.swift */; };
 		68B324282A27568964F19EB4 /* TranscriptPageRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDF9B3E73835E0FEC5791304 /* TranscriptPageRegistry.swift */; };
-		68E162EC1CC1309508E161A2 /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
-		69E7638756A1E0ACC91A24A3 /* RealmSwiftGaps.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */; };
+		693996BB6CC1077A5237BF44 /* SwiftUIWebView.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		6AAE881DA6156565FABF5131 /* SwiftCloudDrive_SwiftCloudDrive.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 4A75A6AECBB5679AAE6B2ECD /* SwiftCloudDrive_SwiftCloudDrive.bundle */; };
 		6ACF6EE4F619ED0BEE29F134 /* ReaderToastBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A9E2BDEC10079CE6CED146 /* ReaderToastBar.swift */; };
 		6B186A13692571337289290E /* URL+ReaderBook.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C8A26CEB5EFF0E4A288F7DB /* URL+ReaderBook.swift */; };
@@ -243,6 +244,7 @@
 		6F1C87BCA36313178038B352 /* OPDS2Parser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71055BD9BD930E5A8E35AABC /* OPDS2Parser.swift */; };
 		6F1EC32490186EB57307313D /* Pow.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0ACFBB587A7997D2F15BBE19 /* Pow.framework */; };
 		7004ACC9E287B4196CBE6DC8 /* SwiftReadability_SwiftReadability.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = 9D7E2BCFE0E7C895584491C2 /* SwiftReadability_SwiftReadability.bundle */; };
+		7044B58DAB1C8922AF18E149 /* libRealmSwiftGaps.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 6F9CC28C85018D2C872F0F69 /* libRealmSwiftGaps.a */; };
 		70B31DF3E2495D1932A98979 /* AsyncView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30563D3E749EE4190578870E /* AsyncView.swift */; };
 		70C0387A7E516592AA359A95 /* LakeImage.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0A07E441969025DDD60958D1 /* LakeImage.framework */; };
 		736C9F216E96446A120D99E4 /* SwiftUIIntrospect.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 759D6FE9F0A27E0BF7E5454A /* SwiftUIIntrospect.framework */; };
@@ -253,6 +255,7 @@
 		7560219AD7772151AE5D02BF /* ZIPFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
 		7590EC1D6564D11987004068 /* Pow_Pow.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = A1C179BE8A90F664850C9605 /* Pow_Pow.bundle */; };
 		75B1286314932B6BB32AFED4 /* Pow.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0ACFBB587A7997D2F15BBE19 /* Pow.framework */; };
+		75DC9E92CD754E49CACC5562 /* ReaderWebViewCallbackContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B370C68FD042BD7384ABA70D /* ReaderWebViewCallbackContractTests.swift */; };
 		7763C3526CC75EAD616451E8 /* LakeOfFireContent.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */; };
 		7834102B714BAA6F709C982A /* DSFSearchField.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 91893302DF30B68678DB17A4 /* DSFSearchField.framework */; platformFilters = (macos, ); };
 		7918A6E95C2C1CAD81E5E2B9 /* SwiftUIBackports.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1E0BE3387862373A9E2E1829 /* SwiftUIBackports.framework */; };
@@ -271,7 +274,7 @@
 		7DCEDBB7CF68C9AA7A996824 /* SharedReaderFontAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA1EAFC2DE2141A39D0A56A9 /* SharedReaderFontAsset.swift */; };
 		7DF24F4976F89C361D42519B /* ArticleReadingProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 292523064730D827A6710BA5 /* ArticleReadingProgress.swift */; };
 		7E266BBA5BBC1FCD3B310DF3 /* TeamChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31505A20249F0A4A7EFFDDDF /* TeamChat.swift */; };
-		7FEB58022ED37809244910BE /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
+		7FAA177F4D1E1CFE639E5061 /* LibraryConfigurationConsolidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC53A7D00EA44705F59CF73D /* LibraryConfigurationConsolidationTests.swift */; };
 		802CEC9DCC87FB89DEE6F577 /* SwiftCloudDrive_SwiftCloudDrive.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 4A75A6AECBB5679AAE6B2ECD /* SwiftCloudDrive_SwiftCloudDrive.bundle */; };
 		80A18D1E0A580AF8086744CF /* Pow.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0ACFBB587A7997D2F15BBE19 /* Pow.framework */; };
 		80E05426241473182B1338A2 /* ReaderSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 355678653CC5882AE9C4748C /* ReaderSettings.swift */; };
@@ -284,6 +287,7 @@
 		8415580E0CE2D12FF9F736C5 /* URL+Internal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C49D6E629C02F2EEA97E380 /* URL+Internal.swift */; };
 		845BE8FB9903B9BD14565EE7 /* Reader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9AA574E96149E47844F7F66 /* Reader.swift */; };
 		847D1840A086D6418AFFBF4B /* LakeImage.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0A07E441969025DDD60958D1 /* LakeImage.framework */; };
+		85A88B02C005F13609D900DE /* LibraryConfiguration+Consolidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EC1EA97E099718B4E11CE0B /* LibraryConfiguration+Consolidation.swift */; };
 		85FCF04F84F676E948878ABB /* LibraryFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDF670F54377EEB0720CA648 /* LibraryFeedView.swift */; };
 		86DCC30516DAF8D4E925CB8C /* LakeOfFireAdblock.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */; };
 		86FB310EFDF37F354AA83A6C /* ReaderPackageEntrySourceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 565A15B803EF96DB053F191A /* ReaderPackageEntrySourceTests.swift */; };
@@ -292,6 +296,7 @@
 		87AC8179EDD92C03E10BA186 /* Pow.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0ACFBB587A7997D2F15BBE19 /* Pow.framework */; };
 		87EB032BAFD1B59450B355C0 /* IssueReportingPackageSupport.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D0FBB2DF8B5F0130E984A08F /* IssueReportingPackageSupport.framework */; };
 		88163DF75BD02B4A16991373 /* UTType+EPub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18482AF17295B2CF26728AF5 /* UTType+EPub.swift */; };
+		886875934EA3841C5B5E231D /* SwiftUIDownloads.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */; };
 		888A159F1C7F492ADB84ECCA /* ParseData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89514077A2D3DFC4E370326C /* ParseData.swift */; };
 		888ABEFBE854CFC4BCB9E116 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
 		88F53F3AEDD246F5EA5B674E /* DSFSearchField_DSFSearchField.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 5F30B071C17E9802785A38B1 /* DSFSearchField_DSFSearchField.bundle */; platformFilters = (macos, ); };
@@ -334,10 +339,11 @@
 		98D0CF3A57B83A6DD8E7F4A0 /* BraveAdblockCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EE410019C296EC8BDA701E77 /* BraveAdblockCore.xcframework */; };
 		993045C9816D79E9C2785E47 /* ReaderFileManagerSetupModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21B11E43A2FD82E69D4CC4A3 /* ReaderFileManagerSetupModifier.swift */; };
 		99A1E1DB4C820A806F6F2124 /* LakeOfFireFiles.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 2D68419CA5CC8F156867D74D /* LakeOfFireFiles.framework */; };
-		9D6967E73D73D9B01A65EACE /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
+		9C2E3BDB1A903E042E27D473 /* SyncMutationBoundaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF6C7F7E410A6F9161416C1D /* SyncMutationBoundaryTests.swift */; };
 		9D7B7F5C45C4584A3DA6BAFE /* Sharing2.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = ABFEC6846BD8486253ECBC22 /* Sharing2.framework */; };
 		9DE56798A517763FCBEF8A07 /* Sharing1.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2B63520D3232202F79B1DE7A /* Sharing1.framework */; };
 		9E048F07272D5B3BD8EEF873 /* AsyncAlgorithms.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6502F01E2BACC9357E8214DE /* AsyncAlgorithms.framework */; };
+		9EF91B4A0C108ACA6F2ED540 /* ReaderContentListSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E623CB00E15535F8426A591 /* ReaderContentListSnapshotTests.swift */; };
 		9F475E65E0E2CB5F707AD09C /* Mute.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E41040DF1FD30C8416AEED99 /* Mute.framework */; };
 		9FCB19A65BFACBD4F53BE5C0 /* libBraveAdblockWrapper.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 0C5CE1B58D9AF04B2EFB0A0D /* libBraveAdblockWrapper.a */; };
 		A19663146890EAC4A30CF1E6 /* SwiftCloudDrive.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F59DCA22F6A9A89879058FFA /* SwiftCloudDrive.framework */; };
@@ -356,7 +362,9 @@
 		A7BE5EDB18360A051F0D3978 /* SwiftUIBackports.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 1E0BE3387862373A9E2E1829 /* SwiftUIBackports.framework */; };
 		AA493B17C6FE821D1B3CF3E0 /* TuistBundle+LakeOfFireAdblock.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD8C0EC5AF704C86CEF05B26 /* TuistBundle+LakeOfFireAdblock.swift */; };
 		AA6816B37B97B7D2B14A8741 /* ReadabilityContentTransformations.swift in Sources */ = {isa = PBXBuildFile; fileRef = F99E318A7F5F91BA58335060 /* ReadabilityContentTransformations.swift */; };
+		AB1E20DDF026F3659C684794 /* ReaderSnippetProcessingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8BB670DAE6086681D2388E8 /* ReaderSnippetProcessingTests.swift */; };
 		AB551666734931A888FBF44D /* SwiftCloudDrive.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F59DCA22F6A9A89879058FFA /* SwiftCloudDrive.framework */; };
+		AC5AD661336136DFAEA14E0E /* SwiftUIWebView.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		AD2253430928B7CBBD12F2DC /* URL+ContentTypeTitle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2087E0C0462C479BEC4635D5 /* URL+ContentTypeTitle.swift */; };
 		AD3B33A198590D27D20E79A9 /* Exports.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EC77074D792477FEBA62436 /* Exports.swift */; };
 		AD4D97351AB3A66D03CE5BE9 /* WebViewNavigator+ReaderContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEF8B2522DB031E91ACC8409 /* WebViewNavigator+ReaderContent.swift */; };
@@ -374,6 +382,7 @@
 		B3B678CDDCA4639DC5C4CA14 /* MarkdownKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 19804300D047EDE18FB8708A /* MarkdownKit.framework */; };
 		B3E5BFD95C0A90F428BE78E0 /* LakeKit_LakeKit.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = DE67CE218D52491ECAE74E8C /* LakeKit_LakeKit.bundle */; };
 		B4DD9E2642EA6E4A95001118 /* StoreHelper_StoreHelper.bundle in Resources */ = {isa = PBXBuildFile; fileRef = CAC08C1EBCB337AF3721A076 /* StoreHelper_StoreHelper.bundle */; };
+		B5183FBBD6BBD92D15918F2E /* SwiftUIWebView.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		B59DBB2135FA3AB12D68992F /* LakeOfFire_LakeOfFireReader.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = 15A429C5C9927AD55853FADB /* LakeOfFire_LakeOfFireReader.bundle */; };
 		B5F12031B245ACC93B2726C7 /* CSS in Resources */ = {isa = PBXBuildFile; fileRef = 71FBF0C1DA553663DD278EAD /* CSS */; };
 		B66C61CD1D9CA78011F875DC /* ReaderExternalSegmentSidecar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66DDD29D6922BB34E9C687CC /* ReaderExternalSegmentSidecar.swift */; };
@@ -395,14 +404,15 @@
 		BE844450DDDF2252A053ABD1 /* SwiftDOMPurify.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 252359C3746A321FE34487F6 /* SwiftDOMPurify.framework */; };
 		BECD504FFDAB31B17DD6E6B1 /* libPersistedLRUCache.a in Frameworks */ = {isa = PBXBuildFile; fileRef = ECB5D8AC75573E7D16ABCEEE /* libPersistedLRUCache.a */; };
 		BF0242E4731D8188D3C469C7 /* libJapaneseLanguageTools.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F9C33E6F42DE554CC16A86A /* libJapaneseLanguageTools.a */; };
-		BF1C4B8EF2AD10F8ED21E881 /* RealmSwiftGaps.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */; };
 		C086BFFCCA4BCD91BCAD749B /* SwiftSoup.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FC77B529231E1ABE8BE0E68A /* SwiftSoup.framework */; };
+		C0989E929240A2C35CC3BC97 /* MutationTrackingTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F86C99C1C1124BF6B3F8395 /* MutationTrackingTestSupport.swift */; };
 		C11F6F275198D09425118BBD /* LakeKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */; };
 		C27C5846F85EC4E78E4DF7FF /* GRDB.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F6173548AD5D86CEA97D8F50 /* GRDB.framework */; };
 		C2FF6FF353F4D8A768546D91 /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
 		C3E914F2969FAAD012F6790B /* ReaderViewModelActor.swift in Sources */ = {isa = PBXBuildFile; fileRef = F747D237C65559FEC763B4B0 /* ReaderViewModelActor.swift */; };
 		C40B2636E126550BF431A3C7 /* libc++.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = D3D5C7EABC9C37051D6502F5 /* libc++.tbd */; };
 		C4C5CE951A45E8D40A15E381 /* IssueReporting.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1B0406713F5524718C10911C /* IssueReporting.framework */; };
+		C57F95C64ECA900EE4B36693 /* ReaderModePendingMatchKeyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 085BA67B77F346E810A38738 /* ReaderModePendingMatchKeyTests.swift */; };
 		C5B0E6665B1BB55F4CB32377 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D3038251E622E4500331E6EB /* Foundation.framework */; };
 		C5E40D32007D7981ED947998 /* User Scripts in Resources */ = {isa = PBXBuildFile; fileRef = 498DFDA5ADCDD665A18EF048 /* User Scripts */; };
 		C6036F9F41CF108098E8D756 /* SwiftReadability_SwiftReadability.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 9D7E2BCFE0E7C895584491C2 /* SwiftReadability_SwiftReadability.bundle */; };
@@ -418,12 +428,10 @@
 		CE2756CA62FB51B5F149853F /* SwiftUIBackports_SwiftUIBackports.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = DF5F8E8C57EF16E3C66786A9 /* SwiftUIBackports_SwiftUIBackports.bundle */; };
 		CE7B5DC002BB95686FFC9C54 /* TuistBundle+LakeOfFireTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1347B612387AF8A4AC1C2177 /* TuistBundle+LakeOfFireTests.swift */; };
 		CF3491DB1E194922594988B6 /* User Scripts in Resources */ = {isa = PBXBuildFile; fileRef = 8016AAC472FE654B02DB6492 /* User Scripts */; };
-		CF7E1793B8C1593BEBF023F4 /* RealmSwiftGaps.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */; };
 		CF9AC24070EC7C77B7EE52C0 /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
 		D04B81EE4DAF2A18194F87A2 /* CloudDriveSyncStatusModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D3E99961AAEC5C03051E6A /* CloudDriveSyncStatusModel.swift */; };
 		D04D0077217E7DFEC746AEA9 /* DSFSearchField_DSFSearchField.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 5F30B071C17E9802785A38B1 /* DSFSearchField_DSFSearchField.bundle */; platformFilters = (macos, ); };
 		D0584CA7DA04D9DA18CB5746 /* ExpandableText.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2D1235D7683CF901922B01A2 /* ExpandableText.framework */; };
-		D08307802D0C0BF718FBB70E /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		D1056C22353520428B5BFCED /* ReaderWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F63913BA3B001236DF672E24 /* ReaderWebView.swift */; };
 		D135450BB88CC44FF9A74256 /* URL+HashlessComparison.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EDC5FF6B5096B69511853D5 /* URL+HashlessComparison.swift */; };
 		D1530A154E4D88B90B60CAEC /* libc++.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = D3D5C7EABC9C37051D6502F5 /* libc++.tbd */; };
@@ -448,44 +456,47 @@
 		DBE2F767346DD5FF86DC4FE6 /* LakeOfFireContentUI.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 4C353C1052A57746AB75EB69 /* LakeOfFireContentUI.framework */; };
 		DBFDB03836B45D4387769031 /* ReaderFileManagerNormalizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B74BFFCABE24CA657A9DCF8 /* ReaderFileManagerNormalizationTests.swift */; };
 		DCA62D9C1353D13F77B5A980 /* StructuredQueriesSQLite.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7DAC05CC0493FA585B5C9A21 /* StructuredQueriesSQLite.framework */; };
+		DCCD3E80E6CFFA9BE42DC222 /* SwiftUIWebView.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
+		DD37EE6F02777ADF3BD11223 /* libRealmSwiftGaps.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 6F9CC28C85018D2C872F0F69 /* libRealmSwiftGaps.a */; };
+		DD5A408990BB1F2A36545F3E /* libRealmSwiftGaps.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 6F9CC28C85018D2C872F0F69 /* libRealmSwiftGaps.a */; };
 		DE8643AA823ED4BB529A919D /* LibraryManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6014A3319E03F979A559A27C /* LibraryManagerView.swift */; };
 		DEA10EBF7958877E6E5E41B2 /* FeedCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93EB0B118916B63BC76CB86C /* FeedCell.swift */; };
 		DED4D057D159889FE3213DB7 /* CloudKitSyncMonitor.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F5E98EDE4DC69472A583A6BA /* CloudKitSyncMonitor.framework */; };
 		DF5EFF4666A4BDF4FD9C0E50 /* ZIPFoundation.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
 		DF5F4031CD29AF68887B69E0 /* LakeImage.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0A07E441969025DDD60958D1 /* LakeImage.framework */; };
+		DFA6EF47643873B446444DEC /* SwiftUIDownloads.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */; };
 		DFB57C8A46F6C5D69D072C04 /* LakeOfFireContent.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */; };
 		DFED0F2728D2974DE459CFBA /* MarkdownKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 19804300D047EDE18FB8708A /* MarkdownKit.framework */; };
 		E084E0C1B577014CDFF67882 /* SwiftBackports.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5705314FAD87F2CF31281D27 /* SwiftBackports.framework */; };
 		E1BAA2F14CD392B8E3945BFF /* EbookURLSchemeHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B5010620C692CE87ACA4385 /* EbookURLSchemeHandlerTests.swift */; };
 		E1F101FA7F9EE76D00622B10 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
-		E220A9C74B8E6E8A75792DD7 /* Realm.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */; };
 		E22F512BF7790EBD017313F6 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
 		E29BD7DCFF05069BB0B00131 /* ZIPFoundation.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
 		E3D82D0351917C276584D036 /* LakeOfFireContentUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4C353C1052A57746AB75EB69 /* LakeOfFireContentUI.framework */; };
 		E40BEFFD185C2D40898AFB05 /* ReaderJavascriptMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53F17C3796C1E84F4A6763B /* ReaderJavascriptMessages.swift */; };
 		E44F5D280813A76439D4A8F4 /* Sharing2.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = ABFEC6846BD8486253ECBC22 /* Sharing2.framework */; };
+		E4681B7FEB1F1731FCCC33A7 /* URLSchemeTaskCompletionOwnershipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86C4ED9AFE35027B412C2D88 /* URLSchemeTaskCompletionOwnershipTests.swift */; };
 		E47875329F47EC333928799F /* ReaderImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FB3D57A2BA8CEA920148526 /* ReaderImage.swift */; };
 		E50A18DCB69BA567CFA3DBD3 /* SwiftUtilities.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
 		E596C832BAC2BA44FD068B28 /* ContentSelectionEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BF29C0CC1012A991B7536F6 /* ContentSelectionEnvironment.swift */; };
 		E78789EC91BC5C2BFD33C9F1 /* _NumericsShims.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A5A2F616729F8747DDA047EE /* _NumericsShims.framework */; };
+		E7BD89E0A12B34503C356CF8 /* libRealmSwiftGaps.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 6F9CC28C85018D2C872F0F69 /* libRealmSwiftGaps.a */; };
 		E7DC8C823E9124E83B925DA8 /* LakeOfFire_LakeOfFireReader.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = 15A429C5C9927AD55853FADB /* LakeOfFire_LakeOfFireReader.bundle */; };
 		E7E3D2C99B45173435E98B02 /* BookGridCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48C42D6E7E1ACFA977D35C9E /* BookGridCell.swift */; };
 		E82E2048C705827D69A57163 /* OPMLSendable.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120767DD34BD6DAD2AFAF2C5 /* OPMLSendable.swift */; };
 		E85D99D57F72F6848319D7CB /* CloudKitSyncMonitor.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F5E98EDE4DC69472A583A6BA /* CloudKitSyncMonitor.framework */; };
 		E9266CEF96F206AF24F0084D /* ReaderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E8DB8BE5FC8753325BDABE3 /* ReaderViewModel.swift */; };
 		E93D8B027EAA158D32354DCA /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
-		E974F874EE94EFA440622E0D /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		E97C0AA249FFE8A08600582B /* StoreHelper_StoreHelper.bundle in Resources */ = {isa = PBXBuildFile; fileRef = CAC08C1EBCB337AF3721A076 /* StoreHelper_StoreHelper.bundle */; };
 		E9A5FBE5A9EE1B46BC1642B5 /* OPML.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 20D77CA7B347A9568C453FE8 /* OPML.framework */; };
 		E9B6BDE3B59772370140A998 /* ReaderUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C53D3486FAC510F64D97141 /* ReaderUserScript.swift */; };
-		E9FC23C72A226DB3D62AA905 /* RealmSwiftGaps.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */; };
+		EAB878883AF8C28E91A16448 /* Brotli.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6DD6D80CA51E2F52513C71E4 /* Brotli.framework */; };
 		EAE746995E81B30C676493B3 /* ReaderWebMediaBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 809DC88C4359ED63A9BAA922 /* ReaderWebMediaBridgeTests.swift */; };
 		EB30182A7728B28605441A59 /* SwiftUIBackports_SwiftUIBackports.bundle in Resources */ = {isa = PBXBuildFile; fileRef = DF5F8E8C57EF16E3C66786A9 /* SwiftUIBackports_SwiftUIBackports.bundle */; };
 		EB4C7754AE95B62C023795E2 /* ReaderContentSourceIconImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8CF732A4D704EC0B2AD050D /* ReaderContentSourceIconImage.swift */; };
 		EB91F49E8CCD51C4BCEA0277 /* LakeKit_LakeKit.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = DE67CE218D52491ECAE74E8C /* LakeKit_LakeKit.bundle */; };
-		EC8631B1CC61CDD7E7F4164F /* RealmSwiftGaps.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */; };
+		EC3D67EE3CB46C4E3B1AEB06 /* SwiftUIWebView.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		ECAC88A7D6B798AC989B15D9 /* DSFSearchField_DSFSearchField.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = 5F30B071C17E9802785A38B1 /* DSFSearchField_DSFSearchField.bundle */; platformFilters = (macos, ); };
-		ECEFEB376C86F93679B35E34 /* VisionLiveText_SwiftUICompatible.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DC983C520BEB23CAE1BA0462 /* VisionLiveText_SwiftUICompatible.framework */; platformFilter = ios; };
 		ED38FB00AE73E181BBA76F9A /* SwiftReadability.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1FB405D7349D3C50BEF4D8FF /* SwiftReadability.framework */; };
 		ED786D9E19DD9A9A419F258E /* ExpandableText.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 2D1235D7683CF901922B01A2 /* ExpandableText.framework */; };
 		EDC134BBE0EA04456AA7B3D0 /* LibraryCategoriesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13849EE84EAEA7363556428B /* LibraryCategoriesViewModel.swift */; };
@@ -508,7 +519,7 @@
 		F20D070F298129461504D5FD /* InternalURLSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C45893AA23B27EB6A020D51 /* InternalURLSchemeHandler.swift */; };
 		F247E07171DBBE3B17DC93B7 /* swift-sharing_Sharing.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = 51C0EEBF886293B2139B6FF3 /* swift-sharing_Sharing.bundle */; };
 		F34D8484E4579795DD47EE9C /* YoutubeAdSkipUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = B69E886C77D5440750153EFF /* YoutubeAdSkipUserScript.swift */; };
-		F38E441C562EC57A31CA2AFD /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
+		F36EEDB7C4893D8E8E94FB13 /* URLInternalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEB7FECC9A96ADDFBA2A6DF /* URLInternalTests.swift */; };
 		F44722568CEF2E107B031DF1 /* StructuredQueries.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 68F0C0E5E3D0713EE9895E37 /* StructuredQueries.framework */; };
 		F4F9B4AF34EE7401B91A9B47 /* ReaderMessageHandlersViewModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B34438AE89F0D68C099A43A /* ReaderMessageHandlersViewModifier.swift */; };
 		F510C5073A7A0E5E2E59EA32 /* LakeKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */; };
@@ -522,6 +533,7 @@
 		FA282D4A71E65E40BA110B05 /* readium_opds2_0_test.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E8C02F879DBD8C9520C36AA /* readium_opds2_0_test.swift */; };
 		FA920CEAEB2A6C87C0902E76 /* MediaTranscript.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A7C654FB182EEA94098FEB /* MediaTranscript.swift */; };
 		FACF9D426AC37711D4C57F71 /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
+		FAD043BE18A3C8AA242B2607 /* ReaderModeProcessingDependencyPublicationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21961F055C1E3476939FA794 /* ReaderModeProcessingDependencyPublicationTests.swift */; };
 		FAD5E638AB87797E77B55FAF /* OrderedCollections.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */; };
 		FB2E1B397FDE4105AAC19556 /* PerceptionCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 409CBA564F1A069182525E96 /* PerceptionCore.framework */; };
 		FC4FBC9CD92098606B6ADB0B /* LakeKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */; };
@@ -783,6 +795,13 @@
 			remoteGlobalIDString = B957D50F079A8034A05BA512;
 			remoteInfo = LakeOfFireFiles;
 		};
+		EA2E3DDFABB8DE18DFA1A314 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BB89F349C49AD326D105E98A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D0EEC562F6975E213EDA9EC3;
+			remoteInfo = LakeOfFireContentUI;
+		};
 		EC9331200A94C0DDFF85F903 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = BB89F349C49AD326D105E98A /* Project object */;
@@ -820,21 +839,12 @@
 			dstSubfolderSpec = 16;
 			files = (
 				9FCB19A65BFACBD4F53BE5C0 /* libBraveAdblockWrapper.a in Dependencies */,
+				50418A9755F3D8AC5CA8A7D0 /* SwiftUIWebView.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
 		};
 		0A31579FF82F5E420E9C96B5 /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 10;
-			files = (
-			);
-			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		1273BBDD15BAAB21938F4BD2 /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
@@ -910,11 +920,14 @@
 				5B9364C983075232BBFA5952 /* LakeOfFireWeb.framework in Dependencies */,
 				6D91DDF89993CED1182642C4 /* Logging.framework in Dependencies */,
 				87AC8179EDD92C03E10BA186 /* Pow.framework in Dependencies */,
+				DD37EE6F02777ADF3BD11223 /* libRealmSwiftGaps.a in Dependencies */,
 				A19663146890EAC4A30CF1E6 /* SwiftCloudDrive.framework in Dependencies */,
 				BE844450DDDF2252A053ABD1 /* SwiftDOMPurify.framework in Dependencies */,
 				232FD0784B8890F9CC067C33 /* SwiftReadability.framework in Dependencies */,
 				6452F3FABCAED36212C68897 /* SwiftSoup.framework in Dependencies */,
 				A7BE5EDB18360A051F0D3978 /* SwiftUIBackports.framework in Dependencies */,
+				886875934EA3841C5B5E231D /* SwiftUIDownloads.framework in Dependencies */,
+				DCCD3E80E6CFFA9BE42DC222 /* SwiftUIWebView.framework in Dependencies */,
 				C2FF6FF353F4D8A768546D91 /* SwiftUtilities.framework in Dependencies */,
 				E29BD7DCFF05069BB0B00131 /* ZIPFoundation.framework in Dependencies */,
 			);
@@ -963,8 +976,11 @@
 				7BB80508A803B8DC9FC7F6F4 /* LakeOfFireCore.framework in Dependencies */,
 				098DD2BA9FF20EB7DDFA0577 /* MarkdownKit.framework in Dependencies */,
 				E9A5FBE5A9EE1B46BC1642B5 /* OPML.framework in Dependencies */,
+				DD5A408990BB1F2A36545F3E /* libRealmSwiftGaps.a in Dependencies */,
 				AB551666734931A888FBF44D /* SwiftCloudDrive.framework in Dependencies */,
 				630DA6856F4DE0B19E344505 /* SwiftSoup.framework in Dependencies */,
+				DFA6EF47643873B446444DEC /* SwiftUIDownloads.framework in Dependencies */,
+				693996BB6CC1077A5237BF44 /* SwiftUIWebView.framework in Dependencies */,
 				CF9AC24070EC7C77B7EE52C0 /* SwiftUtilities.framework in Dependencies */,
 				5F7E11601F82D88A3949831A /* ZIPFoundation.framework in Dependencies */,
 				598E881D58A0DF9D26F09D51 /* libzstd.framework in Dependencies */,
@@ -989,6 +1005,7 @@
 			files = (
 				649A667CE90B232AA9D70E78 /* LakeOfFireAdblock.framework in Dependencies */,
 				A68CA45F11D331E6974F99F8 /* LakeOfFireCore.framework in Dependencies */,
+				B5183FBBD6BBD92D15918F2E /* SwiftUIWebView.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
@@ -1061,6 +1078,8 @@
 				1AC34EFD8998A532D4CADD08 /* LakeOfFireContent.framework in Dependencies */,
 				66D0683AB772D738D785AF1F /* LakeOfFireCore.framework in Dependencies */,
 				80A18D1E0A580AF8086744CF /* Pow.framework in Dependencies */,
+				1CF5D5B10FA4B4C1CB94DEFF /* libRealmSwiftGaps.a in Dependencies */,
+				57F7EBFBCBED8A675B20F41E /* SwiftUIWebView.framework in Dependencies */,
 				4B86F977A3E4AF5A0055A8B3 /* SwiftUtilities.framework in Dependencies */,
 				6D478D35B3E9F42F96AFE5BB /* ZIPFoundation.framework in Dependencies */,
 			);
@@ -1114,16 +1133,7 @@
 			files = (
 				11AB4693821D804DF96B4378 /* AsyncView.framework in Dependencies */,
 				FC4FBC9CD92098606B6ADB0B /* LakeKit.framework in Dependencies */,
-			);
-			name = Dependencies;
-			runOnlyForDeploymentPostprocessing = 1;
-		};
-		E8BB9E09992F7067E2113937 /* Dependencies */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 8;
-			dstSubfolderSpec = 16;
-			files = (
-				1C295B88374A33500435FFC1 /* SwiftUtilities.framework in Dependencies */,
+				AC5AD661336136DFAEA14E0E /* SwiftUIWebView.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
@@ -1172,7 +1182,9 @@
 				B7D972F268641334FA733C5D /* LakeOfFireReader.framework in Dependencies */,
 				C8831530B425A5B96226A5BB /* OPML.framework in Dependencies */,
 				8C0E291CD8F6E880DBC3C2F5 /* OpenGraph.framework in Dependencies */,
+				E7BD89E0A12B34503C356CF8 /* libRealmSwiftGaps.a in Dependencies */,
 				F7746BBD1F45F311A2C9081E /* SwiftUIBackports.framework in Dependencies */,
+				EC3D67EE3CB46C4E3B1AEB06 /* SwiftUIWebView.framework in Dependencies */,
 				D51997E936A2C61BD2031D14 /* SwiftUtilities.framework in Dependencies */,
 			);
 			name = Dependencies;
@@ -1204,9 +1216,10 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		0017879037EB5DDEC30A158C /* LakeOfFireShareSupport.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireShareSupport.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		00BEE0B2992B42D01C783A1B /* ReaderProgressMessageSequenceGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderProgressMessageSequenceGateTests.swift; sourceTree = "<group>"; };
 		02751B0F6E16EC6F3185A0C5 /* LakeOfFire_LakeOfFireAdblock-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFire_LakeOfFireAdblock-Info.plist"; sourceTree = "<group>"; };
 		05A535B5A3ABFA73238AB7FC /* LakeOfFireTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LakeOfFireTests.swift; sourceTree = "<group>"; };
+		085BA67B77F346E810A38738 /* ReaderModePendingMatchKeyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderModePendingMatchKeyTests.swift; sourceTree = "<group>"; };
 		0A07E441969025DDD60958D1 /* LakeImage.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeImage.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		0ACFBB587A7997D2F15BBE19 /* Pow.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pow.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		0BF29C0CC1012A991B7536F6 /* ContentSelectionEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentSelectionEnvironment.swift; sourceTree = "<group>"; };
@@ -1246,6 +1259,7 @@
 		2087E0C0462C479BEC4635D5 /* URL+ContentTypeTitle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+ContentTypeTitle.swift"; sourceTree = "<group>"; };
 		20C17A774C69797FB2ECFDDC /* Puppy.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Puppy.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		20D77CA7B347A9568C453FE8 /* OPML.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = OPML.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		21961F055C1E3476939FA794 /* ReaderModeProcessingDependencyPublicationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderModeProcessingDependencyPublicationTests.swift; sourceTree = "<group>"; };
 		21B11E43A2FD82E69D4CC4A3 /* ReaderFileManagerSetupModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderFileManagerSetupModifier.swift; sourceTree = "<group>"; };
 		2230BD70A581D7C9C1AF826A /* ReadabilityMessageFrameFilteringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadabilityMessageFrameFilteringTests.swift; sourceTree = "<group>"; };
 		231D575B5E9B5C559FBD1B7E /* libzstd.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = libzstd.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -1264,6 +1278,8 @@
 		2C53D3486FAC510F64D97141 /* ReaderUserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderUserScript.swift; sourceTree = "<group>"; };
 		2D1235D7683CF901922B01A2 /* ExpandableText.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ExpandableText.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		2D68419CA5CC8F156867D74D /* LakeOfFireFiles.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireFiles.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		2D8B92EB6F1D3C9B83AF5A33 /* ReaderContentInitialImageRendererTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentInitialImageRendererTests.swift; sourceTree = "<group>"; };
+		2EC1EA97E099718B4E11CE0B /* LibraryConfiguration+Consolidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LibraryConfiguration+Consolidation.swift"; sourceTree = "<group>"; };
 		2F56AFD6057D9BF2D3E9ACB1 /* BaseReadingProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BaseReadingProgress.swift; sourceTree = "<group>"; };
 		30563D3E749EE4190578870E /* AsyncView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncView.swift; sourceTree = "<group>"; };
 		31505A20249F0A4A7EFFDDDF /* TeamChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamChat.swift; sourceTree = "<group>"; };
@@ -1275,7 +1291,6 @@
 		3A7E4DAE4A84C6DF703E10EF /* AsyncView.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = AsyncView.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		3B999F3B6F3DC53882B4DD23 /* OPDSCatalogsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OPDSCatalogsView.swift; sourceTree = "<group>"; };
 		3BC9D8E2591A827A49A26CE5 /* WebMediaWebSupportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMediaWebSupportTests.swift; sourceTree = "<group>"; };
-		3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Realm.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		3EE283BF5F88F02673DE605B /* LakeOfFireOPDSTests-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFireOPDSTests-Info.plist"; sourceTree = "<group>"; };
 		3FF2E0FE2DC03E3D0F9EAA88 /* ContentFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentFile.swift; sourceTree = "<group>"; };
 		4033A8D7C0803299FF506B4F /* BookmarkButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkButton.swift; sourceTree = "<group>"; };
@@ -1304,6 +1319,7 @@
 		4DA26D8E9078F7930EE6D2EC /* FeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedView.swift; sourceTree = "<group>"; };
 		4E12213CF1250504A9D195A1 /* Bookmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bookmark.swift; sourceTree = "<group>"; };
 		4E18D0EF549BDEF032346A8D /* EbookURLSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookURLSchemeHandler.swift; sourceTree = "<group>"; };
+		4E623CB00E15535F8426A591 /* ReaderContentListSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentListSnapshotTests.swift; sourceTree = "<group>"; };
 		4E8C02F879DBD8C9520C36AA /* readium_opds2_0_test.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = readium_opds2_0_test.swift; sourceTree = "<group>"; };
 		4EDC5FF6B5096B69511853D5 /* URL+HashlessComparison.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+HashlessComparison.swift"; sourceTree = "<group>"; };
 		5126A6F6B4DB514C3874C507 /* FeedKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = FeedKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -1341,14 +1357,15 @@
 		692614AB4B368D33116EF24A /* FeedFollowingEditListBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedFollowingEditListBuilderTests.swift; sourceTree = "<group>"; };
 		69799392CC509CD5B7CA711D /* JapaneseLanguageTools_JapaneseLanguageTools.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = JapaneseLanguageTools_JapaneseLanguageTools.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		69DD30D82D01A1F384553B21 /* ReaderNativeContentEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderNativeContentEnvironment.swift; sourceTree = "<group>"; };
-		69EA54B3EF4F8B69D803E51C /* ReaderShareUtilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderShareUtilities.swift; sourceTree = "<group>"; };
 		6ABCCFDB971B5C888BE1180E /* ReaderContentList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentList.swift; sourceTree = "<group>"; };
 		6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireAdblock.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireContent.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		6D46E0204024D29E3136178D /* EbookFileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookFileManager.swift; sourceTree = "<group>"; };
+		6DD6D80CA51E2F52513C71E4 /* Brotli.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Brotli.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		6E500D3DC1099B844F4740F0 /* ReaderBuiltInUserScriptsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderBuiltInUserScriptsTests.swift; sourceTree = "<group>"; };
 		6ED0F7B0B82088C39203E007 /* LakeOfFireOPDSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LakeOfFireOPDSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		6EDE2EDB73B67694E353D62A /* BigSyncKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = BigSyncKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		6F9CC28C85018D2C872F0F69 /* libRealmSwiftGaps.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libRealmSwiftGaps.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		6FE045814BB20B76DE1F0FA1 /* YouTubeAdBlockUserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeAdBlockUserScript.swift; sourceTree = "<group>"; };
 		705740EFB60C15F24E81DF2B /* StructuredQueriesSQLiteCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = StructuredQueriesSQLiteCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		70B61E847844877510DCDEC5 /* PlainTextHTMLConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlainTextHTMLConverter.swift; sourceTree = "<group>"; };
@@ -1359,7 +1376,6 @@
 		759D6FE9F0A27E0BF7E5454A /* SwiftUIIntrospect.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftUIIntrospect.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		785222CBF21E3DEE5FE9CF51 /* Perception.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Perception.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		7864C63653918DC62961A70B /* String+StrippingHTML.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "String+StrippingHTML.swift"; sourceTree = "<group>"; };
-		787C519A0EFE9A11225DCB45 /* LakeOfFireShareSupport-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFireShareSupport-Info.plist"; sourceTree = "<group>"; };
 		788FB2C71005DDEFF46BBB65 /* libPersistedLRUCacheCore.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libPersistedLRUCacheCore.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		79288AE1E6372F266249CEC8 /* InternalReaderProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InternalReaderProtocol.swift; sourceTree = "<group>"; };
 		7AD853F2C49D88DEC789CAE8 /* ReaderContentHorizontalList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentHorizontalList.swift; sourceTree = "<group>"; };
@@ -1372,6 +1388,7 @@
 		809DC88C4359ED63A9BAA922 /* ReaderWebMediaBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderWebMediaBridgeTests.swift; sourceTree = "<group>"; };
 		84EE5AD646FA4689A146F785 /* Color+Presets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Color+Presets.swift"; sourceTree = "<group>"; };
 		86AF5234553A5B749FF416FC /* mozilla-wikipedia-minerva.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = "mozilla-wikipedia-minerva.html"; sourceTree = "<group>"; };
+		86C4ED9AFE35027B412C2D88 /* URLSchemeTaskCompletionOwnershipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSchemeTaskCompletionOwnershipTests.swift; sourceTree = "<group>"; };
 		8730C0A30790A4E6F2424949 /* CloudKitSyncMonitor_CloudKitSyncMonitor.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CloudKitSyncMonitor_CloudKitSyncMonitor.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		878E05D9D239C170DFDE2C3A /* NavigationTaskManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationTaskManager.swift; sourceTree = "<group>"; };
 		89514077A2D3DFC4E370326C /* ParseData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParseData.swift; sourceTree = "<group>"; };
@@ -1399,9 +1416,11 @@
 		9B74BFFCABE24CA657A9DCF8 /* ReaderFileManagerNormalizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderFileManagerNormalizationTests.swift; sourceTree = "<group>"; };
 		9C70D45904D4F0928CCAC4EE /* FilePicker.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = FilePicker.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		9D7E2BCFE0E7C895584491C2 /* SwiftReadability_SwiftReadability.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SwiftReadability_SwiftReadability.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
+		9DEB7FECC9A96ADDFBA2A6DF /* URLInternalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLInternalTests.swift; sourceTree = "<group>"; };
 		9E4915E5B7CBEBF5D41FB73D /* Dependencies.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Dependencies.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		9F059AA2317C283232A0DB30 /* UserLibraryCategoryButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserLibraryCategoryButtons.swift; sourceTree = "<group>"; };
 		9F5447BC17A5D00BAE24D6CC /* LibraryDataManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryDataManager.swift; sourceTree = "<group>"; };
+		9F86C99C1C1124BF6B3F8395 /* MutationTrackingTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MutationTrackingTestSupport.swift; sourceTree = "<group>"; };
 		9FAEB0ECDA76E201CCE82DF1 /* InjectionImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InjectionImport.swift; sourceTree = "<group>"; };
 		9FB3D57A2BA8CEA920148526 /* ReaderImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderImage.swift; sourceTree = "<group>"; };
 		A0D49ACB0FB2C5F018460D97 /* ReaderWebViewConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderWebViewConfiguration.swift; sourceTree = "<group>"; };
@@ -1413,9 +1432,9 @@
 		A5A2F616729F8747DDA047EE /* _NumericsShims.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = _NumericsShims.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		A653B9F245050DFB6DBCAF67 /* OPDSModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OPDSModels.swift; sourceTree = "<group>"; };
 		A6CB23099E4D7B6EA5B9AC45 /* NetflixUserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetflixUserScript.swift; sourceTree = "<group>"; };
+		A8BB670DAE6086681D2388E8 /* ReaderSnippetProcessingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderSnippetProcessingTests.swift; sourceTree = "<group>"; };
 		A93F8ED87C98D950EC8861B6 /* TranscriptReaderProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptReaderProtocol.swift; sourceTree = "<group>"; };
 		A9716A4611DF7518D2ACF912 /* ReaderContentLoadCoordinationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentLoadCoordinationTests.swift; sourceTree = "<group>"; };
-		AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = RealmSwiftGaps.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		ABFEC6846BD8486253ECBC22 /* Sharing2.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Sharing2.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		AC5C42A82E2B2F82E77DE798 /* RealModule.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = RealModule.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -1431,6 +1450,7 @@
 		B1266D2FF843321A0E14BBAB /* ZIPFoundation_ZIPFoundation.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ZIPFoundation_ZIPFoundation.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		B2685ABB176319217D80A76B /* Feed Model Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Feed Model Extensions.swift"; sourceTree = "<group>"; };
 		B287731F0C7959837AAF0105 /* WikipediaReadabilityRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WikipediaReadabilityRegressionTests.swift; sourceTree = "<group>"; };
+		B370C68FD042BD7384ABA70D /* ReaderWebViewCallbackContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderWebViewCallbackContractTests.swift; sourceTree = "<group>"; };
 		B5DE78C686DA12E01F709BC4 /* LakeOfFireReaderWebMediaTests-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFireReaderWebMediaTests-Info.plist"; sourceTree = "<group>"; };
 		B5F2C84339C2F4168C93F8DC /* readium_opds1_1_test.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = readium_opds1_1_test.swift; sourceTree = "<group>"; };
 		B64D98529179A4224AB231B2 /* Samples */ = {isa = PBXFileReference; path = Samples; sourceTree = "<group>"; };
@@ -1444,6 +1464,7 @@
 		BE436D7FE0B850C196E68366 /* LakeOfFire_LakeOfFireReader-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFire_LakeOfFireReader-Info.plist"; sourceTree = "<group>"; };
 		BE815231DC25AA1BBDE7C35E /* TuistBundle+LakeOfFireContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TuistBundle+LakeOfFireContent.swift"; sourceTree = "<group>"; };
 		C10F789EFF1222C6A701E0E6 /* UserScriptAllowedDomainCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserScriptAllowedDomainCell.swift; sourceTree = "<group>"; };
+		C140591D11FB29DF5A45BA26 /* ReaderImageRequestTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderImageRequestTests.swift; sourceTree = "<group>"; };
 		C19622AE691A981585648A6F /* DequeModule.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = DequeModule.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		C257921AF7AD599679F761F7 /* WebFeedButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebFeedButton.swift; sourceTree = "<group>"; };
 		C35BAE76509F919037B83B6B /* ReaderExternalSegmentSidecarRetentionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderExternalSegmentSidecarRetentionTests.swift; sourceTree = "<group>"; };
@@ -1458,6 +1479,7 @@
 		CBA7E8D3FD3C4303EB10951D /* LakeOfFireCore-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFireCore-Info.plist"; sourceTree = "<group>"; };
 		CCDBEA52A5BED45E641E04F4 /* SmokeSummaryTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeSummaryTestSupport.swift; sourceTree = "<group>"; };
 		CD7EC6D5CE496DC6F2C5317E /* Book Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Book Views.swift"; sourceTree = "<group>"; };
+		CF6C7F7E410A6F9161416C1D /* SyncMutationBoundaryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncMutationBoundaryTests.swift; sourceTree = "<group>"; };
 		D06E45617FECE3EBC4EF07EB /* ReaderHTTPErrorRecoveryPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderHTTPErrorRecoveryPolicyTests.swift; sourceTree = "<group>"; };
 		D0FBB2DF8B5F0130E984A08F /* IssueReportingPackageSupport.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = IssueReportingPackageSupport.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		D214A28DA8C9BF920485CEB0 /* ReaderContentProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentProtocol.swift; sourceTree = "<group>"; };
@@ -1472,7 +1494,6 @@
 		DAFB8F45684C4D923369DC75 /* ReaderContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContent.swift; sourceTree = "<group>"; };
 		DBD6B3388355ECEC5EAA56AF /* KeychainSwift.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = KeychainSwift.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		DC499D3A8D09972FF34A6EAF /* ReaderEnvironmentViewModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderEnvironmentViewModifier.swift; sourceTree = "<group>"; };
-		DC983C520BEB23CAE1BA0462 /* VisionLiveText_SwiftUICompatible.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = VisionLiveText_SwiftUICompatible.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		DD892CD97F506B30609A2CFA /* DebouncedOnChange.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = DebouncedOnChange.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		DE67CE218D52491ECAE74E8C /* LakeKit_LakeKit.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LakeKit_LakeKit.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		DF5F8E8C57EF16E3C66786A9 /* SwiftUIBackports_SwiftUIBackports.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SwiftUIBackports_SwiftUIBackports.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -1495,6 +1516,7 @@
 		ECB5D8AC75573E7D16ABCEEE /* libPersistedLRUCache.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libPersistedLRUCache.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		EE410019C296EC8BDA701E77 /* BraveAdblockCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = BraveAdblockCore.xcframework; path = "/Users/alex/Code/manabi/manabi-reader/Tuist/.build/artifacts/swift-brave/BraveAdblockCore/BraveAdblockCore.xcframework"; sourceTree = "<absolute>"; };
 		EEF8B2522DB031E91ACC8409 /* WebViewNavigator+ReaderContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WebViewNavigator+ReaderContent.swift"; sourceTree = "<group>"; };
+		EFD17083FF00574998607393 /* EbookHTMLResponseMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookHTMLResponseMetadata.swift; sourceTree = "<group>"; };
 		F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftUIDownloads.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		F1176F350B6B2CFA8F3FB0F4 /* StructuredQueriesCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = StructuredQueriesCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftUIWebView.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -1511,6 +1533,7 @@
 		F8CF30D23C857DABADD4F9B9 /* EPubParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPubParser.swift; sourceTree = "<group>"; };
 		F928AF6884694ED6E488E4D6 /* ReaderModeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderModeViewModel.swift; sourceTree = "<group>"; };
 		F99E318A7F5F91BA58335060 /* ReadabilityContentTransformations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadabilityContentTransformations.swift; sourceTree = "<group>"; };
+		FC53A7D00EA44705F59CF73D /* LibraryConfigurationConsolidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryConfigurationConsolidationTests.swift; sourceTree = "<group>"; };
 		FC691A7B2C1B4EC4D266E3A2 /* ReaderUnhandledTapUserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderUnhandledTapUserScript.swift; sourceTree = "<group>"; };
 		FC77B529231E1ABE8BE0E68A /* SwiftSoup.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftSoup.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		FDF670F54377EEB0720CA648 /* LibraryFeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryFeedView.swift; sourceTree = "<group>"; };
@@ -1532,8 +1555,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				888ABEFBE854CFC4BCB9E116 /* RealmSwift.framework in Frameworks */,
-				E9FC23C72A226DB3D62AA905 /* RealmSwiftGaps.framework in Frameworks */,
-				68E162EC1CC1309508E161A2 /* SwiftUIWebView.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1549,7 +1570,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				D5C72D5FCBB5B4DF1B2887C1 /* OrderedCollections.framework in Frameworks */,
-				7FEB58022ED37809244910BE /* SwiftUIWebView.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1565,6 +1585,7 @@
 				B05CF2CBC0B06D6FF90356D9 /* BetterSafariView.framework in Frameworks */,
 				8B4102AEAEB912C1399BC5C0 /* BigSyncKit.framework in Frameworks */,
 				81B163172FFAD1839A65DF2C /* libBraveAdblockWrapper.a in Frameworks */,
+				EAB878883AF8C28E91A16448 /* Brotli.framework in Frameworks */,
 				516A596A43931F9B9E919EA7 /* Clocks.framework in Frameworks */,
 				E85D99D57F72F6848319D7CB /* CloudKitSyncMonitor.framework in Frameworks */,
 				41FDF242D5AC5FC5B72C2BB9 /* Collections.framework in Frameworks */,
@@ -1614,7 +1635,7 @@
 				10A5E9E0482FC24C09828B2C /* Puppy.framework in Frameworks */,
 				2A96FA92A296158C3D31005B /* RealModule.framework in Frameworks */,
 				E22F512BF7790EBD017313F6 /* RealmSwift.framework in Frameworks */,
-				01B7982FB335CE1523EEC67B /* RealmSwiftGaps.framework in Frameworks */,
+				7044B58DAB1C8922AF18E149 /* libRealmSwiftGaps.a in Frameworks */,
 				29C20F6145D58CECA2A49D43 /* SQLiteData.framework in Frameworks */,
 				F0A56D19FA31D35FDE2B2EAB /* Sharing.framework in Frameworks */,
 				9DE56798A517763FCBEF8A07 /* Sharing1.framework in Frameworks */,
@@ -1635,7 +1656,6 @@
 				736C9F216E96446A120D99E4 /* SwiftUIIntrospect.framework in Frameworks */,
 				7AB5AC515D544E075851E7E6 /* SwiftUIWebView.framework in Frameworks */,
 				E50A18DCB69BA567CFA3DBD3 /* SwiftUtilities.framework in Frameworks */,
-				ECEFEB376C86F93679B35E34 /* VisionLiveText_SwiftUICompatible.framework in Frameworks */,
 				004D5BAC292F3EABA0D44961 /* XCTestDynamicOverlay.framework in Frameworks */,
 				7560219AD7772151AE5D02BF /* ZIPFoundation.framework in Frameworks */,
 				87A65AB40FAC34DAAB4E7125 /* _NumericsShims.framework in Frameworks */,
@@ -1648,7 +1668,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				F38E441C562EC57A31CA2AFD /* SwiftUIWebView.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1665,9 +1684,6 @@
 			files = (
 				749F15F847BC15A8A7FFCAD0 /* Collections.framework in Frameworks */,
 				E1F101FA7F9EE76D00622B10 /* RealmSwift.framework in Frameworks */,
-				69E7638756A1E0ACC91A24A3 /* RealmSwiftGaps.framework in Frameworks */,
-				0E905AFAD8F6B2B385C54E59 /* SwiftUIDownloads.framework in Frameworks */,
-				D08307802D0C0BF718FBB70E /* SwiftUIWebView.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1676,8 +1692,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				50E8C51C79DF640151744F19 /* RealmSwift.framework in Frameworks */,
-				CF7E1793B8C1593BEBF023F4 /* RealmSwiftGaps.framework in Frameworks */,
-				221E5837DDF30B7164E59399 /* SwiftUIWebView.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1701,6 +1715,7 @@
 				196498E7E2912C6BD39B8A00 /* BetterSafariView.framework in Frameworks */,
 				2AB81FF257AB7FD41566264D /* BigSyncKit.framework in Frameworks */,
 				DBB3EB4D50CC1C606E1077E8 /* libBraveAdblockWrapper.a in Frameworks */,
+				556B5EC2DDFFD752A8AF8EE7 /* Brotli.framework in Frameworks */,
 				6DEF5FB12FDF079ECBA8892F /* Clocks.framework in Frameworks */,
 				DED4D057D159889FE3213DB7 /* CloudKitSyncMonitor.framework in Frameworks */,
 				988ED87521CE83F33856A578 /* Collections.framework in Frameworks */,
@@ -1749,9 +1764,8 @@
 				6F1EC32490186EB57307313D /* Pow.framework in Frameworks */,
 				F1659350C6D421067C6AE3A5 /* Puppy.framework in Frameworks */,
 				468B35A8F34A2EA0E0776045 /* RealModule.framework in Frameworks */,
-				E220A9C74B8E6E8A75792DD7 /* Realm.framework in Frameworks */,
 				BDC06A700E9394DE1FE880A8 /* RealmSwift.framework in Frameworks */,
-				EC8631B1CC61CDD7E7F4164F /* RealmSwiftGaps.framework in Frameworks */,
+				00CBF92EE66E1CC980BF0151 /* libRealmSwiftGaps.a in Frameworks */,
 				D4D2F9B2154AF9C37543C0EB /* SQLiteData.framework in Frameworks */,
 				918407B85937D010009EB516 /* Sharing.framework in Frameworks */,
 				826AF266F3772F83A68F7C71 /* Sharing1.framework in Frameworks */,
@@ -1772,7 +1786,6 @@
 				3CE8CF3663BAAC7F09B699A2 /* SwiftUIIntrospect.framework in Frameworks */,
 				28A87E9C8DB63BC20A35E758 /* SwiftUIWebView.framework in Frameworks */,
 				36439CD01E8630D35F9EDE7B /* SwiftUtilities.framework in Frameworks */,
-				30B73FC40236CC4050709463 /* VisionLiveText_SwiftUICompatible.framework in Frameworks */,
 				35E79B00567DF60AD911AA34 /* WebMedia.framework in Frameworks */,
 				92DF04E0881E8F3504462901 /* XCTestDynamicOverlay.framework in Frameworks */,
 				CB1E46A458C28BBB55048C9A /* ZIPFoundation.framework in Frameworks */,
@@ -1783,13 +1796,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		922BE7555D2086FB2441EF3C /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		A3250CE7A56291C759305F81 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -1808,7 +1814,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				E974F874EE94EFA440622E0D /* SwiftUIWebView.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1826,9 +1831,6 @@
 				F09E60698C7B2D9C1D2C8A0A /* LRUCache.framework in Frameworks */,
 				FAD5E638AB87797E77B55FAF /* OrderedCollections.framework in Frameworks */,
 				598438DF1D64F8A1828A0B71 /* RealmSwift.framework in Frameworks */,
-				BF1C4B8EF2AD10F8ED21E881 /* RealmSwiftGaps.framework in Frameworks */,
-				5FF92E4DF4CA42A53CDDBBD3 /* SwiftUIDownloads.framework in Frameworks */,
-				9D6967E73D73D9B01A65EACE /* SwiftUIWebView.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1976,6 +1978,7 @@
 		588EE1DF83BF70BE80FE1DF8 /* Library */ = {
 			isa = PBXGroup;
 			children = (
+				2EC1EA97E099718B4E11CE0B /* LibraryConfiguration+Consolidation.swift */,
 				9F5447BC17A5D00BAE24D6CC /* LibraryDataManager.swift */,
 				120767DD34BD6DAD2AFAF2C5 /* OPMLSendable.swift */,
 			);
@@ -2130,6 +2133,7 @@
 				F4A82BCE41E472AABFC4F59A /* BetterSafariView.framework */,
 				646E399FF73B28D956EABDAC /* BigSyncKit_BigSyncKit.bundle */,
 				6EDE2EDB73B67694E353D62A /* BigSyncKit.framework */,
+				6DD6D80CA51E2F52513C71E4 /* Brotli.framework */,
 				93FADF363806C5406F404483 /* Clocks.framework */,
 				8730C0A30790A4E6F2424949 /* CloudKitSyncMonitor_CloudKitSyncMonitor.bundle */,
 				F5E98EDE4DC69472A583A6BA /* CloudKitSyncMonitor.framework */,
@@ -2171,7 +2175,6 @@
 				6ED0F7B0B82088C39203E007 /* LakeOfFireOPDSTests.xctest */,
 				685ED81014B30776F3A5C8CC /* LakeOfFireReader.framework */,
 				0CA32517537E67AEE0E3B2FC /* LakeOfFireReaderWebMediaTests.xctest */,
-				0017879037EB5DDEC30A158C /* LakeOfFireShareSupport.framework */,
 				0F106499C783BA02773080CC /* LakeOfFireTests.xctest */,
 				4BBA6DED8DFE39B08B021D32 /* LakeOfFireWeb.framework */,
 				0C5CE1B58D9AF04B2EFB0A0D /* libBraveAdblockWrapper.a */,
@@ -2180,6 +2183,7 @@
 				788FB2C71005DDEFF46BBB65 /* libPersistedLRUCacheCore.a */,
 				2BE281EA36E1E598074634F3 /* libPersistedLRUFileCache.a */,
 				7B6AAE8D8E6AA927DADE176C /* libPersistedLRUSQLiteCache.a */,
+				6F9CC28C85018D2C872F0F69 /* libRealmSwiftGaps.a */,
 				231D575B5E9B5C559FBD1B7E /* libzstd.framework */,
 				BAFD50164A82B1A58BD8ACEF /* Logging.framework */,
 				31ED82BC038DAB511FEE78AE /* LRUCache.framework */,
@@ -2196,11 +2200,9 @@
 				A1C179BE8A90F664850C9605 /* Pow_Pow.bundle */,
 				0ACFBB587A7997D2F15BBE19 /* Pow.framework */,
 				20C17A774C69797FB2ECFDDC /* Puppy.framework */,
-				3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */,
 				197B226A7C5AD2C6872E5303 /* RealmDatabase_RealmCoreResources.bundle */,
 				AC5C42A82E2B2F82E77DE798 /* RealModule.framework */,
 				0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */,
-				AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */,
 				2699F246E2EA16BCB1C61022 /* Sharing.framework */,
 				2B63520D3232202F79B1DE7A /* Sharing1.framework */,
 				ABFEC6846BD8486253ECBC22 /* Sharing2.framework */,
@@ -2227,7 +2229,6 @@
 				759D6FE9F0A27E0BF7E5454A /* SwiftUIIntrospect.framework */,
 				F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */,
 				7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */,
-				DC983C520BEB23CAE1BA0462 /* VisionLiveText_SwiftUICompatible.framework */,
 				66977355C1A2F3191DFAEAA5 /* WebMedia.framework */,
 				B8FEC5BC236BFE3D53661D5E /* XCTestDynamicOverlay.framework */,
 				B1266D2FF843321A0E14BBAB /* ZIPFoundation_ZIPFoundation.bundle */,
@@ -2275,21 +2276,34 @@
 				6250580024957758DB12CEF5 /* FeedStateIndicatorTests.swift */,
 				05A535B5A3ABFA73238AB7FC /* LakeOfFireTests.swift */,
 				9322CA8ACD08548EE371B410 /* LibraryConfigurationActorBoundaryTests.swift */,
+				FC53A7D00EA44705F59CF73D /* LibraryConfigurationConsolidationTests.swift */,
+				9F86C99C1C1124BF6B3F8395 /* MutationTrackingTestSupport.swift */,
 				2230BD70A581D7C9C1AF826A /* ReadabilityMessageFrameFilteringTests.swift */,
 				6E500D3DC1099B844F4740F0 /* ReaderBuiltInUserScriptsTests.swift */,
 				7F4EF4661790A1AC6CD35163 /* ReaderContentEbookInitialRestoreResultTests.swift */,
+				2D8B92EB6F1D3C9B83AF5A33 /* ReaderContentInitialImageRendererTests.swift */,
+				4E623CB00E15535F8426A591 /* ReaderContentListSnapshotTests.swift */,
 				A9716A4611DF7518D2ACF912 /* ReaderContentLoadCoordinationTests.swift */,
 				AEEE9CB477A4C59EE9F68573 /* ReaderContentLoaderAdditionalProviderTests.swift */,
 				C35BAE76509F919037B83B6B /* ReaderExternalSegmentSidecarRetentionTests.swift */,
 				9B74BFFCABE24CA657A9DCF8 /* ReaderFileManagerNormalizationTests.swift */,
 				D06E45617FECE3EBC4EF07EB /* ReaderHTTPErrorRecoveryPolicyTests.swift */,
+				C140591D11FB29DF5A45BA26 /* ReaderImageRequestTests.swift */,
 				C63ABAACC5A7B1C54FB7BC63 /* ReaderMediaMetadataTests.swift */,
+				085BA67B77F346E810A38738 /* ReaderModePendingMatchKeyTests.swift */,
+				21961F055C1E3476939FA794 /* ReaderModeProcessingDependencyPublicationTests.swift */,
 				565A15B803EF96DB053F191A /* ReaderPackageEntrySourceTests.swift */,
+				00BEE0B2992B42D01C783A1B /* ReaderProgressMessageSequenceGateTests.swift */,
+				A8BB670DAE6086681D2388E8 /* ReaderSnippetProcessingTests.swift */,
 				E50198207B2DB46B0C2121F3 /* ReaderSnippetTitleTests.swift */,
 				3803ADDD018BEAF5E277B06A /* ReaderTTSProgressEvaluatorTests.swift */,
+				B370C68FD042BD7384ABA70D /* ReaderWebViewCallbackContractTests.swift */,
 				35C21FF5D9C7157D6432E6C7 /* SharedReaderFontTests.swift */,
 				CCDBEA52A5BED45E641E04F4 /* SmokeSummaryTestSupport.swift */,
 				8A6151850ACC0EB8F07264E9 /* SmokeSummaryTestSupportTests.swift */,
+				CF6C7F7E410A6F9161416C1D /* SyncMutationBoundaryTests.swift */,
+				9DEB7FECC9A96ADDFBA2A6DF /* URLInternalTests.swift */,
+				86C4ED9AFE35027B412C2D88 /* URLSchemeTaskCompletionOwnershipTests.swift */,
 				3BC9D8E2591A827A49A26CE5 /* WebMediaWebSupportTests.swift */,
 				B287731F0C7959837AAF0105 /* WikipediaReadabilityRegressionTests.swift */,
 			);
@@ -2376,14 +2390,6 @@
 			path = LakeOfFireOPDS;
 			sourceTree = "<group>";
 		};
-		D6CC5E594E2053381817CCB1 /* LakeOfFireShareSupport */ = {
-			isa = PBXGroup;
-			children = (
-				69EA54B3EF4F8B69D803E51C /* ReaderShareUtilities.swift */,
-			);
-			path = LakeOfFireShareSupport;
-			sourceTree = "<group>";
-		};
 		D8EDC276A62F2FC732403F48 /* LakeOfFireReader */ = {
 			isa = PBXGroup;
 			children = (
@@ -2450,6 +2456,7 @@
 				64238F6B2BCE65AB3D1E2032 /* BookLibraryView.swift */,
 				F871493FDE55348A1BB7D54F /* Document+Ebooks.swift */,
 				6D46E0204024D29E3136178D /* EbookFileManager.swift */,
+				EFD17083FF00574998607393 /* EbookHTMLResponseMetadata.swift */,
 				4E18D0EF549BDEF032346A8D /* EbookURLSchemeHandler.swift */,
 				102FAB3669EAF9C880015307 /* EPub.swift */,
 				F8CF30D23C857DABADD4F9B9 /* EPubParser.swift */,
@@ -2485,7 +2492,6 @@
 				3EE283BF5F88F02673DE605B /* LakeOfFireOPDSTests-Info.plist */,
 				5C3B133F49C23777962510FA /* LakeOfFireReader-Info.plist */,
 				B5DE78C686DA12E01F709BC4 /* LakeOfFireReaderWebMediaTests-Info.plist */,
-				787C519A0EFE9A11225DCB45 /* LakeOfFireShareSupport-Info.plist */,
 				E1BC5EF115DB0FCE36984EE5 /* LakeOfFireTests-Info.plist */,
 				4D1F151AF72040EF8D9CB584 /* LakeOfFireWeb-Info.plist */,
 			);
@@ -2524,7 +2530,6 @@
 				70E42B9677110909C3BD996D /* LakeOfFireLibrary */,
 				D1ED4FC99345BE788BA12F27 /* LakeOfFireOPDS */,
 				D8EDC276A62F2FC732403F48 /* LakeOfFireReader */,
-				D6CC5E594E2053381817CCB1 /* LakeOfFireShareSupport */,
 				02DE2E42F96D5D7005A83DB4 /* LakeOfFireWeb */,
 			);
 			path = Sources;
@@ -2660,27 +2665,6 @@
 			productName = LakeOfFireOPDSTests;
 			productReference = 6ED0F7B0B82088C39203E007 /* LakeOfFireOPDSTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
-		};
-		9EA0B5B3CF194D555F2C04E2 /* LakeOfFireShareSupport */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = BC2A2E0BBCB0DC9037215558 /* Build configuration list for PBXNativeTarget "LakeOfFireShareSupport" */;
-			buildPhases = (
-				7CA993240942981A243446D2 /* Sources */,
-				F44FD8FA5BB87771DCE173DC /* Resources */,
-				A3250CE7A56291C759305F81 /* Frameworks */,
-				1273BBDD15BAAB21938F4BD2 /* Embed Frameworks */,
-				E8BB9E09992F7067E2113937 /* Dependencies */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = LakeOfFireShareSupport;
-			packageProductDependencies = (
-			);
-			productName = LakeOfFireShareSupport;
-			productReference = 0017879037EB5DDEC30A158C /* LakeOfFireShareSupport.framework */;
-			productType = "com.apple.product-type.framework";
 		};
 		ACBCEEF137445184A731BE59 /* LakeOfFireOPDS */ = {
 			isa = PBXNativeTarget;
@@ -2914,6 +2898,7 @@
 			);
 			dependencies = (
 				03ED2F4306CDF2019F6DDF08 /* PBXTargetDependency */,
+				56D0A07832C0CA84775A4AD5 /* PBXTargetDependency */,
 				5D88D37D212070FADA40FFE9 /* PBXTargetDependency */,
 				A6BF3A448D863D598E377192 /* PBXTargetDependency */,
 				B313EC06AD60914E4AB2751D /* PBXTargetDependency */,
@@ -2960,7 +2945,6 @@
 				972D5AF9262C7A54EC9A0B30 /* LakeOfFireOPDSTests */,
 				B656107E0271F658CAF85968 /* LakeOfFireReader */,
 				67CD5D15FFDCF0CB4E2121C1 /* LakeOfFireReaderWebMediaTests */,
-				9EA0B5B3CF194D555F2C04E2 /* LakeOfFireShareSupport */,
 				E5CCE2CF6699C5B9C6789E02 /* LakeOfFireTests */,
 				9596165D377041B8FD2240A3 /* LakeOfFireWeb */,
 				604817FF7FDCD4EFED1111C2 /* LakeOfFire_LakeOfFireAdblock */,
@@ -3096,13 +3080,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		F44FD8FA5BB87771DCE173DC /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		F81ED70D317354B2D3A0BEA6 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -3176,6 +3153,7 @@
 				EE18294F8009B8E0A5729DC5 /* ReaderFileManager.swift in Sources */,
 				0C7266581BE523BF8A3AF885 /* ReaderFileOperationErrors.swift in Sources */,
 				6F00024FF3B7EC7C3C1DA1EE /* URL+ReaderFileURL.swift in Sources */,
+				85A88B02C005F13609D900DE /* LibraryConfiguration+Consolidation.swift in Sources */,
 				174D83407D362BD0D1C33361 /* LibraryDataManager.swift in Sources */,
 				E82E2048C705827D69A57163 /* OPMLSendable.swift in Sources */,
 				F019EFC3A98215BE15157C35 /* PlainTextHTMLConverter.swift in Sources */,
@@ -3246,6 +3224,7 @@
 				165FF7F0A5D42E66529D3A0F /* EPub.swift in Sources */,
 				619936BCC4D239752919BF05 /* EPubParser.swift in Sources */,
 				4AA46CE4FBD9AF256F479244 /* EbookFileManager.swift in Sources */,
+				2138E740F31AB8A354974544 /* EbookHTMLResponseMetadata.swift in Sources */,
 				3EA61F32BC64DD1337C1535A /* EbookURLSchemeHandler.swift in Sources */,
 				F5C3EAB8FD833E799FC77347 /* OPDS Models.swift in Sources */,
 				8BC08B3D53F78059047C5A42 /* OPDSCatalogsView.swift in Sources */,
@@ -3328,14 +3307,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		7CA993240942981A243446D2 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				2BFA44983712707BC65BA6B8 /* ReaderShareUtilities.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		7E3E6DD34A3C8BACD7215EF1 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -3411,21 +3382,34 @@
 				DBB78FAA1B55950A4DCB21FD /* FeedStateIndicatorTests.swift in Sources */,
 				305F83BB87B36B6DEB98CFEE /* LakeOfFireTests.swift in Sources */,
 				EF297C07E6A82EB70B642435 /* LibraryConfigurationActorBoundaryTests.swift in Sources */,
+				7FAA177F4D1E1CFE639E5061 /* LibraryConfigurationConsolidationTests.swift in Sources */,
+				C0989E929240A2C35CC3BC97 /* MutationTrackingTestSupport.swift in Sources */,
 				28BAB36EFB68A72595130B4D /* ReadabilityMessageFrameFilteringTests.swift in Sources */,
 				94EBD6EB49CE5E00FE0890FD /* ReaderBuiltInUserScriptsTests.swift in Sources */,
 				5C9983BA40D36FD7650C4B1E /* ReaderContentEbookInitialRestoreResultTests.swift in Sources */,
+				2C87F5BA634CB02C1692BBFA /* ReaderContentInitialImageRendererTests.swift in Sources */,
+				9EF91B4A0C108ACA6F2ED540 /* ReaderContentListSnapshotTests.swift in Sources */,
 				92B4947C8DDF5E31904AC4BE /* ReaderContentLoadCoordinationTests.swift in Sources */,
 				D397007DE14C2379BE17F7D5 /* ReaderContentLoaderAdditionalProviderTests.swift in Sources */,
 				1E41738F0BB6E695C5925BD6 /* ReaderExternalSegmentSidecarRetentionTests.swift in Sources */,
 				DBFDB03836B45D4387769031 /* ReaderFileManagerNormalizationTests.swift in Sources */,
 				92EDE29410E77DBF931D7080 /* ReaderHTTPErrorRecoveryPolicyTests.swift in Sources */,
+				03FF070607E3D8FA9B3ABA31 /* ReaderImageRequestTests.swift in Sources */,
 				BC5E178CE6E5937DDC7001B3 /* ReaderMediaMetadataTests.swift in Sources */,
+				C57F95C64ECA900EE4B36693 /* ReaderModePendingMatchKeyTests.swift in Sources */,
+				FAD043BE18A3C8AA242B2607 /* ReaderModeProcessingDependencyPublicationTests.swift in Sources */,
 				86FB310EFDF37F354AA83A6C /* ReaderPackageEntrySourceTests.swift in Sources */,
+				22DD2EB6EDB0EB312BE2C5B6 /* ReaderProgressMessageSequenceGateTests.swift in Sources */,
+				AB1E20DDF026F3659C684794 /* ReaderSnippetProcessingTests.swift in Sources */,
 				21C23126157B77D43BACF325 /* ReaderSnippetTitleTests.swift in Sources */,
 				0F5D3F619957F84EB622538D /* ReaderTTSProgressEvaluatorTests.swift in Sources */,
+				75DC9E92CD754E49CACC5562 /* ReaderWebViewCallbackContractTests.swift in Sources */,
 				24D66F4E164B8839FA0F2658 /* SharedReaderFontTests.swift in Sources */,
 				1B69030E2342F52CADBDDF38 /* SmokeSummaryTestSupport.swift in Sources */,
 				1E9B41BEA8A2A503216EF7BE /* SmokeSummaryTestSupportTests.swift in Sources */,
+				9C2E3BDB1A903E042E27D473 /* SyncMutationBoundaryTests.swift in Sources */,
+				F36EEDB7C4893D8E8E94FB13 /* URLInternalTests.swift in Sources */,
+				E4681B7FEB1F1731FCCC33A7 /* URLSchemeTaskCompletionOwnershipTests.swift in Sources */,
 				95A70DB21FF91AD28D0EB2A3 /* WebMediaWebSupportTests.swift in Sources */,
 				066F72220EF8642D5522FBDC /* WikipediaReadabilityRegressionTests.swift in Sources */,
 			);
@@ -3511,6 +3495,12 @@
 			name = LakeOfFire_LakeOfFireContent;
 			target = 391EFCD51BD9CB1B2E7A2F2F /* LakeOfFire_LakeOfFireContent */;
 			targetProxy = 87BBBCB1601837576F5FC63A /* PBXContainerItemProxy */;
+		};
+		56D0A07832C0CA84775A4AD5 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = LakeOfFireContentUI;
+			target = D0EEC562F6975E213EDA9EC3 /* LakeOfFireContentUI */;
+			targetProxy = EA2E3DDFABB8DE18DFA1A314 /* PBXContainerItemProxy */;
 		};
 		584ABC72050F12EC46B60C25 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -5042,47 +5032,6 @@
 			};
 			name = Debug;
 		};
-		C2EA3D1D7B4B35DCE1FE8476 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CURRENT_PROJECT_VERSION = 1;
-				DEFINES_MODULE = YES;
-				DYLIB_COMPATIBILITY_VERSION = 1;
-				DYLIB_CURRENT_VERSION = 1;
-				DYLIB_INSTALL_NAME_BASE = "@rpath";
-				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireShareSupport-Info.plist";
-				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
-				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@loader_path/../Frameworks",
-				);
-				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				"ONLY_ACTIVE_ARCH[sdk=iphonesimulator*]" = YES;
-				OTHER_SWIFT_FLAGS = "$(inherited)";
-				PRODUCT_BUNDLE_IDENTIFIER = LakeOfFireShareSupport;
-				PRODUCT_NAME = LakeOfFireShareSupport;
-				SDKROOT = auto;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				TARGETED_DEVICE_FAMILY = "1,2";
-				VERSIONING_SYSTEM = "apple-generic";
-				VERSION_INFO_PREFIX = "";
-			};
-			name = Release;
-		};
 		CB5BE7D5C38540797C9C1195 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -5627,51 +5576,6 @@
 			};
 			name = Release;
 		};
-		FE60CB03D0E6621FAAEFD57F /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CURRENT_PROJECT_VERSION = 1;
-				DEFINES_MODULE = YES;
-				DYLIB_COMPATIBILITY_VERSION = 1;
-				DYLIB_CURRENT_VERSION = 1;
-				DYLIB_INSTALL_NAME_BASE = "@rpath";
-				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireShareSupport-Info.plist";
-				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
-				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@loader_path/../Frameworks",
-				);
-				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				"ONLY_ACTIVE_ARCH[sdk=iphonesimulator*]" = YES;
-				OTHER_SWIFT_FLAGS = "$(inherited)";
-				PRODUCT_BUNDLE_IDENTIFIER = LakeOfFireShareSupport;
-				PRODUCT_NAME = LakeOfFireShareSupport;
-				SDKROOT = auto;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = (
-					"$(inherited)",
-					DEBUG,
-				);
-				SWIFT_COMPILATION_MODE = singlefile;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				TARGETED_DEVICE_FAMILY = "1,2";
-				VERSIONING_SYSTEM = "apple-generic";
-				VERSION_INFO_PREFIX = "";
-			};
-			name = Debug;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -5788,15 +5692,6 @@
 			buildConfigurations = (
 				AC91C40EC29F195398E65EFA /* Debug */,
 				7B1F83EF95199DD826E24693 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		BC2A2E0BBCB0DC9037215558 /* Build configuration list for PBXNativeTarget "LakeOfFireShareSupport" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				FE60CB03D0E6621FAAEFD57F /* Debug */,
-				C2EA3D1D7B4B35DCE1FE8476 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

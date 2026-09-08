@@ -84,12 +84,18 @@ public extension HistoryRecord {
     }
 
     @discardableResult
-    static func markOpenedRecordsDeleted(matching url: URL, in realm: Realm) -> Int {
+    static func markOpenedRecordsDeleted(
+        matching url: URL,
+        in realm: Realm,
+        at timestamp: Date = Date()
+    ) -> Int {
         let openedRecords = Array(openedRecords(matching: url, in: realm))
-        let now = Date()
         for record in openedRecords {
             record.isDeleted = true
-            record.refreshChangeMetadata(explicitlyModified: true, at: now)
+            record.refreshChangeMetadata(
+                explicitlyModified: true,
+                at: timestamp
+            )
         }
         return openedRecords.count
     }

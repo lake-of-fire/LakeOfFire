@@ -932,6 +932,10 @@ public struct Reader: View {
     var ignoresSampledTopObscuredInset = false
     var hidesTopScrollEdgeEffect = false
     let schemeHandlers: [(WKURLSchemeHandler, String)]
+    let onDocumentContextInvalidated: (@MainActor (
+        WebViewState,
+        WebViewDocumentContextInvalidationReason
+    ) -> Void)?
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
     let onNavigationFailed: ((WebViewState) -> Void)?
@@ -963,6 +967,10 @@ public struct Reader: View {
         ignoresSampledTopObscuredInset: Bool = false,
         hidesTopScrollEdgeEffect: Bool = false,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
+        onDocumentContextInvalidated: (@MainActor (
+            WebViewState,
+            WebViewDocumentContextInvalidationReason
+        ) -> Void)? = nil,
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
@@ -983,6 +991,7 @@ public struct Reader: View {
         self.ignoresSampledTopObscuredInset = ignoresSampledTopObscuredInset
         self.hidesTopScrollEdgeEffect = hidesTopScrollEdgeEffect
         self.schemeHandlers = schemeHandlers
+        self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
         self.onNavigationFailed = onNavigationFailed
@@ -1067,6 +1076,7 @@ public struct Reader: View {
             onNavigationCommitted: onNavigationCommitted,
             onNavigationFinished: onNavigationFinished,
             onNavigationFailed: onNavigationFailed,
+            onDocumentContextInvalidated: onDocumentContextInvalidated,
             onURLChanged: onURLChanged,
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,

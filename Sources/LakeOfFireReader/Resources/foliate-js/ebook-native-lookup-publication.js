@@ -1,4 +1,5 @@
 let generatedFrameIdentifierSequence = 0
+let generatedLookupPayloadSequence = 0
 
 const generatedFrameIdentifiers = new WeakMap()
 
@@ -19,6 +20,15 @@ const generateFrameIdentifier = doc => {
     } catch (_error) {}
     generatedFrameIdentifierSequence += 1
     return `ebook-frame-${generatedFrameIdentifierSequence}`
+}
+
+export const makeNativeLookupPayloadGeneration = doc => {
+    const view = doc?.defaultView ?? null
+    try {
+        if (typeof view?.crypto?.randomUUID === 'function') return view.crypto.randomUUID()
+    } catch (_error) {}
+    generatedLookupPayloadSequence += 1
+    return `lookup-index-${generatedLookupPayloadSequence}`
 }
 
 export const nativeLookupPublicationIdentityForDocument = doc => {

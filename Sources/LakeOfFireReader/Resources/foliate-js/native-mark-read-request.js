@@ -31,6 +31,7 @@ export const createNativeMarkReadRequestCoordinator = ({
     scheduleTimeout = globalThis.setTimeout,
     cancelTimeout = globalThis.clearTimeout,
     maximumRequestIDAttempts = defaultMaximumRequestIDAttempts,
+    maximumDeliveryAttempts = 2,
 } = {}) => {
     if (typeof postMessage !== 'function') {
         throw new TypeError('postMessage must be a function')
@@ -49,6 +50,9 @@ export const createNativeMarkReadRequestCoordinator = ({
     }
     if (!Number.isSafeInteger(maximumRequestIDAttempts) || maximumRequestIDAttempts <= 0) {
         throw new TypeError('maximumRequestIDAttempts must be a positive safe integer')
+    }
+    if (!Number.isSafeInteger(maximumDeliveryAttempts) || maximumDeliveryAttempts <= 0) {
+        throw new TypeError('maximumDeliveryAttempts must be a positive safe integer')
     }
 
     const pendingByRequestID = new Map()
@@ -91,6 +95,63 @@ export const createNativeMarkReadRequestCoordinator = ({
         return null
     }
 
+    const postPendingRequest = (requestID, pending) => {
+        pending.deliveryAttempts += 1
+        try {
+            postMessage({
+                ...pending.message,
+                requestID,
+                sectionId: pending.sectionID,
+            })
+            return true
+        } catch (error) {
+            finish(requestID, {
+                success: false,
+                stale: !ownerIsCurrent(pending.owner),
+                errorCode: String(error?.message || error || 'nativePostFailed'),
+            })
+            return false
+        }
+    }
+
+    const schedulePendingTimeout = (requestID, pending) => {
+        try {
+            const timeoutHandle = scheduleTimeout(() => {
+                if (pendingByRequestID.get(requestID) !== pending) return
+                pending.timeoutHandle = null
+                if (ownerIsCurrent(pending.owner)
+                    && pending.deliveryAttempts < maximumDeliveryAttempts) {
+                    if (schedulePendingTimeout(requestID, pending)) {
+                        postPendingRequest(requestID, pending)
+                    }
+                    return
+                }
+                finish(requestID, {
+                    success: false,
+                    stale: !ownerIsCurrent(pending.owner),
+                    errorCode: 'nativeCommitTimeout',
+                })
+            }, timeoutMilliseconds)
+            if (pendingByRequestID.get(requestID) === pending) {
+                pending.timeoutHandle = timeoutHandle
+                return true
+            }
+            try {
+                cancelTimeout(timeoutHandle)
+            } catch {
+                // The request already settled while the timer was installed.
+            }
+            return false
+        } catch {
+            finish(requestID, {
+                success: false,
+                stale: !ownerIsCurrent(pending.owner),
+                errorCode: 'nativeTimeoutUnavailable',
+            })
+            return false
+        }
+    }
+
     const request = ({
         sectionID,
         message,
@@ -107,6 +168,28 @@ export const createNativeMarkReadRequestCoordinator = ({
             })
         }
         if (!message || typeof message !== 'object' || Array.isArray(message)) {
+            return Promise.resolve({
+                requestID: null,
+                context,
+                success: false,
+                stale: false,
+                errorCode: 'invalidMessage',
+            })
+        }
+        let capturedMessage
+        try {
+            capturedMessage = JSON.parse(JSON.stringify(message))
+        } catch {
+            return Promise.resolve({
+                requestID: null,
+                context,
+                success: false,
+                stale: false,
+                errorCode: 'invalidMessage',
+            })
+        }
+        if (!capturedMessage || typeof capturedMessage !== 'object'
+            || Array.isArray(capturedMessage)) {
             return Promise.resolve({
                 requestID: null,
                 context,
@@ -132,44 +215,15 @@ export const createNativeMarkReadRequestCoordinator = ({
                 sectionID,
                 owner,
                 context,
+                message: capturedMessage,
                 resolve,
                 timeoutHandle: null,
+                deliveryAttempts: 0,
             }
             pendingByRequestID.set(requestID, pending)
 
-            try {
-                const timeoutHandle = scheduleTimeout(() => {
-                    finish(requestID, {
-                        success: false,
-                        stale: !ownerIsCurrent(owner),
-                        errorCode: 'nativeCommitTimeout',
-                    })
-                }, timeoutMilliseconds)
-                if (pendingByRequestID.get(requestID) === pending) {
-                    pending.timeoutHandle = timeoutHandle
-                }
-            } catch {
-                finish(requestID, {
-                    success: false,
-                    stale: !ownerIsCurrent(owner),
-                    errorCode: 'nativeTimeoutUnavailable',
-                })
-                return
-            }
-
-            if (!pendingByRequestID.has(requestID)) return
-            try {
-                postMessage({
-                    ...message,
-                    requestID,
-                    sectionId: sectionID,
-                })
-            } catch (error) {
-                finish(requestID, {
-                    success: false,
-                    stale: !ownerIsCurrent(owner),
-                    errorCode: String(error?.message || error || 'nativePostFailed'),
-                })
+            if (schedulePendingTimeout(requestID, pending)) {
+                postPendingRequest(requestID, pending)
             }
         })
     }
