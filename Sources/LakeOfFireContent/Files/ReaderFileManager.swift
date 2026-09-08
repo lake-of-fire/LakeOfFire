@@ -318,6 +318,7 @@ public class ReaderFileManager: ObservableObject {
     
     @RealmBackgroundActor
     public func delete(readerFileURL contentURL: URL) async throws {
+        let realmConfiguration = resolvedHistoryRealmConfiguration
         guard let readerBackingURL = canonicalReaderBackingURL(for: contentURL) else {
             throw ReaderFileDeleteError.removeFailed()
         }
@@ -334,10 +335,16 @@ public class ReaderFileManager: ObservableObject {
 
         let status = try await cloudDriveSyncStatus(forReaderBackingURL: readerBackingURL)
         if status == .fileMissing {
-            try await markDeleted(contentURL: contentURL)
+            try await markDeleted(
+                contentURL: contentURL,
+                realmConfiguration: realmConfiguration
+            )
             await removeDeletedFileFromPublishedFiles(matching: readerBackingURL)
             Task { @MainActor [weak self] in
-                try await self?.refreshAllFilesMetadata(force: true)
+                try await self?.refreshAllFilesMetadata(
+                    force: true,
+                    realmConfiguration: realmConfiguration
+                )
             }
             return
         }
@@ -358,10 +365,16 @@ public class ReaderFileManager: ObservableObject {
         } catch {
             throw ReaderFileDeleteError.removeFailed(underlyingDescription: error.localizedDescription)
         }
-        try await markDeleted(contentURL: contentURL)
+        try await markDeleted(
+            contentURL: contentURL,
+            realmConfiguration: realmConfiguration
+        )
         await removeDeletedFileFromPublishedFiles(matching: readerBackingURL)
         Task { @MainActor [weak self] in
-            try await self?.refreshAllFilesMetadata(force: true)
+            try await self?.refreshAllFilesMetadata(
+                force: true,
+                realmConfiguration: realmConfiguration
+            )
         }
     }
     
@@ -1078,8 +1091,11 @@ public class ReaderFileManager: ObservableObject {
     }
 
     @RealmBackgroundActor
-    private func markDeleted(contentURL: URL) async throws {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
+    private func markDeleted(
+        contentURL: URL,
+        realmConfiguration: Realm.Configuration
+    ) async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         let canonicalContentURL = canonicalReaderBackingURL(for: contentURL)
         let contentFiles = Array(
             realm.objects(ContentFile.self)
