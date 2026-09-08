@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { SectionProgress } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/progress.js'
+import { ebookProgressFractionForRelocate } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-reading-progress.js'
 
 import {
     LatestRestoreTransactionCoordinator,
@@ -7,6 +9,8 @@ import {
     isRestoreTransactionSupersededError,
     makeSyntheticRestoreLocator,
     parseSyntheticRestoreLocator,
+    resolveRestoreLocator,
+    runLocatorWithFractionFallback,
     runAcceptedRestoreNavigation,
     runRequiredRestoreNavigation,
     commitAfterMatchingRestoreTransactionsSettle,
@@ -261,4 +265,81 @@ test('mailbox close-and-take atomically owns the final queued restore', () => {
     assert.equal(mailbox.hasPending, false)
     assert.equal(mailbox.queue({ cfi: 'late' }), false)
     assert.equal(mailbox.closeAndTake(), null)
+})
+
+
+test('completion fractions never replace precise saved locators, including chapter ends', () => {
+    for (const fraction of [0.05, 0.1, 0.25, 0.5, 1]) {
+        const cfi = 'epubcfi(/6/2!/4/2/1:0)'
+        const selected = resolveRestoreLocator({ cfi, fractionalCompletion: fraction })
+        assert.equal(selected.kind, 'cfi')
+        assert.equal(selected.cfi, cfi)
+        assert.equal(selected.usesFraction, false)
+        assert.equal(selected.fraction, fraction)
+    }
+    const synthetic = resolveRestoreLocator({ cfi: 'mnb-loc-v1:0:9:10', fractionalCompletion: 0.5 })
+    assert.equal(synthetic.kind, 'synthetic')
+    assert.equal(synthetic.synthetic.localSectionIndex, 9)
+    assert.equal(synthetic.usesFraction, false)
+    assert.equal(resolveRestoreLocator({ fractionalCompletion: 0.5 }).kind, 'fraction')
+    assert.equal(resolveRestoreLocator({ cfi: 'epubcfi(/6/2)', fractionalCompletion: 0.5 }).usesFraction, true)
+})
+
+test('an accepted locator is preserved when layout changes its completion fraction', async () => {
+    let fractionCalls = 0
+    const selected = resolveRestoreLocator({ cfi: 'epubcfi(/6/2!/4/2/1:0)', fractionalCompletion: 0.5 })
+    const accepted = await runLocatorWithFractionFallback({
+        navigateLocator: async () => ({ index: 0, anchor: () => 'same sentence' }),
+        navigateFraction: async () => { fractionCalls += 1; return true },
+        isCurrent: () => true,
+    })
+    assert.equal(accepted, true)
+    assert.equal(selected.usesFraction, false)
+    assert.equal(fractionCalls, 0)
+})
+
+test('missing or rejected locators use one fraction fallback', async () => {
+    for (const failure of [null, false, new Error('invalid CFI')]) {
+        let fractionCalls = 0
+        let fallbackStarted = false
+        assert.equal(await runLocatorWithFractionFallback({
+            navigateLocator: async () => { if (failure instanceof Error) throw failure; return failure },
+            navigateFraction: async () => { fractionCalls += 1; return true },
+            onFallback: () => { fallbackStarted = true },
+            isCurrent: () => true,
+        }), true)
+        assert.equal(fractionCalls, 1)
+        assert.equal(fallbackStarted, true)
+    }
+})
+
+test('superseded locator completion cannot start a fallback navigation', async () => {
+    let fractionCalls = 0
+    await assert.rejects(runLocatorWithFractionFallback({
+        navigateLocator: async () => null,
+        navigateFraction: async () => { fractionCalls += 1; return true },
+        isCurrent: () => false,
+    }), isRestoreTransactionSupersededError)
+    assert.equal(fractionCalls, 0)
+})
+
+
+test('save and reopen retains the locator when progress records the visible page end', async () => {
+    const progress = new SectionProgress([{ size: 100, linear: 'yes' }, { size: 100, linear: 'yes' }], 10, 10)
+    for (const page of [1, 2, 5, 10]) {
+        const location = progress.getProgress(0, (page - 1) / 10, 1 / 10)
+        const saved = { cfi: `epubcfi(/6/2!/4/2/1:${page})`, fractionalCompletion: ebookProgressFractionForRelocate({ relocateFraction: location.fraction }) }
+        assert.ok(Math.abs(saved.fractionalCompletion - page / 20) < 1e-12)
+        const selected = resolveRestoreLocator(saved)
+        let restoredCFI = null
+        let fractionNavigations = 0
+        await runLocatorWithFractionFallback({
+            navigateLocator: async () => { restoredCFI = selected.cfi; return { index: 0 } },
+            navigateFraction: async () => { fractionNavigations += 1; return true },
+            isCurrent: () => true,
+        })
+        assert.equal(restoredCFI, saved.cfi)
+        assert.equal(selected.usesFraction, false)
+        assert.equal(fractionNavigations, 0)
+    }
 })

@@ -50,6 +50,20 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             XCTAssertEqual(realm.objects(FeedEntry.self).first?.title, title)
             XCTAssertEqual(feed.lastFetchedETag, "\"v\(revision)\"")
         }
+        for headStatus in [405, 501] {
+            FeedURLProtocol.requestHandler = { request in
+                XCTAssertNotEqual(request.value(forHTTPHeaderField: "If-None-Match"), "error-page-tag")
+                if request.httpMethod == "HEAD" {
+                    return (headStatus, ["ETag": "error-page-tag", "Last-Modified": "Mon, 07 Sep 2026 10:00:00 GMT"], Data())
+                }
+                let data = Data("<rss version='2.0'><channel><title>Feed</title><item><guid>https://example.com/article</guid><link>https://example.com/article</link><title>No validators</title><description>Body</description></item></channel></rss>".utf8)
+                return (200, ["Content-Type": "application/rss+xml"], data)
+            }
+            try await feed.freeze().fetch(realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            XCTAssertEqual(realm.objects(FeedEntry.self).first?.title, "No validators")
+            XCTAssertNotEqual(feed.lastFetchedETag, "error-page-tag")
+        }
     }
 
     private final class FeedURLProtocol: URLProtocol {

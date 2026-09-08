@@ -248,6 +248,21 @@ final class FeedStateIndicatorTests: XCTestCase {
         XCTAssertEqual(followingEntries.map(\.title), ["new"])
     }
 
+    func testFeedCacheMergeUsesNewestCanonicalArticleAndStableTieBreak() {
+        let feed = Feed()
+        let duplicate = Feed()
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let older = makeEntry(feed: feed, suffix: "old", url: URL(string: "https://example.com/article")!, date: date)
+        let newer = makeEntry(feed: duplicate, suffix: "new", url: URL(string: "https://EXAMPLE.com:443/article#copy")!, date: date.addingTimeInterval(1))
+        let unique = makeEntry(feed: feed, suffix: "unique", date: date)
+        XCTAssertEqual(Feed.deduplicatedEntries([older, unique, newer]).map(\.compoundKey), [newer.compoundKey, unique.compoundKey])
+        older.publicationDate = newer.publicationDate
+        older.createdAt = newer.createdAt
+        let expected = min(older.compoundKey, newer.compoundKey)
+        XCTAssertEqual(Feed.deduplicatedEntries([newer, older]).map(\.compoundKey), [expected])
+        XCTAssertEqual(Feed.deduplicatedEntries([older, newer]).map(\.compoundKey), [expected])
+    }
+
     func testFollowingEntriesDedupesDuplicateFeedURLsAndEntryURLs() throws {
         let configuration = makeConfiguration()
         let realm = try Realm(configuration: configuration)

@@ -28,6 +28,57 @@ export const parseSyntheticRestoreLocator = value => {
     }
 }
 
+export const parseSpineOnlyEpubCFI = (value) => {
+    if (typeof value !== 'string') return null;
+    const match = value.trim().match(/^epubcfi\(\s*\/6\/(\d+)(?:\[[^\]]*\])?\s*\)$/);
+    if (!match) return null;
+    const spineStep = Number(match[1]);
+    if (!Number.isInteger(spineStep) || spineStep <= 0 || spineStep % 2 !== 0) return null;
+    return (spineStep / 2) - 1;
+};
+
+export const coerceRestoreFraction = (...values) => {
+    const numbers = values
+        .map((value) => {
+            if (typeof value === 'number') return value;
+            if (typeof value === 'string' && value.trim().length > 0) return Number(value);
+            return NaN;
+        })
+        .filter((value) => Number.isFinite(value))
+        .map((value) => Math.max(0, Math.min(1, value)));
+    return numbers.find((value) => value > 0) ?? numbers[0] ?? null;
+};
+
+// Completion measures the end of the visible page. It is a fallback, not a
+// position correction for a CFI or the native synthetic page locator.
+export const resolveRestoreLocator = (saved = {}) => {
+    const fraction = coerceRestoreFraction(saved?.fractionalCompletion)
+    const hasFraction = fraction != null && fraction > 0
+    const synthetic = parseSyntheticRestoreLocator(saved?.cfi)
+    const spineSectionIndex = synthetic ? null : parseSpineOnlyEpubCFI(saved?.cfi)
+    const cfi = !synthetic && !Number.isInteger(spineSectionIndex) && typeof saved?.cfi === 'string'
+        ? saved.cfi.trim() : ''
+    const kind = synthetic ? 'synthetic' : (Number.isInteger(spineSectionIndex) ? 'spine-cfi'
+        : (cfi ? 'cfi' : (hasFraction ? 'fraction' : 'none')))
+    return { synthetic, spineSectionIndex, cfi, fraction, kind,
+        usesFraction: hasFraction && !synthetic && !cfi }
+}
+
+export const runLocatorWithFractionFallback = async ({
+    navigateLocator, navigateFraction, isCurrent, onFallback = () => {},
+}) => {
+    try {
+        const receipt = await navigateLocator()
+        if (receipt == null || receipt === false) throw new Error('Saved locator was not accepted')
+        return true
+    } catch (error) {
+        if (!isCurrent()) throw makeRestoreTransactionSupersededError('locator-fallback')
+        if (isRestoreTransactionSupersededError(error) || !navigateFraction) throw error
+        onFallback()
+        return (await navigateFraction()) === true
+    }
+}
+
 export const runRequiredRestoreNavigation = async operation => {
     try {
         return {

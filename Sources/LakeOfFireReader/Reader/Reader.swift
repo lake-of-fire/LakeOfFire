@@ -1023,11 +1023,15 @@ public extension WebViewNavigator {
     func load(
         content: any ReaderContentProtocol,
         readerFileManager: ReaderFileManager = ReaderFileManager.shared,
-        readerModeViewModel: ReaderModeViewModel?
+        readerModeViewModel: ReaderModeViewModel?,
+        shouldLoad: @MainActor () -> Bool = { true }
     ) async throws {
         let loadStartedAt = CFAbsoluteTimeGetCurrent()
         let beginSnapshot = debugLoadSnapshot
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
+            // Callers refreshing an existing document can lose ownership while
+            // native content is being resolved. Check before any UI mutation.
+            guard shouldLoad() else { return }
             let loadSnapshot = debugLoadSnapshot
             let resolvedAt = CFAbsoluteTimeGetCurrent()
             if let readerModeViewModel {

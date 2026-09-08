@@ -221,35 +221,23 @@ public class ReaderContent: ObservableObject {
     }
 
     @MainActor
-    public func updateContentTitle(_ newTitle: String) async {
-        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        guard let content else { return }
-        guard trimmed != content.title else { return }
-        let isTitlePrefixOfContent =
-            content.url.isSnippetURL &&
-            ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
-                trimmed,
-                sourceHTML: content.html
-            )
-
-        content.title = trimmed
-        content.isTitlePrefixOfContent = isTitlePrefixOfContent
-        syncLocationBarTitle()
-        syncContentTitle()
-
-        do {
-            let contentURL = content.url
-            try await ReaderContentLoader.updateContent(url: contentURL) { object in
-                guard object.title != trimmed || object.isTitlePrefixOfContent != isTitlePrefixOfContent else {
-                    return false
-                }
-                object.title = trimmed
-                object.isTitlePrefixOfContent = isTitlePrefixOfContent
-                return true
-            }
-        } catch {
-        }
+    @discardableResult
+    public func updateContentTitle(_ newTitle: String, for targetURL: URL? = nil) async throws -> Bool {
+        guard let contentURL = targetURL ?? content?.url else { return false }
+        let didChange = try await ReaderContentLoader.updateSnippetTitle(
+            contentURL: contentURL,
+            title: newTitle
+        )
+        // The rename belongs to the snippet captured when its UI was opened.
+        // A completed write must not replace a subsequently displayed document.
+        guard let observedContent = content,
+              observedContent.url == contentURL,
+              let reference = ReaderContentLoader.ContentReference(content: observedContent),
+              let refreshedContent = try await reference.resolveOnMainActor(),
+              content === observedContent else { return didChange }
+        content = refreshedContent
+        refreshObservedContentState()
+        return didChange
     }
 }
 

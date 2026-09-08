@@ -52,6 +52,10 @@ import {
     makeSyntheticRestoreLocator,
     makeRestoreTransactionSupersededError,
     parseSyntheticRestoreLocator,
+    parseSpineOnlyEpubCFI,
+    coerceRestoreFraction,
+    resolveRestoreLocator,
+    runLocatorWithFractionFallback,
     runAcceptedRestoreNavigation,
     commitAfterMatchingRestoreTransactionsSettle,
 } from './ebook-restore-coordination.js'
@@ -638,27 +642,6 @@ const roundedDisplayPercent = value => {
         return null;
     }
     return Math.round(Math.max(0, Math.min(1, value)) * 100);
-};
-
-const parseSpineOnlyEpubCFI = (value) => {
-    if (typeof value !== 'string') return null;
-    const match = value.trim().match(/^epubcfi\(\s*\/6\/(\d+)(?:\[[^\]]*\])?\s*\)$/);
-    if (!match) return null;
-    const spineStep = Number(match[1]);
-    if (!Number.isInteger(spineStep) || spineStep <= 0 || spineStep % 2 !== 0) return null;
-    return (spineStep / 2) - 1;
-};
-
-const coerceRestoreFraction = (...values) => {
-    const numbers = values
-        .map((value) => {
-            if (typeof value === 'number') return value;
-            if (typeof value === 'string' && value.trim().length > 0) return Number(value);
-            return NaN;
-        })
-        .filter((value) => Number.isFinite(value))
-        .map((value) => Math.max(0, Math.min(1, value)));
-    return numbers.find((value) => value > 0) ?? numbers[0] ?? null;
 };
 
 const visibleEntryIDsForMetadata = (metadata) => {
@@ -9484,27 +9467,16 @@ class Reader {
         const requestedLocatorFromBridge = typeof initialRestore?.requestedLocator === 'string'
             ? initialRestore.requestedLocator
             : null;
-        const initialRestoreFraction = coerceRestoreFraction(initialRestore?.fractionalCompletion);
+        const initialLocator = resolveRestoreLocator(initialRestore);
+        const initialRestoreFraction = initialLocator.fraction;
         const hasInitialRestoreFraction = initialRestoreFraction != null && initialRestoreFraction > 0;
-        const syntheticInitialRestore = hasInitialRestoreFraction ? null : parseSyntheticRestoreLocator(initialRestore?.cfi);
-        const spineOnlyInitialRestoreSectionIndex = !syntheticInitialRestore && !hasInitialRestoreFraction
-            ? parseSpineOnlyEpubCFI(initialRestore?.cfi)
-            : null;
+        const syntheticInitialRestore = initialLocator.synthetic;
+        const spineOnlyInitialRestoreSectionIndex = initialLocator.spineSectionIndex;
         const hasSpineOnlyInitialRestore = Number.isInteger(spineOnlyInitialRestoreSectionIndex);
-        const initialRestoreCFI = !syntheticInitialRestore
-            && !hasSpineOnlyInitialRestore
-            && !hasInitialRestoreFraction
-            && typeof initialRestore?.cfi === 'string'
-            ? initialRestore.cfi
-            : '';
+        const initialRestoreCFI = initialLocator.cfi;
         const hasInitialRestoreCFI = initialRestoreCFI.length > 0;
-        const restoreLocatorKind = syntheticInitialRestore
-            ? 'synthetic'
-            : (
-                hasSpineOnlyInitialRestore
-                    ? 'spine-cfi'
-                    : (hasInitialRestoreFraction ? 'fraction' : (hasInitialRestoreCFI ? 'cfi' : 'none'))
-            );
+        let initialRestoreUsesFraction = initialLocator.usesFraction;
+        let restoreLocatorKind = initialLocator.kind;
         const publishInitialRestoreResult = (terminalState, details = {}) => {
             if (!isCurrentInitialDisplay()) return null;
             const location = details.location ?? this.view?.lastLocation ?? null;
@@ -9682,23 +9654,20 @@ class Reader {
                         index: spineOnlyInitialRestoreSectionIndex,
                     });
                 }
-            } else if (hasInitialRestoreFraction) {
-                intent = {
-                    source: `${reason}.initialRestoreFraction`,
-                    target: 'view.goToFraction',
-                    fraction: initialRestoreFraction,
-                    cfiAvailable: hasInitialRestoreCFI,
-                };
-                operation = () => this.view.goToFraction(initialRestoreFraction);
             } else if (hasInitialRestoreCFI) {
                 intent = {
                     source: `${reason}.initialRestoreCFI`,
                     target: 'view.goTo',
                     cfiLength: initialRestoreCFI.length,
                 };
-                operation = async () => {
-                    return await this.view.goTo(initialRestoreCFI);
+                operation = () => this.view.goTo(initialRestoreCFI);
+            } else if (hasInitialRestoreFraction) {
+                intent = {
+                    source: `${reason}.initialRestoreFraction`,
+                    target: 'view.goToFraction',
+                    fraction: initialRestoreFraction,
                 };
+                operation = () => this.view.goToFraction(initialRestoreFraction);
             } else {
                 intent = {
                     source: reason,
@@ -9719,7 +9688,28 @@ class Reader {
                 rawFractionType: typeof initialRestore?.fractionalCompletion,
                 rawFractionValue: initialRestore?.fractionalCompletion ?? null,
             });
+            const locatorOperation = operation;
+            if ((hasInitialRestoreCFI || syntheticInitialRestore) && hasInitialRestoreFraction) {
+                operation = () => runLocatorWithFractionFallback({
+                    navigateLocator: locatorOperation,
+                    navigateFraction: () => this.view.goToFraction(initialRestoreFraction),
+                    isCurrent: isCurrentInitialDisplay,
+                    onFallback: () => {
+                        initialRestoreUsesFraction = true;
+                        restoreLocatorKind = 'fraction';
+                    },
+                });
+            }
             const navigationResult = await runInitialDisplayNavigation(intent, operation);
+            if (hasInitialRestoreCFI || syntheticInitialRestore) {
+                // The previous document can still be visible while goTo resolves.
+                // A precise locator is satisfied by its accepted navigation,
+                // never by an unrelated visible page or its completion fraction.
+                const receipt = await navigationResult?.result;
+                if (!isCurrentInitialDisplay()) return false;
+                navigationResult.ok = receipt != null && receipt !== false;
+                navigationResult.pending = false;
+            }
             if (!isCurrentInitialDisplay() || navigationResult?.superseded === true) {
                 return false;
             }
@@ -9742,7 +9732,7 @@ class Reader {
             const pendingNavigationHasVisibleContent = navigationResult?.pending === true
                 ? displaySettled?.settled === true
                 : true;
-            const initialRestoreFractionSatisfied = hasInitialRestoreFraction && !syntheticInitialRestore
+            const initialRestoreFractionSatisfied = initialRestoreUsesFraction
                 ? (
                     typeof settledFraction === 'number'
                     && Math.abs(settledFraction - initialRestoreFraction) <= initialRestoreFractionTolerance
@@ -9768,7 +9758,7 @@ class Reader {
             const restorePrecision = initialRestoreWillBeMarkedHandled
                 ? (initialRestoreUsedSyntheticFallback
                     ? 'synthetic-fraction-fallback'
-                    : (hasInitialRestoreCFI ? 'cfi' : (hasInitialRestoreFraction ? 'fraction' : 'section')))
+                    : (initialRestoreUsesFraction ? 'fraction' : (hasInitialRestoreCFI ? 'cfi' : 'section')))
                 : null;
             globalThis.__manabiRestoreDebugLog?.('ebook.initialDisplay.settleCheck', {
                 reason,
@@ -11874,19 +11864,12 @@ window.loadEBook = ({
             ...(requestedRestoreFraction != null ? { fractionalCompletion: requestedRestoreFraction } : {}),
         }
         : null;
-    const requestedSyntheticRestore = parseSyntheticRestoreLocator(effectiveInitialRestore?.cfi);
-    const requestedSpineOnlySectionIndex = !requestedSyntheticRestore
-        ? parseSpineOnlyEpubCFI(effectiveInitialRestore?.cfi)
-        : null;
+    const requestedLocator = resolveRestoreLocator(effectiveInitialRestore);
+    const requestedSyntheticRestore = requestedLocator.synthetic;
+    const requestedSpineOnlySectionIndex = requestedLocator.spineSectionIndex;
     const hasRequestedSpineOnlyRestore = Number.isInteger(requestedSpineOnlySectionIndex);
-    const requestedRestoreCFI = !requestedSyntheticRestore
-        && !hasRequestedSpineOnlyRestore
-        && typeof effectiveInitialRestore?.cfi === 'string'
-        ? effectiveInitialRestore.cfi
-        : '';
-    const requestedRestoreKind = requestedSyntheticRestore
-        ? 'synthetic'
-        : (hasRequestedSpineOnlyRestore ? 'spine-cfi' : (requestedRestoreCFI.length > 0 ? 'cfi' : (requestedRestoreFraction != null && requestedRestoreFraction > 0 ? 'fraction' : 'none')));
+    const requestedRestoreCFI = requestedLocator.cfi;
+    const requestedRestoreKind = requestedLocator.kind;
     const hasExplicitInitialRestoreTarget = !!effectiveInitialRestore && requestedRestoreKind !== 'none';
     const applyInitialRestore = restore => window.loadLastPosition?.({
         cfi: typeof restore?.cfi === 'string' ? restore.cfi : '',
@@ -12532,16 +12515,18 @@ window.loadLastPosition = async ({
             await waitForFrames(2);
         };
         const hasFractionalCompletion = Number.isFinite(fractionalCompletion) && fractionalCompletion > 0;
+        const locator = resolveRestoreLocator({ cfi, fractionalCompletion });
+        let restoreUsesFraction = locator.usesFraction;
         const restoreStateHasUsableLocation = (state) => {
             if (!state) return false;
-            if (hasFractionalCompletion) {
+            if (restoreUsesFraction) {
                 return typeof state.currentFraction === 'number';
             }
             return typeof state.currentFraction === 'number'
                 || typeof state.sectionIndex === 'number'
                 || typeof state.locationCurrent === 'number';
         };
-        const restoreStateFractionSatisfied = (state) => !hasFractionalCompletion
+        const restoreStateFractionSatisfied = (state) => !restoreUsesFraction
             || (
                 typeof state?.currentFraction === 'number'
                 && Math.abs(state.currentFraction - fractionalCompletion) <= 0.003
@@ -12615,18 +12600,10 @@ window.loadLastPosition = async ({
             });
             return waitedState;
         };
-        const syntheticRestoreLocator = hasFractionalCompletion ? null : parseSyntheticRestoreLocator(cfi);
-        const spineOnlyRestoreSectionIndex = !syntheticRestoreLocator && !hasFractionalCompletion
-            ? parseSpineOnlyEpubCFI(cfi)
-            : null;
-        const hasPreciseCFI = typeof cfi === 'string'
-            && cfi.length > 0
-            && !syntheticRestoreLocator
-            && !hasFractionalCompletion
-            && !Number.isInteger(spineOnlyRestoreSectionIndex);
-        restoreLocatorKind = syntheticRestoreLocator
-            ? 'synthetic'
-            : (Number.isInteger(spineOnlyRestoreSectionIndex) ? 'spine-cfi' : (hasPreciseCFI ? 'cfi' : (hasFractionalCompletion ? 'fraction' : 'none')));
+        const syntheticRestoreLocator = locator.synthetic;
+        const spineOnlyRestoreSectionIndex = locator.spineSectionIndex;
+        const hasPreciseCFI = locator.cfi.length > 0;
+        restoreLocatorKind = locator.kind;
         globalThis.__manabiRestoreDebugLog?.('ebook.loadLastPosition.normalizedRestore', {
             restoreLocatorKind,
             cfiLength: typeof cfi === 'string' ? cfi.length : 0,
@@ -12673,7 +12650,7 @@ window.loadLastPosition = async ({
         };
         const reconcileRestoreFractionIfNeeded = async (restoreState, reason, stageOnReconcile) => {
             assertCurrentRestore(`reconcile:${reason}`);
-            if (!hasFractionalCompletion) {
+            if (!restoreUsesFraction) {
                 return;
             }
             const hasCurrentFraction = typeof restoreState?.currentFraction === 'number';
@@ -12754,7 +12731,7 @@ window.loadLastPosition = async ({
         const initialRestoreCfiMatches = typeof cfi === 'string'
             && cfi.length > 0
             && initialRestoreHandled?.cfi === cfi;
-        const initialRestoreFractionMatches = !hasFractionalCompletion
+        const initialRestoreFractionMatches = !restoreUsesFraction
             || (
                 Number.isFinite(initialRestoreHandled?.fractionalCompletion)
                 && Math.abs(initialRestoreHandled.fractionalCompletion - fractionalCompletion) <= 0.003
@@ -12764,7 +12741,7 @@ window.loadLastPosition = async ({
                 sectionIndex: initialRestoreHandled.sectionIndex ?? null,
             })
             : null;
-        const initialRestoreCurrentFractionMatches = !hasFractionalCompletion
+        const initialRestoreCurrentFractionMatches = !restoreUsesFraction
             || (
                 typeof initialState?.currentFraction === 'number'
                 && Math.abs(initialState.currentFraction - fractionalCompletion) <= 0.003
@@ -12826,9 +12803,22 @@ window.loadLastPosition = async ({
                 localPage: syntheticRestoreLocator.localSectionIndex,
                 rendererTotal: syntheticRestoreLocator.rendererTotal,
                 fraction: hasFractionalCompletion ? fractionalCompletion : null,
-            }, () => restoreReader.view.renderer.goTo?.({
-                index: syntheticRestoreLocator.sectionIndex,
-                localPage: syntheticRestoreLocator.localSectionIndex,
+            }, () => runLocatorWithFractionFallback({
+                navigateLocator: () => restoreReader.view.renderer.goTo?.({
+                    index: syntheticRestoreLocator.sectionIndex,
+                    localPage: syntheticRestoreLocator.localSectionIndex,
+                }),
+                navigateFraction: hasFractionalCompletion
+                    ? () => restoreReader.view.goToFraction(fractionalCompletion)
+                    : null,
+                isCurrent: () => {
+                    assertCurrentRestore('synthetic-fraction-fallback');
+                    return true;
+                },
+                onFallback: () => {
+                    restoreUsesFraction = true;
+                    restoreLocatorKind = 'fraction';
+                },
             }), {
                 throwOnError: false,
             });
@@ -12885,7 +12875,7 @@ window.loadLastPosition = async ({
                 captureRestoreState('after-spine-cfi'),
                 'restore.spine-cfi.after-navigation',
                 'after-spine-cfi',
-                { requireFractionSatisfied: hasFractionalCompletion },
+                { requireFractionSatisfied: restoreUsesFraction },
             );
             const reconciledSpineState = await reconcileRestoreFractionIfNeeded(
                 spineState,
@@ -12896,7 +12886,7 @@ window.loadLastPosition = async ({
                 reconciledSpineState ?? captureRestoreState('after-spine-cfi-final'),
                 'restore.spine-cfi.final',
                 'after-spine-cfi-final',
-                { requireFractionSatisfied: hasFractionalCompletion },
+                { requireFractionSatisfied: restoreUsesFraction },
             );
             globalThis.__manabiRestoreDebugLog?.('ebook.loadLastPosition.path.finish', {
                 path: 'spine-cfi',
@@ -12917,7 +12907,20 @@ window.loadLastPosition = async ({
                 target: 'view.goTo',
                 cfiLength: cfi.length,
                 fraction: hasFractionalCompletion ? fractionalCompletion : null,
-            }, async () => (await restoreReader.view.goTo(cfi)) != null, {
+            }, () => runLocatorWithFractionFallback({
+                navigateLocator: () => restoreReader.view.goTo(locator.cfi),
+                navigateFraction: hasFractionalCompletion
+                    ? () => restoreReader.view.goToFraction(fractionalCompletion)
+                    : null,
+                isCurrent: () => {
+                    assertCurrentRestore('cfi-fraction-fallback');
+                    return true;
+                },
+                onFallback: () => {
+                    restoreUsesFraction = true;
+                    restoreLocatorKind = 'fraction';
+                },
+            }), {
                 throwOnError: false,
             });
             if (navigationResult?.ok !== true) {
@@ -12936,7 +12939,7 @@ window.loadLastPosition = async ({
                 captureRestoreState('after-cfi'),
                 'restore.cfi.after-navigation',
                 'after-cfi',
-                { requireFractionSatisfied: hasFractionalCompletion },
+                { requireFractionSatisfied: restoreUsesFraction },
             );
             const reconciledCfiState = await reconcileRestoreFractionIfNeeded(
                 cfiState,
@@ -12947,7 +12950,7 @@ window.loadLastPosition = async ({
                 reconciledCfiState ?? captureRestoreState('after-cfi-final'),
                 'restore.cfi.final',
                 'after-cfi-final',
-                { requireFractionSatisfied: hasFractionalCompletion },
+                { requireFractionSatisfied: restoreUsesFraction },
             );
             globalThis.__manabiRestoreDebugLog?.('ebook.loadLastPosition.path.finish', {
                 path: 'cfi',
@@ -13010,7 +13013,7 @@ window.loadLastPosition = async ({
             captureRestoreState('done'),
             'loadLastPosition.done',
             'done',
-            { requireFractionSatisfied: hasFractionalCompletion },
+            { requireFractionSatisfied: restoreUsesFraction },
         );
         const doneHasUsableLocation = restoreStateHasUsableLocation(doneState);
         const doneFractionSatisfied = restoreStateFractionSatisfied(doneState);

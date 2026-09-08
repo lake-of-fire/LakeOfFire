@@ -179,7 +179,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             guard let self = self else { return }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
 
-            let exportableTypes: [ObjectBase.Type] = [FeedCategory.self, Feed.self, LibraryConfiguration.self]
+            let exportableTypes: [ObjectBase.Type] = [FeedCategory.self, FeedDirectory.self, Feed.self, LibraryConfiguration.self]
             for objectType in exportableTypes {
                 guard let objectType = objectType as? Object.Type else { continue }
                 realm.objects(objectType)

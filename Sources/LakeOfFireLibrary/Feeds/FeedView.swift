@@ -59,7 +59,7 @@ public class FeedViewModel: ObservableObject {
                 realm.objects(FeedEntry.self)
                     .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
             )
-            self.entries = entries
+            self.entries = Feed.deduplicatedEntries(entries)
         } catch {
         }
     }
@@ -94,7 +94,7 @@ public class FeedViewModel: ObservableObject {
     }
     
     public init(feed: Feed) {
-        entries = feed.getEntries()
+        entries = feed.getEntries().map { Feed.deduplicatedEntries($0) }
         collections = feed.getCollections()
         isFeedGroupFollowed = feed.isFollowed
         canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey

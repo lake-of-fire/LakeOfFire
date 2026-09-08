@@ -770,3 +770,29 @@ test('concurrent reciprocal CSS imports finish without replacing pending owners'
     assert.equal(await loader.loadItem(manifest[0]), urls[0])
     loader.destroy()
 })
+
+test('three concurrent CSS roots break transitive cycles and release every blob', { timeout: 2000 }, async () => {
+    globalThis.window ??= { innerWidth: 800, innerHeight: 600 }
+    const originalBlobMap = globalThis.__manabiBlobResourceMap
+    globalThis.__manabiBlobResourceMap = new Map()
+    const manifest = ['a.css', 'b.css', 'c.css'].map(href => ({ href, mediaType: 'text/css' }))
+    const imports = new Map([['a.css', 'b.css'], ['b.css', 'c.css'], ['c.css', 'a.css']])
+    const loader = new Loader({
+        resources: { manifest },
+        loadText: async href => `@import "${imports.get(href)}";`,
+        loadBlob: async () => new Blob(['body {}']),
+    })
+    try {
+        const urls = await Promise.all(manifest.map(item => loader.loadItem(item)))
+        assert.equal(new Set(urls).size, 3)
+        for (const url of urls) assert.equal((await fetch(url)).status, 200)
+        const ownedURLs = [...globalThis.__manabiBlobResourceMap.keys()]
+        assert.equal(ownedURLs.length, 4)
+        for (const item of manifest) loader.unref(item.href)
+        assert.equal(globalThis.__manabiBlobResourceMap.size, 0)
+        for (const url of ownedURLs) await assert.rejects(fetch(url))
+    } finally {
+        loader.destroy()
+        globalThis.__manabiBlobResourceMap = originalBlobMap
+    }
+})

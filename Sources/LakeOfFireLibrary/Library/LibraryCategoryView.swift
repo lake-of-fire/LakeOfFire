@@ -62,7 +62,7 @@ class LibraryCategoryViewModel: ObservableObject {
     }
     
     init(category: FeedCategory, libraryConfiguration: LibraryConfiguration, selectedFeed: Binding<Feed?>) {
-        self.category = category
+        self.category = category.isFrozen ? (category.thaw() ?? category) : category
         // The StateObject survives parent snapshots; keep its menu source live.
         self.libraryConfiguration = libraryConfiguration.isFrozen
             ? (libraryConfiguration.thaw() ?? libraryConfiguration)

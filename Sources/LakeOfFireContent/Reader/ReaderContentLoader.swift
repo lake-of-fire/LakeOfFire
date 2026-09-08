@@ -33,9 +33,6 @@ public struct ReaderContentLoader {
     private static var inFlightGetContentTasks: [String: Task<(any ReaderContentProtocol)?, Error>] = [:]
     @RealmBackgroundActor
     private static var inFlightLoadAllTasks: [String: Task<[ContentReference], Error>] = [:]
-    @RealmBackgroundActor
-    private static var recentLoadAllCache: [String: (timestamp: Date, references: [ContentReference])] = [:]
-    private static let loadAllCacheTTL: TimeInterval = 5
 
     public struct ContentReference {
         public let contentType: RealmSwift.Object.Type
@@ -74,7 +71,6 @@ public struct ReaderContentLoader {
         }
         await { @RealmBackgroundActor in
             inFlightLoadAllTasks.removeAll()
-            recentLoadAllCache.removeAll()
         }()
     }
 
@@ -127,10 +123,9 @@ public struct ReaderContentLoader {
     @RealmBackgroundActor
     public static func loadAll(url: URL, skipContentFiles: Bool = false, skipFeedEntries: Bool = false) async throws -> [(any ReaderContentProtocol)] {
         let taskKey = loadAllTaskKey(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
-        if let cached = recentLoadAllCache[taskKey],
-           Date().timeIntervalSince(cached.timestamp) < loadAllCacheTTL {
-            return try await resolveContentReferences(cached.references)
-        }
+        // Coalesce only overlapping queries. Completed membership can become
+        // obsolete as soon as load() creates a history record or a bookmark is
+        // added, so authoritative reads and writes must query it again.
         if let existingTask = inFlightLoadAllTasks[taskKey] {
             return try await resolveContentReferences(existingTask.value)
         }
@@ -166,7 +161,6 @@ public struct ReaderContentLoader {
         inFlightLoadAllTasks[taskKey] = task
         defer { inFlightLoadAllTasks[taskKey] = nil }
         let references = try await task.value
-        recentLoadAllCache[taskKey] = (timestamp: Date(), references: references)
         return try await resolveContentReferences(references)
     }
 
@@ -279,6 +273,7 @@ public struct ReaderContentLoader {
         mutate: (Object & ReaderContentProtocol) -> Bool
     ) async throws {
         let objects = try await loadAll(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
+        let timestamp = Date()
         for case let object as (Object & ReaderContentProtocol) in objects {
             guard let realm = object.realm else { continue }
             try await realm.asyncWrite {
@@ -287,7 +282,7 @@ public struct ReaderContentLoader {
                 // Fence the actual commit, not only the preceding lookup.
                 guard !Task.isCancelled else { return }
                 if mutate(object) {
-                    object.refreshChangeMetadata(explicitlyModified: true)
+                    object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 }
             }
         }
@@ -338,13 +333,25 @@ public struct ReaderContentLoader {
                 historyRecord.updateCompoundKey()
                 if persist {
                     let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
-//                    await historyRealm.asyncRefresh()
-                    try await historyRealm.asyncWrite {
-                        historyRealm.add(historyRecord, update: .modified)
-                        historyRecord.refreshChangeMetadata(explicitlyModified: true)
+                    // Another load/capture may have committed while this query
+                    // was suspended. Never replace that row with new defaults.
+                    match = try await historyRealm.asyncWrite {
+                        let timestamp = Date()
+                        if let existing = historyRealm.object(ofType: HistoryRecord.self, forPrimaryKey: historyRecord.compoundKey) {
+                            if countsAsHistoryVisit || existing.isDeleted {
+                                if countsAsHistoryVisit { existing.lastVisitedAt = timestamp }
+                                existing.isDeleted = false
+                                existing.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                            }
+                            return existing
+                        }
+                        historyRealm.add(historyRecord)
+                        historyRecord.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                        return historyRecord
                     }
+                } else {
+                    match = historyRecord
                 }
-                match = historyRecord
             }
             
             try Task.checkCancellation()
@@ -847,12 +854,17 @@ This snippet loads when the pasteboard is empty in a debug build.
         _ appendedHTML: String,
         to content: any ReaderContentProtocol
     ) async throws -> (any ReaderContentProtocol)? {
-        guard content.url.isSnippetURL else {
-            return nil
-        }
+        try await appendSnippetHTML(appendedHTML, toContentURL: content.url)
+    }
 
+    /// A delayed import keeps its original destination across recognition and UI navigation.
+    @MainActor
+    public static func appendSnippetHTML(
+        _ appendedHTML: String,
+        toContentURL contentURL: URL
+    ) async throws -> (any ReaderContentProtocol)? {
+        guard contentURL.isSnippetURL else { return nil }
         let normalizedAppendedHTML = normalizeSnippetSourceHTML(appendedHTML)
-        let contentURL = content.url
     try await { @RealmBackgroundActor in
             try await updateContent(url: contentURL) { object in
                 let currentHTML = object.html
@@ -941,6 +953,33 @@ This snippet loads when the pasteboard is empty in a debug build.
                     didChange = true
                 }
                 return objectDidChange
+            }
+            return didChange
+        }()
+    }
+
+    @MainActor
+    public static func updateSnippetTitle(
+        contentURL: URL,
+        title: String
+    ) async throws -> Bool {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard contentURL.isSnippetURL, !trimmedTitle.isEmpty else { return false }
+        return try await { @RealmBackgroundActor in
+            var didChange = false
+            try await updateContent(url: contentURL) { object in
+                let isTitlePrefixOfContent = snippetTitleMatchesGeneratedPrefix(
+                    trimmedTitle,
+                    sourceHTML: object.html
+                )
+                guard object.title != trimmedTitle
+                    || object.isTitlePrefixOfContent != isTitlePrefixOfContent else {
+                    return false
+                }
+                object.title = trimmedTitle
+                object.isTitlePrefixOfContent = isTitlePrefixOfContent
+                didChange = true
+                return true
             }
             return didChange
         }()
