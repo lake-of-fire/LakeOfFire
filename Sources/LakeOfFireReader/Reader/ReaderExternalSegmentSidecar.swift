@@ -397,13 +397,31 @@ private func readerVisibleContentCoverageDigest(
 func readerVisibleSourceTextDigest(_ document: SwiftSoup.Document) -> String? {
     guard let body = document.body() else { return nil }
     var bytes = Data()
-    readerAppendVisibleSourceTextBytes(body, to: &bytes)
+    do {
+        try readerAppendVisibleSourceTextBytes(body, to: &bytes)
+    } catch {
+        return nil
+    }
     return SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
 }
 
-private func readerAppendVisibleSourceTextBytes(_ node: Node, to bytes: inout Data) {
+private func readerAppendVisibleSourceTextBytes(_ node: Node, to bytes: inout Data) throws {
     if let element = node as? Element,
        readerCoverageExcludedElementNames.contains(element.tagName().lowercased()) {
+        return
+    }
+    // Fresh native EPUB fragments are retained as raw markup until transport
+    // serialization. Read the same visible text as the parsed cache-hit path;
+    // ignoring DataNodes binds the completion proof to an empty source instead.
+    if let rawMarkup = node as? DataNode {
+        let fragments = try SwiftSoup.Parser.parseFragment(
+            rawMarkup.getWholeDataUTF8(),
+            rawMarkup.parent() as? Element,
+            rawMarkup.getBaseUriUTF8()
+        )
+        for fragment in fragments {
+            try readerAppendVisibleSourceTextBytes(fragment, to: &bytes)
+        }
         return
     }
     if let ruby = node as? Element,
@@ -420,7 +438,7 @@ private func readerAppendVisibleSourceTextBytes(_ node: Node, to bytes: inout Da
         bytes.append(contentsOf: text.getWholeText().utf8)
     }
     for index in 0..<node.childNodeSize() {
-        readerAppendVisibleSourceTextBytes(node.childNode(index), to: &bytes)
+        try readerAppendVisibleSourceTextBytes(node.childNode(index), to: &bytes)
     }
 }
 
