@@ -111,17 +111,18 @@ func ebookRequestBodyData(
     defer { buffer.deallocate() }
 
     return try ebookBoundedRequestBodyData(
-        maximumByteCount: maximumByteCount
-    ) {
-        let readCount = stream.read(buffer, maxLength: min(chunkSize, $0))
-        if readCount < 0 {
-            return .failure
+        maximumByteCount: maximumByteCount,
+        nextStreamChunk: {
+            let readCount = stream.read(buffer, maxLength: min(chunkSize, $0))
+            if readCount < 0 {
+                return .failure
+            }
+            if readCount == 0 {
+                return stream.streamStatus == .error ? .failure : .end
+            }
+            return .data(Data(bytes: buffer, count: readCount))
         }
-        if readCount == 0 {
-            return stream.streamStatus == .error ? .failure : .end
-        }
-        return .data(Data(bytes: buffer, count: readCount))
-    }
+    )
 }
 
 private enum EbookBase64URLByte {
@@ -986,8 +987,7 @@ actor EBookProcessingActor {
         guard let ebookTextProcessor else {
             return EbookProcessedSectionPayload(
                 documentHTML: Data(text.utf8),
-                segmentSidecar: Data(),
-                isAuthoritativelyProcessed: false
+                segmentSidecar: Data()
             )
         }
 
@@ -1007,8 +1007,7 @@ actor EBookProcessingActor {
            !(await ebookProcessedPayloadAdmission(result)) {
             result = EbookProcessedSectionPayload(
                 documentHTML: result.documentHTML,
-                segmentSidecar: result.segmentSidecar,
-                processingCompletion: .incomplete
+                segmentSidecar: result.segmentSidecar
             )
         }
         if !isCacheWarmer,
@@ -1020,8 +1019,7 @@ actor EBookProcessingActor {
            !(await ebookProcessedPayloadAdmission(result)) {
             return EbookProcessedSectionPayload(
                 documentHTML: result.documentHTML,
-                segmentSidecar: result.segmentSidecar,
-                processingCompletion: .incomplete
+                segmentSidecar: result.segmentSidecar
             )
         }
         return result
