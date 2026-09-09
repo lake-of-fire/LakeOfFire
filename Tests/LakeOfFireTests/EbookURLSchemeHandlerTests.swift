@@ -4,7 +4,7 @@ import ZIPFoundation
 @preconcurrency import WebKit
 @testable import LakeOfFireContent
 @testable import LakeOfFireFiles
-@_spi(ReaderProcessing) @testable import LakeOfFireReader
+@_spi(ReaderProcessing) @_spi(TestSupport) @testable import LakeOfFireReader
 
 private final class EbookNavigationDelegate: NSObject, WKNavigationDelegate {
     let completionExpectation: XCTestExpectation
@@ -900,6 +900,37 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertNil(decodedEbookProcessedSectionCacheValue(Array(tamperedEnvelope)))
     }
 
+    func testCompletionProofReadsVisibleNativeDataNodeMarkup() throws {
+        let markup = "<m-s sid=\"s\" o=\"true\">猫　犬</m-s>"
+        let source = try SwiftSoup.parse("<html><body><p></p></body></html>")
+        let paragraph = try XCTUnwrap(source.select("p").first())
+        try paragraph.appendChild(DataNode(Array(markup.utf8), []))
+        let output = "<html><body><p>\(markup)</p></body></html>"
+        let structured = try SwiftSoup.parse(output)
+
+        XCTAssertEqual(readerVisibleSourceTextDigest(source), readerVisibleSourceTextDigest(structured))
+        let proof = try XCTUnwrap(EbookReaderProcessingCompletionProof(sourceDocument: source))
+        XCTAssertTrue(proof.complete(documentHTML: Data(output.utf8), segmentSidecar: Data()).isAuthoritativelyProcessed)
+
+        let changedProof = try XCTUnwrap(EbookReaderProcessingCompletionProof(sourceDocument: source))
+        let changed = output.replacingOccurrences(of: "猫　犬", with: "猫　鳥")
+        XCTAssertFalse(changedProof.complete(documentHTML: Data(changed.utf8), segmentSidecar: Data()).isAuthoritativelyProcessed)
+    }
+
+    func testRawMarkupProofPreservesAuthoredRubyAndExcludedContent() throws {
+        let markup = "<m-s sid=\"s\" o=\"true\"><ruby>猫<rt>ねこ</rt></ruby></m-s><script>const 日本語 = true;</script>"
+        let source = try SwiftSoup.parse("<html><body><p></p></body></html>")
+        let paragraph = try XCTUnwrap(source.select("p").first())
+        try paragraph.appendChild(DataNode(Array(markup.utf8), []))
+        let output = "<html><body><p>\(markup)</p></body></html>"
+        let proof = try XCTUnwrap(EbookReaderProcessingCompletionProof(sourceDocument: source))
+        XCTAssertTrue(proof.complete(documentHTML: Data(output.utf8), segmentSidecar: Data()).isAuthoritativelyProcessed)
+
+        let changedProof = try XCTUnwrap(EbookReaderProcessingCompletionProof(sourceDocument: source))
+        let changed = output.replacingOccurrences(of: "ねこ", with: "にゃん")
+        XCTAssertFalse(changedProof.complete(documentHTML: Data(changed.utf8), segmentSidecar: Data()).isAuthoritativelyProcessed)
+    }
+
     func testCompletionProofIsSourceBoundSingleUseAndCoversJapaneseScalarFamilies() {
         let source = "<html><body><m-s sid=\"s\" o=\"true\">本文</m-s></body></html>"
         let proof = EbookReaderProcessingCompletionProof.forTesting(sourceHTML: source)
@@ -1437,7 +1468,8 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testFinalSidecarPublicationAdmissionRejectsReplacementBeforePersisting() async throws {
-        let directoryURL = temporaryDirectoryURL()
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
         let payload = ebookPretransformedTestPayload(
