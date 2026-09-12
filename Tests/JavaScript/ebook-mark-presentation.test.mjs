@@ -31,7 +31,7 @@ const payload = () => ({
     sentenceIdentifiers: ['sentence'],
 })
 const flush = async () => { for (let i = 0; i < 8; i += 1) await Promise.resolve() }
-const harness = () => {
+const harness = ({ onPost = null } = {}) => {
     let timerID = 0
     let requestID = 0
     const timers = new Map()
@@ -107,7 +107,10 @@ const harness = () => {
     }
     reader.preparedPayload = payload()
     reader.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
-        postMessage: message => posted.push(message),
+        postMessage: message => {
+            posted.push(message)
+            onPost?.({ reader, window, message, reply })
+        },
         makeRequestID: () => `request-${++requestID}`,
         isOwnerCurrent: owner => !reader.closed && reader.view.renderer === owner.renderer
             && reader.view.renderer.doc === owner.document,
@@ -374,5 +377,63 @@ test('renderer exceptions cannot turn an acknowledged commit into failed Finish'
     assert.equal(h.reader.lastNativeMarkReadRequestOutcome, 'committed')
     assert.equal(h.errors.length, 1)
     await flush()
+    assert.equal(h.moves, 0)
+})
+
+
+test('viewer installs presentation identity before a synchronous native reply', async () => {
+    let replied = false
+    const h = harness({ onPost: ({ reader, message, reply }) => {
+        assert.equal(reader.pendingMarkReadPresentation.requestID, message.requestID)
+        assert.equal(reader.nativeMarkReadRequestCoordinator.pendingCount, 1)
+        replied = reply()
+    } })
+    const count = await h.reader.markAllSectionsAsRead()
+    assert.equal(replied, true)
+    assert.equal(count, 1)
+    assert.equal(h.reader.nativeMarkReadRequestCoordinator.pendingCount, 0)
+    assert.equal(h.reader.renders, 1)
+    assert.equal(h.moves, 0, 'Only the outer Finish owns whole-document navigation')
+})
+
+test('synchronous cancellation before reply revokes only presentation, not the native commit', async () => {
+    let cancelled = false
+    let replied = false
+    const h = harness({ onPost: ({ reader, window, message, reply }) => {
+        assert.equal(reader.pendingMarkReadPresentation.requestID, message.requestID)
+        cancelled = window.manabiCancelPendingMarkReadPresentation(message.requestID)
+        assert.equal(reader.nativeMarkReadRequestCoordinator.pendingCount, 1)
+        replied = reply()
+    } })
+    assert.equal(await h.reader.markAllSectionsAsRead(), 1)
+    assert.equal(cancelled, true)
+    assert.equal(replied, true)
+    assert.equal(h.reader.nativeMarkReadRequestCoordinator.pendingCount, 0)
+    assert.equal(h.reader.pendingMarkReadPresentation, null)
+    assert.equal(h.reader.renders, 0)
+    assert.equal(h.moves, 0)
+})
+
+test('whole-document Mark retains its committed count after document replacement', async () => {
+    const h = harness()
+    const pending = h.reader.markAllSectionsAsRead()
+    h.reader.view.renderer.doc = { nodeType: 9, location: { href: 'ebook://book/replacement' } }
+    h.reply()
+    assert.equal(await pending, 1)
+    assert.equal(h.reader.lastNativeMarkReadRequestOutcome, 'committed')
+    assert.equal(h.reader.renders, 0)
+    assert.equal(h.moves, 0)
+})
+
+test('sentence-only committed Mark-All retains its subject count when presentation is denied', async () => {
+    const h = harness()
+    h.reader.preparedPayload = {
+        stableIdentityVersion: 1, segments: [], sentenceIdentifiers: ['sentence-a', 'sentence-b'],
+    }
+    const pending = h.reader.markAllSectionsAsRead()
+    h.reply(0, { permitsPresentation: false, permitsAutoAdvance: false,
+        displayEffectiveStableSegmentIDs: [], displayEffectiveStableSentenceIDs: ['sentence-a', 'sentence-b'] })
+    assert.equal(await pending, 2)
+    assert.equal(h.reader.renders, 0)
     assert.equal(h.moves, 0)
 })
