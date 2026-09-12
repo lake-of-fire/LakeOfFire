@@ -8,10 +8,10 @@ const defaultRequestID = () => {
 /**
  * Owns the request/reply lifetime for a native Mark Read transaction.
  *
- * Visible read state is never published from `request()`. The caller may update
- * UI only after the returned promise resolves with `success === true`. Replies
- * are accepted exactly once and only while their captured reader/document owner
- * is still current.
+ * Visible read state is never published from `request()`. Success reports the
+ * known native commit, not permission to repaint or move the reader. The actual
+ * viewer checks owner liveness, native permissions and cancellation again at
+ * repaint and after its delayed page-turn wait. Replies settle exactly once.
  */
 export const createNativeMarkReadRequestCoordinator = ({
     postMessage,
@@ -123,9 +123,9 @@ export const createNativeMarkReadRequestCoordinator = ({
         const sectionMatches = !result?.sectionId
             || result.sectionId === pending.sectionID
         const ownerIsCurrent = isOwnerCurrent(pending.owner)
-        const success = result?.success === true
-            && sectionMatches
-            && ownerIsCurrent
+        // Persistence success is not presentation permission. The real viewer
+        // separately checks stale owner, native permissions and cancellation.
+        const success = result?.success === true && sectionMatches
 
         return finish(requestID, {
             success,
