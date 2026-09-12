@@ -1,0 +1,61 @@
+name: Temporary RA1 viewer patch
+
+on:
+  push:
+    branches:
+      - codex/ra1-pro-w3-host-renderer-20260912
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify and apply reviewed viewer patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE='Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer.js'
+          ACTUAL="$(git hash-object "$FILE")"
+          test "$ACTUAL" = 'ecdd2eafd4a6b1a022ab27086fb7d34906989a4c'
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer.js')
+          s = p.read_text()
+          replacements = [
+          ("""        this.#bindGlobal(window, 'manabiCancelPendingMarkReadPresentation', () => {\n            this.pendingMarkReadPresentation = null;\n            this.pageTrackingAnimateReadStateIDs.clear();\n            return true;\n        });""",
+           """        this.#bindGlobal(window, 'manabiCancelPendingMarkReadPresentation', requestID => {\n            if (typeof requestID !== 'string' || !requestID\n                || this.pendingMarkReadPresentation?.requestID !== requestID) return false\n            this.pendingMarkReadPresentation = null\n            this.pageTrackingAnimateReadStateIDs.clear();\n            return true;\n        });"""),
+          ("""            return { success: false, permitsAutoAdvance: false, presentation: null };""",
+           """            return { success: false, errorCode: 'invalidPayload', permitsAutoAdvance: false, presentation: null }"""),
+          ("""        const outcome = await this.nativeMarkReadRequestCoordinator.request({\n            sectionID,\n            owner,\n            context: { payload: validatedPayload, reason, animateStateID },""",
+           """        const outcome = await this.nativeMarkReadRequestCoordinator.request({\n            sectionID,\n            owner,\n            onRequestID: requestID => { presentation.requestID = requestID },\n            context: { payload: validatedPayload, reason, animateStateID },"""),
+          ("""        presentation.requestID = outcome.requestID;\n        if (this.pendingMarkReadPresentation === presentation) {\n            this.lastNativeMarkReadRequestOutcome = outcome.success === true ? 'committed' : 'failed';\n            this.lastNativeMarkReadRequestErrorCode = outcome.errorCode ?? '';\n        }\n        const presented = outcome.success === true && outcome.stale !== true\n            && this.#isMarkReadPresentationCurrent(presentation)\n            && this.#applyCommittedMarkReadPayload(validatedPayload, outcome.nativeResult, reason, animateStateID);\n        return {\n            success: outcome.success === true,\n            permitsAutoAdvance: presented && outcome.nativeResult?.isMarked === true""",
+           """        if (this.pendingMarkReadPresentation === presentation) {\n            this.lastNativeMarkReadRequestOutcome = outcome.success === true ? 'committed' : 'failed';\n            this.lastNativeMarkReadRequestErrorCode = outcome.errorCode ?? '';\n        }\n        let presented = false\n        try {\n            presented = outcome.success === true && outcome.stale !== true\n                && this.#isMarkReadPresentationCurrent(presentation)\n                && this.#applyCommittedMarkReadPayload(validatedPayload, outcome.nativeResult, reason, animateStateID)\n        } catch (error) {\n            // The native write already committed. A renderer failure may deny\n            // presentation, but must not turn the saved Mark into failed Finish.\n            console.error('Committed Mark presentation failed', error)\n        }\n        return {\n            success: outcome.success === true,\n            errorCode: outcome.errorCode,\n            permitsAutoAdvance: presented && outcome.nativeResult?.isMarked === true"""),
+          ("""        if (!payload || !isDocumentLike(doc)) {\n            return 0;\n        }\n        const outcome = await this.#submitMarkReadPayload(payload, {\n            sectionID: `ebook-mark-all:${this.#lifecycleGeneration}`,\n            owner: this.#markReadOwner({ document: doc }),\n            reason: 'native-mark-all-read-committed',\n        });\n        return outcome.success\n            ? (payload.segments.length || payload.sentenceIdentifiers.length)\n            : 0;""",
+           """        if (!payload || !isDocumentLike(doc)) {\n            throw new Error('nativeMarkReadPreparationUnavailable')\n        }\n        const outcome = await this.#submitMarkReadPayload(payload, {\n            sectionID: `ebook-mark-all:${this.#lifecycleGeneration}`,\n            owner: this.#markReadOwner({ document: doc }),\n            reason: 'native-mark-all-read-committed',\n        });\n        if (!outcome.success) {\n            throw new Error(outcome.errorCode || 'nativeCommitFailed')\n        }\n        // A committed Mark retains its result even after cancellation or when\n        // native presentation is denied. Only the outer native Finish navigates.\n        return payload.segments.length || payload.sentenceIdentifiers.length""")]
+          for old, new in replacements:
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one preimage, found {count}: {old[:80]!r}')
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+          git diff --check
+      - name: Run focused JavaScript suites
+        run: |
+          node --test Tests/JavaScript/native-mark-read-request.test.mjs Tests/JavaScript/ebook-mark-presentation.test.mjs
+      - name: Commit reviewed viewer correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer.js
+          git commit -m 'Complete request-owned native Mark presentation handling'
+          git push origin HEAD:codex/ra1-pro-w3-host-renderer-20260912
