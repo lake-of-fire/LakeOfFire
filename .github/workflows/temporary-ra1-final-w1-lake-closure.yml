@@ -1,0 +1,34 @@
+name: Temporary RA1 Final W1 Lake closure
+
+on:
+  push:
+    branches:
+      - codex/ra1-final-w1-host-widget-20260912
+
+permissions:
+  contents: write
+
+jobs:
+  focused-js:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify exact source and run focused suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = 'ac1e1b58aa8dcceaedc0baea7d50e7846d2ad357' || test "$(git rev-parse HEAD)" = 'ac1e1b58aa8dcceaedc0baea7d50e7846d2ad357'
+          node --test Tests/JavaScript/native-mark-read-request.test.mjs Tests/JavaScript/ebook-mark-presentation.test.mjs
+      - name: Remove temporary runner after success
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/temporary-ra1-final-w1-lake-closure.yml
+          git commit -m 'Remove temporary RA-1 Final W1 Lake runner'
+          git push origin HEAD:codex/ra1-final-w1-host-widget-20260912
