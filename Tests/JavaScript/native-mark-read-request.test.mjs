@@ -88,7 +88,7 @@ test('uses the 15-second request/reply observation deadline', async () => {
     await completion
 })
 
-test('rejects a reply after the reader owner becomes stale', async () => {
+test('preserves committed success when the reader owner becomes stale', async () => {
     const h = harness()
     const completion = h.coordinator.request({
         sectionID: 'section-a',
@@ -104,9 +104,9 @@ test('rejects a reply after the reader owner becomes stale', async () => {
     })
 
     const result = await completion
-    assert.equal(result.success, false)
+    assert.equal(result.success, true)
     assert.equal(result.stale, true)
-    assert.equal(result.errorCode, 'staleReaderLifecycle')
+    assert.equal(result.errorCode, null)
 })
 
 test('rejects a mismatched section and ignores duplicate replies', async () => {
@@ -191,4 +191,69 @@ test('cancellation completes once and makes retained timeout/reply callbacks ine
     assert.strictEqual(await cancelledCompletion, cancelled)
     await Promise.resolve()
     assert.equal(completionCount, 1)
+})
+
+
+test('installs request identity before posting and before a synchronous reply', async () => {
+    let installedID = null
+    let postedID = null
+    const coordinator = createNativeMarkReadRequestCoordinator({
+        makeRequestID: () => 'synchronous-request',
+        postMessage: message => {
+            postedID = message.requestID
+            assert.equal(installedID, message.requestID)
+            assert.equal(coordinator.pendingCount, 1)
+            coordinator.settle({ ...message, success: true })
+        },
+    })
+    const result = await coordinator.request({
+        sectionID: 'section', message: {},
+        onRequestID: requestID => { installedID = requestID },
+    })
+    assert.equal(installedID, 'synchronous-request')
+    assert.equal(postedID, installedID)
+    assert.equal(result.requestID, installedID)
+    assert.equal(result.success, true)
+    assert.equal(coordinator.pendingCount, 0)
+})
+
+test('identity publication failure does not post or leave a pending request', async () => {
+    const h = harness()
+    const result = await h.coordinator.request({
+        sectionID: 'section', message: {},
+        onRequestID: () => { throw new Error('identity installation failed') },
+    })
+    assert.equal(result.success, false)
+    assert.equal(result.errorCode, 'identity installation failed')
+    assert.equal(h.posted.length, 0)
+    assert.equal(h.timeouts.size, 0)
+    assert.equal(h.coordinator.pendingCount, 0)
+})
+
+test('invalid preparation never publishes an identity or posts', async () => {
+    const h = harness()
+    let publications = 0
+    const onRequestID = () => { publications += 1 }
+    assert.equal((await h.coordinator.request({
+        sectionID: '', message: {}, onRequestID,
+    })).errorCode, 'invalidSectionID')
+    assert.equal((await h.coordinator.request({
+        sectionID: 'section', message: null, onRequestID,
+    })).errorCode, 'invalidMessage')
+    assert.equal(publications, 0)
+    assert.equal(h.posted.length, 0)
+})
+
+test('a queued timeout from a completed request cannot clear a newer request', async () => {
+    const h = harness()
+    const first = h.coordinator.request({ sectionID: 'section', message: {} })
+    const queuedTimeout = [...h.timeouts.values()][0]
+    h.coordinator.settle({ requestID: 'request-1', sectionId: 'section', success: true })
+    const second = h.coordinator.request({ sectionID: 'section', message: {} })
+    queuedTimeout()
+    assert.equal(h.coordinator.pendingCount, 1)
+    assert.equal((await first).success, true)
+    h.coordinator.settle({ requestID: 'request-2', sectionId: 'section', success: true })
+    assert.equal((await second).success, true)
+    assert.equal(h.coordinator.pendingCount, 0)
 })
