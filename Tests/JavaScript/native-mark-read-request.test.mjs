@@ -88,7 +88,7 @@ test('uses the 15-second request/reply observation deadline', async () => {
     await completion
 })
 
-test('rejects a reply after the reader owner becomes stale', async () => {
+test('reports durable commit without granting stale owner presentation', async () => {
     const h = harness()
     const completion = h.coordinator.request({
         sectionID: 'section-a',
@@ -104,9 +104,9 @@ test('rejects a reply after the reader owner becomes stale', async () => {
     })
 
     const result = await completion
-    assert.equal(result.success, false)
+    assert.equal(result.success, true)
     assert.equal(result.stale, true)
-    assert.equal(result.errorCode, 'staleReaderLifecycle')
+    assert.equal(result.errorCode, null)
 })
 
 test('rejects a mismatched section and ignores duplicate replies', async () => {

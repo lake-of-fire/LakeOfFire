@@ -6582,11 +6582,8 @@ class Reader {
         });
         // Native Undo awaits this exact document's cancellation before its write.
         // Do not cancel the persistence request: its real result must still settle.
-        this.#bindGlobal(window, 'manabiCancelPendingMarkReadPresentation', () => {
-            this.pendingMarkReadPresentation = null;
-            this.pageTrackingAnimateReadStateIDs.clear();
-            return true;
-        });
+        this.#bindGlobal(window, 'manabiCancelPendingMarkReadPresentation', requestID =>
+            this.cancelPendingMarkReadPresentation(requestID));
         this.#listen(window, 'resize', () => {
             this.#invalidateVisiblePageSegmentSnapshot();
         });
@@ -7082,6 +7079,13 @@ class Reader {
             sentenceIdentifiers,
         };
     }
+    cancelPendingMarkReadPresentation(requestID) {
+        if (typeof requestID !== 'string' || !requestID
+            || this.pendingMarkReadPresentation?.requestID !== requestID) return false;
+        this.pendingMarkReadPresentation = null;
+        this.pageTrackingAnimateReadStateIDs.clear();
+        return true;
+    }
     #isMarkReadPresentationCurrent(presentation) {
         const owner = presentation?.owner;
         return this.pendingMarkReadPresentation === presentation && !!owner
@@ -7148,6 +7152,7 @@ class Reader {
         const outcome = await this.nativeMarkReadRequestCoordinator.request({
             sectionID,
             owner,
+            onRequestCreated: requestID => { presentation.requestID = requestID; },
             context: { payload: validatedPayload, reason, animateStateID },
             message: {
                 ...validatedPayload,
@@ -7158,7 +7163,6 @@ class Reader {
                     : readerDocumentStartedAtMs(),
             },
         });
-        presentation.requestID = outcome.requestID;
         if (this.pendingMarkReadPresentation === presentation) {
             this.lastNativeMarkReadRequestOutcome = outcome.success === true ? 'committed' : 'failed';
             this.lastNativeMarkReadRequestErrorCode = outcome.errorCode ?? '';
@@ -7257,16 +7261,15 @@ class Reader {
         const payload = this.buildMarkAllSectionsAsReadPayload();
         const doc = getPrimaryRendererContent(this.view?.renderer)?.doc ?? null;
         if (!payload || !isDocumentLike(doc)) {
-            return 0;
+            throw new Error('Native Mark All payload is unavailable');
         }
         const outcome = await this.#submitMarkReadPayload(payload, {
             sectionID: `ebook-mark-all:${this.#lifecycleGeneration}`,
             owner: this.#markReadOwner({ document: doc }),
             reason: 'native-mark-all-read-committed',
         });
-        return outcome.success
-            ? (payload.segments.length || payload.sentenceIdentifiers.length)
-            : 0;
+        if (!outcome.success) throw new Error('Native Mark All did not commit');
+        return payload.segments.length || payload.sentenceIdentifiers.length;
     }
     async #markPageClusterAsRead(stateID) {
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
@@ -13360,7 +13363,8 @@ window.manabiReadAloudAdvanceToNextSection = async () => {
 }
 
 window.manabi_markAllSectionsAsRead = async () => {
-    return await globalThis.reader?.markAllSectionsAsRead?.() ?? 0;
+    if (!globalThis.reader?.markAllSectionsAsRead) throw new Error('Reader is unavailable');
+    return await globalThis.reader.markAllSectionsAsRead();
 }
 
 window.manabi_buildMarkAllSectionsAsReadPayload = () => {

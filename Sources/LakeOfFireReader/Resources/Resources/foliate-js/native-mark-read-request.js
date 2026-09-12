@@ -50,6 +50,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         message,
         owner = null,
         context = null,
+        onRequestCreated = null,
     }) => {
         if (typeof sectionID !== 'string' || sectionID.length === 0) {
             return Promise.resolve({
@@ -97,6 +98,7 @@ export const createNativeMarkReadRequestCoordinator = ({
             })
 
             try {
+                onRequestCreated?.(requestID)
                 postMessage({
                     ...message,
                     requestID,
