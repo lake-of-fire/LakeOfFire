@@ -6580,6 +6580,13 @@ class Reader {
         this.#bindGlobal(window, 'manabi_markVisiblePageAsRead', async (source = 'native') => {
             return await this.markVisiblePageAsRead(source);
         });
+        // Native Undo awaits this exact document's cancellation before its write.
+        // Do not cancel the persistence request: its real result must still settle.
+        this.#bindGlobal(window, 'manabiCancelPendingMarkReadPresentation', () => {
+            this.pendingMarkReadPresentation = null;
+            this.pageTrackingAnimateReadStateIDs.clear();
+            return true;
+        });
         this.#listen(window, 'resize', () => {
             this.#invalidateVisiblePageSegmentSnapshot();
         });
@@ -6814,16 +6821,10 @@ class Reader {
     }
     applyBookReadingProgress(articleReadingProgress, _reason = 'unspecified') {
         const incomingProgress = normalizeArticleReadingProgress(articleReadingProgress);
-        const incomingReadSegmentIdentifiers = new Set(incomingProgress.readSegmentIdentifiers);
-        const incomingSentenceIdentifiersRead = new Set(incomingProgress.sentenceIdentifiersRead);
-        for (const segmentIdentifier of this.optimisticReadSegmentIdentifiers) {
-            incomingReadSegmentIdentifiers.add(segmentIdentifier);
-        }
-        for (const sentenceIdentifier of this.optimisticSentenceIdentifiersRead) {
-            incomingSentenceIdentifiersRead.add(sentenceIdentifier);
-        }
-        incomingProgress.readSegmentIdentifiers = Array.from(incomingReadSegmentIdentifiers);
-        incomingProgress.sentenceIdentifiersRead = Array.from(incomingSentenceIdentifiersRead);
+        // Native snapshots may decrease after Undo/reset. A previous Mark's
+        // rendering cache must never be unioned back into authoritative state.
+        this.optimisticReadSegmentIdentifiers.clear();
+        this.optimisticSentenceIdentifiersRead.clear();
         this.articleReadingProgress = incomingProgress;
         this.markedAsFinished = !!this.articleReadingProgress.articleMarkedAsFinished;
         this.lastPageTrackingStateSignature = null;
@@ -7081,31 +7082,52 @@ class Reader {
             sentenceIdentifiers,
         };
     }
-    #applyCommittedMarkReadPayload(payload, reason, animateStateID = null) {
+    #isMarkReadPresentationCurrent(presentation) {
+        const owner = presentation?.owner;
+        return this.pendingMarkReadPresentation === presentation && !!owner
+            && this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
+            && (!owner.document
+                || getCurrentRendererDocument(owner.renderer, owner.document) === owner.document)
+            && (!owner.requireVisibleGeneration
+                || this.visiblePageCollectionGeneration === owner.visiblePageCollectionGeneration);
+    }
+    #applyCommittedMarkReadPayload(payload, nativeResult, reason, animateStateID = null) {
         const validatedPayload = this.#validatedMarkReadPayload(payload);
-        if (!validatedPayload) return 0;
-        const payloadSegmentIdentifiers = validatedPayload.segments
-            .map(segment => segment.stableSegmentID);
-        for (const segmentIdentifier of payloadSegmentIdentifiers) {
-            this.optimisticReadSegmentIdentifiers.add(segmentIdentifier);
-        }
-        for (const sentenceIdentifier of validatedPayload.sentenceIdentifiers) {
-            this.optimisticSentenceIdentifiersRead.add(sentenceIdentifier);
-        }
-        if (animateStateID) {
+        const presentation = this.pendingMarkReadPresentation;
+        if (!validatedPayload || nativeResult?.success !== true
+            || nativeResult.permitsPresentation !== true
+            || !this.#isMarkReadPresentationCurrent(presentation)
+            || typeof presentation.requestID !== 'string'
+            || nativeResult.requestID !== presentation.requestID) return false;
+        const sequence = nativeResult.stateSnapshotSequence;
+        if (!Number.isSafeInteger(sequence) || sequence <= 0
+            || sequence <= (this.lastAppliedMarkReadStateSequence ?? 0)) return false;
+        const requestedSegments = new Set(validatedPayload.segments.map(segment => segment.stableSegmentID));
+        const requestedSentences = new Set(validatedPayload.sentenceIdentifiers);
+        const effectiveSegments = nativeResult.displayEffectiveStableSegmentIDs;
+        const effectiveSentences = nativeResult.displayEffectiveStableSentenceIDs;
+        const isScopedSet = (values, requested) => Array.isArray(values)
+            && new Set(values).size === values.length
+            && values.every(value => typeof value === 'string' && value.length > 0 && requested.has(value));
+        if (!isScopedSet(effectiveSegments, requestedSegments)
+            || !isScopedSet(effectiveSentences, requestedSentences)) return false;
+        // Replace only the subjects covered by this native snapshot. Requested
+        // selection is not proof of reading, and no optimistic support is retained.
+        const progress = normalizeArticleReadingProgress(this.articleReadingProgress);
+        progress.readSegmentIdentifiers = Array.from(new Set([
+            ...progress.readSegmentIdentifiers.filter(id => !requestedSegments.has(id)),
+            ...effectiveSegments,
+        ]));
+        progress.sentenceIdentifiersRead = Array.from(new Set([
+            ...progress.sentenceIdentifiersRead.filter(id => !requestedSentences.has(id)),
+            ...effectiveSentences,
+        ]));
+        this.lastAppliedMarkReadStateSequence = sequence;
+        if (animateStateID && nativeResult.isMarked === true) {
             this.pageTrackingAnimateReadStateIDs.add(animateStateID);
         }
-        const committedProgress = normalizeArticleReadingProgress(this.articleReadingProgress);
-        committedProgress.readSegmentIdentifiers = Array.from(new Set([
-            ...committedProgress.readSegmentIdentifiers,
-            ...payloadSegmentIdentifiers,
-        ]));
-        committedProgress.sentenceIdentifiersRead = Array.from(new Set([
-            ...committedProgress.sentenceIdentifiersRead,
-            ...validatedPayload.sentenceIdentifiers,
-        ]));
-        this.applyBookReadingProgress(committedProgress, reason);
-        return validatedPayload.segments.length;
+        this.applyBookReadingProgress(progress, reason);
+        return true;
     }
     async #submitMarkReadPayload(payload, {
         sectionID,
@@ -7117,16 +7139,16 @@ class Reader {
         if (!validatedPayload) {
             this.lastNativeMarkReadRequestOutcome = 'failed';
             this.lastNativeMarkReadRequestErrorCode = 'invalidPayload';
-            return false;
+            return { success: false, permitsAutoAdvance: false, presentation: null };
         }
+        // One transient continuation owner, not synchronized state. A new
+        // request or native cancellation retires the preceding repaint/advance.
+        const presentation = { owner };
+        this.pendingMarkReadPresentation = presentation;
         const outcome = await this.nativeMarkReadRequestCoordinator.request({
             sectionID,
             owner,
-            context: {
-                payload: validatedPayload,
-                reason,
-                animateStateID,
-            },
+            context: { payload: validatedPayload, reason, animateStateID },
             message: {
                 ...validatedPayload,
                 topWindowURL: window.top.location.href,
@@ -7136,17 +7158,20 @@ class Reader {
                     : readerDocumentStartedAtMs(),
             },
         });
-        this.lastNativeMarkReadRequestOutcome = outcome.success === true
-            ? 'committed'
-            : 'failed';
-        this.lastNativeMarkReadRequestErrorCode = outcome.errorCode ?? '';
-        if (outcome.success !== true) return false;
-        this.#applyCommittedMarkReadPayload(
-            outcome.context.payload,
-            outcome.context.reason,
-            outcome.context.animateStateID
-        );
-        return true;
+        presentation.requestID = outcome.requestID;
+        if (this.pendingMarkReadPresentation === presentation) {
+            this.lastNativeMarkReadRequestOutcome = outcome.success === true ? 'committed' : 'failed';
+            this.lastNativeMarkReadRequestErrorCode = outcome.errorCode ?? '';
+        }
+        const presented = outcome.success === true && outcome.stale !== true
+            && this.#isMarkReadPresentationCurrent(presentation)
+            && this.#applyCommittedMarkReadPayload(validatedPayload, outcome.nativeResult, reason, animateStateID);
+        return {
+            success: outcome.success === true,
+            permitsAutoAdvance: presented && outcome.nativeResult?.isMarked === true
+                && outcome.nativeResult?.permitsAutoAdvance === true,
+            presentation: presented ? presentation : null,
+        };
     }
     applyMarkSectionAsReadResult(result) {
         return this.nativeMarkReadRequestCoordinator?.settle?.(result) ?? false;
@@ -7218,11 +7243,11 @@ class Reader {
             sentenceIdentifiers: payloadSentenceIdentifiers,
         };
     }
-    applyCommittedMarkAllSectionsAsReadPayload(payload) {
-        return this.#applyCommittedMarkReadPayload(
-            payload,
-            'native-mark-all-read-committed'
+    applyCommittedMarkAllSectionsAsReadPayload(payload, nativeResult) {
+        const applied = this.#applyCommittedMarkReadPayload(
+            payload, nativeResult, 'native-mark-all-read-committed'
         );
+        return applied ? (payload.segments.length || payload.sentenceIdentifiers.length) : 0;
     }
     // Retained only for older diagnostics. Optimistic publication is prohibited.
     applyOptimisticMarkAllSectionsAsReadPayload(_payload) {
@@ -7234,12 +7259,12 @@ class Reader {
         if (!payload || !isDocumentLike(doc)) {
             return 0;
         }
-        const success = await this.#submitMarkReadPayload(payload, {
+        const outcome = await this.#submitMarkReadPayload(payload, {
             sectionID: `ebook-mark-all:${this.#lifecycleGeneration}`,
             owner: this.#markReadOwner({ document: doc }),
             reason: 'native-mark-all-read-committed',
         });
-        return success
+        return outcome.success
             ? (payload.segments.length || payload.sentenceIdentifiers.length)
             : 0;
     }
@@ -7266,7 +7291,7 @@ class Reader {
         this.pageTrackingBusyStateIDs.add(stateID);
         this.#renderPageTrackingButtons('mark-read-busy');
         try {
-            const success = await this.#submitMarkReadPayload(pageTrackingState.payload, {
+            const outcome = await this.#submitMarkReadPayload(pageTrackingState.payload, {
                 sectionID: `ebook-page:${stateID}:${this.visiblePageCollectionGeneration}`,
                 owner: this.#markReadOwner({
                     document: doc,
@@ -7275,8 +7300,12 @@ class Reader {
                 reason: 'native-mark-read-committed',
                 animateStateID: stateID,
             });
-            if (!success) return false;
-            await this.#advanceAfterMarkRead(advanceOwner);
+            if (!outcome.success) return false;
+            if (outcome.permitsAutoAdvance) {
+                await this.#advanceAfterMarkRead({
+                    ...advanceOwner, presentation: outcome.presentation, permitsAutoAdvance: true,
+                });
+            }
             return true;
         } finally {
             this.pageTrackingBusyStateIDs.delete(stateID);
@@ -8537,6 +8566,8 @@ class Reader {
         await new Promise((resolve) => setTimeout(resolve, 430));
         if (
             !owner
+            || owner.permitsAutoAdvance !== true
+            || !this.#isMarkReadPresentationCurrent(owner.presentation)
             || !this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
             || this.visiblePageCollectionGeneration !== owner.visiblePageCollectionGeneration
         ) {
