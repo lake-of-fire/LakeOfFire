@@ -13,6 +13,7 @@ import {
     compactEbookSegmentSidecarVersion,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
+    expandCompactEbookSegmentResolution,
     expandCompactEbookSegmentIDToken,
     stableEbookSegmentIdentityVersion,
 } from './ebook-segment-identity.js'
@@ -133,6 +134,13 @@ const manabiExpandCompactSegmentMetadata = (segment, tables) => {
     const segmentHash = manabiSidecarTableValue(tables.h, segment?.[1], null);
     const sentenceID = manabiSidecarTableValue(tables.sid, segment?.[9], null);
     const paragraphID = manabiSidecarTableValue(tables.pid, segment?.[10], null);
+    const jmdictEntryIDs = manabiSidecarTableValue(tables.j, segment?.[2], []);
+    const jmnedictEntryIDs = manabiSidecarTableValue(tables.n, segment?.[3], []);
+    const resolution = expandCompactEbookSegmentResolution(
+        manabiSidecarTableValue(tables.res, segment?.[11], null),
+        jmdictEntryIDs,
+        jmnedictEntryIDs
+    );
     return {
         i: manabiExpandSegmentIDToken(segment?.[0]),
         h: segmentHash,
@@ -140,13 +148,17 @@ const manabiExpandCompactSegmentMetadata = (segment, tables) => {
         sentenceID,
         paragraphID,
         pid: paragraphID,
-        j: manabiSidecarTableValue(tables.j, segment?.[2], []),
-        n: manabiSidecarTableValue(tables.n, segment?.[3], []),
+        j: jmdictEntryIDs,
+        n: jmnedictEntryIDs,
         s: manabiSidecarTableValue(tables.s, segment?.[4], null),
         ns: manabiSidecarTableValue(tables.ns, segment?.[5], null),
         p: manabiSidecarTableValue(tables.p, segment?.[6], null),
         l: segment?.[7],
         x: manabiSidecarTableValue(tables.x, segment?.[8], null),
+        selectedLexicon: resolution?.selectedLexicon ?? null,
+        selectedEntryID: resolution?.selectedEntryID ?? null,
+        canonicalSearchString: resolution?.canonicalSearchString ?? null,
+        requiresCommittedDictionarySelection: true,
     };
 };
 
@@ -160,6 +172,7 @@ const manabiCompactSegmentMetadataTables = (payload) => ({
     x: manabiSidecarTableArray(payload.t, 'x'),
     sid: manabiSidecarTableArray(payload.t, 'sid'),
     pid: manabiSidecarTableArray(payload.t, 'pid'),
+    res: manabiSidecarTableArray(payload.t, 'res'),
 });
 
 class ManabiLazySegmentMetadataMap extends Map {

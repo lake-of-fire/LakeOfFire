@@ -4,7 +4,7 @@ const nonEmptyString = value => typeof value === 'string' && value.length > 0
 
 const compactMnbSegmentTokenPattern = /^[0-9A-Za-z]+$/
 
-export const compactEbookSegmentSidecarVersion = 10
+export const compactEbookSegmentSidecarVersion = 12
 export const stableEbookSegmentIdentityVersion = 1
 
 export const compactEbookSegmentSchemaVersionsAreCompatible = nativeVersion => (
@@ -26,7 +26,7 @@ export const compactEbookSegmentRuntimeIDsAreUnique = segments => {
     if (!Array.isArray(segments)) return false
     const runtimeIDs = new Set()
     return segments.every(segment => {
-        if (!Array.isArray(segment) || segment.length !== 11) return false
+        if (!Array.isArray(segment) || segment.length < 11 || segment.length > 12) return false
         const runtimeID = expandCompactEbookSegmentIDToken(segment[0])
         if (runtimeID === null || runtimeIDs.has(runtimeID)) return false
         runtimeIDs.add(runtimeID)
@@ -55,6 +55,11 @@ const entryIDTableIsValid = value => Array.isArray(value) && value.every(entryID
 
 const stringTableIsValid = value => Array.isArray(value) && value.every(nonEmptyStringIsValid)
 
+const resolutionTableIsValid = value => Array.isArray(value)
+    && value.every(resolution => resolution !== null
+        && typeof resolution === 'object'
+        && !Array.isArray(resolution))
+
 const compactSegmentTablesAreCurrent = tables => (
     entryIDTableIsValid(tables?.j)
     && entryIDTableIsValid(tables?.n)
@@ -65,10 +70,12 @@ const compactSegmentTablesAreCurrent = tables => (
     && stringTableIsValid(tables?.sid)
     && stringTableIsValid(tables?.pid)
     && (tables?.x == null || stringTableIsValid(tables.x))
+    && (tables?.res == null || resolutionTableIsValid(tables.res))
+    && (tables?.f == null || stringTableIsValid(tables.f))
 )
 
 const compactSegmentTupleIsCurrent = (segment, tables) => {
-    if (!Array.isArray(segment) || segment.length !== 11) return false
+    if (!Array.isArray(segment) || segment.length < 11 || segment.length > 12) return false
     if (expandCompactEbookSegmentIDToken(segment[0]) === null) return false
     return [
         compactSegmentTableValue(tables?.h, segment[1]),
@@ -83,6 +90,53 @@ const compactSegmentTupleIsCurrent = (segment, tables) => {
         && (segment[7] === null
             || (Number.isSafeInteger(segment[7]) && segment[7] >= 1 && segment[7] <= 5))
         && optionalTableReferenceIsValid(tables?.x, segment[8], nonEmptyStringIsValid)
+        && (segment.length === 11
+            || optionalTableReferenceIsValid(
+                tables?.res,
+                segment[11],
+                value => expandCompactEbookSegmentResolution(
+                    value,
+                    compactSegmentTableValue(tables?.j, segment[2]) ?? [],
+                    compactSegmentTableValue(tables?.n, segment[3]) ?? []
+                ) !== null
+            ))
+}
+
+export const expandCompactEbookSegmentResolution = (
+    resolution,
+    jmdictEntryIDs,
+    jmnedictEntryIDs
+) => {
+    if (resolution === null || typeof resolution !== 'object' || Array.isArray(resolution)) {
+        return null
+    }
+    const selected = resolution.se
+    const selectedLexicon = selected?.namespace === 'jmdict'
+        || selected?.namespace === 'jmnedict'
+        ? selected.namespace
+        : (Number.isSafeInteger(resolution.e) && resolution.e > 0 ? 'jmdict' : null)
+    const selectedEntryID = Number.isSafeInteger(selected?.entryID) && selected.entryID > 0
+        ? selected.entryID
+        : (selectedLexicon === 'jmdict'
+            && Number.isSafeInteger(resolution.e)
+            && resolution.e > 0
+            ? resolution.e
+            : null)
+    const selectedCandidates = selectedLexicon === 'jmdict'
+        ? jmdictEntryIDs
+        : selectedLexicon === 'jmnedict'
+            ? jmnedictEntryIDs
+            : []
+    if (selectedLexicon !== null
+        && (!Number.isSafeInteger(selectedEntryID)
+            || !selectedCandidates.includes(selectedEntryID))) {
+        return null
+    }
+    return {
+        selectedLexicon,
+        selectedEntryID,
+        canonicalSearchString: nonEmptyString(resolution.s),
+    }
 }
 
 export const compactEbookSegmentMetadataPayloadIsCurrent = payload => (

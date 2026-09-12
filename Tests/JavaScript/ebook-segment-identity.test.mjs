@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
     compactEbookSegmentMetadataPayloadIsCurrent,
     compactEbookSegmentSidecarVersion,
+    expandCompactEbookSegmentResolution,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
     stableEbookSegmentIdentityVersion,
@@ -11,7 +12,7 @@ import {
 
 test('accepts only exact current-schema segment tuples', () => {
     const payload = {
-        v: 10,
+        v: 12,
         t: {
             h: ['hash'],
             j: [[1001]],
@@ -22,11 +23,12 @@ test('accepts only exact current-schema segment tuples', () => {
             x: ['読む'],
             sid: ['sentence'],
             pid: ['paragraph'],
+            res: [{ se: { namespace: 'jmdict', entryID: 1001 }, s: '読む' }],
         },
-        s: [['Ab09', 0, 0, null, 0, null, 0, null, 0, 0, 0]],
+        s: [['Ab09', 0, 0, null, 0, null, 0, null, 0, 0, 0, 0]],
     }
 
-    assert.equal(compactEbookSegmentSidecarVersion, 10)
+    assert.equal(compactEbookSegmentSidecarVersion, 12)
     assert.equal(stableEbookSegmentIdentityVersion, 1)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent(payload), true)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({ ...payload, v: 9 }), false)
@@ -36,11 +38,39 @@ test('accepts only exact current-schema segment tuples', () => {
     }), false)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
         ...payload,
-        s: [['Ab09', 0, true, null, 0, null, 0, null, 0, 0, 0]],
+        s: [['Ab09', 0, true, null, 0, null, 0, null, 0, 0, 0, 0]],
     }), false)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
         ...payload,
-        s: [payload.s[0], ['!mnb-sAb09', 0, 0, null, 0, null, 0, null, 0, 0, 0]],
+        s: [payload.s[0], ['!mnb-sAb09', 0, 0, null, 0, null, 0, null, 0, 0, 0, 0]],
+    }), false)
+
+    assert.deepEqual(
+        expandCompactEbookSegmentResolution(payload.t.res[0], [1001], []),
+        {
+            selectedLexicon: 'jmdict',
+            selectedEntryID: 1001,
+            canonicalSearchString: '読む',
+        }
+    )
+    assert.deepEqual(
+        expandCompactEbookSegmentResolution(
+            { se: { namespace: 'jmnedict', entryID: 2001 }, s: '愛' },
+            [1001],
+            [2001]
+        ),
+        {
+            selectedLexicon: 'jmnedict',
+            selectedEntryID: 2001,
+            canonicalSearchString: '愛',
+        }
+    )
+    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
+        ...payload,
+        t: {
+            ...payload.t,
+            res: [{ se: { namespace: 'jmnedict', entryID: 2001 }, s: '愛' }],
+        },
     }), false)
 })
 
