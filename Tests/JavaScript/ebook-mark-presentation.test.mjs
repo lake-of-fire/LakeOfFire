@@ -17,7 +17,7 @@ const between = (start, end) => {
 const actualMethods = [
     between('    applyBookReadingProgress(', '    async #handleCompletionAction('),
     between('    #markReadOwner(', '    buildMarkAllSectionsAsReadPayload('),
-    between('    async markAllSectionsAsRead()', '    async #markPageClusterAsRead('),
+    between('    async markAllSectionsAsRead()', '    async markVisiblePageAsRead('),
     between('    async #advanceAfterMarkRead(', '    #releaseSideNavChevronHoverSuppression('),
 ].join('\n')
 const actualCancellationBinding = between(
@@ -69,8 +69,9 @@ const harness = ({ onPost = null } = {}) => {
         }
         #invalidateCompletionAction() { this.completionAction = null }
         async #syncPageTrackingButtons() {}
-        #renderPageTrackingButtons() {
-            if (this.renderThrows) throw new Error('renderer failed')
+        #currentPageTrackingDocument() { return this.view?.renderer?.doc ?? null }
+        #renderPageTrackingButtons(reason) {
+            if (this.renderThrows || this.renderThrowsFor === reason) throw new Error('renderer failed')
             this.renders += 1
         }
         #scheduleNativeMarkReadStateRefresh() {}
@@ -84,6 +85,8 @@ const harness = ({ onPost = null } = {}) => {
             this.renders = 0
             ${actualCancellationBinding}
         }
+        get isClosed() { return this.closed === true }
+        markPage() { return this.#markPageClusterAsRead('visible-screen') }
         owner() { return this.#markReadOwner({ document: this.view.renderer.doc, requireVisibleGeneration: true }) }
         submit(payload) {
             return this.#submitMarkReadPayload(payload, {
@@ -106,6 +109,10 @@ const harness = ({ onPost = null } = {}) => {
         goLeft: async () => { moves += 1; return true },
     }
     reader.preparedPayload = payload()
+    reader.pageTrackingStates = [{ id: 'visible-screen', payload: payload(), isRead: false }]
+    context.reader = reader
+    vm.runInContext(between('window.manabi_markAllSectionsAsRead =',
+        'window.manabi_buildMarkAllSectionsAsReadPayload ='), context)
     reader.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
         postMessage: message => {
             posted.push(message)
@@ -129,6 +136,7 @@ const harness = ({ onPost = null } = {}) => {
         })
     }
     return { reader, window, posted, timers, reply, errors,
+        replaceReader: value => { context.reader = value },
         cancel: id => window.manabiCancelPendingMarkReadPresentation(id),
         queuedAdvance: () => [...timers.values()].find(timer => timer.delay === 430)?.callback,
         get moves() { return moves },
@@ -436,4 +444,87 @@ test('sentence-only committed Mark-All retains its subject count when presentati
     assert.equal(await pending, 2)
     assert.equal(h.reader.renders, 0)
     assert.equal(h.moves, 0)
+})
+
+
+test('the public Mark-All bridge rejects missing, closed and unavailable readers', async () => {
+    const h = harness()
+    for (const reader of [null, {}, { isClosed: true, markAllSectionsAsRead: async () => 1 }]) {
+        h.replaceReader(reader)
+        await assert.rejects(h.window.manabi_markAllSectionsAsRead(), /nativeMarkReadPreparationUnavailable/)
+    }
+    assert.equal(h.posted.length, 0)
+})
+
+test('the public Mark-All bridge retains its original committed result after reader replacement', async () => {
+    const h = harness()
+    const pending = h.window.manabi_markAllSectionsAsRead()
+    h.replaceReader({ markAllSectionsAsRead: async () => 999 })
+    h.reply(0, { permitsPresentation: false, permitsAutoAdvance: false })
+    assert.equal(await pending, 1)
+})
+
+test('visible-page cleanup exceptions cannot turn a committed Mark into failure', async () => {
+    const h = harness()
+    h.reader.renderThrowsFor = 'mark-read-finished'
+    const pending = h.reader.markPage()
+    h.reply(0, { permitsAutoAdvance: false })
+    assert.equal(await pending, true)
+    assert.equal(h.reader.lastNativeMarkReadRequestOutcome, 'committed')
+    assert.equal(h.errors.length, 1)
+    assert.equal(h.reader.pageTrackingBusyStateIDs.size, 0)
+})
+
+test('a delayed navigation exception does not replace committed visible-page persistence', async () => {
+    const h = harness()
+    h.reader.view.goRight = async () => { throw new Error('navigation failed') }
+    const pending = h.reader.markPage()
+    h.reply()
+    await flush()
+    h.queuedAdvance()()
+    assert.equal(await pending, true)
+    assert.equal(h.reader.lastNativeMarkReadRequestOutcome, 'committed')
+    assert.equal(h.errors.length, 1)
+})
+
+test('old visible-page cleanup cannot repaint or clear a newer pending request', async () => {
+    const h = harness()
+    const first = h.reader.markPage()
+    const second = h.reader.submit(payload())
+    h.reply(0)
+    assert.equal(await first, true)
+    assert.equal(h.reader.renders, 1, 'only the initial busy render belongs to the old request')
+    assert.equal(h.reader.pageTrackingBusyStateIDs.has('visible-screen'), true)
+    h.reply(1)
+    assert.equal((await second).success, true)
+})
+
+test('visible-page cleanup cannot enter a replacement document', async () => {
+    const h = harness()
+    const pending = h.reader.markPage()
+    h.reader.view.renderer.doc = { nodeType: 9 }
+    h.reply()
+    assert.equal(await pending, true)
+    assert.equal(h.reader.renders, 1)
+    assert.equal(h.moves, 0)
+})
+
+test('matching cancellation clears busy presentation without cancelling visible-page persistence', async () => {
+    const h = harness()
+    const pending = h.reader.markPage()
+    assert.equal(h.cancel(h.posted[0].requestID), true)
+    assert.equal(h.reader.pageTrackingBusyStateIDs.size, 0)
+    assert.equal(h.reader.nativeMarkReadRequestCoordinator.pendingCount, 1)
+    h.reply()
+    assert.equal(await pending, true)
+    assert.equal(h.reader.renders, 1)
+    assert.equal(h.moves, 0)
+})
+
+test('pre-commit busy rendering failure still fails without posting native persistence', async () => {
+    const h = harness()
+    h.reader.renderThrowsFor = 'mark-read-busy'
+    await assert.rejects(h.reader.markPage(), /renderer failed/)
+    assert.equal(h.posted.length, 0)
+    assert.equal(h.reader.pageTrackingBusyStateIDs.size, 0)
 })

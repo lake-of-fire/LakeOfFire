@@ -6586,6 +6586,7 @@ class Reader {
             if (typeof requestID !== 'string' || !requestID
                 || this.pendingMarkReadPresentation?.requestID !== requestID) return false
             this.pendingMarkReadPresentation = null
+            this.pageTrackingBusyStateIDs.clear()
             this.pageTrackingAnimateReadStateIDs.clear();
             return true;
         });
@@ -7177,6 +7178,7 @@ class Reader {
         }
         return {
             success: outcome.success === true,
+            requestID: outcome.requestID,
             errorCode: outcome.errorCode,
             permitsAutoAdvance: presented && outcome.nativeResult?.isMarked === true
                 && outcome.nativeResult?.permitsAutoAdvance === true,
@@ -7283,7 +7285,7 @@ class Reader {
     }
     async #markPageClusterAsRead(stateID) {
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
-        if (!pageTrackingState) {
+        if (!pageTrackingState || this.pageTrackingBusyStateIDs.has(stateID)) {
             return false;
         }
         if (pageTrackingState.payload.segments.length === 0
@@ -7300,11 +7302,13 @@ class Reader {
             renderer: this.view?.renderer ?? null,
             visiblePageCollectionGeneration: this.visiblePageCollectionGeneration,
         };
+        const previousPresentation = this.pendingMarkReadPresentation
+        let outcome = null
         this.lastNativeMarkReadRequestOutcome = 'pending';
         this.pageTrackingBusyStateIDs.add(stateID);
-        this.#renderPageTrackingButtons('mark-read-busy');
         try {
-            const outcome = await this.#submitMarkReadPayload(pageTrackingState.payload, {
+            this.#renderPageTrackingButtons('mark-read-busy');
+            outcome = await this.#submitMarkReadPayload(pageTrackingState.payload, {
                 sectionID: `ebook-page:${stateID}:${this.visiblePageCollectionGeneration}`,
                 owner: this.#markReadOwner({
                     document: doc,
@@ -7320,9 +7324,28 @@ class Reader {
                 });
             }
             return true;
+        } catch (error) {
+            if (outcome?.success !== true) throw error
+            // Navigation is presentation too; a saved Mark remains successful.
+            console.error('Committed Mark navigation failed', error)
+            return true
         } finally {
-            this.pageTrackingBusyStateIDs.delete(stateID);
-            this.#renderPageTrackingButtons('mark-read-finished');
+            try {
+                const presentation = this.pendingMarkReadPresentation
+                const ownsCleanup = outcome?.requestID
+                    ? presentation?.requestID === outcome.requestID
+                    : presentation === previousPresentation
+                if (ownsCleanup
+                    && this.#isRendererLifecycleCurrent(advanceOwner.lifecycleGeneration, advanceOwner.renderer)
+                    && this.#currentPageTrackingDocument(doc) === doc) {
+                    this.pageTrackingBusyStateIDs.delete(stateID)
+                    this.#renderPageTrackingButtons('mark-read-finished')
+                }
+            } catch (error) {
+                // Neither renderer cleanup nor an ownership probe may replace
+                // the persistence result (or its original pre-commit error).
+                console.error('Mark Read presentation cleanup failed', error)
+            }
         }
     }
     async markVisiblePageAsRead(source = 'native') {
@@ -13373,7 +13396,11 @@ window.manabiReadAloudAdvanceToNextSection = async () => {
 }
 
 window.manabi_markAllSectionsAsRead = async () => {
-    return await globalThis.reader?.markAllSectionsAsRead?.() ?? 0;
+    const reader = globalThis.reader
+    if (!reader || reader.isClosed === true || typeof reader.markAllSectionsAsRead !== 'function') {
+        throw new Error('nativeMarkReadPreparationUnavailable')
+    }
+    return await reader.markAllSectionsAsRead()
 }
 
 window.manabi_buildMarkAllSectionsAsReadPayload = () => {
