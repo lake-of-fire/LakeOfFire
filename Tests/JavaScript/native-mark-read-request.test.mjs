@@ -5,7 +5,7 @@ import {
     createNativeMarkReadRequestCoordinator,
 } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
 
-const harness = ({ current = true, postThrows = false } = {}) => {
+const harness = ({ current = true, postThrows = false, ownerProbeThrows = false } = {}) => {
     const posted = []
     const timeouts = new Map()
     const timeoutDelays = new Map()
@@ -16,7 +16,10 @@ const harness = ({ current = true, postThrows = false } = {}) => {
             if (postThrows) throw new Error('bridge unavailable')
             posted.push(message)
         },
-        isOwnerCurrent: () => current,
+        isOwnerCurrent: () => {
+            if (ownerProbeThrows) throw new Error('detached renderer')
+            return current
+        },
         makeRequestID: () => `request-${++requestSequence}`,
         scheduleTimeout: (callback, delay) => {
             const id = ++timeoutSequence
@@ -256,4 +259,42 @@ test('a queued timeout from a completed request cannot clear a newer request', a
     h.coordinator.settle({ requestID: 'request-2', sectionId: 'section', success: true })
     assert.equal((await second).success, true)
     assert.equal(h.coordinator.pendingCount, 0)
+})
+
+
+test('owner-check exception cannot hide an exact committed native reply', async () => {
+    const h = harness({ ownerProbeThrows: true })
+    const pending = h.coordinator.request({ sectionID: 'section', message: {} })
+    assert.equal(h.coordinator.settle({
+        requestID: 'request-1', sectionId: 'section', success: true,
+    }), true)
+    const result = await pending
+    assert.equal(result.success, true)
+    assert.equal(result.stale, true)
+    assert.equal(result.errorCode, null)
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.timeouts.size, 0)
+})
+
+test('owner-check exception cannot strand a failed bridge request', async () => {
+    const h = harness({ postThrows: true, ownerProbeThrows: true })
+    const result = await h.coordinator.request({ sectionID: 'section', message: {} })
+    assert.equal(result.success, false)
+    assert.equal(result.stale, true)
+    assert.match(result.errorCode, /bridge unavailable/)
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.timeouts.size, 0)
+})
+
+test('owner-check exception cannot prevent timeout cleanup', async () => {
+    const h = harness({ ownerProbeThrows: true })
+    const pending = h.coordinator.request({ sectionID: 'section', message: {} })
+    const timeout = [...h.timeouts.values()][0]
+    timeout()
+    const result = await pending
+    assert.equal(result.success, false)
+    assert.equal(result.stale, true)
+    assert.equal(result.errorCode, 'nativeCommitTimeout')
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.timeouts.size, 0)
 })

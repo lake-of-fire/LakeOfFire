@@ -29,6 +29,11 @@ export const createNativeMarkReadRequestCoordinator = ({
     }
 
     const pendingByRequestID = new Map()
+    const ownerIsCurrent = owner => {
+        // A detached renderer can make its liveness probe throw. That denies
+        // presentation; it cannot erase a known commit or strand its promise.
+        try { return isOwnerCurrent(owner) === true } catch { return false }
+    }
 
     const finish = (requestID, outcome) => {
         const pending = pendingByRequestID.get(requestID)
@@ -84,7 +89,7 @@ export const createNativeMarkReadRequestCoordinator = ({
             const timeoutHandle = scheduleTimeout?.(() => {
                 finish(requestID, {
                     success: false,
-                    stale: !isOwnerCurrent(owner),
+                    stale: !ownerIsCurrent(owner),
                     errorCode: 'nativeCommitTimeout',
                 })
             }, timeoutMilliseconds)
@@ -109,7 +114,7 @@ export const createNativeMarkReadRequestCoordinator = ({
             } catch (error) {
                 finish(requestID, {
                     success: false,
-                    stale: !isOwnerCurrent(owner),
+                    stale: !ownerIsCurrent(owner),
                     errorCode: String(error?.message || error || 'nativePostFailed'),
                 })
             }
@@ -126,19 +131,19 @@ export const createNativeMarkReadRequestCoordinator = ({
 
         const sectionMatches = !result?.sectionId
             || result.sectionId === pending.sectionID
-        const ownerIsCurrent = isOwnerCurrent(pending.owner)
+        const currentOwner = ownerIsCurrent(pending.owner)
         // Persistence success is not presentation permission. The real viewer
         // separately checks stale owner, native permissions and cancellation.
         const success = result?.success === true && sectionMatches
 
         return finish(requestID, {
             success,
-            stale: !ownerIsCurrent,
+            stale: !currentOwner,
             errorCode: success
                 ? null
                 : (!sectionMatches
                     ? 'sectionMismatch'
-                    : (!ownerIsCurrent
+                    : (!currentOwner
                         ? 'staleReaderLifecycle'
                         : (result?.errorCode || 'nativeCommitFailed'))),
             nativeResult: result,
