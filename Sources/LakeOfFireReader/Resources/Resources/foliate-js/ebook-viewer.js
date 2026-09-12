@@ -6582,8 +6582,10 @@ class Reader {
         });
         // Native Undo awaits this exact document's cancellation before its write.
         // Do not cancel the persistence request: its real result must still settle.
-        this.#bindGlobal(window, 'manabiCancelPendingMarkReadPresentation', () => {
-            this.pendingMarkReadPresentation = null;
+        this.#bindGlobal(window, 'manabiCancelPendingMarkReadPresentation', requestID => {
+            if (typeof requestID !== 'string' || !requestID
+                || this.pendingMarkReadPresentation?.requestID !== requestID) return false
+            this.pendingMarkReadPresentation = null
             this.pageTrackingAnimateReadStateIDs.clear();
             return true;
         });
@@ -7139,7 +7141,7 @@ class Reader {
         if (!validatedPayload) {
             this.lastNativeMarkReadRequestOutcome = 'failed';
             this.lastNativeMarkReadRequestErrorCode = 'invalidPayload';
-            return { success: false, permitsAutoAdvance: false, presentation: null };
+            return { success: false, errorCode: 'invalidPayload', permitsAutoAdvance: false, presentation: null }
         }
         // One transient continuation owner, not synchronized state. A new
         // request or native cancellation retires the preceding repaint/advance.
@@ -7148,6 +7150,7 @@ class Reader {
         const outcome = await this.nativeMarkReadRequestCoordinator.request({
             sectionID,
             owner,
+            onRequestID: requestID => { presentation.requestID = requestID },
             context: { payload: validatedPayload, reason, animateStateID },
             message: {
                 ...validatedPayload,
@@ -7158,16 +7161,23 @@ class Reader {
                     : readerDocumentStartedAtMs(),
             },
         });
-        presentation.requestID = outcome.requestID;
         if (this.pendingMarkReadPresentation === presentation) {
             this.lastNativeMarkReadRequestOutcome = outcome.success === true ? 'committed' : 'failed';
             this.lastNativeMarkReadRequestErrorCode = outcome.errorCode ?? '';
         }
-        const presented = outcome.success === true && outcome.stale !== true
-            && this.#isMarkReadPresentationCurrent(presentation)
-            && this.#applyCommittedMarkReadPayload(validatedPayload, outcome.nativeResult, reason, animateStateID);
+        let presented = false
+        try {
+            presented = outcome.success === true && outcome.stale !== true
+                && this.#isMarkReadPresentationCurrent(presentation)
+                && this.#applyCommittedMarkReadPayload(validatedPayload, outcome.nativeResult, reason, animateStateID)
+        } catch (error) {
+            // The native write already committed. A renderer failure may deny
+            // presentation, but must not turn the saved Mark into failed Finish.
+            console.error('Committed Mark presentation failed', error)
+        }
         return {
             success: outcome.success === true,
+            errorCode: outcome.errorCode,
             permitsAutoAdvance: presented && outcome.nativeResult?.isMarked === true
                 && outcome.nativeResult?.permitsAutoAdvance === true,
             presentation: presented ? presentation : null,
@@ -7257,16 +7267,19 @@ class Reader {
         const payload = this.buildMarkAllSectionsAsReadPayload();
         const doc = getPrimaryRendererContent(this.view?.renderer)?.doc ?? null;
         if (!payload || !isDocumentLike(doc)) {
-            return 0;
+            throw new Error('nativeMarkReadPreparationUnavailable')
         }
         const outcome = await this.#submitMarkReadPayload(payload, {
             sectionID: `ebook-mark-all:${this.#lifecycleGeneration}`,
             owner: this.#markReadOwner({ document: doc }),
             reason: 'native-mark-all-read-committed',
         });
-        return outcome.success
-            ? (payload.segments.length || payload.sentenceIdentifiers.length)
-            : 0;
+        if (!outcome.success) {
+            throw new Error(outcome.errorCode || 'nativeCommitFailed')
+        }
+        // A committed Mark retains its result even after cancellation or when
+        // native presentation is denied. Only the outer native Finish navigates.
+        return payload.segments.length || payload.sentenceIdentifiers.length
     }
     async #markPageClusterAsRead(stateID) {
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
