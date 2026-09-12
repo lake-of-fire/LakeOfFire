@@ -50,6 +50,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         message,
         owner = null,
         context = null,
+        onRequestID = null,
     }) => {
         if (typeof sectionID !== 'string' || sectionID.length === 0) {
             return Promise.resolve({
@@ -97,6 +98,9 @@ export const createNativeMarkReadRequestCoordinator = ({
             })
 
             try {
+                // Publish the original presentation identity before native code
+                // can reply or cancel, including while request() is still running.
+                onRequestID?.(requestID)
                 postMessage({
                     ...message,
                     requestID,
