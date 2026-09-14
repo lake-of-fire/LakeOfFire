@@ -123,6 +123,92 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
     }
 
     @MainActor
+    func testRefreshFallsBackFromUnsupportedHEADAndHonorsChangedETag() async throws {
+        let configuration = makeRealmConfiguration()
+        let originalLibraryConfiguration = LibraryDataManager.realmConfiguration
+        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalFeedSessionOverride = makeFeedSessionOverrideForTesting
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibraryConfiguration
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            makeFeedSessionOverrideForTesting = originalFeedSessionOverride
+            FeedURLProtocol.requestHandler = nil
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let feedID = UUID()
+        try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            let feed = Feed()
+            feed.id = feedID
+            feed.rssUrl = URL(string: "https://example.com/regression.rss")!
+            try await realm.asyncWrite {
+                realm.add(feed)
+            }
+        }()
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        makeFeedSessionOverrideForTesting = {
+            let sessionConfiguration = URLSessionConfiguration.ephemeral
+            sessionConfiguration.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: sessionConfiguration)
+        }
+
+        var requestMethods: [String] = []
+        for (revision, headStatus) in [200, 405, 501, 200].enumerated() {
+            let title = "Revision \(revision)"
+            let data = Data(
+                """
+                <rss version="2.0"><channel><title>Feed</title><item>
+                <guid>https://example.com/article</guid>
+                <link>https://example.com/article</link>
+                <title>\(title)</title><description>Body</description>
+                </item></channel></rss>
+                """.utf8
+            )
+            FeedURLProtocol.requestHandler = { request in
+                requestMethods.append(request.httpMethod ?? "")
+                let status = request.httpMethod == "HEAD" ? headStatus : 200
+                var headers = ["Content-Type": "application/rss+xml"]
+                if headStatus == 200 {
+                    headers["ETag"] = "\"v\(revision)\""
+                    headers["Last-Modified"] = "Mon, 07 Sep 2026 10:00:00 GMT"
+                } else if request.httpMethod == "HEAD" {
+                    headers["ETag"] = "\"unsupported-head-v\(revision)\""
+                    headers["Last-Modified"] = "Tue, 08 Sep 2026 10:00:00 GMT"
+                }
+                return (
+                    status,
+                    headers,
+                    data
+                )
+            }
+
+            await realm.asyncRefresh()
+            let currentFeed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: feedID))
+            try await currentFeed.fetch(realmConfiguration: configuration)
+            await realm.asyncRefresh()
+
+            XCTAssertEqual(realm.objects(FeedEntry.self).first?.title, title)
+            XCTAssertEqual(
+                realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.lastFetchedETag,
+                revision == 3 ? "\"v3\"" : "\"v0\""
+            )
+        }
+        XCTAssertEqual(
+            requestMethods,
+            ["HEAD", "GET", "HEAD", "GET", "HEAD", "GET", "HEAD", "GET"]
+        )
+    }
+
+    @MainActor
     func testFeedWithValidatorsButNoLocalEntriesRefetchesBody() async throws {
         let rssURL = try XCTUnwrap(URL(string: "https://example.com/feed.xml"))
         let entryURL = try XCTUnwrap(URL(string: "https://example.com/article"))

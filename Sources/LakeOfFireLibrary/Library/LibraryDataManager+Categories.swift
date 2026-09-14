@@ -34,16 +34,9 @@ public extension LibraryDataManager {
     
     @RealmBackgroundActor
     func restoreCategory(_ category: FeedCategory) async throws {
-        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-
-        await realm.asyncRefresh()
-        try await realm.asyncWrite {
-            category.isArchived = false
-            if !libraryConfiguration.categoryIDs.contains(category.id) {
-                libraryConfiguration.categoryIDs.append(category.id)
-                libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
-            }
+        guard category.realm != nil else {
+            throw LibraryMutationError.categoryNotFound
         }
+        _ = try await restoreCategory(categoryID: category.id)
     }
 }

@@ -145,6 +145,161 @@ final class SyncMutationBoundaryTests: XCTestCase {
         )
     }
 
+    @RealmBackgroundActor
+    func testRestoreCategoryJournalsCategoryAndConfigurationWithOneTimestamp() async throws {
+        let configuration = makeConfiguration(objectTypes: [
+            LibraryConfiguration.self,
+            FeedCategory.self,
+            UserScript.self,
+        ])
+        let originalConfiguration = LibraryDataManager.realmConfiguration
+        LibraryDataManager.realmConfiguration = configuration
+        defer { LibraryDataManager.realmConfiguration = originalConfiguration }
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: RealmBackgroundActor.shared
+        )
+        let category = FeedCategory()
+        category.isArchived = true
+        category.isDeleted = true
+        let libraryConfiguration = LibraryConfiguration()
+        try await realm.asyncWrite {
+            realm.add(category)
+            realm.add(libraryConfiguration)
+        }
+        let changedAt = Date(timeIntervalSinceReferenceDate: 58_000)
+
+        let result = try await LibraryDataManager.shared.restoreCategory(
+            categoryID: category.id,
+            at: changedAt
+        )
+
+        XCTAssertEqual(result.categoryID, category.id)
+        XCTAssertEqual(result.configurationID, libraryConfiguration.id)
+        XCTAssertTrue(result.categoryChanged)
+        XCTAssertTrue(result.configurationChanged)
+        XCTAssertFalse(category.isArchived)
+        XCTAssertFalse(category.isDeleted)
+        XCTAssertEqual(Array(libraryConfiguration.categoryIDs), [category.id])
+        XCTAssertEqual(pendingMutation(for: category, in: realm)?.changedAt, changedAt)
+        XCTAssertEqual(
+            pendingMutation(for: libraryConfiguration, in: realm)?.changedAt,
+            changedAt
+        )
+
+        let categoryGeneration = try XCTUnwrap(
+            pendingMutation(for: category, in: realm)?.generation
+        )
+        let configurationGeneration = try XCTUnwrap(
+            pendingMutation(for: libraryConfiguration, in: realm)?.generation
+        )
+        let replay = try await LibraryDataManager.shared.restoreCategory(
+            categoryID: category.id,
+            at: changedAt.addingTimeInterval(60)
+        )
+        XCTAssertFalse(replay.categoryChanged)
+        XCTAssertFalse(replay.configurationChanged)
+        XCTAssertEqual(pendingMutation(for: category, in: realm)?.generation, categoryGeneration)
+        XCTAssertEqual(
+            pendingMutation(for: libraryConfiguration, in: realm)?.generation,
+            configurationGeneration
+        )
+    }
+
+    @RealmBackgroundActor
+    func testRestoreDeletedCategoryKeepsExistingConfigurationReferenceWithoutRejournalingIt() async throws {
+        let configuration = makeConfiguration(objectTypes: [
+            LibraryConfiguration.self,
+            FeedCategory.self,
+            UserScript.self,
+        ])
+        let originalConfiguration = LibraryDataManager.realmConfiguration
+        LibraryDataManager.realmConfiguration = configuration
+        defer { LibraryDataManager.realmConfiguration = originalConfiguration }
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: RealmBackgroundActor.shared
+        )
+        let category = FeedCategory()
+        category.isDeleted = true
+        let libraryConfiguration = LibraryConfiguration()
+        libraryConfiguration.categoryIDs.append(category.id)
+        try await realm.asyncWrite {
+            realm.add(category)
+            realm.add(libraryConfiguration)
+        }
+        let changedAt = Date(timeIntervalSinceReferenceDate: 59_000)
+
+        let result = try await LibraryDataManager.shared.restoreCategory(
+            categoryID: category.id,
+            at: changedAt
+        )
+
+        XCTAssertTrue(result.categoryChanged)
+        XCTAssertFalse(result.configurationChanged)
+        XCTAssertFalse(category.isDeleted)
+        XCTAssertEqual(Array(libraryConfiguration.categoryIDs), [category.id])
+        XCTAssertEqual(pendingMutation(for: category, in: realm)?.changedAt, changedAt)
+        XCTAssertNil(pendingMutation(for: libraryConfiguration, in: realm))
+    }
+
+    @RealmBackgroundActor
+    func testDuplicateFeedRespectsCreateAndOverwriteCommands() async throws {
+        let configuration = makeConfiguration(objectTypes: [
+            FeedCategory.self,
+            Feed.self,
+        ])
+        let originalConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        defer { ReaderContentLoader.feedEntryRealmConfiguration = originalConfiguration }
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: RealmBackgroundActor.shared
+        )
+        let sourceCategory = FeedCategory()
+        let destinationCategory = FeedCategory()
+        let source = makeFeed(url: "https://example.com/feed.xml")
+        source.title = "Source"
+        source.categoryID = sourceCategory.id
+        let existing = makeFeed(url: "https://example.com/feed.xml")
+        existing.title = "Existing"
+        existing.categoryID = destinationCategory.id
+        try await realm.asyncWrite {
+            realm.add([sourceCategory, destinationCategory])
+            realm.add([source, existing])
+        }
+
+        let overwritten = try await LibraryDataManager.shared.duplicateFeed(
+            ThreadSafeReference(to: source),
+            inCategory: ThreadSafeReference(to: destinationCategory),
+            overwriteExisting: true
+        )
+        XCTAssertEqual(overwritten.outcome, .overwroteExisting)
+        XCTAssertEqual(overwritten.feedID, existing.id)
+        XCTAssertEqual(
+            realm.object(ofType: Feed.self, forPrimaryKey: existing.id)?.title,
+            "Source"
+        )
+        XCTAssertNotNil(pendingMutation(for: existing, in: realm))
+
+        let created = try await LibraryDataManager.shared.duplicateFeed(
+            ThreadSafeReference(to: source),
+            inCategory: ThreadSafeReference(to: destinationCategory),
+            overwriteExisting: false
+        )
+        XCTAssertEqual(created.outcome, .createdNew)
+        XCTAssertEqual(created.categoryID, destinationCategory.id)
+        XCTAssertNotEqual(created.feedID, existing.id)
+        XCTAssertEqual(
+            realm.object(ofType: Feed.self, forPrimaryKey: created.feedID)?.title,
+            "Source"
+        )
+        let createdFeed = try XCTUnwrap(
+            realm.object(ofType: Feed.self, forPrimaryKey: created.feedID)
+        )
+        XCTAssertNotNil(pendingMutation(for: createdFeed, in: realm))
+    }
+
     private func makeConfiguration(objectTypes: [Object.Type]) -> Realm.Configuration {
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         configuration.objectTypes = objectTypes

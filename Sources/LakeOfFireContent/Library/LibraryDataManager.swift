@@ -14,6 +14,31 @@ import LakeOfFireAdblock
 
 public let libraryDataQueue = DispatchQueue(label: "LibraryDataQueue")
 
+public struct LibraryCategoryRestoreResult: Equatable, Sendable {
+    public let categoryID: UUID
+    public let configurationID: UUID
+    public let categoryChanged: Bool
+    public let configurationChanged: Bool
+}
+
+public struct LibraryFeedDuplicationResult: Equatable, Sendable {
+    public enum Outcome: Equatable, Sendable {
+        case createdNew
+        case overwroteExisting
+    }
+
+    public let feedID: UUID
+    public let categoryID: UUID
+    public let outcome: Outcome
+}
+
+public enum LibraryMutationError: Error, Equatable, Sendable {
+    case categoryNotFound
+    case configurationNotFound
+    case feedNotFound
+    case managedCategoryCannotBeRestored
+}
+
 //extension URL: FailableCustomPersistable {
 //    public typealias PersistedType = String
 //
@@ -441,21 +466,119 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     }
     
     @RealmBackgroundActor
-    public func duplicateFeed(_ feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws -> UUID? {
+    public func duplicateFeed(
+        _ feed: ThreadSafeReference<Feed>,
+        inCategory category: ThreadSafeReference<FeedCategory>,
+        overwriteExisting: Bool
+    ) async throws -> LibraryFeedDuplicationResult {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration)
-        guard let category = realm.resolve(category), let feed = realm.resolve(feed) else { return nil }
-        let existing = category.getFeeds()?.filter { $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
-        let value = try JSONDecoder().decode(Feed.self, from: JSONEncoder().encode(feed))
-        value.id = (overwriteExisting ? existing?.id : nil) ?? UUID()
-        value.isDeleted = false
-        value.isArchived = false
-        value.categoryID = category.id
-//        await realm.asyncRefresh()
-        try await realm.asyncWrite {
+        guard let category = realm.resolve(category) else {
+            throw LibraryMutationError.categoryNotFound
+        }
+        guard let feed = realm.resolve(feed) else {
+            throw LibraryMutationError.feedNotFound
+        }
+        let categoryID = category.id
+        let sourceFeedID = feed.id
+        return try await realm.asyncWrite {
+            try Task.checkCancellation()
+            guard let category = realm.object(
+                ofType: FeedCategory.self,
+                forPrimaryKey: categoryID
+            ), !category.isInvalidated else {
+                throw LibraryMutationError.categoryNotFound
+            }
+            guard let feed = realm.object(
+                ofType: Feed.self,
+                forPrimaryKey: sourceFeedID
+            ), !feed.isInvalidated else {
+                throw LibraryMutationError.feedNotFound
+            }
+            let existing = category.getFeeds()?.first {
+                $0.rssUrl == feed.rssUrl && $0.id != feed.id
+            }
+            let value = try JSONDecoder().decode(
+                Feed.self,
+                from: JSONEncoder().encode(feed)
+            )
+            let overwrittenFeedID = overwriteExisting ? existing?.id : nil
+            value.id = overwrittenFeedID ?? UUID()
+            value.isDeleted = false
+            value.isArchived = false
+            value.categoryID = category.id
             let duplicatedFeed = realm.create(Feed.self, value: value, update: .modified)
             duplicatedFeed.refreshChangeMetadata(explicitlyModified: true)
+            return LibraryFeedDuplicationResult(
+                feedID: value.id,
+                categoryID: category.id,
+                outcome: overwrittenFeedID == nil ? .createdNew : .overwroteExisting
+            )
         }
-        return value.id
+    }
+
+    @RealmBackgroundActor
+    public func restoreCategory(
+        categoryID: UUID,
+        at timestamp: Date = Date()
+    ) async throws -> LibraryCategoryRestoreResult {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: LibraryDataManager.realmConfiguration
+        )
+        guard let initialCategory = realm.object(
+            ofType: FeedCategory.self,
+            forPrimaryKey: categoryID
+        ) else {
+            throw LibraryMutationError.categoryNotFound
+        }
+        guard initialCategory.isUserEditable else {
+            throw LibraryMutationError.managedCategoryCannotBeRestored
+        }
+        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(
+            preservingCategoryID: categoryID,
+            at: timestamp
+        )
+        let configurationID = libraryConfiguration.id
+        return try await realm.asyncWrite {
+            try Task.checkCancellation()
+            guard let category = realm.object(
+                ofType: FeedCategory.self,
+                forPrimaryKey: categoryID
+            ), !category.isInvalidated else {
+                throw LibraryMutationError.categoryNotFound
+            }
+            guard category.isUserEditable else {
+                throw LibraryMutationError.managedCategoryCannotBeRestored
+            }
+            guard let libraryConfiguration = realm.object(
+                ofType: LibraryConfiguration.self,
+                forPrimaryKey: configurationID
+            ), !libraryConfiguration.isInvalidated, !libraryConfiguration.isDeleted else {
+                throw LibraryMutationError.configurationNotFound
+            }
+            let categoryChanged = category.isArchived || category.isDeleted
+            let configurationChanged = !libraryConfiguration.categoryIDs.contains(categoryID)
+            if categoryChanged {
+                category.isArchived = false
+                category.isDeleted = false
+                category.refreshChangeMetadata(
+                    explicitlyModified: true,
+                    at: timestamp
+                )
+            }
+            if configurationChanged {
+                libraryConfiguration.categoryIDs.append(categoryID)
+                libraryConfiguration.refreshChangeMetadata(
+                    explicitlyModified: true,
+                    at: timestamp
+                )
+            }
+            return LibraryCategoryRestoreResult(
+                categoryID: categoryID,
+                configurationID: configurationID,
+                categoryChanged: categoryChanged,
+                configurationChanged: configurationChanged
+            )
+        }
     }
     
     @RealmBackgroundActor

@@ -553,10 +553,13 @@ class Resources {
     }
 }
 
-class Loader {
+export class Loader {
     #cache = new Map()
     #children = new Map()
     #refCount = new Map()
+    #pendingLoads = new Map()
+    #loadDependencies = new Map()
+    #destroyed = false
     allowScript = false
     constructor({
         loadText,
@@ -574,25 +577,25 @@ class Loader {
         // needed only when replacing in (X)HTML w/o parsing (see below)
         //.filter(({ mediaType }) => ![MIME.XHTML, MIME.HTML].includes(mediaType))
     }
-    createURL(href, data, type, parent) {
-        if (!data) return ''
+    createURL(href, data, type, parent, cacheKey = href, referenced = true) {
+        if (this.#destroyed || data == null) return ''
         const url = URL.createObjectURL(new Blob([data], {
             type
         }))
-        this.#cache.set(href, url)
-        this.#refCount.set(href, 1)
-        if (parent) {
+        this.#cache.set(cacheKey, url)
+        this.#refCount.set(cacheKey, referenced ? 1 : 0)
+        if (referenced && parent) {
             const childList = this.#children.get(parent)
-            if (childList) childList.push(href)
-            else this.#children.set(parent, [href])
+            if (childList) childList.push(cacheKey)
+            else this.#children.set(parent, [cacheKey])
         }
         return url
     }
-    createDirectURL(href, url, parent) {
-        if (!url) return ''
+    createDirectURL(href, url, parent, referenced = true) {
+        if (this.#destroyed || !url) return ''
         this.#cache.set(href, url)
-        this.#refCount.set(href, 1)
-        if (parent) {
+        this.#refCount.set(href, referenced ? 1 : 0)
+        if (referenced && parent) {
             const childList = this.#children.get(parent)
             if (childList) childList.push(href)
             else this.#children.set(parent, [href])
@@ -600,6 +603,7 @@ class Loader {
         return url
     }
     ref(href, parent) {
+        if (this.#destroyed || !this.#cache.has(href)) return null
         if (!parent) {
             this.#refCount.set(href, this.#refCount.get(href) + 1)
             return this.#cache.get(href)
@@ -613,66 +617,160 @@ class Loader {
         }
         return this.#cache.get(href)
     }
+    #release(href) {
+        const url = this.#cache.get(href)
+        if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url)
+        this.#cache.delete(href)
+        this.#refCount.delete(href)
+        const childList = this.#children.get(href)
+        if (childList)
+            while (childList.length) this.unref(childList.pop())
+        this.#children.delete(href)
+    }
     unref(href) {
         if (!this.#refCount.has(href)) return
         const count = this.#refCount.get(href) - 1
         //console.log(`unreferencing ${href}, now ${count}`)
         if (count < 1) {
             //console.log(`unloading ${href}`)
-            const url = this.#cache.get(href)
-            if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url)
-            this.#cache.delete(href)
-            this.#refCount.delete(href)
-            // unref children
-            const childList = this.#children.get(href)
-            if (childList)
-                while (childList.length) this.unref(childList.pop())
-            this.#children.delete(href)
+            this.#release(href)
         } else this.#refCount.set(href, count)
+    }
+    #rollbackUncommittedChildren(parent, retainedChildren) {
+        const childList = this.#children.get(parent)
+        if (!childList?.length) return
+        const retained = []
+        for (const child of childList) {
+            if (retainedChildren.has(child)) retained.push(child)
+            else this.unref(child)
+        }
+        if (retained.length) this.#children.set(parent, retained)
+        else this.#children.delete(parent)
+    }
+    #dependsOn(from, target, visited = new Set()) {
+        if (from === target) return true
+        if (visited.has(from)) return false
+        visited.add(from)
+        for (const child of this.#loadDependencies.get(from)?.keys() ?? []) {
+            if (this.#dependsOn(child, target, visited)) return true
+        }
+        return false
+    }
+    #pendingConsumer(entry, parent) {
+        const consumer = { parent, active: true }
+        entry.consumers.push(consumer)
+        return (async () => {
+            try {
+                const url = await entry.promise
+                if (this.#destroyed || !consumer.active || !url) return null
+                return this.ref(entry.href, parent)
+            } finally {
+                const index = entry.consumers.indexOf(consumer)
+                if (index >= 0) entry.consumers.splice(index, 1)
+                if (entry.settled && !entry.consumers.length) {
+                    if (this.#pendingLoads.get(entry.href) === entry) {
+                        this.#pendingLoads.delete(entry.href)
+                    }
+                    if (this.#refCount.get(entry.href) === 0) this.#release(entry.href)
+                }
+            }
+        })()
     }
     // load manifest item, recursively loading all resources as needed
     async loadItem(item, parents = []) {
-        if (!item) return null
+        if (this.#destroyed || !item) return null
+        if (MIME.JS.test(item.mediaType) && !this.allowScript) return null
+        const parent = parents[parents.length - 1]
+        if (!parent) return this.#loadItemCoalesced(item, parents)
+        if (this.#dependsOn(item.href, parent)) {
+            return this.#loadItemUncoalesced(item, parents, true)
+        }
+        let dependencies = this.#loadDependencies.get(parent)
+        if (!dependencies) this.#loadDependencies.set(parent, dependencies = new Map())
+        dependencies.set(item.href, (dependencies.get(item.href) ?? 0) + 1)
+        try {
+            return await this.#loadItemCoalesced(item, parents)
+        } finally {
+            const count = dependencies.get(item.href) - 1
+            if (count) dependencies.set(item.href, count)
+            else dependencies.delete(item.href)
+            if (!dependencies.size) this.#loadDependencies.delete(parent)
+        }
+    }
+    #loadItemCoalesced(item, parents = []) {
+        const {
+            href,
+        } = item
+        const parent = parents[parents.length - 1]
+        if (this.#cache.has(href)) return this.ref(href, parent)
+        const pending = this.#pendingLoads.get(href)
+        if (pending) return this.#pendingConsumer(pending, parent)
+
+        const retainedChildren = new Set(this.#children.get(href) ?? [])
+        const entry = { href, consumers: [], settled: false, promise: null }
+        entry.promise = (async () => {
+            try {
+                const value = await this.#loadItemUncoalesced(item, parents, false, true)
+                if (!value || !this.#cache.has(href)) {
+                    this.#rollbackUncommittedChildren(href, retainedChildren)
+                }
+                return value
+            } catch (error) {
+                this.#rollbackUncommittedChildren(href, retainedChildren)
+                throw error
+            } finally {
+                entry.settled = true
+            }
+        })()
+        this.#pendingLoads.set(href, entry)
+        return this.#pendingConsumer(entry, parent)
+    }
+    async #loadItemUncoalesced(item, parents = [], forceRaw = false,
+        publishUnreferenced = false) {
+        if (this.#destroyed || !item) return null
         const {
             href,
             mediaType
         } = item
-
-        const isScript = MIME.JS.test(item.mediaType)
+        const isScript = MIME.JS.test(mediaType)
         if (isScript && !this.allowScript) return null
-
         const parent = parents[parents.length - 1]
         if (this.#cache.has(href)) return this.ref(href, parent)
 
-        if (this.replaceURL && [MIME.XHTML, MIME.HTML].includes(mediaType)) {
-            const directURL = await this.replaceURL(href, mediaType)
-            if (!directURL) throw new Error(`Direct processed section URL required for ${href}`)
-            return this.createDirectURL(href, directURL, parent)
-        }
-
+        const isRecursiveReference = forceRaw || parents.some(candidate => candidate === href)
         const shouldReplace =
             (isScript || [MIME.XHTML, MIME.HTML, MIME.CSS, MIME.SVG].includes(mediaType))
-            // prevent circular references
-            &&
-            parents.every(p => p !== href)
-        if (shouldReplace) return this.loadReplaced(item, parents)
-        return this.createURL(href, await this.loadBlob(href), mediaType, parent)
+            && !isRecursiveReference
+        if (shouldReplace) return this.loadReplaced(item, parents, publishUnreferenced)
+        const blob = await this.loadBlob(href)
+        if (this.#destroyed) return null
+        const cacheKey = isRecursiveReference ? Symbol(`recursive:${href}`) : href
+        return this.createURL(href, blob, mediaType, parent, cacheKey,
+            !publishUnreferenced)
     }
     async loadHref(href, base, parents = []) {
+        if (this.#destroyed) return null
         if (isExternal(href)) return href
         const path = resolveURL(href, base)
         const item = this.manifest.find(item => item.href === path)
         if (!item) return href
         return this.loadItem(item, parents.concat(base))
     }
-    async loadReplaced(item, parents = []) {
+    async loadReplaced(item, parents = [], publishUnreferenced = false) {
+        if (this.#destroyed) return null
         const {
             href,
             mediaType
         } = item
         const parent = parents[parents.length - 1]
+        if (this.replaceURL && [MIME.XHTML, MIME.HTML].includes(mediaType)) {
+            const directURL = await this.replaceURL(href, mediaType)
+            if (this.#destroyed) return null
+            if (!directURL) throw new Error(`Direct processed section URL required for ${href}`)
+            return this.createDirectURL(href, directURL, parent, !publishUnreferenced)
+        }
         const str = await this.loadText(href)
-        if (!str) return null
+        if (this.#destroyed || str == null) return null
 
         // note that one can also just use `replaceString` for everything:
         // ```
@@ -687,9 +785,10 @@ class Loader {
         let replacedStr = str
         if (this.replaceText) {
             replacedStr = await this.replaceText(href, str, mediaType)
+            if (this.#destroyed) return null
         }
 
-        if (!replacedStr) {
+        if (replacedStr == null) {
             return null
         }
 
@@ -739,13 +838,15 @@ class Loader {
                     await this.replaceCSS(el.getAttribute('style'), href, parents))
             // TODO: replace inline scripts? probably not worth the trouble
             const textResult = new XMLSerializer().serializeToString(doc)
-            return this.createURL(href, textResult, item.mediaType, parent)
+            return this.createURL(href, textResult, item.mediaType, parent, href,
+                !publishUnreferenced)
         }
 
         const result = mediaType === MIME.CSS ?
             await this.replaceCSS(replacedStr, href, parents) :
             await this.replaceString(replacedStr, href, parents)
-        return this.createURL(href, result, mediaType, parent)
+        return this.createURL(href, result, mediaType, parent, href,
+            !publishUnreferenced)
     }
     async replaceCSS(str, href, parents = []) {
         const replacedUrls = await replaceSeries(str,
@@ -791,10 +892,27 @@ class Loader {
                 parents.concat(href)))
     }
     unloadItem(item) {
-        this.unref(item?.href)
+        const href = item?.href
+        const pending = this.#pendingLoads.get(href)
+        const consumer = pending?.consumers.find(candidate =>
+            candidate.active && !candidate.parent)
+        if (consumer) consumer.active = false
+        else this.unref(href)
     }
     destroy() {
-        for (const url of this.#cache.values()) URL.revokeObjectURL(url)
+        if (this.#destroyed) return false
+        this.#destroyed = true
+        for (const url of this.#cache.values()) {
+            if (typeof url === 'string' && url.startsWith('blob:')) {
+                URL.revokeObjectURL(url)
+            }
+        }
+        this.#cache.clear()
+        this.#children.clear()
+        this.#refCount.clear()
+        this.#pendingLoads.clear()
+        this.#loadDependencies.clear()
+        return true
     }
 }
 

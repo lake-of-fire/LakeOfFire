@@ -58,7 +58,9 @@ private func replaceLibraryListIfNeeded<T: RealmCollectionValue>(
 extension LibraryConfiguration {
     @RealmBackgroundActor
     public static func getConsolidatedOrCreate(
-        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration,
+        preservingCategoryID: UUID? = nil,
+        at commandTimestamp: Date? = nil
     ) async throws -> LibraryConfiguration {
         try Task.checkCancellation()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
@@ -76,13 +78,16 @@ extension LibraryConfiguration {
                 realm.add(configuration)
                 configuration.refreshChangeMetadata(
                     explicitlyModified: true,
-                    at: Date()
+                    at: commandTimestamp ?? Date()
                 )
                 return configuration.id
             }
 
             func retainedCategoryIDs(_ identifiers: [UUID]) -> [UUID] {
                 orderedUniqueLibraryIdentifiers(identifiers).filter { identifier in
+                    if identifier == preservingCategoryID {
+                        return true
+                    }
                     guard let category = realm.object(
                         ofType: FeedCategory.self,
                         forPrimaryKey: identifier
@@ -159,7 +164,7 @@ extension LibraryConfiguration {
                 primary.userScriptIDs,
                 with: scriptIDs
             )
-            let timestamp = Date()
+            let timestamp = commandTimestamp ?? Date()
             if categoryIDsChanged || scriptIDsChanged {
                 primary.refreshChangeMetadata(
                     explicitlyModified: true,

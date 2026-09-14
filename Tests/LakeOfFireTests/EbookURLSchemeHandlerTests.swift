@@ -1746,6 +1746,56 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertNil(ebookPathBackedEntryRequest(from: entryURL, mainDocumentURL: nil))
     }
 
+    func testPathBackedEntryPreservesLiteralPercentArchiveMember() throws {
+        let archiveURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-percent-member-\(UUID().uuidString).epub")
+        defer { try? FileManager.default.removeItem(at: archiveURL) }
+        let literalPercentData = Data("literal-percent".utf8)
+        let spaceData = Data("space".utf8)
+        let archive = try Archive(url: archiveURL, accessMode: .create)
+        for (path, data) in [
+            ("OPS/image%20name.jpg", literalPercentData),
+            ("OPS/image name.jpg", spaceData),
+        ] {
+            try archive.addEntry(
+                with: path,
+                type: .file,
+                uncompressedSize: Int64(data.count),
+                compressionMethod: .deflate
+            ) { position, size in
+                data.subdata(in: Int(position)..<(Int(position) + size))
+            }
+        }
+
+        let sourceURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
+        let generationID = "g1-" + String(repeating: "a", count: 64)
+        let baseURL = try XCTUnwrap(URL(string: ebookProcessedSectionBaseURL(
+            sourceURL: sourceURL,
+            sectionHref: "OPS/chapter.xhtml",
+            generationID: generationID
+        )))
+        let producerURL = try XCTUnwrap(
+            URL(string: "image%2520name.jpg", relativeTo: baseURL)?.absoluteURL
+        )
+        var ownerComponents = URLComponents()
+        ownerComponents.scheme = "ebook"
+        ownerComponents.host = "ebook"
+        ownerComponents.path = "/processed-section"
+        ownerComponents.queryItems = [
+            URLQueryItem(name: "sourceURL", value: sourceURL.absoluteString),
+            URLQueryItem(name: "subpath", value: "OPS/chapter.xhtml"),
+        ]
+
+        let request = try XCTUnwrap(ebookPathBackedEntryRequest(
+            from: producerURL,
+            mainDocumentURL: try XCTUnwrap(ownerComponents.url)
+        ))
+        XCTAssertEqual(request.subpath, "OPS/image%20name.jpg")
+        let source = try ReaderPackageEntrySource(localURL: archiveURL)
+        XCTAssertEqual(try source.readEntry(subpath: request.subpath), literalPercentData)
+        XCTAssertNotEqual(try source.readEntry(subpath: request.subpath), spaceData)
+    }
+
     func testPackageCapabilityRejectsConflictingLegacyRouteIdentities() throws {
         let packageA = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/a.epub"))
         let packageB = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/b.epub"))

@@ -349,7 +349,7 @@ func ebookPathBackedEntryRequest(from url: URL, mainDocumentURL: URL?) -> EbookP
           generationDigest.allSatisfy({
               $0.isASCII && ($0.isNumber || ("a"..."f").contains($0))
           }),
-          let subpath = normalizedEbookEntrySubpath(rawSubpath.removingPercentEncoding ?? rawSubpath) else {
+          let subpath = normalizedEbookEntrySubpath(rawSubpath) else {
         return nil
     }
     guard let mainDocumentURL,

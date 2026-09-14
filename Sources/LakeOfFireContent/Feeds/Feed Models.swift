@@ -1335,9 +1335,8 @@ fileprivate func isFeedUnchanged(
     lastFetchedModifiedAt: Date?
 ) -> Bool {
     if let remoteETag = remoteMetadata.etag,
-       let lastFetchedETag,
-       remoteETag == lastFetchedETag {
-        return true
+       let lastFetchedETag {
+        return remoteETag == lastFetchedETag
     }
 
     if let remoteLastModifiedAt = remoteMetadata.lastModifiedAt,
@@ -1375,10 +1374,14 @@ fileprivate func getRssData(
     }
 
     let headMetadata = feedFetchMetadata(from: headHTTPResponse)
+    var metadataForGet = headMetadata
     logRSS(
         "stage=http.head.response url=\(rssUrl.absoluteString) status=\(headHTTPResponse.statusCode) etag=\(headMetadata.etag ?? "nil") lastModified=\(headMetadata.lastModifiedAt.map(formatFeedHTTPDate) ?? "nil")"
     )
     switch headHTTPResponse.statusCode {
+    case 405, 501:
+        // Some feed endpoints implement GET but not HEAD.
+        metadataForGet = FeedFetchMetadata(etag: nil, lastModifiedAt: nil)
     case 304:
         if allowNotModified {
             logRSS("stage=http.notModified source=head304 url=\(rssUrl.absoluteString)")
@@ -1410,7 +1413,7 @@ fileprivate func getRssData(
         throw FeedError.downloadFailed
     }
 
-    let getMetadata = headMetadata.merged(with: feedFetchMetadata(from: getHTTPResponse))
+    let getMetadata = metadataForGet.merged(with: feedFetchMetadata(from: getHTTPResponse))
     logRSS(
         "stage=http.get.response url=\(rssUrl.absoluteString) status=\(getHTTPResponse.statusCode) bytes=\(data.count) etag=\(getMetadata.etag ?? "nil") lastModified=\(getMetadata.lastModifiedAt.map(formatFeedHTTPDate) ?? "nil")"
     )

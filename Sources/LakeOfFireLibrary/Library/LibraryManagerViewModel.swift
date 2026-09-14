@@ -306,17 +306,32 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     @RealmBackgroundActor
     func duplicate(feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws {
-        do {
-            guard let newFeedID = try await LibraryDataManager.shared.duplicateFeed(feed, inCategory: category, overwriteExisting: true) else { return }
-            Task { @MainActor in
-                let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
-                guard let category = realm.resolve(category),
-                      let newFeed = realm.object(ofType: Feed.self, forPrimaryKey: newFeedID)
-                else { return }
-                navigationPath.removeLast(navigationPath.count)
-                navigationPath.append(category)
-                selectedFeed = newFeed
+        let result = try await LibraryDataManager.shared.duplicateFeed(
+            feed,
+            inCategory: category,
+            overwriteExisting: overwriteExisting
+        )
+        try await { @MainActor in
+            let realm = try await Realm(
+                configuration: ReaderContentLoader.feedEntryRealmConfiguration,
+                actor: MainActor.shared
+            )
+            await realm.asyncRefresh()
+            guard let category = realm.object(
+                ofType: FeedCategory.self,
+                forPrimaryKey: result.categoryID
+            ) else {
+                throw LibraryMutationError.categoryNotFound
             }
-        } catch { }
+            guard let newFeed = realm.object(
+                ofType: Feed.self,
+                forPrimaryKey: result.feedID
+            ) else {
+                throw LibraryMutationError.feedNotFound
+            }
+            navigationPath.removeLast(navigationPath.count)
+            navigationPath.append(category)
+            selectedFeed = newFeed
+        }()
     }
 }
