@@ -3,12 +3,16 @@
 // swiftlint:disable all
 // swift-format-ignore-file
 // swiftformat:disable all
+#if hasFeature(InternalImportsByDefault)
+public import Foundation
+#else
 import Foundation
+#endif
 // MARK: - Swift Bundle Accessor - for SPM
 private class BundleFinder {}
 extension Foundation.Bundle {
 /// Since LakeOfFireContent is a static library, the bundle containing the resources is copied into the final product.
-    nonisolated static let module: Bundle = {
+    static let module: Bundle = {
         let bundleName = "LakeOfFire_LakeOfFireContent"
         let bundleFinderResourceURL = Bundle(for: BundleFinder.self).resourceURL
         var candidates = [
