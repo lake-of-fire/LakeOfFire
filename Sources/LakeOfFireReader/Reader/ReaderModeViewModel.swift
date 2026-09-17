@@ -4030,60 +4030,51 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 )
                 return
             }
-            if let readerFileManager {
-                let html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
-                if let html {
-                    try Task.checkCancellation()
+            // Reader file managers can be independently configured for an embedded reader.
+            // Choose one before the suspended read so a replacement cannot split this load
+            // between two backing stores; the global manager is the normal-app fallback.
+            let activeReaderFileManager = readerFileManager ?? .shared
+            let html = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
+            if let html {
+                try Task.checkCancellation()
 
-                    let currentURL = readerContent.pageURL
-                    guard committedURL.matchesReaderURL(currentURL) else {
-                        print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
-                        cancelReaderModeLoad(for: committedURL, reason: "navCommit.currentURLMismatch")
-                        return
-                    }
-                    let usedSnippetCanonical: Bool
-                    let usedCanonicalMarkup: Bool
-                    if committedURL.isSnippetURL,
-                       let snippetHTML = buildSnippetCanonicalReadabilityHTML(
-                        html: html,
-                        contentURL: committedURL,
-                        fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
-                        publishedTime: await readerContentPublicationDateFallback(for: committedURL),
-                        preferredTitle: content.title,
-                        hideReaderTitleOverride: content.isTitlePrefixOfContent
-                       ) {
-                        readabilityContent = snippetHTML
-                        usedSnippetCanonical = true
-                        usedCanonicalMarkup = false
-                    } else if hasCanonicalReadabilityMarkup(in: html) {
-                        readabilityContent = html
-                        usedSnippetCanonical = false
-                        usedCanonicalMarkup = true
-                    } else {
-                        readabilityContent = nil
-                        usedSnippetCanonical = false
-                        usedCanonicalMarkup = false
-                    }
-                    readerContent.isRenderingReaderHTML = true
-                    showReaderView(
-                        readerContent: readerContent,
-                        scriptCaller: scriptCaller
-                    )
-                } else {
-                    debugPrint(
-                        "# READERLOAD stage=readerMode.navCommit.loaderHTMLMissing",
-                        "contentURL=\(committedURL.absoluteString)",
-                        "elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(loaderStartedAt)))"
-                    )
-                    guard let navigator else {
-                        print("Error: No navigator set in ReaderModeViewModel onNavigationCommitted")
-                        return
-                    }
-                    navigator.load(URLRequest(url: committedURL))
+                let currentURL = readerContent.pageURL
+                guard committedURL.matchesReaderURL(currentURL) else {
+                    print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
+                    cancelReaderModeLoad(for: committedURL, reason: "navCommit.currentURLMismatch")
+                    return
                 }
+                let usedSnippetCanonical: Bool
+                let usedCanonicalMarkup: Bool
+                if committedURL.isSnippetURL,
+                   let snippetHTML = buildSnippetCanonicalReadabilityHTML(
+                    html: html,
+                    contentURL: committedURL,
+                    fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
+                    publishedTime: await readerContentPublicationDateFallback(for: committedURL),
+                    preferredTitle: content.title,
+                    hideReaderTitleOverride: content.isTitlePrefixOfContent
+                   ) {
+                    readabilityContent = snippetHTML
+                    usedSnippetCanonical = true
+                    usedCanonicalMarkup = false
+                } else if hasCanonicalReadabilityMarkup(in: html) {
+                    readabilityContent = html
+                    usedSnippetCanonical = false
+                    usedCanonicalMarkup = true
+                } else {
+                    readabilityContent = nil
+                    usedSnippetCanonical = false
+                    usedCanonicalMarkup = false
+                }
+                readerContent.isRenderingReaderHTML = true
+                showReaderView(
+                    readerContent: readerContent,
+                    scriptCaller: scriptCaller
+                )
             } else {
                 debugPrint(
-                    "# READERLOAD stage=readerMode.navCommit.loaderNoReaderFileManager",
+                    "# READERLOAD stage=readerMode.navCommit.loaderHTMLMissing",
                     "contentURL=\(committedURL.absoluteString)",
                     "elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(loaderStartedAt)))"
                 )

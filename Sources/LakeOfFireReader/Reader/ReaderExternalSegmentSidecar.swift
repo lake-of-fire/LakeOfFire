@@ -1250,6 +1250,28 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
     }
 }
 
+/// Resolves the immutable sidecar named by a renderer's published revision.
+/// The revision is content-addressed and is revalidated against the stored
+/// bytes before they cross the native reader boundary.
+public func readerCanonicalSegmentSidecar(
+    matchingRevision revision: String
+) -> Data? {
+    let fields = revision.split(separator: ":", omittingEmptySubsequences: false)
+    guard fields.count == 3,
+          fields[0] == "sha256",
+          let byteCount = Int(fields[1]),
+          byteCount > 0 else {
+        return nil
+    }
+    let token = String(fields[2])
+    guard let entry = ReaderExternalSegmentSidecarStore.shared.entry(for: token),
+          entry.signature == revision,
+          entry.data.count == byteCount else {
+        return nil
+    }
+    return entry.data
+}
+
 enum ReaderExternalSegmentSidecarScheme: String, Sendable {
     case ebook
     case internalReader = "internal"

@@ -1,5 +1,6 @@
 import XCTest
 import RealmSwift
+import RealmSwiftGaps
 import SwiftCloudDrive
 @testable import LakeOfFireContent
 
@@ -57,10 +58,15 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         return url
     }
 
-    private func makeHistoryRealmConfiguration() -> Realm.Configuration {
-        var configuration = Realm.Configuration(
-            inMemoryIdentifier: "ReaderFileManagerNormalization.\(UUID().uuidString)"
-        )
+    private func makeHistoryRealmConfiguration(fileURL: URL? = nil) -> Realm.Configuration {
+        var configuration: Realm.Configuration
+        if let fileURL {
+            configuration = Realm.Configuration(fileURL: fileURL)
+        } else {
+            configuration = Realm.Configuration(
+                inMemoryIdentifier: "ReaderFileManagerNormalization.\(UUID().uuidString)"
+            )
+        }
         configuration.objectTypes = [
             Bookmark.self,
             ContentFile.self,
@@ -80,6 +86,39 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         )
         try Data("ebook fixture".utf8).write(to: fileURL)
         return fileURL
+    }
+
+    @RealmBackgroundActor
+    private static func addContentFile(
+        at readerURL: URL,
+        to configuration: Realm.Configuration
+    ) async throws -> String {
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: RealmBackgroundActor.shared
+        )
+        let contentFile = ContentFile()
+        contentFile.url = readerURL
+        contentFile.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(contentFile)
+        }
+        return contentFile.compoundKey
+    }
+
+    @RealmBackgroundActor
+    private static func contentFileIsDeleted(
+        primaryKey: String,
+        in configuration: Realm.Configuration
+    ) async throws -> Bool {
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: RealmBackgroundActor.shared
+        )
+        let contentFile: ContentFile = try XCTUnwrap(
+            realm.object(ofType: ContentFile.self, forPrimaryKey: primaryKey)
+        )
+        return contentFile.isDeleted
     }
 
     @MainActor
@@ -272,6 +311,92 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
 
         let status = try await manager.cloudDriveSyncStatus(readerFileURL: readerURL)
         XCTAssertEqual(status, .fileMissing)
+    }
+
+    @MainActor
+    func testMissingFileDeletionUsesManagersCapturedRealmConfiguration() async throws {
+        let rootURL = try temporaryDirectory()
+        let realmRootURL = try temporaryDirectory()
+        let managerConfiguration = makeHistoryRealmConfiguration(
+            fileURL: realmRootURL.appendingPathComponent("manager.realm")
+        )
+        let globalConfiguration = makeHistoryRealmConfiguration(
+            fileURL: realmRootURL.appendingPathComponent("global.realm")
+        )
+        let originalGlobalConfiguration = ReaderContentLoader.historyRealmConfiguration
+        ReaderContentLoader.historyRealmConfiguration = globalConfiguration
+        defer { ReaderContentLoader.historyRealmConfiguration = originalGlobalConfiguration }
+        let manager = ReaderFileManager(defaultLocalRootURLProvider: { rootURL })
+        manager.historyRealmConfigurationOverride = managerConfiguration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        let readerURL = try XCTUnwrap(
+            URL(string: "reader-file://file/load/local/Books/missing.epub")
+        )
+        let managerPrimaryKey = try await Self.addContentFile(
+            at: readerURL,
+            to: managerConfiguration
+        )
+        let globalPrimaryKey = try await Self.addContentFile(
+            at: readerURL,
+            to: globalConfiguration
+        )
+
+        try await manager.delete(readerFileURL: readerURL)
+
+        let managerContentIsDeleted = try await Self.contentFileIsDeleted(
+            primaryKey: managerPrimaryKey,
+            in: managerConfiguration
+        )
+        let globalContentIsDeleted = try await Self.contentFileIsDeleted(
+            primaryKey: globalPrimaryKey,
+            in: globalConfiguration
+        )
+        XCTAssertTrue(managerContentIsDeleted)
+        XCTAssertFalse(globalContentIsDeleted)
+    }
+
+    @MainActor
+    func testSuccessfulFileDeletionUsesManagersCapturedRealmConfiguration() async throws {
+        let rootURL = try temporaryDirectory()
+        let localURL = try writeFixture(relativePath: "Books/present.epub", under: rootURL)
+        let realmRootURL = try temporaryDirectory()
+        let managerConfiguration = makeHistoryRealmConfiguration(
+            fileURL: realmRootURL.appendingPathComponent("manager.realm")
+        )
+        let globalConfiguration = makeHistoryRealmConfiguration(
+            fileURL: realmRootURL.appendingPathComponent("global.realm")
+        )
+        let originalGlobalConfiguration = ReaderContentLoader.historyRealmConfiguration
+        ReaderContentLoader.historyRealmConfiguration = globalConfiguration
+        defer { ReaderContentLoader.historyRealmConfiguration = originalGlobalConfiguration }
+        let manager = ReaderFileManager(defaultLocalRootURLProvider: { rootURL })
+        manager.historyRealmConfigurationOverride = managerConfiguration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        let readerURL = try XCTUnwrap(
+            URL(string: "reader-file://file/load/local/Books/present.epub")
+        )
+        let managerPrimaryKey = try await Self.addContentFile(
+            at: readerURL,
+            to: managerConfiguration
+        )
+        let globalPrimaryKey = try await Self.addContentFile(
+            at: readerURL,
+            to: globalConfiguration
+        )
+
+        try await manager.delete(readerFileURL: readerURL)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: localURL.path))
+        let managerContentIsDeleted = try await Self.contentFileIsDeleted(
+            primaryKey: managerPrimaryKey,
+            in: managerConfiguration
+        )
+        let globalContentIsDeleted = try await Self.contentFileIsDeleted(
+            primaryKey: globalPrimaryKey,
+            in: globalConfiguration
+        )
+        XCTAssertTrue(managerContentIsDeleted)
+        XCTAssertFalse(globalContentIsDeleted)
     }
 
     @MainActor

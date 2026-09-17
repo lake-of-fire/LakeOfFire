@@ -181,6 +181,26 @@ fileprivate class ReaderWebViewHandler {
         }
     }
 
+    /// The WebView can retain callback closures beyond the SwiftUI value view
+    /// that created this handler. A replacement binding must cancel both the
+    /// shared work lane and the tokens owned by this particular content model.
+    func invalidateCallbackBinding() {
+        navigationTaskManager.cancelNavigationWork()
+        endAllMainFrameNavigationTasks()
+    }
+
+    /// A SwiftUI body rebuild can replace the value-view callbacks while the
+    /// mounted WebView and its document remain unchanged. Keep this handler so
+    /// its in-flight navigation tokens stay paired with the later finish, and
+    /// refresh only the callbacks supplied by the rebuilt value view.
+    func updateCallbacks(from replacement: ReaderWebViewHandler) {
+        onNavigationCommitted = replacement.onNavigationCommitted
+        onNavigationFinished = replacement.onNavigationFinished
+        onNavigationFailed = replacement.onNavigationFailed
+        onDocumentContextInvalidated = replacement.onDocumentContextInvalidated
+        onURLChanged = replacement.onURLChanged
+    }
+
     func onNavigationCommitted(state: WebViewState) {
         endAllMainFrameNavigationTasks()
         let navigationKey = state.pageURL.absoluteString
@@ -249,8 +269,7 @@ fileprivate class ReaderWebViewHandler {
         state: WebViewState,
         reason: WebViewDocumentContextInvalidationReason
     ) {
-        navigationTaskManager.cancelNavigationWork()
-        endAllMainFrameNavigationTasks()
+        invalidateCallbackBinding()
         if reason == .webContentProcessTerminated {
             readerModeViewModel.onNavigationFailed(newState: state)
             onNavigationFailed?(state)
@@ -269,6 +288,103 @@ fileprivate class ReaderWebViewHandler {
                 print("Error during public onURLChanged: \(error)")
             }
         }
+    }
+}
+
+/// Object identity is the only ownership evidence available at this boundary.
+/// `WebViewState.pageURL` is deliberately excluded: different ReaderContent
+/// instances can legitimately use the same URL, and URL equality cannot prove
+/// that a retained callback belongs to the newly injected document.
+private struct ReaderWebViewCallbackBinding: Hashable {
+    let readerContent: ObjectIdentifier
+    let readerViewModel: ObjectIdentifier
+    let readerModeViewModel: ObjectIdentifier
+    let readerMediaPlayerViewModel: ObjectIdentifier
+    let scriptCaller: ObjectIdentifier
+    let websiteDataStore: ObjectIdentifier
+}
+
+/// WebView owns its callback closures for longer than a single SwiftUI body
+/// evaluation. Keep their target stable for ordinary body rebuilds, while
+/// refusing to forward callbacks from the retired host after a model or
+/// script-caller replacement. The host identity below remounts WebView so its
+/// new closures capture the replacement binding; callbacks retained by the old
+/// host keep the old binding and fail closed here.
+@MainActor
+private final class ReaderWebViewCallbackRelay: ObservableObject {
+    private var binding: ReaderWebViewCallbackBinding?
+    private var handler: ReaderWebViewHandler?
+
+    func install(
+        _ handler: ReaderWebViewHandler,
+        binding newBinding: ReaderWebViewCallbackBinding
+    ) {
+        guard let binding else {
+            self.binding = newBinding
+            self.handler = handler
+            return
+        }
+
+        guard binding == newBinding else {
+            self.handler?.invalidateCallbackBinding()
+            self.binding = newBinding
+            self.handler = handler
+            return
+        }
+
+        if let currentHandler = self.handler {
+            currentHandler.updateCallbacks(from: handler)
+        } else {
+            self.handler = handler
+        }
+    }
+
+    func cancelWork(for callbackBinding: ReaderWebViewCallbackBinding) {
+        guard binding == callbackBinding else { return }
+        handler?.invalidateCallbackBinding()
+        handler = nil
+    }
+
+    func onNavigationCommitted(
+        state: WebViewState,
+        binding callbackBinding: ReaderWebViewCallbackBinding
+    ) {
+        guard binding == callbackBinding else { return }
+        handler?.onNavigationCommitted(state: state)
+    }
+
+    func onNavigationFinished(
+        state: WebViewState,
+        binding callbackBinding: ReaderWebViewCallbackBinding
+    ) {
+        guard binding == callbackBinding else { return }
+        handler?.onNavigationFinished(state: state)
+    }
+
+    func onNavigationFailed(
+        state: WebViewState,
+        disposition: WebViewNavigationFailureDisposition,
+        binding callbackBinding: ReaderWebViewCallbackBinding
+    ) {
+        guard binding == callbackBinding else { return }
+        handler?.onNavigationFailed(state: state, disposition: disposition)
+    }
+
+    func onDocumentContextInvalidated(
+        state: WebViewState,
+        reason: WebViewDocumentContextInvalidationReason,
+        binding callbackBinding: ReaderWebViewCallbackBinding
+    ) {
+        guard binding == callbackBinding else { return }
+        handler?.onDocumentContextInvalidated(state: state, reason: reason)
+    }
+
+    func onURLChanged(
+        state: WebViewState,
+        binding callbackBinding: ReaderWebViewCallbackBinding
+    ) {
+        guard binding == callbackBinding else { return }
+        handler?.onURLChanged(state: state)
     }
 }
 
@@ -297,6 +413,7 @@ public struct ReaderWebView: View {
     @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
     @State private var navigationTaskManager = NavigationTaskManager()
+    @StateObject private var callbackRelay = ReaderWebViewCallbackRelay()
 
     @EnvironmentObject internal var readerContent: ReaderContent
     @EnvironmentObject internal var scriptCaller: WebViewScriptCaller
@@ -384,9 +501,18 @@ public struct ReaderWebView: View {
             readerMediaPlayerViewModel: readerMediaPlayerViewModel,
             scriptCaller: scriptCaller
         )
+        let websiteDataStore = readerWebViewDataStore ?? WKWebsiteDataStore.default()
+        let callbackBinding = ReaderWebViewCallbackBinding(
+            readerContent: ObjectIdentifier(readerContent),
+            readerViewModel: ObjectIdentifier(readerViewModel),
+            readerModeViewModel: ObjectIdentifier(readerModeViewModel),
+            readerMediaPlayerViewModel: ObjectIdentifier(readerMediaPlayerViewModel),
+            scriptCaller: ObjectIdentifier(scriptCaller),
+            websiteDataStore: ObjectIdentifier(websiteDataStore)
+        )
+        let _ = callbackRelay.install(handler, binding: callbackBinding)
         let ebookURLSchemeHandler = self.ebookURLSchemeHandler
         let readerFileURLSchemeHandler = self.readerFileURLSchemeHandler
-        let websiteDataStore = readerWebViewDataStore ?? WKWebsiteDataStore.default()
         ReaderWebViewInternal(
             persistentWebViewID: persistentWebViewID,
             obscuredInsets: obscuredInsets,
@@ -409,10 +535,11 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler: ebookURLSchemeHandler,
             readerFileURLSchemeHandler: readerFileURLSchemeHandler,
             sharedReaderFontAsset: readerModeViewModel.sharedReaderFontAsset,
-            handler: handler,
+            callbackRelay: callbackRelay,
+            callbackBinding: callbackBinding,
             websiteDataStore: websiteDataStore
         )
-        .id(ObjectIdentifier(websiteDataStore))
+        .id(callbackBinding)
         .task(id: ebookSchemeBindingState) { @MainActor in
             navigator.shouldLoadFallbackOnAttach = false
             ebookURLSchemeHandler.ebookProcessedTextCacheReader = readerModeViewModel.ebookProcessedTextCacheReader
@@ -436,7 +563,7 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.readerFileManager = readerFileManager
         }
         .onDisappear {
-            navigationTaskManager.cancelNavigationWork()
+            callbackRelay.cancelWork(for: callbackBinding)
         }
     }
 }
@@ -482,7 +609,8 @@ fileprivate struct ReaderWebViewInternal: View {
     var ebookURLSchemeHandler: EbookURLSchemeHandler
     var readerFileURLSchemeHandler: ReaderFileURLSchemeHandler
     let sharedReaderFontAsset: SharedReaderFontAsset?
-    let handler: ReaderWebViewHandler
+    let callbackRelay: ReaderWebViewCallbackRelay
+    let callbackBinding: ReaderWebViewCallbackBinding
     let websiteDataStore: WKWebsiteDataStore
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
@@ -578,19 +706,36 @@ fileprivate struct ReaderWebViewInternal: View {
                 (ebookURLSchemeHandler, "ebook"),
             ] + schemeHandlers,
             onNavigationCommitted: { state in
-                handler.onNavigationCommitted(state: state)
+                callbackRelay.onNavigationCommitted(
+                    state: state,
+                    binding: callbackBinding
+                )
             },
             onNavigationFinished: { state in
-                handler.onNavigationFinished(state: state)
+                callbackRelay.onNavigationFinished(
+                    state: state,
+                    binding: callbackBinding
+                )
             },
             onNavigationFailedWithDisposition: { state, disposition in
-                handler.onNavigationFailed(state: state, disposition: disposition)
+                callbackRelay.onNavigationFailed(
+                    state: state,
+                    disposition: disposition,
+                    binding: callbackBinding
+                )
             },
             onDocumentContextInvalidated: { state, reason in
-                handler.onDocumentContextInvalidated(state: state, reason: reason)
+                callbackRelay.onDocumentContextInvalidated(
+                    state: state,
+                    reason: reason,
+                    binding: callbackBinding
+                )
             },
             onURLChanged: { state in
-                handler.onURLChanged(state: state)
+                callbackRelay.onURLChanged(
+                    state: state,
+                    binding: callbackBinding
+                )
             },
             onNavigationAction: { action in
                 if let readerNavigationActionContextHandler,

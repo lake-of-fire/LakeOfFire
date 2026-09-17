@@ -10,7 +10,10 @@
             wiredNodes.set(node, true); // Mark the node as wired
             node.addEventListener('click', (e) => {
                 e.preventDefault();
-                window.webkit.messageHandlers.showOriginal.postMessage({});
+                window.webkit.messageHandlers.showOriginal.postMessage(
+                    globalThis.__swiftUIWebViewTrustedUserAction
+                        ?.withToken?.('showOriginal', {}) ?? {}
+                );
             }, false);
         }
     }

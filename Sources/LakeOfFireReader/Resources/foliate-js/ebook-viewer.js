@@ -4442,7 +4442,10 @@ class Reader {
         applyStoredChromeInsets('reader.constructor');
         this.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
             postMessage: message => {
-                window.webkit.messageHandlers.markSectionAsRead.postMessage(message);
+                window.webkit.messageHandlers.markSectionAsRead.postMessage(
+                    globalThis.__swiftUIWebViewTrustedUserAction
+                        ?.withToken?.('markSectionAsRead', message) ?? message
+                );
             },
             isOwnerCurrent: owner => this.#markReadOwnerIsCurrent(owner),
         });
@@ -4974,7 +4977,7 @@ class Reader {
             switch (actionType) {
                 case 'finish':
                     const sectionReadState = this.#currentSectionReadState();
-                    window.webkit.messageHandlers.finishedReadingBook.postMessage({
+                    const payload = {
                         topWindowURL: window.top.location.href,
                         allSectionsRead: sectionReadState.allSectionsRead,
                         currentPageNumber: sectionReadState.currentPageNumber,
@@ -4982,11 +4985,18 @@ class Reader {
                         pagesLeft: sectionReadState.pagesLeft,
                         segmentCount: sectionReadState.segmentCount,
                         unreadSegmentCount: sectionReadState.unreadSegmentCount,
-                    });
+                    };
+                    window.webkit.messageHandlers.finishedReadingBook.postMessage(
+                        globalThis.__swiftUIWebViewTrustedUserAction
+                            ?.withToken?.('finishedReadingBook', payload) ?? payload
+                    );
                     break;
                 case 'restart':
                     this.#clearOptimisticMarkReadState('restart');
-                    window.webkit.messageHandlers.startOver.postMessage({});
+                    window.webkit.messageHandlers.startOver.postMessage(
+                        globalThis.__swiftUIWebViewTrustedUserAction
+                            ?.withToken?.('startOver', {}) ?? {}
+                    );
                     await this.view?.renderer?.firstSection?.();
                     break;
                 default:
@@ -5185,15 +5195,8 @@ class Reader {
                 }
             }
             normalizedSegments.push({
-                jmdictEntryIds: segment.jmdictEntryIds,
-                jmnedictEntryIds: segment.jmnedictEntryIds,
-                searchString: segment.searchString,
-                displayText: segment.displayText,
-                runtimeElementID,
                 segmentIdentifier,
                 sentenceIdentifier,
-                exampleSentence,
-                exampleSentenceJMDictIDs,
             });
         }
         for (const sentenceIdentifier of payload.sentenceIdentifiers) {
@@ -9173,6 +9176,15 @@ window.manabi_applyOptimisticMarkAllSectionsAsReadPayload = (payload) => {
 
 window.manabi_applyMarkSectionAsReadResult = (result) => {
     return globalThis.reader?.applyMarkSectionAsReadResult?.(result) ?? false;
+}
+
+window.manabi_currentMarkReadSidecarRevision = (documentURL) => {
+    const document = getPrimaryRendererContent(globalThis.reader?.view?.renderer)?.doc ?? null;
+    const currentDocumentURL = document?.URL || document?.location?.href || null;
+    if (!document || typeof documentURL !== 'string' || currentDocumentURL !== documentURL) {
+        return null;
+    }
+    return ebookSegmentSidecarRevision(document);
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})

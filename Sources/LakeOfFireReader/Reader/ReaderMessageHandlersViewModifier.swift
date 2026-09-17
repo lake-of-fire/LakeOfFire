@@ -1072,6 +1072,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 ReaderWebMediaBridge.postExternalSubtitlesUpdate(from: message)
             })
         ])
+        .requiringTrustedUserAction("showOriginal")
     }()
 
     init(
