@@ -6,7 +6,10 @@ import { NavigationHUD } from './ebook-viewer-nav.js'
 import { processedSectionURLForHref } from './ebook-direct-section.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
-import { createNativeMarkReadRequestCoordinator } from './native-mark-read-request.js'
+import {
+    createNativeMarkReadRequestCoordinator,
+    nativeMarkReadCommandMessage,
+} from './native-mark-read-request.js'
 import {
     compactEbookSegmentMetadataPayloadIsCurrent,
     compactEbookSegmentSchemaVersionsAreCompatible,
@@ -7140,14 +7143,13 @@ class Reader {
                 reason,
                 animateStateID,
             },
-            message: {
-                ...validatedPayload,
+            message: nativeMarkReadCommandMessage(validatedPayload, {
                 topWindowURL: window.top.location.href,
                 pageURL: owner?.document?.location?.href ?? null,
                 documentStartedAtMs: Number.isFinite(window.top?.performance?.timeOrigin)
                     ? window.top.performance.timeOrigin
                     : readerDocumentStartedAtMs(),
-            },
+            }),
         });
         this.lastNativeMarkReadRequestOutcome = outcome.success === true
             ? 'committed'

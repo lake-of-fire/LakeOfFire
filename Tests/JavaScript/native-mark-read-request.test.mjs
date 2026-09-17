@@ -3,7 +3,40 @@ import test from 'node:test'
 
 import {
     createNativeMarkReadRequestCoordinator,
+    nativeMarkReadCommandMessage,
 } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
+
+test('projects semantic renderer payload onto durable native subject identifiers', () => {
+    const message = nativeMarkReadCommandMessage({
+        stableIdentityVersion: 1,
+        nativeSidecarContentFingerprint: 'fingerprint-a',
+        segments: [{
+            stableSegmentID: 'segment-a',
+            searchString: '読む',
+            jmdictEntryIds: [1],
+        }, {
+            stableSegmentID: 'segment-b',
+            searchString: '本',
+            jmdictEntryIds: [2],
+        }],
+        sentenceIdentifiers: ['sentence-a'],
+    }, {
+        topWindowURL: 'file:///book.epub',
+        pageURL: 'foliate://chapter-1',
+        documentStartedAtMs: 42,
+    })
+
+    assert.deepEqual(message, {
+        stableIdentityVersion: 1,
+        nativeSidecarContentFingerprint: 'fingerprint-a',
+        stableSegmentIDs: ['segment-a', 'segment-b'],
+        sentenceIdentifiers: ['sentence-a'],
+        topWindowURL: 'file:///book.epub',
+        pageURL: 'foliate://chapter-1',
+        documentStartedAtMs: 42,
+    })
+    assert.equal('segments' in message, false)
+})
 
 const harness = ({ current = true, postThrows = false } = {}) => {
     const posted = []

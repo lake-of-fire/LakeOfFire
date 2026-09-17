@@ -1191,7 +1191,6 @@ public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
     private var isBatchingProcessingDependencyChanges = false
     internal private(set) var processingDependencyRevision: UInt64 = 0
-
     private func processingDependencyWillChange() {
         guard !isBatchingProcessingDependencyChanges else { return }
         processingDependencyRevision &+= 1
@@ -2208,7 +2207,7 @@ public class ReaderModeViewModel: ObservableObject {
         let cachedContainerSelector = readabilityContainerSelector
         let cachedContainerFrameInfo = readabilityContainerFrameInfo
         beginReaderModeLoad(for: contentURL)
-        _ = startRenderTaskIfNeeded(for: contentURL) { [weak self] generation in
+        let didStart = startRenderTaskIfNeeded(for: contentURL) { [weak self] generation in
             guard let self else { return }
             guard await self.isCurrentRender(for: contentURL, generation: generation) else {
                 return
@@ -3032,42 +3031,39 @@ public class ReaderModeViewModel: ObservableObject {
             if duplicateLoaderRender.skip {
                 return
             }
-            if let readerFileManager {
-                let html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
-                if let html {
-                    try Task.checkCancellation()
+            let activeReaderFileManager = readerFileManager ?? .shared
+            let html = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
+            if let html {
+                try Task.checkCancellation()
 
-                    let currentURL = readerContent.pageURL
-                    guard committedURL.matchesReaderURL(currentURL) else {
-                        print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
-                        cancelReaderModeLoad(for: committedURL)
-                        return
-                    }
-                    let publicationDateFallback = await readerContentPublicationDateFallback(for: content)
-                    if committedURL.isSnippetURL,
-                       let snippetHTML = buildSnippetCanonicalReadabilityHTML(
-                        html: html,
-                        contentURL: committedURL,
-                        fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
-                        publishedTime: publicationDateFallback,
-                        preferredTitle: content.title,
-                        hideReaderTitleOverride: content.isTitlePrefixOfContent
-                       ) {
-                        readabilityContent = snippetHTML
-                    } else if hasCanonicalReadabilityMarkup(in: html) {
-                        readabilityContent = html
-                    } else {
-                        readabilityContent = nil
-                    }
-                    readerContent.isRenderingReaderHTML = true
-                    showReaderView(
-                        readerContent: readerContent,
-                        scriptCaller: scriptCaller,
-                        navigator: navigator
-                    )
-                } else {
-                    navigator.load(URLRequest(url: committedURL))
+                let currentURL = readerContent.pageURL
+                guard committedURL.matchesReaderURL(currentURL) else {
+                    print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
+                    cancelReaderModeLoad(for: committedURL)
+                    return
                 }
+                let publicationDateFallback = await readerContentPublicationDateFallback(for: content)
+                if committedURL.isSnippetURL,
+                   let snippetHTML = buildSnippetCanonicalReadabilityHTML(
+                    html: html,
+                    contentURL: committedURL,
+                    fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
+                    publishedTime: publicationDateFallback,
+                    preferredTitle: content.title,
+                    hideReaderTitleOverride: content.isTitlePrefixOfContent
+                   ) {
+                    readabilityContent = snippetHTML
+                } else if hasCanonicalReadabilityMarkup(in: html) {
+                    readabilityContent = html
+                } else {
+                    readabilityContent = nil
+                }
+                readerContent.isRenderingReaderHTML = true
+                showReaderView(
+                    readerContent: readerContent,
+                    scriptCaller: scriptCaller,
+                    navigator: navigator
+                )
             } else {
                 navigator.load(URLRequest(url: committedURL))
             }

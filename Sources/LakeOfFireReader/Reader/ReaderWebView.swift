@@ -273,6 +273,14 @@ final class ReaderWebViewHandler {
 
 }
 
+// WebView owns its callback closures for longer than a single SwiftUI body
+// evaluation. Keep the callback target stable while replacing the handler it
+// forwards to whenever ReaderWebView receives newer environment objects.
+@MainActor
+fileprivate final class ReaderWebViewCallbackRelay: ObservableObject {
+    var handler: ReaderWebViewHandler?
+}
+
 public struct ReaderWebView: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
@@ -301,6 +309,7 @@ public struct ReaderWebView: View {
     // suspended. Keep one task owner across those rebuilds so a newer callback,
     // failure, process termination, or disappearance can cancel older work.
     @State private var navigationTaskManager = NavigationTaskManager()
+    @StateObject private var callbackRelay = ReaderWebViewCallbackRelay()
     
     @EnvironmentObject internal var readerContent: ReaderContent
     @EnvironmentObject internal var scriptCaller: WebViewScriptCaller
@@ -308,6 +317,24 @@ public struct ReaderWebView: View {
     @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject internal var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
+
+    @MainActor
+    private func makeHandler() -> ReaderWebViewHandler {
+        ReaderWebViewHandler(
+            navigationTaskManager: navigationTaskManager,
+            onNavigationCommitted: onNavigationCommitted,
+            onNavigationFinished: onNavigationFinished,
+            onNavigationFailed: onNavigationFailed,
+            onDocumentContextInvalidated: onDocumentContextInvalidated,
+            onURLChanged: onURLChanged,
+            readerContent: readerContent,
+            readerViewModel: readerViewModel,
+            readerModeViewModel: readerModeViewModel,
+            readerMediaPlayerViewModel: readerMediaPlayerViewModel,
+            scriptCaller: scriptCaller,
+            navigator: navigator
+        )
+    }
 
     private var ebookSchemeBindingState: String {
         [
@@ -372,20 +399,8 @@ public struct ReaderWebView: View {
     }
     
     public var body: some View {
-        let handler = ReaderWebViewHandler(
-            navigationTaskManager: navigationTaskManager,
-            onNavigationCommitted: onNavigationCommitted,
-            onNavigationFinished: onNavigationFinished,
-            onNavigationFailed: onNavigationFailed,
-            onDocumentContextInvalidated: onDocumentContextInvalidated,
-            onURLChanged: onURLChanged,
-            readerContent: readerContent,
-            readerViewModel: readerViewModel,
-            readerModeViewModel: readerModeViewModel,
-            readerMediaPlayerViewModel: readerMediaPlayerViewModel,
-            scriptCaller: scriptCaller,
-            navigator: navigator
-        )
+        let handler = makeHandler()
+        let _ = callbackRelay.handler = handler
         ReaderWebViewInternal(
             persistentWebViewID: persistentWebViewID,
             obscuredInsets: obscuredInsets,
@@ -409,7 +424,7 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler: ebookURLSchemeHandler,
             readerFileURLSchemeHandler: readerFileURLSchemeHandler,
             sharedReaderFontAsset: readerModeViewModel.sharedReaderFontAsset,
-            handler: handler
+            callbackRelay: callbackRelay
         )
         .task(id: ebookSchemeBindingState) { @MainActor in
             navigator.shouldLoadFallbackOnAttach = false
@@ -461,7 +476,7 @@ fileprivate struct ReaderWebViewInternal: View {
     var ebookURLSchemeHandler: EbookURLSchemeHandler
     var readerFileURLSchemeHandler: ReaderFileURLSchemeHandler
     let sharedReaderFontAsset: SharedReaderFontAsset?
-    let handler: ReaderWebViewHandler
+    let callbackRelay: ReaderWebViewCallbackRelay
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
 #if os(iOS)
@@ -547,22 +562,25 @@ fileprivate struct ReaderWebViewInternal: View {
                 (ebookURLSchemeHandler, "ebook"),
             ] + schemeHandlers,
             onNavigationCommitted: { state in
-                handler.onNavigationCommitted(state: state)
+                callbackRelay.handler?.onNavigationCommitted(state: state)
             },
             onNavigationFinished: { state in
-                handler.onNavigationFinished(state: state)
+                callbackRelay.handler?.onNavigationFinished(state: state)
             },
             onNavigationFailedWithDisposition: { state, disposition in
-                handler.onNavigationFailed(
+                callbackRelay.handler?.onNavigationFailed(
                     state: state,
                     disposition: disposition
                 )
             },
             onDocumentContextInvalidated: { state, reason in
-                handler.onDocumentContextInvalidated(state: state, reason: reason)
+                callbackRelay.handler?.onDocumentContextInvalidated(
+                    state: state,
+                    reason: reason
+                )
             },
             onURLChanged: { state in
-                handler.onURLChanged(state: state)
+                callbackRelay.handler?.onURLChanged(state: state)
             },
             onScrollBottomStateChanged: onScrollBottomStateChanged,
             buildMenu: { builder in
