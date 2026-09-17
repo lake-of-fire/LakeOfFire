@@ -1,0 +1,31 @@
+name: Publish list lifecycle review sources (not tests)
+on:
+  push:
+    branches: [transport/review-continuation-lake-20260917]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Construct and publish immutable lower and upper source heads
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, os, pathlib, zlib
+          source = zlib.decompress(pathlib.Path('.review-continuation-publish.py.zlib').read_bytes())
+          assert hashlib.sha256(source).hexdigest() == 'a1fb8005129c8c2c4b6b3055439699494de59f9ac9ee61c448d8b0ffca6fcb6d'
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'publish_review.py').write_bytes(source)
+          PY
+          git checkout --detach 0a815dc6adcb5c091e505722f611fbffcc5cee05
+          python3 "$RUNNER_TEMP/publish_review.py"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: review-continuation-sources
+          path: ${{ runner.temp }}/review-continuation-artifact
+          if-no-files-found: error
