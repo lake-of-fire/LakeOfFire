@@ -1,0 +1,40 @@
+name: Isolated review followup
+on:
+  push:
+    branches: [transport/review-followup-20260917]
+    paths: ['.github/workflows/review-followup.yml', '.review-transport/**']
+permissions:
+  contents: write
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Export exact source or publish reviewed patch
+        env:
+          BASE: 1ea8addb6689ece2b11342df3381fc3a9f39adc2
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/review-output
+          if [ -f .review-transport/apply.py ]; then
+            cp .review-transport/apply.py /tmp/apply-review.py
+            git checkout --detach "$BASE"
+            python3 /tmp/apply-review.py
+          fi
+          python3 - <<'PY'
+          import os, pathlib, subprocess, zipfile
+          base = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip() if pathlib.Path('/tmp/apply-review.py').exists() else os.environ['BASE']
+          paths = subprocess.check_output(['git','ls-tree','-r','--name-only',base], text=True).splitlines()
+          with zipfile.ZipFile('/tmp/review-output/source.zip','w',zipfile.ZIP_DEFLATED) as z:
+              for p in paths:
+                  if p.endswith(('.swift','.mjs','.js','.xctestplan')) or p in ['AGENTS.md','Package.resolved']:
+                      z.writestr(p, subprocess.check_output(['git','show',f'{base}:{p}']))
+              z.writestr('SOURCE_COMMIT.txt', base+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review-source-and-receipt
+          path: /tmp/review-output
+          retention-days: 7
