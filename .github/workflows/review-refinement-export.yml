@@ -1,0 +1,28 @@
+name: Review refinement source export
+on:
+  push:
+    branches: [review/20260917-refinement-transport]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 0a815dc6adcb5c091e505722f611fbffcc5cee05
+          persist-credentials: false
+      - name: Export exact public source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/review-export
+          git rev-parse HEAD HEAD^{tree} > /tmp/review-export/source-identity.txt
+          git archive --format=tar HEAD > /tmp/review-export/lake-source.tar
+          sha256sum /tmp/review-export/lake-source.tar > /tmp/review-export/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review-source-0a815dc6
+          path: /tmp/review-export
+          retention-days: 3
