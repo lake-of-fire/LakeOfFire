@@ -40,74 +40,93 @@ public struct EbookFileManager {
             return nil
         })
         
-        ReaderFileManager.fileProcessors.append({ @RealmBackgroundActor contentFiles in
-            var toUpdateWithImage = [(ContentFile, URL)]()
-            var toUpdateWithTitle = [(ContentFile, String)]()
-            var toUpdateWithAuthor = [(ContentFile, String?)]()
-            var toUpdateWithPublicationDate = [(ContentFile, Date)]()
-            var toUpdateAsPhysicalMedia = [ContentFile]()
-            
-            for contentFile in contentFiles {
-                // We'll determine it's an EPUB if the path extension is "epub" or if the mimeType suggests an EPUB/directory.
-                let pathExtension = contentFile.url.lakePathExtension.lowercased()
-                guard pathExtension == "epub"
-                        || contentFile.mimeType == "application/epub+zip"
-                        || contentFile.mimeType == "directory"
-                else {
-                    continue
-                }
+        // Configure may be called again by an isolated reader host. Replace this
+        // processor by identity rather than accumulating duplicate enrichment work.
+        ReaderFileManager.fileEnrichmentProcessors["epub"] = { contentFiles in
+            try await enrichMetadata(contentFiles)
+        }
+    }
 
-                guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url),
-                      let syncStatus = try? await ReaderFileManager.shared.cloudDriveSyncStatus(forReaderBackingURL: readerBackingURL),
-                      syncStatus == .availableLocally || syncStatus == .localOnly else {
-                    continue
-                }
-                
-                // Attempt to parse the EPUB for metadata + cover:
-                do {
-                    let localURL = try contentFile.systemFileURL
-                    if let metadata = try EPubParser.parseMetadataAndCover(from: localURL) {
-                        if contentFile.title != metadata.title {
-                            toUpdateWithTitle.append((contentFile, metadata.title))
-                        }
-                        if contentFile.author != (metadata.author ?? "") {
-                            toUpdateWithAuthor.append((contentFile, metadata.author))
-                        }
-                        if let publicationDate = metadata.publicationDate, contentFile.publicationDate != publicationDate {
-                            toUpdateWithPublicationDate.append((contentFile, publicationDate))
-                        }
+    @RealmBackgroundActor
+    static func enrichMetadata(
+        _ contentFiles: [ContentFile],
+        status: @MainActor (URL) async throws -> CloudDriveSyncStatus = {
+            try await ReaderFileManager.shared.cloudDriveSyncStatus(forReaderBackingURL: $0)
+        }
+    ) async throws -> Set<String> {
+        var deferredIDs = Set<String>()
+        var toUpdateWithImage = [(ContentFile, URL)]()
+        var toUpdateWithTitle = [(ContentFile, String)]()
+        var toUpdateWithAuthor = [(ContentFile, String?)]()
+        var toUpdateWithPublicationDate = [(ContentFile, Date)]()
+        var toUpdateAsPhysicalMedia = [ContentFile]()
 
-                        // If we found a cover href
-                        // We'll build the URL scheme to read the cover image from the same 'reader-file' approach
-                        // e.g. "reader-file://file/load/... ?subpath=<coverHref>"
-                        let coverURLPrefix = contentFile.url.absoluteString.replacingOccurrences(of: "ebook://ebook/load/", with: "reader-file://file/load/") + "?subpath="
-                        if let encodedPath = metadata.coverHref.addingPercentEncoding(withAllowedCharacters: subpathCharacterSet),
-                           let coverImageURL = URL(string: coverURLPrefix + encodedPath), contentFile.imageUrl != coverImageURL {
-                            toUpdateWithImage.append((contentFile, coverImageURL))
-                        }
-                        
-                        if !contentFile.isPhysicalMedia {
-                            toUpdateAsPhysicalMedia.append(contentFile)
-                        }
+        for contentFile in contentFiles {
+            // We'll determine it's an EPUB if the path extension is "epub" or if the mimeType suggests an EPUB/directory.
+            let pathExtension = contentFile.url.lakePathExtension.lowercased()
+            guard pathExtension == "epub"
+                    || contentFile.mimeType == "application/epub+zip"
+                    || contentFile.mimeType == "directory"
+            else {
+                continue
+            }
+
+            guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url),
+                  let syncStatus = try? await status(readerBackingURL),
+                  syncStatus == .availableLocally || syncStatus == .localOnly || syncStatus == .uploading else {
+                deferredIDs.insert(contentFile.compoundKey)
+                continue
+            }
+
+            // Attempt to parse the EPUB for metadata + cover:
+            do {
+                let localURL = try contentFile.systemFileURL
+                if let metadata = try EPubParser.parseMetadataAndCover(from: localURL) {
+                    if contentFile.title != metadata.title {
+                        toUpdateWithTitle.append((contentFile, metadata.title))
                     }
-                } catch {
-                    continue
+                    if contentFile.author != (metadata.author ?? "") {
+                        toUpdateWithAuthor.append((contentFile, metadata.author))
+                    }
+                    if let publicationDate = metadata.publicationDate, contentFile.publicationDate != publicationDate {
+                        toUpdateWithPublicationDate.append((contentFile, publicationDate))
+                    }
+
+                    // If we found a cover href
+                    // We'll build the URL scheme to read the cover image from the same 'reader-file' approach
+                    // e.g. "reader-file://file/load/... ?subpath=<coverHref>"
+                    let coverURLPrefix = contentFile.url.absoluteString.replacingOccurrences(of: "ebook://ebook/load/", with: "reader-file://file/load/") + "?subpath="
+                    if let encodedPath = metadata.coverHref.addingPercentEncoding(withAllowedCharacters: subpathCharacterSet),
+                       let coverImageURL = URL(string: coverURLPrefix + encodedPath), contentFile.imageUrl != coverImageURL {
+                        toUpdateWithImage.append((contentFile, coverImageURL))
+                    }
+
+                    if !contentFile.isPhysicalMedia {
+                        toUpdateAsPhysicalMedia.append(contentFile)
+                    }
+                } else {
+                    deferredIDs.insert(contentFile.compoundKey)
                 }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                deferredIDs.insert(contentFile.compoundKey)
             }
-            
-            if !toUpdateWithImage.isEmpty || !toUpdateWithTitle.isEmpty
-                || !toUpdateWithAuthor.isEmpty
-                || !toUpdateWithPublicationDate.isEmpty
-                || !toUpdateAsPhysicalMedia.isEmpty {
-                try await applyMetadataUpdates(
-                    images: toUpdateWithImage,
-                    titles: toUpdateWithTitle,
-                    authors: toUpdateWithAuthor,
-                    publicationDates: toUpdateWithPublicationDate,
-                    physicalMedia: toUpdateAsPhysicalMedia
-                )
-            }
-        })
+        }
+
+        if !toUpdateWithImage.isEmpty || !toUpdateWithTitle.isEmpty
+            || !toUpdateWithAuthor.isEmpty
+            || !toUpdateWithPublicationDate.isEmpty
+            || !toUpdateAsPhysicalMedia.isEmpty {
+            try await applyMetadataUpdates(
+                images: toUpdateWithImage,
+                titles: toUpdateWithTitle,
+                authors: toUpdateWithAuthor,
+                publicationDates: toUpdateWithPublicationDate,
+                physicalMedia: toUpdateAsPhysicalMedia
+            )
+        }
+        return deferredIDs
     }
 
     @RealmBackgroundActor
