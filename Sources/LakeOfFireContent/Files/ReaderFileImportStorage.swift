@@ -3,65 +3,78 @@ import SwiftCloudDrive
 import SwiftUtilities
 import LakeOfFireCore
 
-/// The actual installation step used by ReaderFileManager, separated from metadata indexing.
+/// Installs without overwriting an existing item. Content identity, not URL inequality,
+/// decides whether an existing destination can be reused.
 @MainActor
 enum ReaderFileImportStorage {
     static func install(fileURL: URL, targetDirectory: RootRelativePath, drive: CloudDrive) async throws -> RootRelativePath {
-        var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
-        let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
-
-        var targetExists = false
-        var distinctTargetExists = false
+        let isPackage = fileURL.isFilePackage()
         var originData: Data?
-        let targetIsFilePackage = targetURL.isFilePackage()
-        if targetIsFilePackage {
-            targetExists = true
-            if fileURL.isFilePackage() {
-                // Package comparison can involve thousands of files. Keep the
-                // main actor free while a deterministic manifest is streamed
-                // and hashed (path + type + size + bytes), and never follow a
-                // symlink outside the package root.
-                originData = try await Task.detached(priority: .utility) {
-                    try fileURL.packageManifestDigest()
-                }.value
-                if targetURL != fileURL {
-                    let targetDigest = try await Task.detached(priority: .utility) {
-                        try targetURL.packageManifestDigest()
-                    }.value
-                    distinctTargetExists = targetDigest != originData
-                }
+        var collisionHash: String?
+        var collision = 0
+        let baseName = fileURL.deletingPathExtension().lastPathComponent
+        let ext = fileURL.lakePathExtension.isEmpty ? "" : "." + fileURL.lakePathExtension
+        var candidate = targetDirectory.appending(fileURL.lastPathComponent)
+
+        func sourceIdentity() async throws -> Data {
+            if let originData { return originData }
+            let data: Data
+            if isPackage {
+                let work = Task.detached(priority: .utility) { try fileURL.packageManifestDigest() }
+                data = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
             } else {
-                distinctTargetExists = true
+                data = try await CoordinatedFileManager().contentsOfFile(coordinatingAccessAt: fileURL)
             }
-        } else if try await drive.fileExists(at: targetFilePath) {
-            let coordinatedFileManager = CoordinatedFileManager()
-            originData = try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: fileURL)
-            targetExists = true
-            distinctTargetExists = targetURL != fileURL
-            if !distinctTargetExists {
-                distinctTargetExists = try await drive.readFile(at: targetFilePath) != originData
-            }
+            try Task.checkCancellation()
+            originData = data
+            return data
         }
-        if distinctTargetExists, let originData = originData {
-            var needsUniqueName = targetIsFilePackage
-            if !needsUniqueName {
-                needsUniqueName = try await drive.readFile(at: targetFilePath) != originData
+
+        func existingMatches(_ path: RootRelativePath, at destination: URL) async throws -> Bool {
+            if destination.standardizedFileURL == fileURL.standardizedFileURL { return true }
+            guard destination.isFilePackage() == isPackage else { return false }
+            let source = try await sourceIdentity()
+            if isPackage {
+                let work = Task.detached(priority: .utility) { try destination.packageManifestDigest() }
+                let digest = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+                try Task.checkCancellation()
+                return digest == source
             }
-            if needsUniqueName {
-                // Make a unique filename
-                var ext = fileURL.lakePathExtension
-                if !ext.isEmpty {
-                    ext = "." + ext
+            return try await drive.readFile(at: path) == source
+        }
+
+        while true {
+            try Task.checkCancellation()
+            let destination = try candidate.fileURL(forRoot: drive.rootDirectory)
+            let exists: Bool
+            if destination.isFilePackage() {
+                exists = true
+            } else {
+                exists = try await drive.fileExists(at: candidate)
+            }
+            if exists {
+                if try await existingMatches(candidate, at: destination) { return candidate }
+            } else {
+                do {
+                    try await drive.upload(from: fileURL, to: candidate)
+                    return candidate
+                } catch {
+                    // A concurrent import may have installed the same name after our check.
+                    // Only an existing-destination error is retried; never swallow I/O failure.
+                    let nsError = error as NSError
+                    guard nsError.domain == NSCocoaErrorDomain,
+                          nsError.code == CocoaError.fileWriteFileExists.rawValue else { throw error }
+                    if try await existingMatches(candidate, at: destination) { return candidate }
                 }
-                let hash = String(format: "%02X", stableHash(data: originData)).prefix(6).uppercased()
-                let newFileName = fileURL.deletingPathExtension().lastPathComponent + " (\(hash))" + ext
-                targetFilePath = targetDirectory.appending(newFileName)
             }
+            if collisionHash == nil {
+                let identity = try await sourceIdentity()
+                collisionHash = String(format: "%02X", stableHash(data: identity)).prefix(6).uppercased()
+            }
+            guard collision < Int.max else { throw CocoaError(.fileWriteFileExists) }
+            collision += 1
+            let suffix = collision == 1 ? "" : "-\(collision)"
+            candidate = targetDirectory.appending(baseName + " (" + (collisionHash ?? "") + suffix + ")" + ext)
         }
-        // Don't overwrite
-        if distinctTargetExists || !targetExists {
-            try await drive.upload(from: fileURL, to: targetFilePath)
-        }
-        return targetFilePath
     }
 }

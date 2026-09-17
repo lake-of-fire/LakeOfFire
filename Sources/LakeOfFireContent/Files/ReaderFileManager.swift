@@ -32,6 +32,7 @@ public class CloudDriveSyncStatusModel: ObservableObject {
     
     @Published public var status: CloudDriveSyncStatus = .loadingStatus
     private var refreshTask: Task<Void, Never>? = nil
+    private var refreshID: UUID?
 
     typealias StatusLoader = @MainActor (ContentFile) async throws -> CloudDriveSyncStatus
     private let statusLoader: StatusLoader
@@ -52,33 +53,41 @@ public class CloudDriveSyncStatusModel: ObservableObject {
 
     @MainActor
     public func refreshAsync(item: ContentFile) async {
-        refreshTask?.cancel() // Cancel any existing task
-        refreshTask = Task { [weak self] in
-            // Continuously refresh status in the background
-            await self?.periodicStatusRefresh(item: item)
+        refreshTask?.cancel()
+        let identifier = UUID()
+        refreshID = identifier
+        let task = Task<Void, Never> { @MainActor [weak self] in
+            guard let self else { return }
+            await periodicStatusRefresh(item: item, identifier: identifier)
         }
-        await refreshTask?.value
+        refreshTask = task
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            // Capture this invocation's producer, never a subsequently assigned handle.
+            task.cancel()
+        }
+        if refreshID == identifier {
+            refreshTask = nil
+            refreshID = nil
+        }
     }
-    
-    private func periodicStatusRefresh(item: ContentFile) async {
-        while !Task.isCancelled {
+
+    private func periodicStatusRefresh(item: ContentFile, identifier: UUID) async {
+        while !Task.isCancelled, refreshID == identifier {
             do {
                 let newStatus = try await statusLoader(item)
-                await MainActor.run {
-                    self.status = newStatus
-                }
-                
-                // Check if we should continue refreshing
-                if newStatus != .downloading && newStatus != .uploading {
-                    break // Stop refreshing if status is not downloading or uploading
-                }
-                
+                try Task.checkCancellation()
+                guard refreshID == identifier else { return }
+                status = newStatus
+                guard newStatus == .downloading || newStatus == .uploading else { return }
                 try await pollingDelay()
+            } catch is CancellationError {
+                return
             } catch {
-                await MainActor.run {
-                    print(error)
-                }
-                break // Exit on error
+                guard !Task.isCancelled, refreshID == identifier else { return }
+                print(error)
+                return
             }
         }
     }

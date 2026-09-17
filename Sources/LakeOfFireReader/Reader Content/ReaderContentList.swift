@@ -615,6 +615,11 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         sortOrder: ReaderContentSortOrder? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) async throws {
+        loadContentsTask?.cancel()
+        let loadID = UUID()
+        currentLoadID = loadID
+        loadContentsTask = nil
+        try Task.checkCancellation()
         let contentIDs = contents.map(\.compoundKey)
 
         if sortOrder == nil && contentFilter == nil && postSortTransform == nil {
@@ -635,9 +640,6 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
 
         let realmConfig = contents.first?.realm?.configuration
         realmConfiguration = realmConfig
-        loadContentsTask?.cancel()
-        let loadID = UUID()
-        currentLoadID = loadID
         let task = Task { @ReaderContentListActor in
             var filtered: [C] = []
 
@@ -713,14 +715,14 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             let ids = publicationContents.map(\.compoundKey)
             try await { @MainActor [weak self] in
                 guard let self else { return }
-                guard self.currentLoadID == loadID else {
+                guard !Task.isCancelled, self.currentLoadID == loadID else {
                     return
                 }
                 let resolvedContents: [C]
                 let resolvedIDs: [String]
                 if let realmConfig {
                     let realm = try await Realm(configuration: realmConfig, actor: MainActor.shared)
-                    guard self.currentLoadID == loadID else {
+                    guard !Task.isCancelled, self.currentLoadID == loadID else {
                         return
                     }
                     let resolvedItems = ids.compactMap { id in
@@ -739,7 +741,11 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         }
         loadContentsTask = task
 
-        try? await task.value
+        try? await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
         guard currentLoadID == loadID else {
             return
         }
