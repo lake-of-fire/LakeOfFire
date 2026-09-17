@@ -240,6 +240,12 @@ fileprivate struct DownloadableBookListRow: View {
                         onNavigateToReader: onNavigateToReader
                     )
                 } catch {
+                    if let message = BookDownloadOpenFailurePresentation.message(
+                        for: error,
+                        title: publication.title
+                    ) {
+                        errorMessage = message
+                    }
                     print("Failed to open downloaded book: \(error)")
                 }
             } else {
