@@ -20,6 +20,9 @@ jobs:
           import hashlib, os, pathlib, zlib
           source = zlib.decompress(pathlib.Path('.review-stack-publish.py.zlib').read_bytes())
           assert hashlib.sha256(source).hexdigest() == '84884a60013fc302a5ea420d5e5f652b825a44bc8f1511481ba60fe8820f8961'
+          assert source.count(b'+s[stop:]') == 1
+          source = source.replace(b'+s[stop:]', b'+s[stop + 8:]', 1)
+          assert hashlib.sha256(source).hexdigest() == '9dbbe4521a1ab70c1bcc23f6b9e540e6d8ce2847927d26ee03ae62a3634716e8'
           pathlib.Path(os.environ['RUNNER_TEMP'], 'lake_stack.py').write_bytes(source)
           PY
           test -z "$(git ls-remote --heads origin review/20260917-red-reader-boundaries review/20260917-green-reader-boundaries)"
