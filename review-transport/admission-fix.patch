@@ -1,0 +1,31 @@
+diff --git a/Sources/LakeOfFireContent/Files/ReaderFileManager.swift b/Sources/LakeOfFireContent/Files/ReaderFileManager.swift
+index 14c8fbe..3f47a8b 100644
+--- a/Sources/LakeOfFireContent/Files/ReaderFileManager.swift
++++ b/Sources/LakeOfFireContent/Files/ReaderFileManager.swift
+@@ -53,6 +53,8 @@ public class CloudDriveSyncStatusModel: ObservableObject {
+ 
+     @MainActor
+     public func refreshAsync(item: ContentFile) async {
++        // A caller cancelled before admission does not own the current producer.
++        guard !Task.isCancelled else { return }
+         refreshTask?.cancel()
+         let identifier = UUID()
+         refreshID = identifier
+diff --git a/Sources/LakeOfFireReader/Reader Content/ReaderContentList.swift b/Sources/LakeOfFireReader/Reader Content/ReaderContentList.swift
+index 8122e60..5b5b96d 100644
+--- a/Sources/LakeOfFireReader/Reader Content/ReaderContentList.swift	
++++ b/Sources/LakeOfFireReader/Reader Content/ReaderContentList.swift	
+@@ -615,11 +615,12 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
+         sortOrder: ReaderContentSortOrder? = nil,
+         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
+     ) async throws {
++        // Reject cancellation before revoking another caller's publication rights.
++        try Task.checkCancellation()
+         loadContentsTask?.cancel()
+         let loadID = UUID()
+         currentLoadID = loadID
+         loadContentsTask = nil
+-        try Task.checkCancellation()
+         let contentIDs = contents.map(\.compoundKey)
+ 
+         if sortOrder == nil && contentFilter == nil && postSortTransform == nil {

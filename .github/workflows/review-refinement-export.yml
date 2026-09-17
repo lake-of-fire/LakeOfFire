@@ -1,28 +1,40 @@
-name: Review refinement source export
+name: Publish reviewed cancellation refinement
 on:
   push:
     branches: [review/20260917-refinement-transport]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  export:
+  publish:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 0a815dc6adcb5c091e505722f611fbffcc5cee05
+          path: transport
           persist-credentials: false
-      - name: Export exact public source
+      - uses: actions/checkout@v4
+        with:
+          ref: 0a815dc6adcb5c091e505722f611fbffcc5cee05
+          path: product
+      - name: Reconstruct exact reviewed trees without transport ancestry
+        working-directory: product
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/review-export
-          git rev-parse HEAD HEAD^{tree} > /tmp/review-export/source-identity.txt
-          git archive --format=tar HEAD > /tmp/review-export/lake-source.tar
-          sha256sum /tmp/review-export/lake-source.tar > /tmp/review-export/SHA256SUMS
-      - uses: actions/upload-artifact@v4
-        with:
-          name: review-source-0a815dc6
-          path: /tmp/review-export
-          retention-days: 3
+          git config user.name 'Alex Ehlke'
+          git config user.email '71601+aehlke@users.noreply.github.com'
+          test "$(git rev-parse HEAD^{tree})" = 4dd318a52dfe08df2f58bc219c1bf20b4905c6e2
+          git apply --index ../transport/review-transport/admission-tests.patch
+          git diff --cached --check
+          git commit -m 'test: reject pre-cancelled status and list ownership takeover'
+          test "$(git rev-parse HEAD^{tree})" = c75d85eab33c1a39922dfcb0f7c0ea17a5e875b7
+          red=$(git rev-parse HEAD)
+          git branch review/20260917-red-cancelled-admission
+          git apply --index ../transport/review-transport/admission-fix.patch
+          git diff --cached --check
+          git commit -m 'fix: reject cancelled callers before revoking active reader work'
+          test "$(git rev-parse HEAD^{tree})" = aa97c792059e93892c7eef02f2645454f6e791fa
+          git branch review/20260917-green-cancelled-admission
+          git push --atomic origin review/20260917-red-cancelled-admission review/20260917-green-cancelled-admission
+          printf 'RED=%s\nGREEN=%s\nTREE=%s\n' "$red" "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
