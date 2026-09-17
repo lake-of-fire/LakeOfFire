@@ -615,11 +615,12 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         sortOrder: ReaderContentSortOrder? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) async throws {
+        // Reject cancellation before revoking another caller's publication rights.
+        try Task.checkCancellation()
         loadContentsTask?.cancel()
         let loadID = UUID()
         currentLoadID = loadID
         loadContentsTask = nil
-        try Task.checkCancellation()
         let contentIDs = contents.map(\.compoundKey)
 
         if sortOrder == nil && contentFilter == nil && postSortTransform == nil {

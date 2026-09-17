@@ -53,6 +53,8 @@ public class CloudDriveSyncStatusModel: ObservableObject {
 
     @MainActor
     public func refreshAsync(item: ContentFile) async {
+        // A caller cancelled before admission does not own the current producer.
+        guard !Task.isCancelled else { return }
         refreshTask?.cancel()
         let identifier = UUID()
         refreshID = identifier
