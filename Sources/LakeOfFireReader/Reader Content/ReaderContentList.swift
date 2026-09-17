@@ -938,21 +938,11 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
             onContentAppear?(content)
-            if let item = content as? ContentFile {
-                await cloudDriveSyncStatusModel.refreshAsync(item: item)
-            }
         }
-        .onReceive(NotificationCenter.default.publisher(for: ReaderFileManager.readerBackingStatusRefreshRequestedNotification)) { notification in
-            guard let contentFile = content as? ContentFile,
-                  let requestedURLString = notification.object as? String,
-                  let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url),
-                  readerBackingURL.absoluteString == requestedURLString else {
-                return
-            }
-            Task { @MainActor in
-                await cloudDriveSyncStatusModel.refreshAsync(item: contentFile)
-            }
-        }
+        .modifier(ReaderFileStatusRefreshModifier(
+            item: content as? ContentFile,
+            statusModel: cloudDriveSyncStatusModel
+        ))
     }
 }
 

@@ -25,6 +25,7 @@ public class BookLibraryModalsModel: ObservableObject {
 struct BookLibrarySheetsModifier: ViewModifier {
     let isActive: Bool
     @ObservedObject var bookLibraryModalsModel: BookLibraryModalsModel
+    @AppStorage("errorMessage") private var errorMessage = ""
 
     @StateObject private var opdsCatalogsViewModel = OPDSCatalogsViewModel()
 
@@ -49,14 +50,23 @@ struct BookLibrarySheetsModifier: ViewModifier {
                             case .success(let url):
                                 do {
                                     guard let _ = try await ReaderFileManager.shared.importFile(fileURL: url, fromDownloadURL: nil) else {
+                                        if let message = ReaderFileImportPresentation.missingResult(for: url) {
+                                            errorMessage = message
+                                        }
                                         print("Couldn't import \(url.absoluteString)")
                                         return
                                     }
                                 } catch {
+                                    if let message = ReaderFileImportPresentation.failure(error, importing: url) {
+                                        errorMessage = message
+                                    }
                                     print("Couldn't import \(url.absoluteString): \(error)")
                                     return
                                 }
                             case .failure(let error):
+                                if let message = ReaderFileImportPresentation.failure(error) {
+                                    errorMessage = message
+                                }
                                 print(error)
                             }
                         }
