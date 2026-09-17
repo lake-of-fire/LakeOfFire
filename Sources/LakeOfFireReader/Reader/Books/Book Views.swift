@@ -142,6 +142,7 @@ fileprivate struct DownloadableBookListRow: View {
     @ObservedObject var downloadable: Downloadable
 
     @State private var wasDownloaded = false
+    @AppStorage("errorMessage") private var errorMessage = ""
     @ObservedObject private var downloadController = DownloadController.shared
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
@@ -193,7 +194,17 @@ fileprivate struct DownloadableBookListRow: View {
             if !wasAlreadyDownloaded {
                 await downloadController.ensureDownloaded([downloadable])
             }
-            _ = try? await ReaderFileManager.shared.ensureImported(downloadable: downloadable)
+            let importOutcome = await BookDownloadImportAttempt.perform(
+                importing: downloadable.localDestination
+            ) {
+                try await ReaderFileManager.shared.ensureImported(
+                    downloadable: downloadable
+                )
+            }
+            if let message = importOutcome.userFacingMessage {
+                errorMessage = message
+            }
+            guard importOutcome.shouldContinueSelection else { return }
             onSelected?(wasAlreadyDownloaded)
         }
     }
@@ -201,8 +212,17 @@ fileprivate struct DownloadableBookListRow: View {
     @MainActor
     private func refreshDownloadable() async {
         if await downloadable.existsLocally() && !wasDownloaded {
-            _ = try? await ReaderFileManager.shared.ensureImported(downloadable: downloadable)
-            wasDownloaded = true
+            let importOutcome = await BookDownloadImportAttempt.perform(
+                importing: downloadable.localDestination
+            ) {
+                try await ReaderFileManager.shared.ensureImported(
+                    downloadable: downloadable
+                )
+            }
+            if let message = importOutcome.userFacingMessage {
+                errorMessage = message
+            }
+            wasDownloaded = importOutcome.shouldMarkDownloaded
         }
     }
 
