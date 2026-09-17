@@ -9,7 +9,16 @@ func observeReaderContentCellAnnotationStatus(
     publish: @MainActor (ReaderContentCellAnnotationStatus) -> Void
 ) async {
     guard !Task.isCancelled else { return }
-    let value = await initialStatus()
-    guard !Task.isCancelled else { return }
-    publish(value)
+    if let stream = updates() {
+        // These are complete per-row snapshots, not lossy invalidation IDs.
+        // A host can coalesce them without adding any per-row Realm observer.
+        for await value in stream {
+            guard !Task.isCancelled else { return }
+            publish(value)
+        }
+    } else {
+        let value = await initialStatus()
+        guard !Task.isCancelled else { return }
+        publish(value)
+    }
 }
