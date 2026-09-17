@@ -357,21 +357,49 @@ public class BookLibraryViewModel: ObservableObject {
             await BookLibraryViewModel.fetchPublications(from: $0)
         }
 
+    private var editorsPicksFetchGeneration: UInt64 = 0
+    private var editorsPicksFetchTask: Task<Void, Never>?
+
     func fetchAllData() async {
-        fetchEditorsPicks()
+        let task = startEditorsPicksFetch()
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     func fetchEditorsPicks() {
-        Task {
-            let (publications, errorMessage) =
-                await publicationFetcher(opdsURL)
-            await MainActor.run {
-                self.editorsPicks = publications
-                self.errorMessage = errorMessage.map { _ in
-                    "\(mediaTypeTitle) editor's picks are unavailable. Pull to refresh or try again later."
-                }
+        _ = startEditorsPicksFetch()
+    }
+
+    @discardableResult
+    private func startEditorsPicksFetch() -> Task<Void, Never> {
+        editorsPicksFetchTask?.cancel()
+        editorsPicksFetchGeneration &+= 1
+        let generation = editorsPicksFetchGeneration
+        let fetcher = publicationFetcher
+        let url = opdsURL
+
+        let task = Task { @MainActor [weak self] in
+            let (publications, errorMessage) = await fetcher(url)
+            guard let self,
+                  !Task.isCancelled,
+                  self.editorsPicksFetchGeneration == generation
+            else {
+                return
+            }
+
+            self.editorsPicks = publications
+            self.errorMessage = errorMessage.map { _ in
+                "\(self.mediaTypeTitle) editor's picks are unavailable. Pull to refresh or try again later."
+            }
+            if self.editorsPicksFetchGeneration == generation {
+                self.editorsPicksFetchTask = nil
             }
         }
+        editorsPicksFetchTask = task
+        return task
     }
 
     @MainActor
