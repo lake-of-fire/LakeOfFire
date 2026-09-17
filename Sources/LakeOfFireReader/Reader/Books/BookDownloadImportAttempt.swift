@@ -25,3 +25,12 @@ enum BookDownloadImportAttempt {
         )
     }
 }
+
+enum BookDownloadOpenFailurePresentation {
+    static func message(
+        for error: Error,
+        title: String
+    ) -> String? {
+        nil
+    }
+}
