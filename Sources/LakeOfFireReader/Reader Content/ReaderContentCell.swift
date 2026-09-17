@@ -78,9 +78,14 @@ enum ReaderContentCellHistoryState: Equatable, Sendable {
     case read
 }
 
-private struct ReaderContentCellLoadIdentity: Hashable {
+struct ReaderContentCellLoadIdentity: Hashable {
     let compoundKey: String
     let includesSource: Bool
+
+    init(item: any ReaderContentProtocol, includesSource: Bool) {
+        compoundKey = item.compoundKey
+        self.includesSource = includesSource
+    }
 }
 
 private func usableReaderContentSourceIconURL(_ url: URL?) -> URL? {
@@ -108,7 +113,13 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     var remainingTime: TimeInterval? { displayState.remainingTime }
     var hasLoadedDisplayState: Bool { displayState.hasLoadedDisplayState }
 
-    init() { }
+    private let imageURLLoader: @MainActor (C) async throws -> URL?
+
+    init(imageURLLoader: @escaping @MainActor (C) async throws -> URL? = {
+        try await $0.imageURLToDisplay()
+    }) {
+        self.imageURLLoader = imageURLLoader
+    }
 
     func observeHistory(for itemURL: URL) async throws {
         try Task.checkCancellation()
@@ -174,7 +185,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
         let itemURL = item.url
-        let imageURL = try await item.imageURLToDisplay()
+        let imageURL = try await imageURLLoader(item)
         try Task.checkCancellation()
         guard generation == loadGeneration else { throw CancellationError() }
         let nextDisplayState = try await { @ReaderContentCellActor in
@@ -1200,7 +1211,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             viewModel.forceShowBookmark = hovered
         }
         .task(id: ReaderContentCellLoadIdentity(
-            compoundKey: item.compoundKey,
+            item: item,
             includesSource: appearance.includeSource
         )) {
             try? await viewModel.load(item: item, includeSource: appearance.includeSource)
