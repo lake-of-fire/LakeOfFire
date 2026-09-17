@@ -1,0 +1,28 @@
+name: Publish review stack sources (no native tests)
+on:
+  push:
+    branches: [transport/review-stack-20260917-lake]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Publish immutable test-first and fix branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, os, pathlib, zlib
+          source = zlib.decompress(pathlib.Path('.review-stack-publish.py.zlib').read_bytes())
+          assert hashlib.sha256(source).hexdigest() == '84884a60013fc302a5ea420d5e5f652b825a44bc8f1511481ba60fe8820f8961'
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'lake_stack.py').write_bytes(source)
+          PY
+          test -z "$(git ls-remote --heads origin review/20260917-red-reader-boundaries review/20260917-green-reader-boundaries)"
+          git checkout --detach 9f8d55004214797a6f6d1a0d2beadb47df6d4666
+          python3 "$RUNNER_TEMP/lake_stack.py"
+          echo 'Publication only. No Swift or native tests were executed.'
