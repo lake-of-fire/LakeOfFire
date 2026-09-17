@@ -1,0 +1,87 @@
+diff --git a/Sources/LakeOfFireReader/Reader Content/ReaderContentCell.swift b/Sources/LakeOfFireReader/Reader Content/ReaderContentCell.swift
+index fb4c243..032ef77 100644
+--- a/Sources/LakeOfFireReader/Reader Content/ReaderContentCell.swift	
++++ b/Sources/LakeOfFireReader/Reader Content/ReaderContentCell.swift	
+@@ -78,13 +78,21 @@ enum ReaderContentCellHistoryState: Equatable, Sendable {
+     case read
+ }
+ 
++/// Same-row metadata edits must restart the one generation-fenced loader.
++/// Progress stored in other models needs a separate upstream invalidation signal.
+ struct ReaderContentCellLoadIdentity: Hashable {
+     let compoundKey: String
+     let includesSource: Bool
++    let url: URL
++    let modifiedAt: Date
++    let imageURL: URL?
+ 
+     init(item: any ReaderContentProtocol, includesSource: Bool) {
+         compoundKey = item.compoundKey
+         self.includesSource = includesSource
++        url = item.url
++        modifiedAt = item.modifiedAt
++        imageURL = item.imageUrl
+     }
+ }
+ 
+@@ -175,6 +183,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
+ 
+     @MainActor
+     func load(item: C, includeSource: Bool) async throws {
++        try Task.checkCancellation()
+         loadGeneration &+= 1
+         let generation = loadGeneration
+         if displayState.hasLoadedDisplayState {
+@@ -206,6 +215,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
+             let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
+             let itemSourceIconURL = item.sourceIconURL
+             let feed = (item as? FeedEntry)?.getFeed()
++            let feedTitle = feed?.title
+             let sourceIconURL = usableReaderContentSourceIconURL(feed?.iconUrl) ?? usableReaderContentSourceIconURL(itemSourceIconURL)
+             let tracksReadingProgress = item.tracksReadingProgress
+             let progressResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL) : nil
+@@ -215,8 +225,8 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
+             if includeSource {
+                 if itemURL.isSnippetURL {
+                     sourceTitle = "Snippet"
+-                } else if let feed {
+-                    sourceTitle = feed.title
++                } else if let feedTitle {
++                    sourceTitle = feedTitle
+                 } else if let host = itemURL.host, !host.isEmpty {
+                     sourceTitle = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+                 }
+@@ -242,13 +252,6 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
+         displayState = nextDisplayState
+     }
+ 
+-    @MainActor
+-    func updateImageURL(_ imageURL: URL?) {
+-        guard imageURL != displayState.imageURL else { return }
+-        var nextState = displayState
+-        nextState.imageURL = imageURL
+-        displayState = nextState
+-    }
+ }
+ 
+ public struct ReaderContentCellAppearance {
+@@ -1224,14 +1227,11 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
+                 debugPrint("Failed to observe reader-content history", error)
+             }
+         }
+-        .task(id: item.compoundKey) {
+-            annotationStatus = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
+-        }
+-        .onChange(of: item.imageUrl) { newImageURL in
+-            guard newImageURL != viewModel.imageURL else { return }
+-            Task { @MainActor in
+-                viewModel.updateImageURL(try await item.imageURLToDisplay())
+-            }
++        .task(id: ReaderContentCellLoadIdentity(item: item, includesSource: false)) {
++            guard !Task.isCancelled else { return }
++            let status = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
++            guard !Task.isCancelled else { return }
++            annotationStatus = status
+         }
+     }
+ }

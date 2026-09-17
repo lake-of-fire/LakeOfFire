@@ -1,4 +1,4 @@
-name: Publish reviewed cancellation refinement
+name: Publish reviewed cell refresh refinement
 on:
   push:
     branches: [review/20260917-refinement-transport]
@@ -15,26 +15,26 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          ref: 0a815dc6adcb5c091e505722f611fbffcc5cee05
+          ref: e86a18a3a4e4325b75f9bf309f0919d071a177d3
           path: product
-      - name: Reconstruct exact reviewed trees without transport ancestry
+      - name: Reconstruct checked source trees without transport ancestry
         working-directory: product
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'Alex Ehlke'
           git config user.email '71601+aehlke@users.noreply.github.com'
-          test "$(git rev-parse HEAD^{tree})" = 4dd318a52dfe08df2f58bc219c1bf20b4905c6e2
-          git apply --index ../transport/review-transport/admission-tests.patch
-          git diff --cached --check
-          git commit -m 'test: reject pre-cancelled status and list ownership takeover'
-          test "$(git rev-parse HEAD^{tree})" = c75d85eab33c1a39922dfcb0f7c0ea17a5e875b7
-          red=$(git rev-parse HEAD)
-          git branch review/20260917-red-cancelled-admission
-          git apply --index ../transport/review-transport/admission-fix.patch
-          git diff --cached --check
-          git commit -m 'fix: reject cancelled callers before revoking active reader work'
           test "$(git rev-parse HEAD^{tree})" = aa97c792059e93892c7eef02f2645454f6e791fa
-          git branch review/20260917-green-cancelled-admission
-          git push --atomic origin review/20260917-red-cancelled-admission review/20260917-green-cancelled-admission
+          git apply --index ../transport/review-transport/cell-tests.patch
+          git diff --cached --check
+          git commit -m 'test: reproduce cell refresh identity and cancelled admission gaps'
+          test "$(git rev-parse HEAD^{tree})" = 7e9eb77de6ee9376e48cb16783d8030eec3b5619
+          red=$(git rev-parse HEAD)
+          git branch review/20260917-red-cell-refresh
+          git apply --index ../transport/review-transport/cell-fix.patch
+          git diff --cached --check
+          git commit -m 'fix: refresh cell metadata through its cancellable load owner'
+          test "$(git rev-parse HEAD^{tree})" = 93fba7c660560ad6377f17095dc5198771ede413
+          git branch review/20260917-green-cell-refresh
+          git push --atomic origin review/20260917-red-cell-refresh review/20260917-green-cell-refresh
           printf 'RED=%s\nGREEN=%s\nTREE=%s\n' "$red" "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
