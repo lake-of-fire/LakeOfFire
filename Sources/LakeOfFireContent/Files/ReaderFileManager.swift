@@ -33,8 +33,23 @@ public class CloudDriveSyncStatusModel: ObservableObject {
     @Published public var status: CloudDriveSyncStatus = .loadingStatus
     private var refreshTask: Task<Void, Never>? = nil
 
-    public init() { }
-    
+    typealias StatusLoader = @MainActor (ContentFile) async throws -> CloudDriveSyncStatus
+    private let statusLoader: StatusLoader
+    private let pollingDelay: @Sendable () async throws -> Void
+
+    public init() {
+        statusLoader = { try await $0.cloudDriveSyncStatus() }
+        pollingDelay = { try await Task.sleep(nanoseconds: 2_000_000_000) }
+    }
+
+    init(statusLoader: @escaping StatusLoader,
+         pollingDelay: @escaping @Sendable () async throws -> Void = {
+             try await Task.sleep(nanoseconds: 2_000_000_000)
+         }) {
+        self.statusLoader = statusLoader
+        self.pollingDelay = pollingDelay
+    }
+
     @MainActor
     public func refreshAsync(item: ContentFile) async {
         refreshTask?.cancel() // Cancel any existing task
@@ -48,7 +63,7 @@ public class CloudDriveSyncStatusModel: ObservableObject {
     private func periodicStatusRefresh(item: ContentFile) async {
         while !Task.isCancelled {
             do {
-                let newStatus = try await item.cloudDriveSyncStatus()
+                let newStatus = try await statusLoader(item)
                 await MainActor.run {
                     self.status = newStatus
                 }
@@ -58,7 +73,7 @@ public class CloudDriveSyncStatusModel: ObservableObject {
                     break // Stop refreshing if status is not downloading or uploading
                 }
                 
-                try await Task.sleep(nanoseconds: 2_000_000_000)
+                try await pollingDelay()
             } catch {
                 await MainActor.run {
                     print(error)
@@ -570,9 +585,6 @@ public class ReaderFileManager: ObservableObject {
         }
         
         let targetDirectory = try await Self.rootRelativePath(forImportedURL: downloadURL ?? fileURL, drive: drive)
-        var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
-        let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
-        
         let shouldStopAccessingFile = fileURL.startAccessingSecurityScopedResource()
         defer {
             if shouldStopAccessingFile {
@@ -582,59 +594,9 @@ public class ReaderFileManager: ObservableObject {
         
         try await drive.createDirectory(at: targetDirectory)
         
-        var targetExists = false
-        var distinctTargetExists = false
-        var originData: Data?
-        let targetIsFilePackage = targetURL.isFilePackage()
-        if targetIsFilePackage {
-            targetExists = true
-            if fileURL.isFilePackage() {
-                // Package comparison can involve thousands of files. Keep the
-                // main actor free while a deterministic manifest is streamed
-                // and hashed (path + type + size + bytes), and never follow a
-                // symlink outside the package root.
-                originData = try await Task.detached(priority: .utility) {
-                    try fileURL.packageManifestDigest()
-                }.value
-                if targetURL != fileURL {
-                    let targetDigest = try await Task.detached(priority: .utility) {
-                        try targetURL.packageManifestDigest()
-                    }.value
-                    distinctTargetExists = targetDigest != originData
-                }
-            } else {
-                distinctTargetExists = true
-            }
-        } else if try await drive.fileExists(at: targetFilePath) {
-            let coordinatedFileManager = CoordinatedFileManager()
-            originData = try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: fileURL)
-            targetExists = true
-            distinctTargetExists = targetURL != fileURL
-            if !distinctTargetExists {
-                distinctTargetExists = try await drive.readFile(at: targetFilePath) != originData
-            }
-        }
-        if distinctTargetExists, let originData = originData {
-            var needsUniqueName = targetIsFilePackage
-            if !needsUniqueName {
-                needsUniqueName = try await drive.readFile(at: targetFilePath) != originData
-            }
-            if needsUniqueName {
-                // Make a unique filename
-                var ext = fileURL.lakePathExtension
-                if !ext.isEmpty {
-                    ext = "." + ext
-                }
-                let hash = String(format: "%02X", stableHash(data: originData)).prefix(6).uppercased()
-                let newFileName = fileURL.deletingPathExtension().lastPathComponent + " (\(hash))" + ext
-                targetFilePath = targetDirectory.appending(newFileName)
-            }
-        }
-        // Don't overwrite
-        if distinctTargetExists || !targetExists {
-            try await drive.upload(from: fileURL, to: targetFilePath)
-        }
-        
+        let targetFilePath = try await ReaderFileImportStorage.install(
+            fileURL: fileURL, targetDirectory: targetDirectory, drive: drive
+        )
         do {
             let metadataRefs = try await refreshFilesMetadata(
                 drive: drive,

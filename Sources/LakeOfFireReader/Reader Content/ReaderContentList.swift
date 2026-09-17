@@ -353,7 +353,13 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                             source: "ReaderContentList.selection"
                         )
                     } catch {
-                        errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
+                        if let message = ReaderSelectionErrorPolicy.message(
+                            for: error,
+                            requestIsCurrent: selectionLoadGeneration == loadGeneration
+                                && entrySelection == itemSelection
+                        ) {
+                            errorMessage = message
+                        }
                         debugPrint("Failed to open reader content for selection", error)
                     }
                     if selectionLoadGeneration == loadGeneration, entrySelection == itemSelection {
