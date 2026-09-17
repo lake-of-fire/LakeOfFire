@@ -9,20 +9,43 @@ struct BookDownloadImportAttemptOutcome {
 }
 
 /// Production decision boundary for converting downloaded bytes into a Reader
-/// library item. The lower tier intentionally preserves legacy behavior.
+/// library item.
 enum BookDownloadImportAttempt {
     @MainActor
     static func perform(
         importing sourceURL: URL,
         operation: () async throws -> URL?
     ) async -> BookDownloadImportAttemptOutcome {
-        let importedURL = try? await operation()
-        return BookDownloadImportAttemptOutcome(
-            importedURL: importedURL,
-            shouldMarkDownloaded: true,
-            shouldContinueSelection: true,
-            userFacingMessage: nil
-        )
+        do {
+            guard let importedURL = try await operation() else {
+                return BookDownloadImportAttemptOutcome(
+                    importedURL: nil,
+                    shouldMarkDownloaded: false,
+                    shouldContinueSelection: false,
+                    userFacingMessage:
+                        ReaderFileImportPresentation.missingResult(
+                            for: sourceURL
+                        )
+                )
+            }
+            return BookDownloadImportAttemptOutcome(
+                importedURL: importedURL,
+                shouldMarkDownloaded: true,
+                shouldContinueSelection: true,
+                userFacingMessage: nil
+            )
+        } catch {
+            return BookDownloadImportAttemptOutcome(
+                importedURL: nil,
+                shouldMarkDownloaded: false,
+                shouldContinueSelection: false,
+                userFacingMessage:
+                    ReaderFileImportPresentation.failure(
+                        error,
+                        importing: sourceURL
+                    )
+            )
+        }
     }
 }
 
@@ -31,6 +54,19 @@ enum BookDownloadOpenFailurePresentation {
         for error: Error,
         title: String
     ) -> String? {
-        nil
+        let nsError = error as NSError
+        guard !(error is CancellationError),
+              !(nsError.domain == NSCocoaErrorDomain
+                && nsError.code == CocoaError.userCancelled.rawValue),
+              !(nsError.domain == NSURLErrorDomain
+                && nsError.code == URLError.cancelled.rawValue)
+        else {
+            return nil
+        }
+
+        let detail =
+            ReaderFileOperationMessageMapper.openMessage(for: error)
+            ?? error.localizedDescription
+        return "Couldn't open \(title). \(detail)"
     }
 }
