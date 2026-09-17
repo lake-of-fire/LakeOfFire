@@ -352,13 +352,19 @@ public class BookLibraryViewModel: ObservableObject {
     @Published public var onNavigateToReader: (() -> Void)?
     private var cancellables = Set<AnyCancellable>()
 
+    var publicationFetcher:
+        @MainActor (URL) async -> ([Publication], String?) = {
+            await BookLibraryViewModel.fetchPublications(from: $0)
+        }
+
     func fetchAllData() async {
         fetchEditorsPicks()
     }
 
     func fetchEditorsPicks() {
         Task {
-            let (publications, errorMessage) = await Self.fetchPublications(from: opdsURL)
+            let (publications, errorMessage) =
+                await publicationFetcher(opdsURL)
             await MainActor.run {
                 self.editorsPicks = publications
                 self.errorMessage = errorMessage.map { _ in
