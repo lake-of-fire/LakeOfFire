@@ -17,7 +17,7 @@ struct ReaderFileStatusRefreshModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .task { @MainActor in
+            .task(id: RefreshKey(itemID: item?.compoundKey, url: item?.url, revision: refreshRevision)) { @MainActor in
                 guard let item else { return }
                 await statusModel.refreshAsync(item: item)
             }
@@ -26,9 +26,8 @@ struct ReaderFileStatusRefreshModifier: ViewModifier {
                       let requestedURL = notification.object as? String,
                       let backingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: item.url),
                       backingURL.absoluteString == requestedURL else { return }
-                Task { @MainActor in
-                    await statusModel.refreshAsync(item: item)
-                }
+                // SwiftUI owns and cancels every replacement, including on disappearance.
+                refreshRevision = UUID()
             }
     }
 }

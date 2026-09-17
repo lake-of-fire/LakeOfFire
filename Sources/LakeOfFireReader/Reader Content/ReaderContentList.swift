@@ -615,11 +615,12 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         sortOrder: ReaderContentSortOrder? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) async throws {
+        // A cancelled caller never acquires authority to supersede active work.
+        try Task.checkCancellation()
         loadContentsTask?.cancel()
         let loadID = UUID()
         currentLoadID = loadID
         loadContentsTask = nil
-        try Task.checkCancellation()
         let contentIDs = contents.map(\.compoundKey)
 
         if sortOrder == nil && contentFilter == nil && postSortTransform == nil {
@@ -633,6 +634,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         if !hasLoadedBefore,
            filteredContents.isEmpty,
            !contents.isEmpty,
+           contentFilter == nil,
            postSortTransform == nil {
             let initialContents = Self.initialDisplayContents(from: contents, sortOrder: sortOrder)
             applyFilteredContents(initialContents, ids: initialContents.map(\.compoundKey))
@@ -741,14 +743,20 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         }
         loadContentsTask = task
 
-        try? await withTaskCancellationHandler {
-            try await task.value
-        } onCancel: {
-            task.cancel()
+        do {
+            try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+            try Task.checkCancellation()
+        } catch {
+            // Only the owner can retire loading state or report its failure.
+            guard currentLoadID == loadID else { return }
+            loadContentsTask = nil
+            throw error
         }
-        guard currentLoadID == loadID else {
-            return
-        }
+        guard currentLoadID == loadID else { return }
         loadContentsTask = nil
     }
 }

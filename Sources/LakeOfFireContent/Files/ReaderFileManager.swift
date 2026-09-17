@@ -53,6 +53,7 @@ public class CloudDriveSyncStatusModel: ObservableObject {
 
     @MainActor
     public func refreshAsync(item: ContentFile) async {
+        guard !Task.isCancelled else { return }
         refreshTask?.cancel()
         let identifier = UUID()
         refreshID = identifier
