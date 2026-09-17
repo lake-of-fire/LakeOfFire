@@ -1,0 +1,69 @@
+name: Publish checked annotation observation trees
+on:
+  push:
+    branches: [review/20260917-annotation-publication-transport]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: transport
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: f9696fec4b2db8fa5d4968bc539f93558fee8f27
+          path: product
+      - name: Reconstruct reviewed trees on the immutable product parent
+        working-directory: product
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Manabi review automation'
+          git config user.email '71601+aehlke@users.noreply.github.com'
+          test "$(git rev-parse HEAD^{tree})" = 93fba7c660560ad6377f17095dc5198771ede413
+          cp ../transport/review-transport/ReaderContentCellAnnotationObservation.red.swift 'Sources/LakeOfFireReader/Reader Content/ReaderContentCellAnnotationObservation.swift'
+          cp ../transport/review-transport/ReaderContentCellAnnotationUpdates.swift 'Sources/LakeOfFireReader/Reader Content/'
+          cp ../transport/review-transport/ReaderContentCellAnnotationObservationTests.swift Tests/LakeOfFireTests/
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Sources/LakeOfFireReader/Reader Content/ReaderContentCell.swift')
+          s = p.read_text()
+          old = '    @Environment(\\.readerContentCellAnnotationStatusLoader) private var readerContentCellAnnotationStatusLoader'
+          assert s.count(old) == 1
+          s = s.replace(old, old + '\n    @Environment(\\.readerContentCellAnnotationStatusUpdates) private var readerContentCellAnnotationStatusUpdates')
+          old = '\n'.join([
+              '            guard !Task.isCancelled else { return }',
+              '            let status = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)',
+              '            guard !Task.isCancelled else { return }',
+              '            annotationStatus = status'
+          ])
+          new = '\n'.join([
+              '            let url = item.url',
+              '            let contentID = item.compoundKey',
+              '            await observeReaderContentCellAnnotationStatus(',
+              '                updates: { readerContentCellAnnotationStatusUpdates?(url, contentID) },',
+              '                initialStatus: { await readerContentCellAnnotationStatusLoader(url, contentID) },',
+              '                publish: { annotationStatus = $0 }',
+              '            )'
+          ])
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new))
+          PY
+          git add Sources Tests
+          git diff --cached --check
+          test "$(git write-tree)" = 5390f0fa0367587c69160d514269050d45ced38e
+          git commit -m 'test: reproduce stale annotation status in cell observation'
+          red=$(git rev-parse HEAD)
+          git branch review/20260917-red-annotation-observation
+          cp ../transport/review-transport/ReaderContentCellAnnotationObservation.green.swift 'Sources/LakeOfFireReader/Reader Content/ReaderContentCellAnnotationObservation.swift'
+          git add Sources
+          git diff --cached --check
+          test "$(git write-tree)" = 9ba47ba48134550947e46f2bf7d66c753ce84ac3
+          git commit -m 'fix: keep cell annotation status subscribed for its view lifetime'
+          git branch review/20260917-green-annotation-observation
+          git push --atomic origin review/20260917-red-annotation-observation review/20260917-green-annotation-observation
+          printf 'RED=%s\nGREEN=%s\nTREE=%s\n' "$red" "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
