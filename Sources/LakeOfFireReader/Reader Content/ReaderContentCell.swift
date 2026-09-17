@@ -515,6 +515,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @Environment(\.readerContentCellStyle) private var readerContentCellStyle
     @Environment(\.readerContentCellAnnotationStatusLoader) private var readerContentCellAnnotationStatusLoader
+    @Environment(\.readerContentCellAnnotationStatusUpdates) private var readerContentCellAnnotationStatusUpdates
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
     @Environment(\.controlSize) private var controlSize
 #if DEBUG
@@ -1228,10 +1229,13 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             }
         }
         .task(id: ReaderContentCellLoadIdentity(item: item, includesSource: false)) {
-            guard !Task.isCancelled else { return }
-            let status = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
-            guard !Task.isCancelled else { return }
-            annotationStatus = status
+            let url = item.url
+            let contentID = item.compoundKey
+            await observeReaderContentCellAnnotationStatus(
+                updates: { readerContentCellAnnotationStatusUpdates?(url, contentID) },
+                initialStatus: { await readerContentCellAnnotationStatusLoader(url, contentID) },
+                publish: { annotationStatus = $0 }
+            )
         }
     }
 }
