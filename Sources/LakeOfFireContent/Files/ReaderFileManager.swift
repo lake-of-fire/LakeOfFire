@@ -698,11 +698,19 @@ public class ReaderFileManager: ObservableObject {
                 guard localDrive != nil || cloudDrive != nil else { return }
                 // Capture candidates before scanning. New imports and edits that
                 // occur while enumeration suspends are not orphan candidates.
-                let candidates = try await { @RealmBackgroundActor in
+                let candidates: [InventoryCandidate] = try await { @RealmBackgroundActor in
                     let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-                    return realm.objects(ContentFile.self).where { !$0.isDeleted }.map {
-                        InventoryCandidate(id: $0.compoundKey, url: $0.url, modifiedAt: $0.modifiedAt)
+                    let results = realm.objects(ContentFile.self).where { !$0.isDeleted }
+                    var snapshot = [InventoryCandidate]()
+                    snapshot.reserveCapacity(results.count)
+                    for file in results {
+                        snapshot.append(InventoryCandidate(
+                            id: file.compoundKey,
+                            url: file.url,
+                            modifiedAt: file.modifiedAt
+                        ))
                     }
+                    return snapshot
                 }()
                 var discoveredIDs = Set<String>()
                 var completeLocations = Set<String>()
@@ -725,7 +733,7 @@ public class ReaderFileManager: ObservableObject {
                 }
                 let completed = completeLocations
                 let discovered = discoveredIDs
-                let activeIDs = try await { @RealmBackgroundActor in
+                let activeIDs: [String] = try await { @RealmBackgroundActor in
                     let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
                     try await realm.asyncWrite {
                         try Task.checkCancellation()
@@ -742,7 +750,13 @@ public class ReaderFileManager: ObservableObject {
                             file.refreshChangeMetadata(explicitlyModified: true, at: date)
                         }
                     }
-                    return realm.objects(ContentFile.self).where { !$0.isDeleted }.map(\.compoundKey)
+                    let results = realm.objects(ContentFile.self).where { !$0.isDeleted }
+                    var snapshot = [String]()
+                    snapshot.reserveCapacity(results.count)
+                    for file in results {
+                        snapshot.append(file.compoundKey)
+                    }
+                    return snapshot
                 }()
                 try Task.checkCancellation()
                 let realm = try await Realm.open(configuration: realmConfiguration)

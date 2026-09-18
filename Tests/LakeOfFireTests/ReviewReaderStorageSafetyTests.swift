@@ -129,6 +129,44 @@ final class ReviewReaderStorageSafetyTests: XCTestCase {
         }
     }
 
+    func testInventoryActorSnapshotRetainsPresentFileAndPublishesOwnedCleanup() async throws {
+        try await withFixture { f in
+            try Data("present".utf8).write(
+                to: f.local.appendingPathComponent("present.txt")
+            )
+            let present = try self.seed(
+                self.backing("local", "present.txt"),
+                in: f.realm
+            )
+            let missing = try self.seed(
+                self.backing("local", "missing.txt"),
+                in: f.realm
+            )
+
+            try await f.manager.refreshAllFilesMetadata(force: true)
+            f.realm.refresh()
+
+            XCTAssertFalse(present.isDeleted)
+            XCTAssertTrue(missing.isDeleted)
+            XCTAssertEqual(
+                f.manager.files?.map(\.compoundKey),
+                [present.compoundKey]
+            )
+
+            // Exercise the healthy same-owner path again after cleanup. The
+            // published inventory must remain a detached ID snapshot rather
+            // than a Realm Results iterator crossing back to MainActor.
+            try await f.manager.refreshAllFilesMetadata(force: true)
+            f.realm.refresh()
+            XCTAssertFalse(present.isDeleted)
+            XCTAssertTrue(missing.isDeleted)
+            XCTAssertEqual(
+                f.manager.files?.map(\.compoundKey),
+                [present.compoundKey]
+            )
+        }
+    }
+
     func testIncompleteDirectoryInventoryDoesNotPublishOrphanTombstones() async throws {
         let manager = ReaderFileManager(payloadStateProvider: { _ in .current }, directoryContentsProvider: { url in
             if url.lastPathComponent == "unavailable" { throw CocoaError(.fileNoSuchFile) }
