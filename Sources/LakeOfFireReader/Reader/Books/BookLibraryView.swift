@@ -36,7 +36,7 @@ struct BookLibrarySheetsModifier: ViewModifier {
                     NavigationStack {
                         OPDSCatalogsView()
                     }
-                    .sheet(isPresented: $bookLibraryModalsModel.showingAddCatalog) {
+                    .sheet(isPresented: $opdsCatalogsViewModel.showingAddCatalog) {
                         AddCatalogView()
                     }
                 }
@@ -371,8 +371,9 @@ public class BookLibraryViewModel: ObservableObject {
         }
     }
 
-    func fetchEditorsPicks() {
-        _ = startEditorsPicksFetch()
+    @discardableResult
+    func fetchEditorsPicks() -> Task<Void, Never> {
+        startEditorsPicksFetch()
     }
 
     @discardableResult
@@ -384,6 +385,14 @@ public class BookLibraryViewModel: ObservableObject {
         let url = opdsURL
 
         let task = Task { @MainActor [weak self] in
+            defer {
+                if self?.editorsPicksFetchGeneration == generation {
+                    self?.editorsPicksFetchTask = nil
+                }
+            }
+            // Retry can be replaced or its owner released before this task starts.
+            guard !Task.isCancelled,
+                  self?.editorsPicksFetchGeneration == generation else { return }
             let (publications, errorMessage) = await fetcher(url)
             guard let self,
                   !Task.isCancelled,
@@ -395,9 +404,6 @@ public class BookLibraryViewModel: ObservableObject {
             self.editorsPicks = publications
             self.errorMessage = errorMessage.map { _ in
                 "\(self.mediaTypeTitle) editor's picks are unavailable. Pull to refresh or try again later."
-            }
-            if self.editorsPicksFetchGeneration == generation {
-                self.editorsPicksFetchTask = nil
             }
         }
         editorsPicksFetchTask = task
