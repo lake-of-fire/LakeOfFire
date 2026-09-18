@@ -4392,6 +4392,15 @@ export class Paginator extends HTMLElement {
                 else {
                     requireCurrent?.()
                     element[scrollProp] = offset
+                    // WebKit can defer applying a programmatic paginated
+                    // scroll until the next rendering update. Sampling in the
+                    // same task then republishes the pre-turn locator even
+                    // though the next frame visibly moved. Settle one frame
+                    // before deriving the authoritative relocation receipt.
+                    if (reason === 'page' && !this.scrolled) {
+                        await manabiRunAnimationFrameOperation(() => {})
+                        requireCurrent?.()
+                    }
                     const actualMetrics = rememberScrolledMetrics()
                     this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
                     await this.#afterScroll(reason, actualMetrics, requireCurrent)
@@ -5916,7 +5925,7 @@ export class Paginator extends HTMLElement {
             if (decision.shouldScrollWithinSection) {
                 await this.#scrollTo(
                     Math.max(0, metrics.start - scrollDistance),
-                    null,
+                    'page',
                     true,
                     metrics,
                     requireCurrent
@@ -6039,7 +6048,7 @@ export class Paginator extends HTMLElement {
             if (decision.shouldScrollWithinSection) {
                 await this.#scrollTo(
                     Math.min(metrics.viewSize, metrics.start + scrollDistance),
-                    null,
+                    'page',
                     true,
                     metrics,
                     requireCurrent
@@ -6327,6 +6336,7 @@ export class Paginator extends HTMLElement {
             const cachedFinalMetrics = this.#pageMetricsCache
             const canReuseCachedFinalMetrics =
                 !shouldGo
+                && !attemptedMovement
                 && cachedFinalMetrics
                 && cachedFinalMetrics.index === this.#index
                 && cachedFinalMetrics.scrolled === this.scrolled

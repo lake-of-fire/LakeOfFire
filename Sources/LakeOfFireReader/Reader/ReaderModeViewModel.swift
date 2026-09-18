@@ -1462,7 +1462,8 @@ public class ReaderModeViewModel: ObservableObject {
 
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
         let expectedMatches = expectedSyntheticReaderLoaderURL.map { urlsMatchWithoutHashForHotfix($0, pageURL) } ?? false
-        guard pendingMatches || expectedMatches,
+        let completedMatches = urlMatchesLastRendered(canonicalURL)
+        guard pendingMatches || expectedMatches || completedMatches,
               isCurrentOrCompletedRenderReady(
                 for: canonicalURL,
                 reportedGeneration: renderGeneration

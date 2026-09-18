@@ -332,8 +332,16 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 let renderGeneration = (body["readerRenderGeneration"] as? String)
                     .flatMap(UUID.init(uuidString:))
                 guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
+                let currentContentURL = readerContent.content?.url
+                let currentContentOwnsCompletedRender = currentContentURL.map { contentURL in
+                    self.readerContent.pageURL.matchesReaderURL(contentURL)
+                        && self.readerModeViewModel.lastRenderedURL?.matchesReaderURL(contentURL) == true
+                } ?? false
+                let renderOwnerURL = currentContentOwnsCompletedRender
+                    ? (currentContentURL ?? pageURL)
+                    : pageURL
                 let accepted = readerModeViewModel.handleRenderedReaderDocumentReady(
-                    pageURL: pageURL,
+                    pageURL: renderOwnerURL,
                     hasReaderContent: true,
                     renderGeneration: renderGeneration,
                     navigator: navigator
