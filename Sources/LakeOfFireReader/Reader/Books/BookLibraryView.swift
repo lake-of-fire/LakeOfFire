@@ -36,7 +36,7 @@ struct BookLibrarySheetsModifier: ViewModifier {
                     NavigationStack {
                         OPDSCatalogsView()
                     }
-                    .sheet(isPresented: $opdsCatalogsViewModel.showingAddCatalog) {
+                    .sheet(isPresented: $bookLibraryModalsModel.showingAddCatalog) {
                         AddCatalogView()
                     }
                 }
