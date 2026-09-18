@@ -1,175 +1,74 @@
 import XCTest
+#if canImport(Combine)
+import Combine
+#endif
 @testable import LakeOfFireReader
 
 @MainActor
-private final class ControlledEditorsPicksFetcher {
-    typealias Value = ([Publication], String?)
-
-    private var nextID = 0
-    private var pending = [
-        Int: CheckedContinuation<Value, Never>
-    ]()
-    private var waiters = [
-        (target: Int, continuation: CheckedContinuation<Void, Never>)
-    ]()
-
-    func fetch(_ url: URL) async -> Value {
-        nextID += 1
-        let id = nextID
-        resumeReadyWaiters()
-        return await withCheckedContinuation { continuation in
-            pending[id] = continuation
-        }
-    }
-
-    func waitForRequests(_ target: Int) async {
-        guard nextID < target else { return }
-        await withCheckedContinuation { continuation in
-            waiters.append((target, continuation))
-        }
-    }
-
-    func resolve(
-        _ id: Int,
-        publications: [Publication],
-        errorMessage: String? = nil
-    ) {
-        pending.removeValue(forKey: id)?.resume(
-            returning: (publications, errorMessage)
-        )
-    }
-
-    private func resumeReadyWaiters() {
-        var remaining = [
-            (target: Int, continuation: CheckedContinuation<Void, Never>)
-        ]()
-        for waiter in waiters {
-            if nextID >= waiter.target {
-                waiter.continuation.resume()
-            } else {
-                remaining.append(waiter)
-            }
-        }
-        waiters = remaining
-    }
-}
-
-@MainActor
 final class ReviewEditorsPicksFetchOwnershipTests: XCTestCase {
-    private func publication(_ title: String) -> Publication {
-        Publication(title: title)
+    func testFetchAllDataDoesNotReturnBeforeCurrentFetchCompletes() async {
+        let fixture = ReviewEditorsPicksHarness()
+        let task = fixture.start()
+        guard await fixture.waitForRequest(1) else { await fixture.cleanup(); return }
+        XCTAssertFalse(fixture.hasFinished(task),
+                       "refreshable completion must represent completed data refresh")
+        fixture.resolve(1, publications: [Publication(title: "current")])
+        guard await fixture.waitForCompletion(task) else { await fixture.cleanup(); return }
+        XCTAssertEqual(fixture.viewModel.editorsPicks.map(\.title), ["current"])
+        await fixture.cleanup()
     }
 
-    private func waitUntil(
-        _ description: String,
-        _ predicate: @MainActor () -> Bool
-    ) async {
-        for _ in 0..<1_000 {
-            if predicate() { return }
-            await Task.yield()
-        }
-        XCTFail("Timed out waiting for \(description)")
-    }
+    private func checkOverlap(olderError: String?, newerError: String?) async {
+        let fixture = ReviewEditorsPicksHarness()
+        let older = fixture.start()
+        guard await fixture.waitForRequest(1) else { await fixture.cleanup(); return }
+        let newer = fixture.start()
+        guard await fixture.waitForRequest(2) else { await fixture.cleanup(); return }
+        fixture.resolve(2, publications: newerError == nil ? [Publication(title: "newer")] : [],
+                        error: newerError)
+        guard await fixture.waitForCompletion(newer) else { await fixture.cleanup(); return }
+        let expectedTitles = newerError == nil ? ["newer"] : []
+        XCTAssertEqual(fixture.viewModel.editorsPicks.map(\.title), expectedTitles)
+        XCTAssertEqual(fixture.viewModel.errorMessage != nil, newerError != nil)
 
-    private func fixture()
-        -> (BookLibraryViewModel, ControlledEditorsPicksFetcher) {
-        let viewModel = BookLibraryViewModel()
-        let fetcher = ControlledEditorsPicksFetcher()
-        viewModel.publicationFetcher = { url in
-            await fetcher.fetch(url)
-        }
-        return (viewModel, fetcher)
-    }
-
-    func testFetchAllDataDoesNotReturnBeforeCurrentFetchCompletes()
-        async {
-        let (viewModel, fetcher) = fixture()
-        var returned = false
-
-        let task = Task { @MainActor in
-            await viewModel.fetchAllData()
-            returned = true
-        }
-
-        await fetcher.waitForRequests(1)
-        await Task.yield()
-        XCTAssertFalse(
-            returned,
-            "refreshable completion must represent completed data refresh"
-        )
-
-        fetcher.resolve(1, publications: [publication("current")])
-        await task.value
-
-        XCTAssertTrue(returned)
-        XCTAssertEqual(viewModel.editorsPicks.map(\.title), ["current"])
+        // The older provider ignores cancellation. Wait for the actual old caller
+        // to finish after releasing it, rather than hoping N yields were enough.
+        fixture.resolve(1, publications: olderError == nil ? [Publication(title: "older")] : [],
+                        error: olderError)
+        guard await fixture.waitForCompletion(older) else { await fixture.cleanup(); return }
+        XCTAssertEqual(fixture.viewModel.editorsPicks.map(\.title), expectedTitles)
+        XCTAssertEqual(fixture.viewModel.errorMessage != nil, newerError != nil)
+        await fixture.cleanup()
     }
 
     func testOlderSuccessCannotOverwriteNewerSuccess() async {
-        let (viewModel, fetcher) = fixture()
-
-        viewModel.fetchEditorsPicks()
-        await fetcher.waitForRequests(1)
-        viewModel.fetchEditorsPicks()
-        await fetcher.waitForRequests(2)
-
-        fetcher.resolve(2, publications: [publication("newer")])
-        await waitUntil("newer publication") {
-            viewModel.editorsPicks.first?.title == "newer"
-        }
-
-        fetcher.resolve(1, publications: [publication("older")])
-        for _ in 0..<20 { await Task.yield() }
-
-        XCTAssertEqual(viewModel.editorsPicks.map(\.title), ["newer"])
-        XCTAssertNil(viewModel.errorMessage)
+        await checkOverlap(olderError: nil, newerError: nil)
     }
 
     func testOlderErrorCannotReplaceNewerSuccess() async {
-        let (viewModel, fetcher) = fixture()
-
-        viewModel.fetchEditorsPicks()
-        await fetcher.waitForRequests(1)
-        viewModel.fetchEditorsPicks()
-        await fetcher.waitForRequests(2)
-
-        fetcher.resolve(2, publications: [publication("newer")])
-        await waitUntil("newer publication") {
-            viewModel.editorsPicks.first?.title == "newer"
-        }
-
-        fetcher.resolve(
-            1,
-            publications: [],
-            errorMessage: "older request failed"
-        )
-        for _ in 0..<20 { await Task.yield() }
-
-        XCTAssertEqual(viewModel.editorsPicks.map(\.title), ["newer"])
-        XCTAssertNil(viewModel.errorMessage)
+        await checkOverlap(olderError: "older failed", newerError: nil)
     }
 
     func testOlderSuccessCannotReplaceNewerError() async {
-        let (viewModel, fetcher) = fixture()
-
-        viewModel.fetchEditorsPicks()
-        await fetcher.waitForRequests(1)
-        viewModel.fetchEditorsPicks()
-        await fetcher.waitForRequests(2)
-
-        fetcher.resolve(
-            2,
-            publications: [],
-            errorMessage: "newer request failed"
-        )
-        await waitUntil("newer error") {
-            viewModel.errorMessage != nil
-        }
-
-        fetcher.resolve(1, publications: [publication("older")])
-        for _ in 0..<20 { await Task.yield() }
-
-        XCTAssertTrue(viewModel.editorsPicks.isEmpty)
-        XCTAssertNotNil(viewModel.errorMessage)
+        await checkOverlap(olderError: nil, newerError: "newer failed")
     }
+
+#if canImport(Combine)
+    func testSynchronousRetryPublishesResult() async {
+        let fixture = ReviewEditorsPicksHarness()
+        let published = XCTestExpectation(description: "Retry published its current result")
+        let observation = fixture.viewModel.$editorsPicks.sink { publications in
+            if publications.map(\.title) == ["retry"] { published.fulfill() }
+        }
+        defer { observation.cancel() }
+        fixture.viewModel.fetchEditorsPicks()
+        guard await fixture.waitForRequest(1) else { await fixture.cleanup(); return }
+        fixture.resolve(1, publications: [Publication(title: "retry")])
+        let result = await XCTWaiter.fulfillment(of: [published], timeout: 2)
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(fixture.viewModel.editorsPicks.map(\.title), ["retry"])
+        await fixture.cleanup()
+    }
+#endif
+
 }
