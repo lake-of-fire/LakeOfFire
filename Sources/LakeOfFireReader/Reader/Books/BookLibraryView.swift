@@ -361,6 +361,8 @@ public class BookLibraryViewModel: ObservableObject {
     private var editorsPicksFetchTask: Task<Void, Never>?
 
     func fetchAllData() async {
+        // A cancelled entrant must not revoke a healthy current producer.
+        guard !Task.isCancelled else { return }
         let task = startEditorsPicksFetch()
         await withTaskCancellationHandler {
             await task.value
