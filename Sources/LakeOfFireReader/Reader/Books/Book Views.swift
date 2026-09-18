@@ -77,7 +77,8 @@ struct HorizontalBooks: View {
 
 struct BookListRow: View {
     let publication: Publication
-    var onSelected: ((Bool) -> Void)? = nil
+    let selectionOwner: BookLibraryViewModel
+    var onSelected: (@MainActor (Bool, BookLibraryViewModel.OpenSelection) async -> Void)? = nil
     var onNavigateToReader: (() -> Void)? = nil
 
     @State private var downloadable: Downloadable?
@@ -87,6 +88,7 @@ struct BookListRow: View {
             if let downloadable {
                 DownloadableBookListRow(
                     publication: publication,
+                    selectionOwner: selectionOwner,
                     onSelected: onSelected,
                     onNavigateToReader: onNavigateToReader,
                     downloadable: downloadable
@@ -137,7 +139,8 @@ fileprivate struct StaticBookListRow: View {
 
 fileprivate struct DownloadableBookListRow: View {
     let publication: Publication
-    let onSelected: ((Bool) -> Void)?
+    let selectionOwner: BookLibraryViewModel
+    let onSelected: (@MainActor (Bool, BookLibraryViewModel.OpenSelection) async -> Void)?
     let onNavigateToReader: (() -> Void)?
     @ObservedObject var downloadable: Downloadable
 
@@ -189,10 +192,24 @@ fileprivate struct DownloadableBookListRow: View {
     }
 
     private func buttonPress() {
-        Task { @MainActor in
+        selectionOwner.startOpenSelection { selection in
+            await performButtonPress(selection: selection)
+        }
+    }
+
+    @MainActor
+    private func performButtonPress(
+        selection: BookLibraryViewModel.OpenSelection
+    ) async {
             let wasAlreadyDownloaded = await downloadable.existsLocally()
+            guard selectionOwner.isCurrentOpenSelection(selection) else {
+                return
+            }
             if !wasAlreadyDownloaded {
                 await downloadController.ensureDownloaded([downloadable])
+            }
+            guard selectionOwner.isCurrentOpenSelection(selection) else {
+                return
             }
             let importOutcome = await BookDownloadImportAttempt.perform(
                 importing: downloadable.localDestination
@@ -201,12 +218,14 @@ fileprivate struct DownloadableBookListRow: View {
                     downloadable: downloadable
                 )
             }
+            guard selectionOwner.isCurrentOpenSelection(selection) else {
+                return
+            }
             if let message = importOutcome.userFacingMessage {
                 errorMessage = message
             }
             guard importOutcome.shouldContinueSelection else { return }
-            onSelected?(wasAlreadyDownloaded)
-        }
+            await onSelected?(wasAlreadyDownloaded, selection)
     }
 
     @MainActor
@@ -227,8 +246,11 @@ fileprivate struct DownloadableBookListRow: View {
     }
 
     private func topTap() {
-        Task { @MainActor in
+        selectionOwner.startOpenSelection { selection in
             let alreadyDownloaded = await downloadable.existsLocally()
+            guard selectionOwner.isCurrentOpenSelection(selection) else {
+                return
+            }
             if alreadyDownloaded {
                 do {
                     try await BookLibraryViewModel.openDownloaded(
@@ -237,9 +259,14 @@ fileprivate struct DownloadableBookListRow: View {
                         readerContent: readerContent,
                         navigator: navigator,
                         readerModeViewModel: readerModeViewModel,
+                        shouldOpen: {
+                            selectionOwner.isCurrentOpenSelection(selection)
+                        },
                         onNavigateToReader: onNavigateToReader
                     )
                 } catch {
+                    guard selectionOwner.isCurrentOpenSelection(selection)
+                    else { return }
                     if let message = BookDownloadOpenFailurePresentation.message(
                         for: error,
                         title: publication.title
@@ -249,7 +276,7 @@ fileprivate struct DownloadableBookListRow: View {
                     print("Failed to open downloaded book: \(error)")
                 }
             } else {
-                buttonPress()
+                await performButtonPress(selection: selection)
             }
         }
     }
