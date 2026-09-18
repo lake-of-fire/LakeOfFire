@@ -131,7 +131,7 @@ private extension View {
     @ViewBuilder
     func readerWebViewSafeAreaExpansionForCurrentDevice() -> some View {
         if #available(macOS 26, *) {
-            ignoresSafeArea(.container, edges: .top)
+            ignoresSafeArea(.all, edges: .top)
         } else {
             self
         }
@@ -977,6 +977,15 @@ public extension EnvironmentValues {
         get { self[WebViewNavigatorEnvironmentKey.self] }
         set { self[WebViewNavigatorEnvironmentKey.self] = newValue }
     }
+
+    var readerReservedTopChromeInset: CGFloat {
+        get { self[ReaderReservedTopChromeInsetEnvironmentKey.self] }
+        set { self[ReaderReservedTopChromeInsetEnvironmentKey.self] = newValue }
+    }
+}
+
+public struct ReaderReservedTopChromeInsetEnvironmentKey: EnvironmentKey {
+    public static let defaultValue: CGFloat = 0
 }
 
 enum ReaderContentSelectionOpenAction: Equatable {
@@ -1097,6 +1106,7 @@ public struct Reader: View {
     @EnvironmentObject private var readerViewModel: ReaderViewModel
     @EnvironmentObject private var scriptCaller: WebViewScriptCaller
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.readerReservedTopChromeInset) private var reservedTopChromeInset
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     @AppStorage("readerFontSize") private var readerFontSize: Double?
@@ -1189,7 +1199,11 @@ public struct Reader: View {
                 trailing: obscuredInsets?.trailing ?? 0
             )
         }()
-        let explicitTopInset = max(0, additionalTopSafeAreaInset ?? 0)
+        let explicitTopInset = max(
+            0,
+            additionalTopSafeAreaInset ?? 0,
+            reservedTopChromeInset
+        )
         let effectiveTopInset = pageURL.isEBookURL
             ? max(explicitTopInset, effectiveSampledTopInset)
             : explicitTopInset
@@ -1262,6 +1276,15 @@ public struct Reader: View {
                     let currentObscuredInsets = obscuredInsets
                     let currentHideNavigationDueToScroll = hideNavigationDueToScroll
                     Color.clear
+#if DEBUG
+                        // WKWebView's macOS accessibility frame reports its
+                        // unobscured document viewport even when SwiftUI has
+                        // expanded the rendered surface beneath native chrome.
+                        // Expose the post-expansion geometry so UI tests can
+                        // verify the surface separately from document insets.
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityIdentifier("ReaderWebView.Surface")
+#endif
                         .onAppear {
                             var sampledInsets = EdgeInsets(
                                 top: max(0, geometrySafeAreaInsets.top),

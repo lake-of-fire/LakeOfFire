@@ -443,7 +443,7 @@ public struct ReaderContentLoader {
             }
             historyRecord.rssContainsFullContent = true
 //            await historyRealm.asyncRefresh()
-            try await historyRealm.asyncWrite {
+            try historyRealm.write {
                 historyRealm.add(historyRecord, update: .modified)
                 historyRecord.refreshChangeMetadata(explicitlyModified: true)
             }

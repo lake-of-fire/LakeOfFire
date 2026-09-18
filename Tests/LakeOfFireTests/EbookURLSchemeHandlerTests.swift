@@ -514,6 +514,35 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertNil(result.signature)
     }
 
+    func testExternalizingCanonicalSidecarRetainsInlineMetadataWhenPublicationFails() {
+        let canonicalJSON = #"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
+        let html = """
+        <html><head></head><body><m-c pid="p"><m-s sid="s" o="true"><m-m id="m">本文</m-m></m-s></m-c>
+        <script id="mnb-segment-metadata" type="application/json" data-mnb-seg-meta="true">\(canonicalJSON)</script>
+        </body></html>
+        """
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true),
+            totalByteLimit: 1,
+            countLimit: 1,
+            diskByteLimit: 1,
+            diskCountLimit: 1
+        )
+
+        let result = externalizingCanonicalReaderSegmentSidecar(
+            in: Array(html.utf8),
+            scheme: .internalReader,
+            store: store
+        )
+        let output = String(decoding: result.documentHTML, as: UTF8.self)
+
+        XCTAssertEqual(result.documentHTML, Data(html.utf8))
+        XCTAssertTrue(output.contains("id=\"mnb-segment-metadata\""))
+        XCTAssertNil(result.endpointURL)
+        XCTAssertNil(result.signature)
+    }
+
     func testProcessedSidecarCacheEnvelopeRoundTripsWithoutRescanningCombinedHTML() throws {
         let canonicalJSON = #"{"v":11,"t":{"語":[1]},"s":[]}"#
         let aggregateJSON = #"{"c":1,"j":["語"]}"#

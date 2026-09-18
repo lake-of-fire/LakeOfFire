@@ -1388,11 +1388,15 @@ func externalizingCanonicalReaderSegmentSidecar(
         store: store
     )
     guard let descriptor = published.headDescriptor else {
+        // Splitting removes the canonical inline sidecar before publication.
+        // If authority validation or storage rejects the external payload,
+        // retain the original document so lookup/tracking metadata is not
+        // silently discarded from an otherwise usable reader render.
         return ReaderExternalizedSegmentSidecarHTML(
-            documentHTML: published.documentHTML,
-            canonicalSidecarByteCount: published.canonicalSidecarByteCount,
-            signature: published.signature,
-            endpointURL: published.endpointURL
+            documentHTML: Data(htmlBytes),
+            canonicalSidecarByteCount: 0,
+            signature: nil,
+            endpointURL: nil
         )
     }
     let closingHead = Data("</head>".utf8)
