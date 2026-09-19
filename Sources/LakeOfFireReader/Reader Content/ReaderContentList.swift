@@ -353,7 +353,13 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                             source: "ReaderContentList.selection"
                         )
                     } catch {
-                        errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
+                        if let message = ReaderSelectionErrorPolicy.message(
+                            for: error,
+                            requestIsCurrent: selectionLoadGeneration == loadGeneration
+                                && entrySelection == itemSelection
+                        ) {
+                            errorMessage = message
+                        }
                         debugPrint("Failed to open reader content for selection", error)
                     }
                     if selectionLoadGeneration == loadGeneration, entrySelection == itemSelection {
@@ -609,6 +615,12 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         sortOrder: ReaderContentSortOrder? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) async throws {
+        // A cancelled caller never acquires authority to supersede active work.
+        try Task.checkCancellation()
+        loadContentsTask?.cancel()
+        let loadID = UUID()
+        currentLoadID = loadID
+        loadContentsTask = nil
         let contentIDs = contents.map(\.compoundKey)
 
         if sortOrder == nil && contentFilter == nil && postSortTransform == nil {
@@ -622,6 +634,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         if !hasLoadedBefore,
            filteredContents.isEmpty,
            !contents.isEmpty,
+           contentFilter == nil,
            postSortTransform == nil {
             let initialContents = Self.initialDisplayContents(from: contents, sortOrder: sortOrder)
             applyFilteredContents(initialContents, ids: initialContents.map(\.compoundKey))
@@ -629,9 +642,6 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
 
         let realmConfig = contents.first?.realm?.configuration
         realmConfiguration = realmConfig
-        loadContentsTask?.cancel()
-        let loadID = UUID()
-        currentLoadID = loadID
         let task = Task { @ReaderContentListActor in
             var filtered: [C] = []
 
@@ -707,14 +717,14 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             let ids = publicationContents.map(\.compoundKey)
             try await { @MainActor [weak self] in
                 guard let self else { return }
-                guard self.currentLoadID == loadID else {
+                guard !Task.isCancelled, self.currentLoadID == loadID else {
                     return
                 }
                 let resolvedContents: [C]
                 let resolvedIDs: [String]
                 if let realmConfig {
                     let realm = try await Realm(configuration: realmConfig, actor: MainActor.shared)
-                    guard self.currentLoadID == loadID else {
+                    guard !Task.isCancelled, self.currentLoadID == loadID else {
                         return
                     }
                     let resolvedItems = ids.compactMap { id in
@@ -733,10 +743,20 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         }
         loadContentsTask = task
 
-        try? await task.value
-        guard currentLoadID == loadID else {
-            return
+        do {
+            try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+            try Task.checkCancellation()
+        } catch {
+            // Only the owner can retire loading state or report its failure.
+            guard currentLoadID == loadID else { return }
+            loadContentsTask = nil
+            throw error
         }
+        guard currentLoadID == loadID else { return }
         loadContentsTask = nil
     }
 }
@@ -926,21 +946,11 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
             onContentAppear?(content)
-            if let item = content as? ContentFile {
-                await cloudDriveSyncStatusModel.refreshAsync(item: item)
-            }
         }
-        .onReceive(NotificationCenter.default.publisher(for: ReaderFileManager.readerBackingStatusRefreshRequestedNotification)) { notification in
-            guard let contentFile = content as? ContentFile,
-                  let requestedURLString = notification.object as? String,
-                  let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url),
-                  readerBackingURL.absoluteString == requestedURLString else {
-                return
-            }
-            Task { @MainActor in
-                await cloudDriveSyncStatusModel.refreshAsync(item: contentFile)
-            }
-        }
+        .modifier(ReaderFileStatusRefreshModifier(
+            item: content as? ContentFile,
+            statusModel: cloudDriveSyncStatusModel
+        ))
     }
 }
 

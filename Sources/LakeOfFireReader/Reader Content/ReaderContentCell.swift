@@ -78,9 +78,22 @@ enum ReaderContentCellHistoryState: Equatable, Sendable {
     case read
 }
 
-private struct ReaderContentCellLoadIdentity: Hashable {
+/// Same-row metadata edits must restart the one generation-fenced loader.
+/// Progress stored in other models needs a separate upstream invalidation signal.
+struct ReaderContentCellLoadIdentity: Hashable {
     let compoundKey: String
     let includesSource: Bool
+    let url: URL
+    let modifiedAt: Date
+    let imageURL: URL?
+
+    init(item: any ReaderContentProtocol, includesSource: Bool) {
+        compoundKey = item.compoundKey
+        self.includesSource = includesSource
+        url = item.url
+        modifiedAt = item.modifiedAt
+        imageURL = item.imageUrl
+    }
 }
 
 private func usableReaderContentSourceIconURL(_ url: URL?) -> URL? {
@@ -108,7 +121,13 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     var remainingTime: TimeInterval? { displayState.remainingTime }
     var hasLoadedDisplayState: Bool { displayState.hasLoadedDisplayState }
 
-    init() { }
+    private let imageURLLoader: @MainActor (C) async throws -> URL?
+
+    init(imageURLLoader: @escaping @MainActor (C) async throws -> URL? = {
+        try await $0.imageURLToDisplay()
+    }) {
+        self.imageURLLoader = imageURLLoader
+    }
 
     func observeHistory(for itemURL: URL) async throws {
         try Task.checkCancellation()
@@ -164,6 +183,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
 
     @MainActor
     func load(item: C, includeSource: Bool) async throws {
+        try Task.checkCancellation()
         loadGeneration &+= 1
         let generation = loadGeneration
         if displayState.hasLoadedDisplayState {
@@ -174,7 +194,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
         let itemURL = item.url
-        let imageURL = try await item.imageURLToDisplay()
+        let imageURL = try await imageURLLoader(item)
         try Task.checkCancellation()
         guard generation == loadGeneration else { throw CancellationError() }
         let nextDisplayState = try await { @ReaderContentCellActor in
@@ -195,6 +215,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
             let itemSourceIconURL = item.sourceIconURL
             let feed = (item as? FeedEntry)?.getFeed()
+            let feedTitle = feed?.title
             let sourceIconURL = usableReaderContentSourceIconURL(feed?.iconUrl) ?? usableReaderContentSourceIconURL(itemSourceIconURL)
             let tracksReadingProgress = item.tracksReadingProgress
             let progressResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL) : nil
@@ -204,8 +225,8 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             if includeSource {
                 if itemURL.isSnippetURL {
                     sourceTitle = "Snippet"
-                } else if let feed {
-                    sourceTitle = feed.title
+                } else if let feedTitle {
+                    sourceTitle = feedTitle
                 } else if let host = itemURL.host, !host.isEmpty {
                     sourceTitle = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
                 }
@@ -231,13 +252,6 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
         displayState = nextDisplayState
     }
 
-    @MainActor
-    func updateImageURL(_ imageURL: URL?) {
-        guard imageURL != displayState.imageURL else { return }
-        var nextState = displayState
-        nextState.imageURL = imageURL
-        displayState = nextState
-    }
 }
 
 public struct ReaderContentCellAppearance {
@@ -501,6 +515,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @Environment(\.readerContentCellStyle) private var readerContentCellStyle
     @Environment(\.readerContentCellAnnotationStatusLoader) private var readerContentCellAnnotationStatusLoader
+    @Environment(\.readerContentCellAnnotationStatusUpdates) private var readerContentCellAnnotationStatusUpdates
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
     @Environment(\.controlSize) private var controlSize
 #if DEBUG
@@ -1200,7 +1215,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             viewModel.forceShowBookmark = hovered
         }
         .task(id: ReaderContentCellLoadIdentity(
-            compoundKey: item.compoundKey,
+            item: item,
             includesSource: appearance.includeSource
         )) {
             try? await viewModel.load(item: item, includeSource: appearance.includeSource)
@@ -1213,14 +1228,14 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
                 debugPrint("Failed to observe reader-content history", error)
             }
         }
-        .task(id: item.compoundKey) {
-            annotationStatus = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
-        }
-        .onChange(of: item.imageUrl) { newImageURL in
-            guard newImageURL != viewModel.imageURL else { return }
-            Task { @MainActor in
-                viewModel.updateImageURL(try await item.imageURLToDisplay())
-            }
+        .task(id: ReaderContentCellLoadIdentity(item: item, includesSource: false)) {
+            let url = item.url
+            let contentID = item.compoundKey
+            await observeReaderContentCellAnnotationStatus(
+                updates: { readerContentCellAnnotationStatusUpdates?(url, contentID) },
+                initialStatus: { await readerContentCellAnnotationStatusLoader(url, contentID) },
+                publish: { annotationStatus = $0 }
+            )
         }
     }
 }
