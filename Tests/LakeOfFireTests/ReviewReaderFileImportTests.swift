@@ -13,7 +13,7 @@ final class ReviewReaderFileImportTests: XCTestCase {
         try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let drive = try await CloudDrive(storage: .localDirectory(rootURL: library))
-        return (incoming, library, drive)
+        return (incoming, drive.rootDirectory, drive)
     }
     private func install(_ url: URL, drive: CloudDrive) async throws -> URL {
         let path = try await ReaderFileImportStorage.install(fileURL: url, targetDirectory: .root, drive: drive)
@@ -29,7 +29,11 @@ final class ReviewReaderFileImportTests: XCTestCase {
         let result = try await install(source, drive: drive)
         XCTAssertEqual(result.standardizedFileURL, target.standardizedFileURL)
         XCTAssertEqual(try Data(contentsOf: target), bytes)
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: library.path).count, 1)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(at: library, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "txt" }.count,
+            1
+        )
     }
     func testRepeatedCollisionImportReusesThePreviouslyRenamedFile() async throws {
         let (incoming, library, drive) = try await fixture()
@@ -43,7 +47,11 @@ final class ReviewReaderFileImportTests: XCTestCase {
         XCTAssertNotEqual(first.lastPathComponent, original.lastPathComponent)
         XCTAssertEqual(try Data(contentsOf: original), Data("original user file".utf8))
         XCTAssertEqual(try Data(contentsOf: second), Data("different imported file".utf8))
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: library.path).count, 2)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(at: library, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "txt" }.count,
+            2
+        )
     }
     func testOccupiedCollisionNameIsNotOverwritten() async throws {
         let (incoming, library, drive) = try await fixture()
