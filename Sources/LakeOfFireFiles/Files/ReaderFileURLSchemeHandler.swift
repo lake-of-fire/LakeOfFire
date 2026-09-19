@@ -212,31 +212,16 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }()
                     return
                 }
-                let contentFile = try? await ReaderFileManager.get(fileURL: url)
-                try Task.checkCancellation()
-                let fileData = try? await readerFileManager.read(fileURL: url)
-                try Task.checkCancellation()
-                if let contentFile,
-                   var data = fileData {
-                    // File
-                    var mimeType = contentFile.mimeType
-                    var textEncodingName: String?
-                    if let text = String(data: data, encoding: .utf8),
-                       ReaderContentLoader.supportsReaderContent(
-                        mimeType: contentFile.mimeType,
-                        pathExtension: url.pathExtension
-                       ),
-                       let convertedData = ReaderContentLoader.normalizeIngestedText(
-                        text,
-                        mimeType: contentFile.mimeType,
-                        pathExtension: url.pathExtension,
-                        source: .file
-                       ).html.data(using: .utf8) {
-                        mimeType = "text/html"
-                        textEncodingName = "UTF-8"
-                        data = convertedData
-                    }
-                    
+                let payload = try await ReaderFileDocumentLoader.load(
+                    url: url,
+                    metadata: { try await ReaderFileManager.get(fileURL: url) },
+                    read: { try await readerFileManager.read(fileURL: url) }
+                )
+                if let payload {
+                    let data = payload.data
+                    let mimeType = payload.mimeType
+                    let textEncodingName = payload.textEncodingName
+
                     let response = HTTPURLResponse(
                         url: url,
                         mimeType: mimeType,

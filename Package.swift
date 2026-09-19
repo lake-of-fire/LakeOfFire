@@ -220,6 +220,8 @@ let package = Package(
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "BigSyncKit", package: "BigSyncKit"),
+                .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
+                "LakeOfFireFiles",
                 "LakeOfFireContent",
                 "LakeOfFireCore",
                 "LakeOfFireReader",
