@@ -11180,8 +11180,7 @@ class Reader {
         articleMutationProducerToken = null,
     }) => {
         if (
-            !articleMutationProducerToken
-            || this.#closed
+            this.#closed
             || this.hasLoadedLastPosition !== true
             || globalThis.__manabiRestoreInProgress === true
             || globalThis.__manabiSuppressNextRestoreRelocateSave === true
