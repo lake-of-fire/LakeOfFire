@@ -1,0 +1,21 @@
+name: Renderer source review
+on:
+  push:
+    branches: [codex/book-actions-source-review-20260920b]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 179cdf8bf4b683bfb5bb281112b467cd9e893392
+          persist-credentials: false
+      - run: git archive --format=tar.gz -o renderer-source.tar.gz HEAD
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: renderer-source
+          path: renderer-source.tar.gz
+          retention-days: 1
