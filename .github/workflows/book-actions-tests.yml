@@ -1,4 +1,5 @@
 name: Book Actions tests
+# Final cleaned epoch branch qualification.
 on:
   push:
     branches: [codex/book-actions-epochs-20260920]
