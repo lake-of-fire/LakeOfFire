@@ -1,0 +1,53 @@
+name: Book Actions tests
+on:
+  push:
+    branches: [codex/book-actions-endcap-20260920]
+    paths:
+      - Sources/LakeOfFireReader/Resources/Resources/foliate-js/**
+      - Tests/Browser/**
+      - Tests/JavaScript/**
+      - .github/workflows/book-actions-tests.yml
+  pull_request:
+    paths:
+      - Sources/LakeOfFireReader/Resources/Resources/foliate-js/**
+      - Tests/Browser/**
+      - Tests/JavaScript/**
+      - .github/workflows/book-actions-tests.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: book-actions-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  behavior:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: JavaScript behavioral tests
+        run: |
+          set -o pipefail
+          node --test Tests/JavaScript/*.test.mjs 2>&1 | tee book-actions-unit-results.txt
+      - name: Install browser dependencies
+        run: |
+          python3 -m pip install playwright==1.57.0
+          python3 -m playwright install --with-deps chromium
+      - name: Renderer journeys
+        run: |
+          set -o pipefail
+          python3 Tests/Browser/test_book_endcap.py 2>&1 | tee book-actions-browser-results.txt
+      - name: Full viewer-shell journey
+        run: |
+          set -o pipefail
+          python3 Tests/Browser/test_book_endcap_shell.py 2>&1 | tee book-actions-shell-results.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: book-actions-test-results
+          path: book-actions-*-results.txt
+          retention-days: 7
