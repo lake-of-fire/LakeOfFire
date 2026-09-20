@@ -36,6 +36,7 @@ window.book = book
 window.actions = []
 window.relocations = []
 window.readIDs = ['chapter-0:read', 'chapter-1:read']
+window.historicalReadIDs = [...window.readIDs]
 window.failNext = false
 view.addEventListener('relocate',e=>window.relocations.push(e.detail))
 await view.open(book)
@@ -47,9 +48,11 @@ const cap = new BookEndcap({document,host:document.querySelector('#reader-stage'
             await view.renderer.goTo({index:0})
             window.readIDs = []
         }
-        return {ok:true,finished:action==='finishBook'}
+        cap.setFinished(action==='finishBook')
+        return {ok:true,committed:true,finished:action==='finishBook'}
     }
 })
+cap.setReady(true)
 window.cap = cap
 view.renderer.bookEndcap = cap
 const prev=()=>view.renderer.prev()

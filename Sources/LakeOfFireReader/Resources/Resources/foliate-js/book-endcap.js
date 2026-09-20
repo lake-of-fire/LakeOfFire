@@ -10,11 +10,14 @@ export class BookEndcap {
     #previousInert = false
     #previousAriaHidden = null
     #listeners = []
+    #ready = false
+    #recovery = null
 
-    constructor({ document, host, publication, performAction, onChange = () => {} }) {
+    constructor({ document, host, publication, performAction, recoverAction = null, onChange = () => {} }) {
         this.document = document
         this.publication = publication
         this.performAction = performAction
+        this.recoverAction = recoverAction
         this.onChange = onChange
         this.element = document.createElement('section')
         this.element.className = 'manabi-book-endcap'
@@ -24,7 +27,7 @@ export class BookEndcap {
         this.element.innerHTML = `
             <div class="manabi-book-endcap-content">
                 <h1 tabindex="-1">End of Book</h1>
-                <p class="manabi-book-endcap-description">Finish this book without changing any read markings.</p>
+                <p class="manabi-book-endcap-description">Your reading history and skipped sections will stay unchanged.</p>
                 <button type="button" class="manabi-book-endcap-action">Finish Book</button>
                 <p class="manabi-book-endcap-error" role="alert" hidden></p>
             </div>`
@@ -80,6 +83,11 @@ export class BookEndcap {
         return true
     }
 
+    setReady(ready) {
+        this.#ready = ready === true
+        this.#render()
+    }
+
     setFinished(finished) {
         if (this.#destroyed) return
         this.#finished = finished === true
@@ -87,21 +95,37 @@ export class BookEndcap {
     }
 
     async activate() {
-        if (this.#destroyed || !this.#visible || this.#busy) return false
+        if (this.#destroyed || !this.#visible || this.#busy || (!this.#ready && !this.#recovery)) return false
         const generation = this.#generation
         const action = this.#finished ? 'startBookOver' : 'finishBook'
         this.#busy = true
         this.error.hidden = true
         this.#render()
         try {
-            const result = await this.performAction(action)
+            const result = this.#recovery
+                ? await this.recoverAction(this.#recovery) : await this.performAction(action)
             if (this.#destroyed || generation !== this.#generation) return false
+            if (result?.pending || result?.outcomeUnknown) {
+                const error = new Error(result.error || 'Check the original action status.')
+                error.outcomeUnknown = true
+                error.requestID = result.requestID
+                error.action = result.action || action
+                throw error
+            }
             if (result?.ok !== true) throw new Error(result?.error || 'The book action could not be completed. Try again.')
-            this.#finished = result.finished === true
-            if (action === 'startBookOver') this.leave()
+            // Only ordered native publications change Finished. Command replies
+            // acknowledge a historical operation; they cannot select current state.
+            if (result.navigation?.status === 'failed') {
+                this.#recovery = { requestID: result.requestID, action: result.action || action, kind: 'navigate' }
+                this.error.textContent = result.navigation.message || 'The new pass was saved. Go to its beginning without restarting again.'
+                this.error.hidden = false
+            } else { this.#recovery = null }
             return true
         } catch (error) {
             if (this.#destroyed || generation !== this.#generation) return false
+            if (error?.outcomeUnknown && error.requestID) {
+                this.#recovery = { requestID: error.requestID, action: error.action || action, kind: 'status' }
+            } else { this.#recovery = null }
             this.error.textContent = error?.message || 'The book action could not be completed. Try again.'
             this.error.hidden = false
             return false
@@ -116,8 +140,10 @@ export class BookEndcap {
     #render() {
         this.heading.textContent = this.#finished ? 'Finished' : 'End of Book'
         this.description.hidden = this.#finished
-        this.button.textContent = this.#finished ? 'Start Book Over' : 'Finish Book'
-        this.button.disabled = this.#busy
+        this.button.textContent = this.#recovery
+            ? (this.#recovery.kind === 'navigate' ? 'Go to Beginning' : 'Check Status')
+            : this.#finished ? 'Start Book Over' : 'Finish Book'
+        this.button.disabled = this.#busy || (!this.#ready && !this.#recovery)
         this.element.setAttribute('aria-busy', String(this.#busy))
     }
 
@@ -139,37 +165,4 @@ export const endcapNavigationResult = () => ({
     endcapNavigation: true,
 })
 
-// All actions have an explicit native acknowledgement. No mark-all payload,
-// optimistic Finished state, retry of a reset, or navigation before commit.
-export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWindowURL }) => {
-    const pending = new Map()
-    let sequence = 0
-    let closed = false
-    const prefix = `${documentStartedAtMs}:${Math.random().toString(36).slice(2)}`
-    return {
-        perform(action) {
-            if (closed) return Promise.reject(new Error('Reader closed'))
-            if (!['finishBook', 'startBookOver'].includes(action)) {
-                return Promise.reject(new Error('Unsupported book action'))
-            }
-            const requestID = `${prefix}:${++sequence}`
-            return new Promise((resolve, reject) => {
-                pending.set(requestID, { resolve, reject })
-                try { postMessage({ action, requestID, topWindowURL, documentStartedAtMs }) }
-                catch (error) { pending.delete(requestID); reject(error) }
-            })
-        },
-        acknowledge(requestID, result) {
-            const request = pending.get(requestID)
-            if (!request) return false
-            pending.delete(requestID)
-            request.resolve(result)
-            return true
-        },
-        close() {
-            closed = true
-            for (const request of pending.values()) request.reject(new Error('Reader closed'))
-            pending.clear()
-        },
-    }
-}
+export { createBookActionBridge } from './book-action-bridge.js'

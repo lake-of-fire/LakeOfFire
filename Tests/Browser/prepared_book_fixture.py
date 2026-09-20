@@ -10,7 +10,7 @@ import json
 
 def prepared_chapter(name):
     sentence_id = 'fixture-' + name
-    text = f'This is the {name} chapter. Some content remains deliberately unmarked.'
+    text = f'昨日の午後、図書館で本を読みました。猫がいます。 {name}'
     payload = {
         'v': 12,
         't': {

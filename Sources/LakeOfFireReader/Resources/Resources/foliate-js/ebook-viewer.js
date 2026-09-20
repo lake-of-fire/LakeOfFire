@@ -2,7 +2,7 @@ import './view.js'
 import {
 createTOCView
 } from './ui/tree.js'
-import { BookEndcap, createBookActionBridge } from './book-endcap.js'
+import { installBookReadingRuntime } from './book-reading-runtime.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import { processedSectionURLForHref } from './ebook-direct-section.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
@@ -4638,7 +4638,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
                 rects: target.rects,
             };
             if (target.lookupPayload) {
-                messageTarget.lookupPayload = target.lookupPayload;
+                messageTarget.lookupPayload = { ...target.lookupPayload, bookReadingScope: globalThis.reader?.bookReadingRuntime?.captureScope(doc) ?? null };
             }
             messageTargets.push(messageTarget);
         }
@@ -5492,6 +5492,7 @@ class Reader {
     #completionActionSequence = 0;
     bookEndcap = null;
     bookActionBridge = null;
+    bookReadingRuntime = null;
     get isClosed() {
         return this.#closed;
     }
@@ -5791,6 +5792,8 @@ class Reader {
             this.#sidebarCoverObjectURL = null;
         }
 
+        this.bookReadingRuntime?.close();
+        this.bookReadingRuntime = null;
         this.bookEndcap?.destroy();
         this.bookActionBridge?.close();
         this.bookEndcap = null;
@@ -6301,6 +6304,7 @@ class Reader {
             },
             isOwnerCurrent: owner => {
                 if (!owner) return false;
+                if (this.bookReadingRuntime && !this.bookReadingRuntime.isScopeCurrent(owner.bookReadingScope, owner.document)) return false;
                 if (!this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)) {
                     return false;
                 }
@@ -6835,7 +6839,9 @@ class Reader {
             clusterCount: diagnostics.clusterCount,
         }, 100);
     }
-    applyBookReadingProgress(articleReadingProgress, _reason = 'unspecified') {
+    applyBookReadingProgress(articleReadingProgress, _reason = 'unspecified', scoped = false) {
+        // Old unqualified Article refreshes are not authority for a chapter pass.
+        if (this.bookReadingRuntime && !scoped) return false;
         const incomingProgress = normalizeArticleReadingProgress(articleReadingProgress);
         const incomingReadSegmentIdentifiers = new Set(incomingProgress.readSegmentIdentifiers);
         const incomingSentenceIdentifiersRead = new Set(incomingProgress.sentenceIdentifiersRead);
@@ -6871,6 +6877,9 @@ class Reader {
             this.#renderPageTrackingButtons('progress-applied.lazy');
             this.#scheduleNativeMarkReadStateRefresh('progress-applied');
         }
+    }
+    async navigateBookReadingAction(target) {
+        return await this.bookReadingRuntime?.navigate(target) ?? { status: 'superseded' };
     }
     #currentSectionReadState() {
         const currentPageNumber = typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
@@ -6968,6 +6977,7 @@ class Reader {
             document,
             requireVisibleGeneration,
             visiblePageCollectionGeneration: this.visiblePageCollectionGeneration,
+            bookReadingScope: this.bookReadingRuntime?.captureScope(document) ?? null,
         };
     }
     #validatedMarkReadPayload(payload) {
@@ -7081,7 +7091,7 @@ class Reader {
             ...committedProgress.sentenceIdentifiersRead,
             ...validatedPayload.sentenceIdentifiers,
         ]));
-        this.applyBookReadingProgress(committedProgress, reason);
+        this.applyBookReadingProgress(committedProgress, reason, true);
         return validatedPayload.segments.length;
     }
     async #submitMarkReadPayload(payload, {
@@ -7096,6 +7106,10 @@ class Reader {
             this.lastNativeMarkReadRequestErrorCode = 'invalidPayload';
             return false;
         }
+        if (this.bookReadingRuntime && !this.bookReadingRuntime.isScopeCurrent(owner?.bookReadingScope, owner?.document)) {
+            this.lastNativeMarkReadRequestErrorCode = 'staleChapterPass';
+            return false;
+        }
         const outcome = await this.nativeMarkReadRequestCoordinator.request({
             sectionID,
             owner,
@@ -7107,6 +7121,7 @@ class Reader {
             message: nativeMarkReadCommandMessage(validatedPayload, {
                 topWindowURL: window.top.location.href,
                 pageURL: owner?.document?.location?.href ?? null,
+                bookReadingScope: owner?.bookReadingScope ?? null,
                 documentStartedAtMs: Number.isFinite(window.top?.performance?.timeOrigin)
                     ? window.top.performance.timeOrigin
                     : readerDocumentStartedAtMs(),
@@ -7117,6 +7132,7 @@ class Reader {
             : 'failed';
         this.lastNativeMarkReadRequestErrorCode = outcome.errorCode ?? '';
         if (outcome.success !== true) return false;
+        if (this.bookReadingRuntime && !this.bookReadingRuntime.state.noteManualReadSnapshot(outcome.nativeResult?.stateSnapshotSequence)) return false;
         this.#applyCommittedMarkReadPayload(
             outcome.context.payload,
             outcome.context.reason,
@@ -7260,7 +7276,7 @@ class Reader {
         }
     }
     async markVisiblePageAsRead(source = 'native') {
-        if (this.bookEndcap?.visible) return false;
+        if (this.bookEndcap?.visible || (this.bookReadingRuntime && !this.bookReadingRuntime.state.ready)) return false;
         const stateID = 'visible-screen';
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID)
             ?? await this.#ensureVisiblePageTrackingState(`native-demand:${source}`);
@@ -7386,7 +7402,7 @@ class Reader {
         const pageTrackingStates = this.pageTrackingStates || [];
         const hasStates = pageTrackingStates.length > 0;
         const completionAction = this.completionAction;
-        const markReadButtonsVisible = !this.bookEndcap?.visible && document.body?.dataset?.mnbMarkReadButtonsVisible !== 'false';
+        const markReadButtonsVisible = !this.bookEndcap?.visible && (!this.bookReadingRuntime || this.bookReadingRuntime.state.ready) && document.body?.dataset?.mnbMarkReadButtonsVisible !== 'false';
         const visibleState = pageTrackingStates.find((state) => state.id === 'visible-screen') ?? null;
         const nativeMarkReadState = completionAction
             ? {
@@ -8783,27 +8799,36 @@ class Reader {
             view.remove?.()
             throw readerOpenSupersededError()
         }
-        const bookActionHandler = window.webkit?.messageHandlers?.ebookBookAction;
-        if (bookActionHandler) {
-            this.bookActionBridge = createBookActionBridge({
-                postMessage: payload => bookActionHandler.postMessage(payload),
-                documentStartedAtMs: readerDocumentStartedAtMs(),
-                topWindowURL: window.top.location.href,
-            });
-            this.bookEndcap = new BookEndcap({
-                document,
-                host: document.getElementById('reader-stage'),
-                publication: view,
-                performAction: action => this.bookActionBridge.perform(action),
-                onChange: visible => {
-                    this.#clearOptimisticMarkReadState('book-endcap');
-                    this.#renderPageTrackingButtons('book-endcap');
-                    void this.updateNavButtons();
-                },
-            });
-            view.renderer.bookEndcap = this.bookEndcap;
-            this.bookEndcap.setFinished(this.markedAsFinished);
-        }
+        this.bookReadingRuntime = installBookReadingRuntime({
+            reader: this, view, document, window, documentStartedAtMs: readerDocumentStartedAtMs(),
+            invalidateProjection: () => {
+                this.#clearOptimisticMarkReadState('chapter-state-unavailable');
+                this.nativeMarkReadRequestCoordinator?.cancelAll('chapter-state-unavailable');
+                this.articleReadingProgress = normalizeArticleReadingProgress({});
+                this.#renderPageTrackingButtons('chapter-state-unavailable');
+            },
+            applyProjection: (state, { passChanged }) => {
+                if (passChanged) {
+                    this.nativeMarkReadRequestCoordinator?.cancelAll('chapter-pass-changed');
+                    this.#clearOptimisticMarkReadState('chapter-pass-changed');
+                    this.#invalidateVisiblePageSegmentSnapshot('chapter-pass-changed');
+                }
+                this.applyBookReadingProgress({
+                    ...this.articleReadingProgress,
+                    readSegmentIdentifiers: state.readSegmentIdentifiers,
+                    sentenceIdentifiersRead: state.sentenceIdentifiersRead,
+                    articleMarkedAsFinished: state.finished,
+                }, 'native-chapter-publication', true);
+                this.refreshNativeLookupHitTargets?.('chapter-pass-publication');
+            },
+            onVisibility: () => {
+                this.#clearOptimisticMarkReadState('book-endcap');
+                this.#renderPageTrackingButtons('book-endcap');
+                void this.updateNavButtons();
+            },
+        });
+        this.bookEndcap = this.bookReadingRuntime?.endcap ?? null;
+        this.bookActionBridge = this.bookReadingRuntime?.bridge ?? null;
         const initialRestore = options?.initialRestore ?? null;
         globalThis.__manabiPostReaderDocStateEvent?.('reader.open.viewAssigned');
         // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
@@ -10351,7 +10376,7 @@ class Reader {
                         && targetPage === currentPage
                     )
                 );
-            if (sameVisiblePage) {
+            if (sameVisiblePage && target?.bookAction !== true) {
                 return Promise.resolve();
             }
             return originalGoTo.call(this, target, ...args);
@@ -11052,6 +11077,7 @@ class Reader {
         if (decision.markCFIUnstable) this.unstableCFIs.add(decision.cfi);
         this.lastCFIPersistenceObservation = decision.nextObservation;
         this.#postUpdateReadingProgressMessage({
+            bookReadingScope: this.bookReadingRuntime?.captureScope(getPrimaryRendererContent(this.view?.renderer)?.doc) ?? null,
             fraction: decision.fraction,
             cfi: decision.persistedLocator,
             reason: decision.progressReason,
@@ -11080,6 +11106,7 @@ class Reader {
         expectedSectionIndex = null,
         expectedLocationCFI = null,
         expectedLocationFraction = null,
+        bookReadingScope = null,
     }) => {
         if (
             this.#closed
@@ -11151,7 +11178,11 @@ class Reader {
             currentDocumentURL,
             currentSectionIndex,
         });
+        if (this.bookEndcap?.visible) return;
+        if (this.bookReadingRuntime && !this.bookReadingRuntime.isScopeCurrent(bookReadingScope, doc)) return;
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
+            bookReadingScope,
+            pageURL: currentDocumentURL,
             fractionalCompletion: fraction,
             cfi: cfi,
             reason: reason,
@@ -11170,6 +11201,7 @@ class Reader {
         detail
     }) {
         if (this.#closed) return;
+        this.bookReadingRuntime?.updateLocation(true);
         const relocateSequence = ++this.#relocateSequence;
         const lifecycleGeneration = this.#lifecycleGeneration;
         const isCurrentRelocate = () => this.#isLifecycleCurrent(lifecycleGeneration)
@@ -11629,6 +11661,7 @@ class Reader {
                 && !requiresUserInputBeforePositionSave;
             if (shouldPersistRelocatePosition) {
                 this.#postUpdateReadingProgressMessage({
+            bookReadingScope: this.bookReadingRuntime?.captureScope(getPrimaryRendererContent(this.view?.renderer)?.doc) ?? null,
                     fraction: Number.isFinite(progressFraction) ? progressFraction : fraction,
                     cfi: persistedLocator,
                     reason,
@@ -13317,3 +13350,7 @@ window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})
 // The host replies to this reader's request ID; another reader cannot consume it.
 window.manabi_bookActionDidComplete = (requestID, result) =>
     globalThis.reader?.bookActionBridge?.acknowledge(requestID, result) ?? false;
+
+window.manabi_refreshBookReadingState = () => globalThis.reader?.bookReadingRuntime?.state.refresh() ?? false;
+window.manabi_bookReadingStateDidUpdate = (requestID, result) =>
+    globalThis.reader?.bookReadingRuntime?.state.apply(requestID, result) ?? false;

@@ -71,6 +71,7 @@ class BookEndcapBrowserTests(unittest.TestCase):
         page.get_by_role('button',name='Start Book Over',exact=True).click()
         page.wait_for_function('!cap.visible && currentChapterIndex()===0')
         self.assertEqual(page.evaluate('readIDs'),[])
+        self.assertEqual(page.evaluate('historicalReadIDs'),['chapter-0:read','chapter-1:read'])
         self.assertEqual(page.evaluate('book.sections.length'),3)
         page.evaluate('cap.enter()')
         page.evaluate('view.renderer.goTo({index:0})')

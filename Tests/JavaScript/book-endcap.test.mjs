@@ -23,6 +23,7 @@ const fixture = (performAction = async()=>({ok:true,finished:true})) => {
     const document={createElement:()=>new Element(),activeElement:new Element()}
     const host=new Element(), publication=new Element(), changes=[]
     const cap=new BookEndcap({document,host,publication,performAction,onChange:v=>changes.push(v)})
+    cap.setReady(true)
     return {cap,host,publication,document,changes}
 }
 const deferred = ()=>{let resolve,reject;const promise=new Promise((r,j)=>{resolve=r;reject=j});return{promise,resolve,reject}}
@@ -51,7 +52,7 @@ test('Finished appears only after acknowledgement and never calls mark-all',asyn
     assert.equal(cap.button.textContent,'Finish Book')
     assert.equal(await cap.activate(),false)
     assert.deepEqual(calls,['finishBook'])
-    pending.resolve({ok:true,finished:true});assert.equal(await first,true)
+    cap.setFinished(true);pending.resolve({ok:true,committed:true,finished:true});assert.equal(await first,true)
     assert.equal(cap.heading.textContent,'Finished');assert.equal(cap.button.textContent,'Start Book Over')
 })
 test('failure does not finish or navigate and a new explicit retry can succeed',async()=>{
@@ -59,7 +60,7 @@ test('failure does not finish or navigate and a new explicit retry can succeed',
     cap.enter();assert.equal(await cap.activate(),false)
     assert.equal(cap.visible,true);assert.equal(cap.finished,false);assert.equal(cap.busy,false)
     assert.equal(cap.error.textContent,'journal failure')
-    assert.equal(await cap.activate(),true);assert.equal(cap.finished,true)
+    assert.equal(await cap.activate(),true);assert.equal(cap.finished,false);cap.setFinished(true);assert.equal(cap.finished,true)
 })
 test('negative acknowledgement is failure, never optimistic success',async()=>{
     const {cap}=fixture(async()=>({ok:false,error:'stale chapter'}));cap.enter()
@@ -69,7 +70,7 @@ test('start over leaves the endcap only after native success',async()=>{
     const pending=deferred(),calls=[];const {cap}=fixture(action=>{calls.push(action);return pending.promise})
     cap.setFinished(true);cap.enter();const task=cap.activate()
     assert.equal(cap.visible,true);assert.deepEqual(calls,['startBookOver'])
-    pending.resolve({ok:true,finished:false});await task
+    cap.setFinished(false);cap.leave();pending.resolve({ok:true,committed:true,finished:false});await task
     assert.equal(cap.visible,false);assert.equal(cap.finished,false)
 })
 test('failure to start over leaves finished state intact',async()=>{
@@ -85,7 +86,7 @@ test('late acknowledgement after destroy cannot revive or update the old endcap'
 test('navigation away during a write never reopens the endcap',async()=>{
     const pending=deferred();const {cap}=fixture(()=>pending.promise)
     cap.enter();const task=cap.activate();cap.leave();pending.resolve({ok:true,finished:true});await task
-    assert.equal(cap.visible,false);assert.equal(cap.finished,true)
+    assert.equal(cap.visible,false);assert.equal(cap.finished,false)
 })
 test('preexisting inert state survives endcap navigation',()=>{
     const {cap,publication}=fixture();publication.inert=true
@@ -94,23 +95,18 @@ test('preexisting inert state survives endcap navigation',()=>{
 test('endcap movement is not physical page/read evidence',()=>{
     assert.equal(pageTurnMovementDisposition(endcapNavigationResult()),'no-move')
 })
-test('bridge only posts explicit book actions, without read subjects',async()=>{
-    const messages=[];const bridge=createBookActionBridge({postMessage:x=>messages.push(x),documentStartedAtMs:1,topWindowURL:'ebook://book/a'})
-    const task=bridge.perform('finishBook');const message=messages[0]
-    assert.deepEqual(Object.keys(message).sort(),['action','documentStartedAtMs','requestID','topWindowURL'])
-    assert.equal(message.action,'finishBook');assert.equal(bridge.acknowledge('wrong',{}),false)
-    assert.equal(bridge.acknowledge(message.requestID,{ok:true,finished:true}),true)
-    assert.equal((await task).finished,true)
-    assert.equal(bridge.acknowledge(message.requestID,{}),false)
-    await assert.rejects(bridge.perform('markAllSectionsAsRead'))
+
+test('old Finish acknowledgement never overwrites a newer native projection',async()=>{
+    const pending=deferred();const {cap}=fixture(()=>pending.promise);cap.enter()
+    const p=cap.activate();cap.setFinished(false);pending.resolve({ok:true,committed:true,finished:true});await p
+    assert.equal(cap.finished,false)
 })
-test('closed bridge rejects pending commands and cannot be reused',async()=>{
-    const bridge=createBookActionBridge({postMessage(){},documentStartedAtMs:1,topWindowURL:'ebook://book/a'})
-    const task=bridge.perform('startBookOver');const rejection=assert.rejects(task,/closed/)
-    bridge.close();await rejection;await assert.rejects(bridge.perform('finishBook'),/closed/)
+test('committed restart with failed navigation remains visible with recovery',async()=>{
+    const {cap}=fixture(async()=>({ok:true,committed:true,requestID:'r',navigation:{status:'failed',message:'Saved; navigation failed'}}))
+    cap.setFinished(true);cap.enter();await cap.activate()
+    assert.equal(cap.visible,true);assert.equal(cap.button.textContent,'Go to Beginning');assert.equal(cap.error.hidden,false)
 })
-test('postMessage failure clears the pending command',async()=>{
-    let request;const bridge=createBookActionBridge({postMessage:x=>{request=x;throw Error('unavailable')},documentStartedAtMs:1,topWindowURL:'ebook://book/a'})
-    await assert.rejects(bridge.perform('finishBook'),/unavailable/)
-    assert.equal(bridge.acknowledge(request.requestID,{ok:true}),false)
+test('without an admitted native state no semantic action is issued',async()=>{
+    const calls=[];const {cap}=fixture(x=>calls.push(x));cap.setReady(false);cap.enter()
+    assert.equal(await cap.activate(),false);assert.deepEqual(calls,[])
 })
