@@ -1,5 +1,5 @@
 name: Book Actions workbench
-# Qualification pass 3: physical-navigation callers and real viewer shell.
+# Qualification pass 4: preserve the production CSP during driver polling.
 on:
   push:
     branches: [codex/book-actions-endcap-20260920]
@@ -30,6 +30,8 @@ jobs:
           old = "'pageMetadataUpdated','updateReadingProgress','ebookNativeMarkReadState',"
           assert s.count(old) == 1
           s = s.replace(old, "'pageMetadataUpdated','updateReadingProgress','ebookNativeMarkReadState',\n        'markAllSectionsAsRead','finishedReadingBook','startOver',")
+          s = s.replace('from playwright.sync_api import sync_playwright', 'from playwright.sync_api import sync_playwright\nfrom browser_wait import wait_for_reader')
+          s = s.replace('page.wait_for_function(', 'wait_for_reader(page, ')
           p.write_text(s)
           PY
           git diff --check
