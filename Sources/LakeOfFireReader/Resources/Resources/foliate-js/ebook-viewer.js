@@ -6295,7 +6295,9 @@ class Reader {
             // A progress observation attempted before the first Manabi grant is
             // not relabeled later. Recompute current renderer state after native
             // installs/rotates the grant instead.
-            this.#postConfirmedPageTurnProgress();
+            this.#postConfirmedPageTurnProgress(
+                captureArticleMutationProducer(window)
+            );
         });
         this.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
             postMessage: message => {
@@ -7690,6 +7692,7 @@ class Reader {
         ignoreIfRendererNavigationInFlight = false,
         serializedContinuation = false,
         details = {},
+        articleMutationProducer = captureArticleMutationProducer(window),
     }) {
         if (this.#closed) {
             return this.#readerClosedPageTurnResult('before-reader-turn');
@@ -7717,6 +7720,7 @@ class Reader {
                     ignoreIfPageTurnInFlight,
                     ignoreIfRendererNavigationInFlight,
                     details,
+                    articleMutationProducer,
                     resolve,
                     reject,
                 };
@@ -7835,7 +7839,9 @@ class Reader {
             }
             const movementDisposition = pageTurnMovementDisposition(result);
             if (shouldRequestConfirmedPageTurnProgress(movementDisposition)) {
-                this.#postConfirmedPageTurnProgress();
+                this.#postConfirmedPageTurnProgress(
+                    articleMutationProducer
+                );
             }
             if (
                 movementDisposition === PAGE_TURN_MOVEMENT_DISPOSITION.noMove
@@ -11127,7 +11133,7 @@ class Reader {
         });
     }
 
-    #postConfirmedPageTurnProgress = debounce(() => {
+    #postConfirmedPageTurnProgress = debounce((articleMutationProducer) => {
         const location = this.view?.lastLocation ?? null;
         const sectionIndex = typeof location?.sectionIndex === 'number'
             ? location.sectionIndex
@@ -11181,15 +11187,20 @@ class Reader {
             expectedSectionIndex: decision.sectionIndex,
             expectedLocationCFI: decision.cfi,
             expectedLocationFraction: decision.fraction,
-        });
+        }, articleMutationProducer);
         if (!queued) return;
         if (decision.markCFIUnstable) this.unstableCFIs.add(decision.cfi);
         this.lastCFIPersistenceObservation = decision.nextObservation;
     }, 0)
 
-    #queueUpdateReadingProgressMessage = details => {
-        const producer = captureArticleMutationProducer(window);
-        const ownedDetails = withArticleMutationProducer(details, producer);
+    #queueUpdateReadingProgressMessage = (
+        details,
+        articleMutationProducer
+    ) => {
+        const ownedDetails = withArticleMutationProducer(
+            details,
+            articleMutationProducer
+        );
         if (!ownedDetails) return false;
         this.#postUpdateReadingProgressMessage(ownedDetails);
         return true;
@@ -11305,6 +11316,8 @@ class Reader {
         detail
     }) {
         if (this.#closed) return;
+        const articleMutationProducer =
+            captureArticleMutationProducer(window);
         const relocateSequence = ++this.#relocateSequence;
         const lifecycleGeneration = this.#lifecycleGeneration;
         const isCurrentRelocate = () => this.#isLifecycleCurrent(lifecycleGeneration)
@@ -11777,7 +11790,7 @@ class Reader {
                         return content?.doc?.location?.href ?? content?.document?.location?.href ?? null;
                     })(),
                     expectedSectionIndex: sectionIndex,
-                })
+                }, articleMutationProducer)
             }
         }
 
