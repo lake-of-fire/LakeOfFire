@@ -6873,7 +6873,10 @@ class Reader {
             this.#scheduleNativeMarkReadStateRefresh('progress-applied');
         }
     }
-    async #handleCompletionAction(actionType) {
+    async #handleCompletionAction(
+        actionType,
+        articleMutationProducer = captureArticleMutationProducer(window)
+    ) {
         if (this.completionActionBusy) {
             return;
         }
@@ -6883,7 +6886,6 @@ class Reader {
         const isCurrentCompletionAction = () =>
             this.#isLifecycleCurrent(lifecycleGeneration)
             && this.#completionActionSequence === completionActionSequence;
-        const articleMutationProducer = captureArticleMutationProducer(window);
         if (articleMutationProducer.required
             && !articleMutationProducer.token) {
             return;
@@ -6910,7 +6912,9 @@ class Reader {
                     );
                     break;
                 case 'restart':
-                    this.#clearOptimisticMarkReadState('restart');
+                    // Native owns the reset transaction and the subsequent
+                    // renderer relocation. Do not clear or navigate locally
+                    // before native accepts this exact producer lifetime.
                     const restartMessage = withArticleMutationProducer({
                         topWindowURL: window.top.location.href,
                         documentStartedAtMs: readerDocumentStartedAtMs(),
@@ -6919,7 +6923,6 @@ class Reader {
                     window.webkit.messageHandlers.startOver.postMessage(
                         restartMessage
                     );
-                    await renderer?.firstSection?.();
                     break;
                 default:
                     break;
@@ -7150,9 +7153,8 @@ class Reader {
         owner,
         reason,
         animateStateID = null,
+        articleMutationProducer = captureArticleMutationProducer(window),
     }) {
-        const articleMutationProducer =
-            captureArticleMutationProducer(window);
         if (articleMutationProducer.required
             && !articleMutationProducer.token) {
             this.lastNativeMarkReadRequestOutcome = 'failed';
@@ -7279,6 +7281,11 @@ class Reader {
         return 0;
     }
     async markAllSectionsAsRead() {
+        const articleMutationProducer = captureArticleMutationProducer(window);
+        if (articleMutationProducer.required
+            && !articleMutationProducer.token) {
+            return 0;
+        }
         const payload = this.buildMarkAllSectionsAsReadPayload();
         const doc = getPrimaryRendererContent(this.view?.renderer)?.doc ?? null;
         if (!payload || !isDocumentLike(doc)) {
@@ -7288,12 +7295,20 @@ class Reader {
             sectionID: `ebook-mark-all:${this.#lifecycleGeneration}`,
             owner: this.#markReadOwner({ document: doc }),
             reason: 'native-mark-all-read-committed',
+            articleMutationProducer,
         });
         return success
             ? (payload.segments.length || payload.sentenceIdentifiers.length)
             : 0;
     }
-    async #markPageClusterAsRead(stateID) {
+    async #markPageClusterAsRead(
+        stateID,
+        articleMutationProducer = captureArticleMutationProducer(window)
+    ) {
+        if (articleMutationProducer.required
+            && !articleMutationProducer.token) {
+            return false;
+        }
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
         if (!pageTrackingState) {
             return false;
@@ -7324,6 +7339,7 @@ class Reader {
                 }),
                 reason: 'native-mark-read-committed',
                 animateStateID: stateID,
+                articleMutationProducer,
             });
             if (!success) return false;
             await this.#advanceAfterMarkRead(advanceOwner);
@@ -7334,6 +7350,13 @@ class Reader {
         }
     }
     async markVisiblePageAsRead(source = 'native') {
+        // Capture before any demand-hydration await. A command admitted under A
+        // must never acquire B's grant after a same-document lifetime rotation.
+        const articleMutationProducer = captureArticleMutationProducer(window);
+        if (articleMutationProducer.required
+            && !articleMutationProducer.token) {
+            return false;
+        }
         const completionAction = this.completionAction;
         if (completionAction) {
             if (this.completionActionBusy) {
@@ -7350,7 +7373,10 @@ class Reader {
             } else {
                 ignoreNextIncomingHideNavigation('native-page-tracking-button');
             }
-            await this.#handleCompletionAction(completionAction.type);
+            await this.#handleCompletionAction(
+                completionAction.type,
+                articleMutationProducer
+            );
             return true;
         }
         const stateID = 'visible-screen';
@@ -7370,7 +7396,10 @@ class Reader {
         } else {
             ignoreNextIncomingHideNavigation('native-page-tracking-button');
         }
-        return await this.#markPageClusterAsRead(stateID);
+        return await this.#markPageClusterAsRead(
+            stateID,
+            articleMutationProducer
+        );
     }
     async #ensureVisiblePageTrackingState(reason = 'native-demand', explicitDoc = null) {
         const doc = this.#currentPageTrackingDocument(explicitDoc);

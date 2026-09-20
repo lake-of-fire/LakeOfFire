@@ -311,3 +311,32 @@ test('captured producer evidence never refreshes when native rotates grant', () 
         'manabi-article-mutation-producer-changed'
     )
 })
+
+
+test('producer evidence captured before an async boundary cannot adopt the successor grant', async () => {
+    let token = '11111111-1111-4111-8111-111111111111'
+    const host = {
+        manabi_captureArticleMutationProducerToken() { return token },
+    }
+    const admitted = captureArticleMutationProducer(host)
+    await Promise.resolve()
+    token = '22222222-2222-4222-8222-222222222222'
+    const message = withArticleMutationProducer({
+        topWindowURL: 'file:///book.epub',
+        documentStartedAtMs: 42,
+    }, admitted)
+    assert.equal(
+        message.articleMutationProducerToken,
+        '11111111-1111-4111-8111-111111111111'
+    )
+})
+
+test('restart-shaped producer message fails closed without a configured Manabi grant', () => {
+    const admitted = captureArticleMutationProducer({
+        manabi_captureArticleMutationProducerToken() { return null },
+    })
+    assert.equal(withArticleMutationProducer({
+        topWindowURL: 'file:///book.epub',
+        documentStartedAtMs: 42,
+    }, admitted), null)
+})
