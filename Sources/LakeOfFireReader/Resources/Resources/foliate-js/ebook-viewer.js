@@ -2,6 +2,7 @@ import './view.js'
 import {
 createTOCView
 } from './ui/tree.js'
+import { BookEndcap, createBookActionBridge } from './book-endcap.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import { processedSectionURLForHref } from './ebook-direct-section.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
@@ -5489,6 +5490,8 @@ class Reader {
     #sidebarCloseHandle = null;
     #navButtonOperations = new Set();
     #completionActionSequence = 0;
+    bookEndcap = null;
+    bookActionBridge = null;
     get isClosed() {
         return this.#closed;
     }
@@ -5788,6 +5791,10 @@ class Reader {
             this.#sidebarCoverObjectURL = null;
         }
 
+        this.bookEndcap?.destroy();
+        this.bookActionBridge?.close();
+        this.bookEndcap = null;
+        this.bookActionBridge = null;
         const view = this.view;
         this.view = null;
         view?.close?.();
@@ -6585,7 +6592,7 @@ class Reader {
                 return;
             }
             if (completionAction) {
-                this.#handleCompletionAction(completionAction).catch((error) => console.error(error));
+                return; // Completion is only available on the endcap.
                 return;
             }
             if (!stateID) {
@@ -6842,6 +6849,7 @@ class Reader {
         incomingProgress.sentenceIdentifiersRead = Array.from(incomingSentenceIdentifiersRead);
         this.articleReadingProgress = incomingProgress;
         this.markedAsFinished = !!this.articleReadingProgress.articleMarkedAsFinished;
+        this.bookEndcap?.setFinished(this.markedAsFinished);
         this.lastPageTrackingStateSignature = null;
         this.lastPageTrackingStateSnapshot = null;
         for (const content of this.view?.renderer?.getContents?.() || []) {
@@ -6862,53 +6870,6 @@ class Reader {
             this.pageTrackingStates = [];
             this.#renderPageTrackingButtons('progress-applied.lazy');
             this.#scheduleNativeMarkReadStateRefresh('progress-applied');
-        }
-    }
-    async #handleCompletionAction(actionType) {
-        if (this.completionActionBusy) {
-            return;
-        }
-        const lifecycleGeneration = this.#lifecycleGeneration;
-        const renderer = this.view?.renderer ?? null;
-        const completionActionSequence = ++this.#completionActionSequence;
-        const isCurrentCompletionAction = () =>
-            this.#isLifecycleCurrent(lifecycleGeneration)
-            && this.#completionActionSequence === completionActionSequence;
-        this.completionActionBusy = true;
-        this.#renderPageTrackingButtons('completion-action-busy');
-        try {
-            switch (actionType) {
-                case 'finish':
-                    const sectionReadState = this.#currentSectionReadState();
-                    window.webkit.messageHandlers.finishedReadingBook.postMessage({
-                        topWindowURL: window.top.location.href,
-                        allSectionsRead: sectionReadState.allSectionsRead,
-                        documentStartedAtMs: readerDocumentStartedAtMs(),
-                        currentPageNumber: sectionReadState.currentPageNumber,
-                        totalPages: sectionReadState.totalPages,
-                        pagesLeft: sectionReadState.pagesLeft,
-                        segmentCount: sectionReadState.segmentCount,
-                        unreadSegmentCount: sectionReadState.unreadSegmentCount,
-                    });
-                    break;
-                case 'restart':
-                    this.#clearOptimisticMarkReadState('restart');
-                    window.webkit.messageHandlers.startOver.postMessage({
-                        topWindowURL: window.top.location.href,
-                        documentStartedAtMs: readerDocumentStartedAtMs(),
-                    });
-                    await renderer?.firstSection?.();
-                    break;
-                default:
-                    break;
-            }
-        } finally {
-            if (actionType !== 'finish' && isCurrentCompletionAction()) {
-                this.completionActionBusy = false;
-                if (this.view?.renderer === renderer) {
-                    this.#renderPageTrackingButtons('completion-action-finished');
-                }
-            }
         }
     }
     #currentSectionReadState() {
@@ -7299,25 +7260,7 @@ class Reader {
         }
     }
     async markVisiblePageAsRead(source = 'native') {
-        const completionAction = this.completionAction;
-        if (completionAction) {
-            if (this.completionActionBusy) {
-                return false;
-            }
-            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
-            if (wasHidden) {
-                globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = true;
-                postEbookNavigationVisibilityToNative(true, 'native-page-tracking-button.preserve-hidden', {
-                    completionAction: completionAction.type ?? null,
-                    source,
-                });
-                ignoreNextIncomingRevealNavigation('native-page-tracking-button');
-            } else {
-                ignoreNextIncomingHideNavigation('native-page-tracking-button');
-            }
-            await this.#handleCompletionAction(completionAction.type);
-            return true;
-        }
+        if (this.bookEndcap?.visible) return false;
         const stateID = 'visible-screen';
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID)
             ?? await this.#ensureVisiblePageTrackingState(`native-demand:${source}`);
@@ -7443,7 +7386,7 @@ class Reader {
         const pageTrackingStates = this.pageTrackingStates || [];
         const hasStates = pageTrackingStates.length > 0;
         const completionAction = this.completionAction;
-        const markReadButtonsVisible = document.body?.dataset?.mnbMarkReadButtonsVisible !== 'false';
+        const markReadButtonsVisible = !this.bookEndcap?.visible && document.body?.dataset?.mnbMarkReadButtonsVisible !== 'false';
         const visibleState = pageTrackingStates.find((state) => state.id === 'visible-screen') ?? null;
         const nativeMarkReadState = completionAction
             ? {
@@ -8837,6 +8780,27 @@ class Reader {
             view.remove?.()
             throw readerOpenSupersededError()
         }
+        const bookActionHandler = window.webkit?.messageHandlers?.ebookBookAction;
+        if (bookActionHandler) {
+            this.bookActionBridge = createBookActionBridge({
+                postMessage: payload => bookActionHandler.postMessage(payload),
+                documentStartedAtMs: readerDocumentStartedAtMs(),
+                topWindowURL: window.top.location.href,
+            });
+            this.bookEndcap = new BookEndcap({
+                document,
+                host: document.getElementById('reader-stage'),
+                publication: view,
+                performAction: action => this.bookActionBridge.perform(action),
+                onChange: visible => {
+                    this.#clearOptimisticMarkReadState('book-endcap');
+                    this.#renderPageTrackingButtons('book-endcap');
+                    void this.updateNavButtons();
+                },
+            });
+            view.renderer.bookEndcap = this.bookEndcap;
+            this.bookEndcap.setFinished(this.markedAsFinished);
+        }
         const initialRestore = options?.initialRestore ?? null;
         globalThis.__manabiPostReaderDocStateEvent?.('reader.open.viewAssigned');
         // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
@@ -9920,32 +9884,12 @@ class Reader {
                 : (typeof this.navHUD?.lastRelocateDetail?.pageCount === 'number'
                     ? this.navHUD.lastRelocateDetail.pageCount
                     : null));
-        const isSinglePageMetadataSection = isMetadataSection && pageCount === 1;
-        const finishLabel = isSinglePageMetadataSection ? 'Mark Read' : 'Finish Chapter';
-        const isRestartHiddenForMiddlePageWhileNavHidden =
-            !!this.markedAsFinished
-            && !!this.navHUD?.hideNavigationDueToScroll
-            && !atSectionStart
-            && !atSectionEnd;
-        const completionAction = this.markedAsFinished
-            ? (isRestartHiddenForMiddlePageWhileNavHidden
-                ? null
-                : {
-                    type: 'restart',
-                    label: 'Start Over Chapter',
-                    tone: 'restart',
-                })
-            : (atSectionEnd && !hasNextSection
-                ? {
-                    type: 'finish',
-                    label: finishLabel,
-                    tone: 'finish',
-                }
-                : null);
-        this.completionAction = completionAction;
-        if (!completionAction) {
-            this.#invalidateCompletionAction();
-        }
+        this.completionAction = null;
+        this.#invalidateCompletionAction();
+        const endcapVisible = this.bookEndcap?.visible === true;
+        const forwardIsDisabled = this.bookEndcap
+            ? endcapVisible : (atSectionEnd && !hasNextSection);
+        const backwardIsDisabled = !endcapVisible && atSectionStart && !hasPrevSection;
 
         this.#show(this.buttons.prev, atSectionStart && hasPrevSection);
 
@@ -9964,13 +9908,13 @@ class Reader {
             if (this.isRTL) {
                 // In RTL, left chevron = go forward, right chevron = go backward
                 // Disable left at end, right at start
-                btnScrollLeft.disabled = compactSheetSidePaginationDisabled || (atSectionEnd && !hasNextSection);
-                btnScrollRight.disabled = compactSheetSidePaginationDisabled || (atSectionStart && !hasPrevSection);
+                btnScrollLeft.disabled = compactSheetSidePaginationDisabled || forwardIsDisabled;
+                btnScrollRight.disabled = compactSheetSidePaginationDisabled || backwardIsDisabled;
             } else {
                 // LTR, left chevron = backward, right chevron = forward
                 // Disable left at start, right at end
-                btnScrollLeft.disabled = compactSheetSidePaginationDisabled || (atSectionStart && !hasPrevSection);
-                btnScrollRight.disabled = compactSheetSidePaginationDisabled || (atSectionEnd && !hasNextSection);
+                btnScrollLeft.disabled = compactSheetSidePaginationDisabled || backwardIsDisabled;
+                btnScrollRight.disabled = compactSheetSidePaginationDisabled || forwardIsDisabled;
             }
         }
 
@@ -13364,3 +13308,7 @@ window.manabi_applyMarkSectionAsReadResult = (result) => {
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})
+
+// The host replies to this reader's request ID; another reader cannot consume it.
+window.manabi_bookActionDidComplete = (requestID, result) =>
+    globalThis.reader?.bookActionBridge?.acknowledge(requestID, result) ?? false;
