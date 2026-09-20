@@ -4,20 +4,50 @@ on:
     branches: [codex/book-actions-endcap-20260920]
     paths: [.github/workflows/book-actions-workbench.yml]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  snapshot:
+  qualify:
+    if: github.ref == 'refs/heads/codex/book-actions-endcap-20260920'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          persist-credentials: false
-      - name: Archive tracked source only
-        run: git archive --format=tar.gz --output=book-actions-source.tar.gz HEAD
-      - uses: actions/upload-artifact@v4
+          fetch-depth: 0
+      - name: Apply reviewed source changes on the feature branch only
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor d1691a4f804de2b9b9e62b5c52b523a6518544bb HEAD
+          python3 Tools/book-actions/apply-endcap.py
+          git diff --check
+      - name: Unit tests
+        run: |
+          set -o pipefail
+          node --test Tests/JavaScript/*.test.mjs 2>&1 | tee book-actions-unit-results.txt
+      - name: Install browser test dependencies
+        run: |
+          python3 -m pip install playwright==1.57.0
+          python3 -m playwright install --with-deps chromium
+      - name: Real renderer browser journeys
+        run: |
+          set -o pipefail
+          python3 Tests/Browser/test_book_endcap.py 2>&1 | tee book-actions-browser-results.txt
+      - name: Preserve qualification evidence
+        if: always()
+        run: git diff --binary > book-actions-reviewed.patch
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
-          name: book-actions-source
-          path: book-actions-source.tar.gz
-          retention-days: 1
-          if-no-files-found: error
+          name: book-actions-qualification
+          path: |
+            book-actions-*-results.txt
+            book-actions-reviewed.patch
+          retention-days: 7
+      - name: Publish tested changes without touching the release branch
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Sources/LakeOfFireReader/Resources/Resources/foliate-js
+          git commit -m 'Separate terminal book page from EPUB text and Mark Read'
+          git push origin HEAD:refs/heads/codex/book-actions-endcap-20260920
