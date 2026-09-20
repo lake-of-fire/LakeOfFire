@@ -1,3 +1,10 @@
+export const currentArticleMutationProducerToken = () => {
+    const value = globalThis.manabi_captureArticleMutationProducerToken?.() ?? null
+    return typeof value === 'string' && value.length > 0 && value.length <= 64
+        ? value
+        : null
+}
+
 const defaultRequestID = () => {
     if (typeof globalThis.crypto?.randomUUID === 'function') {
         return globalThis.crypto.randomUUID()

@@ -8,6 +8,7 @@ import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
     createNativeMarkReadRequestCoordinator,
+    currentArticleMutationProducerToken,
     nativeMarkReadCommandMessage,
 } from './native-mark-read-request.js'
 import {
@@ -6874,6 +6875,12 @@ class Reader {
         const isCurrentCompletionAction = () =>
             this.#isLifecycleCurrent(lifecycleGeneration)
             && this.#completionActionSequence === completionActionSequence;
+        const articleMutationProducerToken = actionType === 'finish'
+            ? currentArticleMutationProducerToken()
+            : null;
+        if (actionType === 'finish' && !articleMutationProducerToken) {
+            return;
+        }
         this.completionActionBusy = true;
         this.#renderPageTrackingButtons('completion-action-busy');
         try {
@@ -6881,6 +6888,7 @@ class Reader {
                 case 'finish':
                     const sectionReadState = this.#currentSectionReadState();
                     window.webkit.messageHandlers.finishedReadingBook.postMessage({
+                        articleMutationProducerToken,
                         topWindowURL: window.top.location.href,
                         allSectionsRead: sectionReadState.allSectionsRead,
                         documentStartedAtMs: readerDocumentStartedAtMs(),
@@ -7129,6 +7137,14 @@ class Reader {
         reason,
         animateStateID = null,
     }) {
+        const articleMutationProducerToken =
+            currentArticleMutationProducerToken();
+        if (!articleMutationProducerToken) {
+            this.lastNativeMarkReadRequestOutcome = 'failed';
+            this.lastNativeMarkReadRequestErrorCode =
+                'articleMutationProducerUnavailable';
+            return false;
+        }
         const validatedPayload = this.#validatedMarkReadPayload(payload);
         if (!validatedPayload) {
             this.lastNativeMarkReadRequestOutcome = 'failed';
@@ -7144,6 +7160,7 @@ class Reader {
                 animateStateID,
             },
             message: nativeMarkReadCommandMessage(validatedPayload, {
+                articleMutationProducerToken,
                 topWindowURL: window.top.location.href,
                 pageURL: owner?.document?.location?.href ?? null,
                 documentStartedAtMs: Number.isFinite(window.top?.performance?.timeOrigin)
@@ -11117,6 +11134,8 @@ class Reader {
             expectedSectionIndex: decision.sectionIndex,
             expectedLocationCFI: decision.cfi,
             expectedLocationFraction: decision.fraction,
+            articleMutationProducerToken:
+                currentArticleMutationProducerToken(),
         });
     }, 0)
 
@@ -11131,9 +11150,11 @@ class Reader {
         expectedSectionIndex = null,
         expectedLocationCFI = null,
         expectedLocationFraction = null,
+        articleMutationProducerToken = null,
     }) => {
         if (
-            this.#closed
+            !articleMutationProducerToken
+            || this.#closed
             || this.hasLoadedLastPosition !== true
             || globalThis.__manabiRestoreInProgress === true
             || globalThis.__manabiSuppressNextRestoreRelocateSave === true
@@ -11203,6 +11224,7 @@ class Reader {
             currentSectionIndex,
         });
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
+            articleMutationProducerToken,
             fractionalCompletion: fraction,
             cfi: cfi,
             reason: reason,
@@ -11693,6 +11715,8 @@ class Reader {
                         return content?.doc?.location?.href ?? content?.document?.location?.href ?? null;
                     })(),
                     expectedSectionIndex: sectionIndex,
+                    articleMutationProducerToken:
+                        currentArticleMutationProducerToken(),
                 })
             }
         }
