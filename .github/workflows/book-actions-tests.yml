@@ -1,7 +1,7 @@
 name: Book Actions tests
 on:
   push:
-    branches: [codex/book-actions-endcap-20260920]
+    branches: [codex/book-actions-epochs-20260920]
     paths:
       - Sources/LakeOfFireReader/Resources/Resources/foliate-js/**
       - Tests/Browser/**
@@ -22,7 +22,7 @@ concurrency:
 jobs:
   behavior:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 15
     env:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
