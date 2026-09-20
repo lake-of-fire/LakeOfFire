@@ -8,9 +8,17 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
     documentStartedAtMs, applyProjection, invalidateProjection, onVisibility }) => {
     const handlers = window.webkit?.messageHandlers
     if (!handlers?.ebookBookAction || !handlers?.ebookBookReadingState) return null
-    const documentURL = () => {
+    // A URL identifies a resource, not a displayed Document. Preloaded or
+    // detached frames can use the very same URL as the current chapter.
+    let closed = false
+    const primaryDocument = () => {
+        if (closed || reader.view !== view) return null
         const content = getPrimaryRendererContent(view.renderer)
-        const doc = content?.doc ?? content?.document
+        return content?.doc ?? content?.document ?? null
+    }
+    const isPrimaryDocument = doc => !!doc && doc === primaryDocument()
+    const documentURL = () => {
+        const doc = primaryDocument()
         return doc?.location?.href ?? doc?.URL ?? null
     }
     const clearDocumentScope = doc => {
@@ -27,21 +35,23 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
             clearDocumentScope(content?.doc ?? content?.document)
         }
     }
-    let endcap
+    let endcap, observedDocument = null, observedRenderer = null
     const state = new BookReadingStateController({
         postMessage: body => handlers.ebookBookReadingState.postMessage(body),
         documentStartedAtMs, topWindowURL: window.location.href,
+        isLocationCurrent: () => !closed && reader.view === view
+            && view.renderer === observedRenderer && primaryDocument() === observedDocument,
         onInvalidate: () => {
             clearDocumentScopes()
             endcap?.setReady(false)
             invalidateProjection()
         },
         onState: (projection, context, details) => {
-            const activeURL = documentURL()
+            const activeDocument = primaryDocument()
             for (const content of view.renderer?.getContents?.() ?? []) {
                 const doc = content?.doc ?? content?.document
                 if (!doc?.defaultView) continue
-                if ((doc.location?.href ?? doc.URL) !== activeURL || context.isEndPage) {
+                if (doc !== activeDocument || context.isEndPage) {
                     clearDocumentScope(doc)
                     continue
                 }
@@ -61,18 +71,38 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         documentStartedAtMs, topWindowURL: window.location.href,
         captureContext: expected => state.captureContext(expected),
     })
-    const updateLocation = (moved = false) => state.relocate({
-        sectionURL: endcap?.visible ? null : documentURL(), isEndPage: endcap?.visible === true,
-    }, { moved })
+    const updateLocation = (moved = false) => {
+        if (closed) return false
+        const doc = primaryDocument(), renderer = view.renderer
+        const replaced = doc !== observedDocument || renderer !== observedRenderer
+        if (replaced) clearDocumentScope(observedDocument)
+        observedDocument = doc; observedRenderer = renderer
+        return state.relocate({ sectionURL: endcap?.visible ? null : documentURL(),
+            isEndPage: endcap?.visible === true }, { moved, replaced })
+    }
+    const captureScope = doc => isPrimaryDocument(doc) && doc === observedDocument
+        && view.renderer === observedRenderer ? state.captureScope(doc.location?.href ?? doc.URL) : null
+    const isScopeCurrent = (scope, doc) => !!scope && bookScopeKey(scope) === bookScopeKey(captureScope(doc))
     endcap = new BookEndcap({ document, host: document.getElementById('reader-stage'), publication: view,
         performAction: action => bridge.perform(action), recoverAction: recovery => bridge.recover(recovery),
-        onChange: visible => { updateLocation(); onVisibility(visible) },
+        onChange: visible => { if (!closed) { updateLocation(); onVisibility(visible) } },
     })
     view.renderer.bookEndcap = endcap
     return {
         state, bridge, endcap, updateLocation,
-        captureScope: doc => state.captureScope(doc?.location?.href ?? doc?.URL),
-        isScopeCurrent: (scope, doc) => !!scope && bookScopeKey(scope) === bookScopeKey(state.captureScope(doc?.location?.href ?? doc?.URL)),
+        captureScope, isScopeCurrent,
+        // Capture before a timer, promise or layout wait. A later same-URL
+        // document, renderer, position or pass cannot adopt this event.
+        captureEvent(doc) {
+            const scope = captureScope(doc)
+            return scope ? Object.freeze({ document: doc, renderer: view.renderer,
+                locationRevision: state.locationRevision, scope: Object.freeze(scope) }) : null
+        },
+        isEventCurrent(event) {
+            return !!event && event.renderer === view.renderer
+                && event.locationRevision === state.locationRevision
+                && isScopeCurrent(event.scope, event.document)
+        },
         async navigate(target) {
             if (reader.view !== view || !view.renderer || target.locationRevision !== state.locationRevision) {
                 return { status: 'superseded' }
@@ -88,10 +118,15 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
             if (index < 0) return { status: 'failed' }
             const renderer = view.renderer
             const result = await renderer.goTo({ index, anchor: 0, bookAction: true })
-            if (reader.view !== view || !view.renderer) return { status: 'superseded' }
+            if (reader.view !== view || view.renderer !== renderer) return { status: 'superseded' }
             if (result !== true || getPrimaryRendererContentIndex(renderer) !== index) return { status: 'failed' }
             return { status: 'completed' }
         },
-        close() { bridge.close(); endcap.destroy(); state.close(); clearDocumentScopes() },
+        close() {
+            if (closed) return
+            closed = true
+            bridge.close(); state.close(); endcap.destroy(); clearDocumentScopes()
+            clearDocumentScope(observedDocument)
+        },
     }
 }
