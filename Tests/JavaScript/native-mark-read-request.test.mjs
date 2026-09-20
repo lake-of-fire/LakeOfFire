@@ -2,9 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+    articleMutationProducerChangedEventName,
+    captureArticleMutationProducer,
     createNativeMarkReadRequestCoordinator,
     currentArticleMutationProducerToken,
     nativeMarkReadCommandMessage,
+    withArticleMutationProducer,
 } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
 
 test('projects semantic renderer payload onto durable native subject identifiers', () => {
@@ -260,4 +263,51 @@ test('native mark command preserves producer token in document identity', () => 
         topWindowURL: 'file:///book.epub',
     })
     assert.equal(message.articleMutationProducerToken, token)
+})
+
+test('generic LakeOfFire host keeps legacy payload without Manabi provider', () => {
+    const previous = globalThis.manabi_captureArticleMutationProducerToken
+    try {
+        delete globalThis.manabi_captureArticleMutationProducerToken
+        const evidence = captureArticleMutationProducer(globalThis)
+        assert.deepEqual(evidence, { required: false, token: null })
+        assert.deepEqual(
+            withArticleMutationProducer({ value: 1 }, evidence),
+            { value: 1 }
+        )
+    } finally {
+        if (previous !== undefined) {
+            globalThis.manabi_captureArticleMutationProducerToken = previous
+        }
+    }
+})
+
+test('configured Manabi host fails closed while producer grant is absent', () => {
+    const evidence = captureArticleMutationProducer({
+        manabi_captureArticleMutationProducerToken() { return null },
+    })
+    assert.equal(evidence.required, true)
+    assert.equal(evidence.token, null)
+    assert.equal(withArticleMutationProducer({ value: 1 }, evidence), null)
+})
+
+test('captured producer evidence never refreshes when native rotates grant', () => {
+    let token = '11111111-1111-4111-8111-111111111111'
+    const host = {
+        manabi_captureArticleMutationProducerToken() { return token },
+    }
+    const evidence = captureArticleMutationProducer(host)
+    token = '22222222-2222-4222-8222-222222222222'
+    assert.deepEqual(
+        withArticleMutationProducer({ value: 1 }, evidence),
+        {
+            value: 1,
+            articleMutationProducerToken:
+                '11111111-1111-4111-8111-111111111111',
+        }
+    )
+    assert.equal(
+        articleMutationProducerChangedEventName,
+        'manabi-article-mutation-producer-changed'
+    )
 })

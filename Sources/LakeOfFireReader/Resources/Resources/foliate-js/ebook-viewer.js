@@ -7,9 +7,11 @@ import { processedSectionURLForHref } from './ebook-direct-section.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
+    articleMutationProducerChangedEventName,
+    captureArticleMutationProducer,
     createNativeMarkReadRequestCoordinator,
-    currentArticleMutationProducerToken,
     nativeMarkReadCommandMessage,
+    withArticleMutationProducer,
 } from './native-mark-read-request.js'
 import {
     compactEbookSegmentMetadataPayloadIsCurrent,
@@ -6289,6 +6291,12 @@ class Reader {
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
+        this.#listen(window, articleMutationProducerChangedEventName, () => {
+            // A progress observation attempted before the first Manabi grant is
+            // not relabeled later. Recompute current renderer state after native
+            // installs/rotates the grant instead.
+            this.#postConfirmedPageTurnProgress();
+        });
         this.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
             postMessage: message => {
                 window.webkit.messageHandlers.markSectionAsRead.postMessage(message);
@@ -6875,10 +6883,9 @@ class Reader {
         const isCurrentCompletionAction = () =>
             this.#isLifecycleCurrent(lifecycleGeneration)
             && this.#completionActionSequence === completionActionSequence;
-        const articleMutationProducerToken = actionType === 'finish'
-            ? currentArticleMutationProducerToken()
-            : null;
-        if (actionType === 'finish' && !articleMutationProducerToken) {
+        const articleMutationProducer = captureArticleMutationProducer(window);
+        if (articleMutationProducer.required
+            && !articleMutationProducer.token) {
             return;
         }
         this.completionActionBusy = true;
@@ -6887,8 +6894,7 @@ class Reader {
             switch (actionType) {
                 case 'finish':
                     const sectionReadState = this.#currentSectionReadState();
-                    window.webkit.messageHandlers.finishedReadingBook.postMessage({
-                        articleMutationProducerToken,
+                    const finishMessage = withArticleMutationProducer({
                         topWindowURL: window.top.location.href,
                         allSectionsRead: sectionReadState.allSectionsRead,
                         documentStartedAtMs: readerDocumentStartedAtMs(),
@@ -6897,14 +6903,22 @@ class Reader {
                         pagesLeft: sectionReadState.pagesLeft,
                         segmentCount: sectionReadState.segmentCount,
                         unreadSegmentCount: sectionReadState.unreadSegmentCount,
-                    });
+                    }, articleMutationProducer);
+                    if (!finishMessage) return;
+                    window.webkit.messageHandlers.finishedReadingBook.postMessage(
+                        finishMessage
+                    );
                     break;
                 case 'restart':
                     this.#clearOptimisticMarkReadState('restart');
-                    window.webkit.messageHandlers.startOver.postMessage({
+                    const restartMessage = withArticleMutationProducer({
                         topWindowURL: window.top.location.href,
                         documentStartedAtMs: readerDocumentStartedAtMs(),
-                    });
+                    }, articleMutationProducer);
+                    if (!restartMessage) return;
+                    window.webkit.messageHandlers.startOver.postMessage(
+                        restartMessage
+                    );
                     await renderer?.firstSection?.();
                     break;
                 default:
@@ -7137,9 +7151,10 @@ class Reader {
         reason,
         animateStateID = null,
     }) {
-        const articleMutationProducerToken =
-            currentArticleMutationProducerToken();
-        if (!articleMutationProducerToken) {
+        const articleMutationProducer =
+            captureArticleMutationProducer(window);
+        if (articleMutationProducer.required
+            && !articleMutationProducer.token) {
             this.lastNativeMarkReadRequestOutcome = 'failed';
             this.lastNativeMarkReadRequestErrorCode =
                 'articleMutationProducerUnavailable';
@@ -7159,14 +7174,17 @@ class Reader {
                 reason,
                 animateStateID,
             },
-            message: nativeMarkReadCommandMessage(validatedPayload, {
-                articleMutationProducerToken,
-                topWindowURL: window.top.location.href,
-                pageURL: owner?.document?.location?.href ?? null,
-                documentStartedAtMs: Number.isFinite(window.top?.performance?.timeOrigin)
-                    ? window.top.performance.timeOrigin
-                    : readerDocumentStartedAtMs(),
-            }),
+            message: withArticleMutationProducer(
+                nativeMarkReadCommandMessage(validatedPayload, {
+                    topWindowURL: window.top.location.href,
+                    pageURL: owner?.document?.location?.href ?? null,
+                    documentStartedAtMs:
+                        Number.isFinite(window.top?.performance?.timeOrigin)
+                            ? window.top.performance.timeOrigin
+                            : readerDocumentStartedAtMs(),
+                }),
+                articleMutationProducer
+            ),
         });
         this.lastNativeMarkReadRequestOutcome = outcome.success === true
             ? 'committed'
@@ -11117,27 +11135,36 @@ class Reader {
             cfiAlreadyUnstable: this.unstableCFIs.has(location?.cfi),
         });
         if (!decision.shouldPost) return;
-        if (decision.markCFIUnstable) this.unstableCFIs.add(decision.cfi);
-        this.lastCFIPersistenceObservation = decision.nextObservation;
-        this.#postUpdateReadingProgressMessage({
+        const queued = this.#queueUpdateReadingProgressMessage({
             fraction: decision.fraction,
             cfi: decision.persistedLocator,
             reason: decision.progressReason,
-            currentPageNumber: typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
-                ? this.navHUD.rendererPageSnapshot.current
-                : null,
-            totalPages: typeof this.navHUD?.rendererPageSnapshot?.total === 'number'
-                ? this.navHUD.rendererPageSnapshot.total
-                : null,
+            currentPageNumber:
+                typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
+                    ? this.navHUD.rendererPageSnapshot.current
+                    : null,
+            totalPages:
+                typeof this.navHUD?.rendererPageSnapshot?.total === 'number'
+                    ? this.navHUD.rendererPageSnapshot.total
+                    : null,
             sectionIndex: decision.sectionIndex,
             expectedDocumentURL: decision.currentDocumentURL,
             expectedSectionIndex: decision.sectionIndex,
             expectedLocationCFI: decision.cfi,
             expectedLocationFraction: decision.fraction,
-            articleMutationProducerToken:
-                currentArticleMutationProducerToken(),
         });
+        if (!queued) return;
+        if (decision.markCFIUnstable) this.unstableCFIs.add(decision.cfi);
+        this.lastCFIPersistenceObservation = decision.nextObservation;
     }, 0)
+
+    #queueUpdateReadingProgressMessage = details => {
+        const producer = captureArticleMutationProducer(window);
+        const ownedDetails = withArticleMutationProducer(details, producer);
+        if (!ownedDetails) return false;
+        this.#postUpdateReadingProgressMessage(ownedDetails);
+        return true;
+    }
 
     #postUpdateReadingProgressMessage = debounce(({
         fraction,
@@ -11223,8 +11250,7 @@ class Reader {
             currentDocumentURL,
             currentSectionIndex,
         });
-        window.webkit.messageHandlers.updateReadingProgress.postMessage({
-            articleMutationProducerToken,
+        const progressMessage = {
             fractionalCompletion: fraction,
             cfi: cfi,
             reason: reason,
@@ -11233,10 +11259,18 @@ class Reader {
             currentPageNumber: currentPageNumber,
             totalPages: totalPages,
             sectionIndex: sectionIndex,
-            hasVisibleJapaneseText: visibleJapaneseTextState.hasVisibleJapaneseText,
+            hasVisibleJapaneseText:
+                visibleJapaneseTextState.hasVisibleJapaneseText,
             visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
             observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
-        })
+        };
+        if (typeof articleMutationProducerToken === 'string') {
+            progressMessage.articleMutationProducerToken =
+                articleMutationProducerToken;
+        }
+        window.webkit.messageHandlers.updateReadingProgress.postMessage(
+            progressMessage
+        )
     }, 400)
 
     async #onRelocate({
@@ -11701,7 +11735,7 @@ class Reader {
                 && !shouldSuppressRestoreSettleSave
                 && !requiresUserInputBeforePositionSave;
             if (shouldPersistRelocatePosition) {
-                this.#postUpdateReadingProgressMessage({
+                this.#queueUpdateReadingProgressMessage({
                     fraction: Number.isFinite(progressFraction) ? progressFraction : fraction,
                     cfi: persistedLocator,
                     reason,
@@ -11715,8 +11749,6 @@ class Reader {
                         return content?.doc?.location?.href ?? content?.document?.location?.href ?? null;
                     })(),
                     expectedSectionIndex: sectionIndex,
-                    articleMutationProducerToken:
-                        currentArticleMutationProducerToken(),
                 })
             }
         }
