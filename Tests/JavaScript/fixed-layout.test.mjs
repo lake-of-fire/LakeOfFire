@@ -1171,3 +1171,30 @@ test('fixed layout publishes the exact direct relocation identifier', async () =
         { index: 1, relocationID: 'relocation-one' },
     ])
 })
+
+
+test('terminal endcap preserves spine identity and rejects lookup-owned navigation', async () => {
+    const sections = [{linear:'yes',load:async()=>'page-0'},{linear:'no',load:async()=>'supplement'}]
+    const layout = new FixedLayout()
+    let entered=0, left=0, relocations=0
+    layout.open({dir:'ltr',rendition:{viewport:{width:1000,height:1000}},sections})
+    await layout.goTo({index:0})
+    layout.addEventListener('relocate',()=>relocations++)
+    layout.bookEndcap={visible:false,enter(){if(this.visible)return false;entered++;this.visible=true;return true},leave(){left++;this.visible=false}}
+    assert.equal(await layout.next(undefined,{allowBookEndcap:false}),false)
+    assert.equal(entered,0)
+    const result=await layout.next()
+    assert.equal(result.endcapNavigation,true)
+    assert.equal(result.authoritativeNoMove,true)
+    assert.equal(layout.currentIndex,0)
+    assert.equal(entered,1)
+    assert.equal(await layout.next(),false)
+    assert.equal((await layout.prev(undefined,{allowBookEndcap:false})).authoritativeNoMove,true)
+    assert.equal(left,0)
+    assert.equal((await layout.prev()).endcapNavigation,true)
+    assert.equal(left,1)
+    assert.equal(layout.currentIndex,0)
+    assert.equal(sections.length,2)
+    assert.equal(relocations,0)
+    layout.destroy()
+})

@@ -8642,7 +8642,10 @@ class Reader {
             this.#mainDocumentSwipeState = null;
             return;
         }
-        const isExcludedTouchTarget = target.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-hidden-overlay, .side-nav, input, textarea, select, button, a, [role="button"], [contenteditable="true"]');
+        const isEndcapBackground = this.bookEndcap?.visible === true
+            && target.closest?.('.manabi-book-endcap')
+            && !target.closest?.('input, textarea, select, button, a, [role="button"], [contenteditable="true"]');
+        const isExcludedTouchTarget = !isEndcapBackground && target.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-hidden-overlay, .side-nav, input, textarea, select, button, a, [role="button"], [contenteditable="true"]');
         const isInteractiveNavTarget = target.closest?.('#progress-wrapper, #nav-primary-text, #nav-hidden-primary-text, #nav-bottom-row input, #nav-bottom-row button, .nav-relocate-button');
         if (isExcludedTouchTarget || isInteractiveNavTarget) {
             this.#mainDocumentSwipeState = null;
@@ -10074,6 +10077,7 @@ class Reader {
                 const turnOptions = {
                     ignoreIfPageTurnInFlight,
                     ignoreIfNavigationInFlight: true,
+                    allowBookEndcap: navigationDetails.allowBookEndcap !== false,
                 };
                 const moveResult = method === 'goLeft'
                     ? await this.view.goLeft(turnOptions)
@@ -10214,6 +10218,7 @@ class Reader {
             {
                 deferVisiblePageResetUntilMovement: true,
                 ignoreIfPageTurnInFlight: true,
+                allowBookEndcap: false,
             },
             (result) => {
                 if (result?.moved === true) {

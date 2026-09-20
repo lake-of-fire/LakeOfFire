@@ -11,6 +11,7 @@ import unittest
 import zipfile
 from playwright.sync_api import sync_playwright
 from browser_wait import wait_for_reader
+from prepared_book_fixture import prepared_chapter
 
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = ROOT / 'Sources/LakeOfFireReader/Resources/Resources/foliate-js'
@@ -30,7 +31,7 @@ def make_epub():
 <spine><itemref idref="one"/><itemref idref="two"/></spine></package>''')
         archive.writestr('OPS/nav.xhtml', '''<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="one.xhtml">First Chapter</a></li><li><a href="two.xhtml">Last Chapter</a></li></ol></nav></body></html>''')
         for name in ['one', 'two']:
-            archive.writestr('OPS/' + name + '.xhtml', f'''<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{name}</title></head><body><p>This is the {name} chapter. Some content remains deliberately unmarked.</p></body></html>''')
+            archive.writestr('OPS/' + name + '.xhtml', prepared_chapter(name))
     return output.getvalue()
 
 
@@ -71,6 +72,12 @@ BRIDGE = '''(() => {
         'ebookNavigationVisibility','readerOnError']) {
         handlers[name] = {postMessage(payload) { window.nativeMessages.push({name,payload}); }};
     }
+    handlers.markSectionAsRead = {postMessage(payload) {
+        window.nativeMessages.push({name:'markSectionAsRead',payload});
+        queueMicrotask(() => window.reader?.nativeMarkReadRequestCoordinator?.settle({
+            requestID:payload.requestID,sectionId:payload.sectionId,success:false,errorCode:'simulatedReadRefusal'
+        }));
+    }};
     handlers.ebookBookAction = {postMessage(payload) {
         window.bookActionRequests.push(payload);
     }};

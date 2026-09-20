@@ -70,7 +70,7 @@ export const advanceCurrentRendererSection = async ({
     if (!isCurrent() || !Number.isFinite(originalIndex)) return false
 
     const result = await runCurrentRendererNavigation({
-        operation: () => renderer.nextSection(),
+        operation: () => renderer.nextSection({ allowBookEndcap: false }),
         isCurrent,
         supersededReason: 'readAloudRendererSuperseded',
     })

@@ -6168,6 +6168,7 @@ export class Paginator extends HTMLElement {
         // An endcap is a shell location. Back returns to the same last page;
         // forward on it is inert. Neither is evidence of physical movement.
         if (!this.#destroyed && !this.navigationInFlight && this.bookEndcap?.visible) {
+            if (options.allowBookEndcap === false) return { authoritativeNoMove: true }
             if (dir < 0) this.bookEndcap.leave()
             return { authoritativeNoMove: true, endcapNavigation: true }
         }
@@ -6327,7 +6328,7 @@ export class Paginator extends HTMLElement {
             requireCurrent()
             if (scrollDecision?.authoritativeNoMove === true) {
                 if (dir > 0 && beforeAdjacentIndex == null && !this.#isCacheWarmer
-                    && this.bookEndcap?.enter()) {
+                    && options.allowBookEndcap !== false && this.bookEndcap?.enter()) {
                     return { authoritativeNoMove: true, endcapNavigation: true }
                 }
                 return false
@@ -6513,8 +6514,10 @@ export class Paginator extends HTMLElement {
             index: this.#adjacentIndex(-1)
         })
     }
-    async nextSection() {
-        if (this.#adjacentIndex(1) == null && this.bookEndcap) return await this.next()
+    async nextSection(options = {}) {
+        if (this.#adjacentIndex(1) == null && this.bookEndcap) {
+            return options.allowBookEndcap === false ? false : await this.next(undefined, options)
+        }
         return await this.goTo({
             index: this.#adjacentIndex(1)
         })

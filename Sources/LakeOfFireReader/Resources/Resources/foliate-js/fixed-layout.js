@@ -800,7 +800,7 @@ export class FixedLayout extends HTMLElement {
                 this.rtl ? 'right' : 'left'
             )
             if (!targetSide) {
-                return this.bookEndcap?.enter()
+                return options.allowBookEndcap !== false && this.bookEndcap?.enter()
                     ? { authoritativeNoMove: true, endcapNavigation: true } : false
             }
             return await this.#goToSpread(targetIndex, targetSide, 'page', transaction)
@@ -812,6 +812,7 @@ export class FixedLayout extends HTMLElement {
                 return fixedLayoutNonOwningResult(transaction.reason)
             }
             if (this.bookEndcap?.visible) {
+                if (options.allowBookEndcap === false) return { authoritativeNoMove: true }
                 this.bookEndcap.leave()
                 return { authoritativeNoMove: true, endcapNavigation: true }
             }
