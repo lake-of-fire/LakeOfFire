@@ -12,22 +12,22 @@ export class BookReadingStateController {
     #location = null; #revision = 0; #pendingID = null; #state = null; #context = null
     #closed = false; #lastSnapshotSequence = 0
     constructor({ postMessage, documentStartedAtMs, topWindowURL,
-        onState = () => {}, onInvalidate = () => {}, makeRequestID = () => globalThis.crypto.randomUUID().toLowerCase() }) {
-        Object.assign(this, { postMessage, documentStartedAtMs, topWindowURL, onState, onInvalidate, makeRequestID })
+        onState = () => {}, onInvalidate = () => {}, isLocationCurrent = () => true, makeRequestID = () => globalThis.crypto.randomUUID().toLowerCase() }) {
+        Object.assign(this, { postMessage, documentStartedAtMs, topWindowURL, onState, onInvalidate, isLocationCurrent, makeRequestID })
     }
-    get ready() { return this.#context !== null }
+    get ready() { return this.#context !== null && this.isLocationCurrent() }
     get locationRevision() { return this.#revision }
     get location() { return this.#location ? clone(this.#location) : null }
     get state() { return this.#state ? clone(this.#state) : null }
     get context() { return this.#context ? clone(this.#context) : null }
-    relocate({ sectionURL = null, isEndPage = false }, { moved = false } = {}) {
+    relocate({ sectionURL = null, isEndPage = false }, { moved = false, replaced = false } = {}) {
         if (this.#closed || typeof isEndPage !== 'boolean' || (!isEndPage && (typeof sectionURL !== 'string' || !sectionURL))) return false
         const next = { sectionURL: isEndPage ? null : sectionURL, isEndPage }
         const changed = !sameLocation(next, this.#location)
-        if (!changed && !moved) return false
+        if (!changed && !moved && !replaced) return false
         if (this.#revision >= Number.MAX_SAFE_INTEGER) { this.close(); return false }
         this.#revision++; this.#location = next; this.#pendingID = null
-        if (changed) { this.#context = null; this.#state = null; this.onInvalidate() }
+        if (changed || replaced) { this.#context = null; this.#state = null; this.onInvalidate() }
         this.refresh()
         return true
     }
@@ -41,7 +41,7 @@ export class BookReadingStateController {
         return true
     }
     apply(requestID, result) {
-        if (this.#closed || !this.#location || !result) return false
+        if (this.#closed || !this.#location || !result || !this.isLocationCurrent()) return false
         if (result.nativeRefresh === true) {
             if (!sameLocation(result.location, this.#location) || result.location.locationRevision !== this.#revision) return false
         } else if (requestID !== this.#pendingID) return false
@@ -72,7 +72,7 @@ export class BookReadingStateController {
         return { ...this.context, locationRevision: this.#revision }
     }
     captureScope(sectionURL) {
-        if (this.#closed || !this.#context || this.#location?.isEndPage || sectionURL !== this.#location?.sectionURL) return null
+        if (this.#closed || !this.ready || this.#location?.isEndPage || sectionURL !== this.#location?.sectionURL) return null
         return clone(this.#context.scope)
     }
     noteManualReadSnapshot(sequence) {
