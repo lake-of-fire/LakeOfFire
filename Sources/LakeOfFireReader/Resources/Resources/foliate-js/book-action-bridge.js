@@ -56,7 +56,7 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
             kind: current.result?.navigation?.status === 'failed' ? 'navigate' : 'status' } : null },
         perform(action, expectedContext = null) {
             if (closed) return Promise.reject(new Error('Reader closed'))
-            if (!actions.has(action)) return Promise.reject(new BookActionUnacknowledgedError('Unsupported book action', current))
+            if (!actions.has(action)) return Promise.reject(new Error('Unsupported book action'))
             if (current) return Promise.reject(new BookActionUnacknowledgedError('Resolve the previous book action first.', current))
             let context
             try {
