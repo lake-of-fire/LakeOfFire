@@ -28,6 +28,10 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
         if (closed) return Promise.reject(new Error('Reader closed'))
         if (request.active && !request.active.settled) return request.active.promise
         if (kind === 'status' && request.result) return Promise.resolve(copy(request.result))
+        // Once navigation recovery starts, its previous failure is no longer
+        // the current result. A timeout must query native status, not replay
+        // that cached failure and offer another navigation attempt.
+        if (kind === 'navigate') request.result = null
         for (const [id, previous] of deliveries) {
             if (previous.request === request && previous.settled && previous.kind !== 'command') deliveries.delete(id)
         }
@@ -52,7 +56,7 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
             kind: current.result?.navigation?.status === 'failed' ? 'navigate' : 'status' } : null },
         perform(action, expectedContext = null) {
             if (closed) return Promise.reject(new Error('Reader closed'))
-            if (!actions.has(action)) return Promise.reject(new Error('Unsupported book action'))
+            if (!actions.has(action)) return Promise.reject(new BookActionUnacknowledgedError('Unsupported book action', current))
             if (current) return Promise.reject(new BookActionUnacknowledgedError('Resolve the previous book action first.', current))
             let context
             try {
@@ -71,6 +75,7 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
             if (!request || request.action !== action) return Promise.reject(new BookActionUnacknowledgedError(
                 'The original action is unavailable. Reopen the book to see its current reading pass.', current))
             if (!['status', 'navigate'].includes(kind)) return Promise.reject(new Error('Unsupported recovery'))
+            if (request.active && !request.active.settled) return request.active.promise
             if (kind === 'navigate' && request.result?.navigation?.status !== 'failed') return Promise.reject(new Error('Navigation is not pending'))
             return deliver(request, kind)
         },
@@ -82,6 +87,13 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
             deliveries.delete(deliveryID)
             const request = delivery.request
             const payload = { ...copy(result), action: request.action }
+            // A reset has two outcomes: the mutation and its navigation. A
+            // committed but unfinished navigation is never terminal success.
+            if (payload.ok === true && request.action !== 'finishBook'
+                && !['completed', 'failed', 'superseded'].includes(payload.navigation?.status)) {
+                payload.pending = true
+            }
+            if (payload.pending === true || payload.outcomeUnknown === true) request.result = null
             if (payload.pending !== true && payload.outcomeUnknown !== true) {
                 request.result = payload
                 for (const [id, other] of deliveries) {
