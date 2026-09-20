@@ -111,3 +111,78 @@ test('unsupported action rejected before transport is not an unknown outcome',as
     await assert.rejects(bridge.perform('finishChapter'),error=>error.outcomeUnknown!==true);
     assert.deepEqual(messages,[]);assert.equal(bridge.recoveryInfo,null);bridge.close();
 });
+
+test('same-URL hidden and detached documents never acquire the displayed scope',()=>{
+    const f=fixture();f.b.location.href=f.a.location.href;f.publish(1);
+    const detached={location:{href:f.a.location.href},defaultView:{}};
+    assert.equal(f.b.defaultView.manabi_bookReadingScope,null);
+    assert.equal(f.runtime.captureScope(f.b),null);
+    assert.equal(f.runtime.captureScope(detached),null);
+    const scope=f.runtime.captureScope(f.a);
+    assert.ok(scope);assert.equal(f.runtime.isScopeCurrent(scope,f.a),true);
+    assert.equal(f.runtime.isScopeCurrent(scope,detached),false);
+    f.runtime.close();
+});
+test('same-URL document replacement withdraws scope until its own publication',()=>{
+    const f=fixture();f.publish(1);const old=f.runtime.captureEvent(f.a);
+    const replacement={location:{href:f.a.location.href},defaultView:{}};
+    f.renderer.getContents=()=>[{index:0,doc:replacement}];
+    assert.equal(f.runtime.captureScope(replacement),null);
+    f.runtime.updateLocation(true);
+    assert.equal(f.runtime.state.ready,false);assert.equal(f.runtime.isEventCurrent(old),false);
+    assert.equal(f.a.defaultView.manabi_bookReadingScope,null);
+    f.publish(2);assert.ok(f.runtime.captureEvent(replacement));
+    f.runtime.close();
+});
+test('replaced renderer cannot complete a suspended book restart navigation',async()=>{
+    const f=fixture();f.publish(1);let resolve;
+    f.renderer.goTo=()=>new Promise(r=>{resolve=r;});
+    const target={action:'startBookOver',articleProgressID:'book',articleEpochID:'E1',locationRevision:f.runtime.state.locationRevision};
+    const pending=f.runtime.navigate(target);
+    f.view.renderer={displayedIndex:1,getContents:()=>[{index:1,doc:f.b}]};
+    resolve(true);assert.deepEqual(await pending,{status:'superseded'});f.runtime.close();
+});
+test('event receipts cannot adopt a successor epoch after a timer or await',()=>{
+    const f=fixture();f.publish(1,'E1');const old=f.runtime.captureEvent(f.a);
+    assert.equal(f.runtime.isEventCurrent(old),true);
+    f.runtime.state.refresh();f.publish(2,'E2');
+    assert.equal(f.runtime.isEventCurrent(old),false);
+    const fresh=f.runtime.captureEvent(f.a);assert.equal(fresh.scope.articleEpochID,'E2');
+    assert.equal(f.runtime.isEventCurrent(fresh),true);f.runtime.close();
+});
+test('event receipts reject an older page but allow a newly observed same-pass page',()=>{
+    const f=fixture();f.publish(1);const old=f.runtime.captureEvent(f.a);
+    f.runtime.updateLocation(true);assert.equal(f.runtime.isEventCurrent(old),false);
+    assert.equal(f.runtime.isEventCurrent(f.runtime.captureEvent(f.a)),true);f.runtime.close();
+});
+test('unadmitted initial work stays unadmitted and fresh work succeeds after publication',()=>{
+    const f=fixture();const old=f.runtime.captureEvent(f.a);assert.equal(old,null);
+    f.publish(1);assert.equal(f.runtime.isEventCurrent(old),false);
+    assert.equal(f.runtime.isEventCurrent(f.runtime.captureEvent(f.a)),true);f.runtime.close();
+});
+
+test('pending publication cannot grant a scope to a same-URL replacement before relocation',()=>{
+    const f=fixture();f.publish(1);f.runtime.state.refresh();
+    const oldRequest=f.requests.at(-1);
+    const cloneDoc={location:{href:f.a.location.href},defaultView:{presentations:[],
+        manabi_applyBookReadingPresentation(p){this.presentations.push(p);}}};
+    f.renderer.getContents=()=>[{index:0,doc:cloneDoc}];
+    assert.equal(f.publish(2),false);
+    assert.equal(f.runtime.state.ready,false);
+    assert.equal(f.runtime.captureScope(cloneDoc),null);
+    assert.equal(cloneDoc.defaultView.manabi_bookReadingScope,undefined);
+    assert.throws(()=>f.runtime.state.captureContext());
+    f.runtime.updateLocation();assert.equal(f.publish(3),true);
+    assert.ok(f.runtime.captureScope(cloneDoc));
+    assert.notEqual(f.requests.at(-1).requestID,oldRequest.requestID);
+    f.runtime.close();
+});
+test('closing an end-page reader cannot publish a false return-to-chapter event',()=>{
+    const f=fixture();f.publish(1);f.runtime.endcap.enter();f.publish(2);
+    const count=f.requests.length;
+    f.runtime.close();
+    assert.equal(f.requests.length,count);
+    assert.equal(f.runtime.state.ready,false);
+    assert.equal(f.runtime.captureScope(f.a),null);
+    f.runtime.close();assert.equal(f.requests.length,count);
+});
