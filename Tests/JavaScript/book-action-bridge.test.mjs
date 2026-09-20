@@ -6,14 +6,18 @@ const make=()=>{
  const context={contextID:'native',articleEpochID:'E1',scope:{chapterEpochID:null},locationRevision:1}
  const bridge=createBookActionBridge({postMessage:x=>messages.push(x),documentStartedAtMs:1,topWindowURL:'ebook://book',captureContext:()=>context,
  makeRequestID:()=>`00000000-0000-4000-8000-${String(++n).padStart(12,'0')}`,setTimer:fn=>{timers.set(n,fn);return n},clearTimer:id=>timers.delete(id)})
- const ack=(m,extra={})=>bridge.acknowledge(m.deliveryID,{requestID:m.requestID,ok:true,committed:true,...extra})
+ // Successful reset completion includes navigation. Commit-only replies are
+ // exercised as pending by book-action-recovery.test.mjs, never guessed done.
+ const ack=(m,extra={})=>bridge.acknowledge(m.deliveryID,{requestID:m.requestID,ok:true,committed:true,
+   ...(m.action==='finishBook'?{}:{navigation:{status:'completed'}}),...extra})
  return{bridge,messages,timers,context,ack}
 }
 test('action captures immutable epoch context without read-all subjects',async()=>{
  const {bridge,messages,context,ack}=make();const p=bridge.perform('startChapterOver');context.scope.chapterEpochID='new'
  assert.equal(messages[0].context.scope.chapterEpochID,null)
  assert.equal(messages[0].stableSegmentIDs,undefined);assert.equal(messages[0].kind,'command')
- ack(messages[0]);assert.equal((await p).ok,true)
+ ack(messages[0]);assert.equal((await p).navigation.status,'completed')
+ assert.equal(bridge.recoveryInfo,null)
 })
 test('timeout and Check Status never issue a second epoch command',async()=>{
  const {bridge,messages,timers,ack}=make();const p=bridge.perform('startBookOver');const rejected=assert.rejects(p,e=>e.outcomeUnknown)
@@ -22,7 +26,7 @@ test('timeout and Check Status never issue a second epoch command',async()=>{
  const recovery=bridge.recoveryInfo;const check=bridge.recover(recovery)
  assert.equal(messages.length,2);assert.equal(messages[1].kind,'status');assert.equal(messages[1].requestID,messages[0].requestID)
  ack(messages[0]);assert.equal((await check).committed,true)
- assert.equal((await bridge.recover(recovery)).committed,true)
+ assert.equal((await bridge.recover(recovery)).navigation.status,'completed')
  assert.equal(messages.length,2)
 })
 test('navigation failure has navigation-only recovery',async()=>{
