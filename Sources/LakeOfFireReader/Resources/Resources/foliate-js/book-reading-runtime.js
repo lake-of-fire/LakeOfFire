@@ -13,10 +13,18 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         const doc = content?.doc ?? content?.document
         return doc?.location?.href ?? doc?.URL ?? null
     }
+    const clearDocumentScope = doc => {
+        const frame = doc?.defaultView
+        if (!frame) return
+        if (typeof frame.manabi_invalidateBookReadingScope === 'function') {
+            frame.manabi_invalidateBookReadingScope()
+        } else {
+            frame.manabi_bookReadingScope = null
+        }
+    }
     const clearDocumentScopes = () => {
         for (const content of view.renderer?.getContents?.() ?? []) {
-            const doc = content?.doc ?? content?.document
-            if (doc?.defaultView) doc.defaultView.manabi_bookReadingScope = null
+            clearDocumentScope(content?.doc ?? content?.document)
         }
     }
     let endcap
@@ -29,13 +37,18 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
             invalidateProjection()
         },
         onState: (projection, context, details) => {
-            clearDocumentScopes()
             const activeURL = documentURL()
             for (const content of view.renderer?.getContents?.() ?? []) {
                 const doc = content?.doc ?? content?.document
-                if (!doc?.defaultView || (doc.location?.href ?? doc.URL) !== activeURL || context.isEndPage) continue
+                if (!doc?.defaultView) continue
+                if ((doc.location?.href ?? doc.URL) !== activeURL || context.isEndPage) {
+                    clearDocumentScope(doc)
+                    continue
+                }
+                // Do not transiently invalidate the visible document on an
+                // ordinary same-pass refresh. Hidden/terminal frames lose
+                // both their token and the cached presentation behind it.
                 doc.defaultView.manabi_bookReadingScope = projection.scope
-                // Native refreshes and read replies use the same ordered domain.
                 doc.defaultView.manabi_applyBookReadingPresentation?.(projection)
             }
             endcap?.setFinished(projection.finished)
@@ -61,15 +74,19 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         captureScope: doc => state.captureScope(doc?.location?.href ?? doc?.URL),
         isScopeCurrent: (scope, doc) => !!scope && bookScopeKey(scope) === bookScopeKey(state.captureScope(doc?.location?.href ?? doc?.URL)),
         async navigate(target) {
-            if (!state.admitsNavigation(target)) return { status: 'superseded' }
+            if (reader.view !== view || !view.renderer || target.locationRevision !== state.locationRevision) {
+                return { status: 'superseded' }
+            }
+            // Native already committed this pass. An unavailable or still-old
+            // projection is recoverable, not proof the user navigated away.
+            // Native revalidates the actual selector before every retry.
+            if (!state.admitsNavigation(target)) return { status: 'failed' }
             const sections = view.book?.sections ?? []
             const index = target.action === 'startBookOver'
                 ? sections.findIndex(section => section.linear !== 'no')
                 : sections.findIndex(section => section.id === target.sectionLocation || section.href === target.sectionLocation)
             if (index < 0) return { status: 'failed' }
             const renderer = view.renderer
-            // goTo's regular same-visible-page optimization must not suppress
-            // the explicit beginning-of-chapter target or endcap exit.
             const result = await renderer.goTo({ index, anchor: 0, bookAction: true })
             if (reader.view !== view || !view.renderer) return { status: 'superseded' }
             if (result !== true || getPrimaryRendererContentIndex(renderer) !== index) return { status: 'failed' }
