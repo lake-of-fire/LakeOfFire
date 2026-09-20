@@ -1,5 +1,5 @@
 name: Book Actions workbench
-# Final assembly only. A failing shell test remains a failure, never release evidence.
+# Final source-only assembly. The full-shell failure remains blocking evidence.
 on:
   push:
     branches: [codex/book-actions-endcap-20260920]
@@ -11,6 +11,8 @@ jobs:
     if: github.ref == 'refs/heads/codex/book-actions-endcap-20260920'
     runs-on: ubuntu-24.04
     timeout-minutes: 12
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -73,53 +75,19 @@ jobs:
             book-actions-*-results.txt
             book-actions-reviewed.patch
           retention-days: 7
-      - name: Preserve reviewed draft and remove the temporary write workbench
+      - name: Preserve reviewed source in draft branch only
         if: always() && steps.patch.outcome == 'success' && steps.unit.outcome == 'success' && steps.renderer.outcome == 'success'
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('.github/workflows/book-actions-tests.yml')
-          p.write_text('''name: Book Actions tests
-          on:
-            push:
-              branches: [codex/book-actions-endcap-20260920]
-            pull_request:
-              paths:
-                - Sources/LakeOfFireReader/Resources/Resources/foliate-js/**
-                - Tests/Browser/**
-                - Tests/JavaScript/**
-                - .github/workflows/book-actions-tests.yml
-            workflow_dispatch:
-          permissions:
-            contents: read
-          jobs:
-            behavior:
-              runs-on: ubuntu-24.04
-              timeout-minutes: 12
-              steps:
-                - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-                  with:
-                    persist-credentials: false
-                - name: JavaScript behavioral tests
-                  run: node --test Tests/JavaScript/*.test.mjs
-                - name: Install browser dependencies
-                  run: |
-                    python3 -m pip install playwright==1.57.0
-                    python3 -m playwright install --with-deps chromium
-                - name: Renderer journeys
-                  run: python3 Tests/Browser/test_book_endcap.py
-                - name: Full viewer-shell journey
-                  run: python3 Tests/Browser/test_book_endcap_shell.py
-          ''')
-          for path in ['.github/workflows/book-actions-workbench.yml',
-                       'Tools/book-actions/apply-endcap.py',
-                       'Tools/book-actions/refine-endcap.py']:
-              Path(path).unlink()
-          PY
+          rm Tools/book-actions/apply-endcap.py Tools/book-actions/refine-endcap.py
+          find Tests -type d -name __pycache__ -prune -exec rm -rf {} +
           git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Sources/LakeOfFireReader/Resources/Resources/foliate-js Tests .github/workflows Tools/book-actions
+          git add Sources/LakeOfFireReader/Resources/Resources/foliate-js Tests/JavaScript/fixed-layout.test.mjs Tests/Browser/test_book_endcap_shell.py Tools/book-actions
+          if git diff --cached --name-only | grep -E '^\.github/|\.pyc$'; then
+            echo 'Unexpected workflow or bytecode in source-only commit' >&2
+            exit 1
+          fi
           git commit -m 'Draft: isolate lookup navigation and retain blocking viewer-shell test'
           git push origin HEAD:refs/heads/codex/book-actions-endcap-20260920
