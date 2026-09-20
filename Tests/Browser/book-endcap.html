@@ -13,6 +13,7 @@ foliate-view {display:block;width:100%;height:100%}
 <button id="next" class="side-nav" aria-label="Next page">›</button>
 <script type="module">
 import '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/view.js'
+import { getPrimaryRendererContentIndex } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/renderer-content.js'
 import { BookEndcap } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-endcap.js'
 const parameters = new URLSearchParams(location.search)
 const dir = parameters.get('dir') || 'ltr'
@@ -30,6 +31,7 @@ const sections = urls.map((url,index)=>({id:`chapter-${index}.xhtml`,linear:inde
 const book = {sections,dir,metadata:{language:'ja'},rendition:fixed?{layout:'pre-paginated',spread:'none',viewport:{width:800,height:1000}}:{},toc:[{label:'First',href:sections[0].id},{label:'Last',href:sections[1].id}]}
 const view = document.querySelector('foliate-view')
 window.view = view
+window.currentChapterIndex = () => getPrimaryRendererContentIndex(view.renderer)
 window.book = book
 window.actions = []
 window.relocations = []
