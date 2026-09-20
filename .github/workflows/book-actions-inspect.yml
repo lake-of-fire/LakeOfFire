@@ -11,11 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: 131e42845c98a256a843f4a9e7cbfc33724c0f52
           persist-credentials: false
       - name: Archive the exact inspected feature revision
         run: |
-          git archive --format=tar.gz --output=source.tar.gz 131e42845c98a256a843f4a9e7cbfc33724c0f52
-          printf '%s\n' 131e42845c98a256a843f4a9e7cbfc33724c0f52 > SOURCE_COMMIT
+          git archive --format=tar.gz --output=source.tar.gz HEAD
+          git rev-parse HEAD > SOURCE_COMMIT
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: book-actions-source
