@@ -1,0 +1,26 @@
+name: Book Actions source snapshot
+on:
+  push:
+    branches: [codex/book-actions-inspect-20260920-0635]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Archive the exact inspected feature revision
+        run: |
+          git archive --format=tar.gz --output=source.tar.gz 131e42845c98a256a843f4a9e7cbfc33724c0f52
+          printf '%s\n' 131e42845c98a256a843f4a9e7cbfc33724c0f52 > SOURCE_COMMIT
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: book-actions-source
+          path: |
+            source.tar.gz
+            SOURCE_COMMIT
+          retention-days: 1
+          if-no-files-found: error
