@@ -1,5 +1,5 @@
 name: Book Actions workbench
-# Qualification pass 6: prepared native-sidecar fixture, unchanged loading policy.
+# Final assembly only. A failing shell test remains a failure, never release evidence.
 on:
   push:
     branches: [codex/book-actions-endcap-20260920]
@@ -16,6 +16,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Apply reviewed navigation refinement and fixture
+        id: patch
         run: |
           set -euo pipefail
           git merge-base --is-ancestor 7cdfd12e304154ef94f157232b3492e8481101d1 HEAD
@@ -44,6 +45,7 @@ jobs:
           git diff --check
           node --check Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer.js
       - name: Unit tests
+        id: unit
         run: |
           set -o pipefail
           node --test Tests/JavaScript/*.test.mjs 2>&1 | tee book-actions-unit-results.txt
@@ -52,14 +54,15 @@ jobs:
           python3 -m pip install playwright==1.57.0
           python3 -m playwright install --with-deps chromium
       - name: Real renderer browser journeys
+        id: renderer
         run: |
           set -o pipefail
           python3 Tests/Browser/test_book_endcap.py 2>&1 | tee book-actions-browser-results.txt
-      - name: Actual viewer shell journey
+      - name: Actual viewer shell journey (known blocking regression)
         run: |
           set -o pipefail
           python3 Tests/Browser/test_book_endcap_shell.py 2>&1 | tee book-actions-shell-results.txt
-      - name: Preserve qualification evidence
+      - name: Preserve qualification evidence including failures
         if: always()
         run: git diff --binary > book-actions-reviewed.patch
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -70,11 +73,53 @@ jobs:
             book-actions-*-results.txt
             book-actions-reviewed.patch
           retention-days: 7
-      - name: Publish tested changes without touching the release branch
+      - name: Preserve reviewed draft and remove the temporary write workbench
+        if: always() && steps.patch.outcome == 'success' && steps.unit.outcome == 'success' && steps.renderer.outcome == 'success'
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/book-actions-tests.yml')
+          p.write_text('''name: Book Actions tests
+          on:
+            push:
+              branches: [codex/book-actions-endcap-20260920]
+            pull_request:
+              paths:
+                - Sources/LakeOfFireReader/Resources/Resources/foliate-js/**
+                - Tests/Browser/**
+                - Tests/JavaScript/**
+                - .github/workflows/book-actions-tests.yml
+            workflow_dispatch:
+          permissions:
+            contents: read
+          jobs:
+            behavior:
+              runs-on: ubuntu-24.04
+              timeout-minutes: 12
+              steps:
+                - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+                  with:
+                    persist-credentials: false
+                - name: JavaScript behavioral tests
+                  run: node --test Tests/JavaScript/*.test.mjs
+                - name: Install browser dependencies
+                  run: |
+                    python3 -m pip install playwright==1.57.0
+                    python3 -m playwright install --with-deps chromium
+                - name: Renderer journeys
+                  run: python3 Tests/Browser/test_book_endcap.py
+                - name: Full viewer-shell journey
+                  run: python3 Tests/Browser/test_book_endcap_shell.py
+          ''')
+          for path in ['.github/workflows/book-actions-workbench.yml',
+                       'Tools/book-actions/apply-endcap.py',
+                       'Tools/book-actions/refine-endcap.py']:
+              Path(path).unlink()
+          PY
+          git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Sources/LakeOfFireReader/Resources/Resources/foliate-js Tests
-          git commit -m 'Keep lookup navigation physical and qualify complete viewer-shell flow'
+          git add Sources/LakeOfFireReader/Resources/Resources/foliate-js Tests .github/workflows Tools/book-actions
+          git commit -m 'Draft: isolate lookup navigation and retain blocking viewer-shell test'
           git push origin HEAD:refs/heads/codex/book-actions-endcap-20260920
