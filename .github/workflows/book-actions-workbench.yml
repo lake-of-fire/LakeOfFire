@@ -1,5 +1,5 @@
 name: Book Actions workbench
-# Qualification pass 5: complete the ordinary native restore handshake.
+# Qualification pass 6: prepared native-sidecar fixture, unchanged loading policy.
 on:
   push:
     branches: [codex/book-actions-endcap-20260920]
@@ -15,11 +15,32 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
-      - name: Apply reviewed navigation refinement
+      - name: Apply reviewed navigation refinement and fixture
         run: |
           set -euo pipefail
           git merge-base --is-ancestor 7cdfd12e304154ef94f157232b3492e8481101d1 HEAD
           python3 Tools/book-actions/refine-endcap.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Tests/Browser/test_book_endcap_shell.py')
+          s = p.read_text()
+          old = "from browser_wait import wait_for_reader"
+          assert s.count(old) == 1
+          s = s.replace(old, old + '\nfrom prepared_book_fixture import prepared_chapter')
+          start = s.index("            archive.writestr('OPS/' + name + '.xhtml', f'''")
+          end = s.index("''')", start) + 4
+          s = s[:start] + "            archive.writestr('OPS/' + name + '.xhtml', prepared_chapter(name))" + s[end:]
+          old = '    handlers.ebookBookAction = {postMessage(payload) {'
+          assert s.count(old) == 1
+          s = s.replace(old, '''    handlers.markSectionAsRead = {postMessage(payload) {
+                  window.nativeMessages.push({name:'markSectionAsRead',payload});
+                  queueMicrotask(() => window.reader?.nativeMarkReadRequestCoordinator?.settle({
+                      requestID:payload.requestID,sectionId:payload.sectionId,success:false,errorCode:'simulatedReadRefusal'
+                  }));
+              }};
+          ''' + old)
+          p.write_text(s)
+          PY
           git diff --check
           node --check Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer.js
       - name: Unit tests
