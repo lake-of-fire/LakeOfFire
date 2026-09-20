@@ -1,5 +1,5 @@
 name: Book Actions workbench
-# Qualification pass 2: canonical displayed-document index in browser assertions.
+# Qualification pass 3: physical-navigation callers and real viewer shell.
 on:
   push:
     branches: [codex/book-actions-endcap-20260920]
@@ -15,11 +15,23 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
-      - name: Apply reviewed source changes on the feature branch only
+      - name: Apply reviewed navigation refinement
         run: |
           set -euo pipefail
-          git merge-base --is-ancestor d1691a4f804de2b9b9e62b5c52b523a6518544bb HEAD
-          python3 Tools/book-actions/apply-endcap.py
+          git merge-base --is-ancestor 7cdfd12e304154ef94f157232b3492e8481101d1 HEAD
+          python3 Tools/book-actions/refine-endcap.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Tests/Browser/test_book_endcap_shell.py')
+          s = p.read_text()
+          old = "page.evaluate('reader.view.renderer.pageMetrics().page')"
+          assert s.count(old) == 1
+          s = s.replace(old, "page.evaluate('async () => (await reader.view.renderer.pageMetrics()).page')")
+          old = "'pageMetadataUpdated','updateReadingProgress','ebookNativeMarkReadState',"
+          assert s.count(old) == 1
+          s = s.replace(old, "'pageMetadataUpdated','updateReadingProgress','ebookNativeMarkReadState',\n        'markAllSectionsAsRead','finishedReadingBook','startOver',")
+          p.write_text(s)
+          PY
           git diff --check
           node --check Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer.js
       - name: Unit tests
@@ -34,6 +46,10 @@ jobs:
         run: |
           set -o pipefail
           python3 Tests/Browser/test_book_endcap.py 2>&1 | tee book-actions-browser-results.txt
+      - name: Actual viewer shell journey
+        run: |
+          set -o pipefail
+          python3 Tests/Browser/test_book_endcap_shell.py 2>&1 | tee book-actions-shell-results.txt
       - name: Preserve qualification evidence
         if: always()
         run: git diff --binary > book-actions-reviewed.patch
@@ -50,6 +66,6 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Sources/LakeOfFireReader/Resources/Resources/foliate-js
-          git commit -m 'Separate terminal book page from EPUB text and Mark Read'
+          git add Sources/LakeOfFireReader/Resources/Resources/foliate-js Tests
+          git commit -m 'Keep lookup navigation physical and qualify complete viewer-shell flow'
           git push origin HEAD:refs/heads/codex/book-actions-endcap-20260920
