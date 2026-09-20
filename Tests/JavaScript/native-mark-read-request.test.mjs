@@ -38,6 +38,23 @@ test('projects semantic renderer payload onto durable native subject identifiers
     assert.equal('segments' in message, false)
 })
 
+test('carries the immutable Core producer ticket through Mark projection', () => {
+    const producerOwner = Object.freeze({
+        token: 'producer-token-a',
+        frameURL: 'foliate://chapter-1',
+        documentStartedAtMs: 42,
+    })
+    const message = nativeMarkReadCommandMessage({
+        stableIdentityVersion: 1,
+        segments: [{ stableSegmentID: 'segment-a' }],
+        sentenceIdentifiers: [],
+    }, { producerOwner })
+
+    assert.deepEqual(message.readerArticleProducer, producerOwner)
+    assert.notStrictEqual(message.readerArticleProducer, producerOwner)
+    assert.equal(Object.getOwnPropertyDescriptor(message, 'readerArticleProducer').writable, false)
+})
+
 const harness = ({ current = true, postThrows = false } = {}) => {
     const posted = []
     const timeouts = new Map()

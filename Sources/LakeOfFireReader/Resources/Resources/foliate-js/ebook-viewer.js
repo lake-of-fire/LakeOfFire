@@ -37,6 +37,10 @@ import {
 import { beginNavigationIntent } from './navigation-intent.js'
 import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
 import { createOwnedAsyncCache } from './owned-async-cache.js'
+import {
+    captureReaderArticleProducerOwner,
+    carryReaderArticleProducerOwner,
+} from './reader-producer-evidence.js'
 import { resetReaderTransientState } from './reader-transient-state.js'
 import {
     activeRendererContentsForLookup,
@@ -5499,6 +5503,12 @@ class Reader {
         return this.#isLifecycleCurrent(generation)
             && this.view?.renderer === renderer;
     }
+    #captureProducerEvidence() {
+        // The injected Core producer owns the opaque token and exact frame.
+        // `captureIfReady` never recaptures at send time; a missing token
+        // causes this event to fail closed and a future event to retry.
+        return captureReaderArticleProducerOwner();
+    }
     #invalidateCompletionAction() {
         this.#completionActionSequence += 1;
         this.completionActionBusy = false;
@@ -6880,7 +6890,13 @@ class Reader {
             switch (actionType) {
                 case 'finish':
                     const sectionReadState = this.#currentSectionReadState();
-                    window.webkit.messageHandlers.finishedReadingBook.postMessage({
+                    const finishProducerOwner = this.#captureProducerEvidence();
+                    if (!finishProducerOwner) {
+                        globalThis.manabiArticleProducer?.ready?.().catch?.(() => {});
+                        this.completionActionBusy = false;
+                        break;
+                    }
+                    const finishMessage = carryReaderArticleProducerOwner({
                         topWindowURL: window.top.location.href,
                         allSectionsRead: sectionReadState.allSectionsRead,
                         documentStartedAtMs: readerDocumentStartedAtMs(),
@@ -6889,14 +6905,26 @@ class Reader {
                         pagesLeft: sectionReadState.pagesLeft,
                         segmentCount: sectionReadState.segmentCount,
                         unreadSegmentCount: sectionReadState.unreadSegmentCount,
-                    });
+                    }, finishProducerOwner);
+                    if (!finishMessage) {
+                        this.completionActionBusy = false;
+                        break;
+                    }
+                    window.webkit.messageHandlers.finishedReadingBook.postMessage(finishMessage);
                     break;
                 case 'restart':
+                    const restartProducerOwner = this.#captureProducerEvidence();
+                    if (!restartProducerOwner) {
+                        globalThis.manabiArticleProducer?.ready?.().catch?.(() => {});
+                        break;
+                    }
                     this.#clearOptimisticMarkReadState('restart');
-                    window.webkit.messageHandlers.startOver.postMessage({
+                    const restartMessage = carryReaderArticleProducerOwner({
                         topWindowURL: window.top.location.href,
                         documentStartedAtMs: readerDocumentStartedAtMs(),
-                    });
+                    }, restartProducerOwner);
+                    if (!restartMessage) break;
+                    window.webkit.messageHandlers.startOver.postMessage(restartMessage);
                     await renderer?.firstSection?.();
                     break;
                 default:
@@ -7128,11 +7156,18 @@ class Reader {
         owner,
         reason,
         animateStateID = null,
+        producerOwner = null,
     }) {
         const validatedPayload = this.#validatedMarkReadPayload(payload);
         if (!validatedPayload) {
             this.lastNativeMarkReadRequestOutcome = 'failed';
             this.lastNativeMarkReadRequestErrorCode = 'invalidPayload';
+            return false;
+        }
+        if (!producerOwner) {
+            this.lastNativeMarkReadRequestOutcome = 'failed';
+            this.lastNativeMarkReadRequestErrorCode = 'producerUnavailable';
+            globalThis.manabiArticleProducer?.ready?.().catch?.(() => {});
             return false;
         }
         const outcome = await this.nativeMarkReadRequestCoordinator.request({
@@ -7149,6 +7184,7 @@ class Reader {
                 documentStartedAtMs: Number.isFinite(window.top?.performance?.timeOrigin)
                     ? window.top.performance.timeOrigin
                     : readerDocumentStartedAtMs(),
+                producerOwner,
             }),
         });
         this.lastNativeMarkReadRequestOutcome = outcome.success === true
@@ -7249,10 +7285,12 @@ class Reader {
         if (!payload || !isDocumentLike(doc)) {
             return 0;
         }
+        const producerOwner = this.#captureProducerEvidence();
         const success = await this.#submitMarkReadPayload(payload, {
             sectionID: `ebook-mark-all:${this.#lifecycleGeneration}`,
             owner: this.#markReadOwner({ document: doc }),
             reason: 'native-mark-all-read-committed',
+            producerOwner,
         });
         return success
             ? (payload.segments.length || payload.sentenceIdentifiers.length)
@@ -7277,6 +7315,7 @@ class Reader {
             renderer: this.view?.renderer ?? null,
             visiblePageCollectionGeneration: this.visiblePageCollectionGeneration,
         };
+        const producerOwner = this.#captureProducerEvidence();
         this.lastNativeMarkReadRequestOutcome = 'pending';
         this.pageTrackingBusyStateIDs.add(stateID);
         this.#renderPageTrackingButtons('mark-read-busy');
@@ -7289,6 +7328,7 @@ class Reader {
                 }),
                 reason: 'native-mark-read-committed',
                 animateStateID: stateID,
+                producerOwner,
             });
             if (!success) return false;
             await this.#advanceAfterMarkRead(advanceOwner);
@@ -7771,7 +7811,10 @@ class Reader {
             }
             const movementDisposition = pageTurnMovementDisposition(result);
             if (shouldRequestConfirmedPageTurnProgress(movementDisposition)) {
-                this.#postConfirmedPageTurnProgress();
+                // Capture the producer before the debounce. The callback may
+                // run after a replacement document has become visible.
+                const producerOwner = this.#captureProducerEvidence();
+                this.#postConfirmedPageTurnProgress(producerOwner);
             }
             if (
                 movementDisposition === PAGE_TURN_MOVEMENT_DISPOSITION.noMove
@@ -11063,7 +11106,7 @@ class Reader {
         });
     }
 
-    #postConfirmedPageTurnProgress = debounce(() => {
+    #postConfirmedPageTurnProgress = debounce((producerOwner = null) => {
         const location = this.view?.lastLocation ?? null;
         const sectionIndex = typeof location?.sectionIndex === 'number'
             ? location.sectionIndex
@@ -11117,6 +11160,7 @@ class Reader {
             expectedSectionIndex: decision.sectionIndex,
             expectedLocationCFI: decision.cfi,
             expectedLocationFraction: decision.fraction,
+            producerOwner,
         });
     }, 0)
 
@@ -11131,6 +11175,7 @@ class Reader {
         expectedSectionIndex = null,
         expectedLocationCFI = null,
         expectedLocationFraction = null,
+        producerOwner = null,
     }) => {
         if (
             this.#closed
@@ -11202,7 +11247,7 @@ class Reader {
             currentDocumentURL,
             currentSectionIndex,
         });
-        window.webkit.messageHandlers.updateReadingProgress.postMessage({
+        const progressMessage = carryReaderArticleProducerOwner({
             fractionalCompletion: fraction,
             cfi: cfi,
             reason: reason,
@@ -11214,7 +11259,9 @@ class Reader {
             hasVisibleJapaneseText: visibleJapaneseTextState.hasVisibleJapaneseText,
             visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
             observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
-        })
+        }, producerOwner);
+        if (!progressMessage) return;
+        window.webkit.messageHandlers.updateReadingProgress.postMessage(progressMessage)
     }, 400)
 
     async #onRelocate({
@@ -11679,6 +11726,10 @@ class Reader {
                 && !shouldSuppressRestoreSettleSave
                 && !requiresUserInputBeforePositionSave;
             if (shouldPersistRelocatePosition) {
+                // Capture before entering the 400 ms progress debounce. A
+                // later callback must not acquire the replacement frame's
+                // identity merely because it is now current.
+                const producerOwner = this.#captureProducerEvidence();
                 this.#postUpdateReadingProgressMessage({
                     fraction: Number.isFinite(progressFraction) ? progressFraction : fraction,
                     cfi: persistedLocator,
@@ -11693,6 +11744,7 @@ class Reader {
                         return content?.doc?.location?.href ?? content?.document?.location?.href ?? null;
                     })(),
                     expectedSectionIndex: sectionIndex,
+                    producerOwner,
                 })
             }
         }
@@ -13363,4 +13415,7 @@ window.manabi_applyMarkSectionAsReadResult = (result) => {
     return globalThis.reader?.applyMarkSectionAsReadResult?.(result) ?? false;
 }
 
+// The Core producer user script owns cold-start setup and sends its own
+// `readerArticleProducerReady` handshake. This viewer notification remains a
+// readiness hint only; it creates no Article and grants no Mark authority.
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})
