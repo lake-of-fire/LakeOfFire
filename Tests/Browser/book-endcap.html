@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-endcap.css">
+<style>
+html,body {margin:0;height:100%;overflow:hidden}
+#reader-stage {position:absolute;inset:0 0 50px}
+foliate-view {display:block;width:100%;height:100%}
+.side-nav {position:fixed;top:30px;bottom:60px;width:32px;border:0;background:none;z-index:5}
+#prev {left:0} #next {right:0}
+</style>
+<div id="reader-stage"><foliate-view></foliate-view></div>
+<button id="prev" class="side-nav" aria-label="Previous page">‹</button>
+<button id="next" class="side-nav" aria-label="Next page">›</button>
+<script type="module">
+import '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/view.js'
+import { BookEndcap } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-endcap.js'
+const parameters = new URLSearchParams(location.search)
+const dir = parameters.get('dir') || 'ltr'
+const vertical = parameters.get('vertical') === 'true'
+const fixed = parameters.get('fixed') === 'true'
+const long = parameters.get('long') === 'true'
+const body = `<p>${'昨日の午後、図書館で本を読みました。 '.repeat(long ? 100 : 2)}</p>`
+const urls = [0,1,2].map(i => URL.createObjectURL(new Blob([
+    `<html><head><meta name="viewport" content="width=800,height=1000"><style>
+    html {writing-mode:${vertical?'vertical-rl':'horizontal-tb'}}
+    body{font:20px/1.6 serif} p{margin:0 24px}
+    </style></head><body>${body}</body></html>`
+], {type:'text/html'})))
+const sections = urls.map((url,index)=>({id:`chapter-${index}.xhtml`,linear:index===2?'no':'yes',size:2000,load:async()=>url,unload(){}}))
+const book = {sections,dir,metadata:{language:'ja'},rendition:fixed?{layout:'pre-paginated',spread:'none',viewport:{width:800,height:1000}}:{},toc:[{label:'First',href:sections[0].id},{label:'Last',href:sections[1].id}]}
+const view = document.querySelector('foliate-view')
+window.view = view
+window.book = book
+window.actions = []
+window.relocations = []
+window.readIDs = ['chapter-0:read', 'chapter-1:read']
+window.failNext = false
+view.addEventListener('relocate',e=>window.relocations.push(e.detail))
+await view.open(book)
+const cap = new BookEndcap({document,host:document.querySelector('#reader-stage'),publication:view,
+    performAction:async(action)=>{
+        window.actions.push(action)
+        if(window.failNext){window.failNext=false;throw new Error('Simulated journal failure')}
+        if(action==='startBookOver'){
+            await view.renderer.goTo({index:0})
+            window.readIDs = []
+        }
+        return {ok:true,finished:action==='finishBook'}
+    }
+})
+window.cap = cap
+view.renderer.bookEndcap = cap
+const prev=()=>view.renderer.prev()
+const next=()=>view.renderer.next()
+document.querySelector('#prev').onclick=dir==='rtl'?next:prev
+document.querySelector('#next').onclick=dir==='rtl'?prev:next
+await view.renderer.goTo({index:0})
+window.ready = true
+</script>
