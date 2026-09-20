@@ -1,4 +1,5 @@
 name: Book Actions workbench
+# Qualification pass 2: canonical displayed-document index in browser assertions.
 on:
   push:
     branches: [codex/book-actions-endcap-20260920]
@@ -20,6 +21,7 @@ jobs:
           git merge-base --is-ancestor d1691a4f804de2b9b9e62b5c52b523a6518544bb HEAD
           python3 Tools/book-actions/apply-endcap.py
           git diff --check
+          node --check Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer.js
       - name: Unit tests
         run: |
           set -o pipefail
