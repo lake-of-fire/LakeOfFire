@@ -7,9 +7,9 @@ import { processedSectionURLForHref } from './ebook-direct-section.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
-    articleProducerLifetimeEventName,
-    captureArticleProducerLifetime,
-    withArticleProducerLifetime,
+    articleMutationProducerEventName,
+    captureArticleMutationProducer,
+    withArticleMutationProducer,
 } from './article-producer-lifetime.js'
 import {
     createNativeMarkReadRequestCoordinator,
@@ -6293,7 +6293,7 @@ class Reader {
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
-        this.#listen(window, articleProducerLifetimeEventName, () => {
+        this.#listen(window, articleMutationProducerEventName, () => {
             // Work attempted before native installed the first token is dropped,
             // never rebound. Re-evaluate current renderer state after installation.
             this.#postConfirmedPageTurnProgress();
@@ -6878,8 +6878,8 @@ class Reader {
         if (this.completionActionBusy) {
             return;
         }
-        const producerLifetime = captureArticleProducerLifetime(window);
-        if (producerLifetime.required && !producerLifetime.token) {
+        const mutationProducer = captureArticleMutationProducer(window);
+        if (mutationProducer.required && !mutationProducer.token) {
             return;
         }
         const lifecycleGeneration = this.#lifecycleGeneration;
@@ -6894,7 +6894,7 @@ class Reader {
             switch (actionType) {
                 case 'finish':
                     const sectionReadState = this.#currentSectionReadState();
-                    const finishMessage = withArticleProducerLifetime({
+                    const finishMessage = withArticleMutationProducer({
                         topWindowURL: window.top.location.href,
                         allSectionsRead: sectionReadState.allSectionsRead,
                         documentStartedAtMs: readerDocumentStartedAtMs(),
@@ -6903,7 +6903,7 @@ class Reader {
                         pagesLeft: sectionReadState.pagesLeft,
                         segmentCount: sectionReadState.segmentCount,
                         unreadSegmentCount: sectionReadState.unreadSegmentCount,
-                    }, producerLifetime);
+                    }, mutationProducer);
                     if (!finishMessage) return;
                     window.webkit.messageHandlers.finishedReadingBook.postMessage(
                         finishMessage
@@ -6911,10 +6911,10 @@ class Reader {
                     break;
                 case 'restart':
                     this.#clearOptimisticMarkReadState('restart');
-                    const restartMessage = withArticleProducerLifetime({
+                    const restartMessage = withArticleMutationProducer({
                         topWindowURL: window.top.location.href,
                         documentStartedAtMs: readerDocumentStartedAtMs(),
-                    }, producerLifetime);
+                    }, mutationProducer);
                     if (!restartMessage) return;
                     window.webkit.messageHandlers.startOver.postMessage(
                         restartMessage
@@ -7157,8 +7157,8 @@ class Reader {
             this.lastNativeMarkReadRequestErrorCode = 'invalidPayload';
             return false;
         }
-        const producerLifetime = captureArticleProducerLifetime(window);
-        const message = withArticleProducerLifetime(
+        const mutationProducer = captureArticleMutationProducer(window);
+        const message = withArticleMutationProducer(
             nativeMarkReadCommandMessage(validatedPayload, {
                 topWindowURL: window.top.location.href,
                 pageURL: owner?.document?.location?.href ?? null,
@@ -7166,7 +7166,7 @@ class Reader {
                     ? window.top.performance.timeOrigin
                     : readerDocumentStartedAtMs(),
             }),
-            producerLifetime
+            mutationProducer
         );
         if (!message) {
             this.lastNativeMarkReadRequestOutcome = 'failed';
@@ -11155,10 +11155,10 @@ class Reader {
     }, 0)
 
     #queueUpdateReadingProgressMessage = details => {
-        const producerLifetime = captureArticleProducerLifetime(window);
-        const ownedDetails = withArticleProducerLifetime(
+        const mutationProducer = captureArticleMutationProducer(window);
+        const ownedDetails = withArticleMutationProducer(
             details,
-            producerLifetime
+            mutationProducer
         );
         if (!ownedDetails) return false;
         this.#postUpdateReadingProgressMessage(ownedDetails);
@@ -11176,7 +11176,7 @@ class Reader {
         expectedSectionIndex = null,
         expectedLocationCFI = null,
         expectedLocationFraction = null,
-        articleProducerLifetimeToken = null,
+        articleMutationProducerToken = null,
     }) => {
         if (
             this.#closed
@@ -11261,9 +11261,9 @@ class Reader {
             visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
             observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
         };
-        if (typeof articleProducerLifetimeToken === 'string') {
-            progressMessage.articleProducerLifetimeToken =
-                articleProducerLifetimeToken;
+        if (typeof articleMutationProducerToken === 'string') {
+            progressMessage.articleMutationProducerToken =
+                articleMutationProducerToken;
         }
         window.webkit.messageHandlers.updateReadingProgress.postMessage(
             progressMessage

@@ -2,15 +2,15 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-    captureArticleProducerLifetime,
-    withArticleProducerLifetime,
+    captureArticleMutationProducer,
+    withArticleMutationProducer,
 } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/article-producer-lifetime.js'
 
 test('generic host without Manabi provider keeps legacy payload shape', () => {
-    const evidence = captureArticleProducerLifetime({})
+    const evidence = captureArticleMutationProducer({})
     assert.deepEqual(evidence, { required: false, token: null })
     assert.deepEqual(
-        withArticleProducerLifetime({ value: 1 }, evidence),
+        withArticleMutationProducer({ value: 1 }, evidence),
         { value: 1 }
     )
 })
@@ -18,41 +18,41 @@ test('generic host without Manabi provider keeps legacy payload shape', () => {
 test('Manabi host captures one immutable producer token', () => {
     let token = 'lifetime-a'
     const host = {
-        manabi_captureArticleProducerLifetimeToken() {
+        manabi_captureArticleMutationProducerToken() {
             return token
         },
     }
-    const evidence = captureArticleProducerLifetime(host)
+    const evidence = captureArticleMutationProducer(host)
     token = 'lifetime-b'
     assert.equal(evidence.required, true)
     assert.equal(evidence.token, 'lifetime-a')
     assert.deepEqual(
-        withArticleProducerLifetime({ value: 1 }, evidence),
+        withArticleMutationProducer({ value: 1 }, evidence),
         {
             value: 1,
-            articleProducerLifetimeToken: 'lifetime-a',
+            articleMutationProducerToken: 'lifetime-a',
         }
     )
 })
 
 test('required provider without a current token fails closed', () => {
-    const evidence = captureArticleProducerLifetime({
-        manabi_captureArticleProducerLifetimeToken() {
+    const evidence = captureArticleMutationProducer({
+        manabi_captureArticleMutationProducerToken() {
             return null
         },
     })
     assert.equal(evidence.required, true)
     assert.equal(evidence.token, null)
-    assert.equal(withArticleProducerLifetime({ value: 1 }, evidence), null)
+    assert.equal(withArticleMutationProducer({ value: 1 }, evidence), null)
 })
 
 test('provider failure fails closed without changing the caller payload', () => {
     const payload = { value: 1 }
-    const evidence = captureArticleProducerLifetime({
-        manabi_captureArticleProducerLifetimeToken() {
+    const evidence = captureArticleMutationProducer({
+        manabi_captureArticleMutationProducerToken() {
             throw new Error('provider unavailable')
         },
     })
-    assert.equal(withArticleProducerLifetime(payload, evidence), null)
+    assert.equal(withArticleMutationProducer(payload, evidence), null)
     assert.deepEqual(payload, { value: 1 })
 })

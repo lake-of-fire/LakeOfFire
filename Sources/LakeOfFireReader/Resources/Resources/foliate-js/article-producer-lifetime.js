@@ -1,13 +1,13 @@
-export const articleProducerLifetimeEventName =
-    'manabi-article-producer-lifetime-changed'
+export const articleMutationProducerEventName =
+    'manabi-article-mutation-producer-changed'
 
 const validToken = value =>
     typeof value === 'string'
     && value.length > 0
     && value.length <= 128
 
-export const captureArticleProducerLifetime = (host = globalThis) => {
-    const provider = host?.manabi_captureArticleProducerLifetimeToken
+export const captureArticleMutationProducer = (host = globalThis) => {
+    const provider = host?.manabi_captureArticleMutationProducerToken
     if (typeof provider !== 'function') {
         return Object.freeze({ required: false, token: null })
     }
@@ -21,9 +21,9 @@ export const captureArticleProducerLifetime = (host = globalThis) => {
     })
 }
 
-export const withArticleProducerLifetime = (
+export const withArticleMutationProducer = (
     payload,
-    evidence = captureArticleProducerLifetime()
+    evidence = captureArticleMutationProducer()
 ) => {
     if (!payload || typeof payload !== 'object') return null
     if (evidence?.required === true && !validToken(evidence?.token)) {
@@ -34,6 +34,6 @@ export const withArticleProducerLifetime = (
     }
     return {
         ...payload,
-        articleProducerLifetimeToken: evidence.token,
+        articleMutationProducerToken: evidence.token,
     }
 }
