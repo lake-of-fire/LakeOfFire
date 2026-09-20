@@ -7,6 +7,11 @@ import { processedSectionURLForHref } from './ebook-direct-section.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
+    articleProducerLifetimeEventName,
+    captureArticleProducerLifetime,
+    withArticleProducerLifetime,
+} from './article-producer-lifetime.js'
+import {
     createNativeMarkReadRequestCoordinator,
     nativeMarkReadCommandMessage,
 } from './native-mark-read-request.js'
@@ -6288,6 +6293,11 @@ class Reader {
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
+        this.#listen(window, articleProducerLifetimeEventName, () => {
+            // Work attempted before native installed the first token is dropped,
+            // never rebound. Re-evaluate current renderer state after installation.
+            this.#postConfirmedPageTurnProgress();
+        });
         this.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
             postMessage: message => {
                 window.webkit.messageHandlers.markSectionAsRead.postMessage(message);
@@ -6868,6 +6878,10 @@ class Reader {
         if (this.completionActionBusy) {
             return;
         }
+        const producerLifetime = captureArticleProducerLifetime(window);
+        if (producerLifetime.required && !producerLifetime.token) {
+            return;
+        }
         const lifecycleGeneration = this.#lifecycleGeneration;
         const renderer = this.view?.renderer ?? null;
         const completionActionSequence = ++this.#completionActionSequence;
@@ -6880,7 +6894,7 @@ class Reader {
             switch (actionType) {
                 case 'finish':
                     const sectionReadState = this.#currentSectionReadState();
-                    window.webkit.messageHandlers.finishedReadingBook.postMessage({
+                    const finishMessage = withArticleProducerLifetime({
                         topWindowURL: window.top.location.href,
                         allSectionsRead: sectionReadState.allSectionsRead,
                         documentStartedAtMs: readerDocumentStartedAtMs(),
@@ -6889,14 +6903,22 @@ class Reader {
                         pagesLeft: sectionReadState.pagesLeft,
                         segmentCount: sectionReadState.segmentCount,
                         unreadSegmentCount: sectionReadState.unreadSegmentCount,
-                    });
+                    }, producerLifetime);
+                    if (!finishMessage) return;
+                    window.webkit.messageHandlers.finishedReadingBook.postMessage(
+                        finishMessage
+                    );
                     break;
                 case 'restart':
                     this.#clearOptimisticMarkReadState('restart');
-                    window.webkit.messageHandlers.startOver.postMessage({
+                    const restartMessage = withArticleProducerLifetime({
                         topWindowURL: window.top.location.href,
                         documentStartedAtMs: readerDocumentStartedAtMs(),
-                    });
+                    }, producerLifetime);
+                    if (!restartMessage) return;
+                    window.webkit.messageHandlers.startOver.postMessage(
+                        restartMessage
+                    );
                     await renderer?.firstSection?.();
                     break;
                 default:
@@ -7135,6 +7157,23 @@ class Reader {
             this.lastNativeMarkReadRequestErrorCode = 'invalidPayload';
             return false;
         }
+        const producerLifetime = captureArticleProducerLifetime(window);
+        const message = withArticleProducerLifetime(
+            nativeMarkReadCommandMessage(validatedPayload, {
+                topWindowURL: window.top.location.href,
+                pageURL: owner?.document?.location?.href ?? null,
+                documentStartedAtMs: Number.isFinite(window.top?.performance?.timeOrigin)
+                    ? window.top.performance.timeOrigin
+                    : readerDocumentStartedAtMs(),
+            }),
+            producerLifetime
+        );
+        if (!message) {
+            this.lastNativeMarkReadRequestOutcome = 'failed';
+            this.lastNativeMarkReadRequestErrorCode =
+                'missingArticleProducerLifetime';
+            return false;
+        }
         const outcome = await this.nativeMarkReadRequestCoordinator.request({
             sectionID,
             owner,
@@ -7143,13 +7182,7 @@ class Reader {
                 reason,
                 animateStateID,
             },
-            message: nativeMarkReadCommandMessage(validatedPayload, {
-                topWindowURL: window.top.location.href,
-                pageURL: owner?.document?.location?.href ?? null,
-                documentStartedAtMs: Number.isFinite(window.top?.performance?.timeOrigin)
-                    ? window.top.performance.timeOrigin
-                    : readerDocumentStartedAtMs(),
-            }),
+            message,
         });
         this.lastNativeMarkReadRequestOutcome = outcome.success === true
             ? 'committed'
@@ -11100,9 +11133,7 @@ class Reader {
             cfiAlreadyUnstable: this.unstableCFIs.has(location?.cfi),
         });
         if (!decision.shouldPost) return;
-        if (decision.markCFIUnstable) this.unstableCFIs.add(decision.cfi);
-        this.lastCFIPersistenceObservation = decision.nextObservation;
-        this.#postUpdateReadingProgressMessage({
+        const queued = this.#queueUpdateReadingProgressMessage({
             fraction: decision.fraction,
             cfi: decision.persistedLocator,
             reason: decision.progressReason,
@@ -11118,7 +11149,21 @@ class Reader {
             expectedLocationCFI: decision.cfi,
             expectedLocationFraction: decision.fraction,
         });
+        if (!queued) return;
+        if (decision.markCFIUnstable) this.unstableCFIs.add(decision.cfi);
+        this.lastCFIPersistenceObservation = decision.nextObservation;
     }, 0)
+
+    #queueUpdateReadingProgressMessage = details => {
+        const producerLifetime = captureArticleProducerLifetime(window);
+        const ownedDetails = withArticleProducerLifetime(
+            details,
+            producerLifetime
+        );
+        if (!ownedDetails) return false;
+        this.#postUpdateReadingProgressMessage(ownedDetails);
+        return true;
+    }
 
     #postUpdateReadingProgressMessage = debounce(({
         fraction,
@@ -11131,6 +11176,7 @@ class Reader {
         expectedSectionIndex = null,
         expectedLocationCFI = null,
         expectedLocationFraction = null,
+        articleProducerLifetimeToken = null,
     }) => {
         if (
             this.#closed
@@ -11202,7 +11248,7 @@ class Reader {
             currentDocumentURL,
             currentSectionIndex,
         });
-        window.webkit.messageHandlers.updateReadingProgress.postMessage({
+        const progressMessage = {
             fractionalCompletion: fraction,
             cfi: cfi,
             reason: reason,
@@ -11214,7 +11260,14 @@ class Reader {
             hasVisibleJapaneseText: visibleJapaneseTextState.hasVisibleJapaneseText,
             visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
             observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
-        })
+        };
+        if (typeof articleProducerLifetimeToken === 'string') {
+            progressMessage.articleProducerLifetimeToken =
+                articleProducerLifetimeToken;
+        }
+        window.webkit.messageHandlers.updateReadingProgress.postMessage(
+            progressMessage
+        )
     }, 400)
 
     async #onRelocate({
@@ -11679,7 +11732,7 @@ class Reader {
                 && !shouldSuppressRestoreSettleSave
                 && !requiresUserInputBeforePositionSave;
             if (shouldPersistRelocatePosition) {
-                this.#postUpdateReadingProgressMessage({
+                this.#queueUpdateReadingProgressMessage({
                     fraction: Number.isFinite(progressFraction) ? progressFraction : fraction,
                     cfi: persistedLocator,
                     reason,
