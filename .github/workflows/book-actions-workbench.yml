@@ -1,5 +1,5 @@
 name: Book Actions workbench
-# Qualification pass 4: preserve the production CSP during driver polling.
+# Qualification pass 5: complete the ordinary native restore handshake.
 on:
   push:
     branches: [codex/book-actions-endcap-20260920]
@@ -20,20 +20,6 @@ jobs:
           set -euo pipefail
           git merge-base --is-ancestor 7cdfd12e304154ef94f157232b3492e8481101d1 HEAD
           python3 Tools/book-actions/refine-endcap.py
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('Tests/Browser/test_book_endcap_shell.py')
-          s = p.read_text()
-          old = "page.evaluate('reader.view.renderer.pageMetrics().page')"
-          assert s.count(old) == 1
-          s = s.replace(old, "page.evaluate('async () => (await reader.view.renderer.pageMetrics()).page')")
-          old = "'pageMetadataUpdated','updateReadingProgress','ebookNativeMarkReadState',"
-          assert s.count(old) == 1
-          s = s.replace(old, "'pageMetadataUpdated','updateReadingProgress','ebookNativeMarkReadState',\n        'markAllSectionsAsRead','finishedReadingBook','startOver',")
-          s = s.replace('from playwright.sync_api import sync_playwright', 'from playwright.sync_api import sync_playwright\nfrom browser_wait import wait_for_reader')
-          s = s.replace('page.wait_for_function(', 'wait_for_reader(page, ')
-          p.write_text(s)
-          PY
           git diff --check
           node --check Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer.js
       - name: Unit tests
