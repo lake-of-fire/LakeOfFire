@@ -11,8 +11,16 @@
 export const captureReaderArticleProducerOwner = ({
     producer = globalThis.manabiArticleProducer,
 } = {}) => {
+    // LakeOfFireReader also runs in hosts that do not install Manabi's native
+    // producer contract. Preserve their historical local message path. Once a
+    // host exposes the producer object, however, an unavailable/malformed
+    // capture must fail closed rather than becoming an unfenced message.
+    if (producer == null) {
+        return Object.freeze({ required: false })
+    }
+    if (typeof producer.captureIfReady !== 'function') return null
     try {
-        const owner = producer?.captureIfReady?.()
+        const owner = producer.captureIfReady()
         if (!owner || typeof owner !== 'object') return null
         if (typeof owner.token !== 'string' || owner.token.length === 0) return null
         if (typeof owner.frameURL !== 'string' || owner.frameURL.length === 0) return null
@@ -34,6 +42,7 @@ export const carryReaderArticleProducerOwner = (
     { producer = globalThis.manabiArticleProducer } = {}
 ) => {
     if (!message || typeof message !== 'object' || !owner) return null
+    if (owner.required === false) return message
     try {
         if (typeof producer?.own === 'function') {
             return producer.own(message, owner)
