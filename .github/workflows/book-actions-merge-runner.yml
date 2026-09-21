@@ -1,0 +1,31 @@
+name: Book Actions isolated merge inspection
+on:
+  push:
+    branches: [codex/book-actions-merge-runner-20260921]
+    paths: [.github/workflows/book-actions-merge-runner.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Inspect exact two-parent merge without publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Book Actions integration'
+          git config user.email 'book-actions-integration@users.noreply.github.com'
+          git checkout --detach 52b48fa7c25326ef62995ef18b59ef7c5781b17c
+          set +e
+          git merge --no-commit --no-ff 60438f8521dd69d908ba53a692a2ec328e41cff4
+          result=$?
+          set -e
+          echo "MERGE_EXIT=$result"
+          git diff --name-only --diff-filter=U
+          git diff --cc
+          if [[ $result -gt 1 ]]; then exit "$result"; fi
