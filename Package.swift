@@ -30,7 +30,7 @@ let package = Package(
         .package(path: "../JapaneseLanguageTools"),
         .package(path: "../SwiftUtilities"),
         .package(path: "../LakeImage"),
-        .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.4"),
+        .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.5"),
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", branch: "development"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.5.0"),
