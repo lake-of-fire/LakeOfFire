@@ -16,97 +16,146 @@ public extension RootRelativePath {
 public struct EbookFileManager {
     private static let subpathCharacterSet = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&="))
 
-    public static func configure() {
-        for mimeType in [UTType.epub, .epubZip, .directory] {
-            if !ReaderFileManager.shared.readerContentMimeTypes.contains(mimeType) {
-                ReaderFileManager.shared.readerContentMimeTypes.append(mimeType)
-            }
-        }
-
-        ReaderFileManager.fileDestinationProcessors.append({ importedFileURL in
-            if importedFileURL.isEBookURL {
-                return .ebooks
-            }
-            return nil
-        })
-
-        ReaderFileManager.readerFileURLProcessors.append({ importedFileURL, encodedPathToCloudDriveFile in
-            if importedFileURL.isEBookURL {
-                return URL(string: "ebook://ebook/load/" + encodedPathToCloudDriveFile)
-            }
-            return nil
-        })
-
-        ReaderFileManager.fileProcessors.append({ @RealmBackgroundActor contentFiles in
-            var toUpdateWithImage = [(ContentFile, URL)]()
-            var toUpdateWithTitle = [(ContentFile, String)]()
-            var toUpdateWithAuthor = [(ContentFile, String?)]()
-            var toUpdateWithPublicationDate = [(ContentFile, Date)]()
-            var toUpdateAsPhysicalMedia = [ContentFile]()
-
-            for contentFile in contentFiles {
-                // We'll determine it's an EPUB if the path extension is "epub" or if the mimeType suggests an EPUB/directory.
-                let pathExtension = contentFile.url.lakePathExtension.lowercased()
-                guard pathExtension == "epub"
-                        || contentFile.mimeType == "application/epub+zip"
-                        || contentFile.mimeType == "directory"
-                else {
-                    continue
+    public static func configure(readerFileManager: ReaderFileManager = .shared) {
+        readerFileManager.registerFileProcessorBundle(
+            identifier: "EbookFileManager",
+            fileProcessorVersion: 1,
+            readerContentMimeTypes: [.epub, .epubZip, .directory],
+            destinationProcessor: { importedFileURL in
+                if importedFileURL.isEBookURL {
+                    return .ebooks
                 }
+                return nil
+            },
 
-                guard let localURL = try? await ReaderFileManager.shared.resolveReadableLocalURL(forReaderBackingURL: contentFile.url) else {
-                    continue
+            readerFileURLProcessor: { importedFileURL, encodedPathToCloudDriveFile in
+                if importedFileURL.isEBookURL {
+                    return URL(string: "ebook://ebook/load/" + encodedPathToCloudDriveFile)
                 }
+                return nil
+            },
 
-                // Attempt to parse the EPUB for metadata + cover:
-                do {
-                    if let metadata = try EPubParser.parseMetadataAndCover(from: localURL) {
-                        if contentFile.title != metadata.title {
-                            toUpdateWithTitle.append((contentFile, metadata.title))
-                        }
-                        if contentFile.author != (metadata.author ?? "") {
-                            toUpdateWithAuthor.append((contentFile, metadata.author))
-                        }
-                        if let publicationDate = metadata.publicationDate, contentFile.publicationDate != publicationDate {
-                            toUpdateWithPublicationDate.append((contentFile, publicationDate))
-                        }
+            contextualFileProcessor: { @RealmBackgroundActor context in
+                let readerFileManager = context.readerFileManager
+                let contentFiles = context.contentFiles
+                var toUpdateWithImage = [(ContentFile, URL)]()
+                var toUpdateWithTitle = [(ContentFile, String)]()
+                var toUpdateWithAuthor = [(ContentFile, String?)]()
+                var toUpdateWithPublicationDate = [(ContentFile, Date)]()
+                var toUpdateAsPhysicalMedia = [ContentFile]()
 
-                        if let coverHref = metadata.coverHref {
-                            let coverURLPrefix = contentFile.url.absoluteString.replacingOccurrences(
-                                of: "ebook://ebook/load/",
-                                with: "reader-file://file/load/"
-                            ) + "?subpath="
-                            if let encodedPath = coverHref.addingPercentEncoding(
-                                withAllowedCharacters: subpathCharacterSet
-                            ),
-                               let coverImageURL = URL(string: coverURLPrefix + encodedPath),
-                               contentFile.imageUrl != coverImageURL {
-                                toUpdateWithImage.append((contentFile, coverImageURL))
-                            }
-                        }
+                for contentFile in contentFiles {
+                    // We'll determine it's an EPUB if the path extension is "epub" or if the mimeType suggests an EPUB/directory.
+                    let pathExtension = contentFile.url.lakePathExtension.lowercased()
+                    guard pathExtension == "epub"
+                            || contentFile.mimeType == "application/epub+zip"
+                            || contentFile.mimeType == "directory"
+                    else {
+                        continue
+                    }
 
-                        if !contentFile.isPhysicalMedia {
-                            toUpdateAsPhysicalMedia.append(contentFile)
+                    let localURL: URL
+                    do {
+                        localURL = try await readerFileManager.resolveReadableLocalURL(
+                            forReaderBackingURL: contentFile.url
+                        )
+                    } catch {
+                        context.deferPostprocessing(for: contentFile)
+                        continue
+                    }
+
+                    // Attempt to parse the EPUB for metadata + cover:
+                    let metadata: (
+                        title: String,
+                        author: String?,
+                        coverHref: String?,
+                        publicationDate: Date?
+                    )
+                    do {
+                        guard let parsed = try EPubParser.parseMetadataAndCover(from: localURL) else {
+                            context.deferPostprocessing(for: contentFile)
+                            continue
+                        }
+                        metadata = parsed
+                    } catch {
+                        context.deferPostprocessing(for: contentFile)
+                        continue
+                    }
+                    if contentFile.title != metadata.title {
+                        toUpdateWithTitle.append((contentFile, metadata.title))
+                    }
+                    if contentFile.author != (metadata.author ?? "") {
+                        toUpdateWithAuthor.append((contentFile, metadata.author))
+                    }
+                    if let publicationDate = metadata.publicationDate, contentFile.publicationDate != publicationDate {
+                        toUpdateWithPublicationDate.append((contentFile, publicationDate))
+                    }
+
+                    if let coverHref = metadata.coverHref {
+                        let coverURLPrefix = contentFile.url.absoluteString.replacingOccurrences(
+                            of: "ebook://ebook/load/",
+                            with: "reader-file://file/load/"
+                        ) + "?subpath="
+                        if let encodedPath = coverHref.addingPercentEncoding(
+                            withAllowedCharacters: subpathCharacterSet
+                        ),
+                           let coverImageURL = URL(string: coverURLPrefix + encodedPath),
+                           contentFile.imageUrl != coverImageURL {
+                            toUpdateWithImage.append((contentFile, coverImageURL))
                         }
                     }
-                } catch {
-                    continue
+
+                    if !contentFile.isPhysicalMedia {
+                        toUpdateAsPhysicalMedia.append(contentFile)
+                    }
+                }
+
+                if !toUpdateWithImage.isEmpty || !toUpdateWithTitle.isEmpty
+                    || !toUpdateWithAuthor.isEmpty
+                    || !toUpdateWithPublicationDate.isEmpty
+                    || !toUpdateAsPhysicalMedia.isEmpty {
+                    let imageURL = toUpdateWithImage.first?.1
+                    let title = toUpdateWithTitle.first?.1
+                    let author = toUpdateWithAuthor.first?.1
+                    let publicationDate = toUpdateWithPublicationDate.first?.1
+                    let shouldMarkPhysicalMedia = !toUpdateAsPhysicalMedia.isEmpty
+                    try await context.performCurrentWrite { _, contentFile in
+                        let metadataDate = Date()
+                        var changed = false
+                        if let imageURL, contentFile.imageUrl != imageURL {
+                            contentFile.imageUrl = imageURL
+                            changed = true
+                        }
+                        if let title, contentFile.title != title {
+                            contentFile.title = title
+                            changed = true
+                        }
+                        if let author {
+                            let resolvedAuthor = author ?? ""
+                            if contentFile.author != resolvedAuthor {
+                                contentFile.author = resolvedAuthor
+                                changed = true
+                            }
+                        }
+                        if let publicationDate,
+                           contentFile.publicationDate != publicationDate {
+                            contentFile.publicationDate = publicationDate
+                            changed = true
+                        }
+                        if shouldMarkPhysicalMedia, !contentFile.isPhysicalMedia {
+                            contentFile.isPhysicalMedia = true
+                            changed = true
+                        }
+                        if changed {
+                            contentFile.refreshChangeMetadata(
+                                explicitlyModified: true,
+                                at: metadataDate
+                            )
+                        }
+                    }
                 }
             }
-
-            if !toUpdateWithImage.isEmpty || !toUpdateWithTitle.isEmpty
-                || !toUpdateWithAuthor.isEmpty
-                || !toUpdateWithPublicationDate.isEmpty
-                || !toUpdateAsPhysicalMedia.isEmpty {
-                try await applyMetadataUpdates(
-                    images: toUpdateWithImage,
-                    titles: toUpdateWithTitle,
-                    authors: toUpdateWithAuthor,
-                    publicationDates: toUpdateWithPublicationDate,
-                    physicalMedia: toUpdateAsPhysicalMedia
-                )
-            }
-        })
+        )
     }
 
     @RealmBackgroundActor

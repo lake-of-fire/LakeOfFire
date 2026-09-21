@@ -16,8 +16,8 @@ public class ContentFile: Bookmark {
         }
     }
     
-    public override func configureBookmark(_ bookmark: Bookmark) {
-        super.configureBookmark(bookmark)
+    public override func configureBookmark(_ bookmark: Bookmark, at timestamp: Date) {
+        super.configureBookmark(bookmark, at: timestamp)
     }
     
     public override var deleteActionTitle: String {
@@ -42,8 +42,16 @@ public class ContentFile: Bookmark {
     
     @MainActor
     public override func delete() async throws {
-        try await ReaderFileManager.shared.delete(readerFileURL: url)
-        try await super.delete()
+        try await delete(readerFileManager: .shared)
+    }
+
+    @MainActor
+    public func delete(readerFileManager: ReaderFileManager) async throws {
+        let contentURL = url
+        try await readerFileManager.delete(readerFileURL: contentURL)
+        try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(
+            contentURL: contentURL
+        )
     }
     
     @MainActor

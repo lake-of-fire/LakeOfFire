@@ -13,12 +13,388 @@ import LakeOfFireAdblock
 
 public enum ReaderFileManagerError: Swift.Error {
     case invalidFileURL
+    /// A reader-URL processor returned a URL that does not map back to the
+    /// exact selected drive path.
+    case invalidReaderFileURL
+    /// More than one processor claimed the same file with different reader URLs.
+    case ambiguousReaderFileURL
+    /// A destination processor returned a path that is not strictly relative
+    /// to the selected drive root.
+    case invalidDestinationPath
+    /// More than one processor claimed the same file with different destinations.
+    case ambiguousDestinationPath
     case driveMissing
     /// Enumeration did not establish a complete current inventory, so it is unsafe to
     /// publish replacements or derive synchronized orphan tombstones from it.
     case incompleteFileInventory
     /// A drive root or Realm configuration changed while a refresh was in flight.
     case refreshSuperseded
+}
+
+struct ReaderFileSourceAccess: @unchecked Sendable {
+    let start: (URL) throws -> Bool
+    let stop: (URL) -> Void
+
+    static let securityScoped = Self(
+        start: { $0.startAccessingSecurityScopedResource() },
+        stop: { $0.stopAccessingSecurityScopedResource() }
+    )
+}
+
+enum ReaderFilePayloadState: Equatable {
+    case current
+    case downloading
+    case uploading
+    case notLocal
+}
+
+struct ReaderFileAvailabilityAccess: @unchecked Sendable {
+    let payloadState: (URL) throws -> ReaderFilePayloadState
+    let startDownloading: (URL) throws -> Void
+    let canCoordinateRead: (URL) async throws -> Bool
+}
+
+private final class ReaderFilePostprocessorOutcome: @unchecked Sendable {
+    private let lock = NSLock()
+    private var deferredContentFilePrimaryKeys = Set<String>()
+
+    func deferPostprocessing(contentFilePrimaryKey: String) {
+        lock.lock()
+        deferredContentFilePrimaryKeys.insert(contentFilePrimaryKey)
+        lock.unlock()
+    }
+
+    func isDeferred(contentFilePrimaryKey: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return deferredContentFilePrimaryKeys.contains(contentFilePrimaryKey)
+    }
+}
+
+public struct ReaderFilePostprocessorContext: @unchecked Sendable {
+    public let readerFileManager: ReaderFileManager
+    public let realmConfiguration: Realm.Configuration
+    public let contentFiles: [ContentFile]
+    @RealmBackgroundActor public let realm: Realm
+    private let outcome: ReaderFilePostprocessorOutcome?
+    private let admission: ReaderFilePostprocessorAdmission?
+
+    @RealmBackgroundActor
+    fileprivate init(
+        readerFileManager: ReaderFileManager,
+        realmConfiguration: Realm.Configuration,
+        realm: Realm,
+        contentFiles: [ContentFile],
+        outcome: ReaderFilePostprocessorOutcome? = nil,
+        admission: ReaderFilePostprocessorAdmission? = nil
+    ) {
+        self.readerFileManager = readerFileManager
+        self.realmConfiguration = realmConfiguration
+        self.realm = realm
+        self.contentFiles = contentFiles
+        self.outcome = outcome
+        self.admission = admission
+    }
+
+    /// Keeps this file generation pending without failing the wider import or
+    /// suppressing another processor. Only versioned processors have a durable
+    /// outcome collector; legacy anonymous adapters remain best effort.
+    @RealmBackgroundActor
+    public func deferPostprocessing(for contentFile: ContentFile) {
+        outcome?.deferPostprocessing(
+            contentFilePrimaryKey: contentFile.compoundKey
+        )
+    }
+
+    /// Commits a durable processor's derived metadata only while the exact
+    /// processor registration, file incarnation, source generation, and debt
+    /// attempt supplied to this invocation are still current.
+    ///
+    /// Durable processors should publish all Realm effects through this method
+    /// after suspension points. A rejected write leaves the file's debt pending
+    /// so the active processor and source generation can retry it.
+    @RealmBackgroundActor
+    @discardableResult
+    public func performCurrentWrite(
+        _ mutation: @escaping @RealmBackgroundActor (Realm, ContentFile) throws -> Void
+    ) async throws -> Bool {
+        guard let admission else {
+            return false
+        }
+        let didApply = try await readerFileManager.performPostprocessorWriteIfCurrent(
+            admission: admission,
+            in: realm,
+            mutation: mutation
+        )
+        if !didApply {
+            outcome?.deferPostprocessing(
+                contentFilePrimaryKey: admission.contentFilePrimaryKey
+            )
+        }
+        return didApply
+    }
+}
+
+private typealias ReaderFileDestinationProcessor = (URL) async throws -> RootRelativePath?
+private typealias ReaderFileURLProcessor = @RealmBackgroundActor (URL, String) async throws -> URL?
+private typealias ReaderFilePostprocessor = @RealmBackgroundActor (ReaderFilePostprocessorContext) async throws -> Void
+
+private struct ReaderFilePostprocessorIdentity: Hashable, Sendable {
+    let identifier: String
+    let version: Int64
+}
+
+private struct ReaderFilePostprocessorRegistration: @unchecked Sendable {
+    let registrationIdentifier: UUID
+    let identity: ReaderFilePostprocessorIdentity?
+    let processor: ReaderFilePostprocessor
+}
+
+fileprivate struct ReaderFilePostprocessorAdmission: Sendable {
+    let registrationIdentifier: UUID
+    let processorIdentity: ReaderFilePostprocessorIdentity
+    let debtIdentifier: String
+    let attemptIdentifier: String
+    let storageScopeIdentifier: String
+    let contentFilePrimaryKey: String
+    let contentFileCreatedAt: Date
+    let readerFileURLString: String
+    let absoluteFileURL: URL
+    let sourceModifiedAt: Date?
+    let sourceFileSize: Int64
+}
+
+private let defaultReaderContentMimeTypes: [UTType] = [
+    .plainText,
+    .html,
+    UTType(filenameExtension: "md")
+        ?? UTType(importedAs: "net.daringfireball.markdown"),
+    .zip,
+]
+
+private struct ReaderFileProcessorRegistrySnapshot: @unchecked Sendable {
+    let readerContentMimeTypes: [UTType]
+    let destinationProcessors: [ReaderFileDestinationProcessor]
+    let readerFileURLProcessors: [ReaderFileURLProcessor]
+    let filePostprocessors: [ReaderFilePostprocessorRegistration]
+}
+
+private struct ReaderFileProcessorOperationSnapshot: @unchecked Sendable {
+    let managerIdentity: ObjectIdentifier
+    let processors: ReaderFileProcessorRegistrySnapshot
+}
+
+private final class ReaderFileProcessorRegistry: @unchecked Sendable {
+    private struct Registration<Processor> {
+        let identifier: String?
+        let processor: Processor
+    }
+
+    private let lock = NSLock()
+    private var baseReaderContentMimeTypes = defaultReaderContentMimeTypes
+    private var readerContentMimeTypeRegistrations = [Registration<[UTType]>]()
+    private var destinationRegistrations = [Registration<ReaderFileDestinationProcessor>]()
+    private var readerFileURLRegistrations = [Registration<ReaderFileURLProcessor>]()
+    private var filePostprocessorRegistrations = [Registration<ReaderFilePostprocessorRegistration>]()
+
+    func snapshot() -> ReaderFileProcessorRegistrySnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        var readerContentMimeTypes = baseReaderContentMimeTypes
+        for registration in readerContentMimeTypeRegistrations {
+            for mimeType in registration.processor where !readerContentMimeTypes.contains(mimeType) {
+                readerContentMimeTypes.append(mimeType)
+            }
+        }
+        return ReaderFileProcessorRegistrySnapshot(
+            readerContentMimeTypes: readerContentMimeTypes,
+            destinationProcessors: destinationRegistrations.map(\.processor),
+            readerFileURLProcessors: readerFileURLRegistrations.map(\.processor),
+            filePostprocessors: filePostprocessorRegistrations.map(\.processor)
+        )
+    }
+
+    func replaceReaderContentMimeTypes(_ mimeTypes: [UTType]) {
+        lock.lock()
+        baseReaderContentMimeTypes = mimeTypes
+        readerContentMimeTypeRegistrations = []
+        lock.unlock()
+    }
+
+    func replaceDestinationProcessors(_ processors: [ReaderFileDestinationProcessor]) {
+        lock.lock()
+        destinationRegistrations = processors.map {
+            Registration(identifier: nil, processor: $0)
+        }
+        lock.unlock()
+    }
+
+    func replaceReaderFileURLProcessors(_ processors: [ReaderFileURLProcessor]) {
+        lock.lock()
+        readerFileURLRegistrations = processors.map {
+            Registration(identifier: nil, processor: $0)
+        }
+        lock.unlock()
+    }
+
+    func replaceFilePostprocessors(_ processors: [ReaderFilePostprocessor]) {
+        lock.lock()
+        filePostprocessorRegistrations = processors.map {
+            Registration(
+                identifier: nil,
+                processor: ReaderFilePostprocessorRegistration(
+                    registrationIdentifier: UUID(),
+                    identity: nil,
+                    processor: $0
+                )
+            )
+        }
+        lock.unlock()
+    }
+
+    func registerDestinationProcessor(
+        identifier: String,
+        processor: @escaping ReaderFileDestinationProcessor
+    ) {
+        lock.lock()
+        replaceOrAppend(
+            identifier: identifier,
+            processor: processor,
+            registrations: &destinationRegistrations
+        )
+        lock.unlock()
+    }
+
+    func registerReaderFileURLProcessor(
+        identifier: String,
+        processor: @escaping ReaderFileURLProcessor
+    ) {
+        lock.lock()
+        replaceOrAppend(
+            identifier: identifier,
+            processor: processor,
+            registrations: &readerFileURLRegistrations
+        )
+        lock.unlock()
+    }
+
+    func registerFilePostprocessor(
+        identifier: String,
+        version: Int64?,
+        processor: @escaping ReaderFilePostprocessor
+    ) {
+        lock.lock()
+        replaceOrAppend(
+            identifier: identifier,
+            processor: ReaderFilePostprocessorRegistration(
+                registrationIdentifier: UUID(),
+                identity: version.map {
+                    ReaderFilePostprocessorIdentity(identifier: identifier, version: $0)
+                },
+                processor: processor
+            ),
+            registrations: &filePostprocessorRegistrations
+        )
+        lock.unlock()
+    }
+
+    func registerProcessorBundle(
+        identifier: String,
+        fileProcessorVersion: Int64?,
+        readerContentMimeTypes newReaderContentMimeTypes: [UTType],
+        destinationProcessor: @escaping ReaderFileDestinationProcessor,
+        readerFileURLProcessor: @escaping ReaderFileURLProcessor,
+        filePostprocessor: @escaping ReaderFilePostprocessor
+    ) {
+        lock.lock()
+        replaceOrAppend(
+            identifier: identifier,
+            processor: newReaderContentMimeTypes,
+            registrations: &readerContentMimeTypeRegistrations
+        )
+        replaceOrAppend(
+            identifier: identifier,
+            processor: destinationProcessor,
+            registrations: &destinationRegistrations
+        )
+        replaceOrAppend(
+            identifier: identifier,
+            processor: readerFileURLProcessor,
+            registrations: &readerFileURLRegistrations
+        )
+        replaceOrAppend(
+            identifier: identifier,
+            processor: ReaderFilePostprocessorRegistration(
+                registrationIdentifier: UUID(),
+                identity: fileProcessorVersion.map {
+                    ReaderFilePostprocessorIdentity(identifier: identifier, version: $0)
+                },
+                processor: filePostprocessor
+            ),
+            registrations: &filePostprocessorRegistrations
+        )
+        lock.unlock()
+    }
+
+    func mutateIfCurrentFilePostprocessor<Result>(
+        registrationIdentifier: UUID,
+        _ mutation: () throws -> Result?
+    ) rethrows -> Result? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard filePostprocessorRegistrations.contains(where: {
+            $0.processor.registrationIdentifier == registrationIdentifier
+        }) else {
+            return nil
+        }
+        return try mutation()
+    }
+
+    private func replaceOrAppend<Processor>(
+        identifier: String,
+        processor: Processor,
+        registrations: inout [Registration<Processor>]
+    ) {
+        let registration = Registration(identifier: identifier, processor: processor)
+        if let index = registrations.firstIndex(where: { $0.identifier == identifier }) {
+            registrations[index] = registration
+        } else {
+            registrations.append(registration)
+        }
+    }
+}
+
+/// Detached Realm metadata for one ordinary `reader-file:` response.
+///
+/// The store and creation timestamp identify the exact `ContentFile` incarnation. The
+/// remaining fields are included so a caller can reject metadata changes that overlap its
+/// byte read without transferring a Realm-managed object between actors.
+public struct ReaderFileDocumentMetadataSnapshot: Hashable, Sendable {
+    public let storeIdentity: BookmarkStoreIdentity
+    public let contentFilePrimaryKey: String
+    public let sourceURL: URL
+    public let createdAt: Date
+    public let modifiedAt: Date
+    public let fileMetadataRefreshedAt: Date?
+    public let mimeType: String
+
+    public init(
+        storeIdentity: BookmarkStoreIdentity,
+        contentFilePrimaryKey: String,
+        sourceURL: URL,
+        createdAt: Date,
+        modifiedAt: Date,
+        fileMetadataRefreshedAt: Date?,
+        mimeType: String
+    ) {
+        self.storeIdentity = storeIdentity
+        self.contentFilePrimaryKey = contentFilePrimaryKey
+        self.sourceURL = sourceURL
+        self.createdAt = createdAt
+        self.modifiedAt = modifiedAt
+        self.fileMetadataRefreshedAt = fileMetadataRefreshedAt
+        self.mimeType = mimeType
+    }
 }
 
 //public extension RootRelativePath {
@@ -76,6 +452,52 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let cloudContainerIdentifier: String?
     }
 
+    private struct PostprocessorSourceGeneration: Equatable, Sendable {
+        let modifiedAt: Date?
+        let fileSize: Int64
+
+        var isComplete: Bool {
+            modifiedAt != nil && fileSize >= 0
+        }
+    }
+
+    private struct LegacyRootRelocationReceiptSnapshot: Sendable {
+        let receiptIdentifier: String
+        let sourceRelativePath: String
+        let sourceReaderBackingURLString: String
+        let sourceContentFilePrimaryKey: String
+        let sourceContentFileCreatedAt: Date
+        let sourceModifiedAt: Date?
+        let sourceFileSize: Int64
+        let targetReaderURLString: String
+        let targetContentFilePrimaryKey: String
+        let targetContentFileCreatedAt: Date
+        let targetModifiedAt: Date?
+        let targetFileSize: Int64
+
+        init(_ receipt: ReaderFileLegacyRootRelocationReceipt) {
+            receiptIdentifier = receipt.receiptIdentifier
+            sourceRelativePath = receipt.sourceRelativePath
+            sourceReaderBackingURLString = receipt.sourceReaderBackingURLString
+            sourceContentFilePrimaryKey = receipt.sourceContentFilePrimaryKey
+            sourceContentFileCreatedAt = receipt.sourceContentFileCreatedAt
+            sourceModifiedAt = receipt.sourceModifiedAt
+            sourceFileSize = receipt.sourceFileSize
+            targetReaderURLString = receipt.targetReaderURLString
+            targetContentFilePrimaryKey = receipt.targetContentFilePrimaryKey
+            targetContentFileCreatedAt = receipt.targetContentFileCreatedAt
+            targetModifiedAt = receipt.targetModifiedAt
+            targetFileSize = receipt.targetFileSize
+        }
+    }
+
+    @RealmBackgroundActor
+    private struct PostprocessorCandidate {
+        let contentFile: ContentFile
+        let absoluteFileURL: URL
+        let sourceGeneration: PostprocessorSourceGeneration
+    }
+
     /// A complete inventory is valid only until the next drive observation. The
     /// receipt is intentionally separate from `RefreshMetadataIdentity`: a
     /// changed inventory must make the in-flight scan retry, rather than run a
@@ -119,10 +541,170 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
     }
 
-    // TODO: Migrate to a 'plugin registry' architecture instead of all these callbacks
-    nonisolated(unsafe) public static var fileDestinationProcessors = [(URL) async throws -> RootRelativePath?]()
-    nonisolated(unsafe) public static var readerFileURLProcessors = [@RealmBackgroundActor (URL, String) async throws -> URL?]()
-    nonisolated(unsafe) public static var fileProcessors = [@RealmBackgroundActor ([ContentFile]) async throws -> Void]()
+    private let processorRegistry = ReaderFileProcessorRegistry()
+    @TaskLocal private static var operationProcessorSnapshot: ReaderFileProcessorOperationSnapshot?
+
+    public static var fileDestinationProcessors: [(URL) async throws -> RootRelativePath?] {
+        get { shared.processorRegistry.snapshot().destinationProcessors }
+        set { shared.processorRegistry.replaceDestinationProcessors(newValue) }
+    }
+
+    public static var readerFileURLProcessors: [@RealmBackgroundActor (URL, String) async throws -> URL?] {
+        get { shared.processorRegistry.snapshot().readerFileURLProcessors }
+        set { shared.processorRegistry.replaceReaderFileURLProcessors(newValue) }
+    }
+
+    public static var fileProcessors: [@RealmBackgroundActor ([ContentFile]) async throws -> Void] {
+        get {
+            let readerFileManager = shared
+            return readerFileManager.processorRegistry.snapshot().filePostprocessors.map { registration in
+                { @RealmBackgroundActor contentFiles in
+                    let realm: Realm
+                    let realmConfiguration: Realm.Configuration
+                    if let contentRealm = contentFiles.first?.realm {
+                        realm = contentRealm
+                        realmConfiguration = contentRealm.configuration
+                    } else {
+                        realmConfiguration = readerFileManager.resolvedHistoryRealmConfiguration
+                        realm = try await RealmBackgroundActor.shared.cachedRealm(
+                            for: realmConfiguration
+                        )
+                    }
+                    try await registration.processor(ReaderFilePostprocessorContext(
+                        readerFileManager: readerFileManager,
+                        realmConfiguration: realmConfiguration,
+                        realm: realm,
+                        contentFiles: contentFiles
+                    ))
+                }
+            }
+        }
+        set {
+            shared.processorRegistry.replaceFilePostprocessors(newValue.map { processor in
+                { context in
+                    try await processor(context.contentFiles)
+                }
+            })
+        }
+    }
+
+    public static func registerFileDestinationProcessor(
+        identifier: String,
+        processor: @escaping (URL) async throws -> RootRelativePath?
+    ) {
+        shared.processorRegistry.registerDestinationProcessor(
+            identifier: identifier,
+            processor: processor
+        )
+    }
+
+    public static func registerReaderFileURLProcessor(
+        identifier: String,
+        processor: @escaping @RealmBackgroundActor (URL, String) async throws -> URL?
+    ) {
+        shared.processorRegistry.registerReaderFileURLProcessor(
+            identifier: identifier,
+            processor: processor
+        )
+    }
+
+    public static func registerFileProcessor(
+        identifier: String,
+        processor: @escaping @RealmBackgroundActor ([ContentFile]) async throws -> Void
+    ) {
+        shared.processorRegistry.registerFilePostprocessor(
+            identifier: identifier,
+            version: nil,
+            processor: { context in
+                try await processor(context.contentFiles)
+            }
+        )
+    }
+
+    public static func registerFileProcessor(
+        identifier: String,
+        version: Int64,
+        processor: @escaping @RealmBackgroundActor ([ContentFile]) async throws -> Void
+    ) {
+        precondition(version > 0, "A durable file processor version must be positive")
+        shared.processorRegistry.registerFilePostprocessor(
+            identifier: identifier,
+            version: version,
+            processor: { context in
+                try await processor(context.contentFiles)
+            }
+        )
+    }
+
+    public static func registerFileProcessorBundle(
+        identifier: String,
+        readerContentMimeTypes: [UTType] = [],
+        destinationProcessor: @escaping (URL) async throws -> RootRelativePath?,
+        readerFileURLProcessor: @escaping @RealmBackgroundActor (URL, String) async throws -> URL?,
+        fileProcessor: @escaping @RealmBackgroundActor ([ContentFile]) async throws -> Void
+    ) {
+        shared.registerFileProcessorBundle(
+            identifier: identifier,
+            readerContentMimeTypes: readerContentMimeTypes,
+            destinationProcessor: destinationProcessor,
+            readerFileURLProcessor: readerFileURLProcessor,
+            fileProcessor: fileProcessor
+        )
+    }
+
+    public func registerFileProcessorBundle(
+        identifier: String,
+        readerContentMimeTypes: [UTType] = [],
+        destinationProcessor: @escaping (URL) async throws -> RootRelativePath?,
+        readerFileURLProcessor: @escaping @RealmBackgroundActor (URL, String) async throws -> URL?,
+        fileProcessor: @escaping @RealmBackgroundActor ([ContentFile]) async throws -> Void
+    ) {
+        registerFileProcessorBundle(
+            identifier: identifier,
+            readerContentMimeTypes: readerContentMimeTypes,
+            destinationProcessor: destinationProcessor,
+            readerFileURLProcessor: readerFileURLProcessor,
+            contextualFileProcessor: { context in
+                try await fileProcessor(context.contentFiles)
+            }
+        )
+    }
+
+    public func registerFileProcessorBundle(
+        identifier: String,
+        readerContentMimeTypes: [UTType] = [],
+        destinationProcessor: @escaping (URL) async throws -> RootRelativePath?,
+        readerFileURLProcessor: @escaping @RealmBackgroundActor (URL, String) async throws -> URL?,
+        contextualFileProcessor: @escaping @RealmBackgroundActor (ReaderFilePostprocessorContext) async throws -> Void
+    ) {
+        processorRegistry.registerProcessorBundle(
+            identifier: identifier,
+            fileProcessorVersion: nil,
+            readerContentMimeTypes: readerContentMimeTypes,
+            destinationProcessor: destinationProcessor,
+            readerFileURLProcessor: readerFileURLProcessor,
+            filePostprocessor: contextualFileProcessor
+        )
+    }
+
+    public func registerFileProcessorBundle(
+        identifier: String,
+        fileProcessorVersion: Int64,
+        readerContentMimeTypes: [UTType] = [],
+        destinationProcessor: @escaping (URL) async throws -> RootRelativePath?,
+        readerFileURLProcessor: @escaping @RealmBackgroundActor (URL, String) async throws -> URL?,
+        contextualFileProcessor: @escaping @RealmBackgroundActor (ReaderFilePostprocessorContext) async throws -> Void
+    ) {
+        precondition(fileProcessorVersion > 0, "A durable file processor version must be positive")
+        processorRegistry.registerProcessorBundle(
+            identifier: identifier,
+            fileProcessorVersion: fileProcessorVersion,
+            readerContentMimeTypes: readerContentMimeTypes,
+            destinationProcessor: destinationProcessor,
+            readerFileURLProcessor: readerFileURLProcessor,
+            filePostprocessor: contextualFileProcessor
+        )
+    }
     
     nonisolated(unsafe) public static var shared = ReaderFileManager()
 
@@ -130,13 +712,46 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     var historyRealmConfigurationOverride: Realm.Configuration?
 
     private let defaultLocalRootURLProvider: @Sendable () -> URL
+    private let allowsCloudDrive: Bool
+    private let sourceAccess: ReaderFileSourceAccess
+    private let availabilityAccess: ReaderFileAvailabilityAccess
+
+    private static var systemAvailabilityAccess: ReaderFileAvailabilityAccess {
+        ReaderFileAvailabilityAccess(
+            payloadState: { try payloadState(at: $0) },
+            startDownloading: {
+                try FileManager.default.startDownloadingUbiquitousItem(at: $0)
+            },
+            canCoordinateRead: { try await canCoordinateRead(rootURL: $0) }
+        )
+    }
 
     public init() {
         defaultLocalRootURLProvider = { Self.getDocumentsDirectory() }
+        allowsCloudDrive = true
+        sourceAccess = .securityScoped
+        availabilityAccess = Self.systemAvailabilityAccess
     }
 
-    init(defaultLocalRootURLProvider: @escaping @Sendable () -> URL) {
+    /// Creates a file manager whose imports and reads remain below one local
+    /// root and never attach the user's iCloud Drive container.
+    public init(isolatedLocalRootURL: URL) {
+        let standardizedRootURL = isolatedLocalRootURL.standardizedFileURL
+        defaultLocalRootURLProvider = { standardizedRootURL }
+        allowsCloudDrive = false
+        sourceAccess = .securityScoped
+        availabilityAccess = Self.systemAvailabilityAccess
+    }
+
+    init(
+        defaultLocalRootURLProvider: @escaping @Sendable () -> URL,
+        sourceAccess: ReaderFileSourceAccess = .securityScoped,
+        availabilityAccess: ReaderFileAvailabilityAccess? = nil
+    ) {
         self.defaultLocalRootURLProvider = defaultLocalRootURLProvider
+        allowsCloudDrive = true
+        self.sourceAccess = sourceAccess
+        self.availabilityAccess = availabilityAccess ?? Self.systemAvailabilityAccess
     }
 
     private var resolvedHistoryRealmConfiguration: Realm.Configuration {
@@ -165,8 +780,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         return "default"
     }
     
-    // TODO: Pull these from callbacks per above
-    public var readerContentMimeTypes: [UTType] = [.plainText, .html, UTType(filenameExtension: "md") ?? UTType(importedAs: "net.daringfireball.markdown"), .zip]
+    public var readerContentMimeTypes: [UTType] {
+        get { processorRegistry.snapshot().readerContentMimeTypes }
+        set { processorRegistry.replaceReaderContentMimeTypes(newValue) }
+    }
     
     @MainActor @Published public var files: [ContentFile]?
     
@@ -225,7 +842,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         "manabi-dictionary-assets",
         "manabi-fonts",
     ]
+    private static let predownloadStagingRootPrefix = "ReaderFileDownload."
     private static let transientRootPrefixes: Set<String> = [
+        predownloadStagingRootPrefix,
         "ReaderFileDeletion.",
     ]
     
@@ -273,10 +892,26 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     public func initialize(ubiquityContainerIdentifier: String) async throws {
         self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
         hasInitializedUbiquityContainerIdentifier = true
-        cloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "Documents")
+        if allowsCloudDrive {
+            cloudDrive = try? await CloudDrive(
+                ubiquityContainerIdentifier: ubiquityContainerIdentifier,
+                relativePathToRootInContainer: "Documents"
+            )
+        } else {
+            cloudDrive = nil
+        }
         cloudDrive?.observer = self
         //        legacyCloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "")
-        localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: defaultLocalRootURLProvider()))
+        let localRootURL = defaultLocalRootURLProvider()
+        if allowsCloudDrive {
+            localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: localRootURL))
+        } else {
+            try FileManager.default.createDirectory(
+                at: localRootURL,
+                withIntermediateDirectories: true
+            )
+            localDrive = try await CloudDrive(storage: .localDirectory(rootURL: localRootURL))
+        }
         localDrive?.observer = self
         NotificationCenter.default.post(name: Self.driveAvailabilityDidChangeNotification, object: self)
         Task { [weak self] in
@@ -418,6 +1053,48 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
         return realm.object(ofType: ContentFile.self, forPrimaryKey: primaryKey)?.mimeType
     }
+
+    /// Resolves ordinary-file response metadata from this manager's exact Realm destination.
+    /// Only detached values leave `RealmBackgroundActor`.
+    public func readerFileDocumentMetadataSnapshot(
+        for fileURL: URL
+    ) async throws -> ReaderFileDocumentMetadataSnapshot? {
+        guard !Self.isInternalStorageReaderFileURL(fileURL) else { return nil }
+        let realmConfiguration = resolvedHistoryRealmConfiguration
+        return try await Self.readerFileDocumentMetadataSnapshot(
+            for: fileURL,
+            realmConfiguration: realmConfiguration
+        )
+    }
+
+    @RealmBackgroundActor
+    private static func readerFileDocumentMetadataSnapshot(
+        for fileURL: URL,
+        realmConfiguration: Realm.Configuration
+    ) async throws -> ReaderFileDocumentMetadataSnapshot? {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        try await realm.asyncRefresh()
+        guard let contentFile = realm.objects(ContentFile.self)
+            .filter(
+                NSPredicate(
+                    format: "isDeleted == %@ AND url == %@",
+                    NSNumber(booleanLiteral: false),
+                    fileURL.absoluteString as CVarArg
+                )
+            )
+            .first else {
+            return nil
+        }
+        return ReaderFileDocumentMetadataSnapshot(
+            storeIdentity: BookmarkStoreIdentity(realmConfiguration: realmConfiguration),
+            contentFilePrimaryKey: contentFile.compoundKey,
+            sourceURL: contentFile.url,
+            createdAt: contentFile.createdAt,
+            modifiedAt: contentFile.modifiedAt,
+            fileMetadataRefreshedAt: contentFile.fileMetadataRefreshedAt,
+            mimeType: contentFile.mimeType
+        )
+    }
     
     //    private static func validate(readerFileURL: URL) throws {
     //        guard (readerFileURL.scheme == "reader-file" && readerFileURL.host == "file") || (readerFileURL.scheme == "ebook" && readerFileURL.host == "ebook") else {
@@ -469,13 +1146,28 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     
     @MainActor
     public func readerFileURL(for downloadable: Downloadable) async throws -> URL? {
-        let fileURL = downloadable.localDestination
-        let readerFileURL = try await readerFileURL(for: fileURL)
-        return readerFileURL
+        try await readerFileURL(
+            for: downloadable.localDestination,
+            drive: nil,
+            processorSnapshot: processorRegistry.snapshot()
+        )
     }
     
     @MainActor
     public func readerFileURL(for fileURL: URL, drive: CloudDrive? = nil) async throws -> URL? {
+        try await readerFileURL(
+            for: fileURL,
+            drive: drive,
+            processorSnapshot: processorRegistry.snapshot()
+        )
+    }
+
+    @MainActor
+    private func readerFileURL(
+        for fileURL: URL,
+        drive: CloudDrive?,
+        processorSnapshot: ReaderFileProcessorRegistrySnapshot
+    ) async throws -> URL? {
         let drives: [CloudDrive] = (drive == nil ? [cloudDrive, localDrive] : [drive]).filter({ $0?.isConnected ?? false }).compactMap({ $0 })
         for drive in drives {
             // This relativePath stuff is funky/fragile
@@ -491,40 +1183,531 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             if normalizedPath.hasPrefix("./") {
                 normalizedPath = String(normalizedPath.dropFirst(2))
             }
-            if let encodedPath = "\(drive.ubiquityContainerIdentifier == nil ? "local" : "icloud")/\(normalizedPath)".addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) {
-                for readerFileURLProcessor in Self.readerFileURLProcessors {
-                    if let url = try await readerFileURLProcessor(fileURL, encodedPath) {
-                        return url
+            if let encodedPath = "\(drive.ubiquityContainerIdentifier == nil ? "local" : "icloud")/\(normalizedPath)".addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+               let fallbackURL = URL(string: "reader-file://file/load/" + encodedPath) {
+                var selectedProcessorURL: URL?
+                for readerFileURLProcessor in processorSnapshot.readerFileURLProcessors {
+                    guard let candidateURL = try await readerFileURLProcessor(
+                        fileURL,
+                        encodedPath
+                    ) else {
+                        continue
                     }
+                    let validatedURL = try validatedReaderFileURL(
+                        candidateURL,
+                        expectedBackingURL: fallbackURL
+                    )
+                    if let selectedProcessorURL,
+                       selectedProcessorURL != validatedURL {
+                        throw ReaderFileManagerError.ambiguousReaderFileURL
+                    }
+                    selectedProcessorURL = validatedURL
                 }
-                return URL(string: "reader-file://file/load/" + encodedPath)
+                return selectedProcessorURL ?? fallbackURL
             }
         }
         return nil
     }
 
+    private func validatedReaderFileURL(
+        _ candidateURL: URL,
+        expectedBackingURL: URL
+    ) throws -> URL {
+        guard let components = URLComponents(
+            url: candidateURL,
+            resolvingAgainstBaseURL: false
+        ),
+        components.query == nil,
+        components.fragment == nil,
+        canonicalReaderBackingURL(for: candidateURL) == expectedBackingURL else {
+            throw ReaderFileManagerError.invalidReaderFileURL
+        }
+        return candidateURL
+    }
+
     @MainActor
     public func ensureImported(downloadable: Downloadable) async throws -> URL? {
         let realmConfiguration = resolvedHistoryRealmConfiguration
+        let processorSnapshot = processorRegistry.snapshot()
+        if try await drainLegacyRootRelocationReceipts(
+            realmConfiguration: realmConfiguration
+        ) {
+            // A completed recovery removes a physical root file. Reconcile it
+            // before looking up an existing download so it cannot be indexed
+            // again from a stale published inventory.
+            try await refreshAllFilesMetadata(
+                force: true,
+                realmConfiguration: realmConfiguration,
+                processorSnapshot: processorSnapshot
+            )
+        }
         guard await downloadable.existsLocally() else { return nil }
-        if let existingReaderURL = try await readerFileURL(for: downloadable) {
+        if let existingReaderURL = try await readerFileURL(
+            for: downloadable.localDestination,
+            drive: nil,
+            processorSnapshot: processorSnapshot
+        ),
+           !isInternalStorageFileURL(downloadable.localDestination) {
+            if let relocatedReaderURL = try await relocateLegacyRootDownloadIfNeeded(
+                sourceURL: downloadable.localDestination,
+                sourceReaderURL: existingReaderURL,
+                realmConfiguration: realmConfiguration,
+                processorSnapshot: processorSnapshot
+            ) {
+                return relocatedReaderURL
+            }
             try await refreshMetadataForExistingLibraryFile(
                 downloadable.localDestination,
-                realmConfiguration: realmConfiguration
+                realmConfiguration: realmConfiguration,
+                processorSnapshot: processorSnapshot
             )
             return existingReaderURL
         }
         return try await importFile(
             fileURL: downloadable.localDestination,
-            fromDownloadURL: downloadable.url,
+            realmConfiguration: realmConfiguration,
+            processorSnapshot: processorSnapshot
+        )
+    }
+
+    /// Moves only the old downloader shape: one normal file immediately below
+    /// a connected drive root. The captured processor snapshot determines both
+    /// the classification and the reader URL used for the target postimage.
+    @MainActor
+    private func relocateLegacyRootDownloadIfNeeded(
+        sourceURL: URL,
+        sourceReaderURL: URL,
+        realmConfiguration: Realm.Configuration,
+        processorSnapshot: ReaderFileProcessorRegistrySnapshot
+    ) async throws -> URL? {
+        guard let drive = [localDrive, cloudDrive]
+            .compactMap({ $0 })
+            .first(where: { drive in
+                guard drive.isConnected,
+                      let relative = Self.relativePath(
+                        for: sourceURL,
+                        relativeTo: drive.rootDirectory
+                      ) else {
+                    return false
+                }
+                let normalized = relative.hasPrefix("./")
+                    ? String(relative.dropFirst(2))
+                    : relative
+                return normalized.split(separator: "/").count == 1
+                    && !Self.shouldSkipDiscoveredRelativePath(normalized)
+            }) else {
+            return nil
+        }
+        guard let sourceRelativePathString = Self.relativePath(
+            for: sourceURL,
+            relativeTo: drive.rootDirectory
+        ) else {
+            return nil
+        }
+        let sourceRelativePath = RootRelativePath(
+            path: sourceRelativePathString.hasPrefix("./")
+                ? String(sourceRelativePathString.dropFirst(2))
+                : sourceRelativePathString
+        )
+        guard sourceRelativePath.path.split(separator: "/").count == 1 else {
+            return nil
+        }
+        let destinationDirectory = try await Self.rootRelativePath(
+            forClassificationCandidateURL: sourceURL,
+            drive: drive,
+            processorSnapshot: processorSnapshot
+        )
+        guard !destinationDirectory.path.isEmpty else { return nil }
+        let requestedTargetPath = destinationDirectory.appending(sourceURL.lastPathComponent)
+        guard requestedTargetPath != sourceRelativePath else { return nil }
+        guard try await supportsLegacyRootRelocationReceipts(
+            realmConfiguration: realmConfiguration
+        ) else {
+            return nil
+        }
+
+        let sourceGeneration = Self.postprocessorSourceGeneration(at: sourceURL)
+        guard sourceGeneration.isComplete else { return nil }
+        guard let sourceReaderBackingURL = canonicalReaderBackingURL(for: sourceReaderURL) else {
+            return nil
+        }
+
+        // Index the root source before any copy. A fresh old download has no
+        // existing ContentFile row, and the later tombstone must identify one
+        // exact live synchronized record rather than inventing it after copy.
+        let sourceReferences = try await refreshFilesMetadata(
+            drive: drive,
+            relativePath: .root,
+            realmConfiguration: realmConfiguration,
+            processorSnapshot: processorSnapshot
+        ) ?? []
+        try await publishDiscoveredFiles(
+            sourceReferences,
             realmConfiguration: realmConfiguration
         )
+
+        // importFile preserves its collision hashing. Its return value is the
+        // exact target chosen after that collision resolution, never merely the
+        // requested destination path.
+        guard let targetReaderURL = try await importFile(
+            fileURL: sourceURL,
+            realmConfiguration: realmConfiguration,
+            processorSnapshot: processorSnapshot
+        ) else {
+            return nil
+        }
+        guard let targetReaderBackingURL = canonicalReaderBackingURL(
+            for: targetReaderURL
+        ) else {
+            return targetReaderURL
+        }
+        let targetRelativePath = try Self.extractRelativePath(
+            fileURL: targetReaderBackingURL
+        )
+        let targetURL = try targetRelativePath.fileURL(forRoot: drive.rootDirectory)
+        let targetGeneration = Self.postprocessorSourceGeneration(at: targetURL)
+        guard targetGeneration.isComplete else { return targetReaderURL }
+        let storageScopeIdentifier = Self.postprocessorStorageScopeIdentifier(
+            drive: drive,
+            realmConfiguration: realmConfiguration
+        )
+        let receiptIdentifier = try await admitLegacyRootRelocationReceipt(
+            storageScopeIdentifier: storageScopeIdentifier,
+            sourceRelativePath: sourceRelativePath,
+            sourceReaderURL: sourceReaderURL,
+            sourceReaderBackingURL: sourceReaderBackingURL,
+            sourceGeneration: sourceGeneration,
+            targetReaderURL: targetReaderURL,
+            targetGeneration: targetGeneration,
+            targetURL: targetURL,
+            sourceURL: sourceURL,
+            realmConfiguration: realmConfiguration
+        )
+        guard let receiptIdentifier else {
+            // The source changed while the target was being installed or the
+            // target could not be proven to be the indexed postimage. Retain
+            // both user-visible bytes and let a later download decide anew.
+            return targetReaderURL
+        }
+        do {
+            try await drive.removeFile(at: sourceRelativePath)
+        } catch {
+            // The committed receipt is the recovery owner; a failed removal
+            // deliberately leaves the soft tombstone and receipt intact.
+            return targetReaderURL
+        }
+        guard !(try await drive.fileExists(at: sourceRelativePath)) else {
+            return targetReaderURL
+        }
+        try await removeLegacyRootRelocationReceipt(
+            receiptIdentifier,
+            realmConfiguration: realmConfiguration
+        )
+        try await refreshAllFilesMetadata(
+            force: true,
+            realmConfiguration: realmConfiguration,
+            processorSnapshot: processorSnapshot
+        )
+        return targetReaderURL
+    }
+
+    @RealmBackgroundActor
+    private func supportsLegacyRootRelocationReceipts(
+        realmConfiguration: Realm.Configuration
+    ) async throws -> Bool {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: realmConfiguration
+        )
+        return realm.schema.objectSchema.contains(where: {
+            $0.className == ReaderFileLegacyRootRelocationReceipt.className()
+        })
+    }
+
+    @RealmBackgroundActor
+    private func admitLegacyRootRelocationReceipt(
+        storageScopeIdentifier: String,
+        sourceRelativePath: RootRelativePath,
+        sourceReaderURL: URL,
+        sourceReaderBackingURL: URL,
+        sourceGeneration: PostprocessorSourceGeneration,
+        targetReaderURL: URL,
+        targetGeneration: PostprocessorSourceGeneration,
+        targetURL: URL,
+        sourceURL: URL,
+        realmConfiguration: Realm.Configuration
+    ) async throws -> String? {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: realmConfiguration
+        )
+        let sourceURLString = sourceReaderURL.absoluteString
+        let targetURLString = targetReaderURL.absoluteString
+        let sourceBackingURLString = sourceReaderBackingURL.absoluteString
+        return try await realm.asyncWrite {
+            guard Self.postprocessorSourceGeneration(at: sourceURL) == sourceGeneration,
+                  Self.postprocessorSourceGeneration(at: targetURL) == targetGeneration,
+                  let source = realm.objects(ContentFile.self)
+                    .filter(NSPredicate(
+                        format: "isDeleted == %@ AND url == %@",
+                        NSNumber(booleanLiteral: false),
+                        sourceURLString as CVarArg
+                    ))
+                    .first,
+                  let target = realm.objects(ContentFile.self)
+                    .filter(NSPredicate(
+                        format: "isDeleted == %@ AND url == %@",
+                        NSNumber(booleanLiteral: false),
+                        targetURLString as CVarArg
+                    ))
+                    .first,
+                  source.compoundKey != target.compoundKey else {
+                return nil
+            }
+            let receiptIdentifier = ReaderFileLegacyRootRelocationReceipt
+                .makeReceiptIdentifier(
+                    storageScopeIdentifier: storageScopeIdentifier,
+                    sourceRelativePath: sourceRelativePath.path,
+                    sourceContentFilePrimaryKey: source.compoundKey
+                )
+            let receipt = realm.object(
+                ofType: ReaderFileLegacyRootRelocationReceipt.self,
+                forPrimaryKey: receiptIdentifier
+            ) ?? ReaderFileLegacyRootRelocationReceipt()
+            receipt.receiptIdentifier = receiptIdentifier
+            receipt.storageScopeIdentifier = storageScopeIdentifier
+            receipt.sourceRelativePath = sourceRelativePath.path
+            receipt.sourceReaderBackingURLString = sourceBackingURLString
+            receipt.sourceContentFilePrimaryKey = source.compoundKey
+            receipt.sourceContentFileCreatedAt = source.createdAt
+            receipt.sourceModifiedAt = sourceGeneration.modifiedAt
+            receipt.sourceFileSize = sourceGeneration.fileSize
+            receipt.targetReaderURLString = targetURLString
+            receipt.targetContentFilePrimaryKey = target.compoundKey
+            receipt.targetContentFileCreatedAt = target.createdAt
+            receipt.targetModifiedAt = targetGeneration.modifiedAt
+            receipt.targetFileSize = targetGeneration.fileSize
+            receipt.createdAt = Date()
+            if receipt.realm == nil {
+                realm.add(receipt)
+            }
+
+            // This is the synchronized half of relocation. Do not alter the
+            // local receipt's metadata or pending-mutation rows by hand.
+            source.isDeleted = true
+            source.refreshChangeMetadata(explicitlyModified: true)
+            return receiptIdentifier
+        }
+    }
+
+    @RealmBackgroundActor
+    private func removeLegacyRootRelocationReceipt(
+        _ receiptIdentifier: String,
+        realmConfiguration: Realm.Configuration
+    ) async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: realmConfiguration
+        )
+        try await realm.asyncWrite {
+            guard let receipt = realm.object(
+                ofType: ReaderFileLegacyRootRelocationReceipt.self,
+                forPrimaryKey: receiptIdentifier
+            ) else {
+                return
+            }
+            realm.delete(receipt)
+        }
+    }
+
+    /// Retries only receipts whose indexed target and tombstoned source still
+    /// describe the exact generation captured at relocation time. A changed
+    /// source or target remains recoverable evidence and is never deleted.
+    @MainActor
+    private func drainLegacyRootRelocationReceipts(
+        realmConfiguration: Realm.Configuration
+    ) async throws -> Bool {
+        var removedAnySource = false
+        for drive in [localDrive, cloudDrive].compactMap({ $0 }).filter(\.isConnected) {
+            let storageScopeIdentifier = Self.postprocessorStorageScopeIdentifier(
+                drive: drive,
+                realmConfiguration: realmConfiguration
+            )
+            let receipts = try await legacyRootRelocationReceiptSnapshots(
+                storageScopeIdentifier: storageScopeIdentifier,
+                realmConfiguration: realmConfiguration
+            )
+            for receipt in receipts {
+                guard let sourceRelativePath = Self.validLegacyRootSourcePath(
+                    receipt.sourceRelativePath
+                ),
+                let sourceBackingURL = URL(
+                    string: receipt.sourceReaderBackingURLString
+                ),
+                let expectedSourceURL = try? sourceRelativePath.fileURL(
+                    forRoot: drive.rootDirectory
+                ),
+                let receiptSourceURL = try? validatedReceiptSourceURL(
+                    sourceBackingURL: sourceBackingURL,
+                    sourceRelativePath: sourceRelativePath,
+                    drive: drive
+                ),
+                receiptSourceURL == expectedSourceURL,
+                try await legacyRootRelocationReceiptStillMatches(
+                    receipt,
+                    sourceURL: try sourceRelativePath.fileURL(forRoot: drive.rootDirectory),
+                    targetURL: try receiptTargetURL(receipt, drive: drive),
+                    realmConfiguration: realmConfiguration
+                ) else {
+                    continue
+                }
+                let sourceExists = try await drive.fileExists(at: sourceRelativePath)
+                if sourceExists {
+                    do {
+                        try await drive.removeFile(at: sourceRelativePath)
+                    } catch {
+                        continue
+                    }
+                }
+                guard !(try await drive.fileExists(at: sourceRelativePath)) else {
+                    continue
+                }
+                try await removeLegacyRootRelocationReceipt(
+                    receipt.receiptIdentifier,
+                    realmConfiguration: realmConfiguration
+                )
+                removedAnySource = true
+            }
+        }
+        return removedAnySource
+    }
+
+    @MainActor
+    private func validatedReceiptSourceURL(
+        sourceBackingURL: URL,
+        sourceRelativePath: RootRelativePath,
+        drive: CloudDrive
+    ) throws -> URL {
+        guard canonicalReaderBackingURL(for: sourceBackingURL) == sourceBackingURL,
+              try Self.extractRelativePath(fileURL: sourceBackingURL) == sourceRelativePath,
+              let (receiptDrive, _) = try? extractCloudDrivePath(
+                fromReaderFileURL: sourceBackingURL
+              ),
+              receiptDrive.rootDirectory.standardizedFileURL
+                == drive.rootDirectory.standardizedFileURL else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
+        return try sourceRelativePath.fileURL(forRoot: drive.rootDirectory)
+    }
+
+    @MainActor
+    private func receiptTargetURL(
+        _ receipt: LegacyRootRelocationReceiptSnapshot,
+        drive: CloudDrive
+    ) throws -> URL {
+        guard let targetReaderURL = URL(string: receipt.targetReaderURLString),
+              let targetBackingURL = canonicalReaderBackingURL(for: targetReaderURL),
+              let (receiptDrive, targetRelativePath) = try? extractCloudDrivePath(
+                fromReaderFileURL: targetBackingURL
+              ),
+              receiptDrive.rootDirectory.standardizedFileURL
+                == drive.rootDirectory.standardizedFileURL else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
+        return try targetRelativePath.fileURL(forRoot: drive.rootDirectory)
+    }
+
+    private static func validLegacyRootSourcePath(
+        _ path: String
+    ) -> RootRelativePath? {
+        guard let validated = try? validatedDestinationPath(RootRelativePath(path: path)),
+              validated.path.split(separator: "/").count == 1,
+              !shouldSkipDiscoveredRelativePath(validated.path) else {
+            return nil
+        }
+        return validated
+    }
+
+    @RealmBackgroundActor
+    private func legacyRootRelocationReceiptSnapshots(
+        storageScopeIdentifier: String,
+        realmConfiguration: Realm.Configuration
+    ) async throws -> [LegacyRootRelocationReceiptSnapshot] {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: realmConfiguration
+        )
+        guard realm.schema.objectSchema.contains(where: {
+            $0.className == ReaderFileLegacyRootRelocationReceipt.className()
+        }) else {
+            return []
+        }
+        return realm.objects(ReaderFileLegacyRootRelocationReceipt.self)
+            .where { $0.storageScopeIdentifier == storageScopeIdentifier }
+            .map(LegacyRootRelocationReceiptSnapshot.init)
+    }
+
+    @RealmBackgroundActor
+    private func legacyRootRelocationReceiptStillMatches(
+        _ receipt: LegacyRootRelocationReceiptSnapshot,
+        sourceURL: URL,
+        targetURL: URL,
+        realmConfiguration: Realm.Configuration
+    ) async throws -> Bool {
+        let sourceExists = FileManager.default.fileExists(atPath: sourceURL.path)
+        let sourceGeneration = Self.postprocessorSourceGeneration(at: sourceURL)
+        let targetGeneration = Self.postprocessorSourceGeneration(at: targetURL)
+        guard (!sourceExists || (
+                sourceGeneration.modifiedAt == receipt.sourceModifiedAt
+                    && sourceGeneration.fileSize == receipt.sourceFileSize
+              )),
+              targetGeneration.modifiedAt == receipt.targetModifiedAt,
+              targetGeneration.fileSize == receipt.targetFileSize else {
+            return false
+        }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: realmConfiguration
+        )
+        guard let source = realm.object(
+            ofType: ContentFile.self,
+            forPrimaryKey: receipt.sourceContentFilePrimaryKey
+        ),
+        source.isDeleted,
+        source.createdAt == receipt.sourceContentFileCreatedAt,
+        canonicalReaderBackingURL(for: source.url)?.absoluteString
+            == receipt.sourceReaderBackingURLString,
+        let target = realm.object(
+            ofType: ContentFile.self,
+            forPrimaryKey: receipt.targetContentFilePrimaryKey
+        ),
+        !target.isDeleted,
+        target.createdAt == receipt.targetContentFileCreatedAt,
+        target.url.absoluteString == receipt.targetReaderURLString else {
+            return false
+        }
+        return true
+    }
+
+    @MainActor
+    private func isInternalStorageFileURL(_ fileURL: URL) -> Bool {
+        [cloudDrive, localDrive]
+            .compactMap { $0 }
+            .filter(\.isConnected)
+            .contains { drive in
+                guard var relativePath = Self.relativePath(
+                    for: fileURL,
+                    relativeTo: drive.rootDirectory
+                ) else {
+                    return false
+                }
+                if relativePath.hasPrefix("./") {
+                    relativePath = String(relativePath.dropFirst(2))
+                }
+                return Self.shouldSkipDiscoveredRelativePath(relativePath)
+            }
     }
 
     @MainActor
     private func refreshMetadataForExistingLibraryFile(
         _ fileURL: URL,
-        realmConfiguration: Realm.Configuration
+        realmConfiguration: Realm.Configuration,
+        processorSnapshot: ReaderFileProcessorRegistrySnapshot
     ) async throws {
         let drives = [cloudDrive, localDrive].compactMap { drive in
             drive?.isConnected == true ? drive : nil
@@ -536,13 +1719,18 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             let discoveredReferences = try await refreshFilesMetadata(
                 drive: drive,
                 relativePath: parent,
-                realmConfiguration: realmConfiguration
+                realmConfiguration: realmConfiguration,
+                processorSnapshot: processorSnapshot
             ) ?? []
             try await publishDiscoveredFiles(
                 discoveredReferences,
                 realmConfiguration: realmConfiguration
             )
-            try await refreshAllFilesMetadata(force: true, realmConfiguration: realmConfiguration)
+            try await refreshAllFilesMetadata(
+                force: true,
+                realmConfiguration: realmConfiguration,
+                processorSnapshot: processorSnapshot
+            )
             return
         }
     }
@@ -566,35 +1754,50 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         files = mergedFiles.filter { !$0.isDeleted }
     }
     
+    /// Imports the readable local candidate. `downloadURL` is remote provenance
+    /// only and never participates in content-based destination classification.
     @MainActor
-    public func importFile(fileURL: URL, fromDownloadURL downloadURL: URL?) async throws -> URL? {
+    public func importFile(fileURL: URL, fromDownloadURL _: URL?) async throws -> URL? {
         try await importFile(
             fileURL: fileURL,
-            fromDownloadURL: downloadURL,
-            realmConfiguration: resolvedHistoryRealmConfiguration
+            realmConfiguration: resolvedHistoryRealmConfiguration,
+            processorSnapshot: processorRegistry.snapshot()
         )
     }
 
     @MainActor
     private func importFile(
         fileURL: URL,
-        fromDownloadURL downloadURL: URL?,
-        realmConfiguration: Realm.Configuration
+        realmConfiguration: Realm.Configuration,
+        processorSnapshot: ReaderFileProcessorRegistrySnapshot
     ) async throws -> URL? {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
-        
-        let targetDirectory = try await Self.rootRelativePath(forImportedURL: downloadURL ?? fileURL, drive: drive)
-        var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
-        let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
-        
-        let shouldStopAccessingFile = fileURL.startAccessingSecurityScopedResource()
+
+        let shouldStopAccessingFile = try sourceAccess.start(fileURL)
         defer {
             if shouldStopAccessingFile {
-                fileURL.stopAccessingSecurityScopedResource()
+                sourceAccess.stop(fileURL)
             }
         }
-        
+
+        let targetDirectory = try await Self.rootRelativePath(
+            forLocalCandidateURL: fileURL,
+            drive: drive,
+            processorSnapshot: processorSnapshot
+        )
+        var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
+        let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
+
+        try Self.validateDestinationContainment(
+            targetDirectory,
+            in: drive.rootDirectory
+        )
         try await drive.createDirectory(at: targetDirectory)
+
+        try Self.validateDestinationContainment(
+            targetFilePath,
+            in: drive.rootDirectory
+        )
         
         var targetExists = false
         var distinctTargetExists = false
@@ -630,6 +1833,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
         // Don't overwrite
         if distinctTargetExists || !targetExists {
+            try Self.validateDestinationContainment(
+                targetFilePath,
+                in: drive.rootDirectory
+            )
             try await drive.upload(from: fileURL, to: targetFilePath)
         }
         
@@ -637,11 +1844,16 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             _ = try await refreshFilesMetadata(
                 drive: drive,
                 relativePath: targetDirectory,
-                realmConfiguration: realmConfiguration
+                realmConfiguration: realmConfiguration,
+                processorSnapshot: processorSnapshot
             )
             let realm = try await Realm.open(configuration: realmConfiguration)
             let importedFileURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
-            guard let importedReaderFileURL = try await readerFileURL(for: importedFileURL, drive: drive) else {
+            guard let importedReaderFileURL = try await readerFileURL(
+                for: importedFileURL,
+                drive: drive,
+                processorSnapshot: processorSnapshot
+            ) else {
                 debugPrint("Warning: Unable to resolve reader file URL for imported file", importedFileURL)
                 return nil
             }
@@ -651,7 +1863,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 debugPrint("Warning: No matching content metadata returned for imported file", importedReaderFileURL)
                 return nil
             }
-            try await refreshAllFilesMetadata(force: true, realmConfiguration: realmConfiguration)
+            try await refreshAllFilesMetadata(
+                force: true,
+                realmConfiguration: realmConfiguration,
+                processorSnapshot: processorSnapshot
+            )
             let finalRealm = try await Realm.open(configuration: realmConfiguration)
             guard let finalContent = finalRealm.object(ofType: ContentFile.self, forPrimaryKey: content.compoundKey),
                   !finalContent.isDeleted,
@@ -669,7 +1885,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     public func refreshAllFilesMetadata(force: Bool = false) async throws {
         try await refreshAllFilesMetadata(
             force: force,
-            realmConfiguration: resolvedHistoryRealmConfiguration
+            realmConfiguration: resolvedHistoryRealmConfiguration,
+            processorSnapshot: processorRegistry.snapshot()
         )
     }
 
@@ -678,8 +1895,27 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         force: Bool,
         realmConfiguration: Realm.Configuration
     ) async throws {
+        try await refreshAllFilesMetadata(
+            force: force,
+            realmConfiguration: realmConfiguration,
+            processorSnapshot: processorRegistry.snapshot()
+        )
+    }
+
+    @MainActor
+    private func refreshAllFilesMetadata(
+        force: Bool,
+        realmConfiguration: Realm.Configuration,
+        processorSnapshot: ReaderFileProcessorRegistrySnapshot
+    ) async throws {
+        let didDrainLegacyRootRelocation = try await drainLegacyRootRelocationReceipts(
+            realmConfiguration: realmConfiguration
+        )
+        let force = force || didDrainLegacyRootRelocation
         let refreshIdentity = refreshMetadataIdentity(for: realmConfiguration)
         if let refreshAllFilesMetadataTask = refreshAllFilesMetadataTasks[refreshIdentity] {
+            // Joiners and forced follow-ups intentionally inherit the in-flight owner's
+            // processor snapshot. A replacement applies to the next independent refresh.
             if force {
                 refreshAllFilesMetadataNeedsFollowUp.insert(refreshIdentity)
             }
@@ -706,15 +1942,23 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 do {
                     guard localDrive != nil || cloudDrive != nil else { return }
                     let inventoryReceipt = driveInventoryGeneration.receipt()
-                    var files = [ThreadSafeReference<ContentFile>]()
-                    for drive in [localDrive, cloudDrive].compactMap({ $0 }) {
-                        try Task.checkCancellation()
-                        if let discovered = try await refreshFilesMetadata(
-                            drive: drive,
-                            realmConfiguration: realmConfiguration
-                        ) {
-                            files.append(contentsOf: discovered)
+                    let files = try await Self.$operationProcessorSnapshot.withValue(
+                        ReaderFileProcessorOperationSnapshot(
+                            managerIdentity: ObjectIdentifier(self),
+                            processors: processorSnapshot
+                        )
+                    ) {
+                        var files = [ThreadSafeReference<ContentFile>]()
+                        for drive in [localDrive, cloudDrive].compactMap({ $0 }) {
+                            try Task.checkCancellation()
+                            if let discovered = try await refreshFilesMetadata(
+                                drive: drive,
+                                realmConfiguration: realmConfiguration
+                            ) {
+                                files.append(contentsOf: discovered)
+                            }
                         }
+                        return files
                     }
 
                     let discoveredFiles = files
@@ -758,11 +2002,16 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             //await realm.asyncRefresh()
                             try await realm.asyncWrite {
                                 try self.driveInventoryGeneration.mutateIfCurrent(inventoryReceipt) {
+                                    let orphanPrimaryKeys = Array(orphans.map(\.compoundKey))
                                     for orphan in orphans {
                                         try Task.checkCancellation()
                                         orphan.isDeleted = true
                                         orphan.refreshChangeMetadata(explicitlyModified: true)
                                     }
+                                    Self.deletePostprocessorDebts(
+                                        contentFilePrimaryKeys: orphanPrimaryKeys,
+                                        in: realm
+                                    )
                                 }
                             }
                         }()
@@ -792,6 +2041,28 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         drive: CloudDrive,
         relativePath: RootRelativePath? = nil,
         realmConfiguration: Realm.Configuration? = nil
+    ) async throws -> [ThreadSafeReference<ContentFile>]? {
+        let processorSnapshot: ReaderFileProcessorRegistrySnapshot
+        if let operationSnapshot = Self.operationProcessorSnapshot,
+           operationSnapshot.managerIdentity == ObjectIdentifier(self) {
+            processorSnapshot = operationSnapshot.processors
+        } else {
+            processorSnapshot = processorRegistry.snapshot()
+        }
+        return try await refreshFilesMetadata(
+            drive: drive,
+            relativePath: relativePath,
+            realmConfiguration: realmConfiguration,
+            processorSnapshot: processorSnapshot
+        )
+    }
+
+    @MainActor
+    private func refreshFilesMetadata(
+        drive: CloudDrive,
+        relativePath: RootRelativePath?,
+        realmConfiguration: Realm.Configuration?,
+        processorSnapshot: ReaderFileProcessorRegistrySnapshot
     ) async throws -> [ThreadSafeReference<ContentFile>]? {
         let realmConfiguration = realmConfiguration ?? resolvedHistoryRealmConfiguration
         var files = [ThreadSafeReference<ContentFile>]()
@@ -842,11 +2113,15 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     let discoveredFiles = try await refreshFilesMetadata(
                         drive: drive,
                         relativePath: tryRelativePath,
-                        realmConfiguration: realmConfiguration
+                        realmConfiguration: realmConfiguration,
+                        processorSnapshot: processorSnapshot
                     )
                     files.append(contentsOf: discoveredFiles ?? [])
                 } else {
-                    let indexDecision = Self.contentFileIndexDecision(at: absoluteFileURL)
+                    let indexDecision = contentFileIndexDecision(
+                        at: absoluteFileURL,
+                        processorSnapshot: processorSnapshot
+                    )
                     switch indexDecision {
                     case .skipArtifact:
                         Self.logContentFileDecision(
@@ -873,7 +2148,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             reason: reason
                         )
                     }
-                    if let readerFileURL = try await readerFileURL(for: absoluteFileURL, drive: drive) {
+                    if let readerFileURL = try await readerFileURL(
+                        for: absoluteFileURL,
+                        drive: drive,
+                        processorSnapshot: processorSnapshot
+                    ) {
                         filesToUpdate.append((readerFileURL, absoluteFileURL))
                     }
                 }
@@ -895,9 +2174,16 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
         if !filesToUpdate.isEmpty {
             let pendingFilesToUpdate = filesToUpdate
+            let storageScopeIdentifier = Self.postprocessorStorageScopeIdentifier(
+                drive: drive,
+                realmConfiguration: realmConfiguration
+            )
             let updatedFiles = try await { @RealmBackgroundActor in
                 var updatedFiles = [ContentFile]()
                 var allFileRefs = [ThreadSafeReference<ContentFile>]()
+                var candidatesByPrimaryKey = [String: PostprocessorCandidate]()
+                var candidatePrimaryKeys = [String]()
+                var updatedPrimaryKeys = Set<String>()
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(
                     for: realmConfiguration
                 )
@@ -905,12 +2191,22 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 try await realm.asyncWrite {
                     for (readerFileURL, absoluteFileURL) in pendingFilesToUpdate {
                         try Task.checkCancellation()
+                        let sourceGeneration = Self.postprocessorSourceGeneration(
+                            at: absoluteFileURL
+                        )
 
                         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
                             try Task.checkCancellation()
                             if try setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: existing) {
                                 updatedFiles.append(existing)
+                                updatedPrimaryKeys.insert(existing.compoundKey)
                             }
+                            candidatesByPrimaryKey[existing.compoundKey] = PostprocessorCandidate(
+                                contentFile: existing,
+                                absoluteFileURL: absoluteFileURL,
+                                sourceGeneration: sourceGeneration
+                            )
+                            candidatePrimaryKeys.append(existing.compoundKey)
                             allFileRefs.append(ThreadSafeReference(to: existing))
                         } else {
                             let contentFile = ContentFile()
@@ -925,14 +2221,175 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 realm.add(contentFile, update: .modified)
                                 contentFile.refreshChangeMetadata(explicitlyModified: true)
                                 updatedFiles.append(contentFile)
+                                updatedPrimaryKeys.insert(contentFile.compoundKey)
                             }
+                            candidatesByPrimaryKey[contentFile.compoundKey] = PostprocessorCandidate(
+                                contentFile: contentFile,
+                                absoluteFileURL: absoluteFileURL,
+                                sourceGeneration: sourceGeneration
+                            )
+                            candidatePrimaryKeys.append(contentFile.compoundKey)
                             allFileRefs.append(ThreadSafeReference(to: contentFile))
                         }
                     }
+
+                    for registration in processorSnapshot.filePostprocessors {
+                        guard let processorIdentity = registration.identity else { continue }
+                        for primaryKey in candidatePrimaryKeys {
+                            guard let candidate = candidatesByPrimaryKey[primaryKey] else { continue }
+                            let contentFile = candidate.contentFile
+                            let debtIdentifier = ReaderFilePostprocessorDebt.makeDebtIdentifier(
+                                storageScopeIdentifier: storageScopeIdentifier,
+                                processorIdentifier: processorIdentity.identifier,
+                                contentFilePrimaryKey: contentFile.compoundKey
+                            )
+                            let portableDebtIdentifier = ReaderFilePostprocessorDebt
+                                .makePortableDebtIdentifier(
+                                    processorIdentifier: processorIdentity.identifier,
+                                    contentFilePrimaryKey: contentFile.compoundKey
+                                )
+                            let portableDebt = realm.object(
+                                ofType: ReaderFilePostprocessorDebt.self,
+                                forPrimaryKey: portableDebtIdentifier
+                            )
+                            guard updatedPrimaryKeys.contains(contentFile.compoundKey)
+                                    || realm.object(
+                                        ofType: ReaderFilePostprocessorDebt.self,
+                                        forPrimaryKey: debtIdentifier
+                                    ) != nil
+                                    || portableDebt != nil else {
+                                continue
+                            }
+                            Self.admitPostprocessorDebt(
+                                debtIdentifier: debtIdentifier,
+                                storageScopeIdentifier: storageScopeIdentifier,
+                                processorIdentity: processorIdentity,
+                                candidate: candidate,
+                                in: realm
+                            )
+                            if let portableDebt,
+                               portableDebt.debtIdentifier != debtIdentifier {
+                                realm.delete(portableDebt)
+                            }
+                        }
+                    }
                 }
-                for fileProcessor in Self.fileProcessors {
+                var firstPostprocessorError: (any Swift.Error)?
+                for registration in processorSnapshot.filePostprocessors {
                     try Task.checkCancellation()
-                    try await fileProcessor(updatedFiles)
+                    if let processorIdentity = registration.identity {
+                        let pending = candidatePrimaryKeys.compactMap { primaryKey -> (
+                            ContentFile,
+                            ReaderFilePostprocessorAdmission
+                        )? in
+                            guard let candidate = candidatesByPrimaryKey[primaryKey] else {
+                                return nil
+                            }
+                            guard candidate.sourceGeneration.isComplete else {
+                                return nil
+                            }
+                            let contentFile = candidate.contentFile
+                            let debtIdentifier = ReaderFilePostprocessorDebt.makeDebtIdentifier(
+                                storageScopeIdentifier: storageScopeIdentifier,
+                                processorIdentifier: processorIdentity.identifier,
+                                contentFilePrimaryKey: contentFile.compoundKey
+                            )
+                            guard let debt = realm.object(
+                                ofType: ReaderFilePostprocessorDebt.self,
+                                forPrimaryKey: debtIdentifier
+                            ),
+                            Self.postprocessorDebt(
+                                debt,
+                                matches: processorIdentity,
+                                storageScopeIdentifier: storageScopeIdentifier,
+                                candidate: candidate
+                            ) else {
+                                return nil
+                            }
+                            return (
+                                contentFile,
+                                ReaderFilePostprocessorAdmission(
+                                    registrationIdentifier: registration.registrationIdentifier,
+                                    processorIdentity: processorIdentity,
+                                    debtIdentifier: debtIdentifier,
+                                    attemptIdentifier: debt.attemptIdentifier,
+                                    storageScopeIdentifier: storageScopeIdentifier,
+                                    contentFilePrimaryKey: contentFile.compoundKey,
+                                    contentFileCreatedAt: contentFile.createdAt,
+                                    readerFileURLString: contentFile.url.absoluteString,
+                                    absoluteFileURL: candidate.absoluteFileURL,
+                                    sourceModifiedAt: candidate.sourceGeneration.modifiedAt,
+                                    sourceFileSize: candidate.sourceGeneration.fileSize
+                                )
+                            )
+                        }
+                        for (contentFile, admission) in pending {
+                            try Task.checkCancellation()
+                            let outcome = ReaderFilePostprocessorOutcome()
+                            let postprocessorContext = ReaderFilePostprocessorContext(
+                                readerFileManager: self,
+                                realmConfiguration: realmConfiguration,
+                                realm: realm,
+                                contentFiles: [contentFile],
+                                outcome: outcome,
+                                admission: admission
+                            )
+                            do {
+                                try await registration.processor(postprocessorContext)
+                            } catch is CancellationError {
+                                throw CancellationError()
+                            } catch {
+                                if firstPostprocessorError == nil {
+                                    firstPostprocessorError = error
+                                }
+                                continue
+                            }
+                            try Task.checkCancellation()
+                            if outcome.isDeferred(
+                                contentFilePrimaryKey: contentFile.compoundKey
+                            ) {
+                                continue
+                            }
+                            try await realm.asyncWrite {
+                                self.processorRegistry.mutateIfCurrentFilePostprocessor(
+                                    registrationIdentifier: admission.registrationIdentifier
+                                ) {
+                                    guard self.postprocessorStateIsCurrent(
+                                        admission,
+                                        in: realm
+                                    ),
+                                    let debt = realm.object(
+                                        ofType: ReaderFilePostprocessorDebt.self,
+                                        forPrimaryKey: admission.debtIdentifier
+                                    ) else {
+                                        return false
+                                    }
+                                    realm.delete(debt)
+                                    return true
+                                }
+                            }
+                        }
+                        continue
+                    }
+
+                    let postprocessorContext = ReaderFilePostprocessorContext(
+                        readerFileManager: self,
+                        realmConfiguration: realmConfiguration,
+                        realm: realm,
+                        contentFiles: updatedFiles
+                    )
+                    do {
+                        try await registration.processor(postprocessorContext)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        if firstPostprocessorError == nil {
+                            firstPostprocessorError = error
+                        }
+                    }
+                }
+                if let firstPostprocessorError {
+                    throw firstPostprocessorError
                 }
                 return allFileRefs
             }()
@@ -1004,6 +2461,161 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
         return false
     }
+
+    private static func postprocessorStorageScopeIdentifier(
+        drive: CloudDrive,
+        realmConfiguration: Realm.Configuration
+    ) -> String {
+        let components = [
+            realmConfigurationIdentity(realmConfiguration),
+            drive.rootDirectory.standardizedFileURL.absoluteString,
+            drive.ubiquityContainerIdentifier ?? "local",
+        ]
+        return components
+            .map { "\($0.utf8.count):\($0)" }
+            .joined(separator: "|")
+    }
+
+    private static func postprocessorSourceGeneration(
+        at absoluteFileURL: URL
+    ) -> PostprocessorSourceGeneration {
+        let attributes = try? FileManager.default.attributesOfItem(
+            atPath: absoluteFileURL.path
+        )
+        return PostprocessorSourceGeneration(
+            modifiedAt: attributes?[.modificationDate] as? Date,
+            fileSize: (attributes?[.size] as? NSNumber)?.int64Value ?? -1
+        )
+    }
+
+    @RealmBackgroundActor
+    fileprivate func performPostprocessorWriteIfCurrent(
+        admission: ReaderFilePostprocessorAdmission,
+        in realm: Realm,
+        mutation: @escaping @RealmBackgroundActor (Realm, ContentFile) throws -> Void
+    ) async throws -> Bool {
+        try Task.checkCancellation()
+        return try await realm.asyncWrite {
+            try processorRegistry.mutateIfCurrentFilePostprocessor(
+                registrationIdentifier: admission.registrationIdentifier
+            ) {
+                guard postprocessorStateIsCurrent(admission, in: realm),
+                      let contentFile = realm.object(
+                        ofType: ContentFile.self,
+                        forPrimaryKey: admission.contentFilePrimaryKey
+                      ) else {
+                    return nil
+                }
+                try mutation(realm, contentFile)
+                return true
+            } ?? false
+        }
+    }
+
+    @RealmBackgroundActor
+    private func postprocessorStateIsCurrent(
+        _ admission: ReaderFilePostprocessorAdmission,
+        in realm: Realm
+    ) -> Bool {
+        guard let contentFile = realm.object(
+            ofType: ContentFile.self,
+            forPrimaryKey: admission.contentFilePrimaryKey
+        ),
+        contentFile.createdAt == admission.contentFileCreatedAt,
+        contentFile.url.absoluteString == admission.readerFileURLString,
+        let debt = realm.object(
+            ofType: ReaderFilePostprocessorDebt.self,
+            forPrimaryKey: admission.debtIdentifier
+        ),
+        debt.storageScopeIdentifier == admission.storageScopeIdentifier,
+        debt.processorIdentifier == admission.processorIdentity.identifier,
+        debt.processorVersion == admission.processorIdentity.version,
+        debt.contentFilePrimaryKey == admission.contentFilePrimaryKey,
+        debt.contentFileCreatedAt == admission.contentFileCreatedAt,
+        debt.readerFileURLString == admission.readerFileURLString,
+        debt.sourceModifiedAt == admission.sourceModifiedAt,
+        debt.sourceFileSize == admission.sourceFileSize,
+        debt.attemptIdentifier == admission.attemptIdentifier else {
+            return false
+        }
+        let currentSourceGeneration = Self.postprocessorSourceGeneration(
+            at: admission.absoluteFileURL
+        )
+        return currentSourceGeneration.modifiedAt == admission.sourceModifiedAt
+            && currentSourceGeneration.fileSize == admission.sourceFileSize
+    }
+
+    @RealmBackgroundActor
+    private static func admitPostprocessorDebt(
+        debtIdentifier: String,
+        storageScopeIdentifier: String,
+        processorIdentity: ReaderFilePostprocessorIdentity,
+        candidate: PostprocessorCandidate,
+        in realm: Realm
+    ) {
+        let contentFile = candidate.contentFile
+        let debt: ReaderFilePostprocessorDebt
+        if let existing = realm.object(
+            ofType: ReaderFilePostprocessorDebt.self,
+            forPrimaryKey: debtIdentifier
+        ) {
+            debt = existing
+        } else {
+            debt = ReaderFilePostprocessorDebt()
+            debt.debtIdentifier = debtIdentifier
+        }
+        debt.storageScopeIdentifier = storageScopeIdentifier
+        debt.processorIdentifier = processorIdentity.identifier
+        debt.processorVersion = processorIdentity.version
+        debt.contentFilePrimaryKey = contentFile.compoundKey
+        debt.contentFileCreatedAt = contentFile.createdAt
+        debt.readerFileURLString = contentFile.url.absoluteString
+        debt.sourceModifiedAt = candidate.sourceGeneration.modifiedAt
+        debt.sourceFileSize = candidate.sourceGeneration.fileSize
+        debt.attemptIdentifier = UUID().uuidString
+        debt.enqueuedAt = Date()
+        if debt.realm == nil {
+            realm.add(debt)
+        }
+    }
+
+    @RealmBackgroundActor
+    private static func postprocessorDebt(
+        _ debt: ReaderFilePostprocessorDebt,
+        matches processorIdentity: ReaderFilePostprocessorIdentity,
+        storageScopeIdentifier: String,
+        candidate: PostprocessorCandidate
+    ) -> Bool {
+        let contentFile = candidate.contentFile
+        return debt.storageScopeIdentifier == storageScopeIdentifier
+            && debt.processorIdentifier == processorIdentity.identifier
+            && debt.processorVersion == processorIdentity.version
+            && debt.contentFilePrimaryKey == contentFile.compoundKey
+            && debt.contentFileCreatedAt == contentFile.createdAt
+            && debt.readerFileURLString == contentFile.url.absoluteString
+            && debt.sourceModifiedAt == candidate.sourceGeneration.modifiedAt
+            && debt.sourceFileSize == candidate.sourceGeneration.fileSize
+    }
+
+    @RealmBackgroundActor
+    private static func deletePostprocessorDebts(
+        contentFilePrimaryKeys: [String],
+        in realm: Realm
+    ) {
+        guard !contentFilePrimaryKeys.isEmpty,
+              realm.schema.objectSchema.contains(where: {
+                  $0.className == ReaderFilePostprocessorDebt.className()
+              }) else {
+            return
+        }
+        let debts = realm.objects(ReaderFilePostprocessorDebt.self).filter(
+            NSPredicate(
+                format: "contentFilePrimaryKey IN %@",
+                contentFilePrimaryKeys
+            )
+        )
+        realm.delete(debts)
+    }
     
     public func localFileURL(forReaderFileURL readerFileURL: URL) throws -> URL {
         let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: readerFileURL)
@@ -1055,6 +2667,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 }
         )
         try await realm.asyncWrite {
+            let deletedPrimaryKeys = contentFiles.map(\.compoundKey)
             for existing in contentFiles {
                 existing.isDeleted = true
                 existing.refreshChangeMetadata(explicitlyModified: true)
@@ -1065,6 +2678,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     packageContentFile.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
+            Self.deletePostprocessorDebts(
+                contentFilePrimaryKeys: deletedPrimaryKeys,
+                in: realm
+            )
         }
     }
     
@@ -1153,7 +2770,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
         for payloadURL in payloadURLs {
             try Task.checkCancellation()
-            switch try Self.payloadState(at: payloadURL) {
+            switch try availabilityAccess.payloadState(payloadURL) {
             case .current:
                 continue
             case .downloading:
@@ -1176,7 +2793,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         if requestDownloadIfNeeded, !missingPayloadURLs.isEmpty {
             for payloadURL in missingPayloadURLs {
                 do {
-                    try FileManager.default.startDownloadingUbiquitousItem(at: payloadURL)
+                    try availabilityAccess.startDownloading(payloadURL)
                     requestedDownload = true
                 } catch {
                     continue
@@ -1193,21 +2810,14 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             return ReaderBackingAvailability(status: .cloudOnly, localURL: activeRootURL, requestedDownload: false)
         }
 
-        guard try await Self.canCoordinateRead(rootURL: activeRootURL) else {
+        guard try await availabilityAccess.canCoordinateRead(activeRootURL) else {
             return ReaderBackingAvailability(status: .cloudOnly, localURL: activeRootURL, requestedDownload: false)
         }
 
         return ReaderBackingAvailability(status: .availableLocally, localURL: activeRootURL, requestedDownload: false)
     }
 
-    private enum PayloadState: Equatable {
-        case current
-        case downloading
-        case uploading
-        case notLocal
-    }
-
-    private static func payloadState(at url: URL) throws -> PayloadState {
+    private static func payloadState(at url: URL) throws -> ReaderFilePayloadState {
         try Task.checkCancellation()
         guard fileSystemEntryExists(at: url) else {
             return .notLocal
@@ -1295,7 +2905,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             let payloadURLs = requiredPayloadURLs.isEmpty ? [activeRootURL] : requiredPayloadURLs
             for payloadURL in payloadURLs {
                 try Task.checkCancellation()
-                guard try Self.payloadState(at: payloadURL) == .current else {
+                guard try availabilityAccess.payloadState(payloadURL) == .current else {
                     return false
                 }
             }
@@ -1343,8 +2953,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         return trimmedRelativePath
     }
 
-    private static func contentFileIndexDecision(at absoluteFileURL: URL) -> ContentFileIndexDecision {
-        if shouldSkipDiscoveredFile(at: absoluteFileURL) {
+    private func contentFileIndexDecision(
+        at absoluteFileURL: URL,
+        processorSnapshot: ReaderFileProcessorRegistrySnapshot
+    ) -> ContentFileIndexDecision {
+        if Self.shouldSkipDiscoveredFile(at: absoluteFileURL) {
             return .skipArtifact
         }
 
@@ -1359,7 +2972,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             return .skipUnsupported(mimeType: mimeType)
         }
 
-        if ReaderFileManager.shared.readerContentMimeTypes.contains(where: { fileType.conforms(to: $0) }) {
+        if processorSnapshot.readerContentMimeTypes.contains(where: { fileType.conforms(to: $0) }) {
             return .index(reason: "libraryType", mimeType: mimeType)
         }
 
@@ -1428,7 +3041,11 @@ public extension ReaderFileManager {
     func downloadable(url: URL, name: String) async throws -> Downloadable? {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
         
-        let targetDirectory = try await Self.rootRelativePath(forImportedURL: url, drive: drive)
+        let targetDirectory = try await Self.rootRelativePath(
+            forDownloadURL: url,
+            drive: drive,
+            processorSnapshot: processorRegistry.snapshot()
+        )
         let targetFilePath = targetDirectory.appending(url.lastPathComponent)
         let targetURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
         
@@ -1452,16 +3069,122 @@ extension ReaderFileManager: CloudDriveObserver {
 
 private extension ReaderFileManager {
     @MainActor
-    static func rootRelativePath(forImportedURL url: URL, drive: CloudDrive) async throws -> RootRelativePath {
+    static func rootRelativePath(
+        forLocalCandidateURL url: URL,
+        drive: CloudDrive,
+        processorSnapshot: ReaderFileProcessorRegistrySnapshot
+    ) async throws -> RootRelativePath {
+        try await rootRelativePath(
+            forClassificationCandidateURL: url,
+            drive: drive,
+            processorSnapshot: processorSnapshot
+        )
+    }
+
+    @MainActor
+    static func rootRelativePath(
+        forDownloadURL url: URL,
+        drive _: CloudDrive,
+        processorSnapshot: ReaderFileProcessorRegistrySnapshot
+    ) async throws -> RootRelativePath {
+        if url.isEBookURL,
+           processorSnapshot.readerContentMimeTypes.contains(where: {
+               UTType.epub.conforms(to: $0)
+           }) {
+            return RootRelativePath(path: "Books")
+        }
+        let downloadIdentity = String(format: "%02X", stableHash(url.absoluteString))
+        return RootRelativePath(path: predownloadStagingRootPrefix + downloadIdentity)
+    }
+
+    @MainActor
+    static func rootRelativePath(
+        forClassificationCandidateURL url: URL,
+        drive: CloudDrive,
+        processorSnapshot: ReaderFileProcessorRegistrySnapshot
+    ) async throws -> RootRelativePath {
         switch url.lakePathExtension.lowercased() {
         default:
-            for fileDestinationProcessor in fileDestinationProcessors {
-                if let destination = try await fileDestinationProcessor(url) {
-                    return destination
+            var selectedDestination: RootRelativePath?
+            for fileDestinationProcessor in processorSnapshot.destinationProcessors {
+                guard let candidateDestination = try await fileDestinationProcessor(url) else {
+                    continue
                 }
+                let validatedDestination = try validatedDestinationPath(candidateDestination)
+                if let selectedDestination,
+                   selectedDestination != validatedDestination {
+                    throw ReaderFileManagerError.ambiguousDestinationPath
+                }
+                selectedDestination = validatedDestination
             }
-            return .root
+            return selectedDestination ?? .root
         }
+    }
+
+    static func validatedDestinationPath(
+        _ destination: RootRelativePath
+    ) throws -> RootRelativePath {
+        guard !destination.path.isEmpty else {
+            return destination
+        }
+        let components = destination.path.split(
+            separator: "/",
+            omittingEmptySubsequences: false
+        )
+        guard !destination.path.hasPrefix("/"),
+              components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+            throw ReaderFileManagerError.invalidDestinationPath
+        }
+        return destination
+    }
+
+    static func validateDestinationContainment(
+        _ destination: RootRelativePath,
+        in driveRootURL: URL
+    ) throws {
+        let destination = try validatedDestinationPath(destination)
+        let resolvedRootURL = driveRootURL
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        var resolvedCandidateURL = resolvedRootURL
+
+        for component in destination.path.split(separator: "/") {
+            let unresolvedCandidateURL = resolvedCandidateURL
+                .appendingPathComponent(String(component))
+                .standardizedFileURL
+            if let symbolicLinkDestination = try? FileManager.default
+                .destinationOfSymbolicLink(atPath: unresolvedCandidateURL.path) {
+                let symbolicLinkDestinationURL: URL
+                if symbolicLinkDestination.hasPrefix("/") {
+                    symbolicLinkDestinationURL = URL(fileURLWithPath: symbolicLinkDestination)
+                } else {
+                    symbolicLinkDestinationURL = unresolvedCandidateURL
+                        .deletingLastPathComponent()
+                        .appendingPathComponent(symbolicLinkDestination)
+                }
+                resolvedCandidateURL = symbolicLinkDestinationURL
+                    .standardizedFileURL
+                    .resolvingSymlinksInPath()
+            } else {
+                resolvedCandidateURL = unresolvedCandidateURL.resolvingSymlinksInPath()
+            }
+            guard isContainedFileURL(
+                resolvedCandidateURL,
+                in: resolvedRootURL
+            ) else {
+                throw ReaderFileManagerError.invalidDestinationPath
+            }
+        }
+    }
+
+    static func isContainedFileURL(
+        _ candidateURL: URL,
+        in rootURL: URL
+    ) -> Bool {
+        let rootComponents = rootURL.standardizedFileURL.pathComponents
+        let candidateComponents = candidateURL.standardizedFileURL.pathComponents
+        return candidateComponents.count >= rootComponents.count
+            && candidateComponents.prefix(rootComponents.count).elementsEqual(rootComponents)
     }
     
     static func getDocumentsDirectory() -> URL {

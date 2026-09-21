@@ -23,6 +23,7 @@ public class BookLibraryModalsModel: ObservableObject {
 struct BookLibrarySheetsModifier: ViewModifier {
     let isActive: Bool
     @ObservedObject var bookLibraryModalsModel: BookLibraryModalsModel
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
 
     @StateObject private var opdsCatalogsViewModel = OPDSCatalogsViewModel()
 
@@ -41,12 +42,12 @@ struct BookLibrarySheetsModifier: ViewModifier {
             .environmentObject(opdsCatalogsViewModel)
             .background {
                 Color.clear
-                    .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile, allowedContentTypes: ReaderFileManager.shared.readerContentMimeTypes) { result in
+                    .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile, allowedContentTypes: readerFileManager.readerContentMimeTypes) { result in
                         Task { @MainActor in
                             switch result {
                             case .success(let url):
                                 do {
-                                    guard let _ = try await ReaderFileManager.shared.importFile(fileURL: url, fromDownloadURL: nil) else {
+                                    guard let _ = try await readerFileManager.importFile(fileURL: url, fromDownloadURL: nil) else {
                                         print("Couldn't import \(url.absoluteString)")
                                         return
                                     }
@@ -73,6 +74,7 @@ fileprivate struct EditorsPicksView: View {
     @ObservedObject var viewModel: BookLibraryViewModel
 
     @EnvironmentObject private var readerContent: ReaderContent
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
 
@@ -95,7 +97,7 @@ fileprivate struct EditorsPicksView: View {
                             do {
                                 try await viewModel.open(
                                     publication: publication,
-                                    readerFileManager: ReaderFileManager.shared,
+                                    readerFileManager: readerFileManager,
                                     readerPageURL: readerContent.pageURL,
                                     navigator: navigator,
                                     readerModeViewModel: readerModeViewModel
@@ -131,6 +133,7 @@ public struct BookLibraryView: View {
     @StateObject private var readerContentListViewModel = ReaderContentListViewModel<ContentFile>()
     @AppStorage("BookLibraryView.editorsPicks.isExpanded") private var isEditorsPicksExpanded = true
     @State private var isMyBooksExpanded = true
+    @State private var myBooksLoadRevision: UInt = 0
 
     private var isMyBooksEmpty: Bool {
         readerContentListViewModel.hasLoadedBefore && readerContentListViewModel.filteredContents.isEmpty
@@ -189,6 +192,12 @@ public struct BookLibraryView: View {
 
     @ViewBuilder
     private var myBooksSection: some View {
+        if let loadFailure = readerContentListViewModel.loadFailure {
+            ReaderContentListLoadFailureView(
+                failure: loadFailure,
+                retry: { myBooksLoadRevision &+= 1 }
+            )
+        }
         if isMyBooksEmpty {
             EmptyStateBoxView(
                 title: Text("Discover and add \(mediaTypeTitleLowercased)"),
@@ -264,14 +273,11 @@ public struct BookLibraryView: View {
         .refreshable {
             await viewModel.fetchAllData()
         }
-        .task { @MainActor in
+        .task(id: myBooksLoadRevision) { @MainActor in
             await loadMyBooks(readerFileManager.files(ofTypes: viewModel.fileTypes) ?? [])
         }
-        .onChange(of: readerFileManager.files(ofTypes: viewModel.fileTypes)) { ebookFiles in
-            Task { @MainActor in
-                guard let ebookFiles else { return }
-                await loadMyBooks(ebookFiles)
-            }
+        .onChange(of: readerFileManager.files(ofTypes: viewModel.fileTypes)) { _ in
+            myBooksLoadRevision &+= 1
         }
         .onChange(of: readerContentListViewModel.filteredContentIDs) { filteredFileIDs in
             viewModel.hasLocalFiles = !filteredFileIDs.isEmpty
@@ -291,14 +297,19 @@ public struct BookLibraryView: View {
     @MainActor
     private func loadMyBooks(_ files: [ContentFile]) async {
         let fileFilter = viewModel.fileFilter
-        try? await readerContentListViewModel.load(
-            contents: files,
-            contentFilter: { _, contentFile in
-                guard let fileFilter else { return true }
-                return try fileFilter(contentFile)
-            },
-            sortOrder: .createdAt
-        )
+        do {
+            try await readerContentListViewModel.load(
+                contents: files,
+                contentFilter: { _, contentFile in
+                    guard let fileFilter else { return true }
+                    return try fileFilter(contentFile)
+                },
+                sortOrder: .createdAt
+            )
+        } catch is CancellationError {
+        } catch {
+            // The list view model retains the current failure for presentation and retry.
+        }
     }
 }
 

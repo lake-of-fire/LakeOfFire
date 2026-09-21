@@ -61,6 +61,7 @@ fileprivate struct DownloadableBookGridCell: View {
     @State private var wasDownloaded = false
 
     @ObservedObject private var downloadController = DownloadController.shared
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -102,7 +103,7 @@ fileprivate struct DownloadableBookGridCell: View {
             if !wasAlreadyDownloaded {
                 await downloadController.ensureDownloaded([downloadable])
             }
-            _ = try? await ReaderFileManager.shared.ensureImported(downloadable: downloadable)
+            _ = try? await readerFileManager.ensureImported(downloadable: downloadable)
             onSelected?(wasAlreadyDownloaded)
         }
     }
@@ -110,7 +111,7 @@ fileprivate struct DownloadableBookGridCell: View {
     @MainActor
     private func refreshDownloadable() async {
         if await downloadable.existsLocally() && !wasDownloaded {
-            _ = try? await ReaderFileManager.shared.ensureImported(downloadable: downloadable)
+            _ = try? await readerFileManager.ensureImported(downloadable: downloadable)
             wasDownloaded = true
         }
     }
@@ -137,6 +138,7 @@ struct BookGridCell: View {
     var onSelected: ((Bool) -> Void)? = nil
 
     @State private var downloadable: Downloadable?
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
     //    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
 
     init(imageURL: URL?, title: String, author: String?, publicationDate: Date?, downloadURL: URL?, onSelected: ((Bool) -> Void)? = nil) {
@@ -164,7 +166,10 @@ struct BookGridCell: View {
     private func refreshDownloadable() async {
         if let downloadURL = downloadURL {
             if downloadable?.url != downloadURL || downloadable?.name != title {
-                downloadable = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: title)
+                downloadable = try? await readerFileManager.downloadable(
+                    url: downloadURL,
+                    name: title
+                )
             }
         }
     }

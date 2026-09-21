@@ -2,7 +2,7 @@ import Foundation
 import RealmSwift
 
 public enum DefaultRealmConfiguration {
-    public static let schemaVersion: UInt64 = 72
+    public static let schemaVersion: UInt64 = 73
     
     public static var configuration: Realm.Configuration {
         var config = Realm.Configuration.defaultConfiguration
@@ -24,6 +24,7 @@ public enum DefaultRealmConfiguration {
             FeedEntryCollection.self,
             FeedEntry.self,
             LibraryConfiguration.self,
+            LibraryOPMLImportLease.self,
             MediaTranscript.self,
             UserScript.self,
             UserScriptAllowedDomain.self,

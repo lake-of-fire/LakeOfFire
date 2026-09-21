@@ -117,6 +117,7 @@ struct ReaderContentListSheetsModifier: ViewModifier {
     let origin: String
 
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
 
     func body(content: Content) -> some View {
         content
@@ -139,9 +140,18 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                         primaryButton: .destructive(Text(actionTitle)) {
                             Task { @MainActor in
                                 do {
-                                    try await preflightDeleteBatch(items)
+                                    try await preflightDeleteBatch(
+                                        items,
+                                        readerFileManager: readerFileManager
+                                    )
                                     for item in items {
-                                        try await item.delete()
+                                        if let contentFile = item as? ContentFile {
+                                            try await contentFile.delete(
+                                                readerFileManager: readerFileManager
+                                            )
+                                        } else {
+                                            try await item.delete()
+                                        }
                                     }
                                     readerContentListModalsModel.clearDeleteDialog()
                                 } catch {
@@ -167,12 +177,15 @@ struct ReaderContentListSheetsModifier: ViewModifier {
 }
 
 @MainActor
-private func preflightDeleteBatch(_ items: [any DeletableReaderContent]) async throws {
+private func preflightDeleteBatch(
+    _ items: [any DeletableReaderContent],
+    readerFileManager: ReaderFileManager
+) async throws {
     for case let contentFile as ContentFile in items {
-        guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url) else {
+        guard let readerBackingURL = readerFileManager.canonicalReaderBackingURL(for: contentFile.url) else {
             continue
         }
-        let eligibility = await ReaderFileManager.shared.deleteEligibility(forReaderBackingURL: readerBackingURL)
+        let eligibility = await readerFileManager.deleteEligibility(forReaderBackingURL: readerBackingURL)
         switch eligibility {
         case .allowed:
             continue
@@ -442,6 +455,44 @@ public enum ReaderContentSortOrder: Sendable {
     case urlAddress
 }
 
+public struct ReaderContentListLoadFailure: Equatable, Identifiable, Sendable {
+    public let id: UUID
+    public let message: String
+
+    init(id: UUID = UUID(), error: Error) {
+        self.id = id
+        message = error.localizedDescription
+    }
+}
+
+public struct ReaderContentListLoadFailureView: View {
+    let failure: ReaderContentListLoadFailure
+    let retry: () -> Void
+
+    public init(
+        failure: ReaderContentListLoadFailure,
+        retry: @escaping () -> Void
+    ) {
+        self.failure = failure
+        self.retry = retry
+    }
+
+    public var body: some View {
+        HStack(spacing: 12) {
+            Label(failure.message, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            Button(action: retry) {
+                Label("Retry", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("ReaderContentList.Retry")
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
 @MainActor
 public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObject {
     private struct FilteredContentSnapshot {
@@ -467,6 +518,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     public var realmConfiguration: Realm.Configuration?
     var refreshSelectionTask: Task<Void, Error>?
     @Published public var loadContentsTask: Task<Void, Error>?
+    @Published public private(set) var loadFailure: ReaderContentListLoadFailure?
     private var currentLoadID: UUID?
     
     @Published public var hasLoadedBefore = false
@@ -549,9 +601,14 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         sortOrder: ReaderContentSortOrder? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) async throws {
+        try Task.checkCancellation()
         let contentIDs = contents.map(\.compoundKey)
 
         if sortOrder == nil && contentFilter == nil && postSortTransform == nil {
+            loadContentsTask?.cancel()
+            currentLoadID = UUID()
+            loadContentsTask = nil
+            loadFailure = nil
             applyFilteredContents(
                 contents,
                 ids: contentIDs
@@ -572,6 +629,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         loadContentsTask?.cancel()
         let loadID = UUID()
         currentLoadID = loadID
+        loadFailure = nil
         let task = Task { @ReaderContentListActor in
             var filtered: [C] = []
 
@@ -675,9 +733,23 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         }
         loadContentsTask = task
 
-        try? await task.value
+        do {
+            try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+        } catch {
+            guard currentLoadID == loadID else { throw error }
+            loadContentsTask = nil
+            if !(error is CancellationError) {
+                loadFailure = ReaderContentListLoadFailure(error: error)
+            }
+            throw error
+        }
         guard currentLoadID == loadID else { return }
         loadContentsTask = nil
+        loadFailure = nil
     }
 }
 
@@ -860,21 +932,13 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
             onContentAppear?(content)
-            if let item = content as? ContentFile {
-                await cloudDriveSyncStatusModel.refreshAsync(item: item)
-            }
         }
-        .onReceive(NotificationCenter.default.publisher(for: ReaderFileManager.readerBackingStatusRefreshRequestedNotification)) { notification in
-            guard let contentFile = content as? ContentFile,
-                  let requestedURLString = notification.object as? String,
-                  let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url),
-                  readerBackingURL.absoluteString == requestedURLString else {
-                return
-            }
-            Task { @MainActor in
-                await cloudDriveSyncStatusModel.refreshAsync(item: contentFile)
-            }
-        }
+        .modifier(
+            ReaderFileStatusRefreshModifier(
+                item: content as? ContentFile,
+                statusModel: cloudDriveSyncStatusModel
+            )
+        )
     }
 }
 
@@ -974,6 +1038,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     // Navigation/env for selection syncing when using custom grouping
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
     @Environment(\.readerModeLoadHandler) private var readerModeLoadHandler
     
 #if os(iOS)
@@ -982,6 +1047,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @State private var multiSelection = Set<String>()
     @State private var pendingScrollTargetID: String?
     @State private var lastScrolledTargetID: String?
+    @State private var loadRevision: UInt = 0
     
     private var showEmptyState: Bool {
         return !viewModel.showLoadingIndicator && viewModel.filteredContents.isEmpty
@@ -1134,10 +1200,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         deleteEligibilityRefreshTask = Task { @MainActor in
             var nextEligibility = [String: ReaderFileDeleteEligibility]()
             for contentFile in selectedContentFiles {
-                guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url) else {
+                guard let readerBackingURL = readerFileManager.canonicalReaderBackingURL(for: contentFile.url) else {
                     continue
                 }
-                let eligibility = await ReaderFileManager.shared.deleteEligibility(forReaderBackingURL: readerBackingURL)
+                let eligibility = await readerFileManager.deleteEligibility(forReaderBackingURL: readerBackingURL)
                 if Task.isCancelled {
                     return
                 }
@@ -1259,29 +1325,26 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     }
                     refreshDeleteEligibilityCache()
                 }
-            .task { @MainActor in
-                    try? await viewModel.load(
-                        contents: contents,
-                        contentFilter: contentFilter,
-                        sortOrder: sortOrder,
-                        postSortTransform: postSortTransform
-                    )
-                    refreshGrouping()
-                    refreshDeleteEligibilityCache()
-                    scheduleScrollToTarget(with: scrollProxy, reason: "taskEnd")
-                }
-                .onChange(of: contents) { contents in
-                    Task { @MainActor in
-                        try? await viewModel.load(
+            .task(id: loadRevision) { @MainActor in
+                    do {
+                        try await viewModel.load(
                             contents: contents,
                             contentFilter: contentFilter,
                             sortOrder: sortOrder,
                             postSortTransform: postSortTransform
                         )
-                        refreshGrouping()
-                        refreshDeleteEligibilityCache()
-                        scheduleScrollToTarget(with: scrollProxy, reason: "contentsChanged")
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        // The view model retains the current failure for presentation and retry.
                     }
+                    guard !Task.isCancelled else { return }
+                    refreshGrouping()
+                    refreshDeleteEligibilityCache()
+                    scheduleScrollToTarget(with: scrollProxy, reason: "taskEnd")
+                }
+                .onChange(of: contents) { _ in
+                    loadRevision &+= 1
                 }
                 .onChange(of: viewModel.filteredContents) { _ in
                     refreshGrouping()
@@ -1427,6 +1490,16 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         }
 
         supplementarySections()
+
+        if let loadFailure = viewModel.loadFailure {
+            Section {
+                ReaderContentListLoadFailureView(
+                    failure: loadFailure,
+                    retry: { loadRevision &+= 1 }
+                )
+                .readerContentListRowStyle(useDefaultRowInsets: true)
+            }
+        }
 
         if customGrouping == nil, !showEmptyState, separateRowsIntoSections {
             separateRowSections

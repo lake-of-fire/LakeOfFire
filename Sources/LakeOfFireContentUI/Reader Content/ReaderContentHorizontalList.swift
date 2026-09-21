@@ -238,22 +238,12 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         //            }
         //        }
         .environmentObject(cloudDriveSyncStatusModel)
-        .task { @MainActor in
-            if let item = content as? ContentFile {
-                await cloudDriveSyncStatusModel.refreshAsync(item: item)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: ReaderFileManager.readerBackingStatusRefreshRequestedNotification)) { notification in
-            guard let contentFile = content as? ContentFile,
-                  let requestedURLString = notification.object as? String,
-                  let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url),
-                  readerBackingURL.absoluteString == requestedURLString else {
-                return
-            }
-            Task { @MainActor in
-                await cloudDriveSyncStatusModel.refreshAsync(item: contentFile)
-            }
-        }
+        .modifier(
+            ReaderFileStatusRefreshModifier(
+                item: content as? ContentFile,
+                statusModel: cloudDriveSyncStatusModel
+            )
+        )
         .onAppear {
             logBookHorizontal("onAppear")
         }
@@ -452,6 +442,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
     let postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])?
     
     @StateObject var viewModel = ReaderContentListViewModel<C>()
+    @State private var loadRevision: UInt = 0
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 130
     @Environment(\.controlSize) private var controlSize
     let contentSortAscending = false
@@ -488,7 +479,15 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
                 )
             }
         
-            if !viewModel.showLoadingIndicator,
+            if let loadFailure = viewModel.loadFailure {
+                ReaderContentListLoadFailureView(
+                    failure: loadFailure,
+                    retry: { loadRevision &+= 1 }
+                )
+                .padding()
+                .frame(maxWidth: .infinity, minHeight: estimatedRowHeight)
+                .background(.regularMaterial)
+            } else if !viewModel.showLoadingIndicator,
                viewModel.filteredContents.isEmpty {
                 emptyStateView()
                     .environment(\.emptyStateBoxFillsAvailableHeight, true)
@@ -507,27 +506,21 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
                     .delayedAppearance()
             }
         }
-        .task { @MainActor in
-            //                await Task { @RealmBackgroundActor in
-            //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
-            try? await viewModel.load(
-                contents: contents,
-                contentFilter: contentFilter,
-                sortOrder: sortOrder,
-                postSortTransform: postSortTransform
-            )
-            //                }.value
-        }
-        .onChange(of: contents, debounceTime: 0.1) { contents in
-            Task { @MainActor in
-                try? await viewModel.load(
+        .task(id: loadRevision) { @MainActor in
+            do {
+                try await viewModel.load(
                     contents: contents,
                     contentFilter: contentFilter,
                     sortOrder: sortOrder,
                     postSortTransform: postSortTransform
                 )
-                //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
+            } catch is CancellationError {
+            } catch {
+                // The view model retains the current failure for presentation and retry.
             }
+        }
+        .onChange(of: contents, debounceTime: 0.1) { _ in
+            loadRevision &+= 1
         }
         .frame(height: estimatedRowHeight, alignment: .top)
         //.enableInjection()

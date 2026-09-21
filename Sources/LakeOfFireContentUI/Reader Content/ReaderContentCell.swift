@@ -1,7 +1,6 @@
 import SwiftUI
 import Foundation
 import CoreText
-import ImageIO
 import RealmSwift
 import RealmSwiftGaps
 import LakeKit
@@ -63,6 +62,100 @@ fileprivate actor ReaderContentCellActor {
     static let shared = ReaderContentCellActor()
 }
 
+fileprivate struct ReaderContentCellDisplayState {
+    var readingProgress: Float?
+    var isFullArticleFinished: Bool?
+    var title = ""
+    var author: String?
+    var humanReadablePublicationDate: String?
+    var imageURL: URL?
+    var sourceIconURL: URL?
+    var sourceTitle: String?
+    var totalWordCount: Int?
+    var remainingTime: TimeInterval?
+    var syncStatusPresentation: ReaderContentSyncStatusPresentation?
+    var hasLoadedDisplayState = false
+}
+
+/// Same-row metadata edits restart the one generation-fenced display-state producer.
+/// Progress and history stored in other models retain their separate invalidation owners.
+struct ReaderContentCellLoadIdentity: Hashable {
+    let compoundKey: String
+    let sourceIncarnation: BookmarkMutationSourceIncarnation
+    let accountSessionSnapshot: AccountSessionSnapshot?
+    let includesSource: Bool
+    let url: URL
+    let modifiedAt: Date
+    let imageURL: URL?
+
+    @MainActor
+    init(
+        item: any ReaderContentProtocol,
+        includesSource: Bool,
+        accountSessionSnapshot: AccountSessionSnapshot? = nil
+    ) {
+        compoundKey = item.compoundKey
+        sourceIncarnation = BookmarkMutationSourceIncarnation(item)
+        self.accountSessionSnapshot = accountSessionSnapshot
+        self.includesSource = includesSource
+        url = item.url
+        modifiedAt = item.modifiedAt
+        imageURL = item.imageUrl
+    }
+}
+
+struct ReaderContentCellLoadTaskIdentity: Hashable {
+    let loadIdentity: ReaderContentCellLoadIdentity
+    let retryRevision: UInt64
+    let derivedStateRevision: UInt64
+
+    init(
+        loadIdentity: ReaderContentCellLoadIdentity,
+        retryRevision: UInt64,
+        derivedStateRevision: UInt64 = 0
+    ) {
+        self.loadIdentity = loadIdentity
+        self.retryRevision = retryRevision
+        self.derivedStateRevision = derivedStateRevision
+    }
+}
+
+struct ReaderContentCellHistoryIdentity: Hashable {
+    let compoundKey: String
+    let sourceIncarnation: BookmarkMutationSourceIncarnation
+    let accountSessionSnapshot: AccountSessionSnapshot?
+    let url: URL
+    let realmConfigurationIdentity: String
+
+    @MainActor
+    init(
+        item: any ReaderContentProtocol,
+        realmConfiguration: Realm.Configuration,
+        accountSessionSnapshot: AccountSessionSnapshot? = nil
+    ) {
+        compoundKey = item.compoundKey
+        sourceIncarnation = BookmarkMutationSourceIncarnation(item)
+        self.accountSessionSnapshot = accountSessionSnapshot
+        url = item.url
+        realmConfigurationIdentity = feedRealmConfigurationIdentity(realmConfiguration)
+    }
+}
+
+enum ReaderContentCellHistoryState: Equatable, Sendable {
+    case loading
+    case value(Date?)
+}
+
+@MainActor
+private final class ReaderContentCellHistorySubscription {
+    var cancellable: AnyCancellable?
+
+    func cancel() {
+        cancellable?.cancel()
+        cancellable = nil
+    }
+}
+
 private func usableReaderContentSourceIconURL(_ url: URL?) -> URL? {
     guard let url, !url.isNativeReaderView else { return nil }
     return url
@@ -70,127 +163,222 @@ private func usableReaderContentSourceIconURL(_ url: URL?) -> URL? {
 
 @MainActor
 class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiable>: ObservableObject {
-    @Published var readingProgress: Float? = nil
-    @Published var isFullArticleFinished: Bool? = nil
-    @Published var latestHistoryRecordLastVisitedAt: Date? = nil
     @Published var forceShowBookmark = false
-    @Published var title = ""
-    @Published var author: String?
-    @Published var humanReadablePublicationDate: String?
-    @Published var imageURL: URL?
-    @Published var sourceIconURL: URL?
-    @Published var sourceTitle: String?
-    @Published var totalWordCount: Int?
-    @Published var remainingTime: TimeInterval?
-    @Published var syncStatusPresentation: ReaderContentSyncStatusPresentation?
-    @Published var hasLoadedDisplayState = false
+    @Published private var displayState = ReaderContentCellDisplayState()
+    @Published private(set) var historyState = ReaderContentCellHistoryState.loading
+    private var loadGeneration: UInt64 = 0
+    private var historyGeneration: UInt64 = 0
+
+    var readingProgress: Float? { displayState.readingProgress }
+    var isFullArticleFinished: Bool? { displayState.isFullArticleFinished }
+    var hasLoadedHistoryState: Bool { historyState != .loading }
+    var latestHistoryRecordLastVisitedAt: Date? {
+        if case let .value(lastVisitedAt) = historyState {
+            return lastVisitedAt
+        }
+        return nil
+    }
+    var title: String { displayState.title }
+    var author: String? { displayState.author }
+    var humanReadablePublicationDate: String? { displayState.humanReadablePublicationDate }
+    var imageURL: URL? { displayState.imageURL }
+    var sourceIconURL: URL? { displayState.sourceIconURL }
+    var sourceTitle: String? { displayState.sourceTitle }
+    var totalWordCount: Int? { displayState.totalWordCount }
+    var remainingTime: TimeInterval? { displayState.remainingTime }
+    var syncStatusPresentation: ReaderContentSyncStatusPresentation? { displayState.syncStatusPresentation }
+    var hasLoadedDisplayState: Bool { displayState.hasLoadedDisplayState }
     // Continue Reading menu is driven by an injected provider in the environment.
 
-    init() { }
+    private let imageURLLoader: @MainActor (C) async throws -> URL?
+    private let feedEntryRealmConfigurationOverride: Realm.Configuration?
 
-    @MainActor
+    init(imageURLLoader: @escaping @MainActor (C) async throws -> URL? = {
+        try await $0.imageURLToDisplay()
+    },
+    feedEntryRealmConfiguration: Realm.Configuration? = nil) {
+        self.imageURLLoader = imageURLLoader
+        feedEntryRealmConfigurationOverride = feedEntryRealmConfiguration
+    }
+
+    func suspendAccountDerivedState() {
+        loadGeneration &+= 1
+        var nextState = displayState
+        nextState.readingProgress = nil
+        nextState.isFullArticleFinished = nil
+        nextState.totalWordCount = nil
+        nextState.remainingTime = nil
+        displayState = nextState
+    }
+
+    func suspendHistoryObservation() {
+        historyGeneration &+= 1
+        historyState = .loading
+    }
+
+    func observeHistory(
+        for itemURL: URL,
+        realmConfiguration: Realm.Configuration
+    ) async throws {
+        try Task.checkCancellation()
+        historyGeneration &+= 1
+        let generation = historyGeneration
+        if historyState != .loading {
+            historyState = .loading
+        }
+
+        let realm = try await Realm.open(configuration: realmConfiguration)
+        try Task.checkCancellation()
+        guard generation == historyGeneration else { throw CancellationError() }
+        let historyRecords = HistoryRecord.openedRecords(matching: itemURL, in: realm)
+        let historyPublisher = historyRecords
+            .collectionPublisher(keyPaths: ["isDeleted", "url", "lastVisitedAt"])
+            .map { records in
+                records.map(\.lastVisitedAt).max()
+            }
+            .removeDuplicates()
+        let observation = ReaderContentCellHistorySubscription()
+        let historyValues = AsyncThrowingStream<Date?, Error> { continuation in
+            continuation.onTermination = { _ in
+                Task { @MainActor in
+                    observation.cancel()
+                }
+            }
+            observation.cancellable = historyPublisher.sink(
+                receiveCompletion: { completion in
+                    switch completion {
+                    case .finished:
+                        continuation.finish()
+                    case let .failure(error):
+                        continuation.finish(throwing: error)
+                    }
+                },
+                receiveValue: { value in
+                    continuation.yield(value)
+                }
+            )
+        }
+
+        for try await lastVisitedAt in historyValues {
+            try Task.checkCancellation()
+            guard generation == historyGeneration else { throw CancellationError() }
+            let nextState = ReaderContentCellHistoryState.value(lastVisitedAt)
+            guard historyState != nextState else { continue }
+            historyState = nextState
+        }
+        try Task.checkCancellation()
+        guard generation == historyGeneration else { throw CancellationError() }
+    }
+
     func load(
         item: C,
         includeSource: Bool
     ) async throws {
-        hasLoadedDisplayState = false
+        try Task.checkCancellation()
+        loadGeneration &+= 1
+        let generation = loadGeneration
+
+        if displayState.hasLoadedDisplayState {
+            var loadingState = displayState
+            loadingState.hasLoadedDisplayState = false
+            displayState = loadingState
+        }
         debugPrint("# loading", item.url.lastPathComponent)
 
-        guard let config = item.realm?.configuration else { return }
-        let pk = item.compoundKey
-        let imageURL = try await item.imageURLToDisplay()
-        try await { @ReaderContentCellActor [weak self] in
-            guard let self else { return }
-            let realm = try await Realm(configuration: config, actor: ReaderContentCellActor.shared)
-            if let item = realm.object(ofType: C.self, forPrimaryKey: pk) {
-                try Task.checkCancellation()
-                let rawTitle = item.title.removingClipboardIndicatorIfNeeded(item.needsClipboardIndicator)
-                let sanitizedTitle = rawTitle.removingHTMLTags() ?? rawTitle
-                let trimmedTitle = sanitizedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                let title = trimmedTitle.isEmpty ? "Untitled" : trimmedTitle
-                let shouldDisplayPublicationDate = item.displayPublicationDate || item.isPhysicalMedia
-                let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
-                let author = item.author.trimmingCharacters(in: .whitespacesAndNewlines)
-                let itemURL = item.url
-                let itemSourceIconURL = item.sourceIconURL
-                let feedEntry = item as? FeedEntry
-                let feed = feedEntry?.getFeed()
-                let feedTitle = feed?.title
-                let feedIconURL = feed?.iconUrl
-                let resolvedSourceIconURL = usableReaderContentSourceIconURL(feedIconURL) ?? usableReaderContentSourceIconURL(itemSourceIconURL)
-                let tracksReadingProgress = item.tracksReadingProgress
-                let progressResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL) : nil
-                let metadataResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL) : nil
-                let syncStatusPresentation = try await ReaderContentSyncStatusLoader.syncStatusLoader?(itemURL)
-                let historyRealm = try await Realm(
-                    configuration: ReaderContentLoader.historyRealmConfiguration,
-                    actor: ReaderContentCellActor.shared
-                )
-                let latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: itemURL, in: historyRealm)
-                try Task.checkCancellation()
+        guard let contentRealmConfiguration = item.realm?.configuration else { return }
+        let primaryKey = item.compoundKey
+        let itemURL = item.url
+        let feedEntryRealmConfiguration = feedEntryRealmConfigurationOverride
+            ?? ReaderContentLoader.feedEntryRealmConfiguration
+        let imageURL = try await imageURLLoader(item)
+        try Task.checkCancellation()
+        guard generation == loadGeneration else { throw CancellationError() }
 
-                let sourceURL = itemURL
-                var sourceTitle: String?
-                // TODO: Store and get site names from OpenGraph
-                var sourceIconURL: URL? = resolvedSourceIconURL
+        let nextDisplayState = try await { @ReaderContentCellActor in
+            let realm = try await Realm(
+                configuration: contentRealmConfiguration,
+                actor: ReaderContentCellActor.shared
+            )
+            guard let item = realm.object(ofType: C.self, forPrimaryKey: primaryKey) else {
+                return nil as ReaderContentCellDisplayState?
+            }
+            try Task.checkCancellation()
 
-                if includeSource {
-                    if sourceURL.isSnippetURL {
-                        sourceTitle = "Snippet"
-                    } else if sourceURL.contentKind != .webpage {
-                        sourceTitle = sourceURL.contentKindTitle
-                    } else if let feedTitle {
-                        sourceTitle = feedTitle
-                        sourceIconURL = resolvedSourceIconURL
-                    } else if sourceURL.isHTTP {
-                        sourceTitle = sourceURL.host
-                        let readerRealm = try await Realm(
-                            configuration: ReaderContentLoader.feedEntryRealmConfiguration,
-                            actor: ReaderContentCellActor.shared
-                        )
-                        try Task.checkCancellation()
+            let rawTitle = item.title.removingClipboardIndicatorIfNeeded(item.needsClipboardIndicator)
+            let sanitizedTitle = rawTitle.removingHTMLTags() ?? rawTitle
+            let trimmedTitle = sanitizedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = trimmedTitle.isEmpty ? "Untitled" : trimmedTitle
+            let shouldDisplayPublicationDate = item.displayPublicationDate || item.isPhysicalMedia
+            let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
+            let author = item.author.trimmingCharacters(in: .whitespacesAndNewlines)
+            let itemSourceIconURL = item.sourceIconURL
+            let feed = (item as? FeedEntry)?.getFeed()
+            let feedTitle = feed?.title
+            let resolvedSourceIconURL = usableReaderContentSourceIconURL(feed?.iconUrl)
+                ?? usableReaderContentSourceIconURL(itemSourceIconURL)
+            let tracksReadingProgress = item.tracksReadingProgress
+            let progressResult = tracksReadingProgress
+                ? try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL)
+                : nil
+            let metadataResult = tracksReadingProgress
+                ? try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL)
+                : nil
+            let syncStatusPresentation = try await ReaderContentSyncStatusLoader.syncStatusLoader?(itemURL)
+            try Task.checkCancellation()
 
-                        if let feedEntry = readerRealm.objects(FeedEntry.self).filter(NSPredicate(format: "url == %@", sourceURL.absoluteString as CVarArg)).first, let feed = feedEntry.getFeed() {
-                            try Task.checkCancellation()
-                            sourceTitle = feed.title
-                            sourceIconURL = usableReaderContentSourceIconURL(feed.iconUrl) ?? resolvedSourceIconURL
-                        } else if let host = sourceURL.host {
-                            sourceTitle = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-                            sourceIconURL = resolvedSourceIconURL
-                        }
+            var sourceTitle: String?
+            var sourceIconURL: URL? = resolvedSourceIconURL
+
+            if includeSource {
+                if itemURL.isSnippetURL {
+                    sourceTitle = "Snippet"
+                } else if itemURL.contentKind != .webpage {
+                    sourceTitle = itemURL.contentKindTitle
+                } else if let feedTitle {
+                    sourceTitle = feedTitle
+                } else if itemURL.isHTTP {
+                    sourceTitle = itemURL.host
+                    let feedRealm = try await Realm(
+                        configuration: feedEntryRealmConfiguration,
+                        actor: ReaderContentCellActor.shared
+                    )
+                    try Task.checkCancellation()
+
+                    if let feedEntry = feedRealm.objects(FeedEntry.self)
+                        .filter(NSPredicate(format: "url == %@", itemURL.absoluteString as CVarArg))
+                        .first,
+                       let feed = feedEntry.getFeed() {
+                        sourceTitle = feed.title
+                        sourceIconURL = usableReaderContentSourceIconURL(feed.iconUrl)
+                            ?? resolvedSourceIconURL
+                    } else if let host = itemURL.host {
+                        sourceTitle = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
                     }
                 }
-
-                let sourceIconURLChoice = sourceIconURL
-                let sourceTitleChoice = sourceTitle
-
-                try await { @MainActor [weak self] in
-                    guard let self else { return }
-                    try Task.checkCancellation()
-                    self.title = title
-                    self.imageURL = imageURL
-                    self.humanReadablePublicationDate = humanReadablePublicationDate
-                    self.author = author.isEmpty ? nil : author
-                    self.sourceIconURL = sourceIconURLChoice
-                    self.sourceTitle = sourceTitleChoice
-                    if let (progress, finished) = progressResult {
-                        self.readingProgress = progress
-                        self.isFullArticleFinished = finished
-                    } else {
-                        self.readingProgress = nil
-                        self.isFullArticleFinished = nil
-                    }
-                    self.latestHistoryRecordLastVisitedAt = latestHistoryRecordLastVisitedAt
-                    self.totalWordCount = metadataResult?.totalWordCount
-                    self.remainingTime = metadataResult?.remainingTime
-                    self.syncStatusPresentation = syncStatusPresentation
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        self.hasLoadedDisplayState = true
-                    }
-                }()
-                // Continue Reading state is provided externally via environment provider.
             }
+
+            return ReaderContentCellDisplayState(
+                readingProgress: progressResult?.0,
+                isFullArticleFinished: progressResult?.1,
+                title: title,
+                author: author.isEmpty ? nil : author,
+                humanReadablePublicationDate: humanReadablePublicationDate,
+                imageURL: imageURL,
+                sourceIconURL: sourceIconURL,
+                sourceTitle: sourceTitle,
+                totalWordCount: metadataResult?.totalWordCount,
+                remainingTime: metadataResult?.remainingTime,
+                syncStatusPresentation: syncStatusPresentation,
+                hasLoadedDisplayState: true
+            )
         }()
+        try Task.checkCancellation()
+        guard generation == loadGeneration else { throw CancellationError() }
+        guard let nextDisplayState else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            displayState = nextDisplayState
+        }
+        // Continue Reading state is provided externally via environment provider.
     }
 }
 
@@ -302,6 +490,41 @@ public extension View {
         _ loader: @escaping @MainActor (URL, String) async -> ReaderContentCellAnnotationStatus
     ) -> some View {
         environment(\.readerContentCellAnnotationStatusLoader, loader)
+    }
+}
+
+private struct ReaderContentNewBadgeVisibilityKey: EnvironmentKey {
+    static let defaultValue: @MainActor (String) -> Bool = { _ in true }
+}
+
+private struct ReaderContentCellAccountSessionSnapshotKey: EnvironmentKey {
+    static let defaultValue: AccountSessionSnapshot? = nil
+}
+
+public extension EnvironmentValues {
+    var readerContentNewBadgeVisibility: @MainActor (String) -> Bool {
+        get { self[ReaderContentNewBadgeVisibilityKey.self] }
+        set { self[ReaderContentNewBadgeVisibilityKey.self] = newValue }
+    }
+
+
+    var readerContentCellAccountSessionSnapshot: AccountSessionSnapshot? {
+        get { self[ReaderContentCellAccountSessionSnapshotKey.self] }
+        set { self[ReaderContentCellAccountSessionSnapshotKey.self] = newValue }
+    }
+}
+
+public extension View {
+    func readerContentNewBadgeVisibility(
+        _ visibility: @escaping @MainActor (String) -> Bool
+    ) -> some View {
+        environment(\.readerContentNewBadgeVisibility, visibility)
+    }
+
+    func readerContentCellAccountSessionSnapshot(
+        _ snapshot: AccountSessionSnapshot?
+    ) -> some View {
+        environment(\.readerContentCellAccountSessionSnapshot, snapshot)
     }
 }
 
@@ -476,6 +699,10 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         viewModel.imageURL ?? item.imageUrl
     }
 
+    private var coverCacheRefreshIdentity: String {
+        "\(item.compoundKey)|\(item.modifiedAt.timeIntervalSinceReferenceDate.bitPattern)"
+    }
+
     private var resolvedSourceIconURL: URL? {
         usableReaderContentSourceIconURL(viewModel.sourceIconURL) ?? usableReaderContentSourceIconURL(item.sourceIconURL)
     }
@@ -490,7 +717,28 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
 
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
     @Environment(\.readerContentCellAnnotationStatusLoader) private var readerContentCellAnnotationStatusLoader
+    @Environment(\.readerContentCellAnnotationStatusUpdates) private var readerContentCellAnnotationStatusUpdates
+    @Environment(\.readerContentCellDerivedStateUpdates) private var readerContentCellDerivedStateUpdates
+    @Environment(\.readerContentNewBadgeVisibility) private var readerContentNewBadgeVisibility
+    @Environment(\.readerContentCellAccountSessionSnapshot) private var accountSessionSnapshot
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
     @State private var annotationStatus = ReaderContentCellAnnotationStatus()
+    @State private var loadFailureDescription: String?
+    @State private var loadRetryRevision: UInt64 = 0
+    @State private var derivedStateRevision: UInt64 = 0
+    @State private var renderedPhysicalCoverWidth: CGFloat = 0
+
+    private var historyRealmConfiguration: Realm.Configuration {
+        ReaderContentLoader.historyRealmConfiguration
+    }
+
+    private var loadIdentity: ReaderContentCellLoadIdentity {
+        ReaderContentCellLoadIdentity(
+            item: item,
+            includesSource: appearance.includeSource,
+            accountSessionSnapshot: accountSessionSnapshot
+        )
+    }
 
     // Match the parent card's rounding minus its padding and scale it with the actual thumbnail size.
     private var thumbnailCornerRadius: CGFloat {
@@ -552,7 +800,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
     }
 
     private var showsUnreadIndicator: Bool {
-        viewModel.latestHistoryRecordLastVisitedAt == nil
+        viewModel.hasLoadedHistoryState && viewModel.latestHistoryRecordLastVisitedAt == nil
     }
 
     private var fallbackSourceTitle: String? {
@@ -836,6 +1084,19 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
                     .imageScale(.small)
                     .foregroundStyle(.secondary)
             }
+
+            if let loadFailureDescription {
+                Button {
+                    loadRetryRevision &+= 1
+                } label: {
+                    Image(systemName: "arrow.clockwise.circle")
+                        .imageScale(.small)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Retry loading: \(loadFailureDescription)")
+                .accessibilityLabel("Retry loading \(displayTitle)")
+            }
         }
         .frame(height: scaledSmallNewBadgeHeight)
         .accessibilityHidden(readerContentRowOwnsAccessibilityLabel)
@@ -872,6 +1133,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
     private var showsNewBadge: Bool {
         viewModel.hasLoadedDisplayState &&
         appearance.showsNewBadge &&
+        readerContentNewBadgeVisibility(item.compoundKey) &&
         (showsUnreadIndicator || (appearance.isEbookStyle && !isProgressVisible))
     }
 
@@ -1044,18 +1306,36 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
                         ReaderImage(
                             imageUrl,
                             contentMode: .fit,
+                            cacheRefreshIdentity: coverCacheRefreshIdentity,
                             thumbnailSize: CGSize(
                                 width: physicalTargetWidth,
                                 height: physicalThumbnailMaxHeight
                             ),
                             maxWidth: physicalTargetWidth,
-                            maxHeight: physicalThumbnailMaxHeight
+                            maxHeight: physicalThumbnailMaxHeight,
+                            onResolvedSize: { imageSize in
+                                let width = readerImageAspectFitWidth(
+                                    imageSize: imageSize,
+                                    maximumWidth: physicalTargetWidth,
+                                    maximumHeight: physicalThumbnailMaxHeight
+                                )
+                                guard abs(renderedPhysicalCoverWidth - width) >= 0.5 else { return }
+                                renderedPhysicalCoverWidth = width
+                            }
                         )
                         .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
+                        .preference(
+                            key: ReaderContentBookCoverRenderedWidthPreferenceKey.self,
+                            value: renderedPhysicalCoverWidth
+                        )
+                        .onChange(of: coverCacheRefreshIdentity) { _ in
+                            renderedPhysicalCoverWidth = 0
+                        }
                     }
             } else {
                 ReaderImage(
                     imageUrl,
+                    cacheRefreshIdentity: coverCacheRefreshIdentity,
                     thumbnailSize: CGSize(width: edgeLength, height: edgeLength),
                     maxWidth: edgeLength,
                     minHeight: edgeLength,
@@ -1213,29 +1493,69 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             maxHeight: usesCompactControlSize ? compactCellHeight : (readerContentCellStyle == .card ? appearance.maxCellHeight : nil)
         )
         .onHover { hovered in
+            guard viewModel.forceShowBookmark != hovered else { return }
             viewModel.forceShowBookmark = hovered
         }
-        .onAppear {
-            Task { @MainActor in
-                try? await viewModel.load(
-                    item: item,
-                    includeSource: appearance.includeSource
-                )
-                annotationStatus = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
+        .task(id: ReaderContentCellLoadTaskIdentity(
+            loadIdentity: loadIdentity,
+            retryRevision: loadRetryRevision,
+            derivedStateRevision: derivedStateRevision
+        )) {
+            guard accountSessionSnapshot?.identity != .transitioning else {
+                viewModel.suspendAccountDerivedState()
+                return
+            }
+            do {
+                loadFailureDescription = nil
+                try await viewModel.load(item: item, includeSource: appearance.includeSource)
+            } catch is CancellationError {
+            } catch {
+                guard !Task.isCancelled else { return }
+                loadFailureDescription = error.localizedDescription
+                debugPrint("Failed to load reader-content cell", error)
             }
         }
-        .task(id: item.compoundKey) {
-            annotationStatus = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
+        .task(id: ReaderContentCellHistoryIdentity(
+            item: item,
+            realmConfiguration: historyRealmConfiguration,
+            accountSessionSnapshot: accountSessionSnapshot
+        )) {
+            guard accountSessionSnapshot?.identity != .transitioning else {
+                viewModel.suspendHistoryObservation()
+                return
+            }
+            let itemURL = item.url
+            let realmConfiguration = historyRealmConfiguration
+            do {
+                try await viewModel.observeHistory(
+                    for: itemURL,
+                    realmConfiguration: realmConfiguration
+                )
+            } catch is CancellationError {
+            } catch {
+                debugPrint("Failed to observe reader-content history", error)
+            }
+        }
+        .task(id: loadIdentity) {
+            guard accountSessionSnapshot?.identity != .transitioning else { return }
+            let itemURL = item.url
+            await observeReaderContentCellDerivedStateUpdates(
+                updates: { readerContentCellDerivedStateUpdates?(itemURL) },
+                invalidate: { derivedStateRevision &+= 1 }
+            )
+        }
+        .task(id: "\(item.compoundKey)|\(item.url.absoluteString)") {
+            let url = item.url
+            let contentID = item.compoundKey
+            await observeReaderContentCellAnnotationStatus(
+                updates: { readerContentCellAnnotationStatusUpdates?(url, contentID) },
+                initialStatus: { await readerContentCellAnnotationStatusLoader(url, contentID) },
+                publish: { annotationStatus = $0 }
+            )
         }
         .onChange(of: item.compoundKey) { _ in
             resolvedContentFile = nil
             contentFileLookupStarted = false
-        }
-        .onChange(of: item.imageUrl) { newImageURL in
-            guard newImageURL != viewModel.imageURL else { return }
-            Task { @MainActor in
-                viewModel.imageURL = try await item.imageURLToDisplay()
-            }
         }
         // No provider-based onReceive; lists refresh via Realm publishers.
     }
@@ -1255,7 +1575,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
 
     @MainActor
     private func lookupContentFile(for url: URL) async throws -> ContentFile? {
-        if let files = ReaderFileManager.shared.files,
+        if let files = readerFileManager.files,
            let match = files.first(where: { !$0.isDeleted && $0.url == url }) {
             let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
             if let live = realm.object(ofType: ContentFile.self, forPrimaryKey: match.compoundKey), !live.isDeleted {
@@ -1284,7 +1604,16 @@ public struct BookCoverImageView: View {
                     imageURL,
                     contentMode: .fit,
                     thumbnailSize: CGSize(width: dimension, height: dimension),
-                    cornerRadius: dimension / 28
+                    cornerRadius: dimension / 28,
+                    onResolvedSize: { imageSize in
+                        let width = readerImageAspectFitWidth(
+                            imageSize: imageSize,
+                            maximumWidth: dimension,
+                            maximumHeight: dimension
+                        )
+                        guard abs(renderedCoverWidth - width) >= 0.5 else { return }
+                        renderedCoverWidth = width
+                    }
                 )
                 .aspectRatio(contentMode: .fit)
                 .frame(
@@ -1297,17 +1626,11 @@ public struct BookCoverImageView: View {
                 key: ReaderContentBookCoverRenderedWidthPreferenceKey.self,
                 value: renderedCoverWidth
             )
-            .task(id: "\(imageURL.absoluteString)|\(dimension)") {
-                let resolvedWidth = await resolveRenderedCoverWidth(imageURL: imageURL, dimension: dimension)
-                guard abs(renderedCoverWidth - resolvedWidth) >= 0.5 else { return }
-                renderedCoverWidth = resolvedWidth
-                debugPrint(
-                    "# BOOKHORIZ",
-                    "event=coverPreferenceEmitResolved",
-                    "url=\(imageURL.absoluteString)",
-                    "dimension=\(dimension)",
-                    "renderedWidth=\(resolvedWidth)"
-                )
+            .onChange(of: imageURL) { _ in
+                renderedCoverWidth = 0
+            }
+            .onChange(of: dimension) { _ in
+                renderedCoverWidth = 0
             }
     }
 
@@ -1316,46 +1639,6 @@ public struct BookCoverImageView: View {
         self.dimension = dimension
     }
 
-    private func resolveRenderedCoverWidth(imageURL: URL, dimension: CGFloat) async -> CGFloat {
-        guard dimension > 0 else { return 0 }
-        guard let pixelSize = await imagePixelSize(for: imageURL) else { return 0 }
-        guard pixelSize.height > 0 else { return 0 }
-
-        let aspectRatio = pixelSize.width / pixelSize.height
-        guard aspectRatio.isFinite, aspectRatio > 0 else { return 0 }
-
-        return min(dimension, dimension * aspectRatio)
-    }
-
-    private nonisolated func imagePixelSize(for url: URL) async -> CGSize? {
-        await Task.detached(priority: .utility) {
-            if let readerFileImageData = try? await readerImageData(url: url),
-               let pixelSize = Self.imagePixelSize(from: readerFileImageData) {
-                return pixelSize
-            }
-
-            if url.isFileURL, let fileImageData = try? Data(contentsOf: url),
-               let pixelSize = Self.imagePixelSize(from: fileImageData) {
-                return pixelSize
-            }
-
-            return nil
-        }.value
-    }
-
-    private nonisolated static func imagePixelSize(from data: Data) -> CGSize? {
-        guard let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
-              let widthValue = properties[kCGImagePropertyPixelWidth] as? NSNumber,
-              let heightValue = properties[kCGImagePropertyPixelHeight] as? NSNumber else {
-            return nil
-        }
-
-        let width = CGFloat(widthValue.doubleValue)
-        let height = CGFloat(heightValue.doubleValue)
-        guard width > 0, height > 0 else { return nil }
-        return CGSize(width: width, height: height)
-    }
 }
 
 /// Rasterizes fallback initials once per visible text and pixel size. Keeping this
@@ -1655,6 +1938,7 @@ private final class ReaderContentCellPreviewStore: ObservableObject {
 
 private struct ReaderContentCellPreviewGallery: View {
     @StateObject private var store = ReaderContentCellPreviewStore()
+    @StateObject private var readerFileManager = ReaderFileManager()
     private let previewMenuOptions: (FeedEntry) -> AnyView = { _ in
         AnyView(
             Button {
@@ -1703,6 +1987,7 @@ private struct ReaderContentCellPreviewGallery: View {
         .stackListStyle(.grouped)
         .stackListInterItemSpacing(18)
         .environmentObject(store.modalsModel)
+        .environmentObject(readerFileManager)
         .frame(maxWidth: 420)
         .padding()
     }

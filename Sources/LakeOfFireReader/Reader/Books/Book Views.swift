@@ -78,6 +78,7 @@ struct BookListRow: View {
     var onNavigateToReader: (() -> Void)? = nil
 
     @State private var downloadable: Downloadable?
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
 
     var body: some View {
         Group {
@@ -108,7 +109,10 @@ struct BookListRow: View {
             return
         }
         if downloadable?.url != downloadURL || downloadable?.name != publication.title {
-            downloadable = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: publication.title)
+            downloadable = try? await readerFileManager.downloadable(
+                url: downloadURL,
+                name: publication.title
+            )
         }
     }
 }
@@ -141,6 +145,7 @@ fileprivate struct DownloadableBookListRow: View {
     @State private var wasDownloaded = false
     @ObservedObject private var downloadController = DownloadController.shared
     @EnvironmentObject private var readerContent: ReaderContent
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
 
@@ -190,7 +195,7 @@ fileprivate struct DownloadableBookListRow: View {
             if !wasAlreadyDownloaded {
                 await downloadController.ensureDownloaded([downloadable])
             }
-            _ = try? await ReaderFileManager.shared.ensureImported(downloadable: downloadable)
+            _ = try? await readerFileManager.ensureImported(downloadable: downloadable)
             onSelected?(wasAlreadyDownloaded)
         }
     }
@@ -198,7 +203,7 @@ fileprivate struct DownloadableBookListRow: View {
     @MainActor
     private func refreshDownloadable() async {
         if await downloadable.existsLocally() && !wasDownloaded {
-            _ = try? await ReaderFileManager.shared.ensureImported(downloadable: downloadable)
+            _ = try? await readerFileManager.ensureImported(downloadable: downloadable)
             wasDownloaded = true
         }
     }
@@ -210,7 +215,7 @@ fileprivate struct DownloadableBookListRow: View {
                 do {
                     try await BookLibraryViewModel.openDownloaded(
                         publication: publication,
-                        readerFileManager: ReaderFileManager.shared,
+                        readerFileManager: readerFileManager,
                         readerContent: readerContent,
                         navigator: navigator,
                         readerModeViewModel: readerModeViewModel,

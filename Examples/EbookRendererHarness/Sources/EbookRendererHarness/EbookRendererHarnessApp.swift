@@ -62,13 +62,15 @@ private func smokeImportFileName(for sourceURL: URL) throws -> String {
 private func makeHarnessReaderRealmConfiguration(rootURL: URL) -> Realm.Configuration {
     var config = Realm.Configuration()
     config.fileURL = rootURL.appendingPathComponent("harness-reader.realm")
-    config.schemaVersion = 239
+    config.schemaVersion = 241
     config.deleteRealmIfMigrationNeeded = true
     config.objectTypes = [
         ArticleReadingProgress.self,
         Bookmark.self,
         ContentFile.self,
         ContentPackageFile.self,
+        ReaderFilePostprocessorDebt.self,
+        ReaderFileLegacyRootRelocationReceipt.self,
         HistoryRecord.self,
         OPDSCatalog.self,
         ReadingSession.self,
