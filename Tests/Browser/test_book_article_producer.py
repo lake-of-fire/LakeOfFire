@@ -19,7 +19,32 @@ class BookArticleProducerTests(unittest.TestCase):
         page.on('pageerror', lambda error: self.errors.append(str(error)))
         page.add_init_script(shell.BRIDGE + '''
             window.articleProducerToken = 'article-A';
-            window.manabi_captureArticleMutationProducerToken = () => window.articleProducerToken;
+            const issuedArticleProducerOwners = new WeakSet();
+            window.manabiArticleProducer = {
+                captureIfReady() {
+                    if (!window.articleProducerToken) return null;
+                    const owner = Object.freeze({
+                        token: window.articleProducerToken,
+                        frameURL: window.location.href.split('#', 1)[0],
+                        documentStartedAtMs: window.performance.timeOrigin,
+                    });
+                    issuedArticleProducerOwners.add(owner);
+                    return owner;
+                },
+                own(payload, owner) {
+                    if (!issuedArticleProducerOwners.has(owner)) throw new Error('stale producer owner');
+                    Object.defineProperty(payload, 'readerArticleProducer', {
+                        value: Object.freeze({...owner}), enumerable: true,
+                        writable: false, configurable: false,
+                    });
+                    return payload;
+                },
+                isCurrent(owner) {
+                    return issuedArticleProducerOwners.has(owner)
+                        && owner.token === window.articleProducerToken;
+                },
+                ready() { return Promise.resolve(this.captureIfReady()); },
+            };
         ''')
         page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
         wait_for_reader(page, 'typeof window.loadEBook === "function"')
@@ -38,7 +63,7 @@ class BookArticleProducerTests(unittest.TestCase):
             return nativeMessages.filter(x => x.name === 'markSectionAsRead').map(x => x.payload);
         }''')
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]['articleMutationProducerToken'], 'article-A')
+        self.assertEqual(result[0]['readerArticleProducer']['token'], 'article-A')
         self.assertEqual(result[0]['bookReadingScope']['articleEpochID'], 'initial')
         self.assertIsNone(result[0]['bookReadingScope']['chapterEpochID'])
         self.assertEqual(self.errors, [])
@@ -62,7 +87,7 @@ class BookArticleProducerTests(unittest.TestCase):
         self.assertFalse(result['oldResult'])
         self.assertEqual(result['oldRequests'], 0)
         self.assertEqual(len(result['requests']), 1)
-        self.assertEqual(result['requests'][0]['articleMutationProducerToken'], 'article-A')
+        self.assertEqual(result['requests'][0]['readerArticleProducer']['token'], 'article-A')
         self.assertEqual(result['requests'][0]['bookReadingScope']['chapterEpochID'], 'chapter-successor')
         self.assertEqual(self.errors, [])
 
@@ -75,11 +100,11 @@ class BookArticleProducerTests(unittest.TestCase):
             articleProducerToken = 'article-B';
             await oldMark;
             const oldTokens = nativeMessages.filter(x => x.name === 'markSectionAsRead')
-                .map(x => x.payload.articleMutationProducerToken);
+                .map(x => x.payload.readerArticleProducer?.token);
             nativeMessages.length = 0;
             await reader.markAllSectionsAsRead();
             return {oldTokens, freshTokens: nativeMessages.filter(x => x.name === 'markSectionAsRead')
-                .map(x => x.payload.articleMutationProducerToken)};
+                .map(x => x.payload.readerArticleProducer?.token)};
         }''')
         self.assertEqual(result['oldTokens'], ['article-A'])
         self.assertEqual(result['freshTokens'], ['article-B'])
@@ -96,7 +121,7 @@ class BookArticleProducerTests(unittest.TestCase):
             await reader.markAllSectionsAsRead();
             return {blocked, blockedRequests,
                 tokens: nativeMessages.filter(x => x.name === 'markSectionAsRead')
-                    .map(x => x.payload.articleMutationProducerToken)};
+                    .map(x => x.payload.readerArticleProducer?.token)};
         }''')
         self.assertFalse(result['blocked'])
         self.assertEqual(result['blockedRequests'], 0)
