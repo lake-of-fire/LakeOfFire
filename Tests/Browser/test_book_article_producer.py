@@ -4,20 +4,20 @@ Native persistence is simulated exactly as in the end-page shell journey.
 Renderer loading, sidecars, layout and reader methods are the production code.
 """
 import unittest
-from test_book_endcap_shell import BookEndcapShellTests, BRIDGE
+import test_book_endcap_shell as shell
 from browser_wait import wait_for_reader
 
 
 class BookArticleProducerTests(unittest.TestCase):
-    setUpClass = classmethod(BookEndcapShellTests.setUpClass.__func__)
-    tearDownClass = classmethod(BookEndcapShellTests.tearDownClass.__func__)
+    setUpClass = classmethod(shell.BookEndcapShellTests.setUpClass.__func__)
+    tearDownClass = classmethod(shell.BookEndcapShellTests.tearDownClass.__func__)
 
     def open_book(self):
         page = self.browser.new_page(viewport={'width': 390, 'height': 844})
         self.addCleanup(page.close)
         self.errors = []
         page.on('pageerror', lambda error: self.errors.append(str(error)))
-        page.add_init_script(BRIDGE + '''
+        page.add_init_script(shell.BRIDGE + '''
             window.articleProducerToken = 'article-A';
             window.manabi_captureArticleMutationProducerToken = () => window.articleProducerToken;
         ''')

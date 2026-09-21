@@ -1,5 +1,5 @@
 name: Book Actions tests
-# Final cleaned epoch branch qualification.
+# Qualify the combined chapter-pass and Article-producer runtime.
 on:
   push:
     branches: [codex/book-actions-epochs-20260920]
@@ -46,9 +46,13 @@ jobs:
         run: |
           set -o pipefail
           python3 Tests/Browser/test_book_endcap_shell.py 2>&1 | tee book-actions-shell-results.txt
+      - name: Combined Article and chapter ownership journeys
+        run: |
+          set -o pipefail
+          python3 Tests/Browser/test_book_article_producer.py 2>&1 | tee book-actions-composition-results.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: book-actions-test-results
           path: book-actions-*-results.txt
-          retention-days: 7
+          retention-days: 14
