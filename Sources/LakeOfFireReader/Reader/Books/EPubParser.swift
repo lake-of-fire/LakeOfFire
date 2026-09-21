@@ -10,15 +10,20 @@ struct EPubParser {
     /// and returns a tuple with the book title, author (if found), cover image relative path, and publication date (if found).
     /// Returns nil if parsing fails.
     static func parseMetadataAndCover(from epubURL: URL) throws -> (title: String, author: String?, coverHref: String, publicationDate: Date?)? {
-        // Treat both unpacked and ZIP EPUBs as untrusted package sources. The
-        // source enforces metadata entry and aggregate limits before XMLParser
-        // sees any bytes, and resolves directory paths with root containment.
-        guard let source = try? ReaderPackageEntrySource(
-            localURL: epubURL,
-            limits: .metadata
-        ), (try? source.enumerateEntries()) != nil else {
+        // Inventory is a package-wide safety check, using the same limits as
+        // ordinary package opening. An unrelated image/audio asset is not XML
+        // metadata and must not inherit the smaller metadata per-entry limit.
+        guard let package = try? ReaderPackageEntrySource(localURL: epubURL),
+              (try? package.enumerateEntries()) != nil,
+              let source = try? ReaderPackageEntrySource(
+                localURL: epubURL,
+                limits: .metadata
+              ) else {
             return nil
         }
+        // Only entries actually consumed as metadata get the metadata budget.
+        // readEntry checks advertised and actual decompressed/read byte counts,
+        // and retains directory root containment and archive path validation.
         guard let containerData = try? source.readEntry(subpath: "META-INF/container.xml"),
               let containerOpfRelativePath = parseContainer(containerData),
               let opfRelPath = try? ReaderPackageEntrySource.sanitizeSubpath(containerOpfRelativePath),
