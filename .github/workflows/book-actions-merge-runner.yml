@@ -1,23 +1,26 @@
-name: Book Actions isolated merge inspection
+name: Book Actions isolated merge qualification
 on:
   push:
     branches: [codex/book-actions-merge-runner-20260921]
-    paths: [.github/workflows/book-actions-merge-runner.yml]
+    paths: [.github/workflows/book-actions-merge-runner.yml, .integration/**, Tests/Browser/test_book_article_producer.py]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  inspect:
+  qualify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - name: Inspect exact two-parent merge without publishing
+      - name: Assemble reviewed merge without changing feature branch
         shell: bash
         run: |
           set -euo pipefail
+          cp .integration/resolve-lake.py "$RUNNER_TEMP/resolve-lake.py"
+          cp Tests/Browser/test_book_article_producer.py "$RUNNER_TEMP/test_book_article_producer.py"
           git config user.name 'Book Actions integration'
           git config user.email 'book-actions-integration@users.noreply.github.com'
           git checkout --detach 52b48fa7c25326ef62995ef18b59ef7c5781b17c
@@ -25,7 +28,45 @@ jobs:
           git merge --no-commit --no-ff 60438f8521dd69d908ba53a692a2ec328e41cff4
           result=$?
           set -e
-          echo "MERGE_EXIT=$result"
-          git diff --name-only --diff-filter=U
-          git diff --cc
-          if [[ $result -gt 1 ]]; then exit "$result"; fi
+          test "$result" -eq 1
+          python3 "$RUNNER_TEMP/resolve-lake.py"
+          cp "$RUNNER_TEMP/test_book_article_producer.py" Tests/Browser/test_book_article_producer.py
+          git add Tests/Browser/test_book_article_producer.py
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git diff --cached --check
+          node --check Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer.js
+          git diff --cached --stat
+          git commit -m 'Merge selected v3-hotfix producers with Book Actions and fence chapter changes during Mark hydration'
+          git rev-parse HEAD | tee "$RUNNER_TEMP/candidate-sha.txt"
+      - name: Complete JavaScript suites
+        run: |
+          set -o pipefail
+          node --test Tests/JavaScript/*.test.mjs 2>&1 | tee "$RUNNER_TEMP/javascript.log"
+      - name: Install browser dependencies
+        run: |
+          python3 -m pip install playwright==1.57.0
+          python3 -m playwright install --with-deps chromium
+      - name: Existing renderer and viewer-shell journeys
+        run: |
+          set -o pipefail
+          python3 Tests/Browser/test_book_endcap.py 2>&1 | tee "$RUNNER_TEMP/renderer.log"
+          python3 Tests/Browser/test_book_endcap_shell.py 2>&1 | tee "$RUNNER_TEMP/shell.log"
+      - name: Combined Article and chapter ownership journeys
+        run: |
+          set -o pipefail
+          python3 Tests/Browser/test_book_article_producer.py 2>&1 | tee "$RUNNER_TEMP/composition.log"
+      - name: Publish tested candidate only
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+          # A new candidate ref only; this workflow never advances the feature or a release branch.
+          test -z "$(git ls-remote origin refs/heads/codex/book-actions-merged-candidate-20260921)"
+          git push origin HEAD:refs/heads/codex/book-actions-merged-candidate-20260921
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: book-actions-combined-results
+          path: |
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/candidate-sha.txt
+          retention-days: 14
