@@ -5873,6 +5873,7 @@ export class Paginator extends HTMLElement {
             if (!Number.isInteger(resolved?.index) || !this.#canGoToIndex(resolved.index)) {
                 return false
             }
+            this.bookEndcap?.leave({ restoreFocus: false })
             return await this.#goTo(resolved, owner)
         } catch (error) {
             if (error instanceof PaginatorDirectNavigationCancelled) {
@@ -6164,6 +6165,13 @@ export class Paginator extends HTMLElement {
         })
     }
     async #turnPage(dir, distance, options = {}) {
+        // An endcap is a shell location. Back returns to the same last page;
+        // forward on it is inert. Neither is evidence of physical movement.
+        if (!this.#destroyed && !this.navigationInFlight && this.bookEndcap?.visible) {
+            if (options.allowBookEndcap === false) return { authoritativeNoMove: true }
+            if (dir < 0) this.bookEndcap.leave()
+            return { authoritativeNoMove: true, endcapNavigation: true }
+        }
         if (this.#destroyed) {
             return rendererNavigationNotOwned('rendererDestroyed')
         }
@@ -6318,7 +6326,13 @@ export class Paginator extends HTMLElement {
                 { lifecycleGeneration }
             )
             requireCurrent()
-            if (scrollDecision?.authoritativeNoMove === true) return false
+            if (scrollDecision?.authoritativeNoMove === true) {
+                if (dir > 0 && beforeAdjacentIndex == null && !this.#isCacheWarmer
+                    && options.allowBookEndcap !== false && this.bookEndcap?.enter()) {
+                    return { authoritativeNoMove: true, endcapNavigation: true }
+                }
+                return false
+            }
             const shouldGo = scrollDecision?.shouldGoToAdjacentSection === true
             let attemptedMovement = scrollDecision?.attemptedMovement === true
             if (shouldGo && Number.isInteger(beforeAdjacentIndex)) {
@@ -6500,7 +6514,10 @@ export class Paginator extends HTMLElement {
             index: this.#adjacentIndex(-1)
         })
     }
-    async nextSection() {
+    async nextSection(options = {}) {
+        if (this.#adjacentIndex(1) == null && this.bookEndcap) {
+            return options.allowBookEndcap === false ? false : await this.next(undefined, options)
+        }
         return await this.goTo({
             index: this.#adjacentIndex(1)
         })
@@ -6603,6 +6620,7 @@ export class Paginator extends HTMLElement {
     // Public navigation edge detection methods
     async canTurnPrev() {
         if (!this.#view) return false;
+        if (this.bookEndcap?.visible) return true;
         if (this.scrolled) {
             return (await this.pageMetrics()).start > 0;
         }
@@ -6613,6 +6631,7 @@ export class Paginator extends HTMLElement {
     }
     async canTurnNext() {
         if (!this.#view) return false;
+        if (this.bookEndcap) return !this.bookEndcap.visible;
         if (this.scrolled) {
             const metrics = await this.pageMetrics()
             return metrics.viewSize - metrics.end > 2;

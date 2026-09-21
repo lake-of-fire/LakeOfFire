@@ -1,0 +1,33 @@
+/* Shell-only terminal location. It never enters a publication iframe. */
+.manabi-endcap-publication-hidden { visibility: hidden !important; }
+.manabi-book-endcap {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: grid;
+    place-items: center;
+    box-sizing: border-box;
+    overflow: auto;
+    padding: 24px max(48px, var(--side-nav-width, 32px));
+    background: var(--theme-background-color, Canvas);
+    color: var(--theme-text-color, CanvasText);
+    font: 1rem/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    writing-mode: horizontal-tb;
+    text-align: center;
+}
+.manabi-book-endcap[hidden] { display: none !important; }
+.manabi-book-endcap-content { max-width: 32rem; }
+.manabi-book-endcap h1 { font-size: 1.5rem; }
+.manabi-book-endcap button {
+    appearance: none;
+    font: inherit;
+    color: inherit;
+    background: var(--active-bg, ButtonFace);
+    border: 1px solid currentColor;
+    border-radius: 12px;
+    padding: 12px 24px;
+    min-height: 44px;
+    cursor: pointer;
+}
+.manabi-book-endcap button:disabled { opacity: .55; cursor: progress; }
+.manabi-book-endcap-error { max-width: 30rem; }
