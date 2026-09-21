@@ -10,6 +10,23 @@ import {
 const owner = (token, frameURL = 'ebook://book/chapter.xhtml', documentStartedAtMs = 42) =>
     Object.freeze({ token, frameURL, documentStartedAtMs })
 
+test('generic LakeOfFire host keeps the historical unfenced message path', () => {
+    const captured = captureReaderArticleProducerOwner({ producer: null })
+    const message = { action: 'progress' }
+    assert.deepEqual(captured, { required: false })
+    assert.strictEqual(
+        carryReaderArticleProducerOwner(message, captured, { producer: null }),
+        message
+    )
+    assert.equal(Object.hasOwn(message, 'readerArticleProducer'), false)
+})
+
+test('installed but malformed producer contract fails closed', () => {
+    const captured = captureReaderArticleProducerOwner({ producer: {} })
+    assert.equal(captured, null)
+    assert.equal(carryReaderArticleProducerOwner({}, captured, { producer: {} }), null)
+})
+
 test('cold setup coalesces without retaining the event until a token exists', () => {
     let setupRequests = 0
     const producer = {
@@ -97,4 +114,3 @@ test('Core ticket capture preserves the original owner through delayed setup', (
     assert.equal(captureCount, 1)
     assert.deepEqual(message.readerArticleProducer, capturedOwner)
 })
-
