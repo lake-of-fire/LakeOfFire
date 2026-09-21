@@ -9,8 +9,11 @@ import { processedSectionURLForHref } from './ebook-direct-section.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
+    articleMutationProducerChangedEventName,
+    captureArticleMutationProducer,
     createNativeMarkReadRequestCoordinator,
     nativeMarkReadCommandMessage,
+    withArticleMutationProducer,
 } from './native-mark-read-request.js'
 import {
     compactEbookSegmentMetadataPayloadIsCurrent,
@@ -6301,6 +6304,14 @@ class Reader {
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
+        this.#listen(window, articleMutationProducerChangedEventName, () => {
+            // A progress observation attempted before the first Manabi grant is
+            // not relabeled later. Recompute current renderer state after native
+            // installs/rotates the grant instead.
+            this.#postConfirmedPageTurnProgress(
+                captureArticleMutationProducer(window)
+            );
+        });
         this.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
             postMessage: message => {
                 window.webkit.messageHandlers.markSectionAsRead.postMessage(message);
@@ -7102,7 +7113,15 @@ class Reader {
         owner,
         reason,
         animateStateID = null,
+        articleMutationProducer = captureArticleMutationProducer(window),
     }) {
+        if (articleMutationProducer.required
+            && !articleMutationProducer.token) {
+            this.lastNativeMarkReadRequestOutcome = 'failed';
+            this.lastNativeMarkReadRequestErrorCode =
+                'articleMutationProducerUnavailable';
+            return false;
+        }
         const validatedPayload = this.#validatedMarkReadPayload(payload);
         if (!validatedPayload) {
             this.lastNativeMarkReadRequestOutcome = 'failed';
@@ -7121,14 +7140,18 @@ class Reader {
                 reason,
                 animateStateID,
             },
-            message: nativeMarkReadCommandMessage(validatedPayload, {
-                topWindowURL: window.top.location.href,
-                pageURL: owner?.document?.location?.href ?? null,
-                bookReadingScope: owner?.bookReadingScope ?? null,
-                documentStartedAtMs: Number.isFinite(window.top?.performance?.timeOrigin)
-                    ? window.top.performance.timeOrigin
-                    : readerDocumentStartedAtMs(),
-            }),
+            message: withArticleMutationProducer(
+                nativeMarkReadCommandMessage(validatedPayload, {
+                    topWindowURL: window.top.location.href,
+                    pageURL: owner?.document?.location?.href ?? null,
+                    bookReadingScope: owner?.bookReadingScope ?? null,
+                    documentStartedAtMs:
+                        Number.isFinite(window.top?.performance?.timeOrigin)
+                            ? window.top.performance.timeOrigin
+                            : readerDocumentStartedAtMs(),
+                }),
+                articleMutationProducer
+            ),
         });
         this.lastNativeMarkReadRequestOutcome = outcome.success === true
             ? 'committed'
@@ -7224,6 +7247,11 @@ class Reader {
         return 0;
     }
     async markAllSectionsAsRead() {
+        const articleMutationProducer = captureArticleMutationProducer(window);
+        if (articleMutationProducer.required
+            && !articleMutationProducer.token) {
+            return 0;
+        }
         const payload = this.buildMarkAllSectionsAsReadPayload();
         const doc = getPrimaryRendererContent(this.view?.renderer)?.doc ?? null;
         if (!payload || !isDocumentLike(doc)) {
@@ -7233,12 +7261,20 @@ class Reader {
             sectionID: `ebook-mark-all:${this.#lifecycleGeneration}`,
             owner: this.#markReadOwner({ document: doc }),
             reason: 'native-mark-all-read-committed',
+            articleMutationProducer,
         });
         return success
             ? (payload.segments.length || payload.sentenceIdentifiers.length)
             : 0;
     }
-    async #markPageClusterAsRead(stateID) {
+    async #markPageClusterAsRead(
+        stateID,
+        articleMutationProducer = captureArticleMutationProducer(window)
+    ) {
+        if (articleMutationProducer.required
+            && !articleMutationProducer.token) {
+            return false;
+        }
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
         if (!pageTrackingState) {
             return false;
@@ -7269,6 +7305,7 @@ class Reader {
                 }),
                 reason: 'native-mark-read-committed',
                 animateStateID: stateID,
+                articleMutationProducer,
             });
             if (!success) return false;
             await this.#advanceAfterMarkRead(advanceOwner);
@@ -7280,12 +7317,24 @@ class Reader {
     }
     async markVisiblePageAsRead(source = 'native') {
         if (this.bookEndcap?.visible || (this.bookReadingRuntime && !this.bookReadingRuntime.state.ready)) return false;
+        // Capture before any demand-hydration await. A command admitted under A
+        // must never acquire B's grant after a same-document lifetime rotation.
+        const articleMutationProducer = captureArticleMutationProducer(window);
+        if (articleMutationProducer.required
+            && !articleMutationProducer.token) {
+            return false;
+        }
+        const bookEvent = this.bookReadingRuntime?.captureEvent(
+            this.#currentPageTrackingDocument()
+        ) ?? null;
+        if (this.bookReadingRuntime && !bookEvent) return false;
         const stateID = 'visible-screen';
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID)
             ?? await this.#ensureVisiblePageTrackingState(`native-demand:${source}`);
         if (!pageTrackingState) {
             return false;
         }
+        if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) return false;
         const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
         if (wasHidden) {
             globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = true;
@@ -7297,7 +7346,10 @@ class Reader {
         } else {
             ignoreNextIncomingHideNavigation('native-page-tracking-button');
         }
-        return await this.#markPageClusterAsRead(stateID);
+        return await this.#markPageClusterAsRead(
+            stateID,
+            articleMutationProducer
+        );
     }
     async #ensureVisiblePageTrackingState(reason = 'native-demand', explicitDoc = null) {
         const doc = this.#currentPageTrackingDocument(explicitDoc);
@@ -7588,6 +7640,7 @@ class Reader {
         ignoreIfRendererNavigationInFlight = false,
         serializedContinuation = false,
         details = {},
+        articleMutationProducer = captureArticleMutationProducer(window),
     }) {
         if (this.#closed) {
             return this.#readerClosedPageTurnResult('before-reader-turn');
@@ -7615,6 +7668,7 @@ class Reader {
                     ignoreIfPageTurnInFlight,
                     ignoreIfRendererNavigationInFlight,
                     details,
+                    articleMutationProducer,
                     resolve,
                     reject,
                 };
@@ -7733,7 +7787,9 @@ class Reader {
             }
             const movementDisposition = pageTurnMovementDisposition(result);
             if (shouldRequestConfirmedPageTurnProgress(movementDisposition)) {
-                this.#postConfirmedPageTurnProgress();
+                this.#postConfirmedPageTurnProgress(
+                    articleMutationProducer
+                );
             }
             if (
                 movementDisposition === PAGE_TURN_MOVEMENT_DISPOSITION.noMove
@@ -11042,13 +11098,15 @@ class Reader {
         });
     }
 
-    #postConfirmedPageTurnProgress = () => {
+    #postConfirmedPageTurnProgress = (
+        articleMutationProducer = captureArticleMutationProducer(window)
+    ) => {
         const content = getPrimaryRendererContent(this.view?.renderer);
         const doc = content?.doc ?? content?.document ?? null;
-        const event = this.bookReadingRuntime?.captureEvent(doc) ?? null;
-        this.#publishConfirmedPageTurnProgress(event);
+        const bookEvent = this.bookReadingRuntime?.captureEvent(doc) ?? null;
+        this.#publishConfirmedPageTurnProgress({ bookEvent, articleMutationProducer });
     }
-    #publishConfirmedPageTurnProgress = debounce((bookEvent) => {
+    #publishConfirmedPageTurnProgress = debounce(({ bookEvent, articleMutationProducer }) => {
         if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) return;
         const location = this.view?.lastLocation ?? null;
         const sectionIndex = typeof location?.sectionIndex === 'number'
@@ -11086,26 +11144,42 @@ class Reader {
             cfiAlreadyUnstable: this.unstableCFIs.has(location?.cfi),
         });
         if (!decision.shouldPost) return;
-        if (decision.markCFIUnstable) this.unstableCFIs.add(decision.cfi);
-        this.lastCFIPersistenceObservation = decision.nextObservation;
-        this.#postUpdateReadingProgressMessage({
+        const queued = this.#queueUpdateReadingProgressMessage({
             bookEvent,
             fraction: decision.fraction,
             cfi: decision.persistedLocator,
             reason: decision.progressReason,
-            currentPageNumber: typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
-                ? this.navHUD.rendererPageSnapshot.current
-                : null,
-            totalPages: typeof this.navHUD?.rendererPageSnapshot?.total === 'number'
-                ? this.navHUD.rendererPageSnapshot.total
-                : null,
+            currentPageNumber:
+                typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
+                    ? this.navHUD.rendererPageSnapshot.current
+                    : null,
+            totalPages:
+                typeof this.navHUD?.rendererPageSnapshot?.total === 'number'
+                    ? this.navHUD.rendererPageSnapshot.total
+                    : null,
             sectionIndex: decision.sectionIndex,
             expectedDocumentURL: decision.currentDocumentURL,
             expectedSectionIndex: decision.sectionIndex,
             expectedLocationCFI: decision.cfi,
             expectedLocationFraction: decision.fraction,
-        });
+        }, articleMutationProducer);
+        if (!queued) return;
+        if (decision.markCFIUnstable) this.unstableCFIs.add(decision.cfi);
+        this.lastCFIPersistenceObservation = decision.nextObservation;
     }, 0)
+
+    #queueUpdateReadingProgressMessage = (
+        details,
+        articleMutationProducer
+    ) => {
+        const ownedDetails = withArticleMutationProducer(
+            details,
+            articleMutationProducer
+        );
+        if (!ownedDetails) return false;
+        this.#postUpdateReadingProgressMessage(ownedDetails);
+        return true;
+    }
 
     #postUpdateReadingProgressMessage = debounce(({
         fraction,
@@ -11119,6 +11193,7 @@ class Reader {
         expectedLocationCFI = null,
         expectedLocationFraction = null,
         bookEvent = null,
+        articleMutationProducerToken = null,
     }) => {
         if (
             this.#closed
@@ -11192,7 +11267,7 @@ class Reader {
         });
         if (this.bookEndcap?.visible) return;
         if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) return;
-        window.webkit.messageHandlers.updateReadingProgress.postMessage({
+        const progressMessage = {
             bookReadingScope: bookEvent?.scope ?? null,
             pageURL: currentDocumentURL,
             fractionalCompletion: fraction,
@@ -11203,16 +11278,26 @@ class Reader {
             currentPageNumber: currentPageNumber,
             totalPages: totalPages,
             sectionIndex: sectionIndex,
-            hasVisibleJapaneseText: visibleJapaneseTextState.hasVisibleJapaneseText,
+            hasVisibleJapaneseText:
+                visibleJapaneseTextState.hasVisibleJapaneseText,
             visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
             observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
-        })
+        };
+        if (typeof articleMutationProducerToken === 'string') {
+            progressMessage.articleMutationProducerToken =
+                articleMutationProducerToken;
+        }
+        window.webkit.messageHandlers.updateReadingProgress.postMessage(
+            progressMessage
+        )
     }, 400)
 
     async #onRelocate({
         detail
     }) {
         if (this.#closed) return;
+        const articleMutationProducer =
+            captureArticleMutationProducer(window);
         this.bookReadingRuntime?.updateLocation(true);
         const eventContent = getPrimaryRendererContent(this.view?.renderer);
         const bookEvent = this.bookReadingRuntime?.captureEvent(eventContent?.doc ?? eventContent?.document) ?? null;
@@ -11677,7 +11762,7 @@ class Reader {
                 && !shouldSuppressRestoreSettleSave
                 && !requiresUserInputBeforePositionSave;
             if (shouldPersistRelocatePosition) {
-                this.#postUpdateReadingProgressMessage({
+                this.#queueUpdateReadingProgressMessage({
                     bookEvent,
                     fraction: Number.isFinite(progressFraction) ? progressFraction : fraction,
                     cfi: persistedLocator,
@@ -11692,7 +11777,7 @@ class Reader {
                         return content?.doc?.location?.href ?? content?.document?.location?.href ?? null;
                     })(),
                     expectedSectionIndex: sectionIndex,
-                })
+                }, articleMutationProducer)
             }
         }
 

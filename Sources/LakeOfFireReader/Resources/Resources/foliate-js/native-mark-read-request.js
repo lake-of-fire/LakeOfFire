@@ -1,3 +1,50 @@
+export const articleMutationProducerChangedEventName =
+    'manabi-article-mutation-producer-changed'
+
+const validArticleMutationProducerToken = value =>
+    typeof value === 'string'
+    && value.length > 0
+    && value.length <= 64
+
+export const captureArticleMutationProducer = (host = globalThis) => {
+    const provider = host?.manabi_captureArticleMutationProducerToken
+    if (typeof provider !== 'function') {
+        // LakeOfFireReader is reusable outside Manabi. An absent provider means
+        // producer fencing is not part of that host's contract, so preserve the
+        // historical message shape rather than disabling the reader.
+        return Object.freeze({ required: false, token: null })
+    }
+    let value = null
+    try {
+        value = provider.call(host)
+    } catch (_error) {}
+    return Object.freeze({
+        required: true,
+        token: validArticleMutationProducerToken(value) ? value : null,
+    })
+}
+
+export const withArticleMutationProducer = (
+    payload,
+    evidence = captureArticleMutationProducer()
+) => {
+    if (!payload || typeof payload !== 'object') return null
+    if (evidence?.required === true
+        && !validArticleMutationProducerToken(evidence?.token)) {
+        return null
+    }
+    if (!validArticleMutationProducerToken(evidence?.token)) {
+        return { ...payload }
+    }
+    return {
+        ...payload,
+        articleMutationProducerToken: evidence.token,
+    }
+}
+
+export const currentArticleMutationProducerToken = () =>
+    captureArticleMutationProducer().token
+
 const defaultRequestID = () => {
     if (typeof globalThis.crypto?.randomUUID === 'function') {
         return globalThis.crypto.randomUUID()

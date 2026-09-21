@@ -63,7 +63,7 @@ BRIDGE = '''(() => {
         queueMicrotask(() => reader?.nativeMarkReadRequestCoordinator?.settle({requestID:payload.requestID,sectionId:payload.sectionId,success:false,errorCode:'simulatedReadRefusal'}));
     }};
     window.publishState = (request, nativeRefresh=false) => {
-        lastLocation = request;
+        lastLocation = request; window.lastNativeBookStateRequest = request;
         const key = 'a'.repeat(64);
         const scope = request.isEndPage ? null : {articleProgressID:'book',articleEpochID:bookEpoch,chapterKey:key,chapterEpochID:chapterEpochs[key] ?? null};
         const index = reader.view.renderer.displayedIndex;
