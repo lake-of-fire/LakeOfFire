@@ -53,7 +53,7 @@ let package = Package(
         .package(path: "../LakeKit"),
         .package(url: "https://github.com/nicklockwood/LRUCache.git", from: "1.1.2"),
         .package(url: "https://github.com/ivan-magda/swiftui-expandable-text.git", branch: "main"),
-        .package(url: "https://github.com/pointfreeco/swift-perception", exact: "2.0.11"),
+        .package(url: "https://github.com/pointfreeco/swift-perception", exact: "2.0.12"),
     ],
     targets: [
         .target(
