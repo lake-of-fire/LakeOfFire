@@ -21,7 +21,7 @@ func configureLakeOfFireMutationTrackingForTesting(
         configurations: [configuration],
         excludedClassNames: [
             LibraryOPMLImportLease.className(),
-            ReaderFilePostprocessorDebt.className(),
+            ReaderFilePostprocessingWorkItem.className(),
             ReaderFileLegacyRootRelocationReceipt.className(),
         ]
     )

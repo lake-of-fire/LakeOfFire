@@ -6,11 +6,11 @@ import RealmSwift
 /// The row lives in the reader Realm so indexing metadata and retry admission can
 /// commit atomically. Manabi's canonical configuration excludes it from BigSync:
 /// drive roots and processor implementations are local to one installation.
-@objc(ReaderFilePostprocessorDebt)
-public final class ReaderFilePostprocessorDebt: Object, @unchecked Sendable {
+@objc(ReaderFilePostprocessingWorkItem)
+public final class ReaderFilePostprocessingWorkItem: Object, @unchecked Sendable {
     public static let portableStorageScopeIdentifier = ""
 
-    @Persisted(primaryKey: true) public var debtIdentifier = ""
+    @Persisted(primaryKey: true) public var workItemIdentifier = ""
     @Persisted(indexed: true) public var storageScopeIdentifier = ""
     @Persisted(indexed: true) public var processorIdentifier = ""
     @Persisted public var processorVersion: Int64 = 0
@@ -22,7 +22,7 @@ public final class ReaderFilePostprocessorDebt: Object, @unchecked Sendable {
     @Persisted public var attemptIdentifier = ""
     @Persisted public var enqueuedAt = Date.distantPast
 
-    public static func makeDebtIdentifier(
+    public static func makeWorkItemIdentifier(
         storageScopeIdentifier: String,
         processorIdentifier: String,
         contentFilePrimaryKey: String
@@ -32,11 +32,11 @@ public final class ReaderFilePostprocessorDebt: Object, @unchecked Sendable {
             .joined(separator: "|")
     }
 
-    public static func makePortableDebtIdentifier(
+    public static func makePortableWorkItemIdentifier(
         processorIdentifier: String,
         contentFilePrimaryKey: String
     ) -> String {
-        makeDebtIdentifier(
+        makeWorkItemIdentifier(
             storageScopeIdentifier: portableStorageScopeIdentifier,
             processorIdentifier: processorIdentifier,
             contentFilePrimaryKey: contentFilePrimaryKey

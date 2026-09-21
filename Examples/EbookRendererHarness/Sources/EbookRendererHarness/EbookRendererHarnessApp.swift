@@ -69,7 +69,7 @@ private func makeHarnessReaderRealmConfiguration(rootURL: URL) -> Realm.Configur
         Bookmark.self,
         ContentFile.self,
         ContentPackageFile.self,
-        ReaderFilePostprocessorDebt.self,
+        ReaderFilePostprocessingWorkItem.self,
         ReaderFileLegacyRootRelocationReceipt.self,
         HistoryRecord.self,
         OPDSCatalog.self,

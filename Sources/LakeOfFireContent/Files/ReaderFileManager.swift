@@ -107,11 +107,11 @@ public struct ReaderFilePostprocessorContext: @unchecked Sendable {
     }
 
     /// Commits a durable processor's derived metadata only while the exact
-    /// processor registration, file incarnation, source generation, and debt
+    /// processor registration, file incarnation, source generation, and work-item
     /// attempt supplied to this invocation are still current.
     ///
     /// Durable processors should publish all Realm effects through this method
-    /// after suspension points. A rejected write leaves the file's debt pending
+    /// after suspension points. A rejected write leaves the file's work item pending
     /// so the active processor and source generation can retry it.
     @RealmBackgroundActor
     @discardableResult
@@ -153,7 +153,7 @@ private struct ReaderFilePostprocessorRegistration: @unchecked Sendable {
 fileprivate struct ReaderFilePostprocessorAdmission: Sendable {
     let registrationIdentifier: UUID
     let processorIdentity: ReaderFilePostprocessorIdentity
-    let debtIdentifier: String
+    let workItemIdentifier: String
     let attemptIdentifier: String
     let storageScopeIdentifier: String
     let contentFilePrimaryKey: String
@@ -2008,7 +2008,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                         orphan.isDeleted = true
                                         orphan.refreshChangeMetadata(explicitlyModified: true)
                                     }
-                                    Self.deletePostprocessorDebts(
+                                    Self.deletePostprocessingWorkItems(
                                         contentFilePrimaryKeys: orphanPrimaryKeys,
                                         in: realm
                                     )
@@ -2238,38 +2238,38 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         for primaryKey in candidatePrimaryKeys {
                             guard let candidate = candidatesByPrimaryKey[primaryKey] else { continue }
                             let contentFile = candidate.contentFile
-                            let debtIdentifier = ReaderFilePostprocessorDebt.makeDebtIdentifier(
+                            let workItemIdentifier = ReaderFilePostprocessingWorkItem.makeWorkItemIdentifier(
                                 storageScopeIdentifier: storageScopeIdentifier,
                                 processorIdentifier: processorIdentity.identifier,
                                 contentFilePrimaryKey: contentFile.compoundKey
                             )
-                            let portableDebtIdentifier = ReaderFilePostprocessorDebt
-                                .makePortableDebtIdentifier(
+                            let portableWorkItemIdentifier = ReaderFilePostprocessingWorkItem
+                                .makePortableWorkItemIdentifier(
                                     processorIdentifier: processorIdentity.identifier,
                                     contentFilePrimaryKey: contentFile.compoundKey
                                 )
-                            let portableDebt = realm.object(
-                                ofType: ReaderFilePostprocessorDebt.self,
-                                forPrimaryKey: portableDebtIdentifier
+                            let portableWorkItem = realm.object(
+                                ofType: ReaderFilePostprocessingWorkItem.self,
+                                forPrimaryKey: portableWorkItemIdentifier
                             )
                             guard updatedPrimaryKeys.contains(contentFile.compoundKey)
                                     || realm.object(
-                                        ofType: ReaderFilePostprocessorDebt.self,
-                                        forPrimaryKey: debtIdentifier
+                                        ofType: ReaderFilePostprocessingWorkItem.self,
+                                        forPrimaryKey: workItemIdentifier
                                     ) != nil
-                                    || portableDebt != nil else {
+                                    || portableWorkItem != nil else {
                                 continue
                             }
-                            Self.admitPostprocessorDebt(
-                                debtIdentifier: debtIdentifier,
+                            Self.admitPostprocessingWorkItem(
+                                workItemIdentifier: workItemIdentifier,
                                 storageScopeIdentifier: storageScopeIdentifier,
                                 processorIdentity: processorIdentity,
                                 candidate: candidate,
                                 in: realm
                             )
-                            if let portableDebt,
-                               portableDebt.debtIdentifier != debtIdentifier {
-                                realm.delete(portableDebt)
+                            if let portableWorkItem,
+                               portableWorkItem.workItemIdentifier != workItemIdentifier {
+                                realm.delete(portableWorkItem)
                             }
                         }
                     }
@@ -2289,17 +2289,17 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 return nil
                             }
                             let contentFile = candidate.contentFile
-                            let debtIdentifier = ReaderFilePostprocessorDebt.makeDebtIdentifier(
+                            let workItemIdentifier = ReaderFilePostprocessingWorkItem.makeWorkItemIdentifier(
                                 storageScopeIdentifier: storageScopeIdentifier,
                                 processorIdentifier: processorIdentity.identifier,
                                 contentFilePrimaryKey: contentFile.compoundKey
                             )
-                            guard let debt = realm.object(
-                                ofType: ReaderFilePostprocessorDebt.self,
-                                forPrimaryKey: debtIdentifier
+                            guard let workItem = realm.object(
+                                ofType: ReaderFilePostprocessingWorkItem.self,
+                                forPrimaryKey: workItemIdentifier
                             ),
-                            Self.postprocessorDebt(
-                                debt,
+                            Self.postprocessingWorkItem(
+                                workItem,
                                 matches: processorIdentity,
                                 storageScopeIdentifier: storageScopeIdentifier,
                                 candidate: candidate
@@ -2311,8 +2311,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 ReaderFilePostprocessorAdmission(
                                     registrationIdentifier: registration.registrationIdentifier,
                                     processorIdentity: processorIdentity,
-                                    debtIdentifier: debtIdentifier,
-                                    attemptIdentifier: debt.attemptIdentifier,
+                                    workItemIdentifier: workItemIdentifier,
+                                    attemptIdentifier: workItem.attemptIdentifier,
                                     storageScopeIdentifier: storageScopeIdentifier,
                                     contentFilePrimaryKey: contentFile.compoundKey,
                                     contentFileCreatedAt: contentFile.createdAt,
@@ -2358,13 +2358,13 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                         admission,
                                         in: realm
                                     ),
-                                    let debt = realm.object(
-                                        ofType: ReaderFilePostprocessorDebt.self,
-                                        forPrimaryKey: admission.debtIdentifier
+                                    let workItem = realm.object(
+                                        ofType: ReaderFilePostprocessingWorkItem.self,
+                                        forPrimaryKey: admission.workItemIdentifier
                                     ) else {
                                         return false
                                     }
-                                    realm.delete(debt)
+                                    realm.delete(workItem)
                                     return true
                                 }
                             }
@@ -2523,19 +2523,19 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         ),
         contentFile.createdAt == admission.contentFileCreatedAt,
         contentFile.url.absoluteString == admission.readerFileURLString,
-        let debt = realm.object(
-            ofType: ReaderFilePostprocessorDebt.self,
-            forPrimaryKey: admission.debtIdentifier
+        let workItem = realm.object(
+            ofType: ReaderFilePostprocessingWorkItem.self,
+            forPrimaryKey: admission.workItemIdentifier
         ),
-        debt.storageScopeIdentifier == admission.storageScopeIdentifier,
-        debt.processorIdentifier == admission.processorIdentity.identifier,
-        debt.processorVersion == admission.processorIdentity.version,
-        debt.contentFilePrimaryKey == admission.contentFilePrimaryKey,
-        debt.contentFileCreatedAt == admission.contentFileCreatedAt,
-        debt.readerFileURLString == admission.readerFileURLString,
-        debt.sourceModifiedAt == admission.sourceModifiedAt,
-        debt.sourceFileSize == admission.sourceFileSize,
-        debt.attemptIdentifier == admission.attemptIdentifier else {
+        workItem.storageScopeIdentifier == admission.storageScopeIdentifier,
+        workItem.processorIdentifier == admission.processorIdentity.identifier,
+        workItem.processorVersion == admission.processorIdentity.version,
+        workItem.contentFilePrimaryKey == admission.contentFilePrimaryKey,
+        workItem.contentFileCreatedAt == admission.contentFileCreatedAt,
+        workItem.readerFileURLString == admission.readerFileURLString,
+        workItem.sourceModifiedAt == admission.sourceModifiedAt,
+        workItem.sourceFileSize == admission.sourceFileSize,
+        workItem.attemptIdentifier == admission.attemptIdentifier else {
             return false
         }
         let currentSourceGeneration = Self.postprocessorSourceGeneration(
@@ -2546,75 +2546,75 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     }
 
     @RealmBackgroundActor
-    private static func admitPostprocessorDebt(
-        debtIdentifier: String,
+    private static func admitPostprocessingWorkItem(
+        workItemIdentifier: String,
         storageScopeIdentifier: String,
         processorIdentity: ReaderFilePostprocessorIdentity,
         candidate: PostprocessorCandidate,
         in realm: Realm
     ) {
         let contentFile = candidate.contentFile
-        let debt: ReaderFilePostprocessorDebt
+        let workItem: ReaderFilePostprocessingWorkItem
         if let existing = realm.object(
-            ofType: ReaderFilePostprocessorDebt.self,
-            forPrimaryKey: debtIdentifier
+            ofType: ReaderFilePostprocessingWorkItem.self,
+            forPrimaryKey: workItemIdentifier
         ) {
-            debt = existing
+            workItem = existing
         } else {
-            debt = ReaderFilePostprocessorDebt()
-            debt.debtIdentifier = debtIdentifier
+            workItem = ReaderFilePostprocessingWorkItem()
+            workItem.workItemIdentifier = workItemIdentifier
         }
-        debt.storageScopeIdentifier = storageScopeIdentifier
-        debt.processorIdentifier = processorIdentity.identifier
-        debt.processorVersion = processorIdentity.version
-        debt.contentFilePrimaryKey = contentFile.compoundKey
-        debt.contentFileCreatedAt = contentFile.createdAt
-        debt.readerFileURLString = contentFile.url.absoluteString
-        debt.sourceModifiedAt = candidate.sourceGeneration.modifiedAt
-        debt.sourceFileSize = candidate.sourceGeneration.fileSize
-        debt.attemptIdentifier = UUID().uuidString
-        debt.enqueuedAt = Date()
-        if debt.realm == nil {
-            realm.add(debt)
+        workItem.storageScopeIdentifier = storageScopeIdentifier
+        workItem.processorIdentifier = processorIdentity.identifier
+        workItem.processorVersion = processorIdentity.version
+        workItem.contentFilePrimaryKey = contentFile.compoundKey
+        workItem.contentFileCreatedAt = contentFile.createdAt
+        workItem.readerFileURLString = contentFile.url.absoluteString
+        workItem.sourceModifiedAt = candidate.sourceGeneration.modifiedAt
+        workItem.sourceFileSize = candidate.sourceGeneration.fileSize
+        workItem.attemptIdentifier = UUID().uuidString
+        workItem.enqueuedAt = Date()
+        if workItem.realm == nil {
+            realm.add(workItem)
         }
     }
 
     @RealmBackgroundActor
-    private static func postprocessorDebt(
-        _ debt: ReaderFilePostprocessorDebt,
+    private static func postprocessingWorkItem(
+        _ workItem: ReaderFilePostprocessingWorkItem,
         matches processorIdentity: ReaderFilePostprocessorIdentity,
         storageScopeIdentifier: String,
         candidate: PostprocessorCandidate
     ) -> Bool {
         let contentFile = candidate.contentFile
-        return debt.storageScopeIdentifier == storageScopeIdentifier
-            && debt.processorIdentifier == processorIdentity.identifier
-            && debt.processorVersion == processorIdentity.version
-            && debt.contentFilePrimaryKey == contentFile.compoundKey
-            && debt.contentFileCreatedAt == contentFile.createdAt
-            && debt.readerFileURLString == contentFile.url.absoluteString
-            && debt.sourceModifiedAt == candidate.sourceGeneration.modifiedAt
-            && debt.sourceFileSize == candidate.sourceGeneration.fileSize
+        return workItem.storageScopeIdentifier == storageScopeIdentifier
+            && workItem.processorIdentifier == processorIdentity.identifier
+            && workItem.processorVersion == processorIdentity.version
+            && workItem.contentFilePrimaryKey == contentFile.compoundKey
+            && workItem.contentFileCreatedAt == contentFile.createdAt
+            && workItem.readerFileURLString == contentFile.url.absoluteString
+            && workItem.sourceModifiedAt == candidate.sourceGeneration.modifiedAt
+            && workItem.sourceFileSize == candidate.sourceGeneration.fileSize
     }
 
     @RealmBackgroundActor
-    private static func deletePostprocessorDebts(
+    private static func deletePostprocessingWorkItems(
         contentFilePrimaryKeys: [String],
         in realm: Realm
     ) {
         guard !contentFilePrimaryKeys.isEmpty,
               realm.schema.objectSchema.contains(where: {
-                  $0.className == ReaderFilePostprocessorDebt.className()
+                  $0.className == ReaderFilePostprocessingWorkItem.className()
               }) else {
             return
         }
-        let debts = realm.objects(ReaderFilePostprocessorDebt.self).filter(
+        let workItems = realm.objects(ReaderFilePostprocessingWorkItem.self).filter(
             NSPredicate(
                 format: "contentFilePrimaryKey IN %@",
                 contentFilePrimaryKeys
             )
         )
-        realm.delete(debts)
+        realm.delete(workItems)
     }
     
     public func localFileURL(forReaderFileURL readerFileURL: URL) throws -> URL {
@@ -2678,7 +2678,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     packageContentFile.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
-            Self.deletePostprocessorDebts(
+            Self.deletePostprocessingWorkItems(
                 contentFilePrimaryKeys: deletedPrimaryKeys,
                 in: realm
             )

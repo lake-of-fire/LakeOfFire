@@ -160,7 +160,7 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
             Bookmark.self,
             ContentFile.self,
             ContentPackageFile.self,
-            ReaderFilePostprocessorDebt.self,
+            ReaderFilePostprocessingWorkItem.self,
             ReaderFileLegacyRootRelocationReceipt.self,
             HistoryRecord.self,
             FeedEntry.self,
@@ -698,7 +698,7 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     }
 
     @MainActor
-    func testDurablePostprocessorDebtRetriesAnUnchangedFileAndClearsAfterSuccess() async throws {
+    func testDurablePostprocessingWorkItemRetriesAnUnchangedFileAndClearsAfterSuccess() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: false) { fixture in
             let probe = FailingProcessorProbe()
             fixture.manager.registerFileProcessorBundle(
@@ -725,21 +725,21 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
 
             let configuration = ReaderContentLoader.historyRealmConfiguration
             var realm = try await Realm.open(configuration: configuration)
-            let debt = try XCTUnwrap(
-                realm.objects(ReaderFilePostprocessorDebt.self)
+            let workItem = try XCTUnwrap(
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
                     .where { $0.processorIdentifier == "DurableRetryTest" }
                     .first
             )
-            XCTAssertEqual(debt.processorVersion, 1)
-            XCTAssertEqual(debt.readerFileURLString, fixture.expectedReaderURL.absoluteString)
-            let firstAttemptIdentifier = debt.attemptIdentifier
+            XCTAssertEqual(workItem.processorVersion, 1)
+            XCTAssertEqual(workItem.readerFileURLString, fixture.expectedReaderURL.absoluteString)
+            let firstAttemptIdentifier = workItem.attemptIdentifier
 
             try await fixture.manager.refreshAllFilesMetadata(force: true)
 
             realm = try await Realm.open(configuration: configuration)
             XCTAssertEqual(probe.attempts, 2)
             XCTAssertTrue(
-                realm.objects(ReaderFilePostprocessorDebt.self)
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
                     .where { $0.processorIdentifier == "DurableRetryTest" }
                     .isEmpty
             )
@@ -796,7 +796,7 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 "Stale Registration"
             )
             XCTAssertEqual(
-                realm.objects(ReaderFilePostprocessorDebt.self)
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
                     .where { $0.processorIdentifier == "ReplacementFenceTest" }
                     .count,
                 1
@@ -812,7 +812,7 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 "Current Registration"
             )
             XCTAssertTrue(
-                realm.objects(ReaderFilePostprocessorDebt.self)
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
                     .where { $0.processorIdentifier == "ReplacementFenceTest" }
                     .isEmpty
             )
@@ -863,7 +863,7 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
             XCTAssertEqual(probe.events, ["1:false", "2:true"])
             XCTAssertEqual(realm.objects(ContentFile.self).first?.title, "Current Source")
             XCTAssertTrue(
-                realm.objects(ReaderFilePostprocessorDebt.self)
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
                     .where { $0.processorIdentifier == "SourceGenerationFenceTest" }
                     .isEmpty
             )
@@ -871,11 +871,11 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     }
 
     @MainActor
-    func testDurablePostprocessorCancellationRetainsDebt() async throws {
+    func testDurablePostprocessorCancellationRetainsWorkItem() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: false) { fixture in
             let gate = ProcessorSnapshotGate()
             fixture.manager.registerFileProcessorBundle(
-                identifier: "CancellationDebtTest",
+                identifier: "CancellationWorkItemTest",
                 fileProcessorVersion: 1,
                 destinationProcessor: { _ in nil },
                 readerFileURLProcessor: { _, _ in nil },
@@ -900,18 +900,18 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
             let realm = try await Realm.open(
                 configuration: ReaderContentLoader.historyRealmConfiguration
             )
-            let debt = try XCTUnwrap(
-                realm.objects(ReaderFilePostprocessorDebt.self)
-                    .where { $0.processorIdentifier == "CancellationDebtTest" }
+            let workItem = try XCTUnwrap(
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
+                    .where { $0.processorIdentifier == "CancellationWorkItemTest" }
                     .first
             )
-            XCTAssertEqual(debt.processorVersion, 1)
-            XCTAssertFalse(debt.attemptIdentifier.isEmpty)
+            XCTAssertEqual(workItem.processorVersion, 1)
+            XCTAssertFalse(workItem.attemptIdentifier.isEmpty)
         }
     }
 
     @MainActor
-    func testDurablePostprocessorVersionUpgradeReplacesAndClearsOlderDebt() async throws {
+    func testDurablePostprocessorVersionUpgradeReplacesAndClearsOlderWorkItem() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: false) { fixture in
             fixture.manager.registerFileProcessorBundle(
                 identifier: "VersionUpgradeTest",
@@ -927,20 +927,20 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 _ = try await fixture.manager.ensureImported(
                     downloadable: fixture.downloadable
                 )
-                XCTFail("Expected version 1 to leave visible failure and debt")
+                XCTFail("Expected version 1 to leave visible failure and a work item")
             } catch TestError.postprocessorFailure {
                 // Expected.
             }
 
             let configuration = ReaderContentLoader.historyRealmConfiguration
             var realm = try await Realm.open(configuration: configuration)
-            let version1Debt = try XCTUnwrap(
-                realm.objects(ReaderFilePostprocessorDebt.self)
+            let version1WorkItem = try XCTUnwrap(
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
                     .where { $0.processorIdentifier == "VersionUpgradeTest" }
                     .first
             )
-            XCTAssertEqual(version1Debt.processorVersion, 1)
-            let version1AttemptIdentifier = version1Debt.attemptIdentifier
+            XCTAssertEqual(version1WorkItem.processorVersion, 1)
+            let version1AttemptIdentifier = version1WorkItem.attemptIdentifier
             let probe = ProcessorEventProbe()
 
             fixture.manager.registerFileProcessorBundle(
@@ -949,12 +949,12 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 destinationProcessor: { _ in nil },
                 readerFileURLProcessor: { _, _ in nil },
                 contextualFileProcessor: { context in
-                    let upgradedDebt = context.realm.objects(ReaderFilePostprocessorDebt.self)
+                    let upgradedWorkItem = context.realm.objects(ReaderFilePostprocessingWorkItem.self)
                         .where { $0.processorIdentifier == "VersionUpgradeTest" }
                         .first
                     probe.record(
-                        "version=\(upgradedDebt?.processorVersion ?? -1)," +
-                        "attemptChanged=\(upgradedDebt?.attemptIdentifier != version1AttemptIdentifier)"
+                        "version=\(upgradedWorkItem?.processorVersion ?? -1)," +
+                        "attemptChanged=\(upgradedWorkItem?.attemptIdentifier != version1AttemptIdentifier)"
                     )
                     try await context.performCurrentWrite { _, contentFile in
                         contentFile.title = "Version 2"
@@ -969,7 +969,7 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
             XCTAssertEqual(probe.events, ["version=2,attemptChanged=true"])
             XCTAssertEqual(realm.objects(ContentFile.self).first?.title, "Version 2")
             XCTAssertTrue(
-                realm.objects(ReaderFilePostprocessorDebt.self)
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
                     .where { $0.processorIdentifier == "VersionUpgradeTest" }
                     .isEmpty
             )
@@ -977,7 +977,7 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     }
 
     @MainActor
-    func testDurablePostprocessorDebtSurvivesManagerReconstruction() async throws {
+    func testDurablePostprocessingWorkItemSurvivesManagerReconstruction() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: false) { fixture in
             fixture.manager.registerFileProcessorBundle(
                 identifier: "ManagerReconstructionTest",
@@ -993,19 +993,19 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 _ = try await fixture.manager.ensureImported(
                     downloadable: fixture.downloadable
                 )
-                XCTFail("Expected the first manager to leave durable debt")
+                XCTFail("Expected the first manager to leave a durable work item")
             } catch TestError.postprocessorFailure {
                 // Expected.
             }
 
             let configuration = ReaderContentLoader.historyRealmConfiguration
             var realm = try await Realm.open(configuration: configuration)
-            let originalDebt = try XCTUnwrap(
-                realm.objects(ReaderFilePostprocessorDebt.self)
+            let originalWorkItem = try XCTUnwrap(
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
                     .where { $0.processorIdentifier == "ManagerReconstructionTest" }
                     .first
             )
-            let originalAttemptIdentifier = originalDebt.attemptIdentifier
+            let originalAttemptIdentifier = originalWorkItem.attemptIdentifier
             let rootURL = try XCTUnwrap(fixture.manager.localDrive).rootDirectory
             let reconstructedManager = ReaderFileManager(
                 defaultLocalRootURLProvider: { rootURL }
@@ -1022,11 +1022,11 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 destinationProcessor: { _ in nil },
                 readerFileURLProcessor: { _, _ in nil },
                 contextualFileProcessor: { context in
-                    let debt = context.realm.objects(ReaderFilePostprocessorDebt.self)
+                    let workItem = context.realm.objects(ReaderFilePostprocessingWorkItem.self)
                         .where { $0.processorIdentifier == "ManagerReconstructionTest" }
                         .first
                     probe.record(
-                        "attemptChanged=\(debt?.attemptIdentifier != originalAttemptIdentifier)"
+                        "attemptChanged=\(workItem?.attemptIdentifier != originalAttemptIdentifier)"
                     )
                     try await context.performCurrentWrite { _, contentFile in
                         contentFile.title = "Reconstructed Manager"
@@ -1044,7 +1044,7 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 "Reconstructed Manager"
             )
             XCTAssertTrue(
-                realm.objects(ReaderFilePostprocessorDebt.self)
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
                     .where { $0.processorIdentifier == "ManagerReconstructionTest" }
                     .isEmpty
             )
@@ -1052,11 +1052,11 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     }
 
     @MainActor
-    func testPortablePostprocessorDebtRebindsToCurrentStorageScope() async throws {
+    func testPortablePostprocessingWorkItemRebindsToCurrentStorageScope() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: false) { fixture in
             let attempts = FailingProcessorProbe()
             fixture.manager.registerFileProcessorBundle(
-                identifier: "PortableDebtTest",
+                identifier: "PortableWorkItemTest",
                 fileProcessorVersion: 1,
                 destinationProcessor: { _ in nil },
                 readerFileURLProcessor: { _, _ in nil },
@@ -1065,7 +1065,7 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                         throw TestError.postprocessorFailure
                     }
                     try await context.performCurrentWrite { _, contentFile in
-                        contentFile.title = "Portable Debt Replayed"
+                        contentFile.title = "Portable Work Item Replayed"
                         contentFile.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
@@ -1075,39 +1075,39 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 _ = try await fixture.manager.ensureImported(
                     downloadable: fixture.downloadable
                 )
-                XCTFail("Expected the first attempt to retain processor debt")
+                XCTFail("Expected the first attempt to retain a processor work item")
             } catch TestError.postprocessorFailure {
                 // Expected.
             }
 
             let configuration = ReaderContentLoader.historyRealmConfiguration
             var realm = try await Realm.open(configuration: configuration)
-            let debt = try XCTUnwrap(
-                realm.objects(ReaderFilePostprocessorDebt.self)
-                    .where { $0.processorIdentifier == "PortableDebtTest" }
+            let workItem = try XCTUnwrap(
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
+                    .where { $0.processorIdentifier == "PortableWorkItemTest" }
                     .first
             )
-            let portableIdentifier = ReaderFilePostprocessorDebt
-                .makePortableDebtIdentifier(
-                    processorIdentifier: debt.processorIdentifier,
-                    contentFilePrimaryKey: debt.contentFilePrimaryKey
+            let portableIdentifier = ReaderFilePostprocessingWorkItem
+                .makePortableWorkItemIdentifier(
+                    processorIdentifier: workItem.processorIdentifier,
+                    contentFilePrimaryKey: workItem.contentFilePrimaryKey
                 )
             try realm.write {
-                let portableDebt = ReaderFilePostprocessorDebt()
-                portableDebt.debtIdentifier = portableIdentifier
-                portableDebt.storageScopeIdentifier = ReaderFilePostprocessorDebt
+                let portableWorkItem = ReaderFilePostprocessingWorkItem()
+                portableWorkItem.workItemIdentifier = portableIdentifier
+                portableWorkItem.storageScopeIdentifier = ReaderFilePostprocessingWorkItem
                     .portableStorageScopeIdentifier
-                portableDebt.processorIdentifier = debt.processorIdentifier
-                portableDebt.processorVersion = debt.processorVersion
-                portableDebt.contentFilePrimaryKey = debt.contentFilePrimaryKey
-                portableDebt.contentFileCreatedAt = debt.contentFileCreatedAt
-                portableDebt.readerFileURLString = debt.readerFileURLString
-                portableDebt.sourceModifiedAt = nil
-                portableDebt.sourceFileSize = -1
-                portableDebt.attemptIdentifier = ""
-                portableDebt.enqueuedAt = debt.enqueuedAt
-                realm.add(portableDebt)
-                realm.delete(debt)
+                portableWorkItem.processorIdentifier = workItem.processorIdentifier
+                portableWorkItem.processorVersion = workItem.processorVersion
+                portableWorkItem.contentFilePrimaryKey = workItem.contentFilePrimaryKey
+                portableWorkItem.contentFileCreatedAt = workItem.contentFileCreatedAt
+                portableWorkItem.readerFileURLString = workItem.readerFileURLString
+                portableWorkItem.sourceModifiedAt = nil
+                portableWorkItem.sourceFileSize = -1
+                portableWorkItem.attemptIdentifier = ""
+                portableWorkItem.enqueuedAt = workItem.enqueuedAt
+                realm.add(portableWorkItem)
+                realm.delete(workItem)
             }
 
             try await fixture.manager.refreshAllFilesMetadata(force: true)
@@ -1116,21 +1116,21 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
             XCTAssertEqual(attempts.attempts, 2)
             XCTAssertEqual(
                 realm.objects(ContentFile.self).first?.title,
-                "Portable Debt Replayed"
+                "Portable Work Item Replayed"
             )
             XCTAssertTrue(
-                realm.objects(ReaderFilePostprocessorDebt.self)
-                    .where { $0.processorIdentifier == "PortableDebtTest" }
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
+                    .where { $0.processorIdentifier == "PortableWorkItemTest" }
                     .isEmpty
             )
         }
     }
 
     @MainActor
-    func testPortablePostprocessorDebtIsRemovedWhenContentFileBecomesOrphan() async throws {
+    func testPortablePostprocessingWorkItemIsRemovedWhenContentFileBecomesOrphan() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: false) { fixture in
             fixture.manager.registerFileProcessorBundle(
-                identifier: "PortableOrphanDebtTest",
+                identifier: "PortableOrphanWorkItemTest",
                 fileProcessorVersion: 1,
                 destinationProcessor: { _ in nil },
                 readerFileURLProcessor: { _, _ in nil },
@@ -1143,40 +1143,40 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 _ = try await fixture.manager.ensureImported(
                     downloadable: fixture.downloadable
                 )
-                XCTFail("Expected the first attempt to retain processor debt")
+                XCTFail("Expected the first attempt to retain a processor work item")
             } catch TestError.postprocessorFailure {
                 // Expected.
             }
 
             let configuration = ReaderContentLoader.historyRealmConfiguration
             var realm = try await Realm.open(configuration: configuration)
-            let debt = try XCTUnwrap(
-                realm.objects(ReaderFilePostprocessorDebt.self)
-                    .where { $0.processorIdentifier == "PortableOrphanDebtTest" }
+            let workItem = try XCTUnwrap(
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
+                    .where { $0.processorIdentifier == "PortableOrphanWorkItemTest" }
                     .first
             )
-            let contentFilePrimaryKey = debt.contentFilePrimaryKey
-            let portableIdentifier = ReaderFilePostprocessorDebt
-                .makePortableDebtIdentifier(
-                    processorIdentifier: debt.processorIdentifier,
+            let contentFilePrimaryKey = workItem.contentFilePrimaryKey
+            let portableIdentifier = ReaderFilePostprocessingWorkItem
+                .makePortableWorkItemIdentifier(
+                    processorIdentifier: workItem.processorIdentifier,
                     contentFilePrimaryKey: contentFilePrimaryKey
                 )
             try realm.write {
-                let portableDebt = ReaderFilePostprocessorDebt()
-                portableDebt.debtIdentifier = portableIdentifier
-                portableDebt.storageScopeIdentifier = ReaderFilePostprocessorDebt
+                let portableWorkItem = ReaderFilePostprocessingWorkItem()
+                portableWorkItem.workItemIdentifier = portableIdentifier
+                portableWorkItem.storageScopeIdentifier = ReaderFilePostprocessingWorkItem
                     .portableStorageScopeIdentifier
-                portableDebt.processorIdentifier = debt.processorIdentifier
-                portableDebt.processorVersion = debt.processorVersion
-                portableDebt.contentFilePrimaryKey = contentFilePrimaryKey
-                portableDebt.contentFileCreatedAt = debt.contentFileCreatedAt
-                portableDebt.readerFileURLString = debt.readerFileURLString
-                portableDebt.sourceModifiedAt = nil
-                portableDebt.sourceFileSize = -1
-                portableDebt.attemptIdentifier = ""
-                portableDebt.enqueuedAt = debt.enqueuedAt
-                realm.add(portableDebt)
-                realm.delete(debt)
+                portableWorkItem.processorIdentifier = workItem.processorIdentifier
+                portableWorkItem.processorVersion = workItem.processorVersion
+                portableWorkItem.contentFilePrimaryKey = contentFilePrimaryKey
+                portableWorkItem.contentFileCreatedAt = workItem.contentFileCreatedAt
+                portableWorkItem.readerFileURLString = workItem.readerFileURLString
+                portableWorkItem.sourceModifiedAt = nil
+                portableWorkItem.sourceFileSize = -1
+                portableWorkItem.attemptIdentifier = ""
+                portableWorkItem.enqueuedAt = workItem.enqueuedAt
+                realm.add(portableWorkItem)
+                realm.delete(workItem)
             }
 
             let importedFileURL = try XCTUnwrap(fixture.manager.localDrive)
@@ -1195,15 +1195,15 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 ).isDeleted
             )
             XCTAssertTrue(
-                realm.objects(ReaderFilePostprocessorDebt.self)
-                    .where { $0.processorIdentifier == "PortableOrphanDebtTest" }
+                realm.objects(ReaderFilePostprocessingWorkItem.self)
+                    .where { $0.processorIdentifier == "PortableOrphanWorkItemTest" }
                     .isEmpty
             )
         }
     }
 
     @MainActor
-    func testDurablePostprocessorDebtIsIsolatedByManagerRootAndRealm() async throws {
+    func testDurablePostprocessingWorkItemIsIsolatedByManagerRootAndRealm() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: false) { fixture in
             let secondBaseURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent(
@@ -1256,35 +1256,35 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 _ = try await fixture.manager.ensureImported(
                     downloadable: fixture.downloadable
                 )
-                XCTFail("Expected manager A to leave durable debt")
+                XCTFail("Expected manager A to leave a durable work item")
             } catch TestError.postprocessorFailure {
                 // Expected.
             }
             do {
                 try await secondManager.refreshAllFilesMetadata(force: true)
-                XCTFail("Expected manager B to leave durable debt")
+                XCTFail("Expected manager B to leave a durable work item")
             } catch TestError.postprocessorFailure {
                 // Expected.
             }
 
             var firstRealm = try await Realm.open(configuration: firstConfiguration)
             let secondRealm = try await Realm.open(configuration: secondConfiguration)
-            let firstDebt = try XCTUnwrap(
-                firstRealm.objects(ReaderFilePostprocessorDebt.self)
+            let firstWorkItem = try XCTUnwrap(
+                firstRealm.objects(ReaderFilePostprocessingWorkItem.self)
                     .where { $0.processorIdentifier == "ManagerIsolationTest" }
                     .first
             )
-            let secondDebt = try XCTUnwrap(
-                secondRealm.objects(ReaderFilePostprocessorDebt.self)
+            let secondWorkItem = try XCTUnwrap(
+                secondRealm.objects(ReaderFilePostprocessingWorkItem.self)
                     .where { $0.processorIdentifier == "ManagerIsolationTest" }
                     .first
             )
-            XCTAssertEqual(firstDebt.contentFilePrimaryKey, secondDebt.contentFilePrimaryKey)
+            XCTAssertEqual(firstWorkItem.contentFilePrimaryKey, secondWorkItem.contentFilePrimaryKey)
             XCTAssertNotEqual(
-                firstDebt.storageScopeIdentifier,
-                secondDebt.storageScopeIdentifier
+                firstWorkItem.storageScopeIdentifier,
+                secondWorkItem.storageScopeIdentifier
             )
-            XCTAssertNotEqual(firstDebt.debtIdentifier, secondDebt.debtIdentifier)
+            XCTAssertNotEqual(firstWorkItem.workItemIdentifier, secondWorkItem.workItemIdentifier)
 
             fixture.manager.registerFileProcessorBundle(
                 identifier: "ManagerIsolationTest",
@@ -1302,12 +1302,12 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
 
             firstRealm = try await Realm.open(configuration: firstConfiguration)
             XCTAssertTrue(
-                firstRealm.objects(ReaderFilePostprocessorDebt.self)
+                firstRealm.objects(ReaderFilePostprocessingWorkItem.self)
                     .where { $0.processorIdentifier == "ManagerIsolationTest" }
                     .isEmpty
             )
             XCTAssertEqual(
-                secondRealm.objects(ReaderFilePostprocessorDebt.self)
+                secondRealm.objects(ReaderFilePostprocessingWorkItem.self)
                     .where { $0.processorIdentifier == "ManagerIsolationTest" }
                     .count,
                 1
