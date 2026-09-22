@@ -1211,11 +1211,60 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     
     @MainActor
     public func readerFileURL(for downloadable: Downloadable) async throws -> URL? {
+        if let provenanceReaderURL = try await readerFileURL(
+            forDownloadProvenance: downloadable.url,
+            realmConfiguration: resolvedHistoryRealmConfiguration
+        ) {
+            return provenanceReaderURL
+        }
         try await readerFileURL(
             for: downloadable.localDestination,
             drive: nil,
             processorSnapshot: processorRegistry.snapshot()
         )
+    }
+
+    /// Resolves a completed catalog acquisition from the immutable remote URL recorded
+    /// on its final library row. This survives deletion of the downloader's transient
+    /// staging bytes, while refusing ambiguous or unavailable inventory rows.
+    @MainActor
+    private func readerFileURL(
+        forDownloadProvenance downloadURL: URL,
+        realmConfiguration: Realm.Configuration
+    ) async throws -> URL? {
+        let candidateURLs = try await Self.readerFileURLs(
+            forDownloadProvenance: downloadURL,
+            realmConfiguration: realmConfiguration
+        )
+        guard candidateURLs.count <= 1 else {
+            throw ReaderFileManagerError.ambiguousReaderFileURL
+        }
+        guard let candidateURL = candidateURLs.first,
+              canonicalReaderBackingURL(for: candidateURL) != nil,
+              try await cloudDriveSyncStatus(readerFileURL: candidateURL) != .fileMissing else {
+            return nil
+        }
+        return candidateURL
+    }
+
+    /// Only detached URLs leave the Realm actor. A deleted row must never make a
+    /// completed acquisition appear installed after its bytes have been removed.
+    @RealmBackgroundActor
+    private static func readerFileURLs(
+        forDownloadProvenance downloadURL: URL,
+        realmConfiguration: Realm.Configuration
+    ) async throws -> [URL] {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: realmConfiguration
+        )
+        try await realm.asyncRefresh()
+        return realm.objects(ContentFile.self)
+            .filter(NSPredicate(
+                format: "isDeleted == %@ AND sourceDownloadURL == %@",
+                NSNumber(booleanLiteral: false),
+                downloadURL.absoluteString as CVarArg
+            ))
+            .map(\.url)
     }
     
     @MainActor
@@ -1306,6 +1355,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 processorSnapshot: processorSnapshot
             )
         }
+        if let provenanceReaderURL = try await readerFileURL(
+            forDownloadProvenance: downloadable.url,
+            realmConfiguration: realmConfiguration
+        ) {
+            return provenanceReaderURL
+        }
         guard await downloadable.existsLocally() else { return nil }
         if let existingReaderURL = try await readerFileURL(
             for: downloadable.localDestination,
@@ -1330,6 +1385,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
         return try await importFile(
             fileURL: downloadable.localDestination,
+            fromDownloadURL: downloadable.url,
             realmConfiguration: realmConfiguration,
             processorSnapshot: processorSnapshot
         )
@@ -1416,6 +1472,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         // requested destination path.
         guard let targetReaderURL = try await importFile(
             fileURL: sourceURL,
+            fromDownloadURL: nil,
             realmConfiguration: realmConfiguration,
             processorSnapshot: processorSnapshot
         ) else {
@@ -1822,9 +1879,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     /// Imports the readable local candidate. `downloadURL` is remote provenance
     /// only and never participates in content-based destination classification.
     @MainActor
-    public func importFile(fileURL: URL, fromDownloadURL _: URL?) async throws -> URL? {
+    public func importFile(fileURL: URL, fromDownloadURL: URL?) async throws -> URL? {
         try await importFile(
             fileURL: fileURL,
+            fromDownloadURL: fromDownloadURL,
             realmConfiguration: resolvedHistoryRealmConfiguration,
             processorSnapshot: processorRegistry.snapshot()
         )
@@ -1833,6 +1891,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     @MainActor
     private func importFile(
         fileURL: URL,
+        fromDownloadURL: URL?,
         realmConfiguration: Realm.Configuration,
         processorSnapshot: ReaderFileProcessorRegistrySnapshot
     ) async throws -> URL? {
@@ -1939,10 +1998,66 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                   finalContent.url == importedReaderFileURL else {
                 throw ReaderFileManagerError.incompleteFileInventory
             }
+            if let fromDownloadURL {
+                let didRecordProvenance = try await recordDownloadProvenance(
+                    fromDownloadURL,
+                    onContentFilePrimaryKey: finalContent.compoundKey,
+                    expectedCreatedAt: finalContent.createdAt,
+                    expectedReaderURL: finalContent.url,
+                    realmConfiguration: realmConfiguration
+                )
+                guard didRecordProvenance else {
+                    throw ReaderFileManagerError.incompleteFileInventory
+                }
+            }
             return finalContent.url
         } catch {
             debugPrint("Error importing file:", error)
             throw error
+        }
+    }
+
+    /// Publishes remote acquisition provenance only after final inventory validation.
+    /// The primary key, incarnation timestamp, and reader URL fence replacement rows
+    /// that may have appeared while the import was suspended.
+    @RealmBackgroundActor
+    private func recordDownloadProvenance(
+        _ downloadURL: URL,
+        onContentFilePrimaryKey primaryKey: String,
+        expectedCreatedAt: Date,
+        expectedReaderURL: URL,
+        realmConfiguration: Realm.Configuration
+    ) async throws -> Bool {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: realmConfiguration
+        )
+        return try await realm.asyncWrite {
+            guard let target = realm.object(
+                ofType: ContentFile.self,
+                forPrimaryKey: primaryKey
+            ),
+            !target.isDeleted,
+            target.createdAt == expectedCreatedAt,
+            target.url == expectedReaderURL else {
+                return false
+            }
+
+            let timestamp = Date()
+            for contentFile in realm.objects(ContentFile.self).filter(NSPredicate(
+                format: "isDeleted == %@ AND sourceDownloadURL == %@",
+                NSNumber(booleanLiteral: false),
+                downloadURL.absoluteString as CVarArg
+            )) where contentFile.compoundKey != primaryKey {
+                contentFile.sourceDownloadURL = nil
+                contentFile.refreshChangeMetadata(
+                    explicitlyModified: true,
+                    at: timestamp
+                )
+            }
+            guard target.sourceDownloadURL != downloadURL else { return true }
+            target.sourceDownloadURL = downloadURL
+            target.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+            return true
         }
     }
     

@@ -2178,6 +2178,126 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
             realm.objects(ContentFile.self).where { !$0.isDeleted }.first?.url,
             expectedReaderURL
         )
+        XCTAssertEqual(
+            realm.objects(ContentFile.self).where { !$0.isDeleted }.first?.sourceDownloadURL,
+            remoteURL
+        )
+
+        let retiredStagingURL = baseURL.appendingPathComponent("retired-regression.zip")
+        try FileManager.default.moveItem(
+            at: downloadable.localDestination,
+            to: retiredStagingURL
+        )
+        XCTAssertFalse(await downloadable.existsLocally())
+
+        let reloadedManager = ReaderFileManager(
+            defaultLocalRootURLProvider: { libraryRootURL }
+        )
+        reloadedManager.localDrive = try await CloudDrive(
+            storage: .localDirectory(rootURL: libraryRootURL)
+        )
+        ReaderFileManager.shared = reloadedManager
+
+        XCTAssertEqual(
+            try await reloadedManager.readerFileURL(for: downloadable),
+            expectedReaderURL
+        )
+        XCTAssertEqual(
+            try await reloadedManager.ensureImported(downloadable: downloadable),
+            expectedReaderURL
+        )
+        XCTAssertEqual(destinationProbe.candidates, [downloadable.localDestination])
+        XCTAssertEqual(realm.objects(ContentFile.self).where { !$0.isDeleted }.count, 1)
+    }
+
+    @MainActor
+    func testDownloadProvenanceDoesNotResolveTombstonedContentFile() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: false) { fixture in
+            _ = try XCTUnwrap(
+                try await fixture.manager.ensureImported(downloadable: fixture.downloadable)
+            )
+            try FileManager.default.removeItem(at: fixture.downloadable.localDestination)
+
+            let configuration = ReaderContentLoader.historyRealmConfiguration
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: configuration
+                )
+                try await realm.asyncWrite {
+                    let content = try XCTUnwrap(
+                        realm.objects(ContentFile.self).where { !$0.isDeleted }.first
+                    )
+                    content.isDeleted = true
+                    content.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }()
+
+            XCTAssertNil(
+                try await fixture.manager.readerFileURL(for: fixture.downloadable)
+            )
+            XCTAssertNil(
+                try await fixture.manager.ensureImported(downloadable: fixture.downloadable)
+            )
+        }
+    }
+
+    @MainActor
+    func testDownloadProvenanceKeepsSameBasenameAcquisitionsOnTheirFinalFiles() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: false) { fixture in
+            let secondSourceURL = fixture.downloadable.localDestination
+                .deletingLastPathComponent()
+                .appendingPathComponent("second", isDirectory: true)
+                .appendingPathComponent(fixture.downloadable.localDestination.lastPathComponent)
+            try FileManager.default.createDirectory(
+                at: secondSourceURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("different epub fixture".utf8).write(to: secondSourceURL)
+            let secondDownloadURL = URL(
+                string: "https://second.example/editor-picks/regression.epub"
+            )!
+            let secondDownloadable = Downloadable(
+                url: secondDownloadURL,
+                name: "Second Regression Book",
+                localDestination: secondSourceURL
+            )
+
+            let firstReaderURL = try XCTUnwrap(
+                try await fixture.manager.ensureImported(downloadable: fixture.downloadable)
+            )
+            let secondReaderURL = try XCTUnwrap(
+                try await fixture.manager.ensureImported(downloadable: secondDownloadable)
+            )
+            XCTAssertNotEqual(firstReaderURL, secondReaderURL)
+
+            let realm = try await Realm.open(
+                configuration: ReaderContentLoader.historyRealmConfiguration
+            )
+            let liveContentFiles = realm.objects(ContentFile.self).where { !$0.isDeleted }
+            XCTAssertEqual(
+                liveContentFiles.first(where: {
+                    $0.sourceDownloadURL == fixture.downloadable.url
+                })?.url,
+                firstReaderURL
+            )
+            XCTAssertEqual(
+                liveContentFiles.first(where: {
+                    $0.sourceDownloadURL == secondDownloadURL
+                })?.url,
+                secondReaderURL
+            )
+
+            try FileManager.default.removeItem(at: fixture.downloadable.localDestination)
+            try FileManager.default.removeItem(at: secondSourceURL)
+            XCTAssertEqual(
+                try await fixture.manager.ensureImported(downloadable: fixture.downloadable),
+                firstReaderURL
+            )
+            XCTAssertEqual(
+                try await fixture.manager.ensureImported(downloadable: secondDownloadable),
+                secondReaderURL
+            )
+        }
     }
 
     @MainActor
