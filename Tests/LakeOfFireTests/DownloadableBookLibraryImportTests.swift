@@ -1,5 +1,6 @@
 import XCTest
 import RealmSwift
+import RealmSwiftGaps
 import SwiftCloudDrive
 import SwiftUIDownloads
 @testable import LakeOfFireContent
@@ -355,39 +356,66 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
             ]
                 .map { "\($0.utf8.count):\($0)" }
                 .joined(separator: "|")
-            let receipt = ReaderFileLegacyRootRelocationReceipt()
-            receipt.storageScopeIdentifier = storageScope
-            receipt.sourceRelativePath = "crash.epub"
-            receipt.sourceReaderBackingURLString = "reader-file://file/load/local/crash.epub"
-            receipt.sourceContentFilePrimaryKey = source.compoundKey
-            receipt.sourceContentFileCreatedAt = source.createdAt
-            receipt.sourceModifiedAt = sourceAttributes[.modificationDate] as? Date
-            receipt.sourceFileSize = (sourceAttributes[.size] as? NSNumber)?.int64Value ?? -1
-            receipt.targetReaderURLString = targetReaderURL.absoluteString
-            receipt.targetContentFilePrimaryKey = target.compoundKey
-            receipt.targetContentFileCreatedAt = target.createdAt
-            receipt.targetModifiedAt = targetAttributes[.modificationDate] as? Date
-            receipt.targetFileSize = (targetAttributes[.size] as? NSNumber)?.int64Value ?? -1
-            receipt.receiptIdentifier = ReaderFileLegacyRootRelocationReceipt
+            let sourceContentFilePrimaryKey = source.compoundKey
+            let sourceContentFileCreatedAt = source.createdAt
+            let sourceModifiedAt = sourceAttributes[.modificationDate] as? Date
+            let sourceFileSize = (sourceAttributes[.size] as? NSNumber)?.int64Value ?? -1
+            let targetContentFilePrimaryKey = target.compoundKey
+            let targetContentFileCreatedAt = target.createdAt
+            let targetModifiedAt = targetAttributes[.modificationDate] as? Date
+            let targetFileSize = (targetAttributes[.size] as? NSNumber)?.int64Value ?? -1
+            let receiptIdentifier = ReaderFileLegacyRootRelocationReceipt
                 .makeReceiptIdentifier(
                     storageScopeIdentifier: storageScope,
-                    sourceRelativePath: receipt.sourceRelativePath,
-                    sourceContentFilePrimaryKey: source.compoundKey
+                    sourceRelativePath: "crash.epub",
+                    sourceContentFilePrimaryKey: sourceContentFilePrimaryKey
                 )
-            try realm.write {
-                realm.add(receipt)
-                source.isDeleted = true
-                source.refreshChangeMetadata(explicitlyModified: true)
-            }
+            try await { @RealmBackgroundActor in
+                let writeRealm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: configuration
+                )
+                try await writeRealm.asyncWrite {
+                    let actorSource = try XCTUnwrap(writeRealm.object(
+                        ofType: ContentFile.self,
+                        forPrimaryKey: sourceContentFilePrimaryKey
+                    ))
+                    let receipt = ReaderFileLegacyRootRelocationReceipt()
+                    receipt.receiptIdentifier = receiptIdentifier
+                    receipt.storageScopeIdentifier = storageScope
+                    receipt.sourceRelativePath = "crash.epub"
+                    receipt.sourceReaderBackingURLString =
+                        "reader-file://file/load/local/crash.epub"
+                    receipt.sourceContentFilePrimaryKey = sourceContentFilePrimaryKey
+                    receipt.sourceContentFileCreatedAt = sourceContentFileCreatedAt
+                    receipt.sourceModifiedAt = sourceModifiedAt
+                    receipt.sourceFileSize = sourceFileSize
+                    receipt.targetReaderURLString = targetReaderURL.absoluteString
+                    receipt.targetContentFilePrimaryKey = targetContentFilePrimaryKey
+                    receipt.targetContentFileCreatedAt = targetContentFileCreatedAt
+                    receipt.targetModifiedAt = targetModifiedAt
+                    receipt.targetFileSize = targetFileSize
+                    writeRealm.add(receipt)
+                    actorSource.isDeleted = true
+                    actorSource.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }()
             try FileManager.default.removeItem(at: sourceURL)
 
             try await fixture.manager.refreshAllFilesMetadata(force: true)
-            XCTAssertTrue(
-                realm.objects(ReaderFileLegacyRootRelocationReceipt.self).isEmpty
-            )
-            XCTAssertTrue(
-                realm.object(ofType: ContentFile.self, forPrimaryKey: target.compoundKey)?.isDeleted == false
-            )
+            try await { @RealmBackgroundActor in
+                let verificationRealm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: configuration
+                )
+                XCTAssertTrue(
+                    verificationRealm.objects(ReaderFileLegacyRootRelocationReceipt.self).isEmpty
+                )
+                XCTAssertTrue(
+                    verificationRealm.object(
+                        ofType: ContentFile.self,
+                        forPrimaryKey: targetContentFilePrimaryKey
+                    )?.isDeleted == false
+                )
+            }()
         }
     }
 
