@@ -509,6 +509,52 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     }
 
     @MainActor
+    func testCancellationDuringLegacyRootRemovalRetainsReceiptAndStopsPreflight() async throws {
+        let removalGate = ProcessorSnapshotGate()
+        try await withFixture(
+            downloadIsAlreadyInLibrary: false,
+            legacyRootFileRemover: { _, _ in
+                await removalGate.enterAndWait()
+                try Task.checkCancellation()
+            }
+        ) { fixture in
+            let receipt = try await admitLegacyRootRelocationReceipt(
+                fixture: fixture,
+                filename: "cancelled-removal.epub"
+            )
+            var preflightCompleted = false
+            fixture.manager.refreshRelocationPreflightDidCompleteForTesting = {
+                preflightCompleted = true
+            }
+
+            let refresh = Task { @MainActor () -> Result<Void, any Swift.Error> in
+                do {
+                    try await fixture.manager.refreshAllFilesMetadata(force: true)
+                    return .success(())
+                } catch {
+                    return .failure(error)
+                }
+            }
+            await removalGate.waitUntilEntered()
+            refresh.cancel()
+            await removalGate.release()
+
+            switch await refresh.value {
+            case .failure(is CancellationError):
+                break
+            case .failure(let error):
+                XCTFail("Unexpected relocation-preflight error: \(error)")
+            case .success:
+                XCTFail("Expected relocation preflight to propagate cancellation.")
+            }
+            XCTAssertFalse(preflightCompleted)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.sourceURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.targetURL.path))
+            try await assertLegacyRootRelocationReceipt(receipt, isPresent: true)
+        }
+    }
+
+    @MainActor
     func testEnsureImportedRetriesLegacyRootRemovalAfterInitialPhysicalDeletionFailure() async throws {
         let removalProbe = RemovalProbe(failuresRemaining: 1)
         try await withFixture(

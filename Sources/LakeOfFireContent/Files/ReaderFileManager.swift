@@ -841,6 +841,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     var refreshTaskWaiterDidAdmitForTesting: ((RefreshTaskWaiterRole) -> Void)?
 
     @MainActor
+    var refreshRelocationPreflightDidCompleteForTesting: (() -> Void)?
+
+    @MainActor
     private func awaitRefreshTask(
         _ refreshTask: Task<Void, any Swift.Error>,
         role: RefreshTaskWaiterRole
@@ -1686,8 +1689,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     private func drainLegacyRootRelocationReceipts(
         realmConfiguration: Realm.Configuration
     ) async throws -> Bool {
+        try Task.checkCancellation()
         var removedAnySource = false
         for drive in [localDrive, cloudDrive].compactMap({ $0 }).filter(\.isConnected) {
+            try Task.checkCancellation()
             let storageScopeIdentifier = Self.postprocessorStorageScopeIdentifier(
                 drive: drive,
                 realmConfiguration: realmConfiguration
@@ -1697,6 +1702,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 realmConfiguration: realmConfiguration
             )
             for receipt in receipts {
+                try Task.checkCancellation()
                 guard let sourceRelativePath = Self.validLegacyRootSourcePath(
                     receipt.sourceRelativePath
                 ),
@@ -1723,14 +1729,19 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 let sourceExists = try await drive.fileExists(at: sourceRelativePath)
                 if sourceExists {
                     do {
+                        try Task.checkCancellation()
                         try await legacyRootFileRemover(drive, sourceRelativePath)
+                    } catch is CancellationError {
+                        throw CancellationError()
                     } catch {
                         continue
                     }
                 }
+                try Task.checkCancellation()
                 guard !(try await drive.fileExists(at: sourceRelativePath)) else {
                     continue
                 }
+                try Task.checkCancellation()
                 try await removeLegacyRootRelocationReceipt(
                     receipt.receiptIdentifier,
                     realmConfiguration: realmConfiguration
@@ -2128,9 +2139,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         realmConfiguration: Realm.Configuration,
         processorSnapshot: ReaderFileProcessorRegistrySnapshot
     ) async throws {
+        try Task.checkCancellation()
         let didDrainLegacyRootRelocation = try await drainLegacyRootRelocationReceipts(
             realmConfiguration: realmConfiguration
         )
+        try Task.checkCancellation()
+        refreshRelocationPreflightDidCompleteForTesting?()
         let force = force || didDrainLegacyRootRelocation
         let refreshIdentity = refreshMetadataIdentity(for: realmConfiguration)
         if let refreshAllFilesMetadataTask = refreshAllFilesMetadataTasks[refreshIdentity] {

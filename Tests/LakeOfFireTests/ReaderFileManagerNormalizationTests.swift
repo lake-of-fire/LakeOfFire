@@ -155,6 +155,56 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     }
 
     @MainActor
+    func testPreCancelledRefreshStopsBeforeRelocationPreflightAndScan() async {
+        let rootURL: URL
+        do {
+            rootURL = try temporaryDirectory()
+        } catch {
+            XCTFail("Failed to create test directory: \(error)")
+            return
+        }
+        let manager = CountingReaderFileManager()
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        do {
+            manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        } catch {
+            XCTFail("Failed to configure local drive: \(error)")
+            return
+        }
+        manager.refreshRelocationPreflightDidCompleteForTesting = {
+            XCTFail("A pre-cancelled refresh must not complete relocation preflight.")
+        }
+        manager.refreshTaskWaiterDidAdmitForTesting = { _ in
+            XCTFail("A pre-cancelled refresh must not admit a scan waiter.")
+        }
+
+        let result = await withTaskGroup(
+            of: Result<Void, any Swift.Error>.self
+        ) { group in
+            group.cancelAll()
+            group.addTask { @MainActor in
+                do {
+                    try await manager.refreshAllFilesMetadata(force: true)
+                    return .success(())
+                } catch {
+                    return .failure(error)
+                }
+            }
+            return await group.next() ?? .success(())
+        }
+
+        switch result {
+        case .failure(is CancellationError):
+            break
+        case .failure(let error):
+            XCTFail("Unexpected pre-cancelled refresh error: \(error)")
+        case .success:
+            XCTFail("Expected the pre-cancelled refresh to throw cancellation.")
+        }
+        XCTAssertEqual(manager.metadataScanCount, 0)
+    }
+
+    @MainActor
     func testCancellingRefreshCreatorDoesNotHideSharedScanFailureFromJoiner() async throws {
         let rootURL = try temporaryDirectory()
         let manager = CountingReaderFileManager()
