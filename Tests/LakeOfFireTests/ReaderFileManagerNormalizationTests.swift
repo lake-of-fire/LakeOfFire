@@ -9,6 +9,7 @@ private final class CountingReaderFileManager: ReaderFileManager, @unchecked Sen
     private(set) var metadataScanCount = 0
     var scanError: (any Swift.Error)?
     var scanDidStart: (() -> Void)?
+    var scanDelayNanoseconds: UInt64 = 100_000_000
 
     override func refreshFilesMetadata(
         drive: CloudDrive,
@@ -20,7 +21,7 @@ private final class CountingReaderFileManager: ReaderFileManager, @unchecked Sen
         if let scanError {
             throw scanError
         }
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: scanDelayNanoseconds)
         return []
     }
 }
@@ -132,6 +133,72 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         async let second: Void = manager.refreshAllFilesMetadata()
         _ = try await (first, second)
 
+        XCTAssertEqual(manager.metadataScanCount, 1)
+    }
+
+    @MainActor
+    func testCancellingRefreshCreatorDoesNotCancelSharedScan() async throws {
+        let rootURL = try temporaryDirectory()
+        let manager = CountingReaderFileManager()
+        manager.scanDelayNanoseconds = 500_000_000
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        let scanStarted = expectation(description: "shared metadata scan started")
+        manager.scanDidStart = { scanStarted.fulfill() }
+
+        let creator = Task { @MainActor in
+            try await manager.refreshAllFilesMetadata()
+        }
+        await fulfillment(of: [scanStarted], timeout: 1)
+        let joinerEntered = expectation(description: "metadata refresh joiner entered")
+        let joiner = Task { @MainActor in
+            joinerEntered.fulfill()
+            try await manager.refreshAllFilesMetadata()
+        }
+        await fulfillment(of: [joinerEntered], timeout: 1)
+        await Task.yield()
+        creator.cancel()
+
+        do {
+            try await creator.value
+            XCTFail("Expected the cancelled creator to stop awaiting the shared scan.")
+        } catch is CancellationError {
+            // Expected.
+        }
+        try await joiner.value
+        XCTAssertEqual(manager.metadataScanCount, 1)
+    }
+
+    @MainActor
+    func testCancellingRefreshJoinerDoesNotCancelOwner() async throws {
+        let rootURL = try temporaryDirectory()
+        let manager = CountingReaderFileManager()
+        manager.scanDelayNanoseconds = 500_000_000
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        let scanStarted = expectation(description: "shared metadata scan started")
+        manager.scanDidStart = { scanStarted.fulfill() }
+
+        let owner = Task { @MainActor in
+            try await manager.refreshAllFilesMetadata()
+        }
+        await fulfillment(of: [scanStarted], timeout: 1)
+        let joinerEntered = expectation(description: "metadata refresh joiner entered")
+        let joiner = Task { @MainActor in
+            joinerEntered.fulfill()
+            try await manager.refreshAllFilesMetadata()
+        }
+        await fulfillment(of: [joinerEntered], timeout: 1)
+        await Task.yield()
+        joiner.cancel()
+
+        do {
+            try await joiner.value
+            XCTFail("Expected the cancelled joiner to stop awaiting the shared scan.")
+        } catch is CancellationError {
+            // Expected.
+        }
+        try await owner.value
         XCTAssertEqual(manager.metadataScanCount, 1)
     }
 
