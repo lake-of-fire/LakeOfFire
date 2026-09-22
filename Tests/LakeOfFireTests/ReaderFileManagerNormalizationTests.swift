@@ -158,31 +158,53 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     func testCancellingRefreshCreatorDoesNotCancelSharedScan() async throws {
         let rootURL = try temporaryDirectory()
         let manager = CountingReaderFileManager()
-        manager.scanDelayNanoseconds = 500_000_000
+        manager.scanDelayNanoseconds = 0
         manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
         manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        let scanGate = ScanGate()
         let scanStarted = expectation(description: "shared metadata scan started")
+        let creatorAdmitted = expectation(description: "refresh creator waiter admitted")
+        let joinerAdmitted = expectation(description: "refresh joiner waiter admitted")
+        let creatorCompleted = expectation(description: "cancelled refresh creator completed")
         manager.scanDidStart = { scanStarted.fulfill() }
-
-        let creator = Task { @MainActor in
-            try await manager.refreshAllFilesMetadata()
+        manager.scanBlocker = { _ in await scanGate.wait() }
+        manager.refreshTaskWaiterDidAdmitForTesting = { role in
+            switch role {
+            case .creator:
+                creatorAdmitted.fulfill()
+            case .joiner:
+                joinerAdmitted.fulfill()
+            case .forcedJoiner:
+                XCTFail("Expected an ordinary refresh joiner.")
+            }
         }
-        await fulfillment(of: [scanStarted], timeout: 1)
-        let joinerEntered = expectation(description: "metadata refresh joiner entered")
+
+        let creator = Task { @MainActor () -> Result<Void, any Swift.Error> in
+            defer { creatorCompleted.fulfill() }
+            do {
+                try await manager.refreshAllFilesMetadata()
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }
+        await fulfillment(of: [scanStarted, creatorAdmitted], timeout: 1)
         let joiner = Task { @MainActor in
-            joinerEntered.fulfill()
             try await manager.refreshAllFilesMetadata()
         }
-        await fulfillment(of: [joinerEntered], timeout: 1)
-        await Task.yield()
+        await fulfillment(of: [joinerAdmitted], timeout: 1)
         creator.cancel()
+        await fulfillment(of: [creatorCompleted], timeout: 1)
 
-        do {
-            try await creator.value
+        switch await creator.value {
+        case .failure(is CancellationError):
+            break
+        case .failure(let error):
+            XCTFail("Unexpected creator error: \(error)")
+        case .success:
             XCTFail("Expected the cancelled creator to stop awaiting the shared scan.")
-        } catch is CancellationError {
-            // Expected.
         }
+        await scanGate.release()
         try await joiner.value
         XCTAssertEqual(manager.metadataScanCount, 1)
     }
@@ -191,31 +213,53 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     func testCancellingRefreshJoinerDoesNotCancelOwner() async throws {
         let rootURL = try temporaryDirectory()
         let manager = CountingReaderFileManager()
-        manager.scanDelayNanoseconds = 500_000_000
+        manager.scanDelayNanoseconds = 0
         manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
         manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        let scanGate = ScanGate()
         let scanStarted = expectation(description: "shared metadata scan started")
+        let ownerAdmitted = expectation(description: "refresh owner waiter admitted")
+        let joinerAdmitted = expectation(description: "refresh joiner waiter admitted")
+        let joinerCompleted = expectation(description: "cancelled refresh joiner completed")
         manager.scanDidStart = { scanStarted.fulfill() }
+        manager.scanBlocker = { _ in await scanGate.wait() }
+        manager.refreshTaskWaiterDidAdmitForTesting = { role in
+            switch role {
+            case .creator:
+                ownerAdmitted.fulfill()
+            case .joiner:
+                joinerAdmitted.fulfill()
+            case .forcedJoiner:
+                XCTFail("Expected an ordinary refresh joiner.")
+            }
+        }
 
         let owner = Task { @MainActor in
             try await manager.refreshAllFilesMetadata()
         }
-        await fulfillment(of: [scanStarted], timeout: 1)
-        let joinerEntered = expectation(description: "metadata refresh joiner entered")
-        let joiner = Task { @MainActor in
-            joinerEntered.fulfill()
-            try await manager.refreshAllFilesMetadata()
+        await fulfillment(of: [scanStarted, ownerAdmitted], timeout: 1)
+        let joiner = Task { @MainActor () -> Result<Void, any Swift.Error> in
+            defer { joinerCompleted.fulfill() }
+            do {
+                try await manager.refreshAllFilesMetadata()
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
         }
-        await fulfillment(of: [joinerEntered], timeout: 1)
-        await Task.yield()
+        await fulfillment(of: [joinerAdmitted], timeout: 1)
         joiner.cancel()
+        await fulfillment(of: [joinerCompleted], timeout: 1)
 
-        do {
-            try await joiner.value
+        switch await joiner.value {
+        case .failure(is CancellationError):
+            break
+        case .failure(let error):
+            XCTFail("Unexpected joiner error: \(error)")
+        case .success:
             XCTFail("Expected the cancelled joiner to stop awaiting the shared scan.")
-        } catch is CancellationError {
-            // Expected.
         }
+        await scanGate.release()
         try await owner.value
         XCTAssertEqual(manager.metadataScanCount, 1)
     }
@@ -307,8 +351,11 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         let secondScanGate = ScanGate()
         let firstScanStarted = expectation(description: "first inventory scan started")
         let secondScanStarted = expectation(description: "forced follow-up inventory scan started")
-        let forceRequesterEntered = expectation(description: "force requester entered")
+        let ownerAdmitted = expectation(description: "refresh owner waiter admitted")
+        let forceRequesterAdmitted = expectation(description: "forced refresh waiter admitted")
+        let ownerCompleted = expectation(description: "refresh owner completed")
         let forceRequesterCompleted = expectation(description: "force requester completed")
+        ownerCompleted.isInverted = true
         forceRequesterCompleted.isInverted = true
         var observedScanCount = 0
         manager.scanDidStart = {
@@ -332,21 +379,31 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
                 break
             }
         }
+        manager.refreshTaskWaiterDidAdmitForTesting = { role in
+            switch role {
+            case .creator:
+                ownerAdmitted.fulfill()
+            case .forcedJoiner:
+                forceRequesterAdmitted.fulfill()
+            case .joiner:
+                XCTFail("Expected the second caller to request a forced follow-up.")
+            }
+        }
 
         let owner = Task { @MainActor in
+            defer { ownerCompleted.fulfill() }
             try await manager.refreshAllFilesMetadata()
         }
-        await fulfillment(of: [firstScanStarted], timeout: 1)
+        await fulfillment(of: [firstScanStarted, ownerAdmitted], timeout: 1)
         let forceRequester = Task { @MainActor in
-            forceRequesterEntered.fulfill()
             try await manager.refreshAllFilesMetadata(force: true)
             forceRequesterCompleted.fulfill()
         }
-        await fulfillment(of: [forceRequesterEntered], timeout: 1)
-        await Task.yield()
+        await fulfillment(of: [forceRequesterAdmitted], timeout: 1)
         await firstScanGate.release()
         await fulfillment(of: [secondScanStarted], timeout: 1)
-        await fulfillment(of: [forceRequesterCompleted], timeout: 0.1)
+        await fulfillment(of: [ownerCompleted, forceRequesterCompleted], timeout: 0.1)
+        ownerCompleted.isInverted = false
         forceRequesterCompleted.isInverted = false
         await secondScanGate.release()
 

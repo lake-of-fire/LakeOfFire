@@ -547,7 +547,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         private var continuation: CheckedContinuation<Void, any Swift.Error>?
         private var resolution: Result<Void, any Swift.Error>?
 
-        func wait() async throws {
+        @MainActor
+        func wait(onAdmission: (() -> Void)? = nil) async throws {
             try await withCheckedThrowingContinuation { continuation in
                 lock.lock()
                 if let resolution {
@@ -556,6 +557,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 } else {
                     self.continuation = continuation
                     lock.unlock()
+                    onAdmission?()
                 }
             }
         }
@@ -829,9 +831,19 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
     /// Cancelling one caller releases only that caller. The keyed refresh task
     /// remains the inventory owner for every other creator or joiner.
+    enum RefreshTaskWaiterRole: Sendable {
+        case creator
+        case joiner
+        case forcedJoiner
+    }
+
+    @MainActor
+    var refreshTaskWaiterDidAdmitForTesting: ((RefreshTaskWaiterRole) -> Void)?
+
     @MainActor
     private func awaitRefreshTask(
-        _ refreshTask: Task<Void, any Swift.Error>
+        _ refreshTask: Task<Void, any Swift.Error>,
+        role: RefreshTaskWaiterRole
     ) async throws {
         let waiter = RefreshTaskWaiter()
         try await withTaskCancellationHandler {
@@ -839,7 +851,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             Task {
                 waiter.resolve(with: await refreshTask.result)
             }
-            try await waiter.wait()
+            try await waiter.wait { [weak self] in
+                self?.refreshTaskWaiterDidAdmitForTesting?(role)
+            }
         } onCancel: {
             waiter.resolve(with: .failure(CancellationError()))
         }
@@ -2125,7 +2139,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             if force {
                 refreshAllFilesMetadataNeedsFollowUp.insert(refreshIdentity)
             }
-            try await awaitRefreshTask(refreshAllFilesMetadataTask)
+            try await awaitRefreshTask(
+                refreshAllFilesMetadataTask,
+                role: force ? .forcedJoiner : .joiner
+            )
             return
         }
         if !force,
@@ -2235,7 +2252,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             } while refreshAllFilesMetadataNeedsFollowUp.contains(refreshIdentity) && !Task.isCancelled
         }
         refreshAllFilesMetadataTasks[refreshIdentity] = refreshTask
-        try await awaitRefreshTask(refreshTask)
+        try await awaitRefreshTask(refreshTask, role: .creator)
     }
     
     static let additionalFilePackageSuffixesToAvoidDescendingInto = [
