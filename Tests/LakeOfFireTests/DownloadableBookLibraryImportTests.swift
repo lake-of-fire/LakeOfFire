@@ -2272,6 +2272,176 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     }
 
     @MainActor
+    func testManualBookImportRejectsCancellationIgnoringCompletionAfterHostReplacement() async throws {
+        let modals = BookLibraryModalsModel()
+        let manager = ReaderFileManager()
+        let firstHost = NSObject()
+        let replacementHost = NSObject()
+        let selectedURL = URL(fileURLWithPath: "/tmp/selected.epub")
+        let staleURL = URL(string: "ebook://ebook/load/local/stale.epub")!
+        let currentURL = URL(string: "ebook://ebook/load/local/current.epub")!
+        let gate = ProcessorSnapshotGate()
+
+        modals.activateManualBookImportHost(firstHost, readerFileManager: manager)
+        modals.handleManualBookFileImporterResult(
+            .success(selectedURL),
+            host: firstHost,
+            readerFileManager: manager
+        ) { _ in
+            await gate.enterAndWait()
+            return staleURL
+        }
+        await gate.waitUntilEntered()
+
+        modals.activateManualBookImportHost(replacementHost, readerFileManager: manager)
+        modals.handleManualBookFileImporterResult(
+            .success(selectedURL),
+            host: replacementHost,
+            readerFileManager: manager
+        ) { _ in
+            currentURL
+        }
+        await Task.yield()
+        await gate.release()
+        await Task.yield()
+
+        XCTAssertEqual(modals.manualBookImportOutcome, .imported(currentURL))
+        XCTAssertNil(modals.manualBookImportFailure)
+    }
+
+    @MainActor
+    func testManualBookImportRejectsCallbackFromReplacedHost() async {
+        let modals = BookLibraryModalsModel()
+        let manager = ReaderFileManager()
+        let firstHost = NSObject()
+        let replacementHost = NSObject()
+        let selectedURL = URL(fileURLWithPath: "/tmp/selected.epub")
+        var didStartImport = false
+
+        modals.activateManualBookImportHost(firstHost, readerFileManager: manager)
+        modals.activateManualBookImportHost(replacementHost, readerFileManager: manager)
+        modals.handleManualBookFileImporterResult(
+            .success(selectedURL),
+            host: firstHost,
+            readerFileManager: manager
+        ) { _ in
+            didStartImport = true
+            return URL(string: "ebook://ebook/load/local/stale.epub")!
+        }
+        await Task.yield()
+
+        XCTAssertFalse(didStartImport)
+        XCTAssertNil(modals.manualBookImportOutcome)
+        XCTAssertNil(modals.manualBookImportFailure)
+    }
+
+    @MainActor
+    func testManualBookImportManagerReplacementRevokesOlderWork() async throws {
+        let modals = BookLibraryModalsModel()
+        let firstManager = ReaderFileManager()
+        let replacementManager = ReaderFileManager()
+        let host = NSObject()
+        let selectedURL = URL(fileURLWithPath: "/tmp/selected.epub")
+        let staleURL = URL(string: "ebook://ebook/load/local/stale.epub")!
+        let currentURL = URL(string: "ebook://ebook/load/local/current.epub")!
+        let gate = ProcessorSnapshotGate()
+
+        modals.activateManualBookImportHost(host, readerFileManager: firstManager)
+        modals.handleManualBookFileImporterResult(
+            .success(selectedURL),
+            host: host,
+            readerFileManager: firstManager
+        ) { _ in
+            await gate.enterAndWait()
+            return staleURL
+        }
+        await gate.waitUntilEntered()
+
+        modals.activateManualBookImportHost(host, readerFileManager: replacementManager)
+        modals.handleManualBookFileImporterResult(
+            .success(selectedURL),
+            host: host,
+            readerFileManager: replacementManager
+        ) { _ in
+            currentURL
+        }
+        await Task.yield()
+        await gate.release()
+        await Task.yield()
+
+        XCTAssertEqual(modals.manualBookImportOutcome, .imported(currentURL))
+    }
+
+    @MainActor
+    func testManualBookImportHostDeactivationSuppressesLateFailure() async throws {
+        let modals = BookLibraryModalsModel()
+        let manager = ReaderFileManager()
+        let host = NSObject()
+        let gate = ProcessorSnapshotGate()
+        let selectedURL = URL(fileURLWithPath: "/tmp/selected.epub")
+
+        modals.activateManualBookImportHost(host, readerFileManager: manager)
+        modals.handleManualBookFileImporterResult(.success(selectedURL), host: host, readerFileManager: manager) { _ in
+            await gate.enterAndWait()
+            throw TestError.postprocessorFailure
+        }
+        await gate.waitUntilEntered()
+        modals.deactivateManualBookImportHost(host)
+        await gate.release()
+        await Task.yield()
+
+        XCTAssertNil(modals.manualBookImportOutcome)
+        XCTAssertNil(modals.manualBookImportFailure)
+    }
+
+    @MainActor
+    func testManualBookImportFailureThenSuccessClearsOnlyManualImportError() async throws {
+        let modals = BookLibraryModalsModel()
+        let manager = ReaderFileManager()
+        let host = NSObject()
+        let selectedURL = URL(fileURLWithPath: "/tmp/selected.epub")
+        let importedURL = URL(string: "ebook://ebook/load/local/imported.epub")!
+
+        modals.activateManualBookImportHost(host, readerFileManager: manager)
+        modals.handleManualBookFileImporterResult(.success(selectedURL), host: host, readerFileManager: manager) { _ in
+            nil
+        }
+        await Task.yield()
+        XCTAssertEqual(modals.manualBookImportFailure, .missingImportResult)
+
+        modals.handleManualBookFileImporterResult(.success(selectedURL), host: host, readerFileManager: manager) { _ in
+            importedURL
+        }
+        await Task.yield()
+        XCTAssertEqual(modals.manualBookImportOutcome, .imported(importedURL))
+        XCTAssertNil(modals.manualBookImportFailure)
+    }
+
+    @MainActor
+    func testManualBookImportHostReplacementClearsPriorPresentation() async {
+        let modals = BookLibraryModalsModel()
+        let manager = ReaderFileManager()
+        let firstHost = NSObject()
+        let replacementHost = NSObject()
+        let selectedURL = URL(fileURLWithPath: "/tmp/selected.epub")
+
+        modals.activateManualBookImportHost(firstHost, readerFileManager: manager)
+        modals.handleManualBookFileImporterResult(
+            .success(selectedURL),
+            host: firstHost,
+            readerFileManager: manager
+        ) { _ in nil }
+        await Task.yield()
+        XCTAssertEqual(modals.manualBookImportFailure, .missingImportResult)
+
+        modals.activateManualBookImportHost(replacementHost, readerFileManager: manager)
+
+        XCTAssertNil(modals.manualBookImportOutcome)
+        XCTAssertNil(modals.manualBookImportFailure)
+        XCTAssertFalse(modals.canRetryManualBookImport)
+    }
+
+    @MainActor
     private func assertEnsureImportedIndexesBook(_ fixture: Fixture) async throws {
         let importedURL = try await assertEnsureImportedIndexesRealmMetadata(fixture)
         XCTAssertEqual(importedURL, fixture.expectedReaderURL)

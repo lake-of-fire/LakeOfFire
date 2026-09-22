@@ -16,9 +16,200 @@ public class BookLibraryModalsModel: ObservableObject {
     @Published public var showingEbookCatalogs = false
     @Published public var showingAddCatalog = false
     @Published public var isImportingBookFile = false
+    @Published private(set) var manualBookImportOutcome: ManualBookImportOutcome?
+    @Published private(set) var manualBookImportFailure: ManualBookImportFailure?
+
+    private var manualBookImportTask: Task<Void, Never>?
+    private var manualBookImportGeneration: UInt64 = 0
+    private var manualBookImportHostIdentity: ObjectIdentifier?
+    private var manualBookImportManagerIdentity: ObjectIdentifier?
+    private var manualBookImportRetry: (() -> Void)?
 
     public init() { }
+
+    func activateManualBookImportHost(_ host: AnyObject, readerFileManager: ReaderFileManager) {
+        let hostIdentity = ObjectIdentifier(host)
+        let managerIdentity = ObjectIdentifier(readerFileManager)
+        guard manualBookImportHostIdentity != hostIdentity || manualBookImportManagerIdentity != managerIdentity else {
+            return
+        }
+        revokeManualBookImport(clearPresentation: true)
+        manualBookImportHostIdentity = hostIdentity
+        manualBookImportManagerIdentity = managerIdentity
+    }
+
+    func deactivateManualBookImportHost(_ host: AnyObject) {
+        guard manualBookImportHostIdentity == ObjectIdentifier(host) else { return }
+        revokeManualBookImport(clearPresentation: true)
+        manualBookImportHostIdentity = nil
+        manualBookImportManagerIdentity = nil
+    }
+
+    func handleManualBookFileImporterResult(
+        _ result: Result<URL, Error>,
+        host: AnyObject,
+        readerFileManager: ReaderFileManager,
+        importFile: @escaping @MainActor (URL) async throws -> URL?
+    ) {
+        guard ownsManualBookImportHost(host, readerFileManager: readerFileManager) else { return }
+        switch result {
+        case .success(let url):
+            startManualBookImport(
+                url: url,
+                host: host,
+                readerFileManager: readerFileManager,
+                importFile: importFile
+            )
+        case .failure(let error):
+            publishManualBookImportFailure(
+                .fileImporterFailed(error.localizedDescription),
+                host: host,
+                readerFileManager: readerFileManager
+            )
+        }
+    }
+
+    func retryManualBookImport() {
+        manualBookImportRetry?()
+    }
+
+    func dismissManualBookImportFailure() {
+        manualBookImportFailure = nil
+        manualBookImportRetry = nil
+    }
+
+    func ownsManualBookImportHost(_ host: AnyObject, readerFileManager: ReaderFileManager) -> Bool {
+        manualBookImportHostIdentity == ObjectIdentifier(host)
+            && manualBookImportManagerIdentity == ObjectIdentifier(readerFileManager)
+    }
+
+    var canRetryManualBookImport: Bool {
+        manualBookImportRetry != nil
+    }
+
+    private func startManualBookImport(
+        url: URL,
+        host: AnyObject,
+        readerFileManager: ReaderFileManager,
+        importFile: @escaping @MainActor (URL) async throws -> URL?
+    ) {
+        let hostIdentity = ObjectIdentifier(host)
+        let managerIdentity = ObjectIdentifier(readerFileManager)
+        guard manualBookImportHostIdentity == hostIdentity,
+              manualBookImportManagerIdentity == managerIdentity
+        else { return }
+        revokeManualBookImport()
+        manualBookImportHostIdentity = hostIdentity
+        manualBookImportManagerIdentity = managerIdentity
+        let generation = manualBookImportGeneration
+        let retry = { [weak self, weak host, weak readerFileManager] in
+            guard let self, let host, let readerFileManager else { return }
+            self.startManualBookImport(
+                url: url,
+                host: host,
+                readerFileManager: readerFileManager,
+                importFile: importFile
+            )
+        }
+        manualBookImportRetry = retry
+        manualBookImportTask = Task { @MainActor [weak self] in
+            let outcome: ManualBookImportOutcome
+            do {
+                guard let importedURL = try await importFile(url) else {
+                    outcome = .failed(.missingImportResult)
+                    self?.finishManualBookImport(
+                        outcome,
+                        generation: generation,
+                        hostIdentity: hostIdentity,
+                        managerIdentity: managerIdentity
+                    )
+                    return
+                }
+                outcome = .imported(importedURL)
+            } catch is CancellationError {
+                outcome = .cancelled
+            } catch {
+                outcome = .failed(.importFailed(error.localizedDescription))
+            }
+            self?.finishManualBookImport(
+                outcome,
+                generation: generation,
+                hostIdentity: hostIdentity,
+                managerIdentity: managerIdentity
+            )
+        }
+    }
+
+    private func publishManualBookImportFailure(
+        _ failure: ManualBookImportFailure,
+        host: AnyObject,
+        readerFileManager: ReaderFileManager
+    ) {
+        guard manualBookImportHostIdentity == ObjectIdentifier(host),
+              manualBookImportManagerIdentity == ObjectIdentifier(readerFileManager)
+        else { return }
+        revokeManualBookImport()
+        manualBookImportOutcome = .failed(failure)
+        manualBookImportFailure = failure
+        manualBookImportRetry = nil
+    }
+
+    private func finishManualBookImport(
+        _ outcome: ManualBookImportOutcome,
+        generation: UInt64,
+        hostIdentity: ObjectIdentifier,
+        managerIdentity: ObjectIdentifier
+    ) {
+        guard !Task.isCancelled,
+              manualBookImportGeneration == generation,
+              manualBookImportHostIdentity == hostIdentity,
+              manualBookImportManagerIdentity == managerIdentity
+        else { return }
+        manualBookImportTask = nil
+        manualBookImportOutcome = outcome
+        switch outcome {
+        case .imported:
+            manualBookImportFailure = nil
+            manualBookImportRetry = nil
+        case .failed(let failure):
+            manualBookImportFailure = failure
+        case .cancelled, .superseded:
+            break
+        }
+    }
+
+    private func revokeManualBookImport(clearPresentation: Bool = false) {
+        manualBookImportTask?.cancel()
+        manualBookImportTask = nil
+        manualBookImportGeneration &+= 1
+        guard clearPresentation else { return }
+        manualBookImportOutcome = nil
+        manualBookImportFailure = nil
+        manualBookImportRetry = nil
+    }
 }
+
+public enum ManualBookImportFailure: LocalizedError, Sendable, Equatable {
+    case fileImporterFailed(String)
+    case missingImportResult
+    case importFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .fileImporterFailed(let message), .importFailed(let message): return message
+        case .missingImportResult: return "The selected book could not be added to your library."
+        }
+    }
+}
+
+public enum ManualBookImportOutcome: Sendable, Equatable {
+    case imported(URL)
+    case failed(ManualBookImportFailure)
+    case cancelled
+    case superseded
+}
+
+private final class BookLibrarySheetsHost: NSObject, ObservableObject { }
 
 struct BookLibrarySheetsModifier: ViewModifier {
     let isActive: Bool
@@ -26,6 +217,7 @@ struct BookLibrarySheetsModifier: ViewModifier {
     @EnvironmentObject private var readerFileManager: ReaderFileManager
 
     @StateObject private var opdsCatalogsViewModel = OPDSCatalogsViewModel()
+    @StateObject private var host = BookLibrarySheetsHost()
 
     func body(content: Content) -> some View {
         content
@@ -42,24 +234,72 @@ struct BookLibrarySheetsModifier: ViewModifier {
             .environmentObject(opdsCatalogsViewModel)
             .background {
                 Color.clear
-                    .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile, allowedContentTypes: readerFileManager.readerContentMimeTypes) { result in
-                        Task { @MainActor in
-                            switch result {
-                            case .success(let url):
-                                do {
-                                    guard let _ = try await readerFileManager.importFile(fileURL: url, fromDownloadURL: nil) else {
-                                        print("Couldn't import \(url.absoluteString)")
-                                        return
-                                    }
-                                } catch {
-                                    print("Couldn't import \(url.absoluteString): \(error)")
-                                    return
-                                }
-                            case .failure(let error):
-                                print(error)
-                            }
+                    .fileImporter(
+                        isPresented: $bookLibraryModalsModel.isImportingBookFile.gatedBy(isActive),
+                        allowedContentTypes: readerFileManager.readerContentMimeTypes
+                    ) { result in
+                        guard isActive else { return }
+                        bookLibraryModalsModel.handleManualBookFileImporterResult(
+                            result,
+                            host: host,
+                            readerFileManager: readerFileManager
+                        ) { url in
+                            try await readerFileManager.importFile(fileURL: url, fromDownloadURL: nil)
                         }
                     }
+            }
+            .onAppear {
+                if isActive {
+                    bookLibraryModalsModel.activateManualBookImportHost(
+                        host,
+                        readerFileManager: readerFileManager
+                    )
+                }
+            }
+            .onChange(of: isActive) { isActive in
+                if isActive {
+                    bookLibraryModalsModel.activateManualBookImportHost(
+                        host,
+                        readerFileManager: readerFileManager
+                    )
+                } else {
+                    bookLibraryModalsModel.deactivateManualBookImportHost(host)
+                }
+            }
+            .onChange(of: ObjectIdentifier(readerFileManager)) { _ in
+                if isActive {
+                    bookLibraryModalsModel.activateManualBookImportHost(
+                        host,
+                        readerFileManager: readerFileManager
+                    )
+                }
+            }
+            .onDisappear {
+                bookLibraryModalsModel.deactivateManualBookImportHost(host)
+            }
+            .alert(
+                "Couldn’t Import Book",
+                isPresented: Binding(
+                    get: {
+                        isActive
+                            && bookLibraryModalsModel.ownsManualBookImportHost(
+                                host,
+                                readerFileManager: readerFileManager
+                            )
+                            && bookLibraryModalsModel.manualBookImportFailure != nil
+                    },
+                    set: { if !$0 { bookLibraryModalsModel.dismissManualBookImportFailure() } }
+                ),
+                presenting: bookLibraryModalsModel.manualBookImportFailure
+            ) { _ in
+                if bookLibraryModalsModel.canRetryManualBookImport {
+                    Button("Retry") { bookLibraryModalsModel.retryManualBookImport() }
+                }
+                Button("Dismiss", role: .cancel) {
+                    bookLibraryModalsModel.dismissManualBookImportFailure()
+                }
+            } message: { failure in
+                Text(failure.localizedDescription)
             }
     }
 }
