@@ -1391,6 +1391,32 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         )
     }
 
+    public enum CatalogDownloadReadiness: Equatable, Sendable {
+        case imported(URL)
+        case verifiedInstalledArtifact
+    }
+
+    /// Catalog commands may reuse a live imported row for the acquisition URL.
+    /// Without that provenance, require SwiftUIDownloads' receipt or checksum
+    /// validation before accepting a retained artifact at the catalog path.
+    /// Generic staged imports deliberately remain path-based in
+    /// `ensureImported(downloadable:)` for manual import compatibility.
+    @MainActor
+    public func catalogDownloadReadiness(
+        for downloadable: Downloadable
+    ) async throws -> CatalogDownloadReadiness? {
+        let realmConfiguration = resolvedHistoryRealmConfiguration
+        if let readerURL = try await readerFileURL(
+            forDownloadProvenance: downloadable.url,
+            realmConfiguration: realmConfiguration
+        ) {
+            return .imported(readerURL)
+        }
+        return await downloadable.hasVerifiedInstalledArtifact()
+            ? .verifiedInstalledArtifact
+            : nil
+    }
+
     /// Moves only the old downloader shape: one normal file immediately below
     /// a connected drive root. The captured processor snapshot determines both
     /// the classification and the reader URL used for the target postimage.

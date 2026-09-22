@@ -2319,6 +2319,10 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     @MainActor
     func testRefreshDownloadedEditorsPicksPublishesExistingLibraryDownload() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            _ = try await fixture.manager.importFile(
+                fileURL: fixture.downloadable.localDestination,
+                fromDownloadURL: fixture.downloadable.url
+            )
             let publication = Publication(
                 title: fixture.downloadable.name,
                 downloadURL: fixture.downloadable.url
@@ -2339,6 +2343,10 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     @MainActor
     func testRefreshDownloadedEditorsPicksReportsMissingAcquisitionAlongsideImportedBook() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            _ = try await fixture.manager.importFile(
+                fileURL: fixture.downloadable.localDestination,
+                fromDownloadURL: fixture.downloadable.url
+            )
             let importedPublication = Publication(
                 title: fixture.downloadable.name,
                 downloadURL: fixture.downloadable.url
@@ -2362,6 +2370,38 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 fixture.manager.files(ofTypes: [.epub, .epubZip])?.map(\.url),
                 [fixture.expectedReaderURL]
             )
+        }
+    }
+
+    @MainActor
+    func testRefreshDownloadedEditorsPicksRejectsForeignCatalogArtifact() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: false) { fixture in
+            let resolvedCatalogDownload = try await fixture.manager.downloadable(
+                url: fixture.downloadable.url,
+                name: fixture.downloadable.name
+            )
+            let catalogDownload = try XCTUnwrap(resolvedCatalogDownload)
+            try FileManager.default.createDirectory(
+                at: catalogDownload.localDestination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("foreign catalog artifact".utf8).write(to: catalogDownload.localDestination)
+            let publication = Publication(
+                title: fixture.downloadable.name,
+                downloadURL: fixture.downloadable.url
+            )
+
+            let outcome = await BookLibraryViewModel.refreshDownloadedEditorsPicks(
+                publications: [publication],
+                readerFileManager: fixture.manager
+            )
+
+            XCTAssertEqual(outcome.outcomes[publication.id], .failed(.notLocal))
+            let readiness = try await fixture.manager.catalogDownloadReadiness(
+                for: catalogDownload
+            )
+            XCTAssertNil(readiness)
+            XCTAssertNil(fixture.manager.files(ofTypes: [.epub, .epubZip]))
         }
     }
 

@@ -653,26 +653,42 @@ public class BookLibraryViewModel: ObservableObject {
                     outcomes[publication.id] = .failed(.unavailable)
                     continue
                 }
-                guard await downloadable.existsLocally() else {
+                guard let readiness = try await readerFileManager.catalogDownloadReadiness(
+                    for: downloadable
+                ) else {
                     outcomes[publication.id] = .failed(.notLocal)
                     continue
                 }
-                localDownloads.append((publication, downloadable))
+                switch readiness {
+                case let .imported(readerURL):
+                    outcomes[publication.id] = .imported(readerURL)
+                case .verifiedInstalledArtifact:
+                    localDownloads.append((publication, downloadable))
+                }
             } catch {
                 outcomes[publication.id] = .failed(.unavailable)
             }
         }
         if !localDownloads.isEmpty {
-            await DownloadController.shared.ensureDownloaded(localDownloads.map { $0.downloadable })
+            await DownloadController.shared.ensureDownloaded(
+                localDownloads.map { $0.downloadable }
+            )
         }
         for entry in localDownloads {
             do {
                 guard try await entry.downloadable.awaitCompletionOrFailure() else {
-                    outcomes[entry.publication.id] = .failed(.downloadFailed("The book download failed."))
+                    outcomes[entry.publication.id] = .failed(.downloadFailed(
+                        entry.downloadable.failureMessage ?? "The book download failed."
+                    ))
                     continue
                 }
+            } catch is CancellationError {
+                outcomes[entry.publication.id] = .cancelled
+                continue
             } catch {
-                outcomes[entry.publication.id] = .failed(.downloadFailed(error.localizedDescription))
+                outcomes[entry.publication.id] = .failed(.downloadFailed(
+                    error.localizedDescription
+                ))
                 continue
             }
             outcomes[entry.publication.id] = await reconcileDownloadedPublication(
@@ -990,7 +1006,20 @@ public class BookLibraryViewModel: ObservableObject {
         if downloadable.isFailed {
             return .failed(.downloadFailed(downloadable.failureMessage ?? "The book download failed."))
         }
-        guard await downloadable.existsLocally() else { return .failed(.notLocal) }
+        let readiness: ReaderFileManager.CatalogDownloadReadiness
+        do {
+            guard let resolved = try await readerFileManager.catalogDownloadReadiness(
+                for: downloadable
+            ) else {
+                return .failed(.notLocal)
+            }
+            readiness = resolved
+        } catch {
+            return .failed(.unavailable)
+        }
+        if case let .imported(readerURL) = readiness {
+            return .imported(readerURL)
+        }
         do {
             guard let importedURL = try await readerFileManager.ensureImported(downloadable: downloadable) else {
                 return .failed(.missingImportResult)
@@ -1022,25 +1051,58 @@ public class BookLibraryViewModel: ObservableObject {
         } catch {
             return .failed(.unavailable)
         }
-        let wasAlreadyLocal = await downloadable.existsLocally()
+        var readiness: ReaderFileManager.CatalogDownloadReadiness?
+        do {
+            readiness = try await readerFileManager.catalogDownloadReadiness(
+                for: downloadable
+            )
+        } catch {
+            return .failed(.unavailable)
+        }
+        let wasAlreadyLocal = readiness != nil
         if !wasAlreadyLocal {
             guard allowDownload else { return .failed(.notLocal) }
             await DownloadController.shared.ensureDownloaded([downloadable])
+            do {
+                guard try await downloadable.awaitCompletionOrFailure() else {
+                    return .failed(.downloadFailed(
+                        downloadable.failureMessage ?? "The book download failed."
+                    ))
+                }
+            } catch is CancellationError {
+                return .cancelled
+            } catch {
+                return .failed(.downloadFailed(error.localizedDescription))
+            }
+            do {
+                readiness = try await readerFileManager.catalogDownloadReadiness(
+                    for: downloadable
+                )
+            } catch {
+                return .failed(.unavailable)
+            }
         }
         if downloadable.isFailed {
             return .failed(.downloadFailed(downloadable.failureMessage ?? "The book download failed."))
         }
-        guard await downloadable.existsLocally() else { return .failed(.notLocal) }
+        guard let readiness else { return .failed(.notLocal) }
         let importedURL: URL
-        do {
-            guard let resolved = try await readerFileManager.ensureImported(downloadable: downloadable) else {
-                return .failed(.missingImportResult)
+        switch readiness {
+        case let .imported(readerURL):
+            importedURL = readerURL
+        case .verifiedInstalledArtifact:
+            do {
+                guard let resolved = try await readerFileManager.ensureImported(
+                    downloadable: downloadable
+                ) else {
+                    return .failed(.missingImportResult)
+                }
+                importedURL = resolved
+            } catch is CancellationError {
+                return .cancelled
+            } catch {
+                return .failed(.importFailed(error.localizedDescription))
             }
-            importedURL = resolved
-        } catch is CancellationError {
-            return .cancelled
-        } catch {
-            return .failed(.importFailed(error.localizedDescription))
         }
         guard wasAlreadyLocal else { return .imported(importedURL) }
         let content: any ReaderContentProtocol
