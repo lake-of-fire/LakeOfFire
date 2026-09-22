@@ -715,6 +715,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     private let allowsCloudDrive: Bool
     private let sourceAccess: ReaderFileSourceAccess
     private let availabilityAccess: ReaderFileAvailabilityAccess
+    private let legacyRootFileRemover: @Sendable (CloudDrive, RootRelativePath) async throws -> Void
 
     private static var systemAvailabilityAccess: ReaderFileAvailabilityAccess {
         ReaderFileAvailabilityAccess(
@@ -731,6 +732,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         allowsCloudDrive = true
         sourceAccess = .securityScoped
         availabilityAccess = Self.systemAvailabilityAccess
+        legacyRootFileRemover = { drive, path in
+            try await drive.removeFile(at: path)
+        }
     }
 
     /// Creates a file manager whose imports and reads remain below one local
@@ -741,17 +745,27 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         allowsCloudDrive = false
         sourceAccess = .securityScoped
         availabilityAccess = Self.systemAvailabilityAccess
+        legacyRootFileRemover = { drive, path in
+            try await drive.removeFile(at: path)
+        }
     }
 
     init(
         defaultLocalRootURLProvider: @escaping @Sendable () -> URL,
         sourceAccess: ReaderFileSourceAccess = .securityScoped,
-        availabilityAccess: ReaderFileAvailabilityAccess? = nil
+        availabilityAccess: ReaderFileAvailabilityAccess? = nil,
+        legacyRootFileRemover: @escaping @Sendable (
+            CloudDrive,
+            RootRelativePath
+        ) async throws -> Void = { drive, path in
+            try await drive.removeFile(at: path)
+        }
     ) {
         self.defaultLocalRootURLProvider = defaultLocalRootURLProvider
         allowsCloudDrive = true
         self.sourceAccess = sourceAccess
         self.availabilityAccess = availabilityAccess ?? Self.systemAvailabilityAccess
+        self.legacyRootFileRemover = legacyRootFileRemover
     }
 
     private var resolvedHistoryRealmConfiguration: Realm.Configuration {
@@ -1390,7 +1404,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             return targetReaderURL
         }
         do {
-            try await drive.removeFile(at: sourceRelativePath)
+            try await legacyRootFileRemover(drive, sourceRelativePath)
         } catch {
             // The committed receipt is the recovery owner; a failed removal
             // deliberately leaves the soft tombstone and receipt intact.
@@ -1561,7 +1575,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 let sourceExists = try await drive.fileExists(at: sourceRelativePath)
                 if sourceExists {
                     do {
-                        try await drive.removeFile(at: sourceRelativePath)
+                        try await legacyRootFileRemover(drive, sourceRelativePath)
                     } catch {
                         continue
                     }

@@ -10,12 +10,55 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     private enum TestError: Swift.Error {
         case sourceAccessDenied
         case postprocessorFailure
+        case removalFailed
     }
 
     private struct Fixture {
         let manager: ReaderFileManager
         let downloadable: Downloadable
         let expectedReaderURL: URL
+    }
+
+    private struct RelocationReceiptFixture {
+        let configuration: Realm.Configuration
+        let receiptIdentifier: String
+        let sourceURL: URL
+        let targetURL: URL
+        let targetContentFilePrimaryKey: String
+    }
+
+    private final class RemovalProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var recordedAttemptCount = 0
+        private var failuresRemaining: Int
+
+        init(failuresRemaining: Int = 0) {
+            self.failuresRemaining = failuresRemaining
+        }
+
+        private func beginAttempt() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            recordedAttemptCount += 1
+            let shouldFail = failuresRemaining > 0
+            if shouldFail {
+                failuresRemaining -= 1
+            }
+            return shouldFail
+        }
+
+        func remove(_ drive: CloudDrive, at path: RootRelativePath) async throws {
+            if beginAttempt() {
+                throw TestError.removalFailed
+            }
+            try await drive.removeFile(at: path)
+        }
+
+        var attemptCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return recordedAttemptCount
+        }
     }
 
     private final class SourceAccessProbe {
@@ -175,6 +218,12 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
         downloadIsAlreadyInLibrary: Bool,
         downloadURL: URL = URL(string: "https://example.com/editor-picks/regression.epub")!,
         sourceAccess: ReaderFileSourceAccess = .securityScoped,
+        legacyRootFileRemover: @escaping @Sendable (
+            CloudDrive,
+            RootRelativePath
+        ) async throws -> Void = { drive, path in
+            try await drive.removeFile(at: path)
+        },
         _ operation: (Fixture) async throws -> T
     ) async throws -> T {
         let baseURL = FileManager.default.temporaryDirectory
@@ -208,7 +257,8 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
 
         let manager = ReaderFileManager(
             defaultLocalRootURLProvider: { libraryRootURL },
-            sourceAccess: sourceAccess
+            sourceAccess: sourceAccess,
+            legacyRootFileRemover: legacyRootFileRemover
         )
         manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
         ReaderFileManager.shared = manager
@@ -225,6 +275,144 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
             downloadable: downloadable,
             expectedReaderURL: URL(string: "ebook://ebook/load/local/Books/regression.epub")!
         ))
+    }
+
+    @MainActor
+    private func admitLegacyRootRelocationReceipt(
+        fixture: Fixture,
+        filename: String
+    ) async throws -> RelocationReceiptFixture {
+        let drive = try XCTUnwrap(fixture.manager.localDrive)
+        let sourceURL = drive.rootDirectory.appendingPathComponent(filename)
+        let targetURL = drive.rootDirectory.appendingPathComponent("Books/\(filename)")
+        try FileManager.default.copyItem(at: fixture.downloadable.localDestination, to: sourceURL)
+        try FileManager.default.createDirectory(
+            at: targetURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.copyItem(at: sourceURL, to: targetURL)
+        try await fixture.manager.refreshAllFilesMetadata(force: true)
+
+        let configuration = ReaderContentLoader.historyRealmConfiguration
+        let sourceReaderURL = try XCTUnwrap(
+            URL(string: "ebook://ebook/load/local/\(filename)")
+        )
+        let targetReaderURL = try XCTUnwrap(
+            URL(string: "ebook://ebook/load/local/Books/\(filename)")
+        )
+        let sourceAttributes = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
+        let targetAttributes = try FileManager.default.attributesOfItem(atPath: targetURL.path)
+        let storageScope = [
+            "memory:\(try XCTUnwrap(configuration.inMemoryIdentifier))",
+            drive.rootDirectory.standardizedFileURL.absoluteString,
+            "local",
+        ]
+            .map { "\($0.utf8.count):\($0)" }
+            .joined(separator: "|")
+
+        return try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            let source = try XCTUnwrap(
+                realm.objects(ContentFile.self)
+                    .filter(NSPredicate(
+                        format: "url == %@",
+                        sourceReaderURL.absoluteString as CVarArg
+                    ))
+                    .first
+            )
+            let target = try XCTUnwrap(
+                realm.objects(ContentFile.self)
+                    .filter(NSPredicate(
+                        format: "url == %@",
+                        targetReaderURL.absoluteString as CVarArg
+                    ))
+                    .first
+            )
+            let receiptIdentifier = ReaderFileLegacyRootRelocationReceipt
+                .makeReceiptIdentifier(
+                    storageScopeIdentifier: storageScope,
+                    sourceRelativePath: filename,
+                    sourceContentFilePrimaryKey: source.compoundKey
+                )
+            let sourceContentFilePrimaryKey = source.compoundKey
+            let targetContentFilePrimaryKey = target.compoundKey
+            try await realm.asyncWrite {
+                let receipt = ReaderFileLegacyRootRelocationReceipt()
+                receipt.receiptIdentifier = receiptIdentifier
+                receipt.storageScopeIdentifier = storageScope
+                receipt.sourceRelativePath = filename
+                receipt.sourceReaderBackingURLString =
+                    "reader-file://file/load/local/\(filename)"
+                receipt.sourceContentFilePrimaryKey = sourceContentFilePrimaryKey
+                receipt.sourceContentFileCreatedAt = source.createdAt
+                receipt.sourceModifiedAt = sourceAttributes[.modificationDate] as? Date
+                receipt.sourceFileSize =
+                    (sourceAttributes[.size] as? NSNumber)?.int64Value ?? -1
+                receipt.targetReaderURLString = targetReaderURL.absoluteString
+                receipt.targetContentFilePrimaryKey = targetContentFilePrimaryKey
+                receipt.targetContentFileCreatedAt = target.createdAt
+                receipt.targetModifiedAt = targetAttributes[.modificationDate] as? Date
+                receipt.targetFileSize =
+                    (targetAttributes[.size] as? NSNumber)?.int64Value ?? -1
+                realm.add(receipt)
+                source.isDeleted = true
+                source.refreshChangeMetadata(explicitlyModified: true)
+            }
+            return RelocationReceiptFixture(
+                configuration: configuration,
+                receiptIdentifier: receiptIdentifier,
+                sourceURL: sourceURL,
+                targetURL: targetURL,
+                targetContentFilePrimaryKey: targetContentFilePrimaryKey
+            )
+        }()
+    }
+
+    @RealmBackgroundActor
+    private func assertLegacyRootRelocationReceipt(
+        _ receipt: RelocationReceiptFixture,
+        isPresent: Bool
+    ) async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: receipt.configuration
+        )
+        XCTAssertEqual(
+            realm.object(
+                ofType: ReaderFileLegacyRootRelocationReceipt.self,
+                forPrimaryKey: receipt.receiptIdentifier
+            ) != nil,
+            isPresent
+        )
+        XCTAssertTrue(
+            realm.object(
+                ofType: ContentFile.self,
+                forPrimaryKey: receipt.targetContentFilePrimaryKey
+            )?.isDeleted == false
+        )
+    }
+
+    @MainActor
+    private func assertLegacyRootRelocationReceiptAdmitted(
+        configuration: Realm.Configuration
+    ) async throws {
+        try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            let receipt = try XCTUnwrap(
+                realm.objects(ReaderFileLegacyRootRelocationReceipt.self).first
+            )
+            XCTAssertTrue(
+                realm.object(
+                    ofType: ContentFile.self,
+                    forPrimaryKey: receipt.sourceContentFilePrimaryKey
+                )?.isDeleted == true
+            )
+            XCTAssertTrue(
+                realm.object(
+                    ofType: ContentFile.self,
+                    forPrimaryKey: receipt.targetContentFilePrimaryKey
+                )?.isDeleted == false
+            )
+        }()
     }
 
     @MainActor
@@ -309,113 +497,109 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     @MainActor
     func testRefreshDrainsReceiptAfterSourceWasRemovedBeforeReceiptCleanup() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: false) { fixture in
+            let receipt = try await admitLegacyRootRelocationReceipt(
+                fixture: fixture,
+                filename: "crash.epub"
+            )
+            try FileManager.default.removeItem(at: receipt.sourceURL)
+
+            try await fixture.manager.refreshAllFilesMetadata(force: true)
+            try await assertLegacyRootRelocationReceipt(receipt, isPresent: false)
+        }
+    }
+
+    @MainActor
+    func testEnsureImportedRetriesLegacyRootRemovalAfterInitialPhysicalDeletionFailure() async throws {
+        let removalProbe = RemovalProbe(failuresRemaining: 1)
+        try await withFixture(
+            downloadIsAlreadyInLibrary: false,
+            legacyRootFileRemover: { drive, path in
+                try await removalProbe.remove(drive, at: path)
+            }
+        ) { fixture in
             let drive = try XCTUnwrap(fixture.manager.localDrive)
-            let sourceURL = drive.rootDirectory.appendingPathComponent("crash.epub")
-            let targetURL = drive.rootDirectory.appendingPathComponent("Books/crash.epub")
-            try FileManager.default.copyItem(
-                at: fixture.downloadable.localDestination,
-                to: sourceURL
+            let sourceURL = drive.rootDirectory.appendingPathComponent("retry.epub")
+            let targetURL = drive.rootDirectory.appendingPathComponent("Books/retry.epub")
+            try FileManager.default.copyItem(at: fixture.downloadable.localDestination, to: sourceURL)
+            let legacyDownload = Downloadable(
+                url: URL(string: "https://example.com/retry.epub")!,
+                name: "Retry EPUB",
+                localDestination: sourceURL
             )
-            try FileManager.default.createDirectory(
-                at: targetURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try FileManager.default.copyItem(at: sourceURL, to: targetURL)
-            try await fixture.manager.refreshAllFilesMetadata(force: true)
 
-            let configuration = ReaderContentLoader.historyRealmConfiguration
-            let realm = try await Realm.open(configuration: configuration)
-            let sourceReaderURL = try XCTUnwrap(
-                URL(string: "ebook://ebook/load/local/crash.epub")
+            let relocatedURL = try await fixture.manager.ensureImported(downloadable: legacyDownload)
+            XCTAssertEqual(
+                relocatedURL,
+                URL(string: "ebook://ebook/load/local/Books/retry.epub")
             )
-            let targetReaderURL = try XCTUnwrap(
-                URL(string: "ebook://ebook/load/local/Books/crash.epub")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: sourceURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: targetURL.path))
+            XCTAssertEqual(removalProbe.attemptCount, 1)
+            try await assertLegacyRootRelocationReceiptAdmitted(
+                configuration: ReaderContentLoader.historyRealmConfiguration
             )
-            let source = try XCTUnwrap(
-                realm.objects(ContentFile.self)
-                    .filter(NSPredicate(
-                        format: "url == %@",
-                        sourceReaderURL.absoluteString as CVarArg
-                    ))
-                    .first
-            )
-            let target = try XCTUnwrap(
-                realm.objects(ContentFile.self)
-                    .filter(NSPredicate(
-                        format: "url == %@",
-                        targetReaderURL.absoluteString as CVarArg
-                    ))
-                    .first
-            )
-            let sourceAttributes = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
-            let targetAttributes = try FileManager.default.attributesOfItem(atPath: targetURL.path)
-            let storageScope = [
-                "memory:\(try XCTUnwrap(configuration.inMemoryIdentifier))",
-                drive.rootDirectory.standardizedFileURL.absoluteString,
-                "local",
-            ]
-                .map { "\($0.utf8.count):\($0)" }
-                .joined(separator: "|")
-            let sourceContentFilePrimaryKey = source.compoundKey
-            let sourceContentFileCreatedAt = source.createdAt
-            let sourceModifiedAt = sourceAttributes[.modificationDate] as? Date
-            let sourceFileSize = (sourceAttributes[.size] as? NSNumber)?.int64Value ?? -1
-            let targetContentFilePrimaryKey = target.compoundKey
-            let targetContentFileCreatedAt = target.createdAt
-            let targetModifiedAt = targetAttributes[.modificationDate] as? Date
-            let targetFileSize = (targetAttributes[.size] as? NSNumber)?.int64Value ?? -1
-            let receiptIdentifier = ReaderFileLegacyRootRelocationReceipt
-                .makeReceiptIdentifier(
-                    storageScopeIdentifier: storageScope,
-                    sourceRelativePath: "crash.epub",
-                    sourceContentFilePrimaryKey: sourceContentFilePrimaryKey
-                )
-            try await { @RealmBackgroundActor in
-                let writeRealm = try await RealmBackgroundActor.shared.cachedRealm(
-                    for: configuration
-                )
-                try await writeRealm.asyncWrite {
-                    let actorSource = try XCTUnwrap(writeRealm.object(
-                        ofType: ContentFile.self,
-                        forPrimaryKey: sourceContentFilePrimaryKey
-                    ))
-                    let receipt = ReaderFileLegacyRootRelocationReceipt()
-                    receipt.receiptIdentifier = receiptIdentifier
-                    receipt.storageScopeIdentifier = storageScope
-                    receipt.sourceRelativePath = "crash.epub"
-                    receipt.sourceReaderBackingURLString =
-                        "reader-file://file/load/local/crash.epub"
-                    receipt.sourceContentFilePrimaryKey = sourceContentFilePrimaryKey
-                    receipt.sourceContentFileCreatedAt = sourceContentFileCreatedAt
-                    receipt.sourceModifiedAt = sourceModifiedAt
-                    receipt.sourceFileSize = sourceFileSize
-                    receipt.targetReaderURLString = targetReaderURL.absoluteString
-                    receipt.targetContentFilePrimaryKey = targetContentFilePrimaryKey
-                    receipt.targetContentFileCreatedAt = targetContentFileCreatedAt
-                    receipt.targetModifiedAt = targetModifiedAt
-                    receipt.targetFileSize = targetFileSize
-                    writeRealm.add(receipt)
-                    actorSource.isDeleted = true
-                    actorSource.refreshChangeMetadata(explicitlyModified: true)
-                }
-            }()
-            try FileManager.default.removeItem(at: sourceURL)
 
             try await fixture.manager.refreshAllFilesMetadata(force: true)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: sourceURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: targetURL.path))
+            XCTAssertEqual(removalProbe.attemptCount, 2)
             try await { @RealmBackgroundActor in
-                let verificationRealm = try await RealmBackgroundActor.shared.cachedRealm(
-                    for: configuration
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: ReaderContentLoader.historyRealmConfiguration
                 )
-                XCTAssertTrue(
-                    verificationRealm.objects(ReaderFileLegacyRootRelocationReceipt.self).isEmpty
-                )
-                XCTAssertTrue(
-                    verificationRealm.object(
-                        ofType: ContentFile.self,
-                        forPrimaryKey: targetContentFilePrimaryKey
-                    )?.isDeleted == false
-                )
+                XCTAssertTrue(realm.objects(ReaderFileLegacyRootRelocationReceipt.self).isEmpty)
+                let liveFiles = realm.objects(ContentFile.self).where { !$0.isDeleted }
+                XCTAssertEqual(liveFiles.count, 1)
+                XCTAssertEqual(liveFiles.first?.url, relocatedURL)
             }()
+        }
+    }
+
+    @MainActor
+    func testRefreshRetainsReceiptWhenLegacyRootSourceGenerationChanges() async throws {
+        let removalProbe = RemovalProbe()
+        try await withFixture(
+            downloadIsAlreadyInLibrary: false,
+            legacyRootFileRemover: { drive, path in
+                try await removalProbe.remove(drive, at: path)
+            }
+        ) { fixture in
+            let receipt = try await admitLegacyRootRelocationReceipt(
+                fixture: fixture,
+                filename: "changed-source.epub"
+            )
+            try Data("changed source generation".utf8).write(to: receipt.sourceURL)
+
+            try await fixture.manager.refreshAllFilesMetadata(force: true)
+
+            XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.sourceURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.targetURL.path))
+            XCTAssertEqual(removalProbe.attemptCount, 0)
+            try await assertLegacyRootRelocationReceipt(receipt, isPresent: true)
+        }
+    }
+
+    @MainActor
+    func testRefreshRetainsReceiptWhenLegacyRootTargetGenerationChanges() async throws {
+        let removalProbe = RemovalProbe()
+        try await withFixture(
+            downloadIsAlreadyInLibrary: false,
+            legacyRootFileRemover: { drive, path in
+                try await removalProbe.remove(drive, at: path)
+            }
+        ) { fixture in
+            let receipt = try await admitLegacyRootRelocationReceipt(
+                fixture: fixture,
+                filename: "changed-target.epub"
+            )
+            try Data("changed target generation".utf8).write(to: receipt.targetURL)
+
+            try await fixture.manager.refreshAllFilesMetadata(force: true)
+
+            XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.sourceURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.targetURL.path))
+            XCTAssertEqual(removalProbe.attemptCount, 0)
+            try await assertLegacyRootRelocationReceipt(receipt, isPresent: true)
         }
     }
 
