@@ -132,6 +132,7 @@
 		52FBCA2E87EE0D771931B2AC /* libLakeOfFireAdblock.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 497C719B89832F484459EAB5 /* libLakeOfFireAdblock.a */; };
 		54A85EE61B13BD918123215B /* ReviewEditorsPicksQueuedAdmissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 352F3C94F16D54C49515AC2D /* ReviewEditorsPicksQueuedAdmissionTests.swift */; };
 		552EEA670491E9BC7253EC14 /* OPDS1Parser.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA602C324AB24D3A8B24474C /* OPDS1Parser.swift */; };
+		553F6AE2842D512B133FF5A8 /* EPubMetadataReadLimitsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F4EF85D7F8D350E390583C0 /* EPubMetadataReadLimitsTests.swift */; };
 		55BC904EFD19D052347124D7 /* ReaderContentList.swift in Sources */ = {isa = PBXBuildFile; fileRef = A32952544F41B678E8087702 /* ReaderContentList.swift */; };
 		57FAEC17DA916FAE7F5B9252 /* swift-sharing_Sharing.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 51C0EEBF886293B2139B6FF3 /* swift-sharing_Sharing.bundle */; };
 		598438DF1D64F8A1828A0B71 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
@@ -1049,6 +1050,7 @@
 		2C40F5457F51A6FA437BAA9C /* LibraryCategoriesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCategoriesView.swift; sourceTree = "<group>"; };
 		2D1235D7683CF901922B01A2 /* ExpandableText.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ExpandableText.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		2D8B92EB6F1D3C9B83AF5A33 /* ReaderContentInitialImageRendererTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentInitialImageRendererTests.swift; sourceTree = "<group>"; };
+		2F4EF85D7F8D350E390583C0 /* EPubMetadataReadLimitsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPubMetadataReadLimitsTests.swift; sourceTree = "<group>"; };
 		30563D3E749EE4190578870E /* AsyncView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncView.swift; sourceTree = "<group>"; };
 		30A1DAE8ED246385CD7967D4 /* ReaderConsoleLogsUserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderConsoleLogsUserScript.swift; sourceTree = "<group>"; };
 		31505A20249F0A4A7EFFDDDF /* TeamChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamChat.swift; sourceTree = "<group>"; };
@@ -1862,6 +1864,7 @@
 				403D5A068FBF440C783668C7 /* AsahiFeedReadabilityPipelineTests.swift */,
 				272B66D1A9CD41A110BD9F8E /* BookOpenSelectionOwnershipTests.swift */,
 				5B5010620C692CE87ACA4385 /* EbookURLSchemeHandlerTests.swift */,
+				2F4EF85D7F8D350E390583C0 /* EPubMetadataReadLimitsTests.swift */,
 				670DB1893CF0D6D66E9A071A /* FeedDirectoryTests.swift */,
 				692614AB4B368D33116EF24A /* FeedFollowingEditListBuilderTests.swift */,
 				6250580024957758DB12CEF5 /* FeedStateIndicatorTests.swift */,
@@ -2811,6 +2814,7 @@
 				CE7B5DC002BB95686FFC9C54 /* TuistBundle+LakeOfFireTests.swift in Sources */,
 				F9186245FF4DE95EB5A4AE5A /* AsahiFeedReadabilityPipelineTests.swift in Sources */,
 				BB1FD364EAA0DD5F305787C2 /* BookOpenSelectionOwnershipTests.swift in Sources */,
+				553F6AE2842D512B133FF5A8 /* EPubMetadataReadLimitsTests.swift in Sources */,
 				E1BAA2F14CD392B8E3945BFF /* EbookURLSchemeHandlerTests.swift in Sources */,
 				CC67B5538B80ED6218B6800A /* FeedDirectoryTests.swift in Sources */,
 				2933EBECED785F8E868AF582 /* FeedFollowingEditListBuilderTests.swift in Sources */,
@@ -3222,6 +3226,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				"ONLY_ACTIVE_ARCH[sdk=iphonesimulator*]" = YES;
@@ -3795,6 +3801,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				"ONLY_ACTIVE_ARCH[sdk=iphonesimulator*]" = YES;
 				OTHER_SWIFT_FLAGS = (
