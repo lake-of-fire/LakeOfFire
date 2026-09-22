@@ -50,73 +50,6 @@ fileprivate struct BookGridCellContent: View {
     }
 }
 
-fileprivate struct DownloadableBookGridCell: View {
-    let imageURL: URL?
-    let title: String
-    let author: String?
-    let publicationDate: Date?
-    var onSelected: ((Bool) -> Void)? = nil
-    @ObservedObject var downloadable: Downloadable
-
-    @State private var wasDownloaded = false
-
-    @ObservedObject private var downloadController = DownloadController.shared
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Spacer(minLength: 0)
-            BookGridCellContent(imageURL: imageURL, title: title, author: author, publicationDate: publicationDate) { _ in
-                buttonPress()
-            }
-            HidingDownloadButton(
-                downloadable: downloadable,
-                downloadText: "Get",
-                downloadedText: "In Library") { _ in
-                    buttonPress()
-                }
-                .font(.caption)
-                .textCase(.uppercase)
-                .foregroundStyle(.primary)
-                .modifier {
-                    if #available(macOS 13, iOS 16, *) {
-                        $0
-                            .fontWeight(.bold)
-                    } else { $0 }
-                }
-                .padding(.bottom, 2)
-            //                    .id("book-grid-cell-\(downloadable.id)-\(wasDownloaded)")
-        }
-        .task { @MainActor in
-            await refreshDownloadable()
-        }
-        .onChange(of: downloadable.isFinishedDownloading) { isFinishedDownloading in
-            Task { @MainActor in
-                await refreshDownloadable()
-            }
-        }
-    }
-
-    private func buttonPress() {
-        Task { @MainActor in
-            let wasAlreadyDownloaded = await downloadable.existsLocally()
-            if !wasAlreadyDownloaded {
-                await downloadController.ensureDownloaded([downloadable])
-            }
-            _ = try? await readerFileManager.ensureImported(downloadable: downloadable)
-            onSelected?(wasAlreadyDownloaded)
-        }
-    }
-
-    @MainActor
-    private func refreshDownloadable() async {
-        if await downloadable.existsLocally() && !wasDownloaded {
-            _ = try? await readerFileManager.ensureImported(downloadable: downloadable)
-            wasDownloaded = true
-        }
-    }
-}
-
 fileprivate struct BookButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -137,10 +70,6 @@ struct BookGridCell: View {
     let downloadURL: URL?
     var onSelected: ((Bool) -> Void)? = nil
 
-    @State private var downloadable: Downloadable?
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
-    //    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
-
     init(imageURL: URL?, title: String, author: String?, publicationDate: Date?, downloadURL: URL?, onSelected: ((Bool) -> Void)? = nil) {
         self.imageURL = imageURL
         self.title = title
@@ -151,26 +80,12 @@ struct BookGridCell: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let downloadable = downloadable {
-                DownloadableBookGridCell(imageURL: imageURL, title: title, author: author, publicationDate: publicationDate, onSelected: onSelected, downloadable: downloadable)
-            } else {
-                BookGridCellContent(imageURL: imageURL, title: title, author: author, publicationDate: publicationDate, onSelected: onSelected)
-            }
-        }
-        .task { @MainActor in
-            await refreshDownloadable()
-        }
-    }
-
-    private func refreshDownloadable() async {
-        if let downloadURL = downloadURL {
-            if downloadable?.url != downloadURL || downloadable?.name != title {
-                downloadable = try? await readerFileManager.downloadable(
-                    url: downloadURL,
-                    name: title
-                )
-            }
-        }
+        BookGridCellContent(
+            imageURL: imageURL,
+            title: title,
+            author: author,
+            publicationDate: publicationDate,
+            onSelected: onSelected
+        )
     }
 }

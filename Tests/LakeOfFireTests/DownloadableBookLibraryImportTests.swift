@@ -2052,19 +2052,223 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     @MainActor
     func testRefreshDownloadedEditorsPicksPublishesExistingLibraryDownload() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
-            await BookLibraryViewModel.refreshDownloadedEditorsPicks(
-                publications: [Publication(
-                    title: fixture.downloadable.name,
-                    downloadURL: fixture.downloadable.url
-                )],
+            let publication = Publication(
+                title: fixture.downloadable.name,
+                downloadURL: fixture.downloadable.url
+            )
+            let outcome = await BookLibraryViewModel.refreshDownloadedEditorsPicks(
+                publications: [publication],
                 readerFileManager: fixture.manager
             )
 
+            XCTAssertEqual(outcome.outcomes[publication.id], .imported(fixture.expectedReaderURL))
             XCTAssertEqual(
                 fixture.manager.files(ofTypes: [.epub, .epubZip])?.map(\.url),
                 [fixture.expectedReaderURL]
             )
         }
+    }
+
+    @MainActor
+    func testRefreshDownloadedEditorsPicksReportsMissingAcquisitionAlongsideImportedBook() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            let importedPublication = Publication(
+                title: fixture.downloadable.name,
+                downloadURL: fixture.downloadable.url
+            )
+            let unavailablePublication = Publication(title: "Unavailable Book")
+
+            let outcome = await BookLibraryViewModel.refreshDownloadedEditorsPicks(
+                publications: [unavailablePublication, importedPublication],
+                readerFileManager: fixture.manager
+            )
+
+            XCTAssertEqual(
+                outcome.outcomes[unavailablePublication.id],
+                .failed(.noAcquisition)
+            )
+            XCTAssertEqual(
+                outcome.outcomes[importedPublication.id],
+                .imported(fixture.expectedReaderURL)
+            )
+            XCTAssertEqual(
+                fixture.manager.files(ofTypes: [.epub, .epubZip])?.map(\.url),
+                [fixture.expectedReaderURL]
+            )
+        }
+    }
+
+    @MainActor
+    func testCatalogBookCommandReplacementRejectsCancellationIgnoringOlderCompletion() async throws {
+        let viewModel = BookLibraryViewModel()
+        let publication = Publication(
+            title: "Generation Book",
+            downloadURL: URL(string: "https://example.com/generation.epub")!
+        )
+        let olderURL = URL(string: "ebook://ebook/load/local/older.epub")!
+        let newerURL = URL(string: "ebook://ebook/load/local/newer.epub")!
+        let gate = ProcessorSnapshotGate()
+        var olderClaimWasCurrentAfterReplacement = true
+
+        let olderTask = try XCTUnwrap(viewModel.startCatalogBookCommand(
+            publication: publication,
+            supersedingExisting: true,
+            presentsFailures: true
+        ) { claim in
+            await gate.enterAndWait()
+            olderClaimWasCurrentAfterReplacement = claim.isCurrent()
+            return .imported(olderURL)
+        })
+        await gate.waitUntilEntered()
+
+        let newerTask = try XCTUnwrap(viewModel.startCatalogBookCommand(
+            publication: publication,
+            supersedingExisting: true,
+            presentsFailures: true
+        ) { _ in
+            .imported(newerURL)
+        })
+        await newerTask.value
+        await gate.release()
+        await olderTask.value
+
+        XCTAssertFalse(olderClaimWasCurrentAfterReplacement)
+        XCTAssertEqual(viewModel.catalogBookOutcomes[publication.id], .imported(newerURL))
+        XCTAssertNil(viewModel.catalogBookErrorMessage(for: publication))
+    }
+
+    @MainActor
+    func testCatalogBookCommandErrorsAreScopedAndCurrentSuccessClearsOnlyItsRow() async throws {
+        let viewModel = BookLibraryViewModel()
+        let first = Publication(
+            title: "First Book",
+            downloadURL: URL(string: "https://example.com/first.epub")!
+        )
+        let second = Publication(
+            title: "Second Book",
+            downloadURL: URL(string: "https://example.com/second.epub")!
+        )
+        let importedURL = URL(string: "ebook://ebook/load/local/first.epub")!
+
+        let firstFailure = try XCTUnwrap(viewModel.startCatalogBookCommand(
+            publication: first,
+            supersedingExisting: true,
+            presentsFailures: true
+        ) { _ in
+            .failed(.importFailed("First import failed."))
+        })
+        let secondFailure = try XCTUnwrap(viewModel.startCatalogBookCommand(
+            publication: second,
+            supersedingExisting: true,
+            presentsFailures: true
+        ) { _ in
+            .failed(.missingImportResult)
+        })
+        await firstFailure.value
+        await secondFailure.value
+
+        XCTAssertEqual(viewModel.catalogBookErrorMessage(for: first), "First import failed.")
+        XCTAssertEqual(
+            viewModel.catalogBookErrorMessage(for: second),
+            "The downloaded book could not be added to your library."
+        )
+
+        let firstRetry = try XCTUnwrap(viewModel.startCatalogBookCommand(
+            publication: first,
+            supersedingExisting: true,
+            presentsFailures: true
+        ) { _ in
+            .imported(importedURL)
+        })
+        await firstRetry.value
+
+        XCTAssertNil(viewModel.catalogBookErrorMessage(for: first))
+        XCTAssertNotNil(viewModel.catalogBookErrorMessage(for: second))
+    }
+
+    @MainActor
+    func testCatalogBookAutomaticCommandJoinsSameManagerAndReplacementManagerRevokesIt() async throws {
+        let viewModel = BookLibraryViewModel()
+        let publication = Publication(
+            title: "Scoped Book",
+            downloadURL: URL(string: "https://example.com/scoped.epub")!
+        )
+        let firstManager = NSObject()
+        let replacementManager = NSObject()
+        let firstManagerIdentity = ObjectIdentifier(firstManager)
+        let replacementManagerIdentity = ObjectIdentifier(replacementManager)
+        let staleURL = URL(string: "ebook://ebook/load/local/stale.epub")!
+        let currentURL = URL(string: "ebook://ebook/load/local/current.epub")!
+        let gate = ProcessorSnapshotGate()
+        var joinedOperationCount = 0
+
+        let firstTask = try XCTUnwrap(viewModel.startCatalogBookCommand(
+            publication: publication,
+            supersedingExisting: false,
+            presentsFailures: false,
+            managerIdentity: firstManagerIdentity
+        ) { _ in
+            await gate.enterAndWait()
+            return .imported(staleURL)
+        })
+        await gate.waitUntilEntered()
+
+        let joinedTask = try XCTUnwrap(viewModel.startCatalogBookCommand(
+            publication: publication,
+            supersedingExisting: false,
+            presentsFailures: false,
+            managerIdentity: firstManagerIdentity
+        ) { _ in
+            joinedOperationCount += 1
+            return .failed(.unavailable)
+        })
+        let replacementTask = try XCTUnwrap(viewModel.startCatalogBookCommand(
+            publication: publication,
+            supersedingExisting: false,
+            presentsFailures: false,
+            managerIdentity: replacementManagerIdentity
+        ) { _ in
+            .imported(currentURL)
+        })
+        await replacementTask.value
+        await gate.release()
+        await firstTask.value
+        await joinedTask.value
+
+        XCTAssertEqual(joinedOperationCount, 0)
+        XCTAssertEqual(viewModel.catalogBookOutcomes[publication.id], .imported(currentURL))
+    }
+
+    @MainActor
+    func testCancellingCatalogBookCommandsRetiresLoadAdmissionAndSuppressesOutcome() async throws {
+        let viewModel = BookLibraryViewModel()
+        let publication = Publication(
+            title: "Cancelled Book",
+            downloadURL: URL(string: "https://example.com/cancelled.epub")!
+        )
+        let gate = ProcessorSnapshotGate()
+        var claim: BookLibraryViewModel.CatalogBookCommandClaim?
+
+        let task = try XCTUnwrap(viewModel.startCatalogBookCommand(
+            publication: publication,
+            supersedingExisting: true,
+            presentsFailures: true
+        ) { commandClaim in
+            claim = commandClaim
+            await gate.enterAndWait()
+            return .failed(.loadFailed("late failure"))
+        })
+        await gate.waitUntilEntered()
+
+        viewModel.cancelCatalogBookCommands()
+        XCTAssertThrowsError(try XCTUnwrap(claim).admission.checkActive()) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        await gate.release()
+        await task.value
+
+        XCTAssertNil(viewModel.catalogBookOutcomes[publication.id])
+        XCTAssertNil(viewModel.catalogBookErrorMessage(for: publication))
     }
 
     @MainActor

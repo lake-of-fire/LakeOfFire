@@ -91,26 +91,17 @@ fileprivate struct EditorsPicksView: View {
             ForEach(viewModel.editorsPicks) { publication in
                 BookListRow(
                     publication: publication,
-                    onSelected: { wasAlreadyDownloaded in
-                        guard wasAlreadyDownloaded else { return }
-                        Task { @MainActor in
-                            do {
-                                try await viewModel.open(
-                                    publication: publication,
-                                    readerFileManager: readerFileManager,
-                                    readerPageURL: readerContent.pageURL,
-                                    navigator: navigator,
-                                    readerModeViewModel: readerModeViewModel
-                                )
-                            } catch {
-                                viewModel.errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
-                            }
-                        }
-                    },
-                    onNavigateToReader: viewModel.onNavigateToReader
+                    commandOwner: viewModel,
+                    suppliedReaderFileManager: readerFileManager,
+                    readerPageURL: readerContent.pageURL,
+                    navigator: navigator,
+                    readerModeViewModel: readerModeViewModel
                 )
                 .accessibilityIdentifier("BookLibrary.EditorsPick.Row.\(publication.title)")
             }
+        }
+        .onDisappear {
+            viewModel.cancelCatalogBookCommands()
         }
     }
 }
@@ -344,9 +335,36 @@ public class BookLibraryViewModel: ObservableObject {
 
     @Published var editorsPicks: [Publication] = []
     @Published var errorMessage: String?
+    @Published private(set) var catalogBookOutcomes = [String: CatalogBookCommandOutcome]()
+    @Published private(set) var catalogBookErrorMessages = [String: String]()
     @Published public var hasLocalFiles = false
     @Published public var onNavigateToReader: (() -> Void)?
     private var cancellables = Set<AnyCancellable>()
+    private var catalogBookCommandGenerations = [String: UInt64]()
+    private var catalogBookCommandTasks = [String: Task<Void, Never>]()
+    private var catalogBookLoadAdmissions = [String: ReaderContentLoadAdmission]()
+    private var catalogBookCommandManagerIdentities = [String: ObjectIdentifier]()
+
+    private struct CatalogBookCommandToken: Equatable {
+        let publicationID: String
+        let generation: UInt64
+        let admission: ReaderContentLoadAdmission
+        let presentsFailures: Bool
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.publicationID == rhs.publicationID && lhs.generation == rhs.generation
+        }
+    }
+
+    struct CatalogBookCommandClaim {
+        fileprivate let isCurrentOperation: @MainActor () -> Bool
+        let admission: ReaderContentLoadAdmission
+
+        @MainActor
+        func isCurrent() -> Bool {
+            isCurrentOperation() && !Task.isCancelled
+        }
+    }
 
     func fetchAllData() async {
         fetchEditorsPicks()
@@ -365,9 +383,11 @@ public class BookLibraryViewModel: ObservableObject {
     }
 
     @MainActor
-    public static func refreshDownloadedEditorsPicks(readerFileManager: ReaderFileManager = .shared) async {
+    public static func refreshDownloadedEditorsPicks(
+        readerFileManager: ReaderFileManager = .shared
+    ) async -> CatalogBookRefreshOutcome {
         let (publications, _) = await Self.fetchPublications(from: Self.defaultOPDSURL)
-        await refreshDownloadedEditorsPicks(
+        return await refreshDownloadedEditorsPicks(
             publications: publications,
             readerFileManager: readerFileManager
         )
@@ -376,25 +396,51 @@ public class BookLibraryViewModel: ObservableObject {
     @MainActor
     static func refreshDownloadedEditorsPicks(
         publications: [Publication],
-        readerFileManager: ReaderFileManager = .shared
-    ) async {
-        guard !publications.isEmpty else { return }
-
-        var downloads = Set<Downloadable>()
+        readerFileManager: ReaderFileManager
+    ) async -> CatalogBookRefreshOutcome {
+        var outcomes = [String: CatalogBookCommandOutcome]()
+        var localDownloads = [(publication: Publication, downloadable: Downloadable)]()
         for publication in publications {
-            guard
-                let downloadURL = publication.downloadURL,
-                let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title),
-                await downloadable.existsLocally()
-            else { continue }
-            downloads.insert(downloadable)
-        }
-        if !downloads.isEmpty {
-            await DownloadController.shared.ensureDownloaded(downloads)
-            for download in downloads {
-                _ = try? await readerFileManager.ensureImported(downloadable: download)
+            guard let downloadURL = publication.downloadURL else {
+                outcomes[publication.id] = .failed(.noAcquisition)
+                continue
+            }
+            do {
+                guard let downloadable = try await readerFileManager.downloadable(
+                    url: downloadURL,
+                    name: publication.title
+                ) else {
+                    outcomes[publication.id] = .failed(.unavailable)
+                    continue
+                }
+                guard await downloadable.existsLocally() else {
+                    outcomes[publication.id] = .failed(.notLocal)
+                    continue
+                }
+                localDownloads.append((publication, downloadable))
+            } catch {
+                outcomes[publication.id] = .failed(.unavailable)
             }
         }
+        if !localDownloads.isEmpty {
+            await DownloadController.shared.ensureDownloaded(localDownloads.map { $0.downloadable })
+        }
+        for entry in localDownloads {
+            do {
+                guard try await entry.downloadable.awaitCompletionOrFailure() else {
+                    outcomes[entry.publication.id] = .failed(.downloadFailed("The book download failed."))
+                    continue
+                }
+            } catch {
+                outcomes[entry.publication.id] = .failed(.downloadFailed(error.localizedDescription))
+                continue
+            }
+            outcomes[entry.publication.id] = await reconcileDownloadedPublication(
+                entry.publication,
+                readerFileManager: readerFileManager
+            )
+        }
+        return CatalogBookRefreshOutcome(outcomes: outcomes)
     }
 
     static func fetchPublications(from url: URL) async -> ([Publication], String?) {
@@ -440,44 +486,307 @@ public class BookLibraryViewModel: ObservableObject {
         }
     }
 
-    @MainActor
-    func open(
+    func catalogBookErrorMessage(for publication: Publication) -> String? {
+        catalogBookErrorMessages[publication.id]
+    }
+
+    func isCatalogBookImported(_ publication: Publication) -> Bool {
+        guard let outcome = catalogBookOutcomes[publication.id] else { return false }
+        return outcome.marksImported
+    }
+
+    func isCatalogBookCommandActive(_ publication: Publication) -> Bool {
+        catalogBookCommandTasks[publication.id] != nil
+    }
+
+    func cancelCatalogBookCommand(for publication: Publication) {
+        catalogBookCommandTasks[publication.id]?.cancel()
+        catalogBookCommandTasks[publication.id] = nil
+        catalogBookLoadAdmissions[publication.id]?.retire()
+        catalogBookLoadAdmissions[publication.id] = nil
+        catalogBookCommandManagerIdentities[publication.id] = nil
+        catalogBookCommandGenerations[publication.id, default: 0] &+= 1
+    }
+
+    func startManualCatalogBookCommand(
+        publication: Publication,
+        readerFileManager: ReaderFileManager,
+        readerPageURL: URL,
+        navigator: WebViewNavigator,
+        readerModeViewModel: ReaderModeViewModel
+    ) {
+        startCatalogBookCommand(
+            publication: publication,
+            supersedingExisting: true,
+            presentsFailures: true,
+            managerIdentity: ObjectIdentifier(readerFileManager)
+        ) { claim in
+            await Self.openPublication(
+                publication,
+                readerFileManager: readerFileManager,
+                readerPageURL: readerPageURL,
+                navigator: navigator,
+                readerModeViewModel: readerModeViewModel,
+                allowDownload: true,
+                claim: claim
+            )
+        }
+    }
+
+    func reconcileDownloadedPublication(
+        publication: Publication,
+        readerFileManager: ReaderFileManager
+    ) {
+        let managerIdentity = ObjectIdentifier(readerFileManager)
+        let hasDifferentManager = catalogBookCommandManagerIdentities[publication.id]
+            .map { $0 != managerIdentity } ?? false
+        startCatalogBookCommand(
+            publication: publication,
+            supersedingExisting: hasDifferentManager,
+            presentsFailures: false,
+            managerIdentity: managerIdentity
+        ) { _ in
+            await Self.reconcileDownloadedPublication(
+                publication,
+                readerFileManager: readerFileManager
+            )
+        }
+    }
+
+    @discardableResult
+    func startCatalogBookCommand(
+        publication: Publication,
+        supersedingExisting: Bool,
+        presentsFailures: Bool,
+        managerIdentity: ObjectIdentifier? = nil,
+        operation: @escaping @MainActor (CatalogBookCommandClaim) async -> CatalogBookCommandOutcome
+    ) -> Task<Void, Never>? {
+        guard !Task.isCancelled else { return nil }
+        let existingTask = catalogBookCommandTasks[publication.id]
+        let managerMatches = managerIdentity == nil
+            || catalogBookCommandManagerIdentities[publication.id] == managerIdentity
+        if !supersedingExisting, managerMatches, let existingTask {
+            return existingTask
+        }
+        let token = beginCatalogBookCommand(
+            for: publication,
+            supersedingExisting: supersedingExisting || existingTask != nil,
+            presentsFailures: presentsFailures,
+            managerIdentity: managerIdentity
+        )
+        let claim = CatalogBookCommandClaim(
+            isCurrentOperation: { [weak self] in
+                guard let self else { return false }
+                return self.catalogBookCommandGenerations[token.publicationID] == token.generation
+            },
+            admission: token.admission
+        )
+        let task = Task { @MainActor [weak self] in
+            guard let self, claim.isCurrent() else { return }
+            let outcome = await operation(claim)
+            self.finishCatalogBookCommand(token, outcome: outcome)
+        }
+        catalogBookCommandTasks[publication.id] = task
+        if let managerIdentity {
+            catalogBookCommandManagerIdentities[publication.id] = managerIdentity
+        }
+        return task
+    }
+
+    func cancelCatalogBookCommands() {
+        for task in catalogBookCommandTasks.values {
+            task.cancel()
+        }
+        for admission in catalogBookLoadAdmissions.values {
+            admission.retire()
+        }
+        catalogBookCommandTasks.removeAll()
+        catalogBookLoadAdmissions.removeAll()
+        catalogBookCommandManagerIdentities.removeAll()
+        for publicationID in catalogBookCommandGenerations.keys {
+            catalogBookCommandGenerations[publicationID, default: 0] &+= 1
+        }
+    }
+
+    private func beginCatalogBookCommand(
+        for publication: Publication,
+        supersedingExisting: Bool,
+        presentsFailures: Bool,
+        managerIdentity: ObjectIdentifier?
+    ) -> CatalogBookCommandToken {
+        if supersedingExisting {
+            catalogBookCommandTasks[publication.id]?.cancel()
+        }
+        catalogBookLoadAdmissions[publication.id]?.retire()
+        let generation = catalogBookCommandGenerations[publication.id, default: 0] &+ 1
+        catalogBookCommandGenerations[publication.id] = generation
+        let admission = ReaderContentLoadAdmission()
+        catalogBookLoadAdmissions[publication.id] = admission
+        return CatalogBookCommandToken(
+            publicationID: publication.id,
+            generation: generation,
+            admission: admission,
+            presentsFailures: presentsFailures
+        )
+    }
+
+    private func finishCatalogBookCommand(
+        _ token: CatalogBookCommandToken,
+        outcome: CatalogBookCommandOutcome
+    ) {
+        guard !Task.isCancelled,
+              catalogBookCommandGenerations[token.publicationID] == token.generation
+        else { return }
+        catalogBookCommandTasks[token.publicationID] = nil
+        catalogBookLoadAdmissions[token.publicationID] = nil
+        catalogBookCommandManagerIdentities[token.publicationID] = nil
+        catalogBookOutcomes[token.publicationID] = outcome
+        if token.presentsFailures, let message = outcome.userFacingMessage {
+            catalogBookErrorMessages[token.publicationID] = message
+        } else if outcome.marksImported {
+            catalogBookErrorMessages[token.publicationID] = nil
+        }
+        if case .navigated = outcome {
+            onNavigateToReader?()
+        }
+    }
+
+    private static func reconcileDownloadedPublication(
+        _ publication: Publication,
+        readerFileManager: ReaderFileManager
+    ) async -> CatalogBookCommandOutcome {
+        guard let downloadURL = publication.downloadURL else { return .failed(.noAcquisition) }
+        let downloadable: Downloadable
+        do {
+            guard let resolved = try await readerFileManager.downloadable(url: downloadURL, name: publication.title) else {
+                return .failed(.unavailable)
+            }
+            downloadable = resolved
+        } catch {
+            return .failed(.unavailable)
+        }
+        if downloadable.isFailed {
+            return .failed(.downloadFailed(downloadable.failureMessage ?? "The book download failed."))
+        }
+        guard await downloadable.existsLocally() else { return .failed(.notLocal) }
+        do {
+            guard let importedURL = try await readerFileManager.ensureImported(downloadable: downloadable) else {
+                return .failed(.missingImportResult)
+            }
+            return .imported(importedURL)
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .failed(.importFailed(error.localizedDescription))
+        }
+    }
+
+    private static func openPublication(
+        _ publication: Publication,
+        readerFileManager: ReaderFileManager,
+        readerPageURL: URL,
+        navigator: WebViewNavigator,
+        readerModeViewModel: ReaderModeViewModel,
+        allowDownload: Bool,
+        claim: CatalogBookCommandClaim
+    ) async -> CatalogBookCommandOutcome {
+        guard let downloadURL = publication.downloadURL else { return .failed(.noAcquisition) }
+        let downloadable: Downloadable
+        do {
+            guard let resolved = try await readerFileManager.downloadable(url: downloadURL, name: publication.title) else {
+                return .failed(.unavailable)
+            }
+            downloadable = resolved
+        } catch {
+            return .failed(.unavailable)
+        }
+        let wasAlreadyLocal = await downloadable.existsLocally()
+        if !wasAlreadyLocal {
+            guard allowDownload else { return .failed(.notLocal) }
+            await DownloadController.shared.ensureDownloaded([downloadable])
+        }
+        if downloadable.isFailed {
+            return .failed(.downloadFailed(downloadable.failureMessage ?? "The book download failed."))
+        }
+        guard await downloadable.existsLocally() else { return .failed(.notLocal) }
+        let importedURL: URL
+        do {
+            guard let resolved = try await readerFileManager.ensureImported(downloadable: downloadable) else {
+                return .failed(.missingImportResult)
+            }
+            importedURL = resolved
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .failed(.importFailed(error.localizedDescription))
+        }
+        guard wasAlreadyLocal else { return .imported(importedURL) }
+        let content: any ReaderContentProtocol
+        do {
+            guard let resolved = try await ReaderContentLoader.load(
+                url: importedURL,
+                persist: true,
+                countsAsHistoryVisit: true,
+                source: "BookLibraryView.openPublication",
+                admission: claim.admission
+            ) else {
+                return .failed(.missingLoadResult)
+            }
+            content = resolved
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .failed(.loadFailed(error.localizedDescription))
+        }
+        guard !content.url.matchesReaderURL(readerPageURL) else { return .alreadyOpen(importedURL) }
+        guard claim.isCurrent() else { return .superseded }
+        do {
+            try await navigator.load(
+                content: content,
+                readerFileManager: readerFileManager,
+                readerModeViewModel: readerModeViewModel
+            )
+            guard claim.isCurrent() else { return .superseded }
+            return .navigated(importedURL)
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .failed(.navigationFailed(error.localizedDescription))
+        }
+    }
+
+    private static func directCommandClaim() -> CatalogBookCommandClaim {
+        CatalogBookCommandClaim(
+            isCurrentOperation: { !Task.isCancelled },
+            admission: ReaderContentLoadAdmission()
+        )
+    }
+
+    /// Source-compatible direct open for callers that already own their task lifetime.
+    /// The Editors' Picks rows use `startManualCatalogBookCommand` instead.
+    public func open(
         publication: Publication,
         readerFileManager: ReaderFileManager = .shared,
         readerPageURL: URL,
         navigator: WebViewNavigator,
         readerModeViewModel: ReaderModeViewModel
     ) async throws {
-        guard let downloadURL = publication.downloadURL else { return }
-        guard let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title) else { return }
-
-        let importedURL: URL?
-        if await downloadable.existsLocally() {
-            importedURL = try await readerFileManager.ensureImported(downloadable: downloadable)
-        } else {
-            guard let importedFileURL = try await readerFileManager.importFile(fileURL: downloadable.localDestination, fromDownloadURL: downloadable.url) else {
-                print("Couldn't import \(publication.title) file URL")
-                return
-            }
-            importedURL = importedFileURL
-        }
-
-        guard let toLoad = importedURL else { return }
-        guard let content = try await ReaderContentLoader.load(
-            url: toLoad,
-            persist: true,
-            countsAsHistoryVisit: true,
-            source: "BookLibraryView.openOrDownloadPublication"
-        ), !content.url.matchesReaderURL(readerPageURL) else { return }
-        try await navigator.load(
-            content: content,
+        let outcome = await Self.openPublication(
+            publication,
             readerFileManager: readerFileManager,
-            readerModeViewModel: readerModeViewModel
+            readerPageURL: readerPageURL,
+            navigator: navigator,
+            readerModeViewModel: readerModeViewModel,
+            allowDownload: false,
+            claim: Self.directCommandClaim()
         )
-        onNavigateToReader?()
+        if case .navigated = outcome {
+            onNavigateToReader?()
+        }
+        try outcome.throwIfUnsuccessful()
     }
 
-    @MainActor
+    /// Source-compatible direct open for an already-local catalog artifact.
     public static func openDownloaded(
         publication: Publication,
         readerFileManager: ReaderFileManager = .shared,
@@ -486,26 +795,101 @@ public class BookLibraryViewModel: ObservableObject {
         readerModeViewModel: ReaderModeViewModel,
         onNavigateToReader: (() -> Void)? = nil
     ) async throws {
-        guard
-            let downloadURL = publication.downloadURL,
-            let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title),
-            await downloadable.existsLocally(),
-            let importedURL = try await readerFileManager.ensureImported(downloadable: downloadable)
-        else { return }
-
-        guard let content = try await ReaderContentLoader.load(
-            url: importedURL,
-            persist: true,
-            countsAsHistoryVisit: true,
-            source: "BookLibraryView.openDownloaded"
-        ) else { return }
-        if content.url.matchesReaderURL(readerContent.pageURL) { return }
-        try await navigator.load(
-            content: content,
+        let outcome = await openPublication(
+            publication,
             readerFileManager: readerFileManager,
-            readerModeViewModel: readerModeViewModel
+            readerPageURL: readerContent.pageURL,
+            navigator: navigator,
+            readerModeViewModel: readerModeViewModel,
+            allowDownload: false,
+            claim: directCommandClaim()
         )
-        onNavigateToReader?()
+        if case .navigated = outcome {
+            onNavigateToReader?()
+        }
+        try outcome.throwIfUnsuccessful()
+    }
+}
+
+public enum CatalogBookCommandFailure: LocalizedError, Sendable, Equatable {
+    case unavailable
+    case noAcquisition
+    case notLocal
+    case downloadFailed(String)
+    case missingImportResult
+    case importFailed(String)
+    case missingLoadResult
+    case loadFailed(String)
+    case navigationFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            return "Book storage is unavailable."
+        case .noAcquisition:
+            return "This book has no downloadable file."
+        case .notLocal:
+            return "The book download is not available locally yet."
+        case .downloadFailed(let message), .importFailed(let message), .loadFailed(let message),
+             .navigationFailed(let message):
+            return message
+        case .missingImportResult:
+            return "The downloaded book could not be added to your library."
+        case .missingLoadResult:
+            return "The imported book could not be opened."
+        }
+    }
+}
+
+public enum CatalogBookCommandOutcome: Sendable, Equatable {
+    case imported(URL)
+    case navigated(URL)
+    case alreadyOpen(URL)
+    case cancelled
+    case superseded
+    case failed(CatalogBookCommandFailure)
+
+    var marksImported: Bool {
+        switch self {
+        case .imported, .navigated, .alreadyOpen:
+            return true
+        case .cancelled, .superseded, .failed:
+            return false
+        }
+    }
+
+    var userFacingMessage: String? {
+        switch self {
+        case .failed(.unavailable): return "Book storage is unavailable."
+        case .failed(.noAcquisition): return "This book has no downloadable file."
+        case .failed(.notLocal): return "The book download is not available locally yet."
+        case .failed(.downloadFailed(let message)): return message
+        case .failed(.missingImportResult): return "The downloaded book could not be added to your library."
+        case .failed(.importFailed(let message)), .failed(.loadFailed(let message)),
+             .failed(.navigationFailed(let message)):
+            return message
+        case .failed(.missingLoadResult): return "The imported book could not be opened."
+        case .imported, .navigated, .alreadyOpen, .cancelled, .superseded: return nil
+        }
+    }
+
+    func throwIfUnsuccessful() throws {
+        switch self {
+        case .imported, .navigated, .alreadyOpen:
+            return
+        case .cancelled, .superseded:
+            throw CancellationError()
+        case .failed(let failure):
+            throw failure
+        }
+    }
+}
+
+public struct CatalogBookRefreshOutcome: Sendable, Equatable {
+    public let outcomes: [String: CatalogBookCommandOutcome]
+
+    public init(outcomes: [String: CatalogBookCommandOutcome]) {
+        self.outcomes = outcomes
     }
 }
 

@@ -74,23 +74,43 @@ struct HorizontalBooks: View {
 
 struct BookListRow: View {
     let publication: Publication
-    var onSelected: ((Bool) -> Void)? = nil
-    var onNavigateToReader: (() -> Void)? = nil
+    let commandOwner: BookLibraryViewModel
+    let suppliedReaderFileManager: ReaderFileManager
+    let readerPageURL: URL
+    let navigator: WebViewNavigator
+    let readerModeViewModel: ReaderModeViewModel
 
     @State private var downloadable: Downloadable?
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
 
     var body: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 4) {
             if let downloadable {
                 DownloadableBookListRow(
                     publication: publication,
-                    onSelected: onSelected,
-                    onNavigateToReader: onNavigateToReader,
+                    commandOwner: commandOwner,
+                    suppliedReaderFileManager: suppliedReaderFileManager,
+                    readerPageURL: readerPageURL,
+                    navigator: navigator,
+                    readerModeViewModel: readerModeViewModel,
                     downloadable: downloadable
+                )
+            } else if publication.downloadURL != nil {
+                UnavailableDownloadableBookListRow(
+                    publication: publication,
+                    commandOwner: commandOwner,
+                    suppliedReaderFileManager: suppliedReaderFileManager,
+                    readerPageURL: readerPageURL,
+                    navigator: navigator,
+                    readerModeViewModel: readerModeViewModel
                 )
             } else {
                 StaticBookListRow(publication: publication)
+            }
+            if let message = commandOwner.catalogBookErrorMessage(for: publication) {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("BookLibrary.CommandError.\(publication.title)")
             }
         }
         .padding(.horizontal, 4)
@@ -109,11 +129,65 @@ struct BookListRow: View {
             return
         }
         if downloadable?.url != downloadURL || downloadable?.name != publication.title {
-            downloadable = try? await readerFileManager.downloadable(
+            downloadable = try? await suppliedReaderFileManager.downloadable(
                 url: downloadURL,
                 name: publication.title
             )
         }
+    }
+}
+
+fileprivate struct UnavailableDownloadableBookListRow: View {
+    let publication: Publication
+    let commandOwner: BookLibraryViewModel
+    let suppliedReaderFileManager: ReaderFileManager
+    let readerPageURL: URL
+    let navigator: WebViewNavigator
+    let readerModeViewModel: ReaderModeViewModel
+
+    var body: some View {
+        BookListRowContent(
+            imageURL: publication.coverURL,
+            title: publication.title,
+            author: publication.author,
+            publicationDate: publication.publicationDate,
+            summary: publication.summary,
+            hasContentAudio: publication.hasContentAudio,
+            onTopTap: startCommand
+        ) {
+            if commandOwner.isCatalogBookCommandActive(publication) {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Button("Cancel") {
+                        commandOwner.cancelCatalogBookCommand(for: publication)
+                    }
+                }
+            } else {
+                Button {
+                    startCommand()
+                } label: {
+                    Text("Get")
+                }
+                .accessibilityIdentifier("BookLibrary.Download.\(publication.title)")
+                .buttonStyle(.bordered)
+                .font(.caption)
+                .textCase(.uppercase)
+                .foregroundStyle(.primary)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    private func startCommand() {
+        guard !commandOwner.isCatalogBookCommandActive(publication) else { return }
+        commandOwner.startManualCatalogBookCommand(
+            publication: publication,
+            readerFileManager: suppliedReaderFileManager,
+            readerPageURL: readerPageURL,
+            navigator: navigator,
+            readerModeViewModel: readerModeViewModel
+        )
     }
 }
 
@@ -138,16 +212,12 @@ fileprivate struct StaticBookListRow: View {
 
 fileprivate struct DownloadableBookListRow: View {
     let publication: Publication
-    let onSelected: ((Bool) -> Void)?
-    let onNavigateToReader: (() -> Void)?
+    let commandOwner: BookLibraryViewModel
+    let suppliedReaderFileManager: ReaderFileManager
+    let readerPageURL: URL
+    let navigator: WebViewNavigator
+    let readerModeViewModel: ReaderModeViewModel
     @ObservedObject var downloadable: Downloadable
-
-    @State private var wasDownloaded = false
-    @ObservedObject private var downloadController = DownloadController.shared
-    @EnvironmentObject private var readerContent: ReaderContent
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
-    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
-    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
 
     var body: some View {
         BookListRowContent(
@@ -159,75 +229,63 @@ fileprivate struct DownloadableBookListRow: View {
             hasContentAudio: publication.hasContentAudio,
             onTopTap: topTap
         ) {
-            HidingDownloadButton(
-                downloadable: downloadable,
-                downloadText: "Get",
-                downloadedText: "In Library"
-            ) { _ in
-                buttonPress()
-            }
-            .accessibilityIdentifier("BookLibrary.Download.\(publication.title)")
-            .font(.caption)
-            .textCase(.uppercase)
-            .foregroundStyle(.primary)
-            .modifier {
-                if #available(macOS 13, iOS 16, *) {
-                    $0.fontWeight(.bold)
-                } else {
-                    $0
+            if commandOwner.isCatalogBookCommandActive(publication) {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Button("Cancel") {
+                        commandOwner.cancelCatalogBookCommand(for: publication)
+                    }
+                }
+            } else {
+                Button {
+                    buttonPress()
+                } label: {
+                    Text(commandOwner.isCatalogBookImported(publication) ? "In Library" : "Get")
+                }
+                .accessibilityIdentifier("BookLibrary.Download.\(publication.title)")
+                .buttonStyle(.bordered)
+                .font(.caption)
+                .textCase(.uppercase)
+                .foregroundStyle(.primary)
+                .modifier {
+                    if #available(macOS 13, iOS 16, *) {
+                        $0.fontWeight(.bold)
+                    } else {
+                        $0
+                    }
                 }
             }
         }
         .contentShape(Rectangle())
-        .task { @MainActor in
-            await refreshDownloadable()
+        .task(id: ObjectIdentifier(suppliedReaderFileManager)) { @MainActor in
+            commandOwner.reconcileDownloadedPublication(
+                publication,
+                readerFileManager: suppliedReaderFileManager
+            )
         }
-        .onChange(of: downloadable.isFinishedDownloading) { _ in
-            Task { @MainActor in
-                await refreshDownloadable()
-            }
+        .onChange(of: downloadable.isFinishedDownloading) { isFinishedDownloading in
+            guard isFinishedDownloading, !downloadable.isFailed else { return }
+            commandOwner.reconcileDownloadedPublication(
+                publication,
+                readerFileManager: suppliedReaderFileManager
+            )
         }
     }
 
     private func buttonPress() {
-        Task { @MainActor in
-            let wasAlreadyDownloaded = await downloadable.existsLocally()
-            if !wasAlreadyDownloaded {
-                await downloadController.ensureDownloaded([downloadable])
-            }
-            _ = try? await readerFileManager.ensureImported(downloadable: downloadable)
-            onSelected?(wasAlreadyDownloaded)
-        }
-    }
-
-    @MainActor
-    private func refreshDownloadable() async {
-        if await downloadable.existsLocally() && !wasDownloaded {
-            _ = try? await readerFileManager.ensureImported(downloadable: downloadable)
-            wasDownloaded = true
-        }
+        guard !commandOwner.isCatalogBookCommandActive(publication) else { return }
+        commandOwner.startManualCatalogBookCommand(
+            publication: publication,
+            readerFileManager: suppliedReaderFileManager,
+            readerPageURL: readerPageURL,
+            navigator: navigator,
+            readerModeViewModel: readerModeViewModel
+        )
     }
 
     private func topTap() {
-        Task { @MainActor in
-            let alreadyDownloaded = await downloadable.existsLocally()
-            if alreadyDownloaded {
-                do {
-                    try await BookLibraryViewModel.openDownloaded(
-                        publication: publication,
-                        readerFileManager: readerFileManager,
-                        readerContent: readerContent,
-                        navigator: navigator,
-                        readerModeViewModel: readerModeViewModel,
-                        onNavigateToReader: onNavigateToReader
-                    )
-                } catch {
-                    print("Failed to open downloaded book: \(error)")
-                }
-            } else {
-                buttonPress()
-            }
-        }
+        buttonPress()
     }
 }
 
