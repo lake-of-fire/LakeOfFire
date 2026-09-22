@@ -1,3 +1,5 @@
+import { carryReaderArticleProducerOwner } from './reader-producer-evidence.js'
+
 const defaultRequestID = () => {
     if (typeof globalThis.crypto?.randomUUID === 'function') {
         return globalThis.crypto.randomUUID()
@@ -10,24 +12,30 @@ const defaultRequestID = () => {
  * boundary. Native reconstructs and validates those facts from its current
  * sidecar; the WebView sends only durable subject identifiers.
  */
-export const nativeMarkReadCommandMessage = (payload, documentIdentity = {}) => ({
-    stableIdentityVersion: payload?.stableIdentityVersion,
-    nativeSidecarContentFingerprint:
-        payload?.nativeSidecarContentFingerprint ?? null,
-    stableSegmentIDs: Array.isArray(payload?.segments)
-        ? payload.segments.map(segment => segment?.stableSegmentID)
-        : [],
-    sentenceIdentifiers: Array.isArray(payload?.sentenceIdentifiers)
-        ? payload.sentenceIdentifiers
-        : [],
-    ...(payload?.desiredState != null
-        ? { desiredState: payload.desiredState }
-        : {}),
-    ...(payload?.expectedManualSupportRevision != null
-        ? { expectedManualSupportRevision: payload.expectedManualSupportRevision }
-        : {}),
-    ...documentIdentity,
-})
+export const nativeMarkReadCommandMessage = (payload, documentIdentity = {}) => {
+    const { producerOwner = null, ...identity } = documentIdentity ?? {}
+    const message = {
+        stableIdentityVersion: payload?.stableIdentityVersion,
+        nativeSidecarContentFingerprint:
+            payload?.nativeSidecarContentFingerprint ?? null,
+        stableSegmentIDs: Array.isArray(payload?.segments)
+            ? payload.segments.map(segment => segment?.stableSegmentID)
+            : [],
+        sentenceIdentifiers: Array.isArray(payload?.sentenceIdentifiers)
+            ? payload.sentenceIdentifiers
+            : [],
+        ...(payload?.desiredState != null
+            ? { desiredState: payload.desiredState }
+            : {}),
+        ...(payload?.expectedManualSupportRevision != null
+            ? { expectedManualSupportRevision: payload.expectedManualSupportRevision }
+            : {}),
+        ...identity,
+    }
+    return producerOwner
+        ? carryReaderArticleProducerOwner(message, producerOwner)
+        : message
+}
 
 /**
  * Owns the request/reply lifetime for a native Mark Read transaction.

@@ -30,7 +30,7 @@ let package = Package(
         .package(path: "../JapaneseLanguageTools"),
         .package(path: "../SwiftUtilities"),
         .package(path: "../LakeImage"),
-        .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.4"),
+        .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.5"),
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", branch: "development"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.5.0"),
@@ -53,7 +53,7 @@ let package = Package(
         .package(path: "../LakeKit"),
         .package(url: "https://github.com/nicklockwood/LRUCache.git", from: "1.1.2"),
         .package(url: "https://github.com/ivan-magda/swiftui-expandable-text.git", branch: "main"),
-        .package(url: "https://github.com/pointfreeco/swift-perception", exact: "2.0.11"),
+        .package(url: "https://github.com/pointfreeco/swift-perception", exact: "2.0.12"),
     ],
     targets: [
         .target(

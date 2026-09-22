@@ -773,6 +773,7 @@ export class FixedLayout extends HTMLElement {
             if (!section) return false
             const spreadTarget = this.getSpreadOf(section)
             if (!spreadTarget) return false
+            this.bookEndcap?.leave({ restoreFocus: false })
             return await this.#goToSpread(
                 spreadTarget.index,
                 spreadTarget.side,
@@ -786,6 +787,7 @@ export class FixedLayout extends HTMLElement {
             if (!this.#isCurrentNavigation(transaction)) {
                 return fixedLayoutNonOwningResult(transaction.reason)
             }
+            if (this.bookEndcap?.visible) return false
             const s = this.rtl ? this.#goLeft() : this.#goRight()
             if (s) {
                 this.#finishNavigation(transaction)
@@ -797,7 +799,10 @@ export class FixedLayout extends HTMLElement {
                 this.#spreads[targetIndex],
                 this.rtl ? 'right' : 'left'
             )
-            if (!targetSide) return false
+            if (!targetSide) {
+                return options.allowBookEndcap !== false && this.bookEndcap?.enter()
+                    ? { authoritativeNoMove: true, endcapNavigation: true } : false
+            }
             return await this.#goToSpread(targetIndex, targetSide, 'page', transaction)
         }, options)
     }
@@ -805,6 +810,11 @@ export class FixedLayout extends HTMLElement {
         return await this.#runNavigation(async transaction => {
             if (!this.#isCurrentNavigation(transaction)) {
                 return fixedLayoutNonOwningResult(transaction.reason)
+            }
+            if (this.bookEndcap?.visible) {
+                if (options.allowBookEndcap === false) return { authoritativeNoMove: true }
+                this.bookEndcap.leave()
+                return { authoritativeNoMove: true, endcapNavigation: true }
             }
             const s = this.rtl ? this.#goRight() : this.#goLeft()
             if (s) {
