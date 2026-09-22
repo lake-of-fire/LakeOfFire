@@ -844,6 +844,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     var refreshRelocationPreflightDidCompleteForTesting: (() -> Void)?
 
     @MainActor
+    var refreshTaskCountForTesting: Int {
+        refreshAllFilesMetadataTasks.count
+    }
+
+    @MainActor
     private func awaitRefreshTask(
         _ refreshTask: Task<Void, any Swift.Error>,
         role: RefreshTaskWaiterRole
@@ -1009,7 +1014,16 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             }
         } else {
             Task { @MainActor in
-                try? await refreshAllFilesMetadata()
+                do {
+                    try await refreshAllFilesMetadata(force: true)
+                } catch is CancellationError {
+                    // Resume can race the cancelled owner's deferred map cleanup.
+                    // Once that exact owner retires, one forced retry must create
+                    // or join the replacement inventory scan.
+                    try? await refreshAllFilesMetadata(force: true)
+                } catch {
+                    Logger.shared.logger.error("\(error)")
+                }
             }
         }
     }

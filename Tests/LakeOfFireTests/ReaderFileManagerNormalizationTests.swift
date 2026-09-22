@@ -418,6 +418,89 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     }
 
     @MainActor
+    func testResumeRetriesAfterJoiningCancelledSuspendedOwner() async throws {
+        let rootURL = try temporaryDirectory()
+        let manager = CountingReaderFileManager()
+        manager.scanDelayNanoseconds = 0
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        let firstScanGate = ScanGate()
+        let secondScanGate = ScanGate()
+        let firstScanStarted = expectation(description: "pre-suspension inventory scan started")
+        let secondScanStarted = expectation(description: "resume replacement inventory scan started")
+        var observedScanCount = 0
+        manager.scanDidStart = {
+            observedScanCount += 1
+            switch observedScanCount {
+            case 1:
+                firstScanStarted.fulfill()
+            case 2:
+                secondScanStarted.fulfill()
+            default:
+                XCTFail("Expected exactly two metadata scans.")
+            }
+        }
+        manager.scanBlocker = { scanNumber in
+            switch scanNumber {
+            case 1:
+                await firstScanGate.wait()
+            case 2:
+                await secondScanGate.wait()
+            default:
+                break
+            }
+        }
+
+        let originalOwner = Task { @MainActor () -> Result<Void, any Swift.Error> in
+            do {
+                try await manager.refreshAllFilesMetadata()
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }
+        await fulfillment(of: [firstScanStarted], timeout: 1)
+        manager.appSuspendedDidChange(isSuspended: true)
+        manager.appSuspendedDidChange(isSuspended: false)
+        await firstScanGate.release()
+
+        switch await originalOwner.value {
+        case .failure(is CancellationError):
+            break
+        case .failure(let error):
+            XCTFail("Unexpected suspended-owner error: \(error)")
+        case .success:
+            XCTFail("Expected suspension to cancel the original inventory owner.")
+        }
+        await fulfillment(of: [secondScanStarted], timeout: 1)
+        await secondScanGate.release()
+
+        for _ in 0..<100 where manager.refreshTaskCountForTesting != 0 {
+            await Task.yield()
+        }
+        XCTAssertEqual(manager.metadataScanCount, 2)
+        XCTAssertEqual(manager.refreshTaskCountForTesting, 0)
+    }
+
+    @MainActor
+    func testDebounceSkipsOrdinaryRefreshAndForceBypassesIt() async throws {
+        let rootURL = try temporaryDirectory()
+        let manager = CountingReaderFileManager()
+        manager.scanDelayNanoseconds = 0
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+
+        try await manager.refreshAllFilesMetadata()
+        XCTAssertEqual(manager.metadataScanCount, 1)
+
+        try await manager.refreshAllFilesMetadata()
+        XCTAssertEqual(manager.metadataScanCount, 1)
+
+        try await manager.refreshAllFilesMetadata(force: true)
+        XCTAssertEqual(manager.metadataScanCount, 2)
+    }
+
+    @MainActor
     func testRefreshAllFilesMetadataDoesNotJoinDifferentRealmConfigurationGenerations() async throws {
         let rootURL = try temporaryDirectory()
         let manager = CountingReaderFileManager()
