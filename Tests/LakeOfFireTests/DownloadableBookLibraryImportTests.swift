@@ -975,6 +975,153 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     }
 
     @MainActor
+    func testCatalogRowsWithRepeatedAcquisitionHaveDistinctStateAndCommands() async throws {
+        let catalogURL = URL(string: "https://catalog.example/opds/index.json")!
+        let acquisitionURL = URL(string: "https://catalog.example/books/shared.epub")!
+        let publications = BookLibraryViewModel.mapCatalogPublicationDescriptors(
+            [
+                BookLibraryViewModel.CatalogPublicationDescriptor(
+                    identifier: nil,
+                    title: "First edition",
+                    author: nil,
+                    publicationDate: nil,
+                    coverURL: nil,
+                    downloadURL: acquisitionURL,
+                    summary: nil,
+                    hasContentAudio: false
+                ),
+                BookLibraryViewModel.CatalogPublicationDescriptor(
+                    identifier: nil,
+                    title: "Second edition",
+                    author: nil,
+                    publicationDate: nil,
+                    coverURL: nil,
+                    downloadURL: acquisitionURL,
+                    summary: nil,
+                    hasContentAudio: false
+                ),
+            ],
+            catalogURL: catalogURL
+        )
+        let first = try XCTUnwrap(publications.first)
+        let second = try XCTUnwrap(publications.last)
+        let viewModel = BookLibraryViewModel()
+        let importedURL = URL(string: "ebook://ebook/load/local/shared.epub")!
+
+        XCTAssertEqual(first.downloadURL, second.downloadURL)
+        XCTAssertNotEqual(first.id, second.id)
+
+        let firstTask = try XCTUnwrap(viewModel.startCatalogBookCommand(
+            publication: first,
+            supersedingExisting: true,
+            presentsFailures: true
+        ) { _ in
+            .failed(.importFailed("First row failed."))
+        })
+        let secondTask = try XCTUnwrap(viewModel.startCatalogBookCommand(
+            publication: second,
+            supersedingExisting: true,
+            presentsFailures: true
+        ) { _ in
+            .imported(importedURL)
+        })
+        await firstTask.value
+        await secondTask.value
+
+        XCTAssertEqual(viewModel.catalogBookErrorMessage(for: first), "First row failed.")
+        XCTAssertNil(viewModel.catalogBookErrorMessage(for: second))
+        XCTAssertEqual(viewModel.catalogBookOutcomes[first.id], .failed(.importFailed("First row failed.")))
+        XCTAssertEqual(viewModel.catalogBookOutcomes[second.id], .imported(importedURL))
+    }
+
+    @MainActor
+    func testCatalogRowsWithoutAcquisitionsUseDistinctOccurrenceIdentities() {
+        let catalogURL = URL(string: "https://catalog.example/opds/index.json")!
+        let publications = BookLibraryViewModel.mapCatalogPublicationDescriptors(
+            [
+                BookLibraryViewModel.CatalogPublicationDescriptor(
+                    identifier: nil,
+                    title: "Unavailable",
+                    author: nil,
+                    publicationDate: nil,
+                    coverURL: nil,
+                    downloadURL: nil,
+                    summary: nil,
+                    hasContentAudio: false
+                ),
+                BookLibraryViewModel.CatalogPublicationDescriptor(
+                    identifier: nil,
+                    title: "Unavailable",
+                    author: nil,
+                    publicationDate: nil,
+                    coverURL: nil,
+                    downloadURL: nil,
+                    summary: nil,
+                    hasContentAudio: false
+                ),
+            ],
+            catalogURL: catalogURL
+        )
+
+        XCTAssertEqual(publications.count, 2)
+        XCTAssertNil(publications[0].downloadURL)
+        XCTAssertNil(publications[1].downloadURL)
+        XCTAssertNotEqual(publications[0].id, publications[1].id)
+    }
+
+    @MainActor
+    func testCatalogOPDSIdentifierPreservesRowIdentityAcrossDescriptorRefresh() async throws {
+        let catalogURL = URL(string: "https://catalog.example/opds/index.json")!
+        let first = BookLibraryViewModel.mapCatalogPublicationDescriptors(
+            [BookLibraryViewModel.CatalogPublicationDescriptor(
+                identifier: "urn:isbn:9780000000001",
+                title: "Original title",
+                author: nil,
+                publicationDate: nil,
+                coverURL: URL(string: "https://catalog.example/covers/original.jpg"),
+                downloadURL: URL(string: "https://catalog.example/books/original.epub"),
+                summary: "Original summary",
+                hasContentAudio: false
+            )],
+            catalogURL: catalogURL
+        )
+        let refreshed = BookLibraryViewModel.mapCatalogPublicationDescriptors(
+            [BookLibraryViewModel.CatalogPublicationDescriptor(
+                identifier: "urn:isbn:9780000000001",
+                title: "Renamed title",
+                author: nil,
+                publicationDate: nil,
+                coverURL: URL(string: "https://catalog.example/covers/revised.jpg"),
+                downloadURL: URL(string: "https://catalog.example/books/revised.epub"),
+                summary: "Revised summary",
+                hasContentAudio: false
+            )],
+            catalogURL: catalogURL
+        )
+
+        XCTAssertEqual(first[0].id, refreshed[0].id)
+        XCTAssertNotEqual(first[0].downloadURL, refreshed[0].downloadURL)
+        XCTAssertNotEqual(first[0].title, refreshed[0].title)
+        XCTAssertNotEqual(first[0].coverURL, refreshed[0].coverURL)
+        XCTAssertNotEqual(first[0].summary, refreshed[0].summary)
+
+        let viewModel = BookLibraryViewModel()
+        let command = try XCTUnwrap(viewModel.startCatalogBookCommand(
+            publication: first[0],
+            supersedingExisting: true,
+            presentsFailures: true
+        ) { _ in
+            .failed(.importFailed("Retained row failure."))
+        })
+        await command.value
+
+        XCTAssertEqual(
+            viewModel.catalogBookErrorMessage(for: refreshed[0]),
+            "Retained row failure."
+        )
+    }
+
+    @MainActor
     func testImportUsesOneProcessorBundleSnapshotAcrossMidflightReplacement() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: false) { fixture in
             ReaderFileManager.fileDestinationProcessors = []

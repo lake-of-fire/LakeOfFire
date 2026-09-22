@@ -692,19 +692,7 @@ public class BookLibraryViewModel: ObservableObject {
                 }
 
                 if let publications = parseData?.feed?.publications, !publications.isEmpty {
-                    let mapped = publications.map { publication -> Publication in
-                        let coverLink = publication.images.first(withRel: .cover) ?? publication.images.first(withRel: .opdsImage) ?? publication.images.first(withRel: .opdsImageThumbnail)
-                        let acquisitionLink = publication.links.first(withRel: .opdsAcquisition)
-                        let summary = publication.metadata.description ?? publication.metadata.subtitle
-                        return Publication(
-                            title: publication.metadata.title,
-                            author: publication.metadata.authors.map(\.name).joined(separator: ", "),
-                            publicationDate: publication.metadata.published,
-                            coverURL: coverLink?.url(relativeTo: url.domainURL),
-                            downloadURL: acquisitionLink?.url(relativeTo: url.domainURL),
-                            summary: summary
-                        )
-                    }
+                    let mapped = mapCatalogPublications(publications, catalogURL: url)
                     continuation.resume(returning: (mapped, nil))
                     return
                 }
@@ -724,6 +712,100 @@ public class BookLibraryViewModel: ObservableObject {
                 continuation.resume(returning: ([], "No publications or navigable links found"))
             }
         }
+    }
+
+    /// Gives each presentation row its own stable identity. The acquisition URL remains
+    /// deliberately separate: it is the identity ReaderFileManager uses for artifacts.
+    struct CatalogPublicationDescriptor: Sendable {
+        let identifier: String?
+        let title: String
+        let author: String?
+        let publicationDate: Date?
+        let coverURL: URL?
+        let downloadURL: URL?
+        let summary: String?
+        let hasContentAudio: Bool
+    }
+
+    nonisolated static func mapCatalogPublications(
+        _ publications: [LakeOfFireOPDS.Publication],
+        catalogURL: URL
+    ) -> [Publication] {
+        let descriptors = publications.map { publication in
+            let coverLink = publication.images.first(withRel: .cover)
+                ?? publication.images.first(withRel: .opdsImage)
+                ?? publication.images.first(withRel: .opdsImageThumbnail)
+            let acquisitionLink = publication.links.first(withRel: .opdsAcquisition)
+            return CatalogPublicationDescriptor(
+                identifier: publication.metadata.identifier,
+                title: publication.metadata.title,
+                author: publication.metadata.authors.map(\.name).joined(separator: ", "),
+                publicationDate: publication.metadata.published,
+                coverURL: coverLink?.url(relativeTo: catalogURL.domainURL),
+                downloadURL: acquisitionLink?.url(relativeTo: catalogURL.domainURL),
+                summary: publication.metadata.description ?? publication.metadata.subtitle,
+                hasContentAudio: false
+            )
+        }
+        return mapCatalogPublicationDescriptors(descriptors, catalogURL: catalogURL)
+    }
+
+    nonisolated static func mapCatalogPublicationDescriptors(
+        _ descriptors: [CatalogPublicationDescriptor],
+        catalogURL: URL
+    ) -> [Publication] {
+        var occurrenceCounts = [String: Int]()
+
+        return descriptors.map { descriptor in
+            let identifier = descriptor.identifier?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let identityBasis: String
+            if let identifier, !identifier.isEmpty {
+                identityBasis = "opds-identifier:\(identifier)"
+            } else if let downloadURL = descriptor.downloadURL {
+                identityBasis = "acquisition:\(downloadURL.absoluteString)"
+            } else {
+                identityBasis = "metadata:\(catalogRowMetadataIdentity(descriptor))"
+            }
+            let occurrence = occurrenceCounts[identityBasis, default: 0]
+            occurrenceCounts[identityBasis] = occurrence + 1
+            let catalogRowID = makeCatalogRowID(
+                catalogURL: catalogURL,
+                identityBasis: identityBasis,
+                occurrence: occurrence
+            )
+            return Publication(
+                title: descriptor.title,
+                author: descriptor.author,
+                publicationDate: descriptor.publicationDate,
+                coverURL: descriptor.coverURL,
+                downloadURL: descriptor.downloadURL,
+                summary: descriptor.summary,
+                hasContentAudio: descriptor.hasContentAudio,
+                catalogRowID: catalogRowID
+            )
+        }
+    }
+
+    nonisolated private static func catalogRowMetadataIdentity(
+        _ descriptor: CatalogPublicationDescriptor
+    ) -> String {
+        [
+            descriptor.title,
+            descriptor.author ?? "",
+            descriptor.publicationDate.map { String($0.timeIntervalSinceReferenceDate) } ?? "",
+        ]
+            .map { "\($0.utf8.count):\($0)" }
+            .joined(separator: "|")
+    }
+
+    nonisolated private static func makeCatalogRowID(
+        catalogURL: URL,
+        identityBasis: String,
+        occurrence: Int
+    ) -> String {
+        let components = ["catalog-row", catalogURL.absoluteString, identityBasis, String(occurrence)]
+        return components.map { "\($0.utf8.count):\($0)" }.joined(separator: "|")
     }
 
     func catalogBookErrorMessage(for publication: Publication) -> String? {
@@ -1141,8 +1223,50 @@ public struct Publication: Identifiable, Hashable, Sendable {
     public var downloadURL: URL?
     public var summary: String?
     public var hasContentAudio = false
+    /// Stable presentation identity supplied by a catalog mapper, or derived once at initialization.
+    public let catalogRowID: String
+
+    public init(
+        title: String,
+        author: String? = nil,
+        publicationDate: Date? = nil,
+        coverURL: URL? = nil,
+        downloadURL: URL? = nil,
+        summary: String? = nil,
+        hasContentAudio: Bool = false,
+        catalogRowID: String? = nil
+    ) {
+        self.title = title
+        self.author = author
+        self.publicationDate = publicationDate
+        self.coverURL = coverURL
+        self.downloadURL = downloadURL
+        self.summary = summary
+        self.hasContentAudio = hasContentAudio
+        self.catalogRowID = catalogRowID ?? Self.legacyCatalogRowID(
+            title: title,
+            author: author,
+            publicationDate: publicationDate,
+            coverURL: coverURL,
+            downloadURL: downloadURL,
+            summary: summary,
+            hasContentAudio: hasContentAudio
+        )
+    }
 
     public var id: String {
+        catalogRowID
+    }
+
+    private static func legacyCatalogRowID(
+        title: String,
+        author: String?,
+        publicationDate: Date?,
+        coverURL: URL?,
+        downloadURL: URL?,
+        summary: String?,
+        hasContentAudio: Bool
+    ) -> String {
         if let downloadURL {
             return "download:\(downloadURL.absoluteString)"
         }

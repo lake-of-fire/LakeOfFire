@@ -82,6 +82,22 @@ struct BookListRow: View {
 
     @State private var downloadable: Downloadable?
 
+    private struct DownloadableDescriptorIdentity: Hashable {
+        let publicationID: String
+        let downloadURL: URL?
+        let title: String
+        let readerFileManagerIdentity: ObjectIdentifier
+    }
+
+    private var downloadableDescriptorIdentity: DownloadableDescriptorIdentity {
+        DownloadableDescriptorIdentity(
+            publicationID: publication.id,
+            downloadURL: publication.downloadURL,
+            title: publication.title,
+            readerFileManagerIdentity: ObjectIdentifier(suppliedReaderFileManager)
+        )
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let downloadable {
@@ -118,22 +134,24 @@ struct BookListRow: View {
         .listRowInsets(.init())
         .listRowBackground(Color.clear)
         .listRowSeparatorIfAvailable(.hidden)
-        .task { @MainActor in
+        .task(id: downloadableDescriptorIdentity) { @MainActor in
             await refreshDownloadable()
         }
     }
 
     private func refreshDownloadable() async {
+        let descriptor = downloadableDescriptorIdentity
+        guard !Task.isCancelled else { return }
+        downloadable = nil
         guard let downloadURL = publication.downloadURL else {
-            downloadable = nil
             return
         }
-        if downloadable?.url != downloadURL || downloadable?.name != publication.title {
-            downloadable = try? await suppliedReaderFileManager.downloadable(
-                url: downloadURL,
-                name: publication.title
-            )
-        }
+        let resolved = try? await suppliedReaderFileManager.downloadable(
+            url: downloadURL,
+            name: publication.title
+        )
+        guard !Task.isCancelled, descriptor == downloadableDescriptorIdentity else { return }
+        downloadable = resolved
     }
 }
 

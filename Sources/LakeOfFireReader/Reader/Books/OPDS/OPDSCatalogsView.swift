@@ -180,7 +180,10 @@ struct OPDSCatalogDetailView: View {
         OPDSParser.parseURL(url: url) { parseData, error in
             DispatchQueue.main.async {
                 if let feed = parseData?.feed {
-                    self.publications = feed.publications.map { Publication(title: $0.metadata.title) }
+                    self.publications = BookLibraryViewModel.mapCatalogPublications(
+                        feed.publications,
+                        catalogURL: url
+                    )
                 } else if let error = error {
                     self.errorMessage = "Failed to fetch catalog data: \(error.localizedDescription)"
                 }
