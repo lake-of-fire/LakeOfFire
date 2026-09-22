@@ -775,24 +775,33 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
         )
         XCTAssertFalse(firstManager.readerContentMimeTypes.contains(.pdf))
         let remoteEbookURL = URL(string: "https://example.com/remote.epub")!
-        let firstDownloadable = try await firstManager.downloadable(
+        let firstDownloadableResult = try await firstManager.downloadable(
             url: remoteEbookURL,
             name: "First Remote"
         )
-        let secondDownloadable = try await secondManager.downloadable(
+        let secondDownloadableResult = try await secondManager.downloadable(
             url: remoteEbookURL,
             name: "Second Remote"
         )
-        XCTAssertEqual(
-            firstDownloadable?.localDestination.deletingLastPathComponent().lastPathComponent,
-            "Books"
+        let firstDownloadable = try XCTUnwrap(firstDownloadableResult)
+        let secondDownloadable = try XCTUnwrap(secondDownloadableResult)
+        let firstRelativeComponents = Array(
+            firstDownloadable.localDestination.pathComponents
+                .dropFirst(firstRootURL.pathComponents.count)
         )
-        XCTAssertTrue(
-            secondDownloadable?.localDestination
-                .deletingLastPathComponent()
-                .lastPathComponent
-                .hasPrefix("ReaderFileDownload.") == true
+        XCTAssertEqual(firstRelativeComponents.count, 5)
+        XCTAssertEqual(Array(firstRelativeComponents.prefix(3)), ["Books", "CatalogArtifacts", "v1"])
+        XCTAssertEqual(firstRelativeComponents[3].count, 64)
+        XCTAssertEqual(firstRelativeComponents[4], "remote.epub")
+        let secondRelativeComponents = Array(
+            secondDownloadable.localDestination.pathComponents
+                .dropFirst(secondRootURL.pathComponents.count)
         )
+        XCTAssertEqual(secondRelativeComponents.count, 5)
+        XCTAssertTrue(secondRelativeComponents[0].hasPrefix("ReaderFileDownload."))
+        XCTAssertEqual(Array(secondRelativeComponents[1...2]), ["CatalogArtifacts", "v1"])
+        XCTAssertEqual(secondRelativeComponents[3].count, 64)
+        XCTAssertEqual(secondRelativeComponents[4], "remote.epub")
         let firstReaderFileURL = try await firstManager.readerFileURL(for: firstFileURL)
         let secondReaderFileURL = try await secondManager.readerFileURL(for: secondFileURL)
         XCTAssertEqual(
@@ -809,6 +818,160 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
         XCTAssertEqual(firstManager.files?.map(\.url), [firstReaderFileURL].compactMap { $0 })
         XCTAssertEqual(firstManager.files?.first?.title, "First Manager Title")
         XCTAssertEqual(secondManager.files?.count, 0)
+    }
+
+    @MainActor
+    func testCatalogDownloadDestinationsUseExactAcquisitionURLIdentity() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "DownloadableBookLibraryImportTests.CatalogIdentity.\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+
+        let manager = ReaderFileManager(defaultLocalRootURLProvider: { rootURL })
+        manager.localDrive = try await CloudDrive(
+            storage: .localDirectory(rootURL: rootURL)
+        )
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        EbookFileManager.configure(readerFileManager: manager)
+
+        let firstURL = URL(string: "https://first.example/books/shared.epub")!
+        let secondURL = URL(string: "https://second.example/books/shared.epub")!
+        let queryURL = URL(string: "https://first.example/books/shared.epub?revision=2")!
+        let firstResult = try await manager.downloadable(url: firstURL, name: "First title")
+        let replayResult = try await manager.downloadable(url: firstURL, name: "Renamed title")
+        let secondResult = try await manager.downloadable(url: secondURL, name: "Second title")
+        let queryResult = try await manager.downloadable(url: queryURL, name: "Query title")
+        let first = try XCTUnwrap(firstResult)
+        let replay = try XCTUnwrap(replayResult)
+        let second = try XCTUnwrap(secondResult)
+        let query = try XCTUnwrap(queryResult)
+        let firstPublication = Publication(title: "First title", downloadURL: firstURL)
+        let renamedPublication = Publication(title: "Renamed title", downloadURL: firstURL)
+        let secondPublication = Publication(title: "Second title", downloadURL: secondURL)
+
+        XCTAssertEqual(first.localDestination, replay.localDestination)
+        XCTAssertNotEqual(first.localDestination, second.localDestination)
+        XCTAssertNotEqual(first.localDestination, query.localDestination)
+        XCTAssertEqual(firstPublication.id, renamedPublication.id)
+        XCTAssertNotEqual(firstPublication.id, secondPublication.id)
+        XCTAssertEqual(firstPublication, renamedPublication)
+        XCTAssertEqual(Set([firstPublication, renamedPublication]).count, 1)
+        XCTAssertEqual(first.localDestination.lastPathComponent, "shared.epub")
+        XCTAssertTrue(first.localDestination.pathComponents.contains("CatalogArtifacts"))
+        XCTAssertTrue(first.localDestination.pathComponents.contains("v1"))
+        XCTAssertTrue(first.localDestination.standardizedFileURL.path.hasPrefix(
+            rootURL.standardizedFileURL.path + "/"
+        ))
+
+        try FileManager.default.createDirectory(
+            at: first.localDestination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("first artifact".utf8).write(to: first.localDestination)
+        let firstExistsLocally = await first.existsLocally()
+        let secondExistsLocally = await second.existsLocally()
+        XCTAssertTrue(firstExistsLocally)
+        XCTAssertFalse(secondExistsLocally)
+        let firstReaderURL = try await manager.readerFileURL(for: first)
+        let expectedFirstReaderURL = URL(string: [
+            "ebook://ebook/load/local/Books/CatalogArtifacts/v1",
+            first.localDestination.deletingLastPathComponent().lastPathComponent,
+            "shared.epub",
+        ].joined(separator: "/"))
+        XCTAssertEqual(firstReaderURL, expectedFirstReaderURL)
+        let importedFirstReaderURL = try await manager.ensureImported(downloadable: first)
+        XCTAssertEqual(importedFirstReaderURL, expectedFirstReaderURL)
+        XCTAssertEqual(manager.files?.map(\.url), [expectedFirstReaderURL].compactMap { $0 })
+
+        let legacyURL = rootURL
+            .appendingPathComponent("Books", isDirectory: true)
+            .appendingPathComponent("legacy.epub")
+        try FileManager.default.createDirectory(
+            at: legacyURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("legacy artifact".utf8).write(to: legacyURL)
+        let legacyAcquisitionResult = try await manager.downloadable(
+            url: URL(string: "https://legacy.example/legacy.epub")!,
+            name: "Legacy title"
+        )
+        let legacyAcquisition = try XCTUnwrap(legacyAcquisitionResult)
+        XCTAssertNotEqual(legacyAcquisition.localDestination, legacyURL)
+        let legacyAcquisitionExistsLocally = await legacyAcquisition.existsLocally()
+        XCTAssertFalse(legacyAcquisitionExistsLocally)
+
+        let basenameFreeResult = try await manager.downloadable(
+            url: URL(string: "https://example.com/")!,
+            name: "No basename"
+        )
+        let encodedSeparatorResult = try await manager.downloadable(
+            url: URL(string: "https://example.com/a%2Fb.epub")!,
+            name: "Encoded separator"
+        )
+        let basenameFree = try XCTUnwrap(basenameFreeResult)
+        let encodedSeparator = try XCTUnwrap(encodedSeparatorResult)
+        XCTAssertEqual(basenameFree.localDestination.lastPathComponent, "download")
+        XCTAssertNotEqual(
+            basenameFree.localDestination,
+            basenameFree.localDestination.deletingLastPathComponent()
+        )
+        XCTAssertEqual(encodedSeparator.localDestination.lastPathComponent, "a%2Fb.epub")
+        let encodedSeparatorIdentityDirectory = encodedSeparator.localDestination
+            .deletingLastPathComponent()
+        XCTAssertEqual(encodedSeparatorIdentityDirectory.lastPathComponent.count, 64)
+        XCTAssertTrue(encodedSeparatorIdentityDirectory.lastPathComponent.allSatisfy {
+            $0.isHexDigit && !$0.isUppercase
+        })
+        XCTAssertEqual(
+            encodedSeparatorIdentityDirectory.deletingLastPathComponent().lastPathComponent,
+            "v1"
+        )
+
+        let symlinkRootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "DownloadableBookLibraryImportTests.CatalogSymlink.\(UUID().uuidString)",
+                isDirectory: true
+            )
+        let outsideURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "DownloadableBookLibraryImportTests.CatalogOutside.\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: symlinkRootURL.appendingPathComponent("Books", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: outsideURL, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: symlinkRootURL.appendingPathComponent("Books/CatalogArtifacts"),
+            withDestinationURL: outsideURL
+        )
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: symlinkRootURL)
+            try? FileManager.default.removeItem(at: outsideURL)
+        }
+        let symlinkManager = ReaderFileManager(defaultLocalRootURLProvider: { symlinkRootURL })
+        symlinkManager.localDrive = try await CloudDrive(
+            storage: .localDirectory(rootURL: symlinkRootURL)
+        )
+        symlinkManager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        EbookFileManager.configure(readerFileManager: symlinkManager)
+
+        do {
+            _ = try await symlinkManager.downloadable(
+                url: URL(string: "https://example.com/escaped.epub")!,
+                name: "Escaped"
+            )
+            XCTFail("Expected a catalog destination symlink outside the drive to be rejected.")
+        } catch ReaderFileManagerError.invalidDestinationPath {
+            let outsideContents = try FileManager.default.contentsOfDirectory(atPath: outsideURL.path)
+            XCTAssertEqual(outsideContents, [])
+        }
     }
 
     @MainActor

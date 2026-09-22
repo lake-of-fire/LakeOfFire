@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import CryptoKit
 @preconcurrency import SwiftCloudDrive
 import SwiftUtilities
 import SwiftUIDownloads
@@ -3110,7 +3111,14 @@ public extension ReaderFileManager {
             drive: drive,
             processorSnapshot: processorRegistry.snapshot()
         )
-        let targetFilePath = targetDirectory.appending(url.lastPathComponent)
+        let targetFilePath = Self.catalogArtifactPath(
+            for: url,
+            under: targetDirectory
+        )
+        try Self.validateDestinationContainment(
+            targetFilePath,
+            in: drive.rootDirectory
+        )
         let targetURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
         
         return Downloadable(
@@ -3132,6 +3140,30 @@ extension ReaderFileManager: CloudDriveObserver {
 }
 
 private extension ReaderFileManager {
+    static func catalogArtifactPath(
+        for acquisitionURL: URL,
+        under targetDirectory: RootRelativePath
+    ) -> RootRelativePath {
+        let acquisitionIdentity = SHA256.hash(
+            data: Data(acquisitionURL.absoluteString.utf8)
+        ).map {
+            String(format: "%02x", $0)
+        }.joined()
+        let encodedPath = URLComponents(
+            url: acquisitionURL,
+            resolvingAgainstBaseURL: false
+        )?.percentEncodedPath ?? ""
+        let fileName = encodedPath
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .last
+            .map(String.init) ?? "download"
+        return targetDirectory
+            .appending("CatalogArtifacts")
+            .appending("v1")
+            .appending(acquisitionIdentity)
+            .appending(fileName)
+    }
+
     @MainActor
     static func rootRelativePath(
         forLocalCandidateURL url: URL,

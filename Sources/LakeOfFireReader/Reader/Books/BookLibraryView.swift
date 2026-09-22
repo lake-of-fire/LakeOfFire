@@ -510,7 +510,6 @@ public class BookLibraryViewModel: ObservableObject {
 }
 
 public struct Publication: Identifiable, Hashable, Sendable {
-    public let id = UUID()
     public var title: String
     public var author: String?
     public var publicationDate: Date?
@@ -518,4 +517,30 @@ public struct Publication: Identifiable, Hashable, Sendable {
     public var downloadURL: URL?
     public var summary: String?
     public var hasContentAudio = false
+
+    public var id: String {
+        if let downloadURL {
+            return "download:\(downloadURL.absoluteString)"
+        }
+        let components = [
+            "catalog",
+            title,
+            author ?? "",
+            publicationDate.map { String($0.timeIntervalSinceReferenceDate) } ?? "",
+            coverURL?.absoluteString ?? "",
+            summary ?? "",
+            hasContentAudio ? "audio" : "silent",
+        ]
+        return components.map {
+            "\($0.utf8.count):\($0)"
+        }.joined()
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 }
