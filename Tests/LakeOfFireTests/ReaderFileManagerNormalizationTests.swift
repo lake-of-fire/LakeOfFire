@@ -9,6 +9,7 @@ private final class CountingReaderFileManager: ReaderFileManager, @unchecked Sen
     private(set) var metadataScanCount = 0
     var scanError: (any Swift.Error)?
     var scanDidStart: (() -> Void)?
+    var scanBlocker: (@MainActor (Int) async -> Void)?
     var scanDelayNanoseconds: UInt64 = 100_000_000
 
     override func refreshFilesMetadata(
@@ -21,6 +22,7 @@ private final class CountingReaderFileManager: ReaderFileManager, @unchecked Sen
         if let scanError {
             throw scanError
         }
+        await scanBlocker?(metadataScanCount)
         try await Task.sleep(nanoseconds: scanDelayNanoseconds)
         return []
     }
@@ -29,6 +31,22 @@ private final class CountingReaderFileManager: ReaderFileManager, @unchecked Sen
 final class ReaderFileManagerNormalizationTests: XCTestCase {
     private enum MetadataScanError: Swift.Error {
         case failed
+    }
+
+    private actor ScanGate {
+        private var didRelease = false
+        private var waiter: CheckedContinuation<Void, Never>?
+
+        func wait() async {
+            guard !didRelease else { return }
+            await withCheckedContinuation { waiter = $0 }
+        }
+
+        func release() {
+            didRelease = true
+            waiter?.resume()
+            waiter = nil
+        }
     }
 
     private final class SequencedRootProvider: @unchecked Sendable {
@@ -276,6 +294,64 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         await fulfillment(of: [replacementScanStarted], timeout: 1)
         try await refresh.value
 
+        XCTAssertEqual(manager.metadataScanCount, 2)
+    }
+
+    @MainActor
+    func testForcedRefreshRequesterCompletesAfterItsFollowUpScan() async throws {
+        let rootURL = try temporaryDirectory()
+        let manager = CountingReaderFileManager()
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        let firstScanGate = ScanGate()
+        let secondScanGate = ScanGate()
+        let firstScanStarted = expectation(description: "first inventory scan started")
+        let secondScanStarted = expectation(description: "forced follow-up inventory scan started")
+        let forceRequesterEntered = expectation(description: "force requester entered")
+        let forceRequesterCompleted = expectation(description: "force requester completed")
+        forceRequesterCompleted.isInverted = true
+        var observedScanCount = 0
+        manager.scanDidStart = {
+            observedScanCount += 1
+            switch observedScanCount {
+            case 1:
+                firstScanStarted.fulfill()
+            case 2:
+                secondScanStarted.fulfill()
+            default:
+                XCTFail("Expected exactly two metadata scans.")
+            }
+        }
+        manager.scanBlocker = { scanNumber in
+            switch scanNumber {
+            case 1:
+                await firstScanGate.wait()
+            case 2:
+                await secondScanGate.wait()
+            default:
+                break
+            }
+        }
+
+        let owner = Task { @MainActor in
+            try await manager.refreshAllFilesMetadata()
+        }
+        await fulfillment(of: [firstScanStarted], timeout: 1)
+        let forceRequester = Task { @MainActor in
+            forceRequesterEntered.fulfill()
+            try await manager.refreshAllFilesMetadata(force: true)
+            forceRequesterCompleted.fulfill()
+        }
+        await fulfillment(of: [forceRequesterEntered], timeout: 1)
+        await Task.yield()
+        await firstScanGate.release()
+        await fulfillment(of: [secondScanStarted], timeout: 1)
+        await fulfillment(of: [forceRequesterCompleted], timeout: 0.1)
+        forceRequesterCompleted.isInverted = false
+        await secondScanGate.release()
+
+        try await owner.value
+        try await forceRequester.value
         XCTAssertEqual(manager.metadataScanCount, 2)
     }
 
