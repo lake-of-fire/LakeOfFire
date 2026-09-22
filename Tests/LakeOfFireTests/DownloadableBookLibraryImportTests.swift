@@ -555,6 +555,71 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     }
 
     @MainActor
+    func testConfigurationReplacementBeforeLegacyRootRemovalRetainsSourceAndReceipt() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: false) { fixture in
+            let receipt = try await admitLegacyRootRelocationReceipt(
+                fixture: fixture,
+                filename: "replaced-configuration.epub"
+            )
+            let removalGate = ProcessorSnapshotGate()
+            fixture.manager.refreshRelocationRemovalWillBeginForTesting = {
+                await removalGate.enterAndWait()
+            }
+
+            let refresh = Task { @MainActor () -> Result<Void, any Swift.Error> in
+                do {
+                    try await fixture.manager.refreshAllFilesMetadata(force: true)
+                    return .success(())
+                } catch {
+                    return .failure(error)
+                }
+            }
+            await removalGate.waitUntilEntered()
+            fixture.manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+            await removalGate.release()
+
+            switch await refresh.value {
+            case .failure(ReaderFileManagerError.refreshSuperseded):
+                break
+            case .failure(let error):
+                XCTFail("Unexpected configuration-replacement error: \(error)")
+            case .success:
+                XCTFail("Expected replacement to supersede relocation preflight.")
+            }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.sourceURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.targetURL.path))
+            try await assertLegacyRootRelocationReceipt(receipt, isPresent: true)
+        }
+    }
+
+    @MainActor
+    func testLegacyRootRemovalFailureRetainsReceiptAndLaterRefreshRetries() async throws {
+        let removalProbe = RemovalProbe(failuresRemaining: 1)
+        try await withFixture(
+            downloadIsAlreadyInLibrary: false,
+            legacyRootFileRemover: { drive, path in
+                try await removalProbe.remove(drive, at: path)
+            }
+        ) { fixture in
+            let receipt = try await admitLegacyRootRelocationReceipt(
+                fixture: fixture,
+                filename: "retry-refresh-removal.epub"
+            )
+
+            try await fixture.manager.refreshAllFilesMetadata(force: true)
+            XCTAssertEqual(removalProbe.attemptCount, 1)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.sourceURL.path))
+            try await assertLegacyRootRelocationReceipt(receipt, isPresent: true)
+
+            try await fixture.manager.refreshAllFilesMetadata(force: true)
+            XCTAssertEqual(removalProbe.attemptCount, 2)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: receipt.sourceURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.targetURL.path))
+            try await assertLegacyRootRelocationReceipt(receipt, isPresent: false)
+        }
+    }
+
+    @MainActor
     func testEnsureImportedRetriesLegacyRootRemovalAfterInitialPhysicalDeletionFailure() async throws {
         let removalProbe = RemovalProbe(failuresRemaining: 1)
         try await withFixture(

@@ -819,6 +819,16 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         )
     }
 
+    @MainActor
+    private func refreshMetadataIdentityIsCurrent(
+        _ refreshIdentity: RefreshMetadataIdentity,
+        realmConfiguration: Realm.Configuration
+    ) -> Bool {
+        refreshMetadataIdentity(for: realmConfiguration) == refreshIdentity
+            && Self.realmConfigurationIdentity(resolvedHistoryRealmConfiguration)
+                == refreshIdentity.realmConfiguration
+    }
+
     private static func realmConfigurationIdentity(_ configuration: Realm.Configuration) -> String {
         if let fileURL = configuration.fileURL {
             return "file:\(fileURL.standardizedFileURL.absoluteString)"
@@ -842,6 +852,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
     @MainActor
     var refreshRelocationPreflightDidCompleteForTesting: (() -> Void)?
+
+    @MainActor
+    var refreshRelocationRemovalWillBeginForTesting: (() async -> Void)?
 
     @MainActor
     var refreshTaskCountForTesting: Int {
@@ -1374,8 +1387,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     public func ensureImported(downloadable: Downloadable) async throws -> URL? {
         let realmConfiguration = resolvedHistoryRealmConfiguration
         let processorSnapshot = processorRegistry.snapshot()
+        let refreshIdentity = refreshMetadataIdentity(for: realmConfiguration)
         if try await drainLegacyRootRelocationReceipts(
-            realmConfiguration: realmConfiguration
+            realmConfiguration: realmConfiguration,
+            refreshIdentity: refreshIdentity
         ) {
             // A completed recovery removes a physical root file. Reconcile it
             // before looking up an existing download so it cannot be indexed
@@ -1701,9 +1716,16 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     /// source or target remains recoverable evidence and is never deleted.
     @MainActor
     private func drainLegacyRootRelocationReceipts(
-        realmConfiguration: Realm.Configuration
+        realmConfiguration: Realm.Configuration,
+        refreshIdentity: RefreshMetadataIdentity
     ) async throws -> Bool {
         try Task.checkCancellation()
+        guard refreshMetadataIdentityIsCurrent(
+            refreshIdentity,
+            realmConfiguration: realmConfiguration
+        ) else {
+            throw ReaderFileManagerError.refreshSuperseded
+        }
         var removedAnySource = false
         for drive in [localDrive, cloudDrive].compactMap({ $0 }).filter(\.isConnected) {
             try Task.checkCancellation()
@@ -1717,6 +1739,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             )
             for receipt in receipts {
                 try Task.checkCancellation()
+                guard refreshMetadataIdentityIsCurrent(
+                    refreshIdentity,
+                    realmConfiguration: realmConfiguration
+                ) else {
+                    throw ReaderFileManagerError.refreshSuperseded
+                }
                 guard let sourceRelativePath = Self.validLegacyRootSourcePath(
                     receipt.sourceRelativePath
                 ),
@@ -1743,15 +1771,30 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 let sourceExists = try await drive.fileExists(at: sourceRelativePath)
                 if sourceExists {
                     do {
+                        await refreshRelocationRemovalWillBeginForTesting?()
                         try Task.checkCancellation()
+                        guard refreshMetadataIdentityIsCurrent(
+                            refreshIdentity,
+                            realmConfiguration: realmConfiguration
+                        ) else {
+                            throw ReaderFileManagerError.refreshSuperseded
+                        }
                         try await legacyRootFileRemover(drive, sourceRelativePath)
                     } catch is CancellationError {
                         throw CancellationError()
+                    } catch ReaderFileManagerError.refreshSuperseded {
+                        throw ReaderFileManagerError.refreshSuperseded
                     } catch {
                         continue
                     }
                 }
                 try Task.checkCancellation()
+                guard refreshMetadataIdentityIsCurrent(
+                    refreshIdentity,
+                    realmConfiguration: realmConfiguration
+                ) else {
+                    throw ReaderFileManagerError.refreshSuperseded
+                }
                 guard !(try await drive.fileExists(at: sourceRelativePath)) else {
                     continue
                 }
@@ -2154,13 +2197,20 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         processorSnapshot: ReaderFileProcessorRegistrySnapshot
     ) async throws {
         try Task.checkCancellation()
+        let refreshIdentity = refreshMetadataIdentity(for: realmConfiguration)
         let didDrainLegacyRootRelocation = try await drainLegacyRootRelocationReceipts(
-            realmConfiguration: realmConfiguration
+            realmConfiguration: realmConfiguration,
+            refreshIdentity: refreshIdentity
         )
         try Task.checkCancellation()
+        guard refreshMetadataIdentityIsCurrent(
+            refreshIdentity,
+            realmConfiguration: realmConfiguration
+        ) else {
+            throw ReaderFileManagerError.refreshSuperseded
+        }
         refreshRelocationPreflightDidCompleteForTesting?()
         let force = force || didDrainLegacyRootRelocation
-        let refreshIdentity = refreshMetadataIdentity(for: realmConfiguration)
         if let refreshAllFilesMetadataTask = refreshAllFilesMetadataTasks[refreshIdentity] {
             // Joiners and forced follow-ups intentionally inherit the in-flight owner's
             // processor snapshot. A replacement applies to the next independent refresh.
