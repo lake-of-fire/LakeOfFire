@@ -125,7 +125,9 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @Published var selectedFeed: Feed?
     
     private var exportOPMLTask: Task<Void, Never>?
+    private var reprepareOPMLTask: Task<Void, Never>?
     private var exportOPMLGeneration = 0
+    private var opmlExportUIRegistrations = Set<UUID>()
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
@@ -233,13 +235,49 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    private func invalidateOPMLExport() {
-        guard exportedOPML != nil || exportedOPMLFileURL != nil || exportOPMLTask != nil else { return }
+    func invalidateOPMLExport() {
+        let shouldReprepare = !opmlExportUIRegistrations.isEmpty &&
+            (exportedOPML != nil || exportedOPMLFileURL != nil || exportOPMLTask != nil || reprepareOPMLTask != nil)
+        guard exportedOPML != nil || exportedOPMLFileURL != nil || exportOPMLTask != nil || reprepareOPMLTask != nil else { return }
         exportOPMLGeneration += 1
+        let generation = exportOPMLGeneration
         exportedOPML = nil
         exportedOPMLFileURL = nil
         exportOPMLTask?.cancel()
         exportOPMLTask = nil
+        reprepareOPMLTask?.cancel()
+        reprepareOPMLTask = nil
+        if shouldReprepare {
+            reprepareOPMLTask = Task { @MainActor [weak self] in
+                await Task.yield()
+                guard !Task.isCancelled,
+                      let self,
+                      !self.opmlExportUIRegistrations.isEmpty,
+                      self.exportOPMLGeneration == generation else { return }
+                self.reprepareOPMLTask = nil
+                self.ensureOPMLExportPrepared()
+            }
+        }
+    }
+
+    var opmlExportUIRegistrationCount: Int {
+        opmlExportUIRegistrations.count
+    }
+
+    @MainActor
+    func registerOPMLExportUI(_ registrationID: UUID) {
+        guard opmlExportUIRegistrations.insert(registrationID).inserted else { return }
+        reprepareOPMLTask?.cancel()
+        reprepareOPMLTask = nil
+        ensureOPMLExportPrepared()
+    }
+
+    @MainActor
+    func unregisterOPMLExportUI(_ registrationID: UUID) {
+        guard opmlExportUIRegistrations.remove(registrationID) != nil,
+              opmlExportUIRegistrations.isEmpty else { return }
+        reprepareOPMLTask?.cancel()
+        reprepareOPMLTask = nil
     }
 
     @MainActor
@@ -331,16 +369,18 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     @RealmBackgroundActor
     func duplicate(feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws {
-        do {
-            guard let newFeedID = try await LibraryDataManager.shared.duplicateFeed(feed, inCategory: category, overwriteExisting: true) else { return }
-            Task { @MainActor in
-                let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
-                guard let category = realm.resolve(category),
-                      let newFeed = realm.object(ofType: Feed.self, forPrimaryKey: newFeedID)
-                else { return }
-                showCategory(category.id)
-                selectedFeed = newFeed
-            }
-        } catch { }
+        guard let newFeedID = try await LibraryDataManager.shared.duplicateFeed(
+            feed,
+            inCategory: category,
+            overwriteExisting: overwriteExisting
+        ) else { return }
+        Task { @MainActor in
+            let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+            guard let newFeed = realm.object(ofType: Feed.self, forPrimaryKey: newFeedID),
+                  let categoryID = newFeed.categoryID
+            else { return }
+            showCategory(categoryID)
+            selectedFeed = newFeed
+        }
     }
 }
