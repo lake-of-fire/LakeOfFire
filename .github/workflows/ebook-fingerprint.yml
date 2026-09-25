@@ -1,0 +1,19 @@
+name: Exact EPUB package fingerprints
+on:
+  pull_request:
+    paths:
+      - 'Sources/LakeOfFireContent/Files/ReaderEBookPackageFingerprint.swift'
+      - 'Tests/LakeOfFireTests/ReaderEBookPackageFingerprintTests.swift'
+      - 'Tools/EBookFingerprintTests/**'
+      - 'Tools/test-ebook-fingerprint.sh'
+      - '.github/workflows/ebook-fingerprint.yml'
+permissions:
+  contents: read
+jobs:
+  fingerprint:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - run: bash Tools/test-ebook-fingerprint.sh
