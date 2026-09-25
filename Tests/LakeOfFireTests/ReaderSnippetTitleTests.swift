@@ -131,6 +131,43 @@ final class ReaderSnippetTitleTests: XCTestCase {
     }
 
     @MainActor
+    func testConcurrentSnippetLoadsKeepEachHistoryRecordAndMutationJournal() async throws {
+        try await withSnippetRealm { configuration in
+            let keys = try await withThrowingTaskGroup(of: String.self) { group in
+                for index in 0..<12 {
+                    group.addTask { @MainActor in
+                        let content = try await ReaderContentLoader.load(
+                            html: "<p>Concurrent startup snippet \(index)</p>",
+                            allowContentMatch: false
+                        )
+                        return try XCTUnwrap(content).compoundKey
+                    }
+                }
+                var keys = [String]()
+                for try await key in group {
+                    keys.append(key)
+                }
+                return keys
+            }
+
+            XCTAssertEqual(Set(keys).count, 12)
+            let realm = try await Realm(configuration: configuration)
+            try await realm.asyncRefresh()
+            XCTAssertEqual(realm.objects(HistoryRecord.self).count, 12)
+            for key in keys {
+                let record = try XCTUnwrap(
+                    realm.object(ofType: HistoryRecord.self, forPrimaryKey: key)
+                )
+                let recordName = record.objectSchema.className + "." + key
+                XCTAssertNotNil(
+                    realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName),
+                    "Missing mutation journal for \(key)"
+                )
+            }
+        }
+    }
+
+    @MainActor
     func testUpdateSnippetContentAutoRetitlesGeneratedTitles() async throws {
         let snippetHTML = self.snippetHTML(token: "auto-retitle")
         let updatedSnippetHTML = self.updatedSnippetHTML(token: "auto-retitle")

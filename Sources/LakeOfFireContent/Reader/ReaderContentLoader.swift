@@ -443,7 +443,10 @@ public struct ReaderContentLoader {
             }
             historyRecord.rssContainsFullContent = true
 //            await historyRealm.asyncRefresh()
-            try historyRealm.write {
+            // The cached actor-bound Realm may still be committing an earlier
+            // async write when another startup load enters this actor. Queue
+            // this transaction instead of synchronously beginning a second one.
+            try await historyRealm.asyncWrite {
                 historyRealm.add(historyRecord, update: .modified)
                 historyRecord.refreshChangeMetadata(explicitlyModified: true)
             }
