@@ -308,3 +308,138 @@ test('cancellation waits for native outcome and retained callbacks are inert aft
     await Promise.resolve()
     assert.equal(completionCount, 1)
 })
+
+test('coalesces the exact pending intent without replaying native mutation', async () => {
+    const h = harness()
+    const message = { segments: [{ stableSegmentID: 'segment-a' }], desiredState: 'marked' }
+    const first = h.coordinator.request({ sectionID: 'section-a', message })
+    const second = h.coordinator.request({ sectionID: 'section-a', message })
+
+    assert.strictEqual(second, first)
+    assert.equal(h.posted.length, 1)
+    assert.equal(h.coordinator.pendingCount, 1)
+
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.strictEqual(await first, await second)
+})
+
+test('rejects a conflicting intent while the target remains owned by the first request', async () => {
+    const h = harness()
+    const first = h.coordinator.request({
+        sectionID: 'section-a',
+        message: { segments: [{ stableSegmentID: 'segment-a' }], desiredState: 'marked' },
+    })
+    const conflicting = await h.coordinator.request({
+        sectionID: 'section-a',
+        message: { segments: [{ stableSegmentID: 'segment-a' }], desiredState: 'unmarked' },
+    })
+
+    assert.equal(conflicting.success, false)
+    assert.equal(conflicting.errorCode, 'pendingTargetBusy')
+    assert.equal(conflicting.presentationAllowed, false)
+    assert.equal(h.posted.length, 1)
+    assert.equal(h.coordinator.pendingCount, 1)
+
+    h.coordinator.settle(terminalFor(h.posted[0]))
+    assert.equal((await first).success, true)
+})
+
+test('wrong observation capability cannot settle or cancel the real request', async () => {
+    const h = harness()
+    const completion = h.coordinator.request({
+        sectionID: 'section-a',
+        message: { segments: [] },
+    })
+
+    assert.equal(h.coordinator.settle({
+        ...terminalFor(h.posted[0]),
+        manualReadPendingObservationToken: '0'.repeat(32),
+    }), false)
+    assert.equal(h.coordinator.pendingCount, 1)
+
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+})
+
+test('pending and unknown status packets are observations, never terminal failures', async () => {
+    const h = harness()
+    let completed = false
+    const completion = h.coordinator.request({
+        sectionID: 'section-a',
+        message: { segments: [] },
+    }).then(result => {
+        completed = true
+        return result
+    })
+    const identity = {
+        requestID: h.posted[0].requestID,
+        manualReadPendingProtocol: 1,
+        manualReadPendingObservationToken: h.posted[0].manualReadPendingObservationToken,
+    }
+
+    assert.equal(h.coordinator.settle({
+        ...identity,
+        manualReadPendingState: 'pending',
+    }), false)
+    assert.equal(h.coordinator.settle({
+        ...identity,
+        manualReadPendingState: 'unknown',
+    }), false)
+    await Promise.resolve()
+    assert.equal(completed, false)
+    assert.equal(h.coordinator.pendingCount, 1)
+
+    h.coordinator.settle(terminalFor(h.posted[0]))
+    assert.equal((await completion).success, true)
+})
+
+test('outcome-only recovery preserves committed success without presentation authority', async () => {
+    const h = harness()
+    const completion = h.coordinator.request({
+        sectionID: 'section-a',
+        message: { segments: [] },
+    })
+
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0], {
+        sectionId: 'not-the-original-target',
+        manualReadPendingOutcomeOnly: true,
+        manualReadPendingPresentationAllowed: false,
+    })), true)
+
+    const result = await completion
+    assert.equal(result.success, true)
+    assert.equal(result.stale, false)
+    assert.equal(result.presentationAllowed, false)
+})
+
+test('pause suppresses observation and resume observes the same request identity', async () => {
+    const h = harness()
+    const completion = h.coordinator.request({
+        sectionID: 'section-a',
+        message: {
+            segments: [],
+            topWindowURL: 'file:///book.epub',
+            documentStartedAtMs: 42,
+        },
+    })
+    const requestID = h.posted[0].requestID
+    const token = h.posted[0].manualReadPendingObservationToken
+
+    h.coordinator.pause()
+    assert.equal(h.coordinator.pendingCount, 1)
+    assert.equal(h.timeouts.size, 0)
+    assert.equal(h.controls.length, 0)
+
+    h.coordinator.resume()
+    assert.deepEqual([...h.timeoutDelays.values()], [0])
+    const resumedObservation = [...h.timeouts.values()][0]
+    resumedObservation()
+    assert.equal(h.controls.length, 1)
+    assert.equal(h.controls[0].requestID, requestID)
+    assert.equal(h.controls[0].manualReadPendingObservationToken, token)
+    assert.equal(h.controls[0].manualReadPendingOperation, 'status')
+
+    h.coordinator.settle(terminalFor(h.posted[0]))
+    assert.equal((await completion).success, true)
+})
+
