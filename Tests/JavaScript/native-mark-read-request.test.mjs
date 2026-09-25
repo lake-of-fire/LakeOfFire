@@ -84,7 +84,7 @@ const harness = ({ current = true, postThrows = false } = {}) => {
             phase: state.phase,
         }),
         isOwnerCurrent: () => current,
-        makeRequestID: () => \`request-\${++requestSequence}\`,
+        makeRequestID: () => `request-${++requestSequence}`,
         scheduleTimeout: (callback, delay) => {
             const id = ++timeoutSequence
             timeouts.set(id, callback)
