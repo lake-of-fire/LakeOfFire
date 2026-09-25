@@ -4,11 +4,13 @@ on:
     paths:
       - 'Sources/LakeOfFireContent/Files/ReaderEBookPackageFingerprint.swift'
       - 'Sources/LakeOfFireContent/Files/ReaderEBookZIPDirectory.swift'
-      - 'Tests/LakeOfFireTests/ReaderEBook*Fingerprint*Tests.swift'
-      - 'Tests/LakeOfFireTests/ReaderEBookZIPDirectoryTests.swift'
+      - 'Sources/LakeOfFireContent/Files/ReaderEBookPackageNamespace.swift'
+      - 'Tests/LakeOfFireTests/ReaderEBook*Tests.swift'
       - 'Tools/EBookFingerprintTests/**'
+      - 'Tools/EBookNamespaceTests/**'
       - 'Tools/test-ebook-fingerprint.sh'
       - 'Tools/test-ebook-zip-directory.sh'
+      - 'Tools/test-ebook-namespace.sh'
       - '.github/workflows/ebook-fingerprint.yml'
 permissions:
   contents: read

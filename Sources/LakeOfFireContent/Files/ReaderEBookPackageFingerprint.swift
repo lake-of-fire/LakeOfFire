@@ -104,21 +104,10 @@ public struct ReaderEBookPackageFingerprint: Equatable, Sendable {
             byteCount += size
         }
         func validateNamespace() throws {
-            let sorted = paths.keys.sorted()
-            // A file may not also be an implicit parent directory. A binary
-            // prefix search avoids quadratic scans and materializing every
-            // ancestor of long untrusted paths.
-            for (path, isDirectory) in paths where !isDirectory {
-                try Task.checkCancellation()
-                let prefix = path + "/"
-                var low = 0, high = sorted.count
-                while low < high {
-                    let mid = low + (high - low) / 2
-                    if sorted[mid] < prefix { low = mid + 1 } else { high = mid }
-                }
-                if low < sorted.count, sorted[low].hasPrefix(prefix) {
-                    throw ReaderEBookFingerprintError.ambiguousPath(path)
-                }
+            if let conflict = try ReaderEBookPackageNamespace.conflictingPath(
+                in: paths.map { (path: $0.key, isDirectory: $0.value) }
+            ) {
+                throw ReaderEBookFingerprintError.ambiguousPath(conflict)
             }
         }
     }
