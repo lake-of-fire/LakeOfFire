@@ -16,7 +16,7 @@ final class ReaderEBookFingerprintValidationTests: XCTestCase {
         do {
             let archive = try Archive(url: url, accessMode: .create)
             for path in directories {
-                try archive.addEntry(with: path, type: .directory, uncompressedSize: 0) { _, _ in Data() }
+                try archive.addEntry(with: path, type: .directory, uncompressedSize: Int64(0)) { _, _ in Data() }
             }
             for (path, bytes) in files + extra {
                 try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(bytes.count)) { offset, count in
