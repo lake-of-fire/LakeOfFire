@@ -103,6 +103,9 @@ export const createNativeMarkReadRequestCoordinator = ({
         if (pending.timeoutHandle != null) cancelTimeout?.(pending.timeoutHandle)
         if (!observing || pendingByRequestID.get(pending.requestID) !== pending) return
         pending.timeoutHandle = scheduleTimeout?.(() => {
+            // A retained callback may fire after a terminal native result.
+            // It must not resurrect polling, cancellation UI or transport.
+            if (pendingByRequestID.get(pending.requestID) !== pending) return
             pending.timeoutHandle = null
             pending.slow = true
             notify(pending)
@@ -190,8 +193,18 @@ export const createNativeMarkReadRequestCoordinator = ({
         pendingByRequestID.set(requestID, pending)
         attachLifecycle()
         observe(pending, timeoutMilliseconds)
-        try { postMessage(frozenMessage) }
-        catch (error) { pending.lastTransportError = String(error) }
+        try {
+            postMessage(frozenMessage)
+        } catch (error) {
+            // A synchronous bridge throw proves the initial mutation was never
+            // handed to native, so this outcome is not ambiguous/pending.
+            finish(pending, {
+                success: false,
+                stale: !ownerCurrent(pending),
+                presentationAllowed: false,
+                errorCode: String(error?.message || error || 'nativePostFailed'),
+            })
+        }
         return completion
     }
     const settle = result => {
