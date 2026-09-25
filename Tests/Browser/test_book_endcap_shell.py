@@ -60,7 +60,13 @@ BRIDGE = '''(() => {
     }
     handlers.markSectionAsRead = {postMessage(payload) {
         nativeMessages.push({name:'markSectionAsRead',payload});
-        queueMicrotask(() => reader?.nativeMarkReadRequestCoordinator?.settle({requestID:payload.requestID,sectionId:payload.sectionId,success:false,errorCode:'simulatedReadRefusal'}));
+        queueMicrotask(() => reader?.nativeMarkReadRequestCoordinator?.settle({
+            requestID:payload.requestID,sectionId:payload.sectionId,
+            manualReadPendingProtocol:1,
+            manualReadPendingObservationToken:payload.manualReadPendingObservationToken,
+            manualReadPendingState:'finished',
+            success:false,errorCode:'simulatedReadRefusal'
+        }));
     }};
     window.publishState = (request, nativeRefresh=false) => {
         lastLocation = request; window.lastNativeBookStateRequest = request;
