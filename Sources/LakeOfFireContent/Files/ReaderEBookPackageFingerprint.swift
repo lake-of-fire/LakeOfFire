@@ -81,38 +81,61 @@ public struct ReaderEBookPackageFingerprint: Equatable, Sendable {
         var entryCount = 0
         var byteCount: UInt64 = 0
         var pathBytes = 0
-        var paths = Set<String>()
+        // String equality intentionally rejects canonically equivalent names
+        // inside one package: the viewer's ZIP lookup cannot disambiguate them.
+        // Otherwise the fingerprint continues to hash the original UTF-8 bytes.
+        var paths = [String: Bool]() // true is a directory
 
         mutating func countEntry() throws {
             try Task.checkCancellation()
             guard entryCount < limits.maxEntryCount else { throw ReaderEBookFingerprintError.limitExceeded }
             entryCount += 1
         }
-        mutating func add(path: String, size: UInt64) throws {
+        mutating func add(path: String, size: UInt64, isDirectory: Bool = false) throws {
             try validatePath(path)
-            guard paths.insert(path).inserted else { throw ReaderEBookFingerprintError.ambiguousPath(path) }
-            guard path.utf8.count <= 16_384, pathBytes <= 16 * 1024 * 1024 - path.utf8.count,
+            guard paths[path] == nil else { throw ReaderEBookFingerprintError.ambiguousPath(path) }
+            guard pathBytes <= 16 * 1024 * 1024 - path.utf8.count,
                   size <= UInt64(limits.maxEntryBytes),
                   size <= UInt64(limits.maxAggregateUncompressedBytes) - byteCount else {
                 throw ReaderEBookFingerprintError.limitExceeded
             }
+            paths[path] = isDirectory
             pathBytes += path.utf8.count
             byteCount += size
+        }
+        func validateNamespace() throws {
+            let sorted = paths.keys.sorted()
+            // A file may not also be an implicit parent directory. A binary
+            // prefix search avoids quadratic scans and materializing every
+            // ancestor of long untrusted paths.
+            for (path, isDirectory) in paths where !isDirectory {
+                try Task.checkCancellation()
+                let prefix = path + "/"
+                var low = 0, high = sorted.count
+                while low < high {
+                    let mid = low + (high - low) / 2
+                    if sorted[mid] < prefix { low = mid + 1 } else { high = mid }
+                }
+                if low < sorted.count, sorted[low].hasPrefix(prefix) {
+                    throw ReaderEBookFingerprintError.ambiguousPath(path)
+                }
+            }
         }
     }
 
     private static func readArchive(_ url: URL, limits: ReaderEBookFingerprintLimits) throws -> [Resource] {
-        let expectedCount = try validatedEntryCount(url)
+        let expectedCount = try ReaderEBookZIPDirectory.validate(url, maximumEntryCount: limits.maxEntryCount)
         let archive = try Archive(url: url, accessMode: .read)
         var budget = Budget(limits: limits)
         var resources = [Resource]()
-        // Do not use the viewer's permissive enumeration here: fingerprinting
-        // must reject, rather than skip, duplicate or unsupported ZIP entries.
         for entry in archive {
             try budget.countEntry()
             if entry.type == .directory {
+                guard entry.uncompressedSize == 0, entry.compressedSize == 0 else {
+                    throw ReaderEBookFingerprintError.unsupportedEntry(entry.path)
+                }
                 let path = entry.path.hasSuffix("/") ? String(entry.path.dropLast()) : entry.path
-                try validatePath(path)
+                try budget.add(path: path, size: 0, isDirectory: true)
                 continue
             }
             guard entry.type == .file else { throw ReaderEBookFingerprintError.unsupportedEntry(entry.path) }
@@ -133,59 +156,8 @@ public struct ReaderEBookPackageFingerprint: Equatable, Sendable {
             resources.append(Resource(path: entry.path, byteCount: actual, sha256: hex(digest.finalize())))
         }
         guard budget.entryCount == expectedCount else { throw ReaderEBookFingerprintError.invalidPackage }
+        try budget.validateNamespace()
         return resources
-    }
-
-    /// ZIPFoundation's Sequence can stop at a malformed central/local header.
-    /// Independently validate the ordinary ZIP directory and compare its count
-    /// with the iterator. ZIP64/multidisk signatures fail closed for v1 rather
-    /// than issuing a fingerprint for a potentially partial package.
-    private static func validatedEntryCount(_ url: URL) throws -> Int {
-        let input = try FileHandle(forReadingFrom: url)
-        defer { try? input.close() }
-        let length = try input.seekToEnd()
-        guard length >= 22 else { throw ReaderEBookFingerprintError.invalidPackage }
-        let tailLength = Int(min(length, 65_557))
-        try input.seek(toOffset: length - UInt64(tailLength))
-        guard let tail = try input.read(upToCount: tailLength), tail.count == tailLength else {
-            throw ReaderEBookFingerprintError.invalidPackage
-        }
-        func u16(_ data: Data, _ index: Int) -> UInt64 {
-            UInt64(data[index]) | (UInt64(data[index + 1]) << 8)
-        }
-        func u32(_ data: Data, _ index: Int) -> UInt64 {
-            u16(data, index) | (u16(data, index + 2) << 16)
-        }
-        guard let end = stride(from: tail.count - 22, through: 0, by: -1).first(where: {
-            u32(tail, $0) == 0x06054b50 && $0 + 22 + Int(u16(tail, $0 + 20)) == tail.count
-        }) else { throw ReaderEBookFingerprintError.invalidPackage }
-        let count = u16(tail, end + 10)
-        let size = u32(tail, end + 12)
-        let offset = u32(tail, end + 16)
-        guard count != 0xffff, size != 0xffffffff, offset != 0xffffffff,
-              u16(tail, end + 4) == 0, u16(tail, end + 6) == 0,
-              u16(tail, end + 8) == count else {
-            throw ReaderEBookFingerprintError.unsupportedEntry("ZIP64 or multidisk archive")
-        }
-        let endOffset = length - UInt64(tailLength) + UInt64(end)
-        guard offset <= endOffset, size == endOffset - offset else {
-            throw ReaderEBookFingerprintError.invalidPackage
-        }
-        var position = offset
-        for _ in 0..<Int(count) {
-            try Task.checkCancellation()
-            guard position <= endOffset, endOffset - position >= 46 else {
-                throw ReaderEBookFingerprintError.invalidPackage
-            }
-            try input.seek(toOffset: position)
-            guard let header = try input.read(upToCount: 46), header.count == 46,
-                  u32(header, 0) == 0x02014b50 else { throw ReaderEBookFingerprintError.invalidPackage }
-            let recordSize = 46 + u16(header, 28) + u16(header, 30) + u16(header, 32)
-            guard recordSize <= endOffset - position else { throw ReaderEBookFingerprintError.invalidPackage }
-            position += recordSize
-        }
-        guard position == endOffset else { throw ReaderEBookFingerprintError.invalidPackage }
-        return Int(count)
     }
 
     private static func readDirectory(_ root: URL, limits: ReaderEBookFingerprintLimits) throws -> [Resource] {
@@ -209,7 +181,10 @@ public struct ReaderEBookPackageFingerprint: Equatable, Sendable {
             try validatePath(path)
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey])
             guard values.isSymbolicLink != true else { throw ReaderEBookFingerprintError.unsupportedEntry(path) }
-            if values.isDirectory == true { continue }
+            if values.isDirectory == true {
+                try budget.add(path: path, size: 0, isDirectory: true)
+                continue
+            }
             guard values.isRegularFile == true, let size = values.fileSize, size >= 0 else {
                 throw ReaderEBookFingerprintError.unsupportedEntry(path)
             }
@@ -219,6 +194,7 @@ public struct ReaderEBookPackageFingerprint: Equatable, Sendable {
             resources.append(Resource(path: path, byteCount: UInt64(size), sha256: digest))
         }
         if let error { throw error }
+        try budget.validateNamespace()
         return resources
     }
 

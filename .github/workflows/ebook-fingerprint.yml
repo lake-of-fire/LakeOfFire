@@ -3,9 +3,12 @@ on:
   pull_request:
     paths:
       - 'Sources/LakeOfFireContent/Files/ReaderEBookPackageFingerprint.swift'
-      - 'Tests/LakeOfFireTests/ReaderEBookPackageFingerprintTests.swift'
+      - 'Sources/LakeOfFireContent/Files/ReaderEBookZIPDirectory.swift'
+      - 'Tests/LakeOfFireTests/ReaderEBook*Fingerprint*Tests.swift'
+      - 'Tests/LakeOfFireTests/ReaderEBookZIPDirectoryTests.swift'
       - 'Tools/EBookFingerprintTests/**'
       - 'Tools/test-ebook-fingerprint.sh'
+      - 'Tools/test-ebook-zip-directory.sh'
       - '.github/workflows/ebook-fingerprint.yml'
 permissions:
   contents: read
