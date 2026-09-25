@@ -87,7 +87,13 @@ const harness = ({ current = true, postThrows = false } = {}) => {
         makeRequestID: () => `request-${++requestSequence}`,
         scheduleTimeout: (callback, delay) => {
             const id = ++timeoutSequence
-            timeouts.set(id, callback)
+            timeouts.set(id, () => {
+                // Model real setTimeout: a fired one-shot handle is no longer
+                // pending before its callback schedules any follow-up poll.
+                timeouts.delete(id)
+                timeoutDelays.delete(id)
+                callback()
+            })
             timeoutDelays.set(id, delay)
             return id
         },
