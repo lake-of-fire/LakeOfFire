@@ -1,0 +1,143 @@
+name: Temporary EPUB serving delta qualification
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/epub-serving-stage.yml'
+permissions: {}
+concurrency:
+  group: epub-serving-stage-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  qualify:
+    if: github.event.pull_request.number == 37 && github.event.pull_request.head.repo.full_name == 'lake-of-fire/LakeOfFire' && github.event.pull_request.head.ref == 'fix/epub-package-fingerprint-20260925'
+    runs-on: macos-15
+    timeout-minutes: 35
+    # This temporary job creates immutable Git blobs only after qualification.
+    # It never pushes a ref, opens/merges a PR, changes settings or publishes data.
+    # Remove this workflow in the manual final source commit.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reconstruct and validate the exact reviewed source delta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/epub-serving-evidence"
+          git merge-base --is-ancestor 10e902b5798a361564d8100ec689ae3221ec2f88 HEAD
+          git rev-parse HEAD > "$RUNNER_TEMP/epub-serving-evidence/checked-out-commit.txt"
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, os, pathlib, subprocess, urllib.request
+          repo = 'lake-of-fire/LakeOfFire'
+          chunks = [
+              '1b1197785850839203b06923765ed4c98264b942',
+              '88cde36e9d4c5c581da0a6dda64e863c8133de42',
+              'e0fd3ac0964d282ff14290bd6d6861b36a70ef5f',
+              'f7b99e82c5401d8f47d57637978ddce24c9fcd54',
+              '6b2401ba07b6e9b4ae63c38851092d5efa95870c',
+              '29811a7a58a31ad96e4061d83cc08cee31da87cd',
+          ]
+          def blob_hash(data):
+              return hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+          encoded = bytearray()
+          for sha in chunks:
+              request = urllib.request.Request(f'https://api.github.com/repos/{repo}/git/blobs/{sha}',
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  value = json.load(response)
+              assert value['encoding'] == 'base64'
+              data = base64.b64decode(value['content'])
+              assert blob_hash(data) == sha
+              encoded.extend(data)
+          assert len(encoded) == 28707
+          patch = gzip.decompress(encoded)
+          assert len(patch) == 131261
+          assert hashlib.sha256(patch).hexdigest() == '89ac944aa9ab1be2031e143cdb70ae351732b93a5cfffb220d0b6b7663d24d31'
+          evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'epub-serving-evidence'
+          patch_path = evidence / 'reviewed.patch'
+          patch_path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--index', '--check', '--whitespace=error-all', str(patch_path)], check=True)
+          subprocess.run(['git', 'apply', '--index', '--whitespace=error-all', str(patch_path)], check=True)
+          files = subprocess.check_output(['git', 'diff', '--cached', '--name-only', '-z']).decode().split('\0')[:-1]
+          assert len(files) == 24
+          entries = []
+          for path in files:
+              assert path.startswith(('Sources/', 'Tests/', 'Tools/', 'Documentation/')) or path == '.github/workflows/ebook-fingerprint.yml'
+              assert '..' not in pathlib.PurePosixPath(path).parts
+              row = subprocess.check_output(['git', 'ls-files', '--stage', '--', path]).decode()
+              mode, sha, stage_path = row.split(' ', 2)
+              assert stage_path.startswith('0\t') and mode in ('100644', '100755')
+              assert blob_hash(pathlib.Path(path).read_bytes()) == sha
+              entries.append({'path': path, 'mode': mode, 'sha': sha})
+          (evidence / 'expected-blobs.json').write_text(json.dumps(entries, sort_keys=True))
+          # Save actual changed source and context without .git or credentials.
+          subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
+          subprocess.run(['tar', '-czf', str(evidence / 'patched-source.tar.gz'), *files], check=True)
+          PY
+          swift --version | tee "$RUNNER_TEMP/epub-serving-evidence/toolchain.txt"
+          node --version | tee "$RUNNER_TEMP/epub-serving-evidence/node-toolchain.txt"
+      - name: Execute real native and JavaScript regression suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/epub-serving-evidence"
+          node --test Tests/JavaScript/*.test.mjs 2>&1 | tee "$evidence/javascript.log"
+          for configuration in debug release; do
+            bash Tools/test-ebook-entry-path.sh -c "$configuration" 2>&1 | tee "$evidence/request-$configuration.log"
+            for dependency in released locked-development; do
+              mkdir -p "$evidence/$dependency-$configuration"
+              ZIPFOUNDATION_TEST_REFERENCE="$dependency" \
+                EBOOK_FINGERPRINT_EVIDENCE_DIRECTORY="$evidence/$dependency-$configuration" \
+                bash Tools/test-ebook-fingerprint.sh -c "$configuration" 2>&1 \
+                | tee "$evidence/$dependency-$configuration/test.log"
+            done
+          done
+          git diff --exit-code
+      - name: Store only verified immutable source blobs after successful tests
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, hashlib, json, os, pathlib, subprocess, urllib.request
+          evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'epub-serving-evidence'
+          patch = (evidence / 'reviewed.patch').read_bytes()
+          assert hashlib.sha256(patch).hexdigest() == '89ac944aa9ab1be2031e143cdb70ae351732b93a5cfffb220d0b6b7663d24d31'
+          subprocess.run(['git', 'diff', '--exit-code'], check=True)
+          entries = json.loads((evidence / 'expected-blobs.json').read_text())
+          assert len(entries) == 24
+          output = []
+          for entry in entries:
+              path = entry['path']
+              assert path.startswith(('Sources/', 'Tests/', 'Tools/', 'Documentation/')) or path == '.github/workflows/ebook-fingerprint.yml'
+              assert '..' not in pathlib.PurePosixPath(path).parts
+              data = pathlib.Path(path).read_bytes()
+              sha = hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+              assert sha == entry['sha']
+              row = subprocess.check_output(['git', 'ls-files', '--stage', '--', path]).decode()
+              assert row.startswith(entry['mode'] + ' ' + sha + ' 0\t')
+              request = urllib.request.Request('https://api.github.com/repos/lake-of-fire/LakeOfFire/git/blobs',
+                  data=json.dumps({'content': base64.b64encode(data).decode(), 'encoding': 'base64'}).encode(),
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'}, method='POST')
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  value = json.load(response)
+              assert value['sha'] == sha
+              output.append(entry)
+          (evidence / 'published-blobs.json').write_text(json.dumps(output, indent=2))
+          print('Verified immutable Git blobs:', len(output))
+          PY
+      - name: Retain qualification evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: epub-serving-stage-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/epub-serving-evidence
+          if-no-files-found: error
+          retention-days: 7
