@@ -30,10 +30,15 @@ finish() {
 trap finish EXIT
 mkdir -p "$work/Sources" "$work/Tests"
 cp "$root/Tools/EBookFingerprintTests/Package.swift" "$work/Package.swift"
-for source in ReaderEBookPackageFingerprint ReaderEBookZIPDirectory ReaderEBookPackageNamespace ReaderEBookPackageSnapshot ReaderEBookSnapshotFingerprint ReaderEBookDirectorySnapshotArchive; do
+for source in ReaderEBookPackageFingerprint ReaderEBookZIPDirectory ReaderEBookPackageNamespace ReaderEBookPackageSnapshot ReaderEBookSnapshotFingerprint ReaderEBookDirectorySnapshotArchive ReaderEBookServingSession ReaderEBookLocalAvailability ReaderEBookRenditionSelection; do
   cp "$root/Sources/LakeOfFireContent/Files/$source.swift" "$work/Sources/"
 done
-for suite in ReaderEBookPackageFingerprint ReaderEBookFingerprintValidation ReaderEBookZIPDirectory ReaderEBookPackageNamespace ReaderEBookNamespaceIntegration ReaderEBookPackageSnapshot ReaderEBookCoordinatedSnapshot ReaderEBookZIPPathMetadata ReaderEBookZIPPathFingerprint; do
+for suite in ReaderEBookPackageFingerprint ReaderEBookFingerprintValidation ReaderEBookZIPDirectory ReaderEBookPackageNamespace ReaderEBookNamespaceIntegration ReaderEBookPackageSnapshot ReaderEBookCoordinatedSnapshot ReaderEBookZIPPathMetadata ReaderEBookZIPPathFingerprint ReaderEBookServingSession ReaderEBookLocalAvailability ReaderEBookRenditionSelection; do
   cp "$root/Tests/LakeOfFireTests/${suite}Tests.swift" "$work/Tests/"
 done
+# Compile the actual package reader declaration, not an API double. The cache
+# following it depends on the full app/file-manager graph and is outside this
+# isolated target. Neither removed import is used by this exact source prefix.
+awk '/^public actor ReaderPackageEntrySourceCache/ { exit } !/^import LakeOfFire(Core|Adblock)$/ { print }' \
+  "$root/Sources/LakeOfFireContent/Files/Archive+Data.swift" > "$work/Sources/ReaderPackageEntrySource.swift"
 swift test --package-path "$work" "$@"

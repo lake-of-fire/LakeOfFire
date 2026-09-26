@@ -200,7 +200,7 @@ public struct ReaderEBookPackageFingerprint: Equatable, Sendable {
         guard actual == expectedSize else { throw ReaderEBookFingerprintError.sizeChanged(path) }
         return hex(digest.finalize())
     }
-    private static func validatePath(_ path: String) throws {
+    static func validatePath(_ path: String) throws {
         guard !path.isEmpty, path.utf8.count <= 16_384, !path.contains("\\"),
               !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
               path == path.trimmingCharacters(in: .whitespacesAndNewlines),
