@@ -43,10 +43,11 @@ jobs:
           swift --version | tee "$evidence/toolchain.txt"
           # Only this public repository's tracked source/test context. No .git,
           # credentials, private sibling repositories or user book data.
+          # Include the actual viewer and JS request producers, not only the
+          # fingerprint helpers, so serving-boundary evidence is reproducible.
           git archive --format=tar.gz --output="$evidence/source.tar.gz" HEAD \
-            Sources/LakeOfFireContent/Files \
-            Sources/LakeOfFireReader/Reader/Books \
-            Tests/LakeOfFireTests Tools Package.swift Package.resolved
+            Sources/LakeOfFireContent Sources/LakeOfFireReader \
+            Tests/LakeOfFireTests Tests/JavaScript Tools Package.swift Package.resolved
       - name: Execute native snapshot and fingerprint regressions
         shell: bash
         env:
