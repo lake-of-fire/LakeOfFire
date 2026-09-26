@@ -14,9 +14,48 @@ permissions:
   contents: read
 jobs:
   fingerprint:
+    name: fingerprint (${{ matrix.configuration }})
     runs-on: macos-15
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
     steps:
       - uses: actions/checkout@v4
-      - run: swift --version
-      - run: bash Tools/test-ebook-fingerprint.sh
+        with:
+          persist-credentials: false
+      - name: Capture exact source and toolchain evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/epub-fingerprint-evidence"
+          mkdir -p "$evidence"
+          git rev-parse HEAD > "$evidence/tested-commit.txt"
+          git ls-tree -r HEAD > "$evidence/source-manifest.txt"
+          git status --porcelain > "$evidence/source-status-before.txt"
+          swift --version | tee "$evidence/toolchain.txt"
+          # Only this public repository's tracked source/test context. No .git,
+          # credentials, private sibling repositories or user book data.
+          git archive --format=tar.gz --output="$evidence/source.tar.gz" HEAD \
+            Sources/LakeOfFireContent/Files \
+            Sources/LakeOfFireReader/Reader/Books \
+            Tests/LakeOfFireTests Tools Package.swift
+      - name: Execute native snapshot and fingerprint regressions
+        shell: bash
+        env:
+          BUILD_CONFIGURATION: ${{ matrix.configuration }}
+        run: |
+          set -euo pipefail
+          bash Tools/test-ebook-fingerprint.sh -c "$BUILD_CONFIGURATION" 2>&1 \
+            | tee "$RUNNER_TEMP/epub-fingerprint-evidence/test.log"
+          git status --porcelain \
+            > "$RUNNER_TEMP/epub-fingerprint-evidence/source-status-after.txt"
+      - name: Retain native evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: epub-fingerprint-${{ matrix.configuration }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/epub-fingerprint-evidence
+          if-no-files-found: error
+          retention-days: 7
