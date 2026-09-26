@@ -45,7 +45,7 @@ final class LibraryExportPresentationTests: XCTestCase {
         configureLakeOfFireMutationTrackingForTesting(&configuration)
         LibraryDataManager.realmConfiguration = configuration
         defer { LibraryDataManager.realmConfiguration = previous }
-        let realm = try Realm(configuration: configuration)
+        let realm = try await Realm(configuration: configuration)
         let manager = LibraryManagerViewModel()
 
         let firstWindow = window(for: manager)
