@@ -8,7 +8,7 @@ final class EbookEntryPathTransportTests: XCTestCase {
     )!
     private let generationID = "g1-" + String(repeating: "a", count: 64)
 
-    private func ownerURL() throws -> URL {
+    private func ownerURL() -> URL {
         var components = URLComponents()
         components.scheme = "ebook"
         components.host = "ebook"
@@ -17,14 +17,14 @@ final class EbookEntryPathTransportTests: XCTestCase {
             URLQueryItem(name: "sourceURL", value: sourceURL.absoluteString),
             URLQueryItem(name: "subpath", value: "OPS/Text/chapter.xhtml"),
         ]
-        return try XCTUnwrap(components.url)
+        return components.url!
     }
 
-    private func requestURL(percentEncodedSubpath: String) throws -> URL {
+    private func requestURL(percentEncodedSubpath: String) -> URL {
         let token = ebookBase64URLToken(for: sourceURL.absoluteString)
-        return try XCTUnwrap(URL(
+        return URL(
             string: "ebook://ebook/entry-source/\(token)/\(generationID)/\(percentEncodedSubpath)"
-        ))
+        )!
     }
 
     func testLiteralPercentEscapeIsDecodedExactlyOnce() throws {
@@ -109,7 +109,7 @@ final class EbookEntryPathTransportTests: XCTestCase {
                 value: "OPS/Text/chapter.xhtml"
             ),
         ]
-        let valid = try requestURL(
+        let valid = requestURL(
             percentEncodedSubpath: "OPS/Text/image.png"
         )
         XCTAssertNil(ebookPathBackedEntryRequest(
