@@ -20,7 +20,7 @@ import LakeKit
 let libraryCategoriesQueue = DispatchQueue(label: "LibraryCategories")
 
 @MainActor
-fileprivate class LibraryCategoriesViewModel: ObservableObject {
+class LibraryCategoriesViewModel: ObservableObject {
     @Published var categories: [FeedCategory]? = nil
     @Published var userLibraryCategories: [FeedCategory]? = nil
     @Published var editorsPicksLibraryCategories: [FeedCategory]? = nil
@@ -31,7 +31,8 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     
     @Published var libraryConfiguration: LibraryConfiguration?
     
-    init() {
+    init(observesRealm: Bool = true) {
+        guard observesRealm else { return }
         Task { @RealmBackgroundActor [weak self] in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
 
@@ -121,17 +122,25 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     }
     
     @MainActor
-    func deleteCategory(at offsets: IndexSet) {
-        Task { @MainActor in
-            guard let libraryConfiguration = libraryConfiguration else { return }
-            guard let categories = libraryConfiguration.getCategories() else { return }
-            for offset in offsets {
-                let category = categories[offset]
-                guard category.isUserEditable else { continue }
-                let ref = ThreadSafeReference(to: category)
+    @discardableResult
+    func deleteCategory(at offsets: IndexSet) -> Task<Void, Error> {
+        deleteCategory(at: offsets, from: userLibraryCategories)
+    }
+
+    @MainActor
+    @discardableResult
+    func deleteCategory(at offsets: IndexSet, from categories: [FeedCategory]?) -> Task<Void, Error> {
+        let categoryIDsToDelete: [UUID] = offsets.compactMap { offset in
+            guard let categories, categories.indices.contains(offset) else { return nil }
+            guard categories[offset].isUserEditable else { return nil }
+            return categories[offset].id
+        }
+        return Task { @MainActor in
+            for categoryID in categoryIDsToDelete {
                 try await Task { @RealmBackgroundActor in
                     let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                    guard let category = realm.resolve(ref) else { return }
+                    guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                          category.isUserEditable else { return }
                     try await LibraryDataManager.shared.deleteCategory(category)
                 }.value
             }
@@ -139,11 +148,48 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     }
    
     @MainActor
-    func moveCategories(fromOffsets: IndexSet, toOffset: Int) {
-        Task { @MainActor in
-            guard let libraryConfiguration = libraryConfiguration else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { _, libraryConfiguration in
-                libraryConfiguration.categoryIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
+    @discardableResult
+    func moveCategories(fromOffsets: IndexSet, toOffset: Int) -> Task<Void, Error>? {
+        guard let libraryConfiguration, let userLibraryCategories else { return nil }
+        let originalIDs = Array(libraryConfiguration.categoryIDs)
+        let visibleIDs = userLibraryCategories.map(\.id)
+        guard !visibleIDs.isEmpty,
+              fromOffsets.allSatisfy(visibleIDs.indices.contains),
+              visibleIDs.indices.contains(toOffset) || toOffset == visibleIDs.endIndex else { return nil }
+        var reorderedIDs = visibleIDs
+        reorderedIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
+        guard reorderedIDs != visibleIDs else { return nil }
+        let configurationID = libraryConfiguration.id
+        let configurationCreatedAt = libraryConfiguration.createdAt
+        let configurationRef = ThreadSafeReference(to: libraryConfiguration)
+        return Task { @MainActor in
+            try await Realm.asyncWrite(configurationRef, configuration: LibraryDataManager.realmConfiguration) { realm, libraryConfiguration in
+                guard libraryConfiguration.id == configurationID,
+                      libraryConfiguration.createdAt == configurationCreatedAt,
+                      Array(libraryConfiguration.categoryIDs) == originalIDs else { return }
+                let visibleIDSet = Set(visibleIDs)
+                let currentVisibleIDs = originalIDs.compactMap { categoryID -> UUID? in
+                    guard visibleIDSet.contains(categoryID),
+                          let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                          !category.isDeleted,
+                          category.isUserEditable else { return nil }
+                    return categoryID
+                }
+                guard currentVisibleIDs == visibleIDs,
+                      reorderedIDs.count == currentVisibleIDs.count,
+                      Set(reorderedIDs) == Set(currentVisibleIDs) else { return }
+                var nextRawIDs = originalIDs
+                var reorderedIndex = 0
+                for index in nextRawIDs.indices where visibleIDSet.contains(nextRawIDs[index]) {
+                    guard reorderedIndex < reorderedIDs.count else { return }
+                    nextRawIDs[index] = reorderedIDs[reorderedIndex]
+                    reorderedIndex += 1
+                }
+                guard reorderedIndex == reorderedIDs.count,
+                      nextRawIDs.count == originalIDs.count,
+                      nextRawIDs != originalIDs else { return }
+                libraryConfiguration.categoryIDs.removeAll()
+                libraryConfiguration.categoryIDs.append(objectsIn: nextRawIDs)
                 libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
@@ -159,6 +205,7 @@ struct LibraryCategoriesView: View {
     @AppStorage("appTint") private var appTint: Color = .accentColor
     
     @State private var categoryIDNeedsScrollTo: String?
+    @State private var exportViewRegistrationID = UUID()
     
 #if os(macOS)
     @State private var savePanel: NSSavePanel?
@@ -181,8 +228,11 @@ struct LibraryCategoriesView: View {
         }
         .labelStyle(.titleAndIcon)
         .disabled(libraryManagerViewModel.exportedOPML == nil)
-        .task {
-            libraryManagerViewModel.ensureOPMLExportPrepared()
+        .onAppear {
+            libraryManagerViewModel.registerOPMLExportUI(exportViewRegistrationID)
+        }
+        .onDisappear {
+            libraryManagerViewModel.unregisterOPMLExportUI(exportViewRegistrationID)
         }
 #if os(macOS)
         Button {
@@ -230,7 +280,8 @@ struct LibraryCategoriesView: View {
     }
     
     @ViewBuilder var userLibraryView: some View {
-        ForEach(viewModel.userLibraryCategories ?? []) { category in
+        let categories = viewModel.userLibraryCategories ?? []
+        ForEach(categories) { category in
             NavigationLink(value: LibrarySidebarDestination.category(category.id)) {
                 FeedCategoryButtonLabel(
                     title: category.title,
@@ -269,10 +320,10 @@ struct LibraryCategoriesView: View {
             }
         }
         .onMove {
-            viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
+            _ = viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
         }
         .onDelete {
-            viewModel.deleteCategory(at: $0)
+            _ = viewModel.deleteCategory(at: $0, from: categories)
         }
     }
 
@@ -295,7 +346,8 @@ struct LibraryCategoriesView: View {
     }
     
     @ViewBuilder var archiveView: some View {
-        ForEach(viewModel.archivedCategories ?? []) { category in
+        let categories = viewModel.archivedCategories ?? []
+        ForEach(categories) { category in
             NavigationLink(value: LibrarySidebarDestination.category(category.id)) {
                 FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, isCompact: true)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -350,7 +402,7 @@ struct LibraryCategoriesView: View {
             }
         }
         .onDelete {
-            viewModel.deleteCategory(at: $0)
+            _ = viewModel.deleteCategory(at: $0, from: categories)
         }
     }
     

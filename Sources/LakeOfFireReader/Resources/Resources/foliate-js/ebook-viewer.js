@@ -10,6 +10,7 @@ import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
     createNativeMarkReadRequestCoordinator,
+    presentNativeMarkReadPending,
     nativeMarkReadCommandMessage,
 } from './native-mark-read-request.js'
 import {
@@ -6311,6 +6312,12 @@ class Reader {
     constructor() {
         applyStoredChromeInsets('reader.constructor');
         this.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
+            postControlMessage: packet => {
+                const handler = globalThis.webkit?.messageHandlers?.manualReadPendingControl
+                if (!handler) throw new Error("Pending command control bridge unavailable")
+                handler.postMessage(packet)
+            },
+            onPending: presentNativeMarkReadPending,
             postMessage: message => {
                 window.webkit.messageHandlers.markSectionAsRead.postMessage(message);
             },
@@ -7152,7 +7159,7 @@ class Reader {
             ? 'committed'
             : 'failed';
         this.lastNativeMarkReadRequestErrorCode = outcome.errorCode ?? '';
-        if (outcome.success !== true) return false;
+        if (outcome.success !== true || outcome.stale || outcome.presentationAllowed === false) return false;
         if (this.bookReadingRuntime && !this.bookReadingRuntime.state.noteManualReadSnapshot(outcome.nativeResult?.stateSnapshotSequence)) return false;
         this.#applyCommittedMarkReadPayload(
             outcome.context.payload,

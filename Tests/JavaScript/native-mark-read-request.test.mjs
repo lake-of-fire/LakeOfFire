@@ -55,8 +55,20 @@ test('carries the immutable Core producer ticket through Mark projection', () =>
     assert.equal(Object.getOwnPropertyDescriptor(message, 'readerArticleProducer').writable, false)
 })
 
+const terminalFor = (message, result = {}) => ({
+    requestID: message.requestID,
+    sectionId: message.sectionId,
+    manualReadPendingProtocol: 1,
+    manualReadPendingObservationToken: message.manualReadPendingObservationToken,
+    manualReadPendingState: 'finished',
+    success: true,
+    ...result,
+})
+
 const harness = ({ current = true, postThrows = false } = {}) => {
     const posted = []
+    const controls = []
+    const pendingStates = []
     const timeouts = new Map()
     const timeoutDelays = new Map()
     let timeoutSequence = 0
@@ -66,11 +78,22 @@ const harness = ({ current = true, postThrows = false } = {}) => {
             if (postThrows) throw new Error('bridge unavailable')
             posted.push(message)
         },
+        postControlMessage: message => controls.push(message),
+        onPending: state => pendingStates.push({
+            requestID: state.requestID,
+            phase: state.phase,
+        }),
         isOwnerCurrent: () => current,
         makeRequestID: () => `request-${++requestSequence}`,
         scheduleTimeout: (callback, delay) => {
             const id = ++timeoutSequence
-            timeouts.set(id, callback)
+            timeouts.set(id, () => {
+                // Model real setTimeout: a fired one-shot handle is no longer
+                // pending before its callback schedules any follow-up poll.
+                timeouts.delete(id)
+                timeoutDelays.delete(id)
+                callback()
+            })
             timeoutDelays.set(id, delay)
             return id
         },
@@ -82,6 +105,8 @@ const harness = ({ current = true, postThrows = false } = {}) => {
     return {
         coordinator,
         posted,
+        controls,
+        pendingStates,
         timeouts,
         timeoutDelays,
         setCurrent(value) {
@@ -90,55 +115,75 @@ const harness = ({ current = true, postThrows = false } = {}) => {
     }
 }
 
-test('publishes success only after the exact native reply', async () => {
+test('publishes success only after the exact pending-protocol native reply', async () => {
     const h = harness()
     const completion = h.coordinator.request({
         sectionID: 'section-a',
-        message: { segments: [{ stableSegmentID: 'segment-a' }] },
+        message: {
+            segments: [{ stableSegmentID: 'segment-a' }],
+            topWindowURL: 'file:///book.epub',
+            documentStartedAtMs: 42,
+        },
         context: { stateID: 'visible-screen' },
     })
 
     assert.equal(h.posted.length, 1)
     assert.equal(h.posted[0].requestID, 'request-1')
     assert.equal(h.posted[0].sectionId, 'section-a')
+    assert.equal(h.posted[0].manualReadPendingProtocol, 1)
+    assert.equal(h.posted[0].manualReadPendingObservationToken.length, 32)
     assert.equal(h.coordinator.pendingCount, 1)
 
-    assert.equal(h.coordinator.settle({
-        requestID: 'request-1',
-        sectionId: 'section-a',
-        success: true,
-    }), true)
+    const nativeResult = terminalFor(h.posted[0])
+    assert.equal(h.coordinator.settle(nativeResult), true)
 
     assert.deepEqual(await completion, {
         requestID: 'request-1',
         context: { stateID: 'visible-screen' },
         success: true,
         stale: false,
+        presentationAllowed: true,
         errorCode: null,
-        nativeResult: {
-            requestID: 'request-1',
-            sectionId: 'section-a',
-            success: true,
-        },
+        nativeResult,
     })
     assert.equal(h.coordinator.pendingCount, 0)
     assert.equal(h.timeouts.size, 0)
 })
 
-test('uses the 15-second request/reply observation deadline', async () => {
+test('15 seconds observes the original request instead of expiring it', async () => {
     const h = harness()
+    let completed = false
     const completion = h.coordinator.request({
         sectionID: 'section-a',
-        message: { segments: [] },
+        message: {
+            segments: [],
+            topWindowURL: 'file:///book.epub',
+            documentStartedAtMs: 42,
+        },
+    }).then(result => {
+        completed = true
+        return result
     })
 
     assert.deepEqual([...h.timeoutDelays.values()], [15_000])
+    const slowCallback = [...h.timeouts.values()][0]
+    slowCallback()
+    await Promise.resolve()
 
-    h.coordinator.cancelAll()
-    await completion
+    assert.equal(completed, false)
+    assert.equal(h.coordinator.pendingCount, 1)
+    assert.equal(h.controls.length, 1)
+    assert.equal(h.controls[0].requestID, 'request-1')
+    assert.equal(h.controls[0].manualReadPendingOperation, 'status')
+    assert.equal(h.controls[0].manualReadPendingObservationToken,
+        h.posted[0].manualReadPendingObservationToken)
+    assert.deepEqual([...h.timeoutDelays.values()], [5_000])
+
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
 })
 
-test('rejects a reply after the reader owner becomes stale', async () => {
+test('committed success remains success after the renderer owner becomes stale', async () => {
     const h = harness()
     const completion = h.coordinator.request({
         sectionID: 'section-a',
@@ -147,39 +192,32 @@ test('rejects a reply after the reader owner becomes stale', async () => {
     })
     h.setCurrent(false)
 
-    h.coordinator.settle({
-        requestID: 'request-1',
-        sectionId: 'section-a',
-        success: true,
-    })
-
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
     const result = await completion
-    assert.equal(result.success, false)
+    assert.equal(result.success, true)
     assert.equal(result.stale, true)
-    assert.equal(result.errorCode, 'staleReaderLifecycle')
+    assert.equal(result.presentationAllowed, false)
+    assert.equal(result.errorCode, null)
 })
 
-test('rejects a mismatched section and ignores duplicate replies', async () => {
+test('mismatched section cannot settle the real request and duplicate terminal replies are inert', async () => {
     const h = harness()
     const completion = h.coordinator.request({
         sectionID: 'section-a',
         message: { segments: [] },
     })
 
-    assert.equal(h.coordinator.settle({
-        requestID: 'request-1',
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0], {
         sectionId: 'section-b',
-        success: true,
-    }), true)
-    assert.equal((await completion).errorCode, 'sectionMismatch')
-    assert.equal(h.coordinator.settle({
-        requestID: 'request-1',
-        sectionId: 'section-a',
-        success: true,
-    }), false)
+    })), false)
+    assert.equal(h.coordinator.pendingCount, 1)
+
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), false)
 })
 
-test('bridge failure resolves without leaving pending work', async () => {
+test('synchronous bridge failure is terminal because native never received the mutation', async () => {
     const h = harness({ postThrows: true })
     const result = await h.coordinator.request({
         sectionID: 'section-a',
@@ -187,58 +225,221 @@ test('bridge failure resolves without leaving pending work', async () => {
     })
 
     assert.equal(result.success, false)
+    assert.equal(result.stale, false)
+    assert.equal(result.presentationAllowed, false)
     assert.match(result.errorCode, /bridge unavailable/)
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.timeouts.size, 0)
+    assert.equal(h.controls.length, 0)
+})
+
+test('slow observation accepts a later native completion instead of manufacturing timeout failure', async () => {
+    const h = harness()
+    let completed = false
+    const completion = h.coordinator.request({
+        sectionID: 'section-a',
+        message: {
+            segments: [],
+            topWindowURL: 'file:///book.epub',
+            documentStartedAtMs: 42,
+        },
+    }).then(result => {
+        completed = true
+        return result
+    })
+    const retainedSlowCallback = [...h.timeouts.values()][0]
+    retainedSlowCallback()
+    await Promise.resolve()
+
+    assert.equal(completed, false)
+    assert.equal(h.coordinator.pendingCount, 1)
+    assert.equal(h.controls.at(-1).manualReadPendingOperation, 'status')
+
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    const result = await completion
+    assert.equal(result.success, true)
+    assert.equal(result.errorCode, null)
     assert.equal(h.coordinator.pendingCount, 0)
     assert.equal(h.timeouts.size, 0)
 })
 
-test('timeout fails closed and ignores late native completion', async () => {
-    const timeoutHarness = harness()
-    const timedCompletion = timeoutHarness.coordinator.request({
-        sectionID: 'section-a',
-        message: { segments: [] },
-    })
-    const timeoutCallback = [...timeoutHarness.timeouts.values()][0]
-    timeoutCallback()
-    const timedResult = await timedCompletion
-    assert.equal(timedResult.success, false)
-    assert.equal(timedResult.errorCode, 'nativeCommitTimeout')
-    assert.equal(timeoutHarness.coordinator.pendingCount, 0)
-    assert.equal(timeoutHarness.timeouts.size, 0)
-    assert.equal(timeoutHarness.coordinator.settle({
-        requestID: 'request-1',
-        sectionId: 'section-a',
-        success: true,
-    }), false)
-})
-
-test('cancellation completes once and makes retained timeout/reply callbacks inert', async () => {
-    const cancelledHarness = harness()
+test('cancellation waits for native outcome and retained callbacks are inert after join', async () => {
+    const h = harness()
     let completionCount = 0
-    const cancelledCompletion = cancelledHarness.coordinator.request({
+    let completed = false
+    const completion = h.coordinator.request({
         sectionID: 'section-b',
-        message: { segments: [] },
-    })
-    const observedCompletion = cancelledCompletion.then(result => {
+        message: {
+            segments: [],
+            topWindowURL: 'file:///book.epub',
+            documentStartedAtMs: 42,
+        },
+    }).then(result => {
+        completed = true
         completionCount += 1
         return result
     })
-    const lateTimeoutCallback = [...cancelledHarness.timeouts.values()][0]
-    cancelledHarness.coordinator.cancelAll('readerReplaced')
-    const cancelled = await observedCompletion
-    assert.equal(cancelled.success, false)
-    assert.equal(cancelled.stale, true)
-    assert.equal(cancelled.errorCode, 'readerReplaced')
-    assert.equal(cancelledHarness.coordinator.pendingCount, 0)
-    assert.equal(cancelledHarness.timeouts.size, 0)
+    const retainedTimeoutCallback = [...h.timeouts.values()][0]
 
-    lateTimeoutCallback()
-    assert.equal(cancelledHarness.coordinator.settle({
-        requestID: 'request-1',
-        sectionId: 'section-b',
-        success: true,
-    }), false)
-    assert.strictEqual(await cancelledCompletion, cancelled)
+    h.coordinator.cancelAll()
+    await Promise.resolve()
+    assert.equal(completed, false)
+    assert.equal(h.coordinator.pendingCount, 1)
+    assert.equal(h.controls.at(-1).manualReadPendingOperation, 'cancel')
+    assert.equal(h.controls.at(-1).requestID, 'request-1')
+
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0], {
+        success: false,
+        errorCode: 'cancelled',
+    })), true)
+    const cancelled = await completion
+    assert.equal(cancelled.success, false)
+    assert.equal(cancelled.stale, false)
+    assert.equal(cancelled.errorCode, 'cancelled')
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.timeouts.size, 0)
+
+    const controlCount = h.controls.length
+    retainedTimeoutCallback()
+    assert.equal(h.controls.length, controlCount)
+    assert.equal(h.timeouts.size, 0)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), false)
+    assert.strictEqual(await completion, cancelled)
     await Promise.resolve()
     assert.equal(completionCount, 1)
 })
+
+test('coalesces the exact pending intent without replaying native mutation', async () => {
+    const h = harness()
+    const message = { segments: [{ stableSegmentID: 'segment-a' }], desiredState: 'marked' }
+    const first = h.coordinator.request({ sectionID: 'section-a', message })
+    const second = h.coordinator.request({ sectionID: 'section-a', message })
+
+    assert.strictEqual(second, first)
+    assert.equal(h.posted.length, 1)
+    assert.equal(h.coordinator.pendingCount, 1)
+
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.strictEqual(await first, await second)
+})
+
+test('rejects a conflicting intent while the target remains owned by the first request', async () => {
+    const h = harness()
+    const first = h.coordinator.request({
+        sectionID: 'section-a',
+        message: { segments: [{ stableSegmentID: 'segment-a' }], desiredState: 'marked' },
+    })
+    const conflicting = await h.coordinator.request({
+        sectionID: 'section-a',
+        message: { segments: [{ stableSegmentID: 'segment-a' }], desiredState: 'unmarked' },
+    })
+
+    assert.equal(conflicting.success, false)
+    assert.equal(conflicting.errorCode, 'pendingTargetBusy')
+    assert.equal(conflicting.presentationAllowed, false)
+    assert.equal(h.posted.length, 1)
+    assert.equal(h.coordinator.pendingCount, 1)
+
+    h.coordinator.settle(terminalFor(h.posted[0]))
+    assert.equal((await first).success, true)
+})
+
+test('wrong observation capability cannot settle or cancel the real request', async () => {
+    const h = harness()
+    const completion = h.coordinator.request({
+        sectionID: 'section-a',
+        message: { segments: [] },
+    })
+
+    assert.equal(h.coordinator.settle({
+        ...terminalFor(h.posted[0]),
+        manualReadPendingObservationToken: '0'.repeat(32),
+    }), false)
+    assert.equal(h.coordinator.pendingCount, 1)
+
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+})
+
+test('pending and unknown status packets are observations, never terminal failures', async () => {
+    const h = harness()
+    let completed = false
+    const completion = h.coordinator.request({
+        sectionID: 'section-a',
+        message: { segments: [] },
+    }).then(result => {
+        completed = true
+        return result
+    })
+    const identity = {
+        requestID: h.posted[0].requestID,
+        manualReadPendingProtocol: 1,
+        manualReadPendingObservationToken: h.posted[0].manualReadPendingObservationToken,
+    }
+
+    assert.equal(h.coordinator.settle({
+        ...identity,
+        manualReadPendingState: 'pending',
+    }), false)
+    assert.equal(h.coordinator.settle({
+        ...identity,
+        manualReadPendingState: 'unknown',
+    }), false)
+    await Promise.resolve()
+    assert.equal(completed, false)
+    assert.equal(h.coordinator.pendingCount, 1)
+
+    h.coordinator.settle(terminalFor(h.posted[0]))
+    assert.equal((await completion).success, true)
+})
+
+test('outcome-only recovery preserves committed success without presentation authority', async () => {
+    const h = harness()
+    const completion = h.coordinator.request({
+        sectionID: 'section-a',
+        message: { segments: [] },
+    })
+
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0], {
+        sectionId: 'not-the-original-target',
+        manualReadPendingOutcomeOnly: true,
+        manualReadPendingPresentationAllowed: false,
+    })), true)
+
+    const result = await completion
+    assert.equal(result.success, true)
+    assert.equal(result.stale, false)
+    assert.equal(result.presentationAllowed, false)
+})
+
+test('pause suppresses observation and resume observes the same request identity', async () => {
+    const h = harness()
+    const completion = h.coordinator.request({
+        sectionID: 'section-a',
+        message: {
+            segments: [],
+            topWindowURL: 'file:///book.epub',
+            documentStartedAtMs: 42,
+        },
+    })
+    const requestID = h.posted[0].requestID
+    const token = h.posted[0].manualReadPendingObservationToken
+
+    h.coordinator.pause()
+    assert.equal(h.coordinator.pendingCount, 1)
+    assert.equal(h.timeouts.size, 0)
+    assert.equal(h.controls.length, 0)
+
+    h.coordinator.resume()
+    assert.deepEqual([...h.timeoutDelays.values()], [0])
+    const resumedObservation = [...h.timeouts.values()][0]
+    resumedObservation()
+    assert.equal(h.controls.length, 1)
+    assert.equal(h.controls[0].requestID, requestID)
+    assert.equal(h.controls[0].manualReadPendingObservationToken, token)
+    assert.equal(h.controls[0].manualReadPendingOperation, 'status')
+
+    h.coordinator.settle(terminalFor(h.posted[0]))
+    assert.equal((await completion).success, true)
+})
+
