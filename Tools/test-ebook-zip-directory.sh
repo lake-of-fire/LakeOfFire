@@ -13,5 +13,7 @@ SWIFT
 cp "$root/Sources/LakeOfFireContent/Files/ReaderEBookZIPDirectory.swift" "$work/Sources/LakeOfFireContent/"
 # Copy the real production error declaration, not an alternate implementation.
 awk '/public enum ReaderEBookFingerprintError/,/^}/' "$root/Sources/LakeOfFireContent/Files/ReaderEBookPackageFingerprint.swift" > "$work/Sources/LakeOfFireContent/ReaderEBookFingerprintError.swift"
-cp "$root/Tests/LakeOfFireTests/ReaderEBookZIPDirectoryTests.swift" "$work/Tests/ZIPTests/"
+for suite in ReaderEBookZIPDirectory ReaderEBookZIPPathMetadata; do
+  cp "$root/Tests/LakeOfFireTests/${suite}Tests.swift" "$work/Tests/ZIPTests/"
+done
 swift test --package-path "$work" "$@"

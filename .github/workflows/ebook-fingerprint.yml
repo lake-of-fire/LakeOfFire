@@ -14,13 +14,14 @@ permissions:
   contents: read
 jobs:
   fingerprint:
-    name: fingerprint (${{ matrix.configuration }})
+    name: fingerprint (${{ matrix.zipfoundation }}, ${{ matrix.configuration }})
     runs-on: macos-15
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         configuration: [debug, release]
+        zipfoundation: [released, locked-development]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,11 +41,13 @@ jobs:
           git archive --format=tar.gz --output="$evidence/source.tar.gz" HEAD \
             Sources/LakeOfFireContent/Files \
             Sources/LakeOfFireReader/Reader/Books \
-            Tests/LakeOfFireTests Tools Package.swift
+            Tests/LakeOfFireTests Tools Package.swift Package.resolved
       - name: Execute native snapshot and fingerprint regressions
         shell: bash
         env:
           BUILD_CONFIGURATION: ${{ matrix.configuration }}
+          ZIPFOUNDATION_TEST_REFERENCE: ${{ matrix.zipfoundation }}
+          EBOOK_FINGERPRINT_EVIDENCE_DIRECTORY: ${{ runner.temp }}/epub-fingerprint-evidence
         run: |
           set -euo pipefail
           bash Tools/test-ebook-fingerprint.sh -c "$BUILD_CONFIGURATION" 2>&1 \
@@ -55,7 +58,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: epub-fingerprint-${{ matrix.configuration }}-${{ github.run_attempt }}
+          name: epub-fingerprint-${{ matrix.zipfoundation }}-${{ matrix.configuration }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/epub-fingerprint-evidence
           if-no-files-found: error
           retention-days: 7

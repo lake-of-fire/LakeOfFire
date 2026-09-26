@@ -67,7 +67,8 @@ enum ReaderEBookZIPDirectory {
             guard (!requireUTF8Paths && flags & 0x0800 == 0) || String(data: name, encoding: .utf8) != nil else {
                 throw ReaderEBookFingerprintError.invalidPackage
             }
-            try validateExtra(try read(input, at: position + 46 + nameLength, count: Int(extraLength)))
+            try validateExtra(try read(input, at: position + 46 + nameLength, count: Int(extraLength)),
+                              name: name, nameIsUTF8: requireUTF8Paths || flags & 0x0800 != 0)
             guard localOffset <= offset, offset - localOffset >= 30 else {
                 throw ReaderEBookFingerprintError.invalidPackage
             }
@@ -82,7 +83,8 @@ enum ReaderEBookZIPDirectory {
             guard localHeaderSize <= offset - localOffset else { throw ReaderEBookFingerprintError.invalidPackage }
             let localName = try read(input, at: localOffset + 30, count: Int(nameLength))
             guard localName == name else { throw ReaderEBookFingerprintError.invalidPackage }
-            try validateExtra(try read(input, at: localOffset + 30 + nameLength, count: Int(localExtraLength)))
+            try validateExtra(try read(input, at: localOffset + 30 + nameLength, count: Int(localExtraLength)),
+                              name: name, nameIsUTF8: requireUTF8Paths || flags & 0x0800 != 0)
             let dataStart = localOffset + localHeaderSize
             guard compressed <= offset - dataStart else { throw ReaderEBookFingerprintError.invalidPackage }
             let crc = u32(central, 16)
@@ -121,17 +123,56 @@ enum ReaderEBookZIPDirectory {
         return Int(count)
     }
 
-    private static func validateExtra(_ data: Data) throws {
+    private static func validateExtra(_ data: Data, name: Data, nameIsUTF8: Bool) throws {
         var offset = 0
+        var sawUnicodePath = false
         while offset < data.count {
             guard data.count - offset >= 4 else { throw ReaderEBookFingerprintError.invalidPackage }
             let kind = u16(data, offset)
             let size = Int(u16(data, offset + 2))
             guard size <= data.count - offset - 4 else { throw ReaderEBookFingerprintError.invalidPackage }
             guard kind != 0x0001 else { throw ReaderEBookFingerprintError.unsupportedEntry("ZIP64 entry") }
+            if kind == 0x7075 {
+                // ZIPFoundation's development implementation interprets this
+                // field, while 0.9.20 ignores it. Check its fixed fields before
+                // entering either extractor, and admit only redundant names.
+                // An alternate name must not change a frozen v1 fingerprint or
+                // let the viewer and scanner refer to different resources.
+                guard !sawUnicodePath, size >= 6 else { throw ReaderEBookFingerprintError.invalidPackage }
+                sawUnicodePath = true
+                guard data[offset + 4] == 1 else {
+                    throw ReaderEBookFingerprintError.unsupportedEntry("ZIP Unicode path version")
+                }
+                guard u32(data, offset + 5) == filenameCRC32(name) else {
+                    throw ReaderEBookFingerprintError.invalidPackage
+                }
+                let unicodeName = data.subdata(in: offset + 9..<offset + 4 + size)
+                guard String(data: unicodeName, encoding: .utf8) != nil else {
+                    throw ReaderEBookFingerprintError.invalidPackage
+                }
+                // Unflagged non-ASCII ordinary ZIP names are CP437 in the v1
+                // baseline; they cannot silently switch to a Unicode override.
+                // Foundation envelopes explicitly opt into lossless UTF-8.
+                guard nameIsUTF8 || name.allSatisfy({ $0 < 128 }), unicodeName == name else {
+                    throw ReaderEBookFingerprintError.unsupportedEntry("Ambiguous Unicode ZIP path")
+                }
+            }
             offset += 4 + size
         }
     }
+
+    private static let crcTable: [UInt32] = (0..<256).map { index in
+        var value = UInt32(index)
+        for _ in 0..<8 { value = value & 1 == 0 ? value >> 1 : (value >> 1) ^ 0xedb88320 }
+        return value
+    }
+
+    private static func filenameCRC32(_ name: Data) -> UInt64 {
+        var value: UInt32 = 0xffffffff
+        for byte in name { value = crcTable[Int((value ^ UInt32(byte)) & 0xff)] ^ (value >> 8) }
+        return UInt64(value ^ 0xffffffff)
+    }
+
     private static func read(_ file: FileHandle, at offset: UInt64, count: Int) throws -> Data {
         try Task.checkCancellation()
         if count == 0 { return Data() }
