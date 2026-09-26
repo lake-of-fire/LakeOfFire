@@ -55,6 +55,9 @@ final class ReaderEBookCoordinatedSnapshotTests: XCTestCase {
         let source = try directory(root)
         let expected = try ReaderEBookPackageFingerprint.readSnapshot(at: source, packageDocumentPath: "OPS/book.opf")
         let snapshot = try await ReaderEBookPackageSnapshot.capture(at: source)
+        let archive = try Archive(url: snapshot.packageURL, accessMode: .read)
+        XCTAssertEqual(archive.filter { $0.type == .file }.map(\.path).sorted(),
+                       files.map(\.0).sorted(), "Snapshot must retain the package resource namespace")
         XCTAssertEqual(try snapshot.fingerprint(packageDocumentPath: "OPS/book.opf"), expected)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: snapshot.packageURL.path)[.type] as? FileAttributeType, .typeRegular)
     }
