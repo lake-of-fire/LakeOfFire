@@ -231,7 +231,13 @@ private final class SnapshotCoordination: @unchecked Sendable {
         if let coordinationError { throw coordinationError }
         guard let result else { throw ReaderEBookPackageSnapshotError.coordinationDidNotRead }
         try Task.checkCancellation()
-        return try result.get()
+        let retained = try result.get()
+        if attributes.isDirectory == true {
+            return try ReaderEBookDirectorySnapshotArchive.retainContents(
+                of: retained, rootName: sourceURL.lastPathComponent, maximumBytes: maximumBytes
+            )
+        }
+        return retained
     }
 }
 #endif

@@ -97,4 +97,55 @@ final class ReaderEBookCoordinatedSnapshotTests: XCTestCase {
         XCTAssertThrowsError(try snapshot.fingerprint(packageDocumentPath: "OPS/book.opf"))
         XCTAssertEqual(try Data(contentsOf: source), Data("not a ZIP".utf8))
     }
+
+    func testRenamedDirectoryDoesNotChangeInternalPathsOrFingerprint() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try directory(root)
+        let original = try await ReaderEBookPackageSnapshot.capture(at: source)
+        let renamed = root.appendingPathComponent("Renamed 日本語.epub", isDirectory: true)
+        try FileManager.default.moveItem(at: source, to: renamed)
+        let replacement = try await ReaderEBookPackageSnapshot.capture(at: renamed)
+        XCTAssertEqual(try original.fingerprint(packageDocumentPath: "OPS/book.opf"),
+                       try replacement.fingerprint(packageDocumentPath: "OPS/book.opf"))
+    }
+
+    func testDirectoryWithSymbolicResourceIsNotAcceptedAsIdentity() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try directory(root)
+        try FileManager.default.createSymbolicLink(at: source.appendingPathComponent("OPS/linked.xhtml"),
+            withDestinationURL: source.appendingPathComponent("OPS/chapter.xhtml"))
+        do {
+            let snapshot = try await ReaderEBookPackageSnapshot.capture(at: source)
+            _ = try snapshot.fingerprint(packageDocumentPath: "OPS/book.opf")
+            XCTFail("A symlink cannot be treated as an ordinary package resource")
+        } catch {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        }
+    }
+
+    func testEnvelopeConversionCannotDiscardOtherTopLevelContent() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("envelope.zip")
+        try zip(source, files: files.map { ("Original.epub/" + $0.0, $0.1) }
+                + [("other-resource", Data([1]))])
+        let snapshot = try await ReaderEBookPackageSnapshot.capture(at: source)
+        XCTAssertThrowsError(try ReaderEBookDirectorySnapshotArchive.retainContents(
+            of: snapshot, rootName: "Original.epub", maximumBytes: 1_000_000))
+        try snapshot.validateObservation(snapshot.observationToken)
+    }
+
+    func testEnvelopeConversionDoesNotGuessRootOfOrdinaryEPUB() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.epub")
+        try zip(source, files: files)
+        let snapshot = try await ReaderEBookPackageSnapshot.capture(at: source)
+        XCTAssertThrowsError(try ReaderEBookDirectorySnapshotArchive.retainContents(
+            of: snapshot, rootName: "OPS", maximumBytes: 1_000_000))
+        XCTAssertEqual(try snapshot.fingerprint(packageDocumentPath: "OPS/book.opf").resources.count, files.count)
+    }
+
 }
