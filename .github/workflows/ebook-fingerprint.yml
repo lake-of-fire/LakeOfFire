@@ -3,10 +3,15 @@ on:
   pull_request:
     paths:
       - 'Sources/LakeOfFireContent/Files/ReaderEBook*.swift'
+      - 'Sources/LakeOfFireReader/Reader/Books/EbookEntryPathTransport.swift'
+      - 'Sources/LakeOfFireReader/Reader/Books/EbookURLSchemeHandler.swift'
       - 'Tests/LakeOfFireTests/ReaderEBook*Tests.swift'
+      - 'Tests/LakeOfFireTests/EbookEntryPathTransportTests.swift'
       - 'Tools/EBookFingerprintTests/**'
+      - 'Tools/EBookEntryPathTests/**'
       - 'Tools/EBookNamespaceTests/**'
       - 'Tools/test-ebook-fingerprint.sh'
+      - 'Tools/test-ebook-entry-path.sh'
       - 'Tools/test-ebook-zip-directory.sh'
       - 'Tools/test-ebook-namespace.sh'
       - '.github/workflows/ebook-fingerprint.yml'
@@ -50,6 +55,8 @@ jobs:
           EBOOK_FINGERPRINT_EVIDENCE_DIRECTORY: ${{ runner.temp }}/epub-fingerprint-evidence
         run: |
           set -euo pipefail
+          bash Tools/test-ebook-entry-path.sh -c "$BUILD_CONFIGURATION" 2>&1 \
+            | tee "$RUNNER_TEMP/epub-fingerprint-evidence/entry-path-test.log"
           bash Tools/test-ebook-fingerprint.sh -c "$BUILD_CONFIGURATION" 2>&1 \
             | tee "$RUNNER_TEMP/epub-fingerprint-evidence/test.log"
           git status --porcelain \
