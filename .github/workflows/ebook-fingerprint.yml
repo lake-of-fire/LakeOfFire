@@ -2,9 +2,7 @@ name: Exact EPUB package fingerprints
 on:
   pull_request:
     paths:
-      - 'Sources/LakeOfFireContent/Files/ReaderEBookPackageFingerprint.swift'
-      - 'Sources/LakeOfFireContent/Files/ReaderEBookZIPDirectory.swift'
-      - 'Sources/LakeOfFireContent/Files/ReaderEBookPackageNamespace.swift'
+      - 'Sources/LakeOfFireContent/Files/ReaderEBook*.swift'
       - 'Tests/LakeOfFireTests/ReaderEBook*Tests.swift'
       - 'Tools/EBookFingerprintTests/**'
       - 'Tools/EBookNamespaceTests/**'
