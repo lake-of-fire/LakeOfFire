@@ -27,7 +27,7 @@ enum ReaderEBookDirectorySnapshotArchive {
               !rootName.contains("\\"), rootName != ".", rootName != ".." else {
             throw ReaderEBookPackageSnapshotError.invalidSource
         }
-        let expected = try ReaderEBookZIPDirectory.validate(url, maximumEntryCount: 65_534)
+        let expected = try ReaderEBookZIPDirectory.validate(url, maximumEntryCount: 65_534, requireUTF8Paths: true)
         let input = try Archive(url: url, accessMode: .read)
         let entries = Array(input)
         guard entries.count == expected else { throw ReaderEBookFingerprintError.invalidPackage }
@@ -38,7 +38,11 @@ enum ReaderEBookDirectorySnapshotArchive {
         var pathBytes = 0
         for entry in entries {
             try Task.checkCancellation()
-            let bytes = Array(entry.path.utf8)
+            // This is a Foundation-produced envelope, whose filesystem names
+            // are UTF-8 even when the ZIP language flag is absent. The preflight
+            // above requires lossless UTF-8; never guess an encoding for an
+            // arbitrary imported archive or repair a malformed byte sequence.
+            let bytes = Array(entry.path(using: .utf8).utf8)
             guard bytes.starts(with: prefix) else {
                 throw ReaderEBookFingerprintError.ambiguousPath(entry.path)
             }

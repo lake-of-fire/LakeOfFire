@@ -5,7 +5,7 @@ import Foundation
 /// check sees. Its public Entry API can prefer descriptor/local-header values
 /// over central-directory fields; comparing only Entry.checksum is insufficient.
 enum ReaderEBookZIPDirectory {
-    static func validate(_ url: URL, maximumEntryCount: Int) throws -> Int {
+    static func validate(_ url: URL, maximumEntryCount: Int, requireUTF8Paths: Bool = false) throws -> Int {
         let input = try FileHandle(forReadingFrom: url)
         defer { try? input.close() }
         let length = try input.seekToEnd()
@@ -64,7 +64,7 @@ enum ReaderEBookZIPDirectory {
                 throw ReaderEBookFingerprintError.unsupportedEntry("ZIP entry representation")
             }
             let name = try read(input, at: position + 46, count: Int(nameLength))
-            guard flags & 0x0800 == 0 || String(data: name, encoding: .utf8) != nil else {
+            guard (!requireUTF8Paths && flags & 0x0800 == 0) || String(data: name, encoding: .utf8) != nil else {
                 throw ReaderEBookFingerprintError.invalidPackage
             }
             try validateExtra(try read(input, at: position + 46 + nameLength, count: Int(extraLength)))
