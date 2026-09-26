@@ -301,13 +301,12 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                     self?.exportOPMLTask = nil
                     self?.exportedOPML = opml
                     
+                    // A ShareLink may still be consuming an older export. Give each
+                    // generation its own immutable file instead of replacing that URL.
                     let resultURL = FileManager.default.temporaryDirectory
-                        .appending(component: "ManabiReaderUserLibrary", directoryHint: .notDirectory)
+                        .appending(component: "ManabiReaderUserLibrary-\(UUID().uuidString)", directoryHint: .notDirectory)
                         .appendingPathExtension("opml")
                     do {
-                        if FileManager.default.fileExists(atPath: resultURL.path(percentEncoded: false)) {
-                            try FileManager.default.removeItem(at: resultURL)
-                        }
                         let data = opml.xml.data(using: .utf8) ?? Data()
                         try data.write(to: resultURL, options: [.atomic])
                         self?.exportedOPMLFileURL = resultURL
