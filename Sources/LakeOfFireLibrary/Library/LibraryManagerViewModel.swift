@@ -128,6 +128,9 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     private var reprepareOPMLTask: Task<Void, Never>?
     private var exportOPMLGeneration = 0
     private var opmlExportUIRegistrations = Set<UUID>()
+    var exportUserOPML: @Sendable () async throws -> OPML = {
+        try await LibraryDataManager.shared.exportUserOPML()
+    }
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
@@ -176,7 +179,15 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
 
     public override init() {
         super.init()
-        
+        observeRealm()
+    }
+
+    init(observesRealm: Bool) {
+        super.init()
+        if observesRealm { observeRealm() }
+    }
+
+    private func observeRealm() {
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
@@ -291,10 +302,11 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     func refreshOPMLExport() {
         invalidateOPMLExport()
         let exportGeneration = exportOPMLGeneration
+        let exportUserOPML = exportUserOPML
         exportOPMLTask = Task.detached {
             do {
                 try Task.checkCancellation()
-                let opml = try await LibraryDataManager.shared.exportUserOPML()
+                let opml = try await exportUserOPML()
                 Task { @MainActor [weak self] in
                     guard self?.exportOPMLGeneration == exportGeneration else { return }
                     try Task.checkCancellation()

@@ -31,7 +31,8 @@ class LibraryCategoriesViewModel: ObservableObject {
     
     @Published var libraryConfiguration: LibraryConfiguration?
     
-    init() {
+    init(observesRealm: Bool = true) {
+        guard observesRealm else { return }
         Task { @RealmBackgroundActor [weak self] in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
 
@@ -121,18 +122,20 @@ class LibraryCategoriesViewModel: ObservableObject {
     }
     
     @MainActor
-    func deleteCategory(at offsets: IndexSet) {
+    @discardableResult
+    func deleteCategory(at offsets: IndexSet) -> Task<Void, Error> {
         deleteCategory(at: offsets, from: userLibraryCategories)
     }
 
     @MainActor
-    func deleteCategory(at offsets: IndexSet, from categories: [FeedCategory]?) {
+    @discardableResult
+    func deleteCategory(at offsets: IndexSet, from categories: [FeedCategory]?) -> Task<Void, Error> {
         let categoryIDsToDelete: [UUID] = offsets.compactMap { offset in
             guard let categories, categories.indices.contains(offset) else { return nil }
             guard categories[offset].isUserEditable else { return nil }
             return categories[offset].id
         }
-        Task { @MainActor in
+        return Task { @MainActor in
             for categoryID in categoryIDsToDelete {
                 try await Task { @RealmBackgroundActor in
                     let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
@@ -145,20 +148,21 @@ class LibraryCategoriesViewModel: ObservableObject {
     }
    
     @MainActor
-    func moveCategories(fromOffsets: IndexSet, toOffset: Int) {
-        guard let libraryConfiguration, let userLibraryCategories else { return }
+    @discardableResult
+    func moveCategories(fromOffsets: IndexSet, toOffset: Int) -> Task<Void, Error>? {
+        guard let libraryConfiguration, let userLibraryCategories else { return nil }
         let originalIDs = Array(libraryConfiguration.categoryIDs)
         let visibleIDs = userLibraryCategories.map(\.id)
         guard !visibleIDs.isEmpty,
               fromOffsets.allSatisfy(visibleIDs.indices.contains),
-              visibleIDs.indices.contains(toOffset) || toOffset == visibleIDs.endIndex else { return }
+              visibleIDs.indices.contains(toOffset) || toOffset == visibleIDs.endIndex else { return nil }
         var reorderedIDs = visibleIDs
         reorderedIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
-        guard reorderedIDs != visibleIDs else { return }
+        guard reorderedIDs != visibleIDs else { return nil }
         let configurationID = libraryConfiguration.id
         let configurationCreatedAt = libraryConfiguration.createdAt
         let configurationRef = ThreadSafeReference(to: libraryConfiguration)
-        Task { @MainActor in
+        return Task { @MainActor in
             try await Realm.asyncWrite(configurationRef, configuration: LibraryDataManager.realmConfiguration) { realm, libraryConfiguration in
                 guard libraryConfiguration.id == configurationID,
                       libraryConfiguration.createdAt == configurationCreatedAt,
@@ -316,10 +320,10 @@ struct LibraryCategoriesView: View {
             }
         }
         .onMove {
-            viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
+            _ = viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
         }
         .onDelete {
-            viewModel.deleteCategory(at: $0, from: categories)
+            _ = viewModel.deleteCategory(at: $0, from: categories)
         }
     }
 
@@ -398,7 +402,7 @@ struct LibraryCategoriesView: View {
             }
         }
         .onDelete {
-            viewModel.deleteCategory(at: $0, from: categories)
+            _ = viewModel.deleteCategory(at: $0, from: categories)
         }
     }
     
