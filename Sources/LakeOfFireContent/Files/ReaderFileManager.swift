@@ -993,6 +993,31 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         )
     }
 
+    /// Automatic identity discovery must not use resolveReadableLocalURL,
+    /// which can start provider downloads. This is a metadata-only eligibility
+    /// check, with no local-path fallback for an unavailable iCloud source.
+    /// nil is not evidence that the book/history is absent on another device.
+    @MainActor
+    public func resolveAlreadyReadableEBookURL(forReaderBackingURL url: URL) async throws -> URL? {
+        guard url.pathExtension.lowercased() == "epub" else { throw ReaderFileManagerError.invalidFileURL }
+        let observed = try readerBackingPathContext(for: url)
+        guard let candidate = observed.activeRootURL else { return nil }
+        let location: ReaderEBookLocalAvailability.StorageLocation =
+            observed.storageLocation == .icloud ? .iCloud : .local
+        let worker = Task.detached(priority: .utility) {
+            try ReaderEBookLocalAvailability.isAlreadyReadable(at: candidate, location: location)
+        }
+        let readable = try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: { worker.cancel() }
+        try Task.checkCancellation()
+        let current = try readerBackingPathContext(for: url)
+        guard current.activeRootURL?.absoluteString.utf8.elementsEqual(candidate.absoluteString.utf8) == true else {
+            throw ReaderEBookPackageSnapshotError.sourceChanged
+        }
+        return readable ? candidate : nil
+    }
+
     private func evaluateAvailability(
         forReaderBackingURL readerBackingURL: URL,
         requestDownloadIfNeeded: Bool

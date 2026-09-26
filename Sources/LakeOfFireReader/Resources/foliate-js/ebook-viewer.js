@@ -45,6 +45,7 @@ import { CacheWarmerOpenIntent } from './cache-warmer-open-intent.js'
 import { CacheWarmerPrecedingSections } from './cache-warmer-preceding-sections.js'
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import { EbookLoadResources } from './ebook-load-resources.js'
+import { makeNativeEbookSource, nativeEbookRequest } from './ebook-native-source-request.js'
 import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
 import { scheduleFrameWithTimeoutFallback } from './frame-timeout-scheduler.js'
 import { OwnedAsyncResource, OwnedPromiseSlot, OwnedScheduledTask } from './owned-async-resource.js'
@@ -261,12 +262,12 @@ const fingerprintReplaceTextInput = (text) => {
     return `${text.length}:${(hash >>> 0).toString(16)}`;
 };
 
-const makeReplaceTextCacheKey = ({ href, text, isCacheWarmer }) => {
-    return `${isCacheWarmer ? 'cache' : 'live'}|${href || 'nil'}|${fingerprintReplaceTextInput(text)}`;
+const makeReplaceTextCacheKey = ({ href, text, isCacheWarmer, packageSessionID = null }) => {
+    return `${packageSessionID ?? 'legacy'}|${isCacheWarmer ? 'cache' : 'live'}|${href || 'nil'}|${fingerprintReplaceTextInput(text)}`;
 };
 
 // Factory for replaceText with isCacheWarmer support
-const makeReplaceText = (isCacheWarmer) => {
+const makeReplaceText = (isCacheWarmer, nativeSource = null) => {
     const owner = replaceTextCacheOwner;
     return async (href, text, mediaType) => {
         if (!owner.active) return text;
@@ -280,6 +281,7 @@ const makeReplaceText = (isCacheWarmer) => {
             href,
             text,
             isCacheWarmer: !!isCacheWarmer,
+            packageSessionID: nativeSource?.packageSessionID ?? null,
         });
         const run = async (signal) => {
             globalThis.__manabiInflightReplaceTextCount = (globalThis.__manabiInflightReplaceTextCount ?? 0) + 1;
@@ -295,13 +297,15 @@ const makeReplaceText = (isCacheWarmer) => {
                     (globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 0) + 1;
             }
             try {
-                const sourceURL = globalThis.reader?.view?.ownerDocument?.defaultView?.top?.location?.href
+                const sourceURL = nativeSource?.url
+                    ?? globalThis.reader?.view?.ownerDocument?.defaultView?.top?.location?.href
                     ?? window.top.location.href;
                 const headers = {
                     "Content-Type": mediaType,
                     "X-Replaced-Text-Location": href,
                     "X-Content-Location": sourceURL,
                 };
+                if (nativeSource?.packageSessionID) headers['X-Ebook-Package-Session'] = nativeSource.packageSessionID;
                 if (isCacheWarmer) headers['X-Is-Cache-Warmer'] = 'true';
                 const response = await fetch('ebook://ebook/process-text', {
                     method: "POST",
@@ -3166,33 +3170,20 @@ const isZip = async (file) => {
     return arr[0] === 0x50 && arr[1] === 0x4b && arr[2] === 0x03 && arr[3] === 0x04
 }
 
-const makeNativeSource = url => ({ kind: 'native', url })
+const makeNativeSource = makeNativeEbookSource
 const makeFileSource = file => ({ kind: 'file', file })
 
-const makeNativeSourceURLQuery = sourceURL =>
-    `sourceURL=${encodeURIComponent(sourceURL)}`
-
-const fetchNativeEntries = async (sourceURL) => {
-    const response = await fetch(`ebook://ebook/entries?${makeNativeSourceURLQuery(sourceURL)}`, {
-        headers: {
-            'X-Ebook-Source-URL': sourceURL,
-        },
-    })
-    if (!response.ok) {
-        throw new Error(`Failed to load native EPUB entries: ${response.status}`)
-    }
+const fetchNativeEntries = async (source) => {
+    const request = nativeEbookRequest('entries', source.url, source)
+    const response = await fetch(request.url, { headers: request.headers })
+    if (!response.ok) throw new Error(`Failed to load native EPUB entries: ${response.status}`)
     return response.json()
 }
 
-const fetchNativeEntryResponse = async (sourceURL, subpath) => {
-    const response = await fetch(`ebook://ebook/entry?subpath=${encodeURIComponent(subpath)}&${makeNativeSourceURLQuery(sourceURL)}`, {
-        headers: {
-            'X-Ebook-Source-URL': sourceURL,
-        },
-    })
-    if (!response.ok) {
-        return null
-    }
+const fetchNativeEntryResponse = async (source, subpath) => {
+    const request = nativeEbookRequest('entry', source.url, { ...source, subpath })
+    const response = await fetch(request.url, { headers: request.headers })
+    if (!response.ok) return null
     return response
 }
 
@@ -3222,10 +3213,14 @@ const readerOpenSupersededError = () => {
     return error
 }
 
-const makeNativeEpubLoader = async (url, isCacheWarmer, { isCurrent = () => true } = {}) => {
+const makeNativeEpubLoader = async (source, isCacheWarmer, { isCurrent = () => true } = {}) => {
+    const url = source.url
     if (!isCurrent()) throw readerOpenSupersededError()
     const loaderStartedAt = performanceNowMs();
-    const { entries: rawEntries = [] } = await fetchNativeEntries(url)
+    const { entries: rawEntries = [], packageDocumentPath = null } = await fetchNativeEntries(source)
+    if (source.packageSessionID != null && (typeof packageDocumentPath !== 'string' || packageDocumentPath.length === 0)) {
+        throw new Error('Missing native EPUB rendition')
+    }
     if (!isCurrent()) throw readerOpenSupersededError()
     const entries = rawEntries.map(function(entry) {
         return {
@@ -3237,25 +3232,26 @@ const makeNativeEpubLoader = async (url, isCacheWarmer, { isCurrent = () => true
     const entryNames = new Set(entries.map(function(entry) { return entry.filename; }))
     let destroyed = false
     const isActive = () => !destroyed && isCurrent()
-    const replaceText = makeReplaceText(isCacheWarmer)
+    const replaceText = makeReplaceText(isCacheWarmer, source)
     const loadText = async (name) => {
         if (!isActive() || !entryNames.has(name)) {
             return null
         }
-        const response = await fetchNativeEntryResponse(url, name)
+        const response = await fetchNativeEntryResponse(source, name)
         if (!isActive()) return null
         const text = await readNativeEntryText(response)
         return isActive() ? text : null
     }
-    const replaceURL = makeDirectSectionURLResolver(url, isCacheWarmer, loadText)
+    const replaceURL = makeDirectSectionURLResolver(url, isCacheWarmer, loadText, source.packageSessionID)
     return {
         entries,
+        packageDocumentPath: source.packageSessionID == null ? null : packageDocumentPath,
         loadText,
         loadBlob: async (name) => {
             if (!isActive() || !entryNames.has(name)) {
                 return null
             }
-            const response = await fetchNativeEntryResponse(url, name)
+            const response = await fetchNativeEntryResponse(source, name)
             if (!isActive()) return null
             const blob = await readNativeEntryBlob(response)
             return isActive() ? blob : null
@@ -3383,7 +3379,7 @@ const getView = async (source, isCacheWarmer, { isCurrent = () => true } = {}) =
         const {
             EPUB
         } = await import('./epub.js')
-        const loader = await makeNativeEpubLoader(source.url, isCacheWarmer, { isCurrent })
+        const loader = await makeNativeEpubLoader(source, isCacheWarmer, { isCurrent })
         book = await initializeEPUBBook(EPUB, loader)
     } else if (source?.kind === 'file' && source.file?.size) {
         const file = source.file
@@ -8559,6 +8555,7 @@ window.loadNextCacheWarmerSection = async (settledSectionHrefs = []) => {
 
 window.loadEBook = ({
     url,
+    packageSessionID = null,
     layoutMode,
     initialRestore,
     readerPresentationState,
@@ -8574,6 +8571,7 @@ window.loadEBook = ({
     if (
         requestedURL.length > 0
         && globalThis.manabiLoadEBookURL === requestedURL
+        && globalThis.manabiLoadEBookPackageSessionID === packageSessionID
         && globalThis.manabiLoadEBookInFlight === true
     ) {
         const existingStartedAt = Number(globalThis.manabiLoadEBookStartedAt || 0);
@@ -8588,6 +8586,7 @@ window.loadEBook = ({
     if (
         requestedURL.length > 0
         && globalThis.manabiLoadEBookURL === requestedURL
+        && globalThis.manabiLoadEBookPackageSessionID === packageSessionID
         && globalThis.manabiLoadEBookReady === true
         && globalThis.reader?.view?.renderer
     ) {
@@ -8600,6 +8599,7 @@ window.loadEBook = ({
     const loadToken = (globalThis.manabiLoadEBookToken ?? 0) + 1;
     globalThis.manabiLoadEBookToken = loadToken;
     globalThis.manabiLoadEBookURL = requestedURL;
+    globalThis.manabiLoadEBookPackageSessionID = packageSessionID;
     globalThis.manabiLoadEBookInFlight = true;
     globalThis.manabiLoadEBookStarted = true;
     globalThis.manabiLoadEBookStartedAt = Date.now();
@@ -8646,7 +8646,7 @@ window.loadEBook = ({
         && reader.isClosed !== true
 
     const ebookSource = typeof url === 'string' && url.length > 0 && url.startsWith('ebook://')
-        ? makeNativeSource(url)
+        ? makeNativeSource(url, packageSessionID)
         : null
     const sourcePath = (() => {
         try {

@@ -1,0 +1,79 @@
+name: Exact EPUB package fingerprints
+on:
+  pull_request:
+    paths:
+      - 'Sources/LakeOfFireContent/Files/ReaderEBook*.swift'
+      - 'Sources/LakeOfFireContent/Files/ReaderFileManager.swift'
+      - 'Sources/LakeOfFireContent/Files/Archive+Data.swift'
+      - 'Sources/LakeOfFireReader/Reader/Books/Ebook*.swift'
+      - 'Sources/LakeOfFireReader/Reader/ReaderWebView.swift'
+      - 'Sources/LakeOfFireReader/Resources/foliate-js/**'
+      - 'Tests/LakeOfFireTests/ReaderEBook*Tests.swift'
+      - 'Tests/LakeOfFireTests/Ebook*Tests.swift'
+      - 'Tests/JavaScript/**'
+      - 'Tools/EBookFingerprintTests/**'
+      - 'Tools/EBookEntryPathTests/**'
+      - 'Tools/EBookNamespaceTests/**'
+      - 'Tools/test-ebook-fingerprint.sh'
+      - 'Tools/test-ebook-entry-path.sh'
+      - 'Tools/test-ebook-zip-directory.sh'
+      - 'Tools/test-ebook-namespace.sh'
+      - '.github/workflows/ebook-fingerprint.yml'
+permissions:
+  contents: read
+jobs:
+  fingerprint:
+    name: fingerprint (${{ matrix.zipfoundation }}, ${{ matrix.configuration }})
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
+        zipfoundation: [released, locked-development]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Capture exact source and toolchain evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/epub-fingerprint-evidence"
+          mkdir -p "$evidence"
+          git rev-parse HEAD > "$evidence/tested-commit.txt"
+          git ls-tree -r HEAD > "$evidence/source-manifest.txt"
+          git status --porcelain > "$evidence/source-status-before.txt"
+          swift --version | tee "$evidence/toolchain.txt"
+          # Only this public repository's tracked source/test context. No .git,
+          # credentials, private sibling repositories or user book data.
+          # Include the actual viewer and JS request producers, not only the
+          # fingerprint helpers, so serving-boundary evidence is reproducible.
+          git archive --format=tar.gz --output="$evidence/source.tar.gz" HEAD \
+            Sources/LakeOfFireContent Sources/LakeOfFireReader \
+            Tests/LakeOfFireTests Tests/JavaScript Tools Package.swift Package.resolved
+      - name: Execute native snapshot and fingerprint regressions
+        shell: bash
+        env:
+          BUILD_CONFIGURATION: ${{ matrix.configuration }}
+          ZIPFOUNDATION_TEST_REFERENCE: ${{ matrix.zipfoundation }}
+          EBOOK_FINGERPRINT_EVIDENCE_DIRECTORY: ${{ runner.temp }}/epub-fingerprint-evidence
+        run: |
+          set -euo pipefail
+          bash Tools/test-ebook-entry-path.sh -c "$BUILD_CONFIGURATION" 2>&1 \
+            | tee "$RUNNER_TEMP/epub-fingerprint-evidence/entry-path-test.log"
+          bash Tools/test-ebook-fingerprint.sh -c "$BUILD_CONFIGURATION" 2>&1 \
+            | tee "$RUNNER_TEMP/epub-fingerprint-evidence/test.log"
+          node --version | tee "$RUNNER_TEMP/epub-fingerprint-evidence/node-toolchain.txt"
+          node --test Tests/JavaScript/*.test.mjs 2>&1 \
+            | tee "$RUNNER_TEMP/epub-fingerprint-evidence/javascript-test.log"
+          git status --porcelain \
+            > "$RUNNER_TEMP/epub-fingerprint-evidence/source-status-after.txt"
+      - name: Retain native evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: epub-fingerprint-${{ matrix.zipfoundation }}-${{ matrix.configuration }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/epub-fingerprint-evidence
+          if-no-files-found: error
+          retention-days: 7
