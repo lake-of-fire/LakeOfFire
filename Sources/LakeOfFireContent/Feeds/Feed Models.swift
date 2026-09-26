@@ -341,7 +341,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         self.title = try container.decode(String.self, forKey: .title)
         self.directoryID = try container.decodeIfPresent(UUID.self, forKey: .directoryID)
         self.ordinal = try container.decodeIfPresent(Int.self, forKey: .ordinal)
-        self.markdownDescription = try container.decode(String.self, forKey: .markdownDescription)
+        self.markdownDescription = try container.decodeIfPresent(String.self, forKey: .markdownDescription)
         self.rssUrl = try container.decode(URL.self, forKey: .rssUrl)
         self.isReaderModeByDefault = try container.decode(Bool.self, forKey: .isReaderModeByDefault)
         self.injectEntryImageIntoHeader = try container.decode(Bool.self, forKey: .injectEntryImageIntoHeader)
