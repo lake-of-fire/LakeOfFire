@@ -195,6 +195,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var hideNavigationDueToScroll: Binding<Bool>
     var showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?
     var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
+    var ebookOpeningPreparer: ReaderEBookOpeningPreparer?
     var colorScheme: ColorScheme
 
     private struct NavigationVisibilityEvent {
@@ -978,11 +979,57 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
                         in: message.frameInfo
                     )
+                    let openingBindingToken =
+                        scriptCaller.currentJavaScriptBindingToken
+                    let openingPreparer = ebookOpeningPreparer
+                    // A configured identity/snapshot preparer is fail-closed:
+                    // never fall back to live pathname bytes or URL-keyed
+                    // progress when the exact native document has no binding.
+                    if openingPreparer != nil,
+                       openingBindingToken == nil {
+                        return
+                    }
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         do {
-                            let initialRestore = try? await ReaderContentReadingProgressLoader
-                                .ebookInitialRestoreLoader?(url)
+                            let preparedOpen: ReaderEBookPreparedOpen?
+                            if let openingPreparer,
+                               let openingBindingToken {
+                                preparedOpen = try await openingPreparer(
+                                    loaderURL,
+                                    openingBindingToken
+                                )
+                                guard scriptCaller
+                                    .currentJavaScriptBindingToken
+                                        == openingBindingToken else {
+                                    return
+                                }
+                            } else {
+                                preparedOpen = nil
+                            }
+                            let initialRestore: ReaderContentEbookInitialRestore?
+                            if let openingBindingToken {
+                                initialRestore = try await
+                                    ReaderEBookOpeningDocumentContext
+                                    .$javaScriptBindingToken.withValue(
+                                        openingBindingToken
+                                    ) {
+                                        try await
+                                            ReaderContentReadingProgressLoader
+                                            .ebookInitialRestoreLoader?(url)
+                                    }
+                            } else {
+                                initialRestore = try await
+                                    ReaderContentReadingProgressLoader
+                                    .ebookInitialRestoreLoader?(url)
+                            }
+                            if let openingBindingToken {
+                                guard scriptCaller
+                                    .currentJavaScriptBindingToken
+                                        == openingBindingToken else {
+                                    return
+                                }
+                            }
                             let defaults = UserDefaults.standard
                             let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16
                             let rawWritingDirection = defaults.string(
@@ -1008,6 +1055,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 "url": loaderURL.absoluteString,
                                 "layoutMode": defaults.string(forKey: "ebookViewerLayout") ?? "paginated",
                                 "readerPresentationState": readerPresentationState,
+                                "packageSessionID":
+                                    preparedOpen?.packageSessionID ?? NSNull(),
                             ]
                             let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(
                                 restore: initialRestore
@@ -1018,6 +1067,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 """
                                 window.loadEBook({
                                     url,
+                                    packageSessionID,
                                     layoutMode,
                                     initialRestore,
                                     readerPresentationState
@@ -1086,6 +1136,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         hideNavigationDueToScroll: Binding<Bool>,
         showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
         navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
+        ebookOpeningPreparer: ReaderEBookOpeningPreparer?,
         colorScheme: ColorScheme
     ) {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -1097,6 +1148,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         self.hideNavigationDueToScroll = hideNavigationDueToScroll
         self.showOriginalWillBeginHandler = showOriginalWillBeginHandler
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
+        self.ebookOpeningPreparer = ebookOpeningPreparer
         self.colorScheme = colorScheme
     }
 
@@ -1226,6 +1278,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
     @Environment(\.readerShowOriginalWillBeginHandler) internal var showOriginalWillBeginHandler
     @Environment(\.readerNavigationVisibilityWillChangeHandler) internal var navigationVisibilityWillChangeHandler
+    @Environment(\.readerEBookOpeningPreparer) internal var ebookOpeningPreparer
     @Environment(\.colorScheme) internal var colorScheme
 
     @State private var readerMessageHandlers: ReaderMessageHandlers?
@@ -1246,6 +1299,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                         hideNavigationDueToScroll: hideNavigationDueToScroll,
                         showOriginalWillBeginHandler: showOriginalWillBeginHandler,
                         navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
+                        ebookOpeningPreparer: ebookOpeningPreparer,
                         colorScheme: colorScheme
                     )
                 } else if let readerMessageHandlers {
@@ -1258,6 +1312,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.hideNavigationDueToScroll = hideNavigationDueToScroll
                     readerMessageHandlers.showOriginalWillBeginHandler = showOriginalWillBeginHandler
                     readerMessageHandlers.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
+                    readerMessageHandlers.ebookOpeningPreparer = ebookOpeningPreparer
                     readerMessageHandlers.colorScheme = colorScheme
                 }
             }
