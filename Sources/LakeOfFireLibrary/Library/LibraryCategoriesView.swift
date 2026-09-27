@@ -499,6 +499,10 @@ struct LibraryCategoriesView: View {
         .controlSize(.small)
         .font(.footnote)
         .fontWeight(.semibold)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Add Category")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("Library.AddCategory")
     }
 
     @ViewBuilder private func inlineAddCategoryButton(scrollProxy: ScrollViewProxy) -> some View {
@@ -510,6 +514,10 @@ struct LibraryCategoriesView: View {
         Button("Add Category") {
             createCategory(scrollProxy: scrollProxy)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Add Category")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("Library.AddCategory")
         .tint(.secondary)
         .foregroundStyle(.primary)
     }
