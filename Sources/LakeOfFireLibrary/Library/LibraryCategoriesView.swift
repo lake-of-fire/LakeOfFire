@@ -292,6 +292,7 @@ struct LibraryCategoriesView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .id("library-sidebar-\(category.id.uuidString)")
+            .accessibilityIdentifier("library-sidebar-\(category.id.uuidString)")
             .listRowSeparator(.hidden)
             .deleteDisabled(!category.isUserEditable)
             .moveDisabled(!category.isUserEditable)
@@ -354,6 +355,7 @@ struct LibraryCategoriesView: View {
                     .saturation(0)
             }
             .id("library-sidebar-\(category.id.uuidString)")
+            .accessibilityIdentifier("library-sidebar-\(category.id.uuidString)")
             .listRowSeparator(.hidden)
             .swipeActions(edge: .leading) {
                 if viewModel.showRestoreButton(category: category) {
@@ -497,6 +499,10 @@ struct LibraryCategoriesView: View {
         .controlSize(.small)
         .font(.footnote)
         .fontWeight(.semibold)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Add Category")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("Library.AddCategory")
     }
 
     @ViewBuilder private func inlineAddCategoryButton(scrollProxy: ScrollViewProxy) -> some View {
@@ -508,6 +514,10 @@ struct LibraryCategoriesView: View {
         Button("Add Category") {
             createCategory(scrollProxy: scrollProxy)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Add Category")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("Library.AddCategory")
         .tint(.secondary)
         .foregroundStyle(.primary)
     }
