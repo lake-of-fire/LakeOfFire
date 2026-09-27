@@ -30,10 +30,10 @@ finish() {
 trap finish EXIT
 mkdir -p "$work/Sources" "$work/Tests"
 cp "$root/Tools/EBookFingerprintTests/Package.swift" "$work/Package.swift"
-for source in ReaderEBookPackageFingerprint ReaderEBookZIPDirectory ReaderEBookPackageNamespace ReaderEBookPackageSnapshot ReaderEBookSnapshotFingerprint ReaderEBookDirectorySnapshotArchive ReaderEBookServingSession ReaderEBookLocalAvailability ReaderEBookRenditionSelection; do
+for source in ReaderEBookPackageFingerprint ReaderEBookZIPDirectory ReaderEBookPackageNamespace ReaderEBookPackageSnapshot ReaderEBookSnapshotFingerprint ReaderEBookDirectorySnapshotArchive ReaderEBookServingSession ReaderEBookLocalAvailability ReaderEBookRenditionSelection ReaderEBookInitialRestorePolicy; do
   cp "$root/Sources/LakeOfFireContent/Files/$source.swift" "$work/Sources/"
 done
-for suite in ReaderEBookPackageFingerprint ReaderEBookFingerprintValidation ReaderEBookZIPDirectory ReaderEBookPackageNamespace ReaderEBookNamespaceIntegration ReaderEBookPackageSnapshot ReaderEBookCoordinatedSnapshot ReaderEBookZIPPathMetadata ReaderEBookZIPPathFingerprint ReaderEBookServingSession ReaderEBookLocalAvailability ReaderEBookRenditionSelection; do
+for suite in ReaderEBookPackageFingerprint ReaderEBookFingerprintValidation ReaderEBookZIPDirectory ReaderEBookPackageNamespace ReaderEBookNamespaceIntegration ReaderEBookPackageSnapshot ReaderEBookCoordinatedSnapshot ReaderEBookZIPPathMetadata ReaderEBookZIPPathFingerprint ReaderEBookServingSession ReaderEBookLocalAvailability ReaderEBookRenditionSelection ReaderEBookInitialRestorePolicy; do
   cp "$root/Tests/LakeOfFireTests/${suite}Tests.swift" "$work/Tests/"
 done
 # Compile the actual package reader declaration, not an API double. The cache
