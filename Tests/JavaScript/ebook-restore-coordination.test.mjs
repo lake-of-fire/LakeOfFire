@@ -24,7 +24,27 @@ test('initial restore requests derive locator identity from validated content', 
         fractionalCompletion: 0.7,
     })
     assert.equal(normalizeInitialRestoreRequest({ requestID: '', cfi: 'epubcfi(/6/14!)' }), null)
+    assert.deepEqual(normalizeInitialRestoreRequest({
+        requestID: 'request-zero',
+        cfi: '',
+        fractionalCompletion: 0,
+    }), {
+        requestID: 'request-zero',
+        requestedLocator: 'fraction',
+        cfi: '',
+        fractionalCompletion: 0,
+    })
     assert.equal(normalizeInitialRestoreRequest({ requestID: 'request-2', cfi: '', fractionalCompletion: 2 }), null)
+    assert.equal(normalizeInitialRestoreRequest({
+        requestID: 'request-invalid-with-cfi',
+        cfi: 'epubcfi(/6/14!)',
+        fractionalCompletion: -0.1,
+    }), null)
+    assert.equal(normalizeInitialRestoreRequest({
+        requestID: 'request-nan-with-cfi',
+        cfi: 'epubcfi(/6/14!)',
+        fractionalCompletion: Number.NaN,
+    }), null)
 })
 
 test('initial restore terminal results retain request correlation and snapshot', () => {
@@ -121,7 +141,10 @@ test('restore routing gives explicit locators priority over fractional completio
     assert.equal(restoreLocatorKind({ cfi: 'mnb-loc-v1:7:2:5', fractionalCompletion: 0.7 }), 'synthetic')
     assert.equal(restoreLocatorKind({ cfi: 'epubcfi(/6/14!)', fractionalCompletion: 0.7 }), 'cfi')
     assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0.7 }), 'fraction')
-    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0 }), 'none')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0 }), 'fraction')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 1 }), 'fraction')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: -0.01 }), 'none')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 1.01 }), 'none')
 })
 
 test('scheduled fractional navigation waits for restore settling until user input', () => {
