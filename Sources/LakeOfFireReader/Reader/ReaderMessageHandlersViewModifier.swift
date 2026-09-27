@@ -19,8 +19,10 @@ private struct ReaderEBookInitialRestoreBridgeRequest {
         cfi = restore.cfi
         fractionalCompletion = restore.fractionalCompletion.map(Double.init)
         let hasCFI = !cfi.isEmpty
-        let hasFraction = (fractionalCompletion ?? 0) > 0
-        guard hasCFI || hasFraction else { return nil }
+        guard ReaderEBookInitialRestorePolicy.shouldRequestRestore(
+            cfi: cfi,
+            fractionalCompletion: restore.fractionalCompletion
+        ) else { return nil }
         requestedLocator = hasCFI ? "cfi" : "fraction"
     }
 
