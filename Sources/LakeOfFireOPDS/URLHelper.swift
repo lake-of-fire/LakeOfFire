@@ -6,45 +6,33 @@
 
 import Foundation
 
-class URLHelper {
-    /**
-     Check if an href destination is absolute or not.
+enum URLHelper {
+    // Preserve URI delimiters and existing percent escapes. This fallback also
+    // supports IRIs on older Foundation versions whose URL initializer is strict.
+    private static let referenceCharacters = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~:/?#[]@!$&'()*+,;=%"
+    )
 
-     - parameter href: The destination.
-
-     - returns: true only if href is absolute.
-     */
-    static func isAbsolute(href: String) -> Bool {
-        if let url = URL(string: href) {
-            if url.scheme != nil, url.host != nil {
-                return true
-            }
+    static func resolve(href: String?, base: URL?) -> URL? {
+        guard let href else { return nil }
+        if href.isEmpty {
+            guard let base, var components = URLComponents(url: base, resolvingAgainstBaseURL: true),
+                  components.scheme != nil else { return nil }
+            components.fragment = nil
+            return components.url
         }
-
-        return false
+        let encoded = href.addingPercentEncoding(withAllowedCharacters: referenceCharacters)
+        guard let url = (URL(string: href, relativeTo: base)
+            ?? encoded.flatMap { URL(string: $0, relativeTo: base) })?.absoluteURL,
+              url.scheme != nil else { return nil }
+        return url
     }
 
-    /**
-     Build an absolute href destination.
+    static func isAbsolute(href: String) -> Bool {
+        resolve(href: href, base: nil) != nil
+    }
 
-     - parameter href: The relative destination.
-     - parameter base: The base URL.
-
-     - returns: The absolute href destination.
-     */
     static func getAbsolute(href: String?, base: URL?) -> String? {
-        var absolute: String?
-
-        if let href = href {
-            if URLHelper.isAbsolute(href: href) {
-                absolute = href
-            } else {
-                if let base = base {
-                    absolute = URL(string: href, relativeTo: base)?.absoluteString
-                }
-            }
-        }
-
-        return absolute
+        resolve(href: href, base: base)?.absoluteString
     }
 }
