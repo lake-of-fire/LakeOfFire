@@ -1,0 +1,63 @@
+name: Port native restore admission
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-restore-admission-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-wire:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+        configuration: [debug, release]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.2.1'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test native values, WebKit arguments and actual JS handoff
+        env:
+          NATIVE_RESTORE_SWIFT6: '1'
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/tested-commit.txt
+          git ls-tree -r HEAD > evidence/source-manifest.txt
+          swift --version > evidence/toolchain.txt
+          node --version > evidence/node-version.txt
+          export NATIVE_RESTORE_FIXTURES="$PWD/evidence/native-wire.json"
+          bash Tools/test-native-restore-admission.sh -c ${{ matrix.configuration }} 2>&1 | tee evidence/test.log
+      - name: Retain exact production sources and tests
+        if: always()
+        shell: bash
+        run: |
+          tar -czf evidence/source.tar.gz \
+            Sources/LakeOfFireContent/Files/ReaderEBookInitialRestorePolicy.swift \
+            Sources/LakeOfFireContent/Reader/ReaderContentEbookInitialRestore.swift \
+            Sources/LakeOfFireContent/Reader/ReaderContentProtocol.swift \
+            Sources/LakeOfFireReader/Reader/ReaderEBookInitialRestoreBridgeRequest.swift \
+            Sources/LakeOfFireReader/Reader/ReaderMessageHandlersViewModifier.swift \
+            Sources/LakeOfFireReader/Resources/foliate-js \
+            Tests/LakeOfFireTests/ReaderEBookInitialRestorePolicyTests.swift \
+            Tests/LakeOfFireTests/ReaderEBookNativeRestore*Tests.swift \
+            Tools/NativeRestoreTests Tools/test-native-restore-admission.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-restore-${{ matrix.os }}-${{ matrix.configuration }}-${{ github.run_attempt }}
+          path: evidence
+          retention-days: 7
+          if-no-files-found: error

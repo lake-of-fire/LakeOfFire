@@ -12,12 +12,21 @@ import LakeOfFireAdblock
 
 public extension Archive {
     func data(for subpath: String) -> Data? {
-        guard let entry = self[subpath] else { return nil }
-        
-        var data = Data()
+        guard let path = try? ReaderPackageEntrySource.sanitizeSubpath(subpath),
+              let entry = self[path], entry.type == .file else { return nil }
+        let limits = ReaderPackageResourceLimits.default
+        var result = ReaderPackageEntryAccumulator(path: path, limits: limits)
         do {
-            _ = try self.extract(entry) { data.append($0) }
-            return data
+            try Task.checkCancellation()
+            try limits.validateAdvertisedEntrySize(entry.uncompressedSize, path: path)
+            let checksum = try self.extract(entry) { chunk in
+                try Task.checkCancellation()
+                try result.append(chunk)
+            }
+            try Task.checkCancellation()
+            guard checksum == entry.checksum,
+                  UInt64(result.data.count) == entry.uncompressedSize else { return nil }
+            return result.data
         } catch {
             return nil
         }
@@ -50,6 +59,13 @@ public enum ReaderPackageEntrySourceError: Error, Equatable, Sendable {
     case ambiguousEntry
     case cancelled
     case unsupportedSource
+    case packageCorrupt
+    case entryCountExceeded(limit: Int)
+    case entrySizeExceeded(path: String, size: Int64, limit: Int64)
+    case aggregateSizeExceeded(limit: Int64)
+    case actualEntrySizeExceeded(path: String, limit: Int64)
+    case entryPathSizeExceeded(limit: Int)
+    case aggregatePathSizeExceeded(limit: Int)
 }
 
 public struct ReaderPackageEntrySource: Sendable {
@@ -122,11 +138,14 @@ public struct ReaderPackageEntrySource: Sendable {
     private static let decodeURIReservedBytes = Set("#$&+,/:;=?@".utf8)
 
     private let kind: Kind
+    private let limits: ReaderPackageResourceLimits
     private let archiveCatalog: ArchiveCatalog?
     private let directoryIdentity: DirectoryIdentity?
     private let archiveState: ArchiveState?
 
-    public init(localURL: URL) throws {
+    public init(localURL: URL, limits: ReaderPackageResourceLimits = .default) throws {
+        try Task.checkCancellation()
+        self.limits = limits
         var isDirectory = ObjCBool(false)
         if FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory),
            isDirectory.boolValue {
@@ -147,15 +166,19 @@ public struct ReaderPackageEntrySource: Sendable {
         kind = .archive(fileURL: fileURL)
         directoryIdentity = nil
         self.archiveState = archiveState
+        if let count = Self.declaredArchiveEntryCount(at: fileURL), count > UInt64(limits.maxEntryCount) {
+            throw ReaderPackageEntrySourceError.entryCountExceeded(limit: limits.maxEntryCount)
+        }
         archiveCatalog = try Self.withVerifiedArchive(
             at: fileURL,
             expectedState: archiveState
         ) { archive in
-            Self.makeArchiveCatalog(from: archive, fileURL: fileURL)
+            Self.makeArchiveCatalog(from: archive, fileURL: fileURL, limits: limits)
         }
     }
 
     public func enumerateEntries() throws -> [ReaderPackageEntryMetadata] {
+        try Task.checkCancellation()
         switch kind {
         case .directory(let rootURL):
             return try enumerateDirectoryEntries(
@@ -179,6 +202,8 @@ public struct ReaderPackageEntrySource: Sendable {
         subpath rawSubpath: String,
         progress: Progress? = nil
     ) throws -> Data {
+        try Task.checkCancellation()
+        if progress?.isCancelled == true { throw ReaderPackageEntrySourceError.cancelled }
         let subpath = try Self.sanitizeSubpath(rawSubpath)
         switch kind {
         case .directory(let rootURL):
@@ -186,7 +211,8 @@ public struct ReaderPackageEntrySource: Sendable {
                 rootURL: rootURL,
                 expectedRootIdentity: directoryIdentity,
                 subpath: subpath,
-                progress: progress
+                progress: progress,
+                limits: limits
             )
         case .archive(let fileURL):
             guard let archiveCatalog, let archiveState else {
@@ -205,15 +231,26 @@ public struct ReaderPackageEntrySource: Sendable {
                 guard let entry = archive[subpath], entry.type == .file else {
                     throw ReaderPackageEntrySourceError.entryNotFound
                 }
-                var data = Data()
+                try limits.validateAdvertisedEntrySize(entry.uncompressedSize, path: subpath)
+                var result = ReaderPackageEntryAccumulator(path: subpath, limits: limits)
                 do {
-                    _ = try archive.extract(entry, progress: progress) { data.append($0) }
+                    let checksum = try archive.extract(entry, progress: progress) { chunk in
+                        try Task.checkCancellation()
+                        if progress?.isCancelled == true { throw ReaderPackageEntrySourceError.cancelled }
+                        try result.append(chunk)
+                    }
+                    try Task.checkCancellation()
+                    if progress?.isCancelled == true { throw ReaderPackageEntrySourceError.cancelled }
+                    guard checksum == entry.checksum,
+                          UInt64(result.data.count) == entry.uncompressedSize else {
+                        throw ReaderPackageEntrySourceError.packageCorrupt
+                    }
                 } catch Archive.ArchiveError.cancelledOperation {
                     throw ReaderPackageEntrySourceError.cancelled
                 } catch Archive.ArchiveError.invalidCompressionMethod {
                     throw ReaderPackageEntrySourceError.unsupportedSource
                 }
-                return data
+                return result.data
             }
         }
     }
@@ -546,25 +583,41 @@ public struct ReaderPackageEntrySource: Sendable {
             .isSymbolicLinkKey,
             .fileSizeKey,
         ]
-        let enumerator = FileManager.default.enumerator(
+        var enumerationError: Error?
+        guard let enumerator = FileManager.default.enumerator(
             at: standardizedRootURL,
             includingPropertiesForKeys: Array(resourceKeys),
-            options: []
-        )
+            options: [],
+            errorHandler: { _, error in enumerationError = error; return false }
+        ) else { throw ReaderPackageEntrySourceError.unsupportedSource }
 
+        var budget = ReaderPackageCatalogBudget(limits: limits)
         var entries = [ReaderPackageEntryMetadata]()
-        while let fileURL = enumerator?.nextObject() as? URL {
+        while let fileURL = enumerator.nextObject() as? URL {
+            try Task.checkCancellation()
             let values = try fileURL.resourceValues(forKeys: resourceKeys)
+            let relativePath = try Self.relativeSubpath(fileURL: fileURL, rootURL: standardizedRootURL)
+            let size: UInt64
+            if values.isRegularFile == true, values.isSymbolicLink != true {
+                guard let fileSize = values.fileSize, fileSize >= 0 else {
+                    throw ReaderPackageEntrySourceError.unsupportedSource
+                }
+                size = UInt64(fileSize)
+            } else {
+                size = 0
+            }
+            try budget.include(path: relativePath, uncompressedSize: size)
             if values.isSymbolicLink == true {
-                enumerator?.skipDescendants()
+                enumerator.skipDescendants()
                 continue
             }
             guard values.isRegularFile == true else { continue }
-            let relativePath = try Self.relativeSubpath(fileURL: fileURL, rootURL: standardizedRootURL)
             let subpath = try Self.sanitizeSubpath(relativePath)
             _ = try Self.resolveDirectoryURL(rootURL: standardizedRootURL, subpath: subpath)
-            entries.append(ReaderPackageEntryMetadata(path: subpath, size: values.fileSize ?? 0))
+            entries.append(ReaderPackageEntryMetadata(path: subpath, size: Int(size)))
         }
+        if let enumerationError { throw enumerationError }
+        try Task.checkCancellation()
 
         let currentRootDescriptor = try Self.openDirectoryDescriptor(at: rootURL)
         defer { close(currentRootDescriptor) }
@@ -604,13 +657,25 @@ public struct ReaderPackageEntrySource: Sendable {
 
     private static func makeArchiveCatalog(
         from archive: Archive,
-        fileURL: URL
+        fileURL: URL,
+        limits: ReaderPackageResourceLimits
     ) -> ArchiveCatalog {
+        var budget = ReaderPackageCatalogBudget(limits: limits)
         var metadataByPath = [String: ReaderPackageEntryMetadata]()
         var duplicatePaths = Set<String>()
         var hasInvalidEntry = false
         var parsedEntryCount: UInt64 = 0
         for entry in archive {
+            if Task.isCancelled {
+                return ArchiveCatalog(entries: [], paths: [], validationError: .cancelled)
+            }
+            do {
+                try budget.include(path: entry.path, uncompressedSize: entry.type == .file ? entry.uncompressedSize : 0)
+            } catch let error as ReaderPackageEntrySourceError {
+                return ArchiveCatalog(entries: [], paths: [], validationError: error)
+            } catch {
+                return ArchiveCatalog(entries: [], paths: [], validationError: .unsupportedSource)
+            }
             parsedEntryCount += 1
             guard entry.type == .file else { continue }
             guard entry.uncompressedSize <= UInt64(Int.max),
@@ -738,7 +803,8 @@ public struct ReaderPackageEntrySource: Sendable {
         rootURL: URL,
         expectedRootIdentity: DirectoryIdentity?,
         subpath: String,
-        progress: Progress?
+        progress: Progress?,
+        limits: ReaderPackageResourceLimits
     ) throws -> Data {
         if progress?.isCancelled == true {
             throw ReaderPackageEntrySourceError.cancelled
@@ -811,24 +877,24 @@ public struct ReaderPackageEntrySource: Sendable {
             throw ReaderPackageEntrySourceError.invalidSubpath
         }
 
-        progress?.totalUnitCount = Int64(fileInfo.st_size)
         let handle = FileHandle(fileDescriptor: fileDescriptor, closeOnDealloc: true)
         defer { try? handle.close() }
-        var data = Data()
-        if fileInfo.st_size <= Int.max {
-            data.reserveCapacity(Int(fileInfo.st_size))
-        }
+        try limits.validateAdvertisedEntrySize(UInt64(fileInfo.st_size), path: subpath)
+        progress?.totalUnitCount = Int64(fileInfo.st_size)
+        var result = ReaderPackageEntryAccumulator(path: subpath, limits: limits)
         while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
             if progress?.isCancelled == true {
                 throw ReaderPackageEntrySourceError.cancelled
             }
-            data.append(chunk)
+            try Task.checkCancellation()
+            try result.append(chunk)
             progress?.completedUnitCount += Int64(chunk.count)
         }
         if progress?.isCancelled == true {
             throw ReaderPackageEntrySourceError.cancelled
         }
-        return data
+        try Task.checkCancellation()
+        return result.data
     }
 
     private static func openDirectoryDescriptor(at rootURL: URL) throws -> Int32 {
@@ -1196,26 +1262,40 @@ public actor ReaderPackageEntrySourceCache {
             .fileSizeKey,
             .isDirectoryKey,
             .isSymbolicLinkKey,
+            .isRegularFileKey,
         ]
-        let enumerator = FileManager.default.enumerator(
+        var enumerationError: Error?
+        guard let enumerator = FileManager.default.enumerator(
             at: canonicalRootURL,
             includingPropertiesForKeys: Array(resourceKeys),
-            options: []
-        )
+            options: [],
+            errorHandler: { _, error in enumerationError = error; return false }
+        ) else { throw ReaderPackageEntrySourceError.unsupportedSource }
 
+        var budget = ReaderPackageCatalogBudget(limits: .default)
         var descendantMetadata = [String]()
 
-        while let childURL = enumerator?.nextObject() as? URL {
+        while let childURL = enumerator.nextObject() as? URL {
+            try Task.checkCancellation()
             let childValues = try childURL.resourceValues(forKeys: resourceKeys)
+            let relativePath = try ReaderPackageEntrySource.relativeSubpath(
+                fileURL: childURL, rootURL: canonicalRootURL
+            )
+            let size: UInt64
+            if childValues.isRegularFile == true, childValues.isSymbolicLink != true {
+                guard let fileSize = childValues.fileSize, fileSize >= 0 else {
+                    throw ReaderPackageEntrySourceError.unsupportedSource
+                }
+                size = UInt64(fileSize)
+            } else {
+                size = 0
+            }
+            try budget.include(path: relativePath, uncompressedSize: size)
             if childValues.isSymbolicLink == true {
-                enumerator?.skipDescendants()
+                enumerator.skipDescendants()
                 continue
             }
             let childModificationDate = childValues.contentModificationDate?.timeIntervalSince1970 ?? 0
-            let relativePath = try ReaderPackageEntrySource.relativeSubpath(
-                fileURL: childURL,
-                rootURL: canonicalRootURL
-            )
             descendantMetadata.append([
                 relativePath,
                 String(childModificationDate.bitPattern),
@@ -1224,6 +1304,8 @@ public actor ReaderPackageEntrySourceCache {
             ].joined(separator: "\u{0}"))
         }
 
+        if let enumerationError { throw enumerationError }
+        try Task.checkCancellation()
         let finalIdentity = try ReaderPackageEntrySource.directoryIdentityFingerprint(at: canonicalRootURL)
         guard finalIdentity == initialIdentity else {
             throw ReaderPackageEntrySourceError.invalidSubpath

@@ -132,80 +132,112 @@ fileprivate struct StaticBookListRow: View {
     }
 }
 
+@MainActor
 fileprivate struct DownloadableBookListRow: View {
     let publication: Publication
     let onSelected: ((Bool) -> Void)?
     let onNavigateToReader: (() -> Void)?
     @ObservedObject var downloadable: Downloadable
 
-    @State private var wasDownloaded = false
+    @State private var importState = BookDownloadImportState()
+    @State private var importOperation = BookDownloadOperation()
+    @State private var presentedError: String?
+    @State private var isErrorPresented = false
     @ObservedObject private var downloadController = DownloadController.shared
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
 
     var body: some View {
-        BookListRowContent(
-            imageURL: publication.coverURL,
-            title: publication.title,
-            author: publication.author,
-            publicationDate: publication.publicationDate,
-            summary: publication.summary,
-            hasContentAudio: publication.hasContentAudio,
-            onTopTap: topTap
-        ) {
-            HidingDownloadButton(
-                downloadable: downloadable,
-                downloadText: "Get",
-                downloadedText: "In Library"
-            ) { _ in
-                buttonPress()
-            }
-            .accessibilityIdentifier("BookLibrary.Download.\(publication.title)")
-            .font(.caption)
-            .textCase(.uppercase)
-            .foregroundStyle(.primary)
-            .modifier {
-                if #available(macOS 13, iOS 16, *) {
-                    $0.fontWeight(.bold)
-                } else {
-                    $0
+        VStack(alignment: .leading, spacing: 8) {
+            BookListRowContent(
+                imageURL: publication.coverURL,
+                title: publication.title,
+                author: publication.author,
+                publicationDate: publication.publicationDate,
+                summary: publication.summary,
+                hasContentAudio: publication.hasContentAudio,
+                onTopTap: topTap
+            ) {
+                HidingDownloadButton(
+                    downloadable: downloadable,
+                    downloadText: "Get",
+                    downloadedText: importState.isImported ? "In Library" : "Downloaded"
+                ) { _ in
+                    await MainActor.run { buttonPress() }
                 }
+                .accessibilityIdentifier("BookLibrary.Download.\(publication.title)")
+                .font(.caption)
+                .textCase(.uppercase)
+                .foregroundStyle(.primary)
+                .modifier {
+                    if #available(macOS 13, iOS 16, *) {
+                        $0.fontWeight(.bold)
+                    } else {
+                        $0
+                    }
+                }
+            }
+            if importState.errorMessage != nil {
+                Button("Retry Import") { buttonPress() }
+                    .accessibilityIdentifier("BookLibrary.RetryImport.\(publication.title)")
             }
         }
         .contentShape(Rectangle())
-        .task { @MainActor in
+        .task(id: downloadable.isFinishedDownloading) { @MainActor in
             await refreshDownloadable()
         }
-        .onChange(of: downloadable.isFinishedDownloading) { _ in
-            Task { @MainActor in
-                await refreshDownloadable()
-            }
+        .onDisappear { importOperation.cancel() }
+        .alert("Book Error", isPresented: $isErrorPresented) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(presentedError ?? "")
         }
     }
 
     private func buttonPress() {
-        Task { @MainActor in
+        importOperation.start(operation: {
             let wasAlreadyDownloaded = await downloadable.existsLocally()
+            guard !Task.isCancelled else { return nil }
             if !wasAlreadyDownloaded {
                 await downloadController.ensureDownloaded([downloadable])
             }
-            _ = try? await ReaderFileManager.shared.ensureImported(downloadable: downloadable)
-            onSelected?(wasAlreadyDownloaded)
-        }
+            guard !Task.isCancelled else { return nil }
+            let result = await ReaderFileImportOperation.perform(.success(downloadable.localDestination)) { _ in
+                try await ReaderFileManager.shared.ensureImported(downloadable: downloadable)
+            }
+            return (result, wasAlreadyDownloaded)
+        }, publish: { result in
+            if receiveImportResult(result.0) {
+                onSelected?(result.1)
+            }
+        })
     }
 
-    @MainActor
     private func refreshDownloadable() async {
-        if await downloadable.existsLocally() && !wasDownloaded {
-            _ = try? await ReaderFileManager.shared.ensureImported(downloadable: downloadable)
-            wasDownloaded = true
-        }
+        await importOperation.refresh(operation: {
+            guard !importState.isImported,
+                  await downloadable.existsLocally(), !Task.isCancelled else { return nil }
+            return await ReaderFileImportOperation.perform(.success(downloadable.localDestination)) { _ in
+                try await ReaderFileManager.shared.ensureImported(downloadable: downloadable)
+            }
+        }, publish: { result in
+            _ = receiveImportResult(result)
+        })
+    }
+
+    private func receiveImportResult(_ result: ReaderFileImportResult) -> Bool {
+        guard result != .cancelled else { return false }
+        let didImport = importState.receive(result)
+        presentedError = importState.errorMessage
+        isErrorPresented = presentedError != nil
+        return didImport
     }
 
     private func topTap() {
         Task { @MainActor in
             let alreadyDownloaded = await downloadable.existsLocally()
+            guard !Task.isCancelled else { return }
             if alreadyDownloaded {
                 do {
                     try await BookLibraryViewModel.openDownloaded(
@@ -217,7 +249,13 @@ fileprivate struct DownloadableBookListRow: View {
                         onNavigateToReader: onNavigateToReader
                     )
                 } catch {
-                    print("Failed to open downloaded book: \(error)")
+                    let nsError = error as NSError
+                    guard !(error is CancellationError),
+                          !(nsError.domain == NSCocoaErrorDomain && nsError.code == CocoaError.userCancelled.rawValue),
+                          !(nsError.domain == NSURLErrorDomain && nsError.code == URLError.cancelled.rawValue),
+                          (error as? ReaderPackageEntrySourceError) != .cancelled else { return }
+                    presentedError = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
+                    isErrorPresented = true
                 }
             } else {
                 buttonPress()
