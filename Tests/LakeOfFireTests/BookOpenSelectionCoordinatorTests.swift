@@ -103,7 +103,8 @@ final class BookOpenSelectionCoordinatorTests: XCTestCase {
             withUnsafeCurrentTask { $0?.cancel() }
             return owner.start { _ in events.append("cancelled") }
         }
-        XCTAssertNil(await cancelled.value)
+        let cancelledResult = await cancelled.value
+        XCTAssertNil(cancelledResult)
         XCTAssertTrue(events.isEmpty)
 
         await gate.release()
