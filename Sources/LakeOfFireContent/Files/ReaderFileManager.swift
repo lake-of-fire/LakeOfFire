@@ -732,7 +732,7 @@ public class ReaderFileManager: ObservableObject {
                         let date = Date()
                         for candidate in candidates {
                             guard !discovered.contains(candidate.id),
-                                  let canonical = canonicalReaderBackingURL(for: candidate.url),
+                                  let canonical = self.canonicalReaderBackingURL(for: candidate.url),
                                   let location = canonical.pathComponents.dropFirst(2).first,
                                   completed.contains(location),
                                   let file = realm.object(ofType: ContentFile.self, forPrimaryKey: candidate.id),
