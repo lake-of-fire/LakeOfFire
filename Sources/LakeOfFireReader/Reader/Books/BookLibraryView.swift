@@ -62,45 +62,47 @@ fileprivate struct EditorsPicksView: View {
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
 
     var body: some View {
-        if let errorMessage = viewModel.errorMessage {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(errorMessage)
-                    .foregroundColor(.red)
-                Button("Retry") {
-                    viewModel.fetchEditorsPicks()
+        Group {
+            if let errorMessage = viewModel.errorMessage {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(errorMessage)
+                        .foregroundColor(.red)
+                    Button("Retry") {
+                        viewModel.fetchEditorsPicks()
+                    }
+                }
+            } else if !viewModel.editorsPicks.isEmpty {
+                ForEach(viewModel.editorsPicks) { publication in
+                    BookListRow(
+                        publication: publication,
+                        selectionOwner: viewModel,
+                        onSelected: { wasAlreadyDownloaded, selection in
+                            guard wasAlreadyDownloaded,
+                                  viewModel.isCurrentOpenSelection(selection) else { return }
+                            do {
+                                try await viewModel.open(
+                                    publication: publication,
+                                    selection: selection,
+                                    readerFileManager: ReaderFileManager.shared,
+                                    readerPageURL: readerContent.pageURL,
+                                    navigator: navigator,
+                                    readerModeViewModel: readerModeViewModel
+                                )
+                            } catch {
+                                if viewModel.isCurrentOpenSelection(selection) {
+                                    viewModel.errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
+                                }
+                            }
+                        },
+                        onNavigateToReader: viewModel.onNavigateToReader
+                    )
+                    .accessibilityIdentifier("BookLibrary.EditorsPick.Row.\(publication.title)")
                 }
             }
-        } else if !viewModel.editorsPicks.isEmpty {
-            ForEach(viewModel.editorsPicks) { publication in
-                BookListRow(
-                    publication: publication,
-                    selectionOwner: viewModel,
-                    onSelected: { wasAlreadyDownloaded, selection in
-                        guard wasAlreadyDownloaded,
-                              viewModel.isCurrentOpenSelection(selection) else { return }
-                        do {
-                            try await viewModel.open(
-                                publication: publication,
-                                selection: selection,
-                                readerFileManager: ReaderFileManager.shared,
-                                readerPageURL: readerContent.pageURL,
-                                navigator: navigator,
-                                readerModeViewModel: readerModeViewModel
-                            )
-                        } catch {
-                            if viewModel.isCurrentOpenSelection(selection) {
-                                viewModel.errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
-                            }
-                        }
-                    },
-                    onNavigateToReader: viewModel.onNavigateToReader
-                )
-                .accessibilityIdentifier("BookLibrary.EditorsPick.Row.\(publication.title)")
-            }
         }
-    }
-    .onDisappear {
-        viewModel.cancelOpenSelection()
+        .onDisappear {
+            viewModel.cancelOpenSelection()
+        }
     }
 }
 
