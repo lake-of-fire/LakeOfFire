@@ -234,22 +234,55 @@ public class ReaderFileManager: ObservableObject {
         "ReaderFileDeletion.",
     ]
     
+    typealias CloudDriveFactory = @MainActor @Sendable (String) async throws -> CloudDrive
+    typealias LocalDriveFactory = @MainActor @Sendable () async throws -> CloudDrive
+
     private let payloadStateProvider: @Sendable (URL) throws -> PayloadState
     private let directoryContentsProvider: (@Sendable (URL) async throws -> [URL])?
+    private let cloudDriveFactory: CloudDriveFactory
+    private let localDriveFactory: LocalDriveFactory
 
     public init() {
         payloadStateProvider = { try Self.payloadState(at: $0) }
         directoryContentsProvider = nil
+        cloudDriveFactory = { identifier in
+            try await CloudDrive(
+                ubiquityContainerIdentifier: identifier,
+                relativePathToRootInContainer: "Documents"
+            )
+        }
+        localDriveFactory = {
+            try await CloudDrive(
+                storage: .localDirectory(
+                    rootURL: Self.getDocumentsDirectory()
+                )
+            )
+        }
     }
 
-    // Inject only filesystem observations; production identity and mutation decisions
-    // remain in this manager and are exercised by the temporary-root regressions.
+    // Inject filesystem observations and drive construction for isolated
+    // boundary tests. Production identity and mutation decisions remain here.
     init(
         payloadStateProvider: @escaping @Sendable (URL) throws -> PayloadState,
-        directoryContentsProvider: (@Sendable (URL) async throws -> [URL])? = nil
+        directoryContentsProvider: (@Sendable (URL) async throws -> [URL])? = nil,
+        cloudDriveFactory: @escaping CloudDriveFactory = { identifier in
+            try await CloudDrive(
+                ubiquityContainerIdentifier: identifier,
+                relativePathToRootInContainer: "Documents"
+            )
+        },
+        localDriveFactory: @escaping LocalDriveFactory = {
+            try await CloudDrive(
+                storage: .localDirectory(
+                    rootURL: ReaderFileManager.getDocumentsDirectory()
+                )
+            )
+        }
     ) {
         self.payloadStateProvider = payloadStateProvider
         self.directoryContentsProvider = directoryContentsProvider
+        self.cloudDriveFactory = cloudDriveFactory
+        self.localDriveFactory = localDriveFactory
     }
 
     private var resolvedHistoryRealmConfiguration: Realm.Configuration {
@@ -258,17 +291,42 @@ public class ReaderFileManager: ObservableObject {
     
     @MainActor
     public func initialize(ubiquityContainerIdentifier: String) async throws {
-        self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
-        hasInitializedUbiquityContainerIdentifier = true
-        cloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "Documents")
-        cloudDrive?.observer = self
-        //        legacyCloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "")
-        localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: Self.getDocumentsDirectory()))
-        localDrive?.observer = self
-        NotificationCenter.default.post(name: Self.driveAvailabilityDidChangeNotification, object: self)
-        Task { [weak self] in
-            try await self?.refreshAllFilesMetadata()
+        // Prepare replacement drives without mutating the currently usable
+        // manager. A SwiftUI .task(id:) cancellation must not commit a partial
+        // identity or launch detached indexing work.
+        let nextCloudDrive: CloudDrive?
+        do {
+            nextCloudDrive = try await cloudDriveFactory(
+                ubiquityContainerIdentifier
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // iCloud is optional; the local library remains usable when the
+            // account/container is unavailable.
+            nextCloudDrive = nil
         }
+
+        try Task.checkCancellation()
+        let nextLocalDrive = try await localDriveFactory()
+        try Task.checkCancellation()
+
+        nextCloudDrive?.observer = self
+        nextLocalDrive.observer = self
+
+        // Suppress the identifier observer while committing the prepared
+        // drive tuple. The structured refresh below is the single initial scan.
+        hasInitializedUbiquityContainerIdentifier = false
+        self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
+        cloudDrive = nextCloudDrive
+        localDrive = nextLocalDrive
+        hasInitializedUbiquityContainerIdentifier = true
+
+        NotificationCenter.default.post(
+            name: Self.driveAvailabilityDidChangeNotification,
+            object: self
+        )
+        try await refreshAllFilesMetadata()
     }
     
     @MainActor
