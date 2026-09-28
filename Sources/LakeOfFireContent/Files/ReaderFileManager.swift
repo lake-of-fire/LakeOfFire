@@ -212,12 +212,17 @@ public class ReaderFileManager: ObservableObject {
         }
     }
     
-    private var refreshAllFilesMetadataTask: Task<Void, Never>?
-    @MainActor private var lastRefreshAllFilesMetadataStartedAt: Date?
-    @MainActor private var refreshAllFilesMetadataNeedsFollowUp = false
+    @MainActor var inventoryRefreshQueue: ReaderFileRefreshQueue?
     @ReaderFileManagerActor
     private var metadataRefreshEntries = [MetadataRefreshKey: MetadataRefreshEntry]()
-    private static let refreshAllFilesMetadataDebounceInterval: TimeInterval = 2
+
+    @MainActor
+    private func resolvedInventoryRefreshQueue() -> ReaderFileRefreshQueue {
+        if let inventoryRefreshQueue { return inventoryRefreshQueue }
+        let queue = ReaderFileRefreshQueue()
+        inventoryRefreshQueue = queue
+        return queue
+    }
 
     private static let internalStorageRootPrefixes: Set<String> = [
         "manabi-caches",
@@ -268,11 +273,13 @@ public class ReaderFileManager: ObservableObject {
     
     @MainActor
     public func appSuspendedDidChange(isSuspended: Bool) {
+        let queue = resolvedInventoryRefreshQueue()
         if isSuspended {
-            refreshAllFilesMetadataTask?.cancel()
+            queue.suspend()
         } else {
-            Task { @MainActor in
-                try? await refreshAllFilesMetadata()
+            queue.resume()
+            Task { @MainActor [weak self] in
+                try? await self?.refreshAllFilesMetadata()
             }
         }
     }
@@ -673,28 +680,12 @@ public class ReaderFileManager: ObservableObject {
         force: Bool,
         realmConfiguration: Realm.Configuration
     ) async throws {
-        if let refreshAllFilesMetadataTask {
-            if force {
-                refreshAllFilesMetadataNeedsFollowUp = true
-            }
-            await refreshAllFilesMetadataTask.value
-            if force, refreshAllFilesMetadataNeedsFollowUp {
-                try await refreshAllFilesMetadata(force: true, realmConfiguration: realmConfiguration)
-            }
-            return
-        }
-        if !force,
-           files != nil,
-           let lastRefreshAllFilesMetadataStartedAt,
-           Date().timeIntervalSince(lastRefreshAllFilesMetadataStartedAt) < Self.refreshAllFilesMetadataDebounceInterval {
-            return
-        }
-        refreshAllFilesMetadataNeedsFollowUp = false
-        lastRefreshAllFilesMetadataStartedAt = Date()
-        refreshAllFilesMetadataTask = Task { @MainActor in
-            defer {
-                refreshAllFilesMetadataTask = nil
-            }
+        guard !Task.isCancelled else { return }
+        let scope = realmConfiguration.inMemoryIdentifier.map { "memory:\($0)" }
+            ?? "file:\(realmConfiguration.fileURL?.standardizedFileURL.absoluteString ?? "")"
+        let queue = resolvedInventoryRefreshQueue()
+        queue.enqueue(scope: scope, force: force) { @MainActor [weak self] in
+            guard let self else { return }
             do {
                 guard localDrive != nil || cloudDrive != nil else { return }
                 // Capture candidates before scanning. New imports and edits that
@@ -773,7 +764,7 @@ public class ReaderFileManager: ObservableObject {
                 }
             }
         }
-        await refreshAllFilesMetadataTask?.value
+        await queue.waitForIdle()
     }
     
     static let additionalFilePackageSuffixesToAvoidDescendingInto = [
@@ -1414,7 +1405,7 @@ public class ReaderFileManager: ObservableObject {
         }
 
         guard try await Self.canCoordinateRead(rootURL: activeRootURL) else {
-            return ReaderBackingAvailability(status: .cloudOnly, localURL: activeRootURL, requestedDownload: false)
+            return ReaderBackingAvailability(status: .cloudOnly, localURL: nil, requestedDownload: false)
         }
 
         return ReaderBackingAvailability(
@@ -1586,6 +1577,7 @@ public class ReaderFileManager: ObservableObject {
     }
 
     private static func shouldSkipDiscoveredFile(at absoluteFileURL: URL) -> Bool {
+        if ReaderFileStoragePaths.isDownloadArtifact(absoluteFileURL) { return true }
         let lastPathComponent = absoluteFileURL.lastPathComponent.lowercased()
         if lastPathComponent.hasSuffix(".realm")
             || lastPathComponent.hasSuffix(".realm.lock")
@@ -1648,7 +1640,16 @@ public extension ReaderFileManager {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
         
         let targetDirectory = try await Self.rootRelativePath(forImportedURL: url, drive: drive)
-        let targetFilePath = targetDirectory.appending(url.lastPathComponent)
+        // A basename is not proof that a file came from this catalog resource.
+        // Keep legacy files untouched rather than adopting an ambiguous match.
+        let identity = ReaderFileStoragePaths.downloadIdentity(for: url)
+        let digest = SHA256.hash(data: Data(identity.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let targetFilePath = targetDirectory
+            .appending(ReaderFileStoragePaths.downloadsDirectory)
+            .appending(digest)
+            .appending(try ReaderFileStoragePaths.downloadFilename(for: url))
+        try Self.validateContainedPath(targetFilePath, within: drive.rootDirectory)
         let targetURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
         
         return Downloadable(
