@@ -274,7 +274,7 @@ public class ReaderFileManager: ObservableObject {
         localDriveFactory: @escaping LocalDriveFactory = {
             try await CloudDrive(
                 storage: .localDirectory(
-                    rootURL: Self.getDocumentsDirectory()
+                    rootURL: ReaderFileManager.getDocumentsDirectory()
                 )
             )
         }

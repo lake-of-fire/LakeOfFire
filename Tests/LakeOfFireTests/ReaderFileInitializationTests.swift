@@ -29,7 +29,7 @@ private actor ReaderFileInitializationGate {
     }
 }
 
-private enum ReaderFileInitializationTestError: Error {
+private enum ReaderFileInitializationTestError: Swift.Error {
     case unexpectedFactoryContinuation
     case localFactoryShouldNotRun
 }
