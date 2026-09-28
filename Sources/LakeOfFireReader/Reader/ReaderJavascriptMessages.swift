@@ -128,9 +128,17 @@ public struct ReaderModeUnavailableMessage {
     public let windowURL: URL?
 
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any] else { return nil }
-        pageURL = URL(string: body["pageURL"] as! String)
-        windowURL = URL(string: body["windowURL"] as! String)
+        self.init(body: message.body)
+    }
+
+    init?(body rawBody: Any) {
+        guard let body = rawBody as? [String: Any],
+              let pageURLString = body["pageURL"] as? String,
+              let windowURLString = body["windowURL"] as? String else {
+            return nil
+        }
+        pageURL = URL(string: pageURLString)
+        windowURL = URL(string: windowURLString)
     }
 }
 
@@ -147,21 +155,33 @@ public struct ReadabilityParsedMessage {
     public let outputHTML: String
 
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any] else { return nil }
-        pageURL = URL(string: body["pageURL"] as! String)
-        windowURL = URL(string: body["windowURL"] as! String)
+        self.init(body: message.body)
+    }
 
+    init?(body rawBody: Any) {
+        guard let body = rawBody as? [String: Any],
+              let pageURLString = body["pageURL"] as? String,
+              let windowURLString = body["windowURL"] as? String,
+              let title = body["title"] as? String,
+              let byline = body["byline"] as? String,
+              let content = body["content"] as? String,
+              let inputHTML = body["inputHTML"] as? String else {
+            return nil
+        }
+
+        pageURL = URL(string: pageURLString)
+        windowURL = URL(string: windowURLString)
         readabilityContainerSelector = body["readabilityContainerSelector"] as? String
         readabilityContainerRootSelector = NestedDOMRootSelector(
             layer0FrameSelector: body["layer0FrameSelector"] as? String,
             layer1ShadowRootSelector: body["layer1ShadowRootSelector"] as? String,
             layer2ShadowRootSelector: body["layer2ShadowRootSelector"] as? String)
 
-        title = body["title"] as! String
-        byline = body["byline"] as! String
+        self.title = title
+        self.byline = byline
         publishedTime = body["publishedTime"] as? String
-        content = body["content"] as! String
-        inputHTML = body["inputHTML"] as! String
+        self.content = content
+        self.inputHTML = inputHTML
         outputHTML = body["outputHTML"] as? String ?? ""
     }
 }
@@ -201,9 +221,17 @@ public struct VideoStatusMessage {
     public let captionsOptions: [CaptionsOption]
 
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any] else { return nil }
-        pageURL = URL(string: body["pageURL"] as! String)
-        windowURL = URL(string: body["windowURL"] as! String)
+        self.init(body: message.body)
+    }
+
+    init?(body rawBody: Any) {
+        guard let body = rawBody as? [String: Any],
+              let pageURLString = body["pageURL"] as? String,
+              let windowURLString = body["windowURL"] as? String else {
+            return nil
+        }
+        pageURL = URL(string: pageURLString)
+        windowURL = URL(string: windowURLString)
         providerVideoID = body["providerVideoID"] as? String
 
         if let captionsArray = body["captionsOptions"] as? [[String: Any]] {
@@ -221,13 +249,19 @@ public struct PageMetadataUpdatedMessage {
     public let url: URL?
 
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any],
+        self.init(body: message.body)
+    }
+
+    init?(body rawBody: Any) {
+        guard let body = rawBody as? [String: Any],
               let title = body["title"] as? String,
-              let author = body["author"] as? String
-        else { return nil }
+              let author = body["author"] as? String,
+              let urlString = body["url"] as? String else {
+            return nil
+        }
         self.title = title
         self.author = author
-        url = URL(string: body["url"] as! String)
+        url = URL(string: urlString)
     }
 }
 
