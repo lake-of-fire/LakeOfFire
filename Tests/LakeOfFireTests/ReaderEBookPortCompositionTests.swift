@@ -71,10 +71,10 @@ final class ReaderEBookPortCompositionTests: XCTestCase {
         let pathBudget = 16 * 1024 * 1024
         let fixedPaths = ["mimetype", "META-INF/container.xml", "OPS/book.opf", "OPS/resource.bin"]
         let available = pathBudget - fixedPaths.reduce(0) { $0 + $1.utf8.count }
-        // Distinct short directory names: no resource is ever written to disk
+        // Distinct ZIP directory names: no resource is ever written to disk
         // at these archive member paths. Exact normalized v1 path total is
         // 16 MiB; raw directory entry names exceed it by one slash each.
-        let count = 4096
+        let count = 1024
         var remaining = available
         var names: [(String, Bool)] = []
         for index in 0..<count {
@@ -128,7 +128,7 @@ final class ReaderEBookPortCompositionTests: XCTestCase {
             }
             for (path, isDirectory) in extraEntries {
                 try archive.addEntry(with: path, type: isDirectory ? .directory : .file,
-                                     uncompressedSize: 0, compressionMethod: .none) { _, _ in Data() }
+                                     uncompressedSize: Int64(0), compressionMethod: .none) { _, _ in Data() }
             }
         }
         try body(url)
