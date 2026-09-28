@@ -23,8 +23,8 @@ public struct ReaderContentEbookInitialRestoreResult: Sendable, Equatable {
               let requestedLocator = payload["requestedLocator"] as? String,
               let terminalStateValue = payload["terminalState"] as? String,
               let terminalState = TerminalState(rawValue: terminalStateValue),
-              let navigationOk = ReaderPositionPayloadValue.boolean(payload["navigationOk"]),
-              let restoreSatisfied = ReaderPositionPayloadValue.boolean(payload["restoreSatisfied"]) else {
+              let navigationOk = ReaderMessagePayloadValue.boolean(payload["navigationOk"]),
+              let restoreSatisfied = ReaderMessagePayloadValue.boolean(payload["restoreSatisfied"]) else {
             return nil
         }
         // A failed/no-target result cannot carry a success acknowledgement.
@@ -38,8 +38,8 @@ public struct ReaderContentEbookInitialRestoreResult: Sendable, Equatable {
         self.terminalState = terminalState
         self.navigationOk = navigationOk
         self.restoreSatisfied = restoreSatisfied
-        handledFractionalCompletion = ReaderPositionPayloadValue.fraction(payload["handledFractionalCompletion"])
-        currentFractionalCompletion = ReaderPositionPayloadValue.fraction(payload["currentFractionalCompletion"])
+        handledFractionalCompletion = ReaderMessagePayloadValue.fraction(payload["handledFractionalCompletion"])
+        currentFractionalCompletion = ReaderMessagePayloadValue.fraction(payload["currentFractionalCompletion"])
         handledCFI = payload["handledCFI"] as? String
         error = payload["error"] as? String
     }
@@ -74,7 +74,7 @@ public struct FractionalCompletionMessage: Sendable {
 
     public init?(body rawBody: Any?) {
         guard let body = rawBody as? [String: Any],
-              let completion = ReaderPositionPayloadValue.fraction(body["fractionalCompletion"]),
+              let completion = ReaderMessagePayloadValue.fraction(body["fractionalCompletion"]),
               let cfi = body["cfi"] as? String,
               cfi.utf8.count <= Self.maximumCFIUTF8Bytes,
               let reason = body["reason"] as? String,
@@ -82,7 +82,7 @@ public struct FractionalCompletionMessage: Sendable {
         fractionalCompletion = Float(completion)
         self.cfi = cfi
         self.reason = reason
-        hasVisibleJapaneseText = ReaderPositionPayloadValue.boolean(body["hasVisibleJapaneseText"])
+        hasVisibleJapaneseText = ReaderMessagePayloadValue.boolean(body["hasVisibleJapaneseText"])
         if let rawPageValue = body["mainDocumentURL"] {
             guard let rawPage = rawPageValue as? String,
                   rawPage.utf8.count <= Self.maximumURLUTF8Bytes,
@@ -90,20 +90,20 @@ public struct FractionalCompletionMessage: Sendable {
             mainDocumentURL = pageURL
         }
         if let rawDocumentStartedAt = body["documentStartedAtMs"] {
-            guard let timestamp = ReaderPositionPayloadValue.number(rawDocumentStartedAt) else { return nil }
+            guard let timestamp = ReaderMessagePayloadValue.number(rawDocumentStartedAt) else { return nil }
             documentStartedAtMilliseconds = timestamp
         }
-        sectionIndex = ReaderPositionPayloadValue.integer(body["sectionIndex"])
-        currentPageNumber = ReaderPositionPayloadValue.integer(body["currentPageNumber"])
-        totalPages = ReaderPositionPayloadValue.integer(body["totalPages"])
-        visibleSegmentCount = ReaderPositionPayloadValue.integer(body["visibleSegmentCount"])
-        observedSegmentCount = ReaderPositionPayloadValue.integer(body["observedSegmentCount"])
+        sectionIndex = ReaderMessagePayloadValue.integer(body["sectionIndex"])
+        currentPageNumber = ReaderMessagePayloadValue.integer(body["currentPageNumber"])
+        totalPages = ReaderMessagePayloadValue.integer(body["totalPages"])
+        visibleSegmentCount = ReaderMessagePayloadValue.integer(body["visibleSegmentCount"])
+        observedSegmentCount = ReaderMessagePayloadValue.integer(body["observedSegmentCount"])
     }
 }
 
 // JSON/WebKit numbers and booleans both arrive as NSNumber. Swift's `is Bool`
 // bridging also accepts numeric 0 and 1, so compare the CF runtime type instead.
-private enum ReaderPositionPayloadValue {
+enum ReaderMessagePayloadValue {
     static func boolean(_ value: Any?) -> Bool? {
         guard let number = value as? NSNumber,
               CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
