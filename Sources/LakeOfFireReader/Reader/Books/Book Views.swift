@@ -74,7 +74,8 @@ struct HorizontalBooks: View {
 
 struct BookListRow: View {
     let publication: Publication
-    var onSelected: ((Bool) -> Void)? = nil
+    let selectionOwner: BookLibraryViewModel
+    var onSelected: (@MainActor (Bool, BookLibraryViewModel.OpenSelection) async -> Void)? = nil
     var onNavigateToReader: (() -> Void)? = nil
 
     @State private var downloadable: Downloadable?
@@ -84,6 +85,7 @@ struct BookListRow: View {
             if let downloadable {
                 DownloadableBookListRow(
                     publication: publication,
+                    selectionOwner: selectionOwner,
                     onSelected: onSelected,
                     onNavigateToReader: onNavigateToReader,
                     downloadable: downloadable
@@ -135,7 +137,8 @@ fileprivate struct StaticBookListRow: View {
 @MainActor
 fileprivate struct DownloadableBookListRow: View {
     let publication: Publication
-    let onSelected: ((Bool) -> Void)?
+    let selectionOwner: BookLibraryViewModel
+    let onSelected: (@MainActor (Bool, BookLibraryViewModel.OpenSelection) async -> Void)?
     let onNavigateToReader: (() -> Void)?
     @ObservedObject var downloadable: Downloadable
 
@@ -196,22 +199,27 @@ fileprivate struct DownloadableBookListRow: View {
     }
 
     private func buttonPress() {
-        importOperation.start(operation: {
-            let wasAlreadyDownloaded = await downloadable.existsLocally()
-            guard !Task.isCancelled else { return nil }
-            if !wasAlreadyDownloaded {
-                await downloadController.ensureDownloaded([downloadable])
-            }
-            guard !Task.isCancelled else { return nil }
-            let result = await ReaderFileImportOperation.perform(.success(downloadable.localDestination)) { _ in
-                try await ReaderFileManager.shared.ensureImported(downloadable: downloadable)
-            }
-            return (result, wasAlreadyDownloaded)
-        }, publish: { result in
-            if receiveImportResult(result.0) {
-                onSelected?(result.1)
-            }
-        })
+        selectionOwner.startOpenSelection { selection in
+            await performButtonPress(selection: selection)
+        }
+    }
+
+    private func performButtonPress(
+        selection: BookLibraryViewModel.OpenSelection
+    ) async {
+        let wasAlreadyDownloaded = await downloadable.existsLocally()
+        guard selectionOwner.isCurrentOpenSelection(selection) else { return }
+        if !wasAlreadyDownloaded {
+            await downloadController.ensureDownloaded([downloadable])
+        }
+        guard selectionOwner.isCurrentOpenSelection(selection) else { return }
+        let result = await ReaderFileImportOperation.perform(.success(downloadable.localDestination)) { _ in
+            try await ReaderFileManager.shared.ensureImported(downloadable: downloadable)
+        }
+        guard selectionOwner.isCurrentOpenSelection(selection) else { return }
+        if receiveImportResult(result) {
+            await onSelected?(wasAlreadyDownloaded, selection)
+        }
     }
 
     private func refreshDownloadable() async {
@@ -235,9 +243,9 @@ fileprivate struct DownloadableBookListRow: View {
     }
 
     private func topTap() {
-        Task { @MainActor in
+        selectionOwner.startOpenSelection { selection in
             let alreadyDownloaded = await downloadable.existsLocally()
-            guard !Task.isCancelled else { return }
+            guard selectionOwner.isCurrentOpenSelection(selection) else { return }
             if alreadyDownloaded {
                 do {
                     try await BookLibraryViewModel.openDownloaded(
@@ -246,9 +254,13 @@ fileprivate struct DownloadableBookListRow: View {
                         readerContent: readerContent,
                         navigator: navigator,
                         readerModeViewModel: readerModeViewModel,
+                        shouldOpen: {
+                            selectionOwner.isCurrentOpenSelection(selection)
+                        },
                         onNavigateToReader: onNavigateToReader
                     )
                 } catch {
+                    guard selectionOwner.isCurrentOpenSelection(selection) else { return }
                     let nsError = error as NSError
                     guard !(error is CancellationError),
                           !(nsError.domain == NSCocoaErrorDomain && nsError.code == CocoaError.userCancelled.rawValue),
@@ -258,7 +270,7 @@ fileprivate struct DownloadableBookListRow: View {
                     isErrorPresented = true
                 }
             } else {
-                buttonPress()
+                await performButtonPress(selection: selection)
             }
         }
     }
