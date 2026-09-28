@@ -322,19 +322,34 @@ public class BookLibraryViewModel: ObservableObject {
     @Published public var onNavigateToReader: (() -> Void)?
     private var cancellables = Set<AnyCancellable>()
 
+    var publicationFetcher: @MainActor (URL) async -> ([Publication], String?) = {
+        await BookLibraryViewModel.fetchPublications(from: $0)
+    }
+    private let editorsPicksRefresh = BookCatalogRefresh()
+
     func fetchAllData() async {
-        fetchEditorsPicks()
+        let fetcher = publicationFetcher
+        let url = opdsURL
+        await editorsPicksRefresh.load(
+            fetch: { await fetcher(url) },
+            publish: { [weak self] in self?.publishEditorsPicks($0, error: $1) }
+        )
     }
 
-    func fetchEditorsPicks() {
-        Task {
-            let (publications, errorMessage) = await Self.fetchPublications(from: opdsURL)
-            await MainActor.run {
-                self.editorsPicks = publications
-                self.errorMessage = errorMessage.map { _ in
-                    "\(mediaTypeTitle) editor's picks are unavailable. Pull to refresh or try again later."
-                }
-            }
+    @discardableResult
+    func fetchEditorsPicks() -> Task<Void, Never>? {
+        let fetcher = publicationFetcher
+        let url = opdsURL
+        return editorsPicksRefresh.start(
+            fetch: { await fetcher(url) },
+            publish: { [weak self] in self?.publishEditorsPicks($0, error: $1) }
+        )
+    }
+
+    private func publishEditorsPicks(_ publications: [Publication], error: String?) {
+        editorsPicks = publications
+        errorMessage = error.map { _ in
+            "\(mediaTypeTitle) editor's picks are unavailable. Pull to refresh or try again later."
         }
     }
 
@@ -372,45 +387,10 @@ public class BookLibraryViewModel: ObservableObject {
     }
 
     static func fetchPublications(from url: URL) async -> ([Publication], String?) {
-        await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: url) { parseData, error in
-                if let error {
-                    continuation.resume(returning: ([], "Failed to fetch data: \(error.localizedDescription)"))
-                    return
-                }
-
-                if let publications = parseData?.feed?.publications, !publications.isEmpty {
-                    let mapped = publications.map { publication -> Publication in
-                        let coverLink = publication.images.first(withRel: .cover) ?? publication.images.first(withRel: .opdsImage) ?? publication.images.first(withRel: .opdsImageThumbnail)
-                        let acquisitionLink = publication.links.first(withRel: .opdsAcquisition)
-                        let summary = publication.metadata.description ?? publication.metadata.subtitle
-                        return Publication(
-                            title: publication.metadata.title,
-                            author: publication.metadata.authors.map(\.name).joined(separator: ", "),
-                            publicationDate: publication.metadata.published,
-                            coverURL: coverLink?.url(relativeTo: url.domainURL),
-                            downloadURL: acquisitionLink?.url(relativeTo: url.domainURL),
-                            summary: summary
-                        )
-                    }
-                    continuation.resume(returning: (mapped, nil))
-                    return
-                }
-
-                if let navigationLinks = parseData?.feed?.navigation,
-                   let allBooksLink = navigationLinks.first(where: { $0.title?.hasPrefix("All Books") == true }) {
-                    guard let allBooksURL = allBooksLink.url(relativeTo: url.domainURL) ?? URL(string: allBooksLink.href) else {
-                        continuation.resume(returning: ([], "Invalid 'All Books' URL"))
-                        return
-                    }
-                    Task {
-                        continuation.resume(returning: await Self.fetchPublications(from: allBooksURL))
-                    }
-                    return
-                }
-
-                continuation.resume(returning: ([], "No publications or navigable links found"))
-            }
+        do {
+            return (try await BookCatalogLoading.publications(from: url), nil)
+        } catch {
+            return ([], "Failed to fetch data: \(error.localizedDescription)")
         }
     }
 
@@ -481,15 +461,4 @@ public class BookLibraryViewModel: ObservableObject {
         )
         onNavigateToReader?()
     }
-}
-
-public struct Publication: Identifiable, Hashable, Sendable {
-    public let id = UUID()
-    public var title: String
-    public var author: String?
-    public var publicationDate: Date?
-    public var coverURL: URL?
-    public var downloadURL: URL?
-    public var summary: String?
-    public var hasContentAudio = false
 }

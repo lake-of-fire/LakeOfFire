@@ -1,0 +1,72 @@
+name: Port OPDS qualification
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Sources/LakeOfFireOPDS/**'
+      - 'Sources/LakeOfFireReader/Reader/Books/**'
+      - 'Tests/LakeOfFireOPDSTests/**'
+      - 'Tests/LakeOfFireTests/BookCatalog*'
+      - 'Tests/Portable/run_opds_url_port.py'
+      - 'Tests/Portable/run_book_catalog_port.py'
+      - '.github/workflows/port-opds.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: opds-port-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  opds:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.2.1'
+      - name: Retain exact public port inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/current evidence/hotfix-source evidence/hotfix-consumers
+          git rev-parse HEAD > evidence/tested-commit.txt
+          git ls-tree -r HEAD > evidence/source-manifest.txt
+          swift --version > evidence/toolchain.txt
+          git archive HEAD Sources/LakeOfFireOPDS Sources/LakeOfFireReader/Reader/Books Tests/LakeOfFireOPDSTests Tests/LakeOfFireTests/BookCatalogLoadingTests.swift Tests/LakeOfFireTests/BookCatalogRefreshTests.swift Tests/Portable Package.swift | tar -x -C evidence/current
+          git show HEAD:.github/workflows/port-opds.yml > evidence/workflow.yml
+          # Immutable source of the pending hotfix port, not a dependency pin.
+          git fetch --depth=1 origin b150e9c71e13f2ae64a729443918a82133fbae74
+          git ls-tree -r b150e9c71e13f2ae64a729443918a82133fbae74 > evidence/hotfix-source-manifest.txt
+          git archive b150e9c71e13f2ae64a729443918a82133fbae74 Sources/LakeOfFireOPDS Tests/LakeOfFireOPDSTests Tests/Portable | tar -x -C evidence/hotfix-source
+          git fetch --depth=1 origin 780c3cfaf8a3422dbaab3e0a87ed84369b126248
+          git ls-tree -r 780c3cfaf8a3422dbaab3e0a87ed84369b126248 > evidence/hotfix-consumer-manifest.txt
+          git archive 780c3cfaf8a3422dbaab3e0a87ed84369b126248 Sources/LakeOfFireReader/Reader/Books | tar -x -C evidence/hotfix-consumers
+      - name: Test destination Swift 6 language mode
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 Tests/Portable/run_opds_url_port.py 2>&1 | tee evidence/test.log
+      - name: Test actual catalog consumers
+        shell: bash
+        run: |
+          set -o pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            xcrun --sdk iphonesimulator --show-sdk-version > evidence/ios-sdk.txt
+            python3 Tests/Portable/run_book_catalog_port.py --typecheck-ios 2>&1 | tee evidence/catalog.log
+          else
+            python3 Tests/Portable/run_book_catalog_port.py 2>&1 | tee evidence/catalog.log
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: opds-port-${{ matrix.os }}-${{ github.run_attempt }}
+          path: evidence
+          retention-days: 7
+          if-no-files-found: error

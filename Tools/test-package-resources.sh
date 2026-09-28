@@ -32,6 +32,9 @@ for source in ReaderPackageResourceLimits ReaderFileOperationErrors ReaderFileIm
   cp "$root/Sources/LakeOfFireContent/Files/$source.swift" "$work/Sources/LakeOfFireContent/"
 done
 cp "$root/Sources/LakeOfFireReader/Reader/Books/EPubParser.swift" "$work/Sources/LakeOfFireReader/"
+for source in BookDownloadOperation BookDownloadImportState; do
+  cp "$root/Sources/LakeOfFireReader/Reader/Books/$source.swift" "$work/Sources/LakeOfFireReader/"
+done
 # Select the 22 existing I/O cases unchanged; leave the two app-cache cases in
 # their original full-host suite instead of compiling them against a test double.
 python3 - "$root" "$work" <<'PYEXTRACT'
@@ -47,7 +50,7 @@ excluded, after = tail.split(end)
 assert excluded.count("    func test") == 1
 (work / "Tests/PackageResourceTests/ReaderPackageEntrySourceTests.swift").write_text(before + end + after)
 PYEXTRACT
-for suite in ReaderPackageResourceBudget ReaderPackageResourceLimit EPubMetadataResourceLimit ReaderFileImportPort; do
+for suite in ReaderPackageResourceBudget ReaderPackageResourceLimit EPubMetadataResourceLimit ReaderFileImportPort BookDownloadOperation BookDownloadImportPort; do
   cp "$root/Tests/LakeOfFireTests/${suite}Tests.swift" "$work/Tests/PackageResourceTests/"
 done
 swift test --package-path "$work" "$@"
