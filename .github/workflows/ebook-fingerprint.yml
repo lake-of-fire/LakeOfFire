@@ -6,6 +6,8 @@ on:
       - 'Sources/LakeOfFireContent/Files/ReaderFileManager.swift'
       - 'Sources/LakeOfFireContent/Files/Archive+Data.swift'
       - 'Sources/LakeOfFireReader/Reader/Books/Ebook*.swift'
+      - 'Sources/LakeOfFireReader/Reader/Books/ReaderEBook*.swift'
+      - 'Sources/LakeOfFireReader/Reader/ReaderMessageHandlersViewModifier.swift'
       - 'Sources/LakeOfFireReader/Reader/ReaderWebView.swift'
       - 'Sources/LakeOfFireReader/Resources/foliate-js/**'
       - 'Tests/LakeOfFireTests/ReaderEBook*Tests.swift'
@@ -16,6 +18,7 @@ on:
       - 'Tools/EBookNamespaceTests/**'
       - 'Tools/test-ebook-fingerprint.sh'
       - 'Tools/test-ebook-entry-path.sh'
+      - 'Tools/test-ebook-initialization.sh'
       - 'Tools/test-ebook-zip-directory.sh'
       - 'Tools/test-ebook-namespace.sh'
       - '.github/workflows/ebook-fingerprint.yml'
@@ -60,6 +63,8 @@ jobs:
           EBOOK_FINGERPRINT_EVIDENCE_DIRECTORY: ${{ runner.temp }}/epub-fingerprint-evidence
         run: |
           set -euo pipefail
+          bash Tools/test-ebook-initialization.sh -c "$BUILD_CONFIGURATION" 2>&1 \
+            | tee "$RUNNER_TEMP/epub-fingerprint-evidence/initialization-test.log"
           bash Tools/test-ebook-entry-path.sh -c "$BUILD_CONFIGURATION" 2>&1 \
             | tee "$RUNNER_TEMP/epub-fingerprint-evidence/entry-path-test.log"
           bash Tools/test-ebook-fingerprint.sh -c "$BUILD_CONFIGURATION" 2>&1 \

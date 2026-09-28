@@ -356,7 +356,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         || logMessage.contains("\"loadEBook:delayed-state:1s\"")
                         || logMessage.contains("\"loadEBook:delayed-state:3s\"")
                         || logMessage.contains("\"loadEBook:delayed-state:8s\"") {
-                        registerEbookViewerFrame(message.frameInfo)
+                        if message.isMainFrame,
+                           let binding = message.javaScriptBindingToken,
+                           scriptCaller.currentJavaScriptBindingToken == binding {
+                            registerEbookViewerFrame(message.frameInfo)
+                        }
                     }
                     if logMessage.hasPrefix("# EBOOKFIX1")
                         || logMessage.hasPrefix("# BOOKBUG1")
@@ -961,75 +965,48 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
             }),
             ("ebookViewerInitialized", { @MainActor [weak self] message in
-                guard let self else { return }
-                registerEbookViewerFrame(message.frameInfo)
+                guard let self, message.isMainFrame else { return }
+                // Use the framework's immutable receipt, never the current
+                // document sampled after acknowledgment or package discovery.
+                let receiptBinding = message.javaScriptBindingToken
                 let stateURL = readerViewModel.state.pageURL
                 let url = stateURL.isEBookURL ? stateURL : readerContent.pageURL
-                if let scheme = url.scheme,
-                   (scheme == "ebook" || scheme == "ebook-url"),
-                   url.absoluteString.hasPrefix("\(scheme)://"),
-                   url.isEBookURL,
-                   let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))") {
-                    debugPrint(
-                        "# EPUB  ebookViewerInitialized",
-                        "page=\(url.absoluteString)",
-                        "frame=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")"
-                    )
-                    _ = try? await scriptCaller.evaluateJavaScript(
-                        "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
-                        in: message.frameInfo
-                    )
-                    let openingBindingToken =
-                        scriptCaller.currentJavaScriptBindingToken
-                    let openingPreparer = ebookOpeningPreparer
-                    // A configured identity/snapshot preparer is fail-closed:
-                    // never fall back to live pathname bytes or URL-keyed
-                    // progress when the exact native document has no binding.
-                    if openingPreparer != nil,
-                       openingBindingToken == nil {
-                        return
-                    }
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        do {
-                            let preparedOpen: ReaderEBookPreparedOpen?
-                            if let openingPreparer,
-                               let openingBindingToken {
-                                preparedOpen = try await openingPreparer(
-                                    loaderURL,
-                                    openingBindingToken
-                                )
-                                guard scriptCaller
-                                    .currentJavaScriptBindingToken
-                                        == openingBindingToken else {
-                                    return
+                guard url.isEBookURL,
+                      let scheme = url.scheme,
+                      scheme == "ebook" || scheme == "ebook-url",
+                      let receiptURL = message.requestURL ?? message.mainDocumentURL,
+                      urlsMatchIgnoringFragment(
+                        ReaderContentLoader.getContentURL(fromLoaderURL: receiptURL) ?? receiptURL,
+                        ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+                      ) else { return }
+                let loaderURL = url
+                let openingPreparer = ebookOpeningPreparer
+                let caller = scriptCaller
+                do {
+                    try await ReaderEBookInitialization.perform(
+                        receiptBinding: receiptBinding,
+                        currentBinding: { scriptCaller.currentJavaScriptBindingToken },
+                        registerFrame: { _ in
+                            registerEbookViewerFrame(message.frameInfo)
+                        },
+                        acknowledge: { bindingToken in
+                            _ = try await caller.evaluateJavaScript(
+                                "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
+                                in: message.frameInfo,
+                                requiring: bindingToken
+                            )
+                        },
+                        prepare: { bindingToken -> ReaderEBookPreparedOpen? in
+                            try await openingPreparer?(loaderURL, bindingToken)
+                        },
+                        restore: { bindingToken -> ReaderContentEbookInitialRestore? in
+                            try await ReaderEBookOpeningDocumentContext
+                                .$javaScriptBindingToken.withValue(bindingToken) {
+                                    try await ReaderContentReadingProgressLoader
+                                        .ebookInitialRestoreLoader?(url)
                                 }
-                            } else {
-                                preparedOpen = nil
-                            }
-                            let initialRestore: ReaderContentEbookInitialRestore?
-                            if let openingBindingToken {
-                                initialRestore = try await
-                                    ReaderEBookOpeningDocumentContext
-                                    .$javaScriptBindingToken.withValue(
-                                        openingBindingToken
-                                    ) {
-                                        try await
-                                            ReaderContentReadingProgressLoader
-                                            .ebookInitialRestoreLoader?(url)
-                                    }
-                            } else {
-                                initialRestore = try await
-                                    ReaderContentReadingProgressLoader
-                                    .ebookInitialRestoreLoader?(url)
-                            }
-                            if let openingBindingToken {
-                                guard scriptCaller
-                                    .currentJavaScriptBindingToken
-                                        == openingBindingToken else {
-                                    return
-                                }
-                            }
+                        },
+                        publish: { bindingToken, preparedOpen, initialRestore in
                             let defaults = UserDefaults.standard
                             let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16
                             let rawWritingDirection = defaults.string(
@@ -1063,7 +1040,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             )
                             loadArguments["initialRestore"] =
                                 initialRestoreRequest?.javaScriptArgument ?? NSNull()
-                            try await scriptCaller.evaluateJavaScript(
+                            try await caller.evaluateJavaScript(
                                 """
                                 window.loadEBook({
                                     url,
@@ -1074,14 +1051,18 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 });
                                 """,
                                 arguments: loadArguments,
-                                in: message.frameInfo
-                            )
-                        } catch {
-                            Logger.shared.logger.error(
-                                "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
+                                in: message.frameInfo,
+                                requiring: bindingToken
                             )
                         }
-                    }
+                    )
+                } catch is CancellationError {
+                    // Navigation, owner revocation and parent cancellation are
+                    // expected terminal outcomes. Do not launch detached retry.
+                } catch {
+                    Logger.shared.logger.error(
+                        "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
+                    )
                 }
             }),
             ("updateReadingProgress", { @MainActor [weak self] message in
