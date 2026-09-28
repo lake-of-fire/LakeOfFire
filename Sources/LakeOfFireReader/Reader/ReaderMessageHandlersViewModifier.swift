@@ -8,37 +8,6 @@ import LakeKit
 import LakeOfFireContent
 import LakeOfFireCore
 
-private struct ReaderEBookInitialRestoreBridgeRequest {
-    let requestID = UUID().uuidString
-    let cfi: String
-    let fractionalCompletion: Double?
-    let requestedLocator: String
-
-    init?(restore: ReaderContentEbookInitialRestore?) {
-        guard let restore else { return nil }
-        cfi = restore.cfi
-        fractionalCompletion = restore.fractionalCompletion.map(Double.init)
-        let hasCFI = !cfi.isEmpty
-        guard ReaderEBookInitialRestorePolicy.shouldRequestRestore(
-            cfi: cfi,
-            fractionalCompletion: restore.fractionalCompletion
-        ) else { return nil }
-        requestedLocator = hasCFI ? "cfi" : "fraction"
-    }
-
-    var javaScriptArgument: [String: any Sendable] {
-        var argument: [String: any Sendable] = [
-            "requestID": requestID,
-            "requestedLocator": requestedLocator,
-            "cfi": cfi,
-        ]
-        if let fractionalCompletion {
-            argument["fractionalCompletion"] = fractionalCompletion
-        }
-        return argument
-    }
-}
-
 public typealias ReaderShowOriginalWillBeginHandler = @MainActor @Sendable (_ contentURL: URL, _ pageURL: URL) async -> Void
 public struct ReaderNavigationVisibilityChange: Sendable {
     public let shouldHide: Bool
@@ -999,14 +968,16 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         prepare: { bindingToken -> ReaderEBookPreparedOpen? in
                             try await openingPreparer?(loaderURL, bindingToken)
                         },
-                        restore: { bindingToken -> ReaderContentEbookInitialRestore? in
+                        restore: { bindingToken -> ReaderEBookInitialRestoreBridgeRequest? in
                             try await ReaderEBookOpeningDocumentContext
                                 .$javaScriptBindingToken.withValue(bindingToken) {
-                                    try await ReaderContentReadingProgressLoader
-                                        .ebookInitialRestoreLoader?(url)
+                                    try await ReaderEBookInitialRestoreBridgeRequest.prepare {
+                                        try await ReaderContentReadingProgressLoader
+                                            .ebookInitialRestoreLoader?(url)
+                                    }
                                 }
                         },
-                        publish: { bindingToken, preparedOpen, initialRestore in
+                        publish: { bindingToken, preparedOpen, initialRestoreRequest in
                             let defaults = UserDefaults.standard
                             let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16
                             let rawWritingDirection = defaults.string(
@@ -1035,9 +1006,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 "packageSessionID":
                                     preparedOpen?.packageSessionID ?? NSNull(),
                             ]
-                            let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(
-                                restore: initialRestore
-                            )
                             loadArguments["initialRestore"] =
                                 initialRestoreRequest?.javaScriptArgument ?? NSNull()
                             try await caller.evaluateJavaScript(
