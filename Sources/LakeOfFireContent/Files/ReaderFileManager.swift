@@ -684,7 +684,7 @@ public class ReaderFileManager: ObservableObject {
         let scope = realmConfiguration.inMemoryIdentifier.map { "memory:\($0)" }
             ?? "file:\(realmConfiguration.fileURL?.standardizedFileURL.absoluteString ?? "")"
         let queue = resolvedInventoryRefreshQueue()
-        queue.enqueue(scope: scope, force: force) { @MainActor [weak self] in
+        let completion = queue.enqueue(scope: scope, force: force) { @MainActor [weak self] in
             guard let self else { return }
             do {
                 guard localDrive != nil || cloudDrive != nil else { return }
@@ -764,7 +764,7 @@ public class ReaderFileManager: ObservableObject {
                 }
             }
         }
-        await queue.waitForIdle()
+        await completion.wait()
     }
     
     static let additionalFilePackageSuffixesToAvoidDescendingInto = [
@@ -1405,7 +1405,7 @@ public class ReaderFileManager: ObservableObject {
         }
 
         guard try await Self.canCoordinateRead(rootURL: activeRootURL) else {
-            return ReaderBackingAvailability(status: .cloudOnly, localURL: nil, requestedDownload: false)
+            return ReaderBackingAvailability(status: .cloudOnly, localURL: activeRootURL, requestedDownload: false)
         }
 
         return ReaderBackingAvailability(
