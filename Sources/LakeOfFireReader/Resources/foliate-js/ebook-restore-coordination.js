@@ -34,16 +34,20 @@ export const parseSyntheticRestoreLocator = value => {
 export const restoreLocatorKind = ({ cfi, fractionalCompletion }) => {
     if (parseSyntheticRestoreLocator(cfi)) return 'synthetic'
     if (typeof cfi === 'string' && cfi.length > 0) return 'cfi'
-    return Number.isFinite(fractionalCompletion) && fractionalCompletion > 0 ? 'fraction' : 'none'
+    return Number.isFinite(fractionalCompletion) && fractionalCompletion >= 0
+        && fractionalCompletion <= 1 ? 'fraction' : 'none'
 }
 
 export const normalizeInitialRestoreRequest = value => {
-    if (!value || typeof value !== 'object') return null
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+    if (value.cfi != null && typeof value.cfi !== 'string') return null
+    if (value.fractionalCompletion != null && !(Number.isFinite(value.fractionalCompletion)
+        && value.fractionalCompletion >= 0 && value.fractionalCompletion <= 1)) return null
 
     const requestID = typeof value.requestID === 'string' ? value.requestID.trim() : ''
     const cfi = typeof value.cfi === 'string' ? value.cfi : ''
     const fractionalCompletion = Number.isFinite(value.fractionalCompletion)
-        && value.fractionalCompletion > 0
+        && value.fractionalCompletion >= 0
         && value.fractionalCompletion <= 1
         ? value.fractionalCompletion
         : null

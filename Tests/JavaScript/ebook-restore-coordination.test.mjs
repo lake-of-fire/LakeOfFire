@@ -121,7 +121,7 @@ test('restore routing gives explicit locators priority over fractional completio
     assert.equal(restoreLocatorKind({ cfi: 'mnb-loc-v1:7:2:5', fractionalCompletion: 0.7 }), 'synthetic')
     assert.equal(restoreLocatorKind({ cfi: 'epubcfi(/6/14!)', fractionalCompletion: 0.7 }), 'cfi')
     assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0.7 }), 'fraction')
-    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0 }), 'none')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0 }), 'fraction')
 })
 
 test('scheduled fractional navigation waits for restore settling until user input', () => {

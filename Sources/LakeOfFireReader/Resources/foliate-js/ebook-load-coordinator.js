@@ -1,4 +1,5 @@
 import { EbookLoadResources } from './ebook-load-resources.js'
+import { normalizeEbookPackageSessionID } from './ebook-native-source-request.js'
 import {
     makeInitialRestoreTerminalResult,
     normalizeInitialRestoreRequest,
@@ -11,6 +12,17 @@ export class EbookLoadSupersededError extends Error {
     constructor() {
         super('Ebook load or restore was superseded')
         this.name = 'EbookLoadSupersededError'
+    }
+}
+
+// Keep navigation failure distinct from a navigation that completed at the
+// wrong position. The outer loader can publish that same measured snapshot
+// without falsely reporting that navigation itself threw.
+export class EbookRestoreValidationError extends Error {
+    constructor(snapshot) {
+        super('Saved restore position was not reached')
+        this.name = 'EbookRestoreValidationError'
+        this.snapshot = snapshot
     }
 }
 
@@ -158,9 +170,10 @@ export const createEbookLoadHandlers = ({
         if (!reader || reader.isClosed === true || !renderer) throw new EbookLoadSupersededError()
         currentRestore?.controller.abort()
         const restore = { reader, view, renderer, controller: new AbortController() }
-        restore.isCurrent = () => currentRestore === restore && host.reader === reader
-            && reader.isClosed !== true && reader.view === view && view.renderer === renderer
+        restore.ownsFlags = () => currentRestore === restore && host.reader === reader
             && host.manabiLoadEBookToken === loadToken
+        restore.isCurrent = () => restore.ownsFlags()
+            && reader.isClosed !== true && reader.view === view && view.renderer === renderer
         currentRestore = restore
         return restore
     }
@@ -206,9 +219,10 @@ export const createEbookLoadHandlers = ({
         effect(ensureRestorePositionSaveUserInputTracking)
         host.__manabiRequestedRestoreFraction = validFraction ? fractionalCompletion : null
         host.__manabiRestoreInProgress = true
-        // Retain main's existing no-target/zero opening behavior; the separately
-        // reviewed saved-zero route is not silently changed by a lifetime port.
-        const hasFraction = validFraction && fractionalCompletion > 0
+        // A present zero is a saved location, not missing position information.
+        // The native caller still owns retrieving/admitting its saved locator.
+        const hasFraction = validFraction && (fractionalCompletion > 0 || cfi.length === 0)
+        reader.hasLoadedLastPosition = false
         let handledCFI = null
         try {
             if (parseSyntheticRestoreLocator(cfi)) {
@@ -243,16 +257,30 @@ export const createEbookLoadHandlers = ({
                     () => view.goToFraction(fractionalCompletion))
                 await waitForFrames()
             } else {
-                try { await waitFor(restore, () => renderer.next(), 1500) }
-                catch (error) {
+                try {
+                    const result = await waitFor(restore,
+                        () => runRequiredRestoreNavigation(() => renderer.next()), 1500)
+                    if (!result.ok) throw result.error
+                } catch (error) {
                     check() // Cancellation/replacement is never fallback authority.
-                    await waitFor(restore, () => renderer.nextSection())
+                    await navigate({ source: 'restore.default', target: 'renderer.nextSection' },
+                        () => renderer.nextSection())
                 }
                 await waitForFrames()
             }
+            const doneState = captureState()
+            const snapshot = { handledFractionalCompletion: doneState.currentFraction,
+                currentFractionalCompletion: doneState.currentFraction, handledCFI }
+            const target = cfi.length > 0 || hasFraction
+                ? { cfi, fractionalCompletion, requestedLocator: cfi.length > 0 ? 'cfi' : 'fraction' }
+                : null
+            if (target && !makeInitialRestoreTerminalResult({ request: target, snapshot }).restoreSatisfied) {
+                throw new EbookRestoreValidationError(snapshot)
+            }
+            // Completion enables relocation persistence in Reader. It must
+            // follow target validation, not merely the absence of an exception.
             effect(() => reader.completeLastPositionLoad())
             effect(() => reader.refreshNativeLookupHitTargets?.('load-last-position-done'))
-            const doneState = captureState()
             effect(() => reader.maybeFlashInitialForwardSideNavChevron?.(doneState))
             effect(() => markReaderRenderReady('loadLastPosition.done'))
             effect(() => postLandscapeInsetRestoreProbe('done', doneState, {
@@ -260,8 +288,7 @@ export const createEbookLoadHandlers = ({
                 requestedFraction: validFraction ? Number(fractionalCompletion.toFixed(6)) : null,
             }))
             effect(() => scheduleDeferredCacheWarmerOpen('load-last-position-done', 2200))
-            return { handledFractionalCompletion: doneState.currentFraction,
-                currentFractionalCompletion: doneState.currentFraction, handledCFI }
+            return snapshot
         } catch (error) {
             if (restore.isCurrent()) {
                 reader.hasLoadedLastPosition = false
@@ -269,7 +296,9 @@ export const createEbookLoadHandlers = ({
             }
             throw error
         } finally {
-            if (restore.isCurrent()) clearRestoreFlags()
+            // Renderer replacement revokes navigation, not this attempt's
+            // cleanup ownership. Never clear flags belonging to a newer restore.
+            if (restore.ownsFlags()) clearRestoreFlags()
         }
     }
 
@@ -279,7 +308,12 @@ export const createEbookLoadHandlers = ({
             && !(Number.isFinite(fractionalCompletion) && fractionalCompletion >= 0 && fractionalCompletion <= 1))) {
             return Promise.reject(new TypeError('Invalid saved ebook position'))
         }
-        return performRestore(beginRestore(), { cfi, fractionalCompletion })
+        const restore = beginRestore()
+        const load = currentLoad
+        return performRestore(restore, { cfi, fractionalCompletion }).catch(error => {
+            if (load && liveLoad(load) && restore.ownsFlags()) finishForeground(load)
+            throw error
+        })
     }
 
     const runLoad = async load => {
@@ -309,23 +343,31 @@ export const createEbookLoadHandlers = ({
             if (!reader.view?.renderer) throw new Error('reader-open-missing-renderer')
             host.manabiPendingInitialRestoreRequest = null
             const restore = beginRestore()
+            load.restore = restore
             let snapshot = null
             let error = null
-            try { snapshot = await performRestore(restore, load.request ?? { cfi: '', fractionalCompletion: 0 }) }
-            catch (failure) { error = failure }
+            try { snapshot = await performRestore(restore, load.request ?? {}) }
+            catch (failure) {
+                if (failure instanceof EbookRestoreValidationError) snapshot = failure.snapshot
+                else error = failure
+            }
             // A separate restore on this same reader supersedes the receipt too.
             assertCurrent(load)
             assertCurrent(restore)
             const result = makeInitialRestoreTerminalResult({ request: load.request, snapshot, error })
             host.manabiInitialRestoreResult = result
-            host.manabiLoadEBookReady = true
-            host.manabiLoadEBookLastState = 'reader-open-resolved'
+            const succeeded = result.navigationOk && result.terminalState !== 'failed'
+            host.manabiLoadEBookReady = succeeded
+            host.manabiLoadEBookLastState = succeeded ? 'reader-open-resolved' : 'reader-restore-failed'
             const probe = reader.collectLayoutGapProbe?.('ebookViewerLoaded', {
                 bookDir: reader.bookDir || null, isRTL: !!reader.isRTL,
             }) ?? null
             assertCurrent(load)
             assertCurrent(restore)
             host.webkit.messageHandlers.ebookViewerLoaded.postMessage({ probe, initialRestoreResult: result })
+            // Keep the failed reader visible for host error/retry handling, but
+            // do not hold foreground admission or deduplicate a later retry.
+            if (!succeeded) finishForeground(load)
         } catch (error) {
             if (!liveLoad(load) || error instanceof EbookLoadSupersededError) return
             host.manabiLoadEBookLastState = `open-error:${error?.message || String(error)}`
@@ -340,15 +382,33 @@ export const createEbookLoadHandlers = ({
         }
     }
 
-    const loadEBook = ({ url, layoutMode, initialRestore, readerPresentationState } = {}) => {
+    const loadEBook = ({ url, packageSessionID = null, layoutMode, initialRestore, readerPresentationState } = {}) => {
+        const request = normalizeInitialRestoreRequest(initialRestore)
+        if (initialRestore != null && !request) {
+            return Promise.reject(new TypeError('Invalid initial ebook restore request'))
+        }
+        // Reject malformed explicit targets before changing presentation or
+        // invalidating a valid reader/restore already in flight.
+        const requestedURL = typeof url === 'string' ? url : ''
+        let sessionID
+        try { sessionID = normalizeEbookPackageSessionID(packageSessionID) }
+        catch (error) { return Promise.reject(error) }
         const invocation = ++loadInvocation
+        let nativeSource
+        try {
+            nativeSource = requestedURL.startsWith('ebook://') ? makeNativeSource(requestedURL, sessionID) : null
+            if (sessionID != null && nativeSource?.packageSessionID !== sessionID) {
+                throw new TypeError('Native EPUB package session was not preserved by the source factory')
+            }
+        } catch (error) { return Promise.reject(error) }
+        if (invocation !== loadInvocation) return host.manabiLoadEBookPromise
         installReaderPresentationState(host, host.document, readerPresentationState, 'loadEBook')
         if (invocation !== loadInvocation) return host.manabiLoadEBookPromise
-        const requestedURL = typeof url === 'string' ? url : ''
-        const request = normalizeInitialRestoreRequest(initialRestore)
         const previous = currentLoad
         if (previous && liveLoad(previous) && requestedURL.length > 0 && previous.url === requestedURL
-            && previous.layoutMode === layoutMode && sameRestore(previous.request, request)) {
+            && previous.packageSessionID === sessionID
+            && previous.layoutMode === layoutMode && sameRestore(previous.request, request)
+            && (previous.restore == null || previous.restore === currentRestore)) {
             const age = Date.now() - host.manabiLoadEBookStartedAt
             if (host.manabiLoadEBookInFlight && (previous.reader.view?.renderer || age < 2500)) {
                 host.manabiLoadEBookLastState = 'duplicate-inflight'
@@ -371,12 +431,13 @@ export const createEbookLoadHandlers = ({
             oldWarmer?.destroy?.()
         }
         if (invocation !== loadInvocation) return host.manabiLoadEBookPromise
-        const load = { url: requestedURL, layoutMode, request, retired: false,
+        const load = { url: requestedURL, packageSessionID: sessionID, layoutMode, request, retired: false,
             token: (host.manabiLoadEBookToken ?? 0) + 1, controller: new AbortController() }
         currentLoad = load
         load.isCurrent = () => liveLoad(load)
         host.manabiLoadEBookToken = load.token
         host.manabiLoadEBookURL = requestedURL
+        host.manabiLoadEBookPackageSessionID = sessionID
         host.manabiLoadEBookInFlight = true
         host.manabiLoadEBookStarted = true
         host.manabiLoadEBookStartedAt = Date.now()
@@ -405,7 +466,7 @@ export const createEbookLoadHandlers = ({
             }
             host.reader = load.reader
             load.reader.onLoadClosed = () => retireLoad(load)
-            load.nativeSource = requestedURL.startsWith('ebook://') ? makeNativeSource(requestedURL) : null
+            load.nativeSource = nativeSource
             assertCurrent(load)
             load.sourcePath = requestedURL ? new URL(requestedURL, host.location.href).pathname : 'book.epub'
             load.resources = new EbookLoadResources({ nativeSource: load.nativeSource, sourcePath: load.sourcePath })

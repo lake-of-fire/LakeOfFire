@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { makeNativeEbookSource } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-native-source-request.js'
 import { createEbookLoadHandlers, createNavigationIntentRunner, EbookLoadSupersededError } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-load-coordinator.js'
 
 const deferred = () => {
@@ -80,7 +81,7 @@ const fixture = (specs = [], hooks = {}) => {
         destroy() { this.closed = true; this.resources.close() }
     }
     const handlers = createEbookLoadHandlers({ host, Reader, CacheWarmer,
-        makeNativeSource: url => ({ kind: 'native', url }),
+        makeNativeSource: hooks.makeNativeSource ?? (url => ({ kind: 'native', url })),
         makeFileSource: file => ({ kind: 'file', file }),
         installReaderPresentationState: () => {}, beginReplaceTextCacheGeneration: () => hooks.generation?.(),
         beginForegroundCriticalSection: () => ++criticalID,
@@ -446,4 +447,276 @@ test('a newer request issued during foreground release outranks the calling repl
     await f.loadEBook(request('B')); await replacement
     assert.deepEqual(f.messages.map(m => m.initialRestoreResult.requestID), ['A', 'C'])
     assert.equal(f.host.manabiInitialRestoreResult.requestID, 'C')
+})
+
+
+test('wrong landing never unlocks saving or runs successful restoration effects', async () => {
+    const f = fixture([{ landing: 0.1 }])
+    await f.loadEBook(request())
+    const result = f.messages[0].initialRestoreResult
+    assert.equal(result.terminalState, 'failed')
+    assert.equal(result.navigationOk, true)
+    assert.equal(result.currentFractionalCompletion, 0.1)
+    assert.equal(count(f.readers[0], 'complete'), 0)
+    assert.equal(f.readers[0].hasLoadedLastPosition, false)
+    assert.equal(count(f.readers[0], 'attempt'), 1)
+    assert.deepEqual(f.effects, [])
+    assert.equal(f.host.manabiLoadEBookReady, false)
+    assert.equal(f.host.__manabiRestoreInProgress, false)
+    assert.deepEqual(f.ended, [1])
+})
+
+test('an identical request retries a failed landing instead of reporting duplicate-ready', async () => {
+    const f = fixture([{ landing: 0.1 }, { landing: 0.25 }])
+    await f.loadEBook(request())
+    await f.loadEBook(request())
+    assert.equal(f.readers.length, 2)
+    assert.deepEqual(f.messages.map(value => value.initialRestoreResult.terminalState), ['failed', 'satisfied'])
+    assert.equal(f.readers[0].isClosed, true)
+    assert.equal(f.readers[1].hasLoadedLastPosition, true)
+    assert.deepEqual(f.ended, [1])
+})
+
+test('a direct failed restore rejects without claiming completion on the existing reader', async () => {
+    const f = fixture(); await f.loadEBook(request())
+    const reader = f.readers[0]
+    reader.view.lastLocation.fraction = 0.1
+    await assert.rejects(f.loadLastPosition({ cfi: 'new-cfi', fractionalCompletion: 0.8 }), error => {
+        assert.equal(error.name, 'EbookRestoreValidationError')
+        assert.equal(error.snapshot.currentFractionalCompletion, 0.1)
+        return true
+    })
+    assert.equal(reader.hasLoadedLastPosition, false)
+    assert.equal(count(reader, 'complete'), 1)
+    assert.equal(count(reader, 'attempt'), 1)
+    assert.deepEqual(f.effects, ['ready', 'probe', 'warm'])
+})
+
+test('a direct retry closes the previous success gate before awaiting navigation', async () => {
+    const f = fixture(); await f.loadEBook(request())
+    const reader = f.readers[0], gate = deferred()
+    reader.spec.goTo = () => gate.promise
+    const pending = f.loadLastPosition({ cfi: 'again' })
+    await until(() => count(reader, 'goTo') === 2)
+    assert.equal(reader.hasLoadedLastPosition, false)
+    assert.equal(f.host.__manabiRestoreInProgress, true)
+    gate.resolve(); await pending
+    assert.equal(reader.hasLoadedLastPosition, true)
+})
+
+test('frame settling drift is checked before marking the reader restored', async () => {
+    const f = fixture(); f.host.pauseFrames = true
+    const pending = f.loadEBook(request())
+    await until(() => f.frames.size === 1)
+    f.readers[0].view.lastLocation.fraction = 0.9
+    for (let index = 0; index < 4; index++) {
+        await until(() => f.timers.size > 0)
+        ;[...f.timers.values()][0].callback()
+    }
+    await pending
+    assert.equal(count(f.readers[0], 'complete'), 0)
+    assert.equal(f.messages[0].initialRestoreResult.navigationOk, true)
+    assert.equal(f.messages[0].initialRestoreResult.restoreSatisfied, false)
+})
+
+test('malformed load requests cannot replace a ready reader or its published receipt', async () => {
+    const f = fixture(); await f.loadEBook(request())
+    const reader = f.host.reader, receipt = f.host.manabiInitialRestoreResult
+    for (const initialRestore of [[], 'request', {}, { requestID: 'B' },
+        { requestID: 'B', cfi: 4 }, { requestID: 'B', cfi: 'valid', fractionalCompletion: Infinity },
+        { requestID: 'B', cfi: 'valid', fractionalCompletion: true }]) {
+        await assert.rejects(Promise.resolve().then(() => f.loadEBook({ ...request(), initialRestore })), TypeError)
+        assert.equal(f.host.reader, reader)
+        assert.equal(f.host.manabiInitialRestoreResult, receipt)
+        assert.equal(reader.isClosed, false)
+    }
+    assert.equal(f.readers.length, 1)
+})
+
+test('a malformed initial request cannot revoke a valid in-flight restore', async () => {
+    const gate = deferred(), f = fixture([{ goTo: () => gate.promise }])
+    const pending = f.loadEBook(request())
+    await until(() => count(f.readers[0], 'goTo') === 1)
+    await assert.rejects(Promise.resolve().then(() => f.loadEBook({
+        ...request(), initialRestore: { requestID: 'bad', cfi: '', fractionalCompletion: -1 },
+    })), TypeError)
+    assert.equal(f.host.manabiLoadEBookPromise, pending)
+    assert.equal(f.host.__manabiRestoreInProgress, true)
+    assert.equal(f.readers[0].isClosed, false)
+    gate.resolve(); await pending
+    assert.deepEqual(f.messages.map(value => value.initialRestoreResult.requestID), ['A'])
+})
+
+test('an explicit zero-position request navigates to zero rather than the default next page', async () => {
+    const f = fixture([{ landing: 0 }])
+    await f.loadEBook(request('zero', '', 0))
+    assert.equal(count(f.readers[0], 'goToFraction'), 1)
+    assert.equal(count(f.readers[0], 'next'), 0)
+    assert.equal(f.messages[0].initialRestoreResult.requestID, 'zero')
+    assert.equal(f.messages[0].initialRestoreResult.terminalState, 'satisfied')
+    assert.equal(f.messages[0].initialRestoreResult.currentFractionalCompletion, 0)
+})
+
+test('a direct zero restore is distinct from absent position information', async () => {
+    const f = fixture([{ landing: 0 }]); await f.loadEBook({ url: 'ebook://reader/a.epub' })
+    const reader = f.readers[0]
+    assert.equal(count(reader, 'next'), 1)
+    await f.loadLastPosition({ cfi: '', fractionalCompletion: 0 })
+    assert.equal(count(reader, 'next'), 1)
+    assert.equal(count(reader, 'goToFraction'), 1)
+})
+
+test('wrong landing from an explicit zero request is still a failed restore', async () => {
+    const f = fixture([{ landing: 0.25 }])
+    await f.loadEBook(request('zero', '', 0))
+    assert.equal(f.messages[0].initialRestoreResult.terminalState, 'failed')
+    assert.equal(f.messages[0].initialRestoreResult.requestID, 'zero')
+    assert.equal(count(f.readers[0], 'complete'), 0)
+})
+
+test('an explicit non-applied default fallback cannot enable position saving', async () => {
+    const f = fixture([{ next: () => false, nextSection: () => ({ ignored: true }) }])
+    await f.loadEBook({ url: 'ebook://reader/a.epub' })
+    assert.equal(count(f.readers[0], 'nextSection'), 1)
+    assert.equal(count(f.readers[0], 'complete'), 0)
+    assert.equal(f.messages[0].initialRestoreResult.navigationOk, false)
+    assert.equal(f.host.manabiLoadEBookReady, false)
+    assert.deepEqual(f.ended, [1])
+})
+
+test('a validated fraction reconciliation still completes normally', async () => {
+    const f = fixture([{ landing: 0.1, fraction: (reader, value) => {
+        reader.view.lastLocation.fraction = value
+    } }])
+    await f.loadEBook(request())
+    assert.equal(count(f.readers[0], 'goToFraction'), 1)
+    assert.equal(count(f.readers[0], 'complete'), 1)
+    assert.equal(f.messages[0].initialRestoreResult.restoreSatisfied, true)
+    assert.deepEqual(f.effects, ['ready', 'probe', 'warm'])
+})
+
+test('failure publication cannot release a reentrantly opened successor foreground token', async () => {
+    let second
+    const f = fixture([{ landing: 0.1 }])
+    const post = f.host.webkit.messageHandlers.ebookViewerLoaded.postMessage
+    f.host.webkit.messageHandlers.ebookViewerLoaded.postMessage = message => {
+        post(message)
+        if (message.initialRestoreResult.terminalState === 'failed') second = f.loadEBook(request('B'))
+    }
+    await f.loadEBook(request()); await second
+    assert.equal(f.host.manabiInitialRestoreResult.requestID, 'B')
+    assert.equal(f.host.manabiLoadEBookReady, true)
+    assert.deepEqual(f.ended, [1])
+})
+
+
+test('direct restoration supersedes the initial request identity for later deduplication', async () => {
+    const f = fixture(); await f.loadEBook(request())
+    await f.loadLastPosition({ cfi: 'direct-location' })
+    await f.loadEBook(request())
+    assert.equal(f.readers.length, 2)
+    assert.equal(f.messages.length, 2)
+    assert.equal(f.readers[0].isClosed, true)
+})
+
+test('renderer replacement revokes navigation but still clears only the old attempt flags', async () => {
+    const f = fixture(); await f.loadEBook(request())
+    const gate = deferred(), reader = f.readers[0]
+    reader.spec.goTo = () => gate.promise
+    const pending = f.loadLastPosition({ cfi: 'again' })
+    const rejected = assert.rejects(pending, EbookLoadSupersededError)
+    await until(() => count(reader, 'goTo') === 2)
+    reader.view.renderer = {}
+    gate.resolve(); await rejected
+    assert.equal(f.host.__manabiRestoreInProgress, false)
+    assert.equal(reader.hasLoadedLastPosition, false)
+    assert.equal(count(reader, 'complete'), 1)
+})
+
+test('new restore flags survive completion from a superseded renderer on the same reader', async () => {
+    const f = fixture(); await f.loadEBook(request())
+    const a = deferred(), b = deferred(), reader = f.readers[0]
+    reader.spec.goTo = () => a.promise
+    const old = f.loadLastPosition({ cfi: 'old' })
+    const rejected = assert.rejects(old, EbookLoadSupersededError)
+    await until(() => count(reader, 'goTo') === 2)
+    reader.view.renderer = {}
+    reader.spec.goTo = () => b.promise
+    const next = f.loadLastPosition({ cfi: 'new' })
+    await until(() => count(reader, 'goTo') === 3)
+    a.resolve(); await rejected
+    assert.equal(f.host.__manabiRestoreInProgress, true)
+    b.resolve(); await next
+    assert.equal(f.host.__manabiRestoreInProgress, false)
+    assert.equal(reader.hasLoadedLastPosition, true)
+})
+
+
+const sessionA = '00000000-0000-0000-0000-000000000001'
+const sessionB = '00000000-0000-0000-0000-000000000002'
+const boundRequest = (packageSessionID = sessionA) => ({ ...request(),
+    url: 'ebook://ebook/load/local/book.epub', packageSessionID })
+
+test('an unsupported package session is rejected before replacing a working legacy reader', async () => {
+    const f = fixture(); await f.loadEBook(request())
+    const reader = f.host.reader, receipt = f.host.manabiInitialRestoreResult
+    await assert.rejects(f.loadEBook(boundRequest()), /session was not preserved/)
+    assert.equal(f.host.reader, reader)
+    assert.equal(f.host.manabiInitialRestoreResult, receipt)
+    assert.equal(reader.isClosed, false)
+    assert.equal(f.readers.length, 1)
+})
+
+test('actual companion source descriptors retain the selected package session through opening and warming', async () => {
+    const f = fixture([], { makeNativeSource: makeNativeEbookSource })
+    await f.loadEBook(boundRequest())
+    const source = f.readers[0].events.find(value => value[0] === 'open')[1]
+    assert.equal(source.packageSessionID, sessionA)
+    assert.equal(Object.isFrozen(source), true)
+    assert.equal(f.warmers[0].resources.makeReusableSource(), source)
+    assert.equal(f.host.manabiLoadEBookPackageSessionID, sessionA)
+})
+
+test('same URL and restore with different package sessions are different loads', async () => {
+    const f = fixture([], { makeNativeSource: makeNativeEbookSource })
+    await f.loadEBook(boundRequest(sessionA))
+    await f.loadEBook(boundRequest(sessionB))
+    assert.equal(f.readers.length, 2)
+    assert.equal(f.readers[0].isClosed, true)
+    assert.equal(f.host.manabiLoadEBookPackageSessionID, sessionB)
+    assert.equal(f.readers[1].events.find(value => value[0] === 'open')[1].packageSessionID, sessionB)
+})
+
+test('an identical bound request reuses the same in-flight load and ready reader', async () => {
+    const gate = deferred(), f = fixture([{ open: () => gate.promise }], { makeNativeSource: makeNativeEbookSource })
+    const pending = f.loadEBook(boundRequest())
+    assert.equal(f.loadEBook(boundRequest()), pending)
+    gate.resolve(); await pending
+    assert.equal(f.loadEBook(boundRequest()), undefined)
+    assert.equal(f.readers.length, 1)
+})
+
+test('malformed package tokens and nonnative bound URLs never change an active load', async () => {
+    const f = fixture([], { makeNativeSource: makeNativeEbookSource })
+    await f.loadEBook(boundRequest())
+    const reader = f.host.reader
+    for (const packageSessionID of ['', true, 1, {}, 'not-a-session', sessionA.toUpperCase().replace('0', 'A')]) {
+        await assert.rejects(Promise.resolve().then(() => f.loadEBook(boundRequest(packageSessionID))), TypeError)
+        assert.equal(f.host.reader, reader)
+        assert.equal(reader.isClosed, false)
+    }
+    await assert.rejects(f.loadEBook({ ...boundRequest(), url: 'https://books.invalid/a.epub' }), TypeError)
+    assert.equal(f.host.reader, reader)
+    assert.equal(f.readers.length, 1)
+})
+
+test('a factory returning a different native capability cannot replace the current reader', async () => {
+    let substitute = false
+    const f = fixture([], { makeNativeSource: (url, sessionID) =>
+        makeNativeEbookSource(url, substitute ? sessionB : sessionID) })
+    await f.loadEBook(boundRequest())
+    substitute = true
+    await assert.rejects(f.loadEBook(boundRequest()), /session was not preserved/)
+    assert.equal(f.readers.length, 1)
+    assert.equal(f.readers[0].isClosed, false)
 })
