@@ -92,9 +92,16 @@ export const shouldSkipScheduledReaderFractionGoTo = ({
 
 export const runRequiredRestoreNavigation = async operation => {
     try {
+        const value = await operation()
+        // View.goTo returns null when resolution failed or its renderer/command
+        // was superseded. A fulfilled Promise alone is not a restore receipt.
+        // Keep void success valid for existing renderer implementations.
+        if (value === null || value === false || value?.ignored === true) {
+            throw new Error('Required restore navigation was not applied')
+        }
         return {
             ok: true,
-            value: await operation(),
+            value,
             error: null,
         }
     } catch (error) {

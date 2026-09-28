@@ -56,14 +56,18 @@ export class View extends HTMLElement {
     #rendererBindings = null
     #documentBindings = new Map()
     #openGeneration = 0
+    #navigationGeneration = 0
     isFixedLayout = false
     lastLocation
     history = new ViewHistory()
     constructor() {
         super()
-        this.history.addEventListener('popstate', async ({ detail }) => {
-            const resolved = this.resolveNavigation(detail.state)
-            await this.renderer.goTo(resolved)
+        this.history.addEventListener('popstate', ({ detail }) => {
+            // EventTarget does not consume rejected promises. History traversal
+            // shares command ownership but must not append another history entry.
+            void this.#navigate(detail.state, { recordHistory: false }).catch(error => {
+                console.error(error)
+            })
         })
     }
     async open(book, isCacheWarmer) {
@@ -149,8 +153,7 @@ export class View extends HTMLElement {
     async init({ lastLocation, showTextStart }) {
         const resolved = lastLocation ? this.resolveNavigation(lastLocation) : null
         if (resolved) {
-            await this.renderer.goTo(resolved)
-            this.history.pushState(lastLocation)
+            await this.goTo(lastLocation)
         }
         else if (showTextStart) await this.goToTextStart()
             else {
@@ -349,51 +352,49 @@ export class View extends HTMLElement {
             console.error(`Could not resolve target ${target}`)
         }
     }
-    async goTo(target) {
-        const resolved = this.resolveNavigation(target)
+    async #navigate(target, { select = false, recordHistory = true } = {}) {
+        const navigationGeneration = ++this.#navigationGeneration
         const renderer = this.renderer
+        const book = this.book
         const openGeneration = this.#openGeneration
-        if (!renderer || !resolved) return null
-        try {
-            const result = await runCurrentRendererOperation({
-                operation: () => renderer.goTo(resolved),
-                isCurrent: () =>
-                    this.renderer === renderer && this.#openGeneration === openGeneration,
-            })
-            if (result.ignored) return null
-            this.history.pushState(target)
-            return resolved
-        } catch(e) {
-            console.error(e)
-            console.error(`Could not go to ${target}`)
-            throw e
-            //            return
-        }
-        //        this.#emit('is-loading', false)
-        //        return resolved
+        if (!renderer || !book) return null
+        const resolved = this.resolveNavigation(target)
+        // A renderer may silently ignore an invalid section. Never publish that
+        // as successful navigation or an acknowledged saved-position restore.
+        if (!resolved || !Number.isInteger(resolved.index)
+            || resolved.index < 0 || resolved.index >= book.sections.length) return null
+        const result = await runCurrentRendererOperation({
+            operation: () => renderer.goTo(select ? { ...resolved, select: true } : resolved),
+            isCurrent: () => this.renderer === renderer && this.book === book
+                && this.#openGeneration === openGeneration
+                && this.#navigationGeneration === navigationGeneration,
+        })
+        if (result.ignored || result.value === null || result.value === false
+            || result.value?.ignored === true) return null
+        // Successful renderers can return void. Only their explicit rejection
+        // values, or loss of ownership, mean that this command was not applied.
+        if (recordHistory) this.history.pushState(target)
+        return resolved
     }
-    async goToFraction(frac) {
-        const [index, anchor] = this.#sectionProgress.getSection(frac)
-        await this.renderer.goTo({ index, anchor })
-        this.history.pushState({ fraction: frac })
+    async goTo(target) {
+        try {
+            return await this.#navigate(target)
+        } catch (error) {
+            console.error(error)
+            console.error(`Could not go to ${target}`)
+            throw error
+        }
+    }
+    async goToFraction(fraction) {
+        if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) return null
+        // Use the same renderer/load/command fence as CFI and href navigation.
+        return this.goTo({ fraction })
     }
     async select(target) {
-        const renderer = this.renderer
-        const openGeneration = this.#openGeneration
-        if (!renderer) return false
         try {
-            const obj = this.resolveNavigation(target)
-            if (!obj) return false
-            const result = await runCurrentRendererOperation({
-                operation: () => renderer.goTo({ ...obj, select: true }),
-                isCurrent: () =>
-                    this.renderer === renderer && this.#openGeneration === openGeneration,
-            })
-            if (result.ignored) return false
-            this.history.pushState(target)
-            return true
-        } catch(e) {
-            console.error(e)
+            return await this.#navigate(target, { select: true }) != null
+        } catch (error) {
+            console.error(error)
             console.error(`Could not go to ${target}`)
             return false
         }
@@ -456,10 +457,12 @@ export class View extends HTMLElement {
         }
     }
     async prev(distance) {
-        await this.renderer.prev(distance)
+        this.#navigationGeneration += 1
+        await this.renderer?.prev(distance)
     }
     async next(distance) {
-        await this.renderer.next(distance)
+        this.#navigationGeneration += 1
+        await this.renderer?.next(distance)
     }
     async goLeft() {
         return this.book.dir === 'rtl' ? await this.next() : await this.prev()
