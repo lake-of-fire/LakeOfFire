@@ -46,4 +46,23 @@ final class ReaderFileStoragePathsTests: XCTestCase {
             XCTAssertFalse(ReaderFileStoragePaths.isDownloadArtifact(URL(fileURLWithPath: "/library/" + name)), name)
         }
     }
+
+    func testOwnedPartStagesAreFilteredThroughTheSharedContract() {
+        let owner = String(repeating: "a", count: 64)
+        let id = "01234567-89AB-CDEF-0123-456789ABCDEF"
+        for phase in ["transfer", "compressed", "expanded"] {
+            let name = ".swiftui-download-v1.\(owner).\(phase).\(id).part"
+            XCTAssertTrue(ReaderFileStoragePaths.isDownloadArtifact(URL(fileURLWithPath: "/library/" + name)), name)
+        }
+    }
+
+    func testPartSuffixAloneDoesNotIdentifyAnOwnedArtifact() {
+        let owner = String(repeating: "a", count: 64)
+        let id = "01234567-89AB-CDEF-0123-456789ABCDEF"
+        for name in ["book.epub.part", "unfinished.part",
+                     ".swiftui-download-v1.\(owner).transfer.not-a-uuid.part",
+                     ".swiftui-download-v1.\(owner).unknown.\(id).part"] {
+            XCTAssertFalse(ReaderFileStoragePaths.isDownloadArtifact(URL(fileURLWithPath: "/library/" + name)), name)
+        }
+    }
 }
