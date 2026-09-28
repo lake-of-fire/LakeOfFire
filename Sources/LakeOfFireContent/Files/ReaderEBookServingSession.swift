@@ -33,7 +33,14 @@ public final class ReaderEBookServingPackage: Sendable {
         // interpret header metadata differently or without the v1 bounds checks.
         let selectedPath = try ReaderEBookRenditionSelection.path(in: snapshot, preferred: packageDocumentPath, limits: limits)
         let fingerprint = try snapshot.fingerprint(packageDocumentPath: selectedPath, limits: limits)
-        let source = try ReaderPackageEntrySource(localURL: snapshot.packageURL)
+        let source = try ReaderPackageEntrySource(
+            localURL: snapshot.packageURL,
+            limits: ReaderPackageResourceLimits(
+                maxEntryCount: limits.maxEntryCount,
+                maxEntryBytes: limits.maxEntryBytes,
+                maxAggregateUncompressedBytes: limits.maxAggregateUncompressedBytes
+            )
+        )
         let entries = try source.enumerateEntries()
         let resources = Dictionary(uniqueKeysWithValues: fingerprint.resources.map {
             (Data($0.path.utf8), $0)

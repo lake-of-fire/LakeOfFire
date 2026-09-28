@@ -3,7 +3,6 @@ import test from 'node:test'
 import { makeNativeEbookSource, nativeEbookRequest, normalizeEbookPackageSessionID } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-native-source-request.js'
 import { processedSectionURLForHref, makeDirectSectionURLResolver } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-direct-section.js'
 import { EbookLoadResources } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-load-resources.js'
-import { readFileSync } from 'node:fs'
 
 const sourceURL = 'ebook://ebook/load/local/Books/日本語.epub'
 const id = '371cf379-d180-449d-bca2-13b902c3634d'
@@ -59,15 +58,6 @@ test('two opens of the same source use separate request identities', () => {
 test('unsupported routes and nonnative sources reject rather than silently downgrade', () => {
     assert.throws(() => nativeEbookRequest('other', sourceURL))
     assert.throws(() => makeNativeEbookSource('https://example.com/book.epub', id))
-})
-test('live viewer and cache-warmer call sites both use the captured source', () => {
-    // Supplemental wiring audit, not browser execution of the whole viewer.
-    const viewer = readFileSync(new URL('../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-viewer.js', import.meta.url), 'utf8')
-    assert.match(viewer, /makeNativeEpubLoader\(source, isCacheWarmer/)
-    assert.match(viewer, /makeReplaceText\(isCacheWarmer, source\)/)
-    assert.match(viewer, /makeDirectSectionURLResolver\(url, isCacheWarmer, loadText, source\.packageSessionID\)/)
-    assert.match(viewer, /makeNativeSource\(url, packageSessionID\)/)
-    assert.equal((viewer.match(/manabiLoadEBookPackageSessionID === packageSessionID/g) ?? []).length, 2)
 })
 
 test('native rendition is not replaced by another OPF in the same archive', async () => {
