@@ -155,4 +155,94 @@ final class ReaderJavascriptMessageDecodingTests: XCTestCase {
         XCTAssertEqual(decoded.author, "Author")
         XCTAssertEqual(decoded.url?.absoluteString, "https://example.com/article")
     }
+
+    func testFractionalCompletionRejectsNonFiniteOrFloatOverflowingProgress() {
+        let invalidValues = [
+            Double.nan,
+            Double.infinity,
+            -Double.infinity,
+            Double.greatestFiniteMagnitude,
+        ]
+
+        for invalidValue in invalidValues {
+            XCTAssertNil(
+                FractionalCompletionMessage(
+                    body: [
+                        "fractionalCompletion": invalidValue,
+                        "cfi": "epubcfi(/6/2!)",
+                        "reason": "navigation",
+                    ]
+                )
+            )
+        }
+    }
+
+    func testFractionalCompletionDropsUnsafeIntegerMetadataWithoutTrapping() throws {
+        let unsafeValues = [
+            Double.nan,
+            Double.infinity,
+            -Double.infinity,
+            Double.greatestFiniteMagnitude,
+        ]
+        let integerFields = [
+            "sectionIndex",
+            "currentPageNumber",
+            "totalPages",
+            "visibleSegmentCount",
+            "observedSegmentCount",
+        ]
+
+        for field in integerFields {
+            for unsafeValue in unsafeValues {
+                let decoded = try XCTUnwrap(
+                    FractionalCompletionMessage(
+                        body: [
+                            "fractionalCompletion": 0.5,
+                            "cfi": "epubcfi(/6/2!)",
+                            "reason": "navigation",
+                            field: unsafeValue,
+                        ]
+                    )
+                )
+                switch field {
+                case "sectionIndex":
+                    XCTAssertNil(decoded.sectionIndex)
+                case "currentPageNumber":
+                    XCTAssertNil(decoded.currentPageNumber)
+                case "totalPages":
+                    XCTAssertNil(decoded.totalPages)
+                case "visibleSegmentCount":
+                    XCTAssertNil(decoded.visibleSegmentCount)
+                case "observedSegmentCount":
+                    XCTAssertNil(decoded.observedSegmentCount)
+                default:
+                    XCTFail("Unexpected field: \(field)")
+                }
+            }
+        }
+    }
+
+    func testFractionalCompletionPreservesFiniteNumericConversionBehavior() throws {
+        let decoded = try XCTUnwrap(
+            FractionalCompletionMessage(
+                body: [
+                    "fractionalCompletion": 0.625,
+                    "cfi": "epubcfi(/6/2!)",
+                    "reason": "navigation",
+                    "sectionIndex": 2.9,
+                    "currentPageNumber": "4",
+                    "totalPages": 10.9,
+                    "visibleSegmentCount": 3.7,
+                    "observedSegmentCount": "8",
+                ]
+            )
+        )
+
+        XCTAssertEqual(decoded.fractionalCompletion, 0.625)
+        XCTAssertEqual(decoded.sectionIndex, 2)
+        XCTAssertEqual(decoded.currentPageNumber, 4)
+        XCTAssertEqual(decoded.totalPages, 10)
+        XCTAssertEqual(decoded.visibleSegmentCount, 3)
+        XCTAssertEqual(decoded.observedSegmentCount, 8)
+    }
 }
