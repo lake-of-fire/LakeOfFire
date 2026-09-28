@@ -51,8 +51,61 @@ final class ReaderEBookPortCompositionTests: XCTestCase {
         }
     }
 
+    func testAdmittedLongResourceAndDirectoryPathsKeepTheirLiteralBytes() throws {
+        let longPath = String(repeating: "p", count: 16_384)
+        let longDirectory = String(repeating: "d", count: 16_384) + "/"
+        try withPackage(resourceSize: 1, extraEntries: [(longPath, false), (longDirectory, true)]) { url in
+            let snapshot = try ReaderEBookPackageSnapshot.retainCoordinatedFile(at: url, maximumBytes: 1_000_000)
+            let package = try ReaderEBookServingPackage(sourceURL: sourceURL, snapshot: snapshot)
+            let store = ReaderEBookServingSessionStore(), lease = try store.install(package)
+            XCTAssertEqual(try lease.readEntry(subpath: longPath), Data())
+            XCTAssertTrue(package.fingerprint.resources.contains { $0.path.utf8.elementsEqual(longPath.utf8) })
+            XCTAssertFalse(package.entries.contains { $0.path == longDirectory })
+            XCTAssertThrowsError(try ReaderPackageEntrySource(localURL: snapshot.packageURL).enumerateEntries()) {
+                XCTAssertEqual($0 as? ReaderPackageEntrySourceError, .entryPathSizeExceeded(limit: 4096))
+            }
+        }
+    }
+
+    func testExtraDirectorySlashesDoNotConsumeNormalizedFingerprintBudgetTwice() throws {
+        let pathBudget = 16 * 1024 * 1024
+        let fixedPaths = ["mimetype", "META-INF/container.xml", "OPS/book.opf", "OPS/resource.bin"]
+        let available = pathBudget - fixedPaths.reduce(0) { $0 + $1.utf8.count }
+        // Distinct short directory names: no resource is ever written to disk
+        // at these archive member paths. Exact normalized v1 path total is
+        // 16 MiB; raw directory entry names exceed it by one slash each.
+        let count = 4096
+        var remaining = available
+        var names: [(String, Bool)] = []
+        for index in 0..<count {
+            let length = remaining / (count - index)
+            let prefix = String(format: "%04x-", index)
+            names.append((prefix + String(repeating: "p", count: length - prefix.utf8.count) + "/", true))
+            remaining -= length
+        }
+        XCTAssertEqual(remaining, 0)
+        XCTAssertEqual(names.reduce(0) { $0 + $1.0.utf8.count - 1 }, available)
+        try withPackage(resourceSize: 1, extraEntries: names) { url in
+            let snapshot = try ReaderEBookPackageSnapshot.retainCoordinatedFile(at: url, maximumBytes: 64 * 1024 * 1024)
+            let package = try ReaderEBookServingPackage(sourceURL: sourceURL, snapshot: snapshot)
+            let store = ReaderEBookServingSessionStore(), lease = try store.install(package)
+            XCTAssertEqual(try lease.readEntry(subpath: "OPS/resource.bin"), Data([7]))
+            XCTAssertEqual(package.entries.count, fixedPaths.count)
+        }
+    }
+
+    func testLargerReadEnvelopeCannotAuthorizeAnOverlongFingerprintPath() throws {
+        let rejectedPath = String(repeating: "p", count: 16_385)
+        try withPackage(resourceSize: 1, extraEntries: [(rejectedPath, false)]) { url in
+            let snapshot = try ReaderEBookPackageSnapshot.retainCoordinatedFile(at: url, maximumBytes: 1_000_000)
+            XCTAssertThrowsError(try ReaderEBookServingPackage(sourceURL: sourceURL, snapshot: snapshot)) {
+                XCTAssertEqual($0 as? ReaderEBookFingerprintError, .ambiguousPath(rejectedPath))
+            }
+        }
+    }
+
     private var sourceURL: URL { URL(string: "ebook://ebook/load/local/Books/composition.epub")! }
-    private func withPackage(resourceSize: Int, _ body: (URL) throws -> Void) throws {
+    private func withPackage(resourceSize: Int, extraEntries: [(String, Bool)] = [], _ body: (URL) throws -> Void) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("ebook-port-composition-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -72,6 +125,10 @@ final class ReaderEBookPortCompositionTests: XCTestCase {
             }
             try archive.addEntry(with: "OPS/resource.bin", type: .file, uncompressedSize: Int64(resourceSize), compressionMethod: .deflate) { _, count in
                 Data(repeating: 7, count: count)
+            }
+            for (path, isDirectory) in extraEntries {
+                try archive.addEntry(with: path, type: isDirectory ? .directory : .file,
+                                     uncompressedSize: 0, compressionMethod: .none) { _, _ in Data() }
             }
         }
         try body(url)

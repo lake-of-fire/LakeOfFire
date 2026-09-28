@@ -38,7 +38,13 @@ public final class ReaderEBookServingPackage: Sendable {
             limits: ReaderPackageResourceLimits(
                 maxEntryCount: limits.maxEntryCount,
                 maxEntryBytes: limits.maxEntryBytes,
-                maxAggregateUncompressedBytes: limits.maxAggregateUncompressedBytes
+                maxAggregateUncompressedBytes: limits.maxAggregateUncompressedBytes,
+                // Fingerprint v1 admits 16-KiB literal paths and 16 MiB of
+                // normalized path bytes. The generic ZIP catalog also counts
+                // each directory's trailing slash. The strict scan above has
+                // already enforced the narrower normalized-path budget.
+                maxPathUTF8Bytes: 16_384 + 1,
+                maxAggregatePathUTF8Bytes: 16 * 1024 * 1024 + min(limits.maxEntryCount, 65_534)
             )
         )
         let entries = try source.enumerateEntries()
