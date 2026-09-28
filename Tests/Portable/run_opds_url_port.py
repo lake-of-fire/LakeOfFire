@@ -44,7 +44,8 @@ def main() -> int:
         (workspace / "Package.swift").write_text(
             "// swift-tools-version: 6.2\n"
             "import PackageDescription\n"
-            "let package = Package(name: \"OPDSURLForwardPort\", targets: [\n"
+            # Match the owning package; do not accidentally test an older default deployment.
+            "let package = Package(name: \"OPDSURLForwardPort\", platforms: [.macOS(.v15), .iOS(.v15)], targets: [\n"
             "    .target(name: \"LakeOfFireOPDS\"),\n"
             "    .testTarget(name: \"LakeOfFireOPDSTests\", dependencies: [\"LakeOfFireOPDS\"], "
             "resources: [.copy(\"Samples\")])\n"
