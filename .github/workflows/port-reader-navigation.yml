@@ -31,6 +31,8 @@ jobs:
           git rev-parse HEAD > evidence/tested-commit.txt
           git ls-tree -r HEAD > evidence/source-manifest.txt
           node --version > evidence/node-version.txt
+          node --check Sources/LakeOfFireReader/Resources/foliate-js/ebook-viewer.js
+          node --check Sources/LakeOfFireReader/Resources/foliate-js/ebook-load-coordinator.js
           node --test Tests/JavaScript/*.test.mjs 2>&1 | tee evidence/javascript-test.log
       - name: Retain executed source and tests
         if: always()
