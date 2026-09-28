@@ -335,47 +335,47 @@ public struct FractionalCompletionMessage: Sendable {
     }
 
     public init?(body rawBody: Any?) {
-        guard let body = rawBody as? [String: Any], let completion = body["fractionalCompletion"] as? Double, let cfi = body["cfi"] as? String, let reason = body["reason"] as? String else { return nil }
-        fractionalCompletion = Float(completion)
+        guard let body = rawBody as? [String: Any],
+              let completion = body["fractionalCompletion"] as? Double,
+              completion.isFinite,
+              let cfi = body["cfi"] as? String,
+              let reason = body["reason"] as? String else {
+            return nil
+        }
+        let convertedCompletion = Float(completion)
+        guard convertedCompletion.isFinite else { return nil }
+
+        fractionalCompletion = convertedCompletion
         self.cfi = cfi
         self.reason = reason
         hasVisibleJapaneseText = body["hasVisibleJapaneseText"] as? Bool
-        if let rawPage = body["mainDocumentURL"] as? String, let pageURL = URL(string: rawPage) {
+        if let rawPage = body["mainDocumentURL"] as? String,
+           let pageURL = URL(string: rawPage) {
             mainDocumentURL = pageURL
         }
-        if let rawSectionIndex = body["sectionIndex"] as? Int {
-            sectionIndex = rawSectionIndex
-        } else if let doubleIndex = body["sectionIndex"] as? Double {
-            sectionIndex = Int(doubleIndex)
+        sectionIndex = Self.safeInteger(body["sectionIndex"], acceptsString: false)
+        currentPageNumber = Self.safeInteger(body["currentPageNumber"])
+        totalPages = Self.safeInteger(body["totalPages"])
+        visibleSegmentCount = Self.safeInteger(body["visibleSegmentCount"])
+        observedSegmentCount = Self.safeInteger(body["observedSegmentCount"])
+    }
+
+    private static func safeInteger(
+        _ value: Any?,
+        acceptsString: Bool = true
+    ) -> Int? {
+        if let value = value as? Int {
+            return value
         }
-        if let rawCurrentPageNumber = body["currentPageNumber"] as? Int {
-            currentPageNumber = rawCurrentPageNumber
-        } else if let doubleCurrentPageNumber = body["currentPageNumber"] as? Double {
-            currentPageNumber = Int(doubleCurrentPageNumber)
-        } else if let stringCurrentPageNumber = body["currentPageNumber"] as? String {
-            currentPageNumber = Int(stringCurrentPageNumber)
+        if let value = value as? Double, value.isFinite {
+            // Preserve the old truncation-toward-zero behavior for valid
+            // doubles without trapping on NaN, infinity, or out-of-range input.
+            return Int(exactly: value.rounded(.towardZero))
         }
-        if let rawTotalPages = body["totalPages"] as? Int {
-            totalPages = rawTotalPages
-        } else if let doubleTotalPages = body["totalPages"] as? Double {
-            totalPages = Int(doubleTotalPages)
-        } else if let stringTotalPages = body["totalPages"] as? String {
-            totalPages = Int(stringTotalPages)
+        if acceptsString, let value = value as? String {
+            return Int(value)
         }
-        if let rawVisibleSegmentCount = body["visibleSegmentCount"] as? Int {
-            visibleSegmentCount = rawVisibleSegmentCount
-        } else if let doubleVisibleSegmentCount = body["visibleSegmentCount"] as? Double {
-            visibleSegmentCount = Int(doubleVisibleSegmentCount)
-        } else if let stringVisibleSegmentCount = body["visibleSegmentCount"] as? String {
-            visibleSegmentCount = Int(stringVisibleSegmentCount)
-        }
-        if let rawObservedSegmentCount = body["observedSegmentCount"] as? Int {
-            observedSegmentCount = rawObservedSegmentCount
-        } else if let doubleObservedSegmentCount = body["observedSegmentCount"] as? Double {
-            observedSegmentCount = Int(doubleObservedSegmentCount)
-        } else if let stringObservedSegmentCount = body["observedSegmentCount"] as? String {
-            observedSegmentCount = Int(stringObservedSegmentCount)
-        }
+        return nil
     }
 }
 
