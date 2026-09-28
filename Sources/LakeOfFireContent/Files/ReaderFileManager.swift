@@ -1274,14 +1274,36 @@ public class ReaderFileManager: ObservableObject {
         _ relativePath: RootRelativePath,
         within rootURL: URL
     ) throws {
-        let candidateURL = try relativePath.fileURL(forRoot: rootURL)
-        let resolvedRootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
-        let resolvedCandidateURL = candidateURL.standardizedFileURL.resolvingSymlinksInPath()
-        let rootComponents = resolvedRootURL.pathComponents
-        let candidateComponents = resolvedCandidateURL.pathComponents
-        guard candidateComponents.count > rootComponents.count,
-              Array(candidateComponents.prefix(rootComponents.count)) == rootComponents else {
+        let standardizedRootURL = rootURL.standardizedFileURL
+        let candidateURL = try relativePath.fileURL(forRoot: rootURL).standardizedFileURL
+        let lexicalRootComponents = standardizedRootURL.pathComponents
+        let lexicalCandidateComponents = candidateURL.pathComponents
+        guard lexicalCandidateComponents.count > lexicalRootComponents.count,
+              Array(lexicalCandidateComponents.prefix(lexicalRootComponents.count)) == lexicalRootComponents else {
             throw ReaderFileManagerError.invalidFileURL
+        }
+
+        let resolvedRootURL = standardizedRootURL.resolvingSymlinksInPath().standardizedFileURL
+        let rootComponents = resolvedRootURL.pathComponents
+        var existingAncestorURL = candidateURL
+        let fileManager = FileManager.default
+        while existingAncestorURL.pathComponents.count > lexicalRootComponents.count,
+              !fileManager.fileExists(atPath: existingAncestorURL.path) {
+            // A dangling symlink cannot be a valid destination. Detect it
+            // before climbing to a parent that might otherwise look safe.
+            if (try? fileManager.destinationOfSymbolicLink(atPath: existingAncestorURL.path)) != nil {
+                throw ReaderFileManagerError.invalidFileURL
+            }
+            existingAncestorURL.deleteLastPathComponent()
+        }
+        if existingAncestorURL.pathComponents.count > lexicalRootComponents.count {
+            // Resolve the deepest existing prefix. Foundation does not always
+            // resolve a symlink in a parent of a still-missing destination.
+            let components = existingAncestorURL.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+            guard components.count > rootComponents.count,
+                  Array(components.prefix(rootComponents.count)) == rootComponents else {
+                throw ReaderFileManagerError.invalidFileURL
+            }
         }
     }
 

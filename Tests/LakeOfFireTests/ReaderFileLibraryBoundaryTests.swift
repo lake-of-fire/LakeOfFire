@@ -193,6 +193,27 @@ final class ReaderFileLibraryBoundaryTests: XCTestCase {
         }
     }
 
+    func testDownloadSlotCannotEscapeThroughExistingSymlink() async throws {
+        try await withFixture { f in
+            let source = "https://example.com/book.txt"
+            let first = try await self.download(source, manager: f.manager)
+            let destination = first.localDestination
+            let slot = destination.deletingLastPathComponent()
+            let outside = f.root.appendingPathComponent("outside", isDirectory: true)
+            try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: slot.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try FileManager.default.createSymbolicLink(at: slot, withDestinationURL: outside)
+            do {
+                _ = try await self.download(source, manager: f.manager)
+                XCTFail("An existing download slot symlink must not escape the selected drive")
+            } catch ReaderFileManagerError.invalidFileURL {
+            }
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+        }
+    }
+
     func testInventorySkipsStagingPayloadButKeepsOrdinarySimilarlyNamedBook() async throws {
         try await withFixture { f in
             let id = "01234567-89AB-CDEF-0123-456789ABCDEF"
