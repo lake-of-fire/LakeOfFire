@@ -47,17 +47,42 @@ public enum OPDSParser {
                 return
             }
 
-            // We try to parse as an OPDS v1 feed,
-            // then, if it fails, we try as an OPDS v2 feed.
-            if let parseData = try? OPDS1Parser.parse(xmlData: data, url: url, response: response) {
-                completion(parseData, nil)
-            } else if let parseData = try? OPDS2Parser.parse(jsonData: data, url: url, response: response) {
-                completion(parseData, nil)
-            } else {
-                // Not a valid OPDS ressource
-                completion(nil, OPDSParserError.documentNotValid)
+            do {
+                completion(try parseDocument(data: data, url: url, response: response), nil)
+            } catch {
+                completion(nil, error)
             }
         }
+    }
+
+    /// Loads a catalog in the calling task's lifetime. Cancellation reaches the
+    /// URLSession task; a cancelled caller cannot receive a successful result.
+    /// The fresh mutable graph is transferred to the caller, not shared.
+    public static func parseURL(
+        url: URL,
+        session: URLSession = .shared
+    ) async throws -> sending ParseData {
+        try Task.checkCancellation()
+        let (data, response) = try await session.data(from: url)
+        try Task.checkCancellation()
+        let (validatedData, validatedResponse) = try validateDocument(
+            data: data, response: response, error: nil
+        )
+        let result = try parseDocument(data: validatedData, url: url, response: validatedResponse)
+        try Task.checkCancellation()
+        return result
+    }
+
+    private static func parseDocument(data: Data, url: URL, response: URLResponse) throws -> ParseData {
+        // Retain the existing XML-first, JSON-second format selection for both
+        // entry points. HTTP/transport admission precedes either parser.
+        if let result = try? OPDS1Parser.parse(xmlData: data, url: url, response: response) {
+            return result
+        }
+        if let result = try? OPDS2Parser.parse(jsonData: data, url: url, response: response) {
+            return result
+        }
+        throw OPDSParserError.documentNotValid
     }
 
     static func loadDocument(url: URL, session: URLSession = .shared, completion: @escaping @Sendable (Data?, URLResponse?, Error?) -> Void) {
