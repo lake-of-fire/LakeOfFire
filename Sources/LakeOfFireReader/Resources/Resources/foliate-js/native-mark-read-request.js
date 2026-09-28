@@ -156,7 +156,7 @@ export const createNativeMarkReadRequestCoordinator = ({
             return Promise.resolve({ requestID: null, context, success: false,
                 stale: false, errorCode: 'pendingTargetBusy', presentationAllowed: false })
         }
-        if (!observing || pendingByRequestID.size >= 32 || issuedRequestIDs.size >= 2048) {
+        if (!observing || pendingByRequestID.size >= 32) {
             return Promise.resolve({ requestID: null, context, success: false,
                 stale: false, errorCode: 'pendingCapacityExceeded', presentationAllowed: false })
         }
