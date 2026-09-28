@@ -12,12 +12,16 @@ final class ReaderFileImportStorageNativeTests: XCTestCase {
         let library: URL
         init() throws {
             source = root.appendingPathComponent("incoming/book.epub")
-            library = root.appendingPathComponent("library")
+            library = root.appendingPathComponent("library", isDirectory: true)
             try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
         }
         deinit { try? FileManager.default.removeItem(at: root) }
-        func drive() async throws -> CloudDrive { try await CloudDrive(storage: .localDirectory(rootURL: library)) }
+        func drive() async throws -> CloudDrive {
+            let result = try await CloudDrive(storage: .localDirectory(rootURL: library))
+            XCTAssertEqual(result.rootDirectory.standardizedFileURL.path, library.standardizedFileURL.path)
+            return result
+        }
         func put(_ url: URL, _ value: String) throws {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data(value.utf8).write(to: url)
