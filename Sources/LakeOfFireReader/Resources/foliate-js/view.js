@@ -71,7 +71,23 @@ export class View extends HTMLElement {
         })
     }
     async open(book, isCacheWarmer) {
-        this.#openGeneration += 1
+        const openGeneration = ++this.#openGeneration
+        const previousRenderer = this.renderer
+        // Do not let a command pair the incoming book with the old renderer
+        // while the new renderer module is loading.
+        this.renderer = null
+        this.#rendererBindings?.clear()
+        this.#rendererBindings = null
+        for (const bindings of this.#documentBindings.values()) bindings.clear()
+        this.#documentBindings.clear()
+        previousRenderer?.destroy()
+        previousRenderer?.remove()
+        this.#sectionProgress = null
+        this.#tocProgress = null
+        this.#pageProgress = null
+        this.#searchResults = new Map()
+        this.lastLocation = null
+        this.history.clear()
         this.book = book
         this.language = languageInfo(book.metadata?.language)
         this.#isCacheWarmer = isCacheWarmer
@@ -87,14 +103,20 @@ export class View extends HTMLElement {
                 toc: book.pageList ?? [], ids, splitHref, getFragment })
         }
 
-        this.isFixedLayout = this.book.rendition?.layout === 'pre-paginated'
-        if (this.isFixedLayout) {
-            await import('./fixed-layout.js')
-            this.renderer = document.createElement('foliate-fxl')
-        } else {
-            await import('./paginator.js')
-            this.renderer = document.createElement('foliate-paginator')
+        const isFixedLayout = book.rendition?.layout === 'pre-paginated'
+        this.isFixedLayout = isFixedLayout
+        if (isFixedLayout) await import('./fixed-layout.js')
+        else await import('./paginator.js')
+        const isCurrent = () => this.#openGeneration === openGeneration && this.book === book
+        if (!isCurrent()) return
+        const renderer = document.createElement(isFixedLayout ? 'foliate-fxl' : 'foliate-paginator')
+        // A custom-element constructor can synchronously trigger host teardown.
+        if (!isCurrent()) {
+            renderer.destroy()
+            renderer.remove()
+            return
         }
+        this.renderer = renderer
         this.renderer.setAttribute('exportparts', 'head,foot') //,filter')
         this.#rendererBindings?.clear()
         this.#rendererBindings = new OwnedEventBindings()
@@ -118,8 +140,8 @@ export class View extends HTMLElement {
             //            });
         }
 
-        this.renderer.open(book, isCacheWarmer)
-        this.#root.append(this.renderer)
+        renderer.open(book, isCacheWarmer)
+        if (isCurrent() && this.renderer === renderer) this.#root.append(renderer)
     }
     close() {
         this.#openGeneration += 1

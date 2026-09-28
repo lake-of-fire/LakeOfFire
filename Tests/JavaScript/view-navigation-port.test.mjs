@@ -4,9 +4,13 @@ import test from 'node:test'
 // View's browser host is minimal here; navigation/history/ownership are the
 // actual production class. No DOM rendering or WebKit integration is claimed.
 globalThis.HTMLElement = class extends EventTarget {
-    attachShadow() { return { append() {} } }
+    attachShadow() {
+        this.appendedRenderers = []
+        return { append: renderer => { this.appendedRenderers.push(renderer) } }
+    }
 }
 globalThis.customElements = { define() {} }
+globalThis.document = { createElement() { throw new Error('Unexpected browser rendering') } }
 const { View } = await import('../../Sources/LakeOfFireReader/Resources/foliate-js/view.js')
 const { SectionProgress } = await import('../../Sources/LakeOfFireReader/Resources/foliate-js/progress.js')
 const { runRequiredRestoreNavigation, makeInitialRestoreTerminalResult } = await import(
@@ -297,4 +301,122 @@ test('resolution that synchronously starts a newer command cannot dispatch the o
     assert.deepEqual(await newer, { index: 1 })
     assert.deepEqual(calls, [{ index: 1 }])
     assert.deepEqual(pushes, [1])
+})
+
+function rendererFactory(t, onCreate = () => {}) {
+    const created = []
+    t.mock.method(document, 'createElement', name => {
+        assert.equal(name, 'foliate-fxl')
+        const renderer = new EventTarget()
+        Object.assign(renderer, {
+            calls: [], destroyed: 0, removed: 0,
+            setAttribute() {},
+            open(book) { this.book = book },
+            goTo(target) { this.calls.push(target) },
+            destroy() { this.destroyed += 1 },
+            remove() { this.removed += 1 },
+        })
+        created.push(renderer)
+        onCreate(renderer)
+        return renderer
+    })
+    return created
+}
+const fixedBook = () => ({
+    rendition: { layout: 'pre-paginated' },
+    sections: [{ id: 'a', size: 100 }, { id: 'b', size: 100 }],
+    splitTOCHref: href => [href, ''],
+    getTOCFragment: () => null,
+})
+
+test('closing during renderer-module loading cannot resurrect the closed View', async t => {
+    const created = rendererFactory(t)
+    const view = new View()
+    const pending = view.open(fixedBook(), false)
+    view.close()
+    await pending
+    assert.equal(view.renderer, null)
+    assert.equal(view.book, null)
+    assert.deepEqual(created, [])
+    assert.deepEqual(view.appendedRenderers, [])
+})
+
+test('only the latest overlapping open can install a renderer', async t => {
+    const created = rendererFactory(t)
+    const view = new View(), firstBook = fixedBook(), lastBook = fixedBook()
+    const first = view.open(firstBook, false)
+    const last = view.open(lastBook, false)
+    await Promise.all([first, last])
+    assert.equal(created.length, 1)
+    assert.equal(view.renderer, created[0])
+    assert.equal(view.renderer.book, lastBook)
+    assert.deepEqual(view.appendedRenderers, created)
+})
+
+test('overlapping opens for the same book still require the exact open generation', async t => {
+    const created = rendererFactory(t)
+    const view = new View(), book = fixedBook()
+    await Promise.all([view.open(book, false), view.open(book, false)])
+    assert.equal(created.length, 1)
+    assert.equal(view.renderer.book, book)
+})
+
+test('opening retires the old renderer before accepting commands for the new book', async t => {
+    const created = rendererFactory(t)
+    const view = new View()
+    await view.open(fixedBook(), false)
+    const old = view.renderer
+    const next = view.open(fixedBook(), false)
+    assert.equal(view.renderer, null)
+    assert.equal(old.destroyed, 1)
+    assert.equal(old.removed, 1)
+    assert.equal(await view.goTo(0), null)
+    await next
+    assert.equal(created.length, 2)
+    assert.equal(view.renderer, created[1])
+    assert.deepEqual(old.calls, [])
+})
+
+test('actual open initializes fraction resolution used by guarded navigation', async t => {
+    const created = rendererFactory(t)
+    const view = new View()
+    await view.open(fixedBook(), false)
+    assert.deepEqual(await view.goToFraction(0.75), { index: 1, anchor: 0.5 })
+    assert.deepEqual(created[0].calls, [{ index: 1, anchor: 0.5 }])
+})
+
+test('teardown reentered from renderer construction prevents publication', async t => {
+    const view = new View()
+    const created = rendererFactory(t, () => view.close())
+    await view.open(fixedBook(), false)
+    assert.equal(created.length, 1)
+    assert.equal(created[0].destroyed, 1)
+    assert.equal(created[0].removed, 1)
+    assert.equal(view.renderer, null)
+    assert.deepEqual(view.appendedRenderers, [])
+})
+
+test('reopening cannot reuse a previous book fraction map when the new book lacks one', async t => {
+    t.mock.method(console, 'error', () => {})
+    rendererFactory(t)
+    const view = new View()
+    await view.open(fixedBook(), false)
+    const book = fixedBook()
+    delete book.splitTOCHref
+    delete book.getTOCFragment
+    await view.open(book, false)
+    assert.equal(await view.goToFraction(0.75), null)
+    assert.deepEqual(view.renderer.calls, [])
+})
+
+test('a new book open clears navigation history from the previous book', async t => {
+    rendererFactory(t)
+    const view = new View()
+    await view.open(fixedBook(), false)
+    await view.goTo(0)
+    await view.goTo(1)
+    assert.equal(view.history.canGoBack, true)
+    await view.open(fixedBook(), false)
+    assert.equal(view.history.canGoBack, false)
+    assert.equal(view.history.canGoForward, false)
 })
