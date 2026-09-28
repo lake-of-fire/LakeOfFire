@@ -4,10 +4,44 @@ import Foundation
 /// not by dropping notifications received while a scan or throttle is active.
 @MainActor
 final class ReaderFileRefreshQueue {
+    @MainActor
+    final class Completion {
+        private var finished: Bool
+        private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
+        init(finished: Bool = false) { self.finished = finished }
+
+        func wait() async {
+            guard !finished, !Task.isCancelled else { return }
+            let id = UUID()
+            await withTaskCancellationHandler {
+                guard !finished, !Task.isCancelled else { return }
+                await withCheckedContinuation { waiters[id] = $0 }
+            } onCancel: {
+                // Only this waiter is cancelled, not the shared scan or another
+                // caller coalesced into its completion.
+                Task { @MainActor [weak self] in self?.cancelWaiter(id) }
+            }
+        }
+
+        private func cancelWaiter(_ id: UUID) {
+            waiters.removeValue(forKey: id)?.resume()
+        }
+
+        fileprivate func finish() {
+            guard !finished else { return }
+            finished = true
+            let pending = Array(waiters.values)
+            waiters.removeAll()
+            for waiter in pending { waiter.resume() }
+        }
+    }
+
     private struct Request {
         let scope: String
         var force: Bool
         var operation: @MainActor () async -> Void
+        var completions: [Completion]
     }
 
     private let interval: TimeInterval
@@ -33,22 +67,28 @@ final class ReaderFileRefreshQueue {
         self.sleep = sleep
     }
 
+    @discardableResult
     func enqueue(
         scope: String,
         force: Bool,
         operation: @escaping @MainActor () async -> Void
-    ) {
-        guard !Task.isCancelled else { return }
+    ) -> Completion {
+        guard !Task.isCancelled else { return Completion(finished: true) }
+        let completion: Completion
         if let index = pending.firstIndex(where: { $0.scope == scope }) {
             pending[index].force = pending[index].force || force
             pending[index].operation = operation
+            completion = pending[index].completions[0]
         } else {
-            pending.append(Request(scope: scope, force: force, operation: operation))
+            completion = Completion()
+            pending.append(Request(scope: scope, force: force, operation: operation,
+                                   completions: [completion]))
         }
         // Wake only the throttle. Never cancel an in-progress filesystem/Realm
         // scan on behalf of a different waiter.
         if force { delay?.cancel() }
         startIfNeeded()
+        return completion
     }
 
     func waitForIdle() async {
@@ -81,8 +121,12 @@ final class ReaderFileRefreshQueue {
         defer {
             // Cancellation does not consume the scan. A newer pending request
             // for its scope already subsumes it; otherwise replay it on resume.
-            if let inFlight, !pending.contains(where: { $0.scope == inFlight.scope }) {
-                pending.insert(inFlight, at: 0)
+            if let inFlight {
+                if let index = pending.firstIndex(where: { $0.scope == inFlight.scope }) {
+                    pending[index].completions += inFlight.completions
+                } else {
+                    pending.insert(inFlight, at: 0)
+                }
             }
             inFlight = nil
             delay = nil
@@ -117,6 +161,9 @@ final class ReaderFileRefreshQueue {
             lastStartedAt = now()
             await inFlight?.operation()
             if Task.isCancelled || isSuspended { return }
+            // Finish this batch's callers even if later notifications keep the
+            // queue busy. Waiting for global idle would starve book-open/import.
+            for completion in inFlight?.completions ?? [] { completion.finish() }
             inFlight = nil
         }
     }
