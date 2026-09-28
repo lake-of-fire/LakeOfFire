@@ -52,50 +52,6 @@ public struct ConsoleLogMessage {
     }
 }
 
-public struct ReaderContentEbookInitialRestoreResult: Sendable, Equatable {
-    public enum TerminalState: String, Sendable, Equatable {
-        case satisfied
-        case failed
-        case noTarget
-    }
-
-    public let requestID: String?
-    public let requestedLocator: String
-    public let terminalState: TerminalState
-    public let navigationOk: Bool
-    public let restoreSatisfied: Bool
-    public let handledFractionalCompletion: Double?
-    public let currentFractionalCompletion: Double?
-    public let handledCFI: String?
-    public let error: String?
-
-    public init?(payload: Any?) {
-        guard let payload = payload as? [String: Any],
-              let requestedLocator = payload["requestedLocator"] as? String,
-              let terminalStateValue = payload["terminalState"] as? String,
-              let terminalState = TerminalState(rawValue: terminalStateValue),
-              let navigationOk = payload["navigationOk"] as? Bool,
-              let restoreSatisfied = payload["restoreSatisfied"] as? Bool else {
-            return nil
-        }
-        requestID = payload["requestID"] as? String
-        self.requestedLocator = requestedLocator
-        self.terminalState = terminalState
-        self.navigationOk = navigationOk
-        self.restoreSatisfied = restoreSatisfied
-        handledFractionalCompletion = Self.finiteDouble(payload["handledFractionalCompletion"])
-        currentFractionalCompletion = Self.finiteDouble(payload["currentFractionalCompletion"])
-        handledCFI = payload["handledCFI"] as? String
-        error = payload["error"] as? String
-    }
-
-    private static func finiteDouble(_ value: Any?) -> Double? {
-        guard let number = value as? NSNumber, !(value is Bool) else { return nil }
-        let result = number.doubleValue
-        return result.isFinite ? result : nil
-    }
-}
-
 public struct ReaderContentEbookInitialRestoreResultMessage: Sendable {
     public let initialRestoreResult: ReaderContentEbookInitialRestoreResult?
 
@@ -273,75 +229,13 @@ public struct WritingDirectionMessage {
 //
 //    public init?(fromMessage message: WebViewMessage) {
 //        guard let body = message.body as? [String: Any] else { return nil }
-////        rssURLs = body["rssURLs"] as! [[String]]
+////        rssURLs = body["rssURLs"] as? [[String]] ?? []
 //    }
 //}
 
-public struct FractionalCompletionMessage: Sendable {
-    public var fractionalCompletion: Float
-    public var cfi: String
-    public var reason: String
-    public var mainDocumentURL: URL?
-    public var sectionIndex: Int?
-    public var currentPageNumber: Int?
-    public var totalPages: Int?
-    public var hasVisibleJapaneseText: Bool?
-    public var visibleSegmentCount: Int?
-    public var observedSegmentCount: Int?
-
-    public var representsKnownBlankViewport: Bool {
-        visibleSegmentCount == 0
-            && (observedSegmentCount ?? 0) > 0
-            && currentPageNumber == nil
-            && totalPages == nil
-    }
-
-    public init?(fromMessage message: WebViewMessage) {
+public extension FractionalCompletionMessage {
+    init?(fromMessage message: WebViewMessage) {
         self.init(body: message.body)
-    }
-
-    public init?(body rawBody: Any?) {
-        guard let body = rawBody as? [String: Any], let completion = body["fractionalCompletion"] as? Double, let cfi = body["cfi"] as? String, let reason = body["reason"] as? String else { return nil }
-        fractionalCompletion = Float(completion)
-        self.cfi = cfi
-        self.reason = reason
-        hasVisibleJapaneseText = body["hasVisibleJapaneseText"] as? Bool
-        if let rawPage = body["mainDocumentURL"] as? String, let pageURL = URL(string: rawPage) {
-            mainDocumentURL = pageURL
-        }
-        if let rawSectionIndex = body["sectionIndex"] as? Int {
-            sectionIndex = rawSectionIndex
-        } else if let doubleIndex = body["sectionIndex"] as? Double {
-            sectionIndex = Int(doubleIndex)
-        }
-        if let rawCurrentPageNumber = body["currentPageNumber"] as? Int {
-            currentPageNumber = rawCurrentPageNumber
-        } else if let doubleCurrentPageNumber = body["currentPageNumber"] as? Double {
-            currentPageNumber = Int(doubleCurrentPageNumber)
-        } else if let stringCurrentPageNumber = body["currentPageNumber"] as? String {
-            currentPageNumber = Int(stringCurrentPageNumber)
-        }
-        if let rawTotalPages = body["totalPages"] as? Int {
-            totalPages = rawTotalPages
-        } else if let doubleTotalPages = body["totalPages"] as? Double {
-            totalPages = Int(doubleTotalPages)
-        } else if let stringTotalPages = body["totalPages"] as? String {
-            totalPages = Int(stringTotalPages)
-        }
-        if let rawVisibleSegmentCount = body["visibleSegmentCount"] as? Int {
-            visibleSegmentCount = rawVisibleSegmentCount
-        } else if let doubleVisibleSegmentCount = body["visibleSegmentCount"] as? Double {
-            visibleSegmentCount = Int(doubleVisibleSegmentCount)
-        } else if let stringVisibleSegmentCount = body["visibleSegmentCount"] as? String {
-            visibleSegmentCount = Int(stringVisibleSegmentCount)
-        }
-        if let rawObservedSegmentCount = body["observedSegmentCount"] as? Int {
-            observedSegmentCount = rawObservedSegmentCount
-        } else if let doubleObservedSegmentCount = body["observedSegmentCount"] as? Double {
-            observedSegmentCount = Int(doubleObservedSegmentCount)
-        } else if let stringObservedSegmentCount = body["observedSegmentCount"] as? String {
-            observedSegmentCount = Int(stringObservedSegmentCount)
-        }
     }
 }
 
