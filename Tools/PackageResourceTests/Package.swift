@@ -16,11 +16,17 @@ default:
 let package = Package(
     name: "PackageResourceTests",
     platforms: [.macOS(.v12)],
-    dependencies: [zip],
+    dependencies: [zip,
+        .package(url: "https://github.com/lake-of-fire/SwiftCloudDrive.git",
+                 revision: "0a84ea27d394fe0ed92e9b7809d84cfaa1942442")
+    ],
     targets: [
-        .target(name: "LakeOfFireContent", dependencies: [.product(name: "ZIPFoundation", package: "ZIPFoundation")]),
+        .target(name: "LakeOfFireContent", dependencies: [
+            .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+            .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive")]),
         .target(name: "LakeOfFireReader", dependencies: ["LakeOfFireContent"]),
         .testTarget(name: "PackageResourceTests", dependencies: ["LakeOfFireContent", "LakeOfFireReader",
-            .product(name: "ZIPFoundation", package: "ZIPFoundation")])
+            .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+            .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive")])
     ]
 )

@@ -28,7 +28,7 @@ cp "$root/Tools/PackageResourceTests/Package.swift" "$work/Package.swift"
 # full ReaderFileManager graph; two corresponding tests remain full-host only.
 awk '/^public actor ReaderPackageEntrySourceCache/ { exit } !/^import LakeOfFire(Core|Adblock)$/ { print }' \
   "$root/Sources/LakeOfFireContent/Files/Archive+Data.swift" > "$work/Sources/LakeOfFireContent/ReaderPackageEntrySource.swift"
-for source in ReaderPackageResourceLimits ReaderFileOperationErrors ReaderFileImportPresentation ReaderFileImportOperation; do
+for source in ReaderPackageResourceLimits ReaderFileOperationErrors ReaderFileImportPresentation ReaderFileImportOperation ReaderFileImportCollisionResolver ReaderFileImportStorage ReaderFileImportPackageManifest; do
   cp "$root/Sources/LakeOfFireContent/Files/$source.swift" "$work/Sources/LakeOfFireContent/"
 done
 cp "$root/Sources/LakeOfFireReader/Reader/Books/EPubParser.swift" "$work/Sources/LakeOfFireReader/"
@@ -50,7 +50,7 @@ excluded, after = tail.split(end)
 assert excluded.count("    func test") == 1
 (work / "Tests/PackageResourceTests/ReaderPackageEntrySourceTests.swift").write_text(before + end + after)
 PYEXTRACT
-for suite in ReaderPackageResourceBudget ReaderPackageResourceLimit EPubMetadataResourceLimit ReaderFileImportPort BookDownloadOperation BookDownloadImportPort; do
+for suite in ReaderPackageResourceBudget ReaderPackageResourceLimit EPubMetadataResourceLimit ReaderFileImportPort BookDownloadOperation BookDownloadImportPort ReaderFileImportCollisionResolver ReaderFileImportStorageNative ReaderFileImportStorageComposition; do
   cp "$root/Tests/LakeOfFireTests/${suite}Tests.swift" "$work/Tests/PackageResourceTests/"
 done
 swift test --package-path "$work" "$@"

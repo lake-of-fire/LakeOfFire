@@ -1,0 +1,68 @@
+name: Stage storage and import outcome composition
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Tools/stage-import-storage-composition.py'
+      - '.github/workflows/stage-import-storage-composition.yml'
+      - 'Tests/LakeOfFireTests/ReaderFileImportStorageCompositionTests.swift'
+      - 'Tools/PackageResourceTests/Package.swift'
+      - 'Tools/test-package-resources.sh'
+permissions:
+  contents: read
+jobs:
+  native:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'port/epub-serving-safety-integration-20260928'
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.2.1'
+      - name: Check exact composed hook
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/tested-commit.txt
+          git ls-tree -r HEAD > evidence/source-manifest.txt
+          python3 Tools/stage-import-storage-composition.py
+          cp Sources/LakeOfFireContent/Files/ReaderFileManager.swift evidence/staged-manager.swift
+      - name: Execute actual storage and outcome components
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PACKAGE_RESOURCE_EVIDENCE_DIRECTORY="$PWD/evidence"
+          bash Tools/test-package-resources.sh -c debug 2>&1 | tee evidence/test.log
+      - name: Retain only the verified immutable manager blob
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, json, os, urllib.request
+          data = Path('Sources/LakeOfFireContent/Files/ReaderFileManager.swift').read_bytes()
+          expected = '5a1bfc4b14ee4afb8265b432ea88c2e40237905f'
+          assert hashlib.sha1(f'blob {len(data)}\0'.encode() + data).hexdigest() == expected
+          body = json.dumps({'content': base64.b64encode(data).decode(), 'encoding': 'base64'}).encode()
+          request = urllib.request.Request('https://api.github.com/repos/lake-of-fire/LakeOfFire/git/blobs',
+              data=body, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                                 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
+          with urllib.request.urlopen(request, timeout=30) as response:
+              result = json.load(response)
+          assert result['sha'] == expected
+          Path('evidence/stored-blob.txt').write_text(expected + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: storage-outcome-stage-${{ github.run_attempt }}
+          path: evidence
+          retention-days: 7
+          if-no-files-found: error
