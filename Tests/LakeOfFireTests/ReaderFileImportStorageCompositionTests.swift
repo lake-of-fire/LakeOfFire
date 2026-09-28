@@ -92,11 +92,19 @@ final class ReaderFileImportStorageCompositionTests: XCTestCase {
         let fixture = try await Fixture()
         try fixture.put(fixture.source, "new")
         var state = BookDownloadImportState()
-        let result = await fixture.perform()
+        var returnedURL: URL?
+        let result = await fixture.perform { installed in
+            returnedURL = installed
+            return installed
+        }
+        let installed = try XCTUnwrap(returnedURL)
         let expected = fixture.library.appendingPathComponent("book.epub")
-        XCTAssertEqual(result, .imported(expected))
+        // CloudDrive may return a relative URL with its root as the base. Check
+        // filesystem location separately from exact operation-to-state transfer.
+        XCTAssertEqual(installed.absoluteURL.standardizedFileURL, expected.standardizedFileURL)
+        XCTAssertEqual(result, .imported(installed))
         XCTAssertTrue(state.receive(result))
-        XCTAssertEqual(state.importedURL, expected)
+        XCTAssertEqual(state.importedURL, installed)
         XCTAssertNil(state.errorMessage)
         XCTAssertEqual(try fixture.read("book.epub"), "new")
     }
