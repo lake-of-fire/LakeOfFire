@@ -295,6 +295,8 @@ public struct ReaderWebView: View {
     let darkModeTheme: DarkModeTheme
 
     @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
+    @State private var defaultEBookPackageSessions = ReaderEBookServingSessionStore()
+    @Environment(\.readerEBookPackageSessions) private var readerEBookPackageSessions
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
     @State private var navigationTaskManager = NavigationTaskManager()
 
@@ -369,6 +371,12 @@ public struct ReaderWebView: View {
         self.darkModeTheme = darkModeTheme
     }
 
+    private func configuredEBookURLSchemeHandler() -> EbookURLSchemeHandler {
+        let handler = ebookURLSchemeHandler
+        handler.packageSessions = readerEBookPackageSessions ?? defaultEBookPackageSessions
+        return handler
+    }
+
     public var body: some View {
         let handler = ReaderWebViewHandler(
             navigationTaskManager: navigationTaskManager,
@@ -383,7 +391,7 @@ public struct ReaderWebView: View {
             readerMediaPlayerViewModel: readerMediaPlayerViewModel,
             scriptCaller: scriptCaller
         )
-        let ebookURLSchemeHandler = self.ebookURLSchemeHandler
+        let ebookURLSchemeHandler = configuredEBookURLSchemeHandler()
         let readerFileURLSchemeHandler = self.readerFileURLSchemeHandler
         ReaderWebViewInternal(
             persistentWebViewID: persistentWebViewID,
