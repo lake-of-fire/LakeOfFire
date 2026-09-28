@@ -491,55 +491,22 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
         
         let targetDirectory = try await Self.rootRelativePath(forImportedURL: downloadURL ?? fileURL, drive: drive)
-        var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
-        let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
-        
         let shouldStopAccessingFile = fileURL.startAccessingSecurityScopedResource()
         defer {
             if shouldStopAccessingFile {
                 fileURL.stopAccessingSecurityScopedResource()
             }
         }
-        
+
         try await drive.createDirectory(at: targetDirectory)
-        
-        var targetExists = false
-        var distinctTargetExists = false
-        var originData: Data?
-        if targetURL.isFilePackage() {
-            targetExists = true
-            if fileURL.isFilePackage() {
-                originData = try fileURL.concatenateDataInDirectory()
-                distinctTargetExists = try targetURL != fileURL && targetURL.concatenateDataInDirectory() != originData
-            } else {
-                distinctTargetExists = true
-            }
-        } else if try await drive.fileExists(at: targetFilePath) {
-            let coordinatedFileManager = CoordinatedFileManager()
-            originData = try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: fileURL)
-            targetExists = true
-            distinctTargetExists = targetURL != fileURL
-            if !distinctTargetExists {
-                distinctTargetExists = try await drive.readFile(at: targetFilePath) != originData
-            }
-        }
-        if distinctTargetExists, let originData = originData {
-            if try await drive.readFile(at: targetFilePath) != originData {
-                // Make a unique filename
-                var ext = fileURL.lakePathExtension
-                if !ext.isEmpty {
-                    ext = "." + ext
-                }
-                let hash = String(format: "%02X", stableHash(data: originData)).prefix(6).uppercased()
-                let newFileName = fileURL.deletingPathExtension().lastPathComponent + " (\(hash))" + ext
-                targetFilePath = targetDirectory.appending(newFileName)
-            }
-        }
-        // Don't overwrite
-        if distinctTargetExists || !targetExists {
-            try await drive.upload(from: fileURL, to: targetFilePath)
-        }
-        
+        let targetFilePath = try await ReaderFileImportStorage.install(
+            fileURL: fileURL,
+            targetDirectory: targetDirectory,
+            drive: drive,
+            pathExtension: fileURL.lakePathExtension,
+            collisionTag: { String(format: "%02X", stableHash(data: $0)).prefix(6).uppercased() }
+        )
+
         do {
             _ = try await refreshFilesMetadata(
                 drive: drive,
