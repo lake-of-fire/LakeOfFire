@@ -7,13 +7,18 @@ import FoundationNetworking
 @testable import LakeOfFireOPDS
 
 final class opds_parser_url_test: XCTestCase {
+    private var session: URLSession!
+
     override func setUp() {
         super.setUp()
-        URLProtocol.registerClass(MockOPDSURLProtocol.self)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockOPDSURLProtocol.self]
+        session = URLSession(configuration: configuration)
     }
 
     override func tearDown() {
-        URLProtocol.unregisterClass(MockOPDSURLProtocol.self)
+        session.invalidateAndCancel()
+        session = nil
         MockOPDSURLProtocol.requestHandler = nil
         super.tearDown()
     }
@@ -27,7 +32,7 @@ final class opds_parser_url_test: XCTestCase {
         }
 
         let result = await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/feed.json")!) { parseData, error in
+            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/feed.json")!, session: session) { parseData, error in
                 continuation.resume(returning: (parseData, error))
             }
         }
@@ -44,7 +49,7 @@ final class opds_parser_url_test: XCTestCase {
         }
 
         let result = await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/bad.xml")!) { parseData, error in
+            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/bad.xml")!, session: session) { parseData, error in
                 continuation.resume(returning: (parseData, error))
             }
         }
@@ -60,7 +65,7 @@ final class opds_parser_url_test: XCTestCase {
         }
 
         let result = await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/bad.json")!) { parseData, error in
+            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/bad.json")!, session: session) { parseData, error in
                 continuation.resume(returning: (parseData, error))
             }
         }
