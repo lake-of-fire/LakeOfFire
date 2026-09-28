@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the full OPDS module's URL-port and retained document tests.
+"""Run the complete OPDS module and all retained, ported and concurrency tests.
 
 The default matches main's Swift 6 language mode. --language-mode 5 is an
 explicit supplemental behavior probe, not qualification of main's build.
@@ -24,18 +24,13 @@ def main() -> int:
     paths = sorted(source_directory.rglob("*.swift"))
     if not paths:
         parser.error(f"No OPDS sources found at {source_directory}")
-    paths.extend(test_directory / name for name in (
-        "OPDSURLForwardPortTests.swift",
-        "readium_opds1_1_test.swift",
-        "readium_opds2_0_test.swift",
-        "Samples/wiki_1_1.opds",
-        "Samples/opds_2_0.json",
-    ))
+    paths.extend(sorted(test_directory.glob("*.swift")))
+    paths.extend(sorted(path for path in (test_directory / "Samples").rglob("*") if path.is_file()))
     for path in paths:
         if not path.is_file():
             parser.error(f"Required input is missing: {path}")
     subprocess.run(["swift", "--version"], check=True)
-    print(f"Swift language mode {arguments.language_mode}; complete OPDS sources, document tests only", flush=True)
+    print(f"Swift language mode {arguments.language_mode}; complete OPDS sources and complete OPDS test target", flush=True)
     with tempfile.TemporaryDirectory(prefix="opds-url-port-") as temporary:
         workspace = Path(temporary)
         for path in paths:

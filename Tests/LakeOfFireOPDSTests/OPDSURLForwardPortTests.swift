@@ -142,14 +142,14 @@ final class OPDSURLForwardPortTests: XCTestCase {
         XCTAssertEqual(Link(href: "/book.epub?q=cat&lang=ja#chapter").url(relativeTo: base)?.absoluteString, expected)
     }
 
-    func testStandaloneJSONPublicationRelativeLinkRemainsUsable() throws {
+    func testStandaloneJSONPublicationNormalizesItsRelativeLink() throws {
         let data = try JSONSerialization.data(withJSONObject: [
             "metadata": ["title": "Book"], "links": [["href": "?download=1"]]
         ])
         let response = URLResponse(url: base, mimeType: "application/opds+json", expectedContentLength: -1, textEncodingName: nil)
         let parsed = try OPDS2Parser.parse(jsonData: data, url: base, response: response)
         let link = try XCTUnwrap(parsed.publication?.links.first)
-        XCTAssertEqual(link.href, "?download=1")
+        XCTAssertEqual(link.href, "https://catalog.example/nested/feed.xml?download=1")
         XCTAssertEqual(link.url(relativeTo: base)?.absoluteString, "https://catalog.example/nested/feed.xml?download=1")
     }
 

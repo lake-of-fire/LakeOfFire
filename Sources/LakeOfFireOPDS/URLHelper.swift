@@ -28,6 +28,38 @@ enum URLHelper {
         return url
     }
 
+    static func resolveTemplate(_ template: String, base: URL?) -> String? {
+        // Hide complete literal parameters while resolving the surrounding URI:
+        // an optional parameter's '?' must not become the URI query separator.
+        // Existing %7B/%7D escapes remain literal data, not template parameters.
+        var marker = "_OPDS_TEMPLATE_"
+        while template.contains(marker) || base?.absoluteString.contains(marker) == true {
+            marker += "_"
+        }
+        var protected = ""
+        var parameters: [(token: String, value: String)] = []
+        var cursor = template.startIndex
+        while cursor < template.endIndex {
+            if template[cursor] == "{" {
+                guard let end = template[cursor...].firstIndex(of: "}"),
+                      !template[template.index(after: cursor)..<end].contains("{") else { return nil }
+                let token = marker + String(parameters.count) + "_"
+                parameters.append((token, String(template[cursor...end])))
+                protected += token
+                cursor = template.index(after: end)
+            } else {
+                guard template[cursor] != "}" else { return nil }
+                protected.append(template[cursor])
+                cursor = template.index(after: cursor)
+            }
+        }
+        guard var resolved = getAbsolute(href: protected, base: base) else { return nil }
+        for parameter in parameters {
+            resolved = resolved.replacingOccurrences(of: parameter.token, with: parameter.value)
+        }
+        return resolved
+    }
+
     static func isAbsolute(href: String) -> Bool {
         resolve(href: href, base: nil) != nil
     }
