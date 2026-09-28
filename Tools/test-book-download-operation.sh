@@ -10,7 +10,8 @@ cp "$root/Tests/LakeOfFireTests/BookDownloadOperationTests.swift" "$work/Tests/L
 cat > "$work/Package.swift" <<'MANIFEST'
 // swift-tools-version: 6.2
 import PackageDescription
-let package = Package(name: "BookDownloadOperationPort", targets: [
+let package = Package(name: "BookDownloadOperationPort",
+    platforms: [.macOS(.v15), .iOS(.v15)], targets: [
     .target(name: "LakeOfFireReader"),
     .testTarget(name: "LakeOfFireTests", dependencies: ["LakeOfFireReader"])
 ], swiftLanguageModes: [.v6])
