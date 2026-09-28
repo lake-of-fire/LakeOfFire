@@ -41,24 +41,9 @@ struct BookLibrarySheetsModifier: ViewModifier {
             .environmentObject(opdsCatalogsViewModel)
             .background {
                 Color.clear
-                    .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile, allowedContentTypes: ReaderFileManager.shared.readerContentMimeTypes) { result in
-                        Task { @MainActor in
-                            switch result {
-                            case .success(let url):
-                                do {
-                                    guard let _ = try await ReaderFileManager.shared.importFile(fileURL: url, fromDownloadURL: nil) else {
-                                        print("Couldn't import \(url.absoluteString)")
-                                        return
-                                    }
-                                } catch {
-                                    print("Couldn't import \(url.absoluteString): \(error)")
-                                    return
-                                }
-                            case .failure(let error):
-                                print(error)
-                            }
-                        }
-                    }
+                    .readerContentFileImporter(
+                        isPresented: $bookLibraryModalsModel.isImportingBookFile.gatedBy(isActive)
+                    )
             }
     }
 }

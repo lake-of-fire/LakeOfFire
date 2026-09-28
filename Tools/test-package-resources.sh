@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Real production package-reader and EPUB parser, excluding app/file-manager cache.
+# Real production package-reader, EPUB parser and import operation. The app cache
+# and SwiftUI wrappers still need the assembled ReaderFileManager/WebKit graph.
 set -euo pipefail
 if [[ "$(uname -s)" != Darwin ]]; then
   echo 'These I/O tests require the Apple CryptoKit/UTType implementation; not executed.' >&2
@@ -27,7 +28,9 @@ cp "$root/Tools/PackageResourceTests/Package.swift" "$work/Package.swift"
 # full ReaderFileManager graph; two corresponding tests remain full-host only.
 awk '/^public actor ReaderPackageEntrySourceCache/ { exit } !/^import LakeOfFire(Core|Adblock)$/ { print }' \
   "$root/Sources/LakeOfFireContent/Files/Archive+Data.swift" > "$work/Sources/LakeOfFireContent/ReaderPackageEntrySource.swift"
-cp "$root/Sources/LakeOfFireContent/Files/ReaderPackageResourceLimits.swift" "$work/Sources/LakeOfFireContent/"
+for source in ReaderPackageResourceLimits ReaderFileOperationErrors ReaderFileImportPresentation ReaderFileImportOperation; do
+  cp "$root/Sources/LakeOfFireContent/Files/$source.swift" "$work/Sources/LakeOfFireContent/"
+done
 cp "$root/Sources/LakeOfFireReader/Reader/Books/EPubParser.swift" "$work/Sources/LakeOfFireReader/"
 # Select the 22 existing I/O cases unchanged; leave the two app-cache cases in
 # their original full-host suite instead of compiling them against a test double.
@@ -44,7 +47,7 @@ excluded, after = tail.split(end)
 assert excluded.count("    func test") == 1
 (work / "Tests/PackageResourceTests/ReaderPackageEntrySourceTests.swift").write_text(before + end + after)
 PYEXTRACT
-for suite in ReaderPackageResourceBudget ReaderPackageResourceLimit EPubMetadataResourceLimit; do
+for suite in ReaderPackageResourceBudget ReaderPackageResourceLimit EPubMetadataResourceLimit ReaderFileImportPort; do
   cp "$root/Tests/LakeOfFireTests/${suite}Tests.swift" "$work/Tests/PackageResourceTests/"
 done
 swift test --package-path "$work" "$@"
