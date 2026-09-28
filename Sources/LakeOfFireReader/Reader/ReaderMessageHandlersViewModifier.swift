@@ -8,35 +8,6 @@ import LakeKit
 import LakeOfFireContent
 import LakeOfFireCore
 
-private struct ReaderEBookInitialRestoreBridgeRequest {
-    let requestID = UUID().uuidString
-    let cfi: String
-    let fractionalCompletion: Double?
-    let requestedLocator: String
-
-    init?(restore: ReaderContentEbookInitialRestore?) {
-        guard let restore else { return nil }
-        cfi = restore.cfi
-        fractionalCompletion = restore.fractionalCompletion.map(Double.init)
-        let hasCFI = !cfi.isEmpty
-        let hasFraction = (fractionalCompletion ?? 0) > 0
-        guard hasCFI || hasFraction else { return nil }
-        requestedLocator = hasCFI ? "cfi" : "fraction"
-    }
-
-    var javaScriptArgument: [String: any Sendable] {
-        var argument: [String: any Sendable] = [
-            "requestID": requestID,
-            "requestedLocator": requestedLocator,
-            "cfi": cfi,
-        ]
-        if let fractionalCompletion {
-            argument["fractionalCompletion"] = fractionalCompletion
-        }
-        return argument
-    }
-}
-
 public typealias ReaderShowOriginalWillBeginHandler = @MainActor @Sendable (_ contentURL: URL, _ pageURL: URL) async -> Void
 public struct ReaderNavigationVisibilityChange: Sendable {
     public let shouldHide: Bool
@@ -972,63 +943,61 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         "page=\(url.absoluteString)",
                         "frame=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")"
                     )
-                    _ = try? await scriptCaller.evaluateJavaScript(
-                        "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
-                        in: message.frameInfo
-                    )
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        do {
-                            let initialRestore = try? await ReaderContentReadingProgressLoader
-                                .ebookInitialRestoreLoader?(url)
-                            let defaults = UserDefaults.standard
-                            let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16
-                            let rawWritingDirection = defaults.string(
-                                forKey: "bookWritingDirectionSetting"
-                            ) ?? "original"
-                            let writingDirection = ["original", "horizontal", "vertical"]
-                                .contains(rawWritingDirection)
-                                ? rawWritingDirection
-                                : "original"
-                            let readerPresentationState: [String: any Sendable] = [
-                                "colorScheme": colorScheme == .dark ? "dark" : "light",
-                                "lightModeTheme": defaults.string(forKey: "lightModeTheme") ?? "white",
-                                "darkModeTheme": defaults.string(forKey: "darkModeTheme") ?? "black",
-                                "readerFontSize": readerFontSize,
-                                "readerContentRTSize": readerFontSize * 0.46,
-                                "readerBoldText": defaults.object(forKey: "readerBoldText") as? Bool ?? false,
-                                "maxWidthOverride": readerAdaptiveMaxWidthOverrideCSSValue(
-                                    readerFontSize: readerFontSize
-                                ),
-                                "writingDirection": writingDirection,
-                            ]
-                            var loadArguments: [String: any Sendable] = [
-                                "url": loaderURL.absoluteString,
-                                "layoutMode": defaults.string(forKey: "ebookViewerLayout") ?? "paginated",
-                                "readerPresentationState": readerPresentationState,
-                            ]
-                            let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(
-                                restore: initialRestore
-                            )
-                            loadArguments["initialRestore"] =
-                                initialRestoreRequest?.javaScriptArgument ?? NSNull()
-                            try await scriptCaller.evaluateJavaScript(
-                                """
-                                window.loadEBook({
-                                    url,
-                                    layoutMode,
-                                    initialRestore,
-                                    readerPresentationState
-                                });
-                                """,
-                                arguments: loadArguments,
-                                in: message.frameInfo
-                            )
-                        } catch {
-                            Logger.shared.logger.error(
-                                "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
-                            )
+                    do {
+                        try Task.checkCancellation()
+                        _ = try await scriptCaller.evaluateJavaScript(
+                            "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
+                            in: message.frameInfo
+                        )
+                        let initialRestoreRequest = try await ReaderEBookInitialRestoreBridgeRequest.prepare {
+                            try await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
                         }
+                        let defaults = UserDefaults.standard
+                        let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16
+                        let rawWritingDirection = defaults.string(
+                            forKey: "bookWritingDirectionSetting"
+                        ) ?? "original"
+                        let writingDirection = ["original", "horizontal", "vertical"]
+                            .contains(rawWritingDirection)
+                            ? rawWritingDirection
+                            : "original"
+                        let readerPresentationState: [String: any Sendable] = [
+                            "colorScheme": colorScheme == .dark ? "dark" : "light",
+                            "lightModeTheme": defaults.string(forKey: "lightModeTheme") ?? "white",
+                            "darkModeTheme": defaults.string(forKey: "darkModeTheme") ?? "black",
+                            "readerFontSize": readerFontSize,
+                            "readerContentRTSize": readerFontSize * 0.46,
+                            "readerBoldText": defaults.object(forKey: "readerBoldText") as? Bool ?? false,
+                            "maxWidthOverride": readerAdaptiveMaxWidthOverrideCSSValue(
+                                readerFontSize: readerFontSize
+                            ),
+                            "writingDirection": writingDirection,
+                        ]
+                        var loadArguments: [String: any Sendable] = [
+                            "url": loaderURL.absoluteString,
+                            "layoutMode": defaults.string(forKey: "ebookViewerLayout") ?? "paginated",
+                            "readerPresentationState": readerPresentationState,
+                        ]
+                        loadArguments["initialRestore"] =
+                            initialRestoreRequest?.javaScriptArgument ?? NSNull()
+                        try await scriptCaller.evaluateJavaScript(
+                            """
+                            window.loadEBook({
+                                url,
+                                layoutMode,
+                                initialRestore,
+                                readerPresentationState
+                            });
+                            """,
+                            arguments: loadArguments,
+                            in: message.frameInfo
+                        )
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        Logger.shared.logger.error(
+                            "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
+                        )
                     }
                 }
             }),
