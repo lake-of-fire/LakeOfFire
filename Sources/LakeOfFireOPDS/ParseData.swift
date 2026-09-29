@@ -27,6 +27,9 @@ public struct ParseData {
     /// The URLResponse got after fetching the ressource
     var response: URLResponse
 
+    /// The final response URL used to resolve the document's relative links.
+    public var documentURL: URL { response.url ?? url }
+
     /// The OPDS version
     var version: Version
 
