@@ -449,7 +449,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         case index(reason: String, mimeType: String?)
     }
 
-    private struct RefreshMetadataIdentity: Hashable {
+    private struct RefreshMetadataIdentity: Hashable, Sendable {
         let realmConfiguration: String
         let localDriveRoot: String?
         let cloudDriveRoot: String?
@@ -462,6 +462,47 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let createdAt: Date
         let modifiedAt: Date
         let location: String
+    }
+
+    private struct InventoryCommitContext: Sendable {
+        let orphanCandidates: [InventoryOrphanCandidate]
+        let completeLocations: Set<String>
+        let inventoryReceipt: UInt64
+        let refreshIdentity: RefreshMetadataIdentity
+    }
+
+    private struct DiscoveredContentFile: Sendable {
+        let readerFileURL: URL
+        let absoluteFileURL: URL
+        let storageScopeIdentifier: String
+    }
+
+    private final class InventoryDiscoveryStage: @unchecked Sendable {
+        private let lock = NSLock()
+        let managerIdentity: ObjectIdentifier
+        let realmConfigurationIdentity: String
+        private var discoveredFiles = [DiscoveredContentFile]()
+        private var didStageDiscovery = false
+
+        init(managerIdentity: ObjectIdentifier, realmConfigurationIdentity: String) {
+            self.managerIdentity = managerIdentity
+            self.realmConfigurationIdentity = realmConfigurationIdentity
+        }
+
+        func append(_ files: [DiscoveredContentFile]) {
+            lock.withLock {
+                didStageDiscovery = true
+                discoveredFiles.append(contentsOf: files)
+            }
+        }
+
+        func snapshot() -> [DiscoveredContentFile] {
+            lock.withLock { discoveredFiles }
+        }
+
+        var wasUsed: Bool {
+            lock.withLock { didStageDiscovery }
+        }
     }
 
     private struct PostprocessorSourceGeneration: Equatable, Sendable {
@@ -508,6 +549,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let contentFile: ContentFile
         let absoluteFileURL: URL
         let sourceGeneration: PostprocessorSourceGeneration
+        let storageScopeIdentifier: String
     }
 
     /// A complete inventory is valid only until the next drive observation. The
@@ -588,6 +630,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
     private let processorRegistry = ReaderFileProcessorRegistry()
     @TaskLocal private static var operationProcessorSnapshot: ReaderFileProcessorOperationSnapshot?
+    @TaskLocal private static var inventoryDiscoveryStage: InventoryDiscoveryStage?
 
     public static var fileDestinationProcessors: [(URL) async throws -> RootRelativePath?] {
         get { shared.processorRegistry.snapshot().destinationProcessors }
@@ -870,6 +913,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
     @MainActor
     var refreshOrphanCleanupWillBeginForTesting: (() async throws -> Void)?
+
+    @MainActor
+    var refreshInventoryDriveWillScanForTesting: ((String) throws -> Void)?
 
     @MainActor
     var refreshTaskCountForTesting: Int {
@@ -2300,37 +2346,44 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             }
                     }()
                     var completeLocations = Set<String>()
-                    let files = try await Self.$operationProcessorSnapshot.withValue(
-                        ReaderFileProcessorOperationSnapshot(
-                            managerIdentity: ObjectIdentifier(self),
-                            processors: processorSnapshot
-                        )
-                    ) {
-                        var files = [ThreadSafeReference<ContentFile>]()
-                        for (location, drive) in drives {
-                            try Task.checkCancellation()
-                            guard refreshMetadataIdentityIsCurrent(
-                                refreshIdentity,
-                                realmConfiguration: realmConfiguration
-                            ), driveInventoryGeneration.isCurrent(inventoryReceipt) else {
-                                throw ReaderFileManagerError.refreshSuperseded
+                    let discoveryStage = InventoryDiscoveryStage(
+                        managerIdentity: ObjectIdentifier(self),
+                        realmConfigurationIdentity: refreshIdentity.realmConfiguration
+                    )
+                    var files = try await Self.$inventoryDiscoveryStage.withValue(discoveryStage) {
+                        try await Self.$operationProcessorSnapshot.withValue(
+                            ReaderFileProcessorOperationSnapshot(
+                                managerIdentity: ObjectIdentifier(self),
+                                processors: processorSnapshot
+                            )
+                        ) {
+                            var files = [ThreadSafeReference<ContentFile>]()
+                            for (location, drive) in drives {
+                                try Task.checkCancellation()
+                                guard refreshMetadataIdentityIsCurrent(
+                                    refreshIdentity,
+                                    realmConfiguration: realmConfiguration
+                                ), driveInventoryGeneration.isCurrent(inventoryReceipt) else {
+                                    throw ReaderFileManagerError.refreshSuperseded
+                                }
+                                try refreshInventoryDriveWillScanForTesting?(location)
+                                if let discovered = try await refreshFilesMetadata(
+                                    drive: drive,
+                                    realmConfiguration: realmConfiguration
+                                ) {
+                                    files.append(contentsOf: discovered)
+                                }
+                                try Task.checkCancellation()
+                                guard refreshMetadataIdentityIsCurrent(
+                                    refreshIdentity,
+                                    realmConfiguration: realmConfiguration
+                                ), driveInventoryGeneration.isCurrent(inventoryReceipt) else {
+                                    throw ReaderFileManagerError.refreshSuperseded
+                                }
+                                completeLocations.insert(location)
                             }
-                            if let discovered = try await refreshFilesMetadata(
-                                drive: drive,
-                                realmConfiguration: realmConfiguration
-                            ) {
-                                files.append(contentsOf: discovered)
-                            }
-                            try Task.checkCancellation()
-                            guard refreshMetadataIdentityIsCurrent(
-                                refreshIdentity,
-                                realmConfiguration: realmConfiguration
-                            ), driveInventoryGeneration.isCurrent(inventoryReceipt) else {
-                                throw ReaderFileManagerError.refreshSuperseded
-                            }
-                            completeLocations.insert(location)
+                            return files
                         }
-                        return files
                     }
                     if !completeLocations.contains("icloud"),
                        orphanCandidates.contains(where: { $0.location == "icloud" }) {
@@ -2338,6 +2391,34 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     }
                     guard orphanCandidates.allSatisfy({ completeLocations.contains($0.location) }) else {
                         throw ReaderFileManagerError.incompleteFileInventory
+                    }
+
+                    let stagedFiles = discoveryStage.snapshot()
+                    if discoveryStage.wasUsed {
+                        // A hybrid override must not leave its returned rows outside
+                        // the staged transaction's discovered set and orphan protection.
+                        guard files.isEmpty else {
+                            throw ReaderFileManagerError.incompleteFileInventory
+                        }
+                        try await refreshOrphanCleanupWillBeginForTesting?()
+                        try Task.checkCancellation()
+                        guard refreshMetadataIdentityIsCurrent(
+                            refreshIdentity,
+                            realmConfiguration: realmConfiguration
+                        ), driveInventoryGeneration.isCurrent(inventoryReceipt) else {
+                            throw ReaderFileManagerError.refreshSuperseded
+                        }
+                        files.append(contentsOf: try await persistDiscoveredFileMetadata(
+                            stagedFiles,
+                            realmConfiguration: realmConfiguration,
+                            processorSnapshot: processorSnapshot,
+                            inventoryCommit: InventoryCommitContext(
+                                orphanCandidates: orphanCandidates,
+                                completeLocations: completeLocations,
+                                inventoryReceipt: inventoryReceipt,
+                                refreshIdentity: refreshIdentity
+                            )
+                        ))
                     }
 
                     let discoveredFiles = files
@@ -2370,58 +2451,64 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         }
                         let discoveredPrimaryKeys = Set(discoveredIdentities.map(\.primaryKey))
 
-                        // Delete orphans (objects with no corresponding file on disk)
-                        try await self.refreshOrphanCleanupWillBeginForTesting?()
-                        try await { @RealmBackgroundActor in
-                            try Task.checkCancellation()
-                            guard await MainActor.run(body: {
-                                self.refreshMetadataIdentity(for: realmConfiguration) == refreshIdentity
-                                    && self.driveInventoryGeneration.isCurrent(inventoryReceipt)
-                            }) else {
-                                throw ReaderFileManagerError.refreshSuperseded
-                            }
-                            let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                                for: realmConfiguration
-                            )
-                            try Task.checkCancellation()
-                            guard await MainActor.run(body: {
-                                self.refreshMetadataIdentityIsCurrent(
-                                    refreshIdentity,
-                                    realmConfiguration: realmConfiguration
-                                ) && self.driveInventoryGeneration.isCurrent(inventoryReceipt)
-                            }) else {
-                                throw ReaderFileManagerError.refreshSuperseded
-                            }
-                            try await realm.asyncWrite {
-                                try self.driveInventoryGeneration.mutateIfCurrent(inventoryReceipt) {
-                                    var orphanPrimaryKeys = [String]()
-                                    let timestamp = Date()
-                                    for candidate in orphanCandidates where
-                                        !discoveredPrimaryKeys.contains(candidate.primaryKey) {
-                                        try Task.checkCancellation()
-                                        guard let orphan = realm.object(
-                                            ofType: ContentFile.self,
-                                            forPrimaryKey: candidate.primaryKey
-                                        ), !orphan.isDeleted,
-                                        orphan.url == candidate.url,
-                                        orphan.createdAt == candidate.createdAt,
-                                        orphan.modifiedAt == candidate.modifiedAt else {
-                                            continue
-                                        }
-                                        orphan.isDeleted = true
-                                        orphan.refreshChangeMetadata(
-                                            explicitlyModified: true,
-                                            at: timestamp
-                                        )
-                                        orphanPrimaryKeys.append(candidate.primaryKey)
-                                    }
-                                    Self.deletePostprocessingWorkItems(
-                                        contentFilePrimaryKeys: orphanPrimaryKeys,
-                                        in: realm
-                                    )
+                        // Overrides may supply already-persisted references. Keep their
+                        // targeted behavior while the concrete manager stages both roots.
+                        if !discoveryStage.wasUsed {
+                            try await self.refreshOrphanCleanupWillBeginForTesting?()
+                            try await { @RealmBackgroundActor in
+                                try Task.checkCancellation()
+                                guard await MainActor.run(body: {
+                                    self.refreshMetadataIdentityIsCurrent(
+                                        refreshIdentity,
+                                        realmConfiguration: realmConfiguration
+                                    ) && self.driveInventoryGeneration.isCurrent(inventoryReceipt)
+                                }) else {
+                                    throw ReaderFileManagerError.refreshSuperseded
                                 }
-                            }
-                        }()
+                                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                                    for: realmConfiguration
+                                )
+                                try Task.checkCancellation()
+                                guard await MainActor.run(body: {
+                                    self.refreshMetadataIdentityIsCurrent(
+                                        refreshIdentity,
+                                        realmConfiguration: realmConfiguration
+                                    ) && self.driveInventoryGeneration.isCurrent(inventoryReceipt)
+                                }) else {
+                                    throw ReaderFileManagerError.refreshSuperseded
+                                }
+                                try await realm.asyncWrite {
+                                    try self.driveInventoryGeneration.mutateIfCurrent(inventoryReceipt) {
+                                        var orphanPrimaryKeys = [String]()
+                                        let timestamp = Date()
+                                        for candidate in orphanCandidates where
+                                            !discoveredPrimaryKeys.contains(candidate.primaryKey) {
+                                            try Task.checkCancellation()
+                                            guard let orphan = realm.object(
+                                                ofType: ContentFile.self,
+                                                forPrimaryKey: candidate.primaryKey
+                                            ), !orphan.isDeleted,
+                                            orphan.url == candidate.url,
+                                            orphan.createdAt == candidate.createdAt,
+                                            orphan.modifiedAt == candidate.modifiedAt else {
+                                                continue
+                                            }
+                                            orphan.isDeleted = true
+                                            orphan.refreshChangeMetadata(
+                                                explicitlyModified: true,
+                                                at: timestamp
+                                            )
+                                            orphanPrimaryKeys.append(candidate.primaryKey)
+                                        }
+                                        Self.deletePostprocessingWorkItems(
+                                            contentFilePrimaryKeys: orphanPrimaryKeys,
+                                            in: realm
+                                        )
+                                    }
+                                }
+                            }()
+                        }
+
                         try Task.checkCancellation()
                         let finalRealm = try await Realm.open(configuration: realmConfiguration)
                         try await finalRealm.asyncRefresh()
@@ -2493,11 +2580,13 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         } else {
             processorSnapshot = processorRegistry.snapshot()
         }
+        let inventoryDiscoveryStage = relativePath == nil ? Self.inventoryDiscoveryStage : nil
         return try await refreshFilesMetadata(
             drive: drive,
             relativePath: relativePath,
             realmConfiguration: realmConfiguration,
-            processorSnapshot: processorSnapshot
+            processorSnapshot: processorSnapshot,
+            inventoryDiscoveryStage: inventoryDiscoveryStage
         )
     }
 
@@ -2506,7 +2595,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         drive: CloudDrive,
         relativePath: RootRelativePath?,
         realmConfiguration: Realm.Configuration?,
-        processorSnapshot: ReaderFileProcessorRegistrySnapshot
+        processorSnapshot: ReaderFileProcessorRegistrySnapshot,
+        inventoryDiscoveryStage: InventoryDiscoveryStage? = nil
     ) async throws -> [ThreadSafeReference<ContentFile>]? {
         let realmConfiguration = realmConfiguration ?? resolvedHistoryRealmConfiguration
         var files = [ThreadSafeReference<ContentFile>]()
@@ -2558,7 +2648,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         drive: drive,
                         relativePath: tryRelativePath,
                         realmConfiguration: realmConfiguration,
-                        processorSnapshot: processorSnapshot
+                        processorSnapshot: processorSnapshot,
+                        inventoryDiscoveryStage: inventoryDiscoveryStage
                     )
                     files.append(contentsOf: discoveredFiles ?? [])
                 } else {
@@ -2616,39 +2707,88 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             throw error
         }
 
-        if !filesToUpdate.isEmpty {
-            let pendingFilesToUpdate = filesToUpdate
-            let storageScopeIdentifier = Self.postprocessorStorageScopeIdentifier(
-                drive: drive,
-                realmConfiguration: realmConfiguration
-            )
-            let updatedFiles = try await { @RealmBackgroundActor in
-                var updatedFiles = [ContentFile]()
-                var allFileRefs = [ThreadSafeReference<ContentFile>]()
-                var candidatesByPrimaryKey = [String: PostprocessorCandidate]()
-                var candidatePrimaryKeys = [String]()
-                var updatedPrimaryKeys = Set<String>()
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                    for: realmConfiguration
+        let discoveredFiles = filesToUpdate.map { readerFileURL, absoluteFileURL in
+            DiscoveredContentFile(
+                readerFileURL: readerFileURL,
+                absoluteFileURL: absoluteFileURL,
+                storageScopeIdentifier: Self.postprocessorStorageScopeIdentifier(
+                    drive: drive,
+                    realmConfiguration: realmConfiguration
                 )
+            )
+        }
+        if let inventoryDiscoveryStage,
+           inventoryDiscoveryStage.managerIdentity == ObjectIdentifier(self),
+           inventoryDiscoveryStage.realmConfigurationIdentity
+                == Self.realmConfigurationIdentity(realmConfiguration) {
+            inventoryDiscoveryStage.append(discoveredFiles)
+            return files
+        }
+        files.append(contentsOf: try await persistDiscoveredFileMetadata(
+            discoveredFiles,
+            realmConfiguration: realmConfiguration,
+            processorSnapshot: processorSnapshot
+        ))
+        return files
+    }
 
-                try await realm.asyncWrite {
-                    for (readerFileURL, absoluteFileURL) in pendingFilesToUpdate {
+    @MainActor
+    private func persistDiscoveredFileMetadata(
+        _ discoveredFiles: [DiscoveredContentFile],
+        realmConfiguration: Realm.Configuration,
+        processorSnapshot: ReaderFileProcessorRegistrySnapshot,
+        inventoryCommit: InventoryCommitContext? = nil
+    ) async throws -> [ThreadSafeReference<ContentFile>] {
+        guard !discoveredFiles.isEmpty || inventoryCommit != nil else { return [] }
+        let pendingFilesToUpdate = discoveredFiles
+        let updatedFiles = try await { @RealmBackgroundActor in
+            var updatedFiles = [ContentFile]()
+            var allFileRefs = [ThreadSafeReference<ContentFile>]()
+            var candidatesByPrimaryKey = [String: PostprocessorCandidate]()
+            var candidatePrimaryKeys = [String]()
+            var updatedPrimaryKeys = Set<String>()
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: realmConfiguration
+            )
+            if let inventoryCommit {
+                guard
+                    await MainActor.run(body: {
+                        self.refreshMetadataIdentityIsCurrent(
+                            inventoryCommit.refreshIdentity,
+                            realmConfiguration: realmConfiguration
+                        ) && self.driveInventoryGeneration.isCurrent(inventoryCommit.inventoryReceipt)
+                    })
+                else {
+                    throw ReaderFileManagerError.refreshSuperseded
+                }
+            }
+            try await realm.asyncWrite {
+                let admitDiscoveredFilesAndCleanup: () throws -> Void = {
+                    try Task.checkCancellation()
+                    for discoveredFile in pendingFilesToUpdate {
+                        let readerFileURL = discoveredFile.readerFileURL
+                        let absoluteFileURL = discoveredFile.absoluteFileURL
                         try Task.checkCancellation()
                         let sourceGeneration = Self.postprocessorSourceGeneration(
                             at: absoluteFileURL
                         )
 
-                        if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
+                        if let existing = realm.objects(ContentFile.self).filter(
+                            NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)
+                        ).first {
                             try Task.checkCancellation()
-                            if try setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: existing) {
+                            if try self.setMetadata(
+                                readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL,
+                                contentFile: existing)
+                            {
                                 updatedFiles.append(existing)
                                 updatedPrimaryKeys.insert(existing.compoundKey)
                             }
                             candidatesByPrimaryKey[existing.compoundKey] = PostprocessorCandidate(
                                 contentFile: existing,
                                 absoluteFileURL: absoluteFileURL,
-                                sourceGeneration: sourceGeneration
+                                sourceGeneration: sourceGeneration,
+                                storageScopeIdentifier: discoveredFile.storageScopeIdentifier
                             )
                             candidatePrimaryKeys.append(existing.compoundKey)
                             allFileRefs.append(ThreadSafeReference(to: existing))
@@ -2656,7 +2796,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             let contentFile = ContentFile()
                             contentFile.url = readerFileURL
                             try Task.checkCancellation()
-                            if try setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: contentFile) {
+                            if try self.setMetadata(
+                                readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL,
+                                contentFile: contentFile)
+                            {
                                 contentFile.updateCompoundKey()
                                 contentFile.isReaderModeByDefault = ReaderContentLoader.supportsReaderContent(
                                     mimeType: contentFile.mimeType,
@@ -2670,7 +2813,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             candidatesByPrimaryKey[contentFile.compoundKey] = PostprocessorCandidate(
                                 contentFile: contentFile,
                                 absoluteFileURL: absoluteFileURL,
-                                sourceGeneration: sourceGeneration
+                                sourceGeneration: sourceGeneration,
+                                storageScopeIdentifier: discoveredFile.storageScopeIdentifier
                             )
                             candidatePrimaryKeys.append(contentFile.compoundKey)
                             allFileRefs.append(ThreadSafeReference(to: contentFile))
@@ -2682,12 +2826,14 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         for primaryKey in candidatePrimaryKeys {
                             guard let candidate = candidatesByPrimaryKey[primaryKey] else { continue }
                             let contentFile = candidate.contentFile
+                            let storageScopeIdentifier = candidate.storageScopeIdentifier
                             let workItemIdentifier = ReaderFilePostprocessingWorkItem.makeWorkItemIdentifier(
                                 storageScopeIdentifier: storageScopeIdentifier,
                                 processorIdentifier: processorIdentity.identifier,
                                 contentFilePrimaryKey: contentFile.compoundKey
                             )
-                            let portableWorkItemIdentifier = ReaderFilePostprocessingWorkItem
+                            let portableWorkItemIdentifier =
+                                ReaderFilePostprocessingWorkItem
                                 .makePortableWorkItemIdentifier(
                                     processorIdentifier: processorIdentity.identifier,
                                     contentFilePrimaryKey: contentFile.compoundKey
@@ -2696,12 +2842,14 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 ofType: ReaderFilePostprocessingWorkItem.self,
                                 forPrimaryKey: portableWorkItemIdentifier
                             )
-                            guard updatedPrimaryKeys.contains(contentFile.compoundKey)
+                            guard
+                                updatedPrimaryKeys.contains(contentFile.compoundKey)
                                     || realm.object(
                                         ofType: ReaderFilePostprocessingWorkItem.self,
                                         forPrimaryKey: workItemIdentifier
                                     ) != nil
-                                    || portableWorkItem != nil else {
+                                    || portableWorkItem != nil
+                            else {
                                 continue
                             }
                             Self.admitPostprocessingWorkItem(
@@ -2712,33 +2860,86 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 in: realm
                             )
                             if let portableWorkItem,
-                               portableWorkItem.workItemIdentifier != workItemIdentifier {
+                                portableWorkItem.workItemIdentifier != workItemIdentifier
+                            {
                                 realm.delete(portableWorkItem)
                             }
                         }
                     }
+                    if let inventoryCommit {
+                        let discoveredPrimaryKeys = Set(candidatePrimaryKeys)
+                        var orphanPrimaryKeys = [String]()
+                        let timestamp = Date()
+                        for candidate in inventoryCommit.orphanCandidates
+                        where
+                            inventoryCommit.completeLocations.contains(candidate.location)
+                            && !discoveredPrimaryKeys.contains(candidate.primaryKey)
+                        {
+                            try Task.checkCancellation()
+                            guard
+                                let orphan = realm.object(
+                                    ofType: ContentFile.self,
+                                    forPrimaryKey: candidate.primaryKey
+                                ), !orphan.isDeleted,
+                                orphan.url == candidate.url,
+                                orphan.createdAt == candidate.createdAt,
+                                orphan.modifiedAt == candidate.modifiedAt
+                            else {
+                                continue
+                            }
+                            orphan.isDeleted = true
+                            orphan.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                            orphanPrimaryKeys.append(candidate.primaryKey)
+                        }
+                        Self.deletePostprocessingWorkItems(
+                            contentFilePrimaryKeys: orphanPrimaryKeys,
+                            in: realm
+                        )
+                    }
                 }
-                var firstPostprocessorError: (any Swift.Error)?
-                for registration in processorSnapshot.filePostprocessors {
-                    try Task.checkCancellation()
-                    if let processorIdentity = registration.identity {
-                        let pending = candidatePrimaryKeys.compactMap { primaryKey -> (
+                if let inventoryCommit {
+                    try self.driveInventoryGeneration.mutateIfCurrent(
+                        inventoryCommit.inventoryReceipt,
+                        mutation: admitDiscoveredFilesAndCleanup
+                    )
+                } else {
+                    try admitDiscoveredFilesAndCleanup()
+                }
+            }
+            if let inventoryCommit {
+                guard await MainActor.run(body: {
+                    self.refreshMetadataIdentityIsCurrent(
+                        inventoryCommit.refreshIdentity,
+                        realmConfiguration: realmConfiguration
+                    ) && self.driveInventoryGeneration.isCurrent(inventoryCommit.inventoryReceipt)
+                }) else {
+                    throw ReaderFileManagerError.refreshSuperseded
+                }
+            }
+            var firstPostprocessorError: (any Swift.Error)?
+            for registration in processorSnapshot.filePostprocessors {
+                try Task.checkCancellation()
+                if let processorIdentity = registration.identity {
+                    let pending = candidatePrimaryKeys.compactMap {
+                        primaryKey -> (
                             ContentFile,
                             ReaderFilePostprocessorAdmission
                         )? in
-                            guard let candidate = candidatesByPrimaryKey[primaryKey] else {
-                                return nil
-                            }
-                            guard candidate.sourceGeneration.isComplete else {
-                                return nil
-                            }
-                            let contentFile = candidate.contentFile
-                            let workItemIdentifier = ReaderFilePostprocessingWorkItem.makeWorkItemIdentifier(
-                                storageScopeIdentifier: storageScopeIdentifier,
-                                processorIdentifier: processorIdentity.identifier,
-                                contentFilePrimaryKey: contentFile.compoundKey
-                            )
-                            guard let workItem = realm.object(
+                        guard let candidate = candidatesByPrimaryKey[primaryKey] else {
+                            return nil
+                        }
+                        guard candidate.sourceGeneration.isComplete else {
+                            return nil
+                        }
+                        let contentFile = candidate.contentFile
+                        let storageScopeIdentifier = candidate.storageScopeIdentifier
+                        let workItemIdentifier = ReaderFilePostprocessingWorkItem.makeWorkItemIdentifier(
+                            storageScopeIdentifier: storageScopeIdentifier,
+                            processorIdentifier: processorIdentity.identifier,
+                            contentFilePrimaryKey: contentFile.compoundKey
+                        )
+                        guard
+                            let workItem = realm.object(
                                 ofType: ReaderFilePostprocessingWorkItem.self,
                                 forPrimaryKey: workItemIdentifier
                             ),
@@ -2747,100 +2948,100 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 matches: processorIdentity,
                                 storageScopeIdentifier: storageScopeIdentifier,
                                 candidate: candidate
-                            ) else {
-                                return nil
-                            }
-                            return (
-                                contentFile,
-                                ReaderFilePostprocessorAdmission(
-                                    registrationIdentifier: registration.registrationIdentifier,
-                                    processorIdentity: processorIdentity,
-                                    workItemIdentifier: workItemIdentifier,
-                                    attemptIdentifier: workItem.attemptIdentifier,
-                                    storageScopeIdentifier: storageScopeIdentifier,
-                                    contentFilePrimaryKey: contentFile.compoundKey,
-                                    contentFileCreatedAt: contentFile.createdAt,
-                                    readerFileURLString: contentFile.url.absoluteString,
-                                    absoluteFileURL: candidate.absoluteFileURL,
-                                    sourceModifiedAt: candidate.sourceGeneration.modifiedAt,
-                                    sourceFileSize: candidate.sourceGeneration.fileSize
-                                )
                             )
+                        else {
+                            return nil
                         }
-                        for (contentFile, admission) in pending {
-                            try Task.checkCancellation()
-                            let outcome = ReaderFilePostprocessorOutcome()
-                            let postprocessorContext = ReaderFilePostprocessorContext(
-                                readerFileManager: self,
-                                realmConfiguration: realmConfiguration,
-                                realm: realm,
-                                contentFiles: [contentFile],
-                                outcome: outcome,
-                                admission: admission
+                        return (
+                            contentFile,
+                            ReaderFilePostprocessorAdmission(
+                                registrationIdentifier: registration.registrationIdentifier,
+                                processorIdentity: processorIdentity,
+                                workItemIdentifier: workItemIdentifier,
+                                attemptIdentifier: workItem.attemptIdentifier,
+                                storageScopeIdentifier: storageScopeIdentifier,
+                                contentFilePrimaryKey: contentFile.compoundKey,
+                                contentFileCreatedAt: contentFile.createdAt,
+                                readerFileURLString: contentFile.url.absoluteString,
+                                absoluteFileURL: candidate.absoluteFileURL,
+                                sourceModifiedAt: candidate.sourceGeneration.modifiedAt,
+                                sourceFileSize: candidate.sourceGeneration.fileSize
                             )
-                            do {
-                                try await registration.processor(postprocessorContext)
-                            } catch is CancellationError {
-                                throw CancellationError()
-                            } catch {
-                                if firstPostprocessorError == nil {
-                                    firstPostprocessorError = error
-                                }
-                                continue
+                        )
+                    }
+                    for (contentFile, admission) in pending {
+                        try Task.checkCancellation()
+                        let outcome = ReaderFilePostprocessorOutcome()
+                        let postprocessorContext = ReaderFilePostprocessorContext(
+                            readerFileManager: self,
+                            realmConfiguration: realmConfiguration,
+                            realm: realm,
+                            contentFiles: [contentFile],
+                            outcome: outcome,
+                            admission: admission
+                        )
+                        do {
+                            try await registration.processor(postprocessorContext)
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            if firstPostprocessorError == nil {
+                                firstPostprocessorError = error
                             }
-                            try Task.checkCancellation()
-                            if outcome.isDeferred(
-                                contentFilePrimaryKey: contentFile.compoundKey
+                            continue
+                        }
+                        try Task.checkCancellation()
+                        if outcome.isDeferred(
+                            contentFilePrimaryKey: contentFile.compoundKey
+                        ) {
+                            continue
+                        }
+                        try await realm.asyncWrite {
+                            self.processorRegistry.mutateIfCurrentFilePostprocessor(
+                                registrationIdentifier: admission.registrationIdentifier
                             ) {
-                                continue
-                            }
-                            try await realm.asyncWrite {
-                                self.processorRegistry.mutateIfCurrentFilePostprocessor(
-                                    registrationIdentifier: admission.registrationIdentifier
-                                ) {
-                                    guard self.postprocessorStateIsCurrent(
+                                guard
+                                    self.postprocessorStateIsCurrent(
                                         admission,
                                         in: realm
                                     ),
                                     let workItem = realm.object(
                                         ofType: ReaderFilePostprocessingWorkItem.self,
                                         forPrimaryKey: admission.workItemIdentifier
-                                    ) else {
-                                        return false
-                                    }
-                                    realm.delete(workItem)
-                                    return true
+                                    )
+                                else {
+                                    return false
                                 }
+                                realm.delete(workItem)
+                                return true
                             }
                         }
-                        continue
                     }
+                    continue
+                }
 
-                    let postprocessorContext = ReaderFilePostprocessorContext(
-                        readerFileManager: self,
-                        realmConfiguration: realmConfiguration,
-                        realm: realm,
-                        contentFiles: updatedFiles
-                    )
-                    do {
-                        try await registration.processor(postprocessorContext)
-                    } catch is CancellationError {
-                        throw CancellationError()
-                    } catch {
-                        if firstPostprocessorError == nil {
-                            firstPostprocessorError = error
-                        }
+                let postprocessorContext = ReaderFilePostprocessorContext(
+                    readerFileManager: self,
+                    realmConfiguration: realmConfiguration,
+                    realm: realm,
+                    contentFiles: updatedFiles
+                )
+                do {
+                    try await registration.processor(postprocessorContext)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    if firstPostprocessorError == nil {
+                        firstPostprocessorError = error
                     }
                 }
-                if let firstPostprocessorError {
-                    throw firstPostprocessorError
-                }
-                return allFileRefs
-            }()
-            files.append(contentsOf: updatedFiles)
-        }
-
-        return files
+            }
+            if let firstPostprocessorError {
+                throw firstPostprocessorError
+            }
+            return allFileRefs
+        }()
+        return updatedFiles
     }
 
     private static func isDiscoveredDirectory(

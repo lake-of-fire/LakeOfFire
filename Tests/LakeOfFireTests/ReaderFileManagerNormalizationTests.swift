@@ -29,6 +29,19 @@ private final class CountingReaderFileManager: ReaderFileManager, @unchecked Sen
     }
 }
 
+private final class ProcessorCallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func increment() {
+        lock.withLock { value += 1 }
+    }
+
+    var count: Int {
+        lock.withLock { value }
+    }
+}
+
 final class ReaderFileManagerNormalizationTests: XCTestCase {
     private enum MetadataScanError: Swift.Error {
         case failed
@@ -221,6 +234,102 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
             ofType: ReaderFilePostprocessingWorkItem.self,
             forPrimaryKey: identifier
         ) != nil
+    }
+
+    @RealmBackgroundActor
+    private static func inventoryCounts(
+        in configuration: Realm.Configuration
+    ) async throws -> (activeFiles: Int, workItems: Int) {
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: RealmBackgroundActor.shared
+        )
+        try await realm.asyncRefresh()
+        return (
+            realm.objects(ContentFile.self).where { !$0.isDeleted }.count,
+            realm.objects(ReaderFilePostprocessingWorkItem.self).count
+        )
+    }
+
+    @MainActor
+    func testTwoDriveDiscoveryFailureDoesNotAdmitFirstDriveUntilRetry() async throws {
+        let localRootURL = try temporaryDirectory()
+        let cloudRootURL = try temporaryDirectory()
+        _ = try writeFixture(relativePath: "Books/new-local.epub", under: localRootURL)
+        _ = try writeFixture(relativePath: "Books/new-cloud.epub", under: cloudRootURL)
+        let configuration = makeHistoryRealmConfiguration()
+        let oldPrimaryKey = try await Self.addContentFile(
+            at: XCTUnwrap(URL(string: "reader-file://file/load/local/Books/old.epub")),
+            to: configuration
+        )
+        let oldWorkItem = try await Self.addPostprocessingWorkItem(
+            for: oldPrimaryKey,
+            in: configuration
+        )
+        let manager = ReaderFileManager()
+        let processorCalls = ProcessorCallCounter()
+        let previousVisibleFile = ContentFile()
+        previousVisibleFile.url = try XCTUnwrap(
+            URL(string: "reader-file://file/load/local/Books/old.epub")
+        )
+        manager.files = [previousVisibleFile]
+        manager.registerFileProcessorBundle(
+            identifier: "two-drive-atomic-inventory-\(UUID().uuidString)",
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in nil },
+            readerFileURLProcessor: { _, _ in nil },
+            contextualFileProcessor: { context in
+                for contentFile in context.contentFiles {
+                    processorCalls.increment()
+                    context.deferPostprocessing(for: contentFile)
+                }
+            }
+        )
+        manager.historyRealmConfigurationOverride = configuration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: localRootURL))
+        manager.cloudDrive = try await CloudDrive(storage: .localDirectory(rootURL: cloudRootURL))
+        manager.refreshInventoryDriveWillScanForTesting = { location in
+            if location == "icloud" { throw MetadataScanError.failed }
+        }
+
+        do {
+            try await manager.refreshAllFilesMetadata(force: true)
+            XCTFail("Expected the second drive discovery to fail.")
+        } catch MetadataScanError.failed {
+            XCTAssertEqual(manager.files?.map(\.url), [previousVisibleFile.url])
+            let counts = try await Self.inventoryCounts(in: configuration)
+            XCTAssertEqual(counts.activeFiles, 1)
+            XCTAssertEqual(counts.workItems, 1)
+            let oldFileDeleted = try await Self.contentFileIsDeleted(
+                primaryKey: oldPrimaryKey,
+                in: configuration
+            )
+            let oldWorkItemExists = try await Self.postprocessingWorkItemExists(
+                oldWorkItem,
+                in: configuration
+            )
+            XCTAssertFalse(oldFileDeleted)
+            XCTAssertTrue(oldWorkItemExists)
+            XCTAssertEqual(processorCalls.count, 0)
+        }
+
+        manager.refreshInventoryDriveWillScanForTesting = nil
+        try await manager.refreshAllFilesMetadata(force: true)
+        let counts = try await Self.inventoryCounts(in: configuration)
+        XCTAssertEqual(counts.activeFiles, 2)
+        XCTAssertEqual(counts.workItems, 2)
+        let oldFileDeleted = try await Self.contentFileIsDeleted(
+            primaryKey: oldPrimaryKey,
+            in: configuration
+        )
+        let oldWorkItemExists = try await Self.postprocessingWorkItemExists(
+            oldWorkItem,
+            in: configuration
+        )
+        XCTAssertTrue(oldFileDeleted)
+        XCTAssertFalse(oldWorkItemExists)
+        XCTAssertEqual(manager.files?.count, 2)
+        XCTAssertEqual(processorCalls.count, 2)
     }
 
     @MainActor
