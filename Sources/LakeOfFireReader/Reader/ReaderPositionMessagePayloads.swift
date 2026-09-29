@@ -82,7 +82,12 @@ public struct FractionalCompletionMessage: Sendable {
         fractionalCompletion = Float(completion)
         self.cfi = cfi
         self.reason = reason
-        hasVisibleJapaneseText = ReaderMessagePayloadValue.boolean(body["hasVisibleJapaneseText"])
+        if let rawHasVisibleJapaneseText = body["hasVisibleJapaneseText"] {
+            guard let decoded = ReaderMessagePayloadValue.boolean(rawHasVisibleJapaneseText) else {
+                return nil
+            }
+            hasVisibleJapaneseText = decoded
+        }
         if let rawPageValue = body["mainDocumentURL"] {
             guard let rawPage = rawPageValue as? String,
                   rawPage.utf8.count <= Self.maximumURLUTF8Bytes,
@@ -93,17 +98,40 @@ public struct FractionalCompletionMessage: Sendable {
             guard let timestamp = ReaderMessagePayloadValue.number(rawDocumentStartedAt) else { return nil }
             documentStartedAtMilliseconds = timestamp
         }
-        sectionIndex = ReaderMessagePayloadValue.integer(body["sectionIndex"])
-        currentPageNumber = ReaderMessagePayloadValue.integer(body["currentPageNumber"])
-        totalPages = ReaderMessagePayloadValue.integer(body["totalPages"])
-        visibleSegmentCount = ReaderMessagePayloadValue.integer(body["visibleSegmentCount"])
-        observedSegmentCount = ReaderMessagePayloadValue.integer(body["observedSegmentCount"])
+        guard Self.optionalNonnegativeIntegerIsValid(body, key: "sectionIndex"),
+              Self.optionalNonnegativeIntegerIsValid(body, key: "currentPageNumber"),
+              Self.optionalNonnegativeIntegerIsValid(body, key: "totalPages"),
+              Self.optionalNonnegativeIntegerIsValid(body, key: "visibleSegmentCount"),
+              Self.optionalNonnegativeIntegerIsValid(body, key: "observedSegmentCount") else {
+            return nil
+        }
+        sectionIndex = body["sectionIndex"].flatMap { ReaderMessagePayloadValue.nonnegativeInteger($0) }
+        currentPageNumber = body["currentPageNumber"].flatMap {
+            ReaderMessagePayloadValue.nonnegativeInteger($0)
+        }
+        totalPages = body["totalPages"].flatMap { ReaderMessagePayloadValue.nonnegativeInteger($0) }
+        visibleSegmentCount = body["visibleSegmentCount"].flatMap {
+            ReaderMessagePayloadValue.nonnegativeInteger($0)
+        }
+        observedSegmentCount = body["observedSegmentCount"].flatMap {
+            ReaderMessagePayloadValue.nonnegativeInteger($0)
+        }
+    }
+
+    private static func optionalNonnegativeIntegerIsValid(
+        _ body: [String: Any],
+        key: String
+    ) -> Bool {
+        guard let value = body[key] else { return true }
+        return ReaderMessagePayloadValue.nonnegativeInteger(value) != nil
     }
 }
 
 // JSON/WebKit numbers and booleans both arrive as NSNumber. Swift's `is Bool`
 // bridging also accepts numeric 0 and 1, so compare the CF runtime type instead.
 enum ReaderMessagePayloadValue {
+    private static let maximumExactJavaScriptInteger = 9_007_199_254_740_991.0
+
     static func boolean(_ value: Any?) -> Bool? {
         guard let number = value as? NSNumber,
               CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
@@ -127,8 +155,16 @@ enum ReaderMessagePayloadValue {
         if let value = value as? Int { return value }
         if let value = value as? String { return Int(value) }
         guard let value = number(value) else { return nil }
-        // Preserve main/hotfix's truncation semantics, without trapping for
-        // non-finite or out-of-range floating-point values.
         return Int(exactly: value.rounded(.towardZero))
+    }
+
+    static func nonnegativeInteger(_ value: Any?) -> Int? {
+        guard let value = number(value),
+              value.rounded(.towardZero) == value,
+              value >= 0,
+              value <= maximumExactJavaScriptInteger else {
+            return nil
+        }
+        return Int(exactly: value)
     }
 }
