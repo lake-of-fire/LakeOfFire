@@ -858,7 +858,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             }
         }
         .environmentObject(cloudDriveSyncStatusModel)
-        .task { @MainActor in
+        .task { @MainActor @Sendable in
             onContentAppear?(content)
             if let item = content as? ContentFile {
                 await cloudDriveSyncStatusModel.refreshAsync(item: item)
