@@ -59,6 +59,7 @@ import {
     getPrimaryRendererContentIndex,
 } from './renderer-content.js'
 import {
+    makeNativeLookupPayloadGeneration,
     nativeLookupFramePublicationTransition,
     nativeLookupPublicationIdentityForDocument,
     shouldRunNativeLookupRefresh,
@@ -2859,6 +2860,9 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         idsByEntryID,
         documentURL: doc?.location?.href || doc?.URL || null,
         sidecarRevision: ebookSegmentSidecarRevision(doc),
+        lookupPayloadGeneration: makeNativeLookupPayloadGeneration(doc),
+        currentSidecarRevision: () => ebookSegmentSidecarRevision(doc),
+        lookupProducerGeneration: null,
         lookupPayloadByElementID: new Map(),
         lookupPayloadPrepared: false,
         reason,
@@ -2867,6 +2871,10 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         indexedSegmentCount: byElementID.size,
         visibleElementIDs,
     };
+    index.lookupProducerGeneration = view?.manabi_lookupProducerGenerationForIndex?.(
+        index,
+        doc,
+    ) ?? null;
     doc.manabiVisiblePageLookupIndex = index;
     if (view) {
         view.__manabiVisiblePageLookupIndex = index;
