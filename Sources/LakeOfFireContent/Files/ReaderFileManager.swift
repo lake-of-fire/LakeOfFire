@@ -2272,8 +2272,17 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         drive: CloudDrive,
         validateAuthority: @MainActor () throws -> Void
     ) async throws -> RootRelativePath {
-        let sourceIsPackage = try sourceURL.readerImportRequiresManifest()
-        var sourceBytes: Data?
+        let snapshotWork = Task.detached(priority: .utility) {
+            try ReaderImportSnapshot.capture(from: sourceURL)
+        }
+        let snapshot = try await withTaskCancellationHandler {
+            try await snapshotWork.value
+        } onCancel: {
+            snapshotWork.cancel()
+        }
+        defer { snapshot.discard() }
+        try validateAuthority()
+        let sourceIsPackage = snapshot.requiresManifest
         var collisionHash: String?
         var collision = 0
         let baseName = sourceURL.deletingPathExtension().lastPathComponent
@@ -2281,24 +2290,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         var candidate = targetDirectory.appending(sourceURL.lastPathComponent)
 
         @MainActor
-        func sourceIdentity(refresh: Bool = false) async throws -> Data {
-            if !refresh, let sourceBytes { return sourceBytes }
-            let bytes: Data
-            if sourceIsPackage {
-                let work = Task.detached(priority: .utility) { try sourceURL.packageManifestDigest() }
-                bytes = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
-            } else {
-                bytes = try await CoordinatedFileManager().contentsOfFile(coordinatingAccessAt: sourceURL)
-            }
-            try validateAuthority()
-            if !refresh { sourceBytes = bytes }
-            return bytes
-        }
-
-        @MainActor
         func existingMatches(_ path: RootRelativePath, destination: URL) async throws -> Bool {
             guard try destination.readerImportRequiresManifest() == sourceIsPackage else { return false }
-            let source = try await sourceIdentity()
+            let source = snapshot.identity
             let destinationBytes: Data
             if sourceIsPackage {
                 let work = Task.detached(priority: .utility) { try destination.packageManifestDigest() }
@@ -2307,9 +2301,6 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 destinationBytes = try await drive.readFile(at: path)
             }
             try validateAuthority()
-            guard try await sourceIdentity(refresh: true) == source else {
-                throw ReaderFileManagerError.importContentChanged
-            }
             return destinationBytes == source
         }
 
@@ -2329,13 +2320,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             } else {
                 do {
                     try validateAuthority()
-                    // Capture even for a free destination; collision comparisons and
-                    // installation must refer to the same source content.
-                    let expectedSource = try await sourceIdentity()
-                    guard try await sourceIdentity(refresh: true) == expectedSource else {
-                        throw ReaderFileManagerError.importContentChanged
-                    }
-                    try await drive.upload(from: sourceURL, to: candidate)
+                    try await drive.upload(from: snapshot.fileURL, to: candidate)
                     try validateAuthority()
                     guard try await existingMatches(candidate, destination: destination) else {
                         // Preserve the copy for recovery; never remove a path whose
@@ -2353,7 +2338,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 }
             }
             if collisionHash == nil {
-                let identity = try await sourceIdentity()
+                let identity = snapshot.identity
                 collisionHash = String(format: "%02X", stableHash(data: identity)).prefix(6).uppercased()
             }
             guard collision < Int.max else { throw CocoaError(.fileWriteFileExists) }
@@ -4181,6 +4166,88 @@ enum ReaderImportPackageManifestError: Swift.Error {
     case unsupportedEntry
     case budgetExceeded
     case changedDuringRead
+}
+
+/// A private, operation-owned copy. Uploads never reopen the mutable picker source.
+struct ReaderImportSnapshot: Sendable {
+    let fileURL: URL
+    let requiresManifest: Bool
+    let identity: Data
+    private let temporaryRoot: URL
+
+    static func capture(from sourceURL: URL) throws -> Self {
+        try Task.checkCancellation()
+        let sourceRequiresManifest = try sourceURL.readerImportRequiresManifest()
+        let sourceIdentity = try ReaderImportPackageEntryIdentity.read(sourceURL)
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reader-import-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryRoot,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let snapshotURL = temporaryRoot.appendingPathComponent(sourceURL.lastPathComponent)
+        do {
+            var coordinationError: NSError?
+            var captureResult: Result<Self, any Swift.Error>?
+            NSFileCoordinator().coordinate(
+                readingItemAt: sourceURL,
+                options: .withoutChanges,
+                error: &coordinationError
+            ) { coordinatedURL in
+                captureResult = Result {
+                    try Task.checkCancellation()
+                    let requiresManifest = try coordinatedURL.readerImportRequiresManifest()
+                    let before = try ReaderImportPackageEntryIdentity.read(coordinatedURL)
+                    guard requiresManifest == sourceRequiresManifest, before == sourceIdentity else {
+                        throw ReaderFileManagerError.importContentChanged
+                    }
+                    let identity = try contentIdentity(at: coordinatedURL, requiresManifest: requiresManifest)
+                    try FileManager.default.copyItem(at: coordinatedURL, to: snapshotURL)
+                    try Task.checkCancellation()
+                    guard try snapshotURL.readerImportRequiresManifest() == requiresManifest,
+                          try contentIdentity(at: snapshotURL, requiresManifest: requiresManifest) == identity,
+                          try contentIdentity(at: coordinatedURL, requiresManifest: requiresManifest) == identity,
+                          try ReaderImportPackageEntryIdentity.read(coordinatedURL) == before else {
+                        throw ReaderFileManagerError.importContentChanged
+                    }
+                    return Self(
+                        fileURL: snapshotURL,
+                        requiresManifest: requiresManifest,
+                        identity: identity,
+                        temporaryRoot: temporaryRoot
+                    )
+                }
+            }
+            if let coordinationError { throw coordinationError }
+            guard let captureResult else { throw ReaderFileManagerError.importContentChanged }
+            return try captureResult.get()
+        } catch {
+            // This root was freshly created by this operation and never published.
+            try? FileManager.default.removeItem(at: temporaryRoot)
+            throw error
+        }
+    }
+
+    private static func contentIdentity(at url: URL, requiresManifest: Bool) throws -> Data {
+        try Task.checkCancellation()
+        guard try url.readerImportRequiresManifest() == requiresManifest else {
+            throw ReaderFileManagerError.importContentChanged
+        }
+        if requiresManifest { return try url.packageManifestDigest() }
+        let before = try ReaderImportPackageEntryIdentity.read(url)
+        let bytes = try Data(contentsOf: url)
+        guard try ReaderImportPackageEntryIdentity.read(url) == before else {
+            throw ReaderFileManagerError.importContentChanged
+        }
+        try Task.checkCancellation()
+        return bytes
+    }
+
+    func discard() {
+        // Delete only our UUID-owned temporary root, never a source or installed path.
+        try? FileManager.default.removeItem(at: temporaryRoot)
+    }
 }
 
 private struct ReaderImportPackageEntryIdentity: Equatable {

@@ -610,6 +610,40 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         return realm.objects(ContentFile.self).where { !$0.isDeleted }.map { ($0.title, $0.sourceDownloadURL) }
     }
 
+    func testRegularImportSnapshotRetainsCapturedBytesAfterSourceEdit() throws {
+        let root = try temporaryDirectory()
+        let source = try writeFixture(relativePath: "book.txt", under: root)
+        let original = try Data(contentsOf: source)
+        let snapshot = try ReaderImportSnapshot.capture(from: source)
+        defer { snapshot.discard() }
+        try Data("later source edit".utf8).write(to: source)
+        XCTAssertFalse(snapshot.requiresManifest)
+        XCTAssertEqual(snapshot.identity, original)
+        XCTAssertEqual(try Data(contentsOf: snapshot.fileURL), original)
+        XCTAssertNotEqual(snapshot.fileURL, source)
+    }
+
+    func testDirectoryImportSnapshotRetainsManifestAfterSourceEdit() throws {
+        let source = try temporaryDirectory()
+        let child = try writeFixture(relativePath: "chapter.txt", under: source)
+        let snapshot = try ReaderImportSnapshot.capture(from: source)
+        defer { snapshot.discard() }
+        try Data("later chapter edit".utf8).write(to: child)
+        XCTAssertTrue(snapshot.requiresManifest)
+        XCTAssertEqual(try snapshot.fileURL.packageManifestDigest(), snapshot.identity)
+        XCTAssertNotEqual(try source.packageManifestDigest(), snapshot.identity)
+    }
+
+    func testDiscardingImportSnapshotPreservesSource() throws {
+        let root = try temporaryDirectory()
+        let source = try writeFixture(relativePath: "book.txt", under: root)
+        let original = try Data(contentsOf: source)
+        let snapshot = try ReaderImportSnapshot.capture(from: source)
+        snapshot.discard()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: snapshot.fileURL.path))
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
     func testImportManifestClassificationUsesFilesystemType() throws {
         let root = try temporaryDirectory()
         let directory = root.appendingPathComponent("unregistered-package.txt")
