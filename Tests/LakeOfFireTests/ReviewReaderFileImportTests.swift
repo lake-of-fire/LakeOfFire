@@ -207,6 +207,10 @@ final class ReviewReaderFileImportTests: XCTestCase {
             at: sourceLink,
             withDestinationURL: outside
         )
+        let entriesBefore = try Set(FileManager.default.contentsOfDirectory(
+            at: library,
+            includingPropertiesForKeys: nil
+        ))
 
         do {
             _ = try await install(sourceLink, drive: drive)
@@ -215,11 +219,11 @@ final class ReviewReaderFileImportTests: XCTestCase {
         }
 
         XCTAssertEqual(
-            try FileManager.default.contentsOfDirectory(
+            try Set(FileManager.default.contentsOfDirectory(
                 at: library,
                 includingPropertiesForKeys: nil
-            ).filter { !$0.lastPathComponent.hasPrefix(".") },
-            []
+            )),
+            entriesBefore
         )
         XCTAssertEqual(try Data(contentsOf: outside), Data("outside payload".utf8))
     }
