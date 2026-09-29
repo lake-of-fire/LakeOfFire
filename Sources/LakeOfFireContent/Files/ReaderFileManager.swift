@@ -2330,6 +2330,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         }
                         return files
                     }
+                    if !completeLocations.contains("icloud"),
+                       orphanCandidates.contains(where: { $0.location == "icloud" }) {
+                        throw ReaderFileManagerError.cloudInventoryUnavailable
+                    }
                     guard orphanCandidates.allSatisfy({ completeLocations.contains($0.location) }) else {
                         throw ReaderFileManagerError.incompleteFileInventory
                     }
@@ -2372,10 +2376,6 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 self.refreshMetadataIdentity(for: realmConfiguration) == refreshIdentity
                                     && self.driveInventoryGeneration.isCurrent(inventoryReceipt)
                             }) else {
-                    if !completeLocations.contains("icloud"),
-                       orphanCandidates.contains(where: { $0.location == "icloud" }) {
-                        throw ReaderFileManagerError.cloudInventoryUnavailable
-                    }
                                 throw ReaderFileManagerError.refreshSuperseded
                             }
                             let realm = try await RealmBackgroundActor.shared.cachedRealm(
