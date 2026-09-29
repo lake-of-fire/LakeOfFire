@@ -4236,8 +4236,30 @@ struct ReaderImportSnapshot: Sendable {
         }
         if requiresManifest { return try url.packageManifestDigest() }
         let before = try ReaderImportPackageEntryIdentity.read(url)
-        let bytes = try Data(contentsOf: url)
-        guard try ReaderImportPackageEntryIdentity.read(url) == before else {
+        guard before.mode & mode_t(S_IFMT) == mode_t(S_IFREG), before.size >= 0 else {
+            throw ReaderFileManagerError.importContentChanged
+        }
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var opened = stat()
+        guard fstat(descriptor, &opened) == 0,
+              ReaderImportPackageEntryIdentity(opened) == before else {
+            throw ReaderFileManagerError.importContentChanged
+        }
+        var bytes = Data()
+        while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+            try Task.checkCancellation()
+            guard Int64(chunk.count) <= Int64(before.size) - Int64(bytes.count) else {
+                throw ReaderFileManagerError.importContentChanged
+            }
+            bytes.append(chunk)
+        }
+        guard Int64(bytes.count) == Int64(before.size),
+              fstat(descriptor, &opened) == 0,
+              ReaderImportPackageEntryIdentity(opened) == before,
+              try ReaderImportPackageEntryIdentity.read(url) == before else {
             throw ReaderFileManagerError.importContentChanged
         }
         try Task.checkCancellation()

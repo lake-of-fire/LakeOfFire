@@ -610,6 +610,47 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         return realm.objects(ContentFile.self).where { !$0.isDeleted }.map { ($0.title, $0.sourceDownloadURL) }
     }
 
+    func testImportSnapshotRejectsRootSymlinkWithoutChangingTarget() throws {
+        let root = try temporaryDirectory()
+        let source = try writeFixture(relativePath: "book.txt", under: root)
+        let original = try Data(contentsOf: source)
+        let link = root.appendingPathComponent("linked-book.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: source)
+        XCTAssertThrowsError(try ReaderImportSnapshot.capture(from: link)) { error in
+            guard let manifestError = error as? ReaderImportPackageManifestError,
+                  case .unsupportedEntry = manifestError else {
+                return XCTFail("Expected unsupported root symlink, got \(error)")
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
+    func testCancelledImportSnapshotCapturePreservesSource() async throws {
+        let root = try temporaryDirectory()
+        let source = try writeFixture(relativePath: "book.txt", under: root)
+        let original = try Data(contentsOf: source)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                let snapshot = try ReaderImportSnapshot.capture(from: source)
+                snapshot.discard()
+                return false
+            } catch is CancellationError {
+                return true
+            } catch {
+                return false
+            }
+        }
+        let didCancel = await task.value
+        XCTAssertTrue(didCancel)
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
+    func testImportSnapshotRejectsMissingSource() throws {
+        let root = try temporaryDirectory()
+        XCTAssertThrowsError(try ReaderImportSnapshot.capture(from: root.appendingPathComponent("missing.txt")))
+    }
+
     func testRegularImportSnapshotRetainsCapturedBytesAfterSourceEdit() throws {
         let root = try temporaryDirectory()
         let source = try writeFixture(relativePath: "book.txt", under: root)
