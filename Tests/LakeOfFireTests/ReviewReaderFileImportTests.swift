@@ -87,4 +87,114 @@ final class ReviewReaderFileImportTests: XCTestCase {
             XCTAssertEqual(try Data(contentsOf: target), Data("keep".utf8))
         }
     }
+
+    func testIdenticalDirectoryAtDifferentURLReusesExistingDestination() async throws {
+        let (incoming, library, drive) = try await fixture()
+        let source = incoming.appendingPathComponent("book.epub", isDirectory: true)
+        let target = library.appendingPathComponent("book.epub", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let mimetype = Data("application/epub+zip".utf8)
+        let chapter = Data("<p>same</p>".utf8)
+        try mimetype.write(to: source.appendingPathComponent("mimetype"))
+        try mimetype.write(to: target.appendingPathComponent("mimetype"))
+        try chapter.write(to: source.appendingPathComponent("chapter.xhtml"))
+        try chapter.write(to: target.appendingPathComponent("chapter.xhtml"))
+
+        let result = try await install(source, drive: drive)
+
+        XCTAssertEqual(result.standardizedFileURL, target.standardizedFileURL)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(
+                at: library,
+                includingPropertiesForKeys: [.isDirectoryKey]
+            ).filter { $0.lastPathComponent.hasPrefix("book") }.count,
+            1
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: target.appendingPathComponent("chapter.xhtml")),
+            chapter
+        )
+    }
+
+    func testRepeatedDirectoryCollisionReusesPreviouslyRenamedDirectory() async throws {
+        let (incoming, library, drive) = try await fixture()
+        let source = incoming.appendingPathComponent("book.epub", isDirectory: true)
+        let original = library.appendingPathComponent("book.epub", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+        try Data("incoming".utf8).write(to: source.appendingPathComponent("chapter.xhtml"))
+        try Data("original".utf8).write(to: original.appendingPathComponent("chapter.xhtml"))
+
+        let first = try await install(source, drive: drive)
+        let second = try await install(source, drive: drive)
+
+        XCTAssertEqual(first.standardizedFileURL, second.standardizedFileURL)
+        XCTAssertNotEqual(first.standardizedFileURL, original.standardizedFileURL)
+        XCTAssertEqual(
+            try Data(contentsOf: original.appendingPathComponent("chapter.xhtml")),
+            Data("original".utf8)
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: second.appendingPathComponent("chapter.xhtml")),
+            Data("incoming".utf8)
+        )
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(
+                at: library,
+                includingPropertiesForKeys: [.isDirectoryKey]
+            ).filter { $0.lastPathComponent.hasPrefix("book") }.count,
+            2
+        )
+    }
+
+    func testFileAndDirectoryWithSameNameAreNeverTreatedAsIdentical() async throws {
+        let (incoming, library, drive) = try await fixture()
+        let source = incoming.appendingPathComponent("book.epub", isDirectory: true)
+        let occupiedFile = library.appendingPathComponent("book.epub")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try Data("directory payload".utf8).write(
+            to: source.appendingPathComponent("chapter.xhtml")
+        )
+        try Data("ordinary file".utf8).write(to: occupiedFile)
+
+        let result = try await install(source, drive: drive)
+
+        XCTAssertNotEqual(result.standardizedFileURL, occupiedFile.standardizedFileURL)
+        XCTAssertEqual(try Data(contentsOf: occupiedFile), Data("ordinary file".utf8))
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: result.path,
+                isDirectory: &isDirectory
+            )
+        )
+        XCTAssertTrue(isDirectory.boolValue)
+    }
+
+    func testFileSourceDoesNotReuseOccupiedDirectory() async throws {
+        let (incoming, library, drive) = try await fixture()
+        let source = incoming.appendingPathComponent("notes.txt")
+        let occupiedDirectory = library.appendingPathComponent(
+            "notes.txt",
+            isDirectory: true
+        )
+        try Data("file payload".utf8).write(to: source)
+        try FileManager.default.createDirectory(
+            at: occupiedDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data("keep".utf8).write(
+            to: occupiedDirectory.appendingPathComponent("nested.txt")
+        )
+
+        let result = try await install(source, drive: drive)
+
+        XCTAssertNotEqual(result.standardizedFileURL, occupiedDirectory.standardizedFileURL)
+        XCTAssertEqual(try Data(contentsOf: result), Data("file payload".utf8))
+        XCTAssertEqual(
+            try Data(contentsOf: occupiedDirectory.appendingPathComponent("nested.txt")),
+            Data("keep".utf8)
+        )
+    }
 }
