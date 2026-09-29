@@ -1,4 +1,6 @@
 import XCTest
+import CryptoKit
+import SwiftUtilities
 import RealmSwift
 import RealmSwiftGaps
 import SwiftCloudDrive
@@ -651,6 +653,19 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         XCTAssertThrowsError(try ReaderImportSnapshot.capture(from: root.appendingPathComponent("missing.txt")))
     }
 
+    func testStreamingImportIdentityPreservesCollisionHashAcrossChunkBoundaries() throws {
+        let root = try temporaryDirectory()
+        let source = root.appendingPathComponent("large.txt")
+        let bytes = Data((0..<150_000).map { UInt8($0 % 251) })
+        try bytes.write(to: source)
+        let identity = try ReaderImportSnapshot.contentIdentity(at: source, requiresManifest: false)
+        XCTAssertEqual(identity.collisionHash, stableHash(data: bytes))
+        XCTAssertEqual(identity.digest.count, 32)
+        try Data(bytes.dropLast()).write(to: source)
+        let truncated = try ReaderImportSnapshot.contentIdentity(at: source, requiresManifest: false)
+        XCTAssertNotEqual(identity.digest, truncated.digest)
+    }
+
     func testRegularImportSnapshotRetainsCapturedBytesAfterSourceEdit() throws {
         let root = try temporaryDirectory()
         let source = try writeFixture(relativePath: "book.txt", under: root)
@@ -659,7 +674,12 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         defer { snapshot.discard() }
         try Data("later source edit".utf8).write(to: source)
         XCTAssertFalse(snapshot.requiresManifest)
-        XCTAssertEqual(snapshot.identity, original)
+        var hasher = SHA256()
+        hasher.update(data: Data("reader-import-regular-file-v1\0".utf8))
+        hasher.update(data: Data("\(original.count)\0".utf8))
+        hasher.update(data: original)
+        XCTAssertEqual(snapshot.identity.digest, Data(hasher.finalize()))
+        XCTAssertEqual(snapshot.identity.collisionHash, stableHash(data: original))
         XCTAssertEqual(try Data(contentsOf: snapshot.fileURL), original)
         XCTAssertNotEqual(snapshot.fileURL, source)
     }
@@ -671,8 +691,8 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         defer { snapshot.discard() }
         try Data("later chapter edit".utf8).write(to: child)
         XCTAssertTrue(snapshot.requiresManifest)
-        XCTAssertEqual(try snapshot.fileURL.packageManifestDigest(), snapshot.identity)
-        XCTAssertNotEqual(try source.packageManifestDigest(), snapshot.identity)
+        XCTAssertEqual(try snapshot.fileURL.packageManifestDigest(), snapshot.identity.digest)
+        XCTAssertNotEqual(try source.packageManifestDigest(), snapshot.identity.digest)
     }
 
     func testDiscardingImportSnapshotPreservesSource() throws {

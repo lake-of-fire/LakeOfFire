@@ -2292,13 +2292,18 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         @MainActor
         func existingMatches(_ path: RootRelativePath, destination: URL) async throws -> Bool {
             guard try destination.readerImportRequiresManifest() == sourceIsPackage else { return false }
-            let source = snapshot.identity
+            let source = snapshot.identity.digest
             let destinationBytes: Data
             if sourceIsPackage {
                 let work = Task.detached(priority: .utility) { try destination.packageManifestDigest() }
                 destinationBytes = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
             } else {
-                destinationBytes = try await drive.readFile(at: path)
+                let work = Task.detached(priority: .utility) {
+                    try ReaderImportSnapshot.contentIdentity(at: destination, requiresManifest: false).digest
+                }
+                destinationBytes = try await withTaskCancellationHandler {
+                    try await work.value
+                } onCancel: { work.cancel() }
             }
             try validateAuthority()
             return destinationBytes == source
@@ -2338,8 +2343,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 }
             }
             if collisionHash == nil {
-                let identity = snapshot.identity
-                collisionHash = String(format: "%02X", stableHash(data: identity)).prefix(6).uppercased()
+                collisionHash = String(format: "%02X", snapshot.identity.collisionHash).prefix(6).uppercased()
             }
             guard collision < Int.max else { throw CocoaError(.fileWriteFileExists) }
             collision += 1
@@ -4169,10 +4173,15 @@ enum ReaderImportPackageManifestError: Swift.Error {
 }
 
 /// A private, operation-owned copy. Uploads never reopen the mutable picker source.
+struct ReaderImportContentIdentity: Sendable, Equatable {
+    let digest: Data
+    let collisionHash: UInt64
+}
+
 struct ReaderImportSnapshot: Sendable {
     let fileURL: URL
     let requiresManifest: Bool
-    let identity: Data
+    let identity: ReaderImportContentIdentity
     private let temporaryRoot: URL
 
     static func capture(from sourceURL: URL) throws -> Self {
@@ -4229,12 +4238,15 @@ struct ReaderImportSnapshot: Sendable {
         }
     }
 
-    private static func contentIdentity(at url: URL, requiresManifest: Bool) throws -> Data {
+    static func contentIdentity(at url: URL, requiresManifest: Bool) throws -> ReaderImportContentIdentity {
         try Task.checkCancellation()
         guard try url.readerImportRequiresManifest() == requiresManifest else {
             throw ReaderFileManagerError.importContentChanged
         }
-        if requiresManifest { return try url.packageManifestDigest() }
+        if requiresManifest {
+            let digest = try url.packageManifestDigest()
+            return ReaderImportContentIdentity(digest: digest, collisionHash: stableHash(data: digest))
+        }
         let before = try ReaderImportPackageEntryIdentity.read(url)
         guard before.mode & mode_t(S_IFMT) == mode_t(S_IFREG), before.size >= 0 else {
             throw ReaderFileManagerError.importContentChanged
@@ -4248,22 +4260,30 @@ struct ReaderImportSnapshot: Sendable {
               ReaderImportPackageEntryIdentity(opened) == before else {
             throw ReaderFileManagerError.importContentChanged
         }
-        var bytes = Data()
+        var hasher = SHA256()
+        hasher.update(data: Data("reader-import-regular-file-v1\0".utf8))
+        hasher.update(data: Data("\(before.size)\0".utf8))
+        var readBytes: Int64 = 0
+        var collisionHash: UInt64 = 5381
         while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
             try Task.checkCancellation()
-            guard Int64(chunk.count) <= Int64(before.size) - Int64(bytes.count) else {
+            guard Int64(chunk.count) <= Int64(before.size) - readBytes else {
                 throw ReaderFileManagerError.importContentChanged
             }
-            bytes.append(chunk)
+            readBytes += Int64(chunk.count)
+            hasher.update(data: chunk)
+            for byte in chunk {
+                collisionHash = (collisionHash & 0x00ffffffffffffff) * 127 + UInt64(byte)
+            }
         }
-        guard Int64(bytes.count) == Int64(before.size),
+        guard readBytes == Int64(before.size),
               fstat(descriptor, &opened) == 0,
               ReaderImportPackageEntryIdentity(opened) == before,
               try ReaderImportPackageEntryIdentity.read(url) == before else {
             throw ReaderFileManagerError.importContentChanged
         }
         try Task.checkCancellation()
-        return bytes
+        return ReaderImportContentIdentity(digest: Data(hasher.finalize()), collisionHash: collisionHash)
     }
 
     func discard() {
