@@ -3,7 +3,7 @@
 This branch contains no runtime source changes beyond Lake #50. It exists to compile the exact Lake integration against explicit sibling repositories on public GitHub runners.
 
 Lake:
-- `fa2e2f771f7d6fca3351da17abd46df04e31734b` — #50 exact qualified head.
+- `68b73f946919096e7342c59136f21a4e6e583c64` — #50 exact qualified head.
 
 Changed/converged siblings:
 - SwiftSoup `e870c5ff5efacfce3aa423356fa918e6614f0e50` — canonical master.
@@ -32,3 +32,8 @@ The first full target build reached LakeKit and found real Swift 6 failures in o
 - LakeKit #9: `4a60f068b20e2fb25055aad12f40fb1b7fd5c770` (composes #5/#6/#7/#8; its retained workflows run independently).
 
 The original failed Lake #59 run is retained as evidence that the previous Reader-main LakeKit selection did not compile under this Swift 6 tuple. The rerun tests the repaired dependency composition.
+
+
+## Swift 6 task-operation follow-up
+
+The first canonical sibling build on the prior Lake base reached `ReaderContentList.swift` and failed because SwiftUI's `.task` operation was still inferred as a non-Sendable function value. Lake #50 now declares that operation explicitly `@MainActor @Sendable` at `68b73f946919096e7342c59136f21a4e6e583c64`. This qualification revision reruns the full `LakeOfFireReader` Debug/Release compile against that exact base.
