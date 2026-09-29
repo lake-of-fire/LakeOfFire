@@ -915,6 +915,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     var refreshOrphanCleanupWillBeginForTesting: (() async throws -> Void)?
 
     @MainActor
+    var refreshFinalInventoryWillRefreshForTesting: (() async throws -> Void)?
+
+    @MainActor
     var refreshInventoryDriveWillScanForTesting: ((String) throws -> Void)?
 
     @MainActor
@@ -1332,7 +1335,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         ) {
             return provenanceReaderURL
         }
-        try await readerFileURL(
+        return try await readerFileURL(
             for: downloadable.localDestination,
             drive: nil,
             processorSnapshot: processorRegistry.snapshot()
@@ -2511,6 +2514,14 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
                         try Task.checkCancellation()
                         let finalRealm = try await Realm.open(configuration: realmConfiguration)
+                        try await self.refreshFinalInventoryWillRefreshForTesting?()
+                        try Task.checkCancellation()
+                        guard self.refreshMetadataIdentityIsCurrent(
+                            refreshIdentity,
+                            realmConfiguration: realmConfiguration
+                        ), self.driveInventoryGeneration.isCurrent(inventoryReceipt) else {
+                            throw ReaderFileManagerError.refreshSuperseded
+                        }
                         try await finalRealm.asyncRefresh()
                         try Task.checkCancellation()
                         guard self.refreshMetadataIdentityIsCurrent(

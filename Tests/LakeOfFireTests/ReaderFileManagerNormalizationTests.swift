@@ -333,6 +333,73 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     }
 
     @MainActor
+    func testDriveReplacementDuringFinalRefreshDoesNotPublishOldInventory() async throws {
+        try await assertReplacementDuringFinalRefresh(replacesConfiguration: false)
+    }
+
+    @MainActor
+    func testConfigurationReplacementDuringFinalRefreshDoesNotPublishOldInventory() async throws {
+        try await assertReplacementDuringFinalRefresh(replacesConfiguration: true)
+    }
+
+    @MainActor
+    private func assertReplacementDuringFinalRefresh(replacesConfiguration: Bool) async throws {
+        let firstRootURL = try temporaryDirectory()
+        let secondRootURL = try temporaryDirectory()
+        _ = try writeFixture(relativePath: "Books/first.epub", under: firstRootURL)
+        _ = try writeFixture(relativePath: "Books/second.epub", under: secondRootURL)
+        let firstConfiguration = makeHistoryRealmConfiguration()
+        let secondConfiguration = replacesConfiguration ? makeHistoryRealmConfiguration() : firstConfiguration
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = firstConfiguration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: firstRootURL))
+        try await manager.refreshAllFilesMetadata(force: true)
+        let previousURLs = try XCTUnwrap(manager.files).map(\.url)
+        XCTAssertEqual(previousURLs.count, 1)
+
+        let finalRefreshGate = ScanGate()
+        let finalRefreshStarted = expectation(description: "final inventory Realm refresh reached")
+        manager.refreshFinalInventoryWillRefreshForTesting = {
+            finalRefreshStarted.fulfill()
+            await finalRefreshGate.wait()
+        }
+        let refresh = Task { @MainActor in
+            try await manager.refreshAllFilesMetadata(force: true)
+        }
+        await fulfillment(of: [finalRefreshStarted], timeout: 5)
+        if replacesConfiguration {
+            manager.historyRealmConfigurationOverride = secondConfiguration
+        } else {
+            manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: secondRootURL))
+        }
+        await finalRefreshGate.release()
+
+        do {
+            try await refresh.value
+            XCTFail("Expected replacement during final refresh to reject the obsolete inventory.")
+        } catch ReaderFileManagerError.refreshSuperseded {
+            XCTAssertEqual(manager.files?.map(\.url), previousURLs)
+        }
+
+        manager.refreshFinalInventoryWillRefreshForTesting = nil
+        try await manager.refreshAllFilesMetadata(force: true)
+        let currentURLs = try XCTUnwrap(manager.files).map(\.url)
+        XCTAssertEqual(currentURLs.count, 1)
+        XCTAssertEqual(currentURLs.first?.lastPathComponent, replacesConfiguration ? "first.epub" : "second.epub")
+        if replacesConfiguration {
+            XCTAssertEqual(currentURLs, previousURLs)
+        } else {
+            XCTAssertNotEqual(currentURLs, previousURLs)
+        }
+        let counts = try await Self.inventoryCounts(in: secondConfiguration)
+        XCTAssertEqual(counts.activeFiles, 1)
+        if replacesConfiguration {
+            let oldCounts = try await Self.inventoryCounts(in: firstConfiguration)
+            XCTAssertEqual(oldCounts.activeFiles, 1)
+        }
+    }
+
+    @MainActor
     func testFailedOrphanCleanupDoesNotPublishIncompleteInventory() async throws {
         let rootURL = try temporaryDirectory()
         let configuration = makeHistoryRealmConfiguration()
