@@ -2249,6 +2249,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 do {
                     guard localDrive != nil || cloudDrive != nil else { return }
                     let inventoryReceipt = driveInventoryGeneration.receipt()
+                    let drives = [localDrive, cloudDrive].compactMap { $0 }
                     let files = try await Self.$operationProcessorSnapshot.withValue(
                         ReaderFileProcessorOperationSnapshot(
                             managerIdentity: ObjectIdentifier(self),
@@ -2256,13 +2257,26 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         )
                     ) {
                         var files = [ThreadSafeReference<ContentFile>]()
-                        for drive in [localDrive, cloudDrive].compactMap({ $0 }) {
+                        for drive in drives {
                             try Task.checkCancellation()
+                            guard refreshMetadataIdentityIsCurrent(
+                                refreshIdentity,
+                                realmConfiguration: realmConfiguration
+                            ), driveInventoryGeneration.isCurrent(inventoryReceipt) else {
+                                throw ReaderFileManagerError.refreshSuperseded
+                            }
                             if let discovered = try await refreshFilesMetadata(
                                 drive: drive,
                                 realmConfiguration: realmConfiguration
                             ) {
                                 files.append(contentsOf: discovered)
+                            }
+                            try Task.checkCancellation()
+                            guard refreshMetadataIdentityIsCurrent(
+                                refreshIdentity,
+                                realmConfiguration: realmConfiguration
+                            ), driveInventoryGeneration.isCurrent(inventoryReceipt) else {
+                                throw ReaderFileManagerError.refreshSuperseded
                             }
                         }
                         return files

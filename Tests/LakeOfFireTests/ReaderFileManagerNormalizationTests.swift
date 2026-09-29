@@ -382,6 +382,38 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     }
 
     @MainActor
+    func testConfigurationReplacementBetweenDrivesStopsObsoleteSecondScan() async throws {
+        let localRootURL = try temporaryDirectory()
+        let cloudRootURL = try temporaryDirectory()
+        let manager = CountingReaderFileManager()
+        manager.scanDelayNanoseconds = 0
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: localRootURL))
+        manager.cloudDrive = try await CloudDrive(storage: .localDirectory(rootURL: cloudRootURL))
+        let firstScanGate = ScanGate()
+        let firstScanStarted = expectation(description: "first drive scan started")
+        manager.scanDidStart = { firstScanStarted.fulfill() }
+        manager.scanBlocker = { scanNumber in
+            if scanNumber == 1 { await firstScanGate.wait() }
+        }
+
+        let refresh = Task { @MainActor in
+            try await manager.refreshAllFilesMetadata()
+        }
+        await fulfillment(of: [firstScanStarted], timeout: 1)
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        await firstScanGate.release()
+
+        do {
+            try await refresh.value
+            XCTFail("Expected the old configuration to stop before scanning drive two.")
+        } catch ReaderFileManagerError.refreshSuperseded {
+            XCTAssertEqual(manager.metadataScanCount, 1)
+            XCTAssertNil(manager.files)
+        }
+    }
+
+    @MainActor
     func testConcurrentMetadataRefreshesShareOneScan() async throws {
         let rootURL = try temporaryDirectory()
         let manager = CountingReaderFileManager()
