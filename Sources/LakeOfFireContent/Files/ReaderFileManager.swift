@@ -28,6 +28,9 @@ public enum ReaderFileManagerError: Swift.Error {
     /// Enumeration did not establish a complete current inventory, so it is unsafe to
     /// publish replacements or derive synchronized orphan tombstones from it.
     case incompleteFileInventory
+    /// The indexed iCloud rows cannot be reconciled while their drive is unavailable.
+    /// A local-only scan must not publish a complete replacement or delete cloud rows.
+    case cloudInventoryUnavailable
     /// A drive root or Realm configuration changed while a refresh was in flight.
     case refreshSuperseded
 }
@@ -2369,6 +2372,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 self.refreshMetadataIdentity(for: realmConfiguration) == refreshIdentity
                                     && self.driveInventoryGeneration.isCurrent(inventoryReceipt)
                             }) else {
+                    if !completeLocations.contains("icloud"),
+                       orphanCandidates.contains(where: { $0.location == "icloud" }) {
+                        throw ReaderFileManagerError.cloudInventoryUnavailable
+                    }
                                 throw ReaderFileManagerError.refreshSuperseded
                             }
                             let realm = try await RealmBackgroundActor.shared.cachedRealm(

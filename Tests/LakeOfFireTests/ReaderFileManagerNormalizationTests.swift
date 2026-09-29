@@ -474,7 +474,7 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         do {
             try await manager.refreshAllFilesMetadata()
             XCTFail("Expected an unavailable cloud root to prevent complete publication.")
-        } catch ReaderFileManagerError.incompleteFileInventory {
+        } catch ReaderFileManagerError.cloudInventoryUnavailable {
             XCTAssertNil(manager.files)
             let isDeleted = try await Self.contentFileIsDeleted(
                 primaryKey: primaryKey,
