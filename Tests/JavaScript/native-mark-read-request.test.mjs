@@ -72,7 +72,6 @@ const harness = ({ current = true, postThrows = false } = {}) => {
     const timeouts = new Map()
     const timeoutDelays = new Map()
     let timeoutSequence = 0
-    let requestSequence = 0
     const coordinator = createNativeMarkReadRequestCoordinator({
         postMessage: message => {
             if (postThrows) throw new Error('bridge unavailable')
@@ -84,7 +83,7 @@ const harness = ({ current = true, postThrows = false } = {}) => {
             phase: state.phase,
         }),
         isOwnerCurrent: () => current,
-        makeRequestID: () => `request-${++requestSequence}`,
+        makeRequestID: () => 'request',
         scheduleTimeout: (callback, delay) => {
             const id = ++timeoutSequence
             timeouts.set(id, () => {
@@ -323,6 +322,32 @@ test('coalesces the exact pending intent without replaying native mutation', asy
     assert.strictEqual(await first, await second)
 })
 
+test('long sessions keep admitting requests without reusing old identities', async () => {
+    const h = harness()
+    let firstReply
+    for (let index = 0; index < 2_050; index += 1) {
+        const completion = h.coordinator.request({
+            sectionID: 'section-a',
+            message: { segments: [], desiredState: index % 2 ? 'unmarked' : 'marked' },
+        })
+        const posted = h.posted.at(-1)
+        assert.equal(posted.requestID, `request-${index + 1}`)
+        const reply = terminalFor(posted)
+        if (index === 0) firstReply = reply
+        assert.equal(h.coordinator.settle(reply), true)
+        assert.equal((await completion).success, true)
+    }
+
+    const next = h.coordinator.request({
+        sectionID: 'section-a', message: { segments: [], desiredState: 'unmarked' },
+    })
+    assert.equal(h.posted.at(-1).requestID, 'request-2051')
+    assert.equal(h.coordinator.settle(firstReply), false)
+    assert.equal(h.coordinator.pendingCount, 1)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted.at(-1))), true)
+    assert.equal((await next).success, true)
+})
+
 test('rejects a conflicting intent while the target remains owned by the first request', async () => {
     const h = harness()
     const first = h.coordinator.request({
@@ -442,4 +467,3 @@ test('pause suppresses observation and resume observes the same request identity
     h.coordinator.settle(terminalFor(h.posted[0]))
     assert.equal((await completion).success, true)
 })
-
