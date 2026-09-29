@@ -99,9 +99,13 @@ struct BookListRow: View {
         .listRowInsets(.init())
         .listRowBackground(Color.clear)
         .listRowSeparatorIfAvailable(.hidden)
-        .task { @MainActor in
+        .task(id: downloadRequestIdentity) { @MainActor in
             await refreshDownloadable()
         }
+    }
+
+    private var downloadRequestIdentity: String {
+        (publication.downloadURL?.absoluteString ?? "") + "\u{0}" + publication.title
     }
 
     private func refreshDownloadable() async {
@@ -110,7 +114,9 @@ struct BookListRow: View {
             return
         }
         if downloadable?.url != downloadURL || downloadable?.name != publication.title {
-            downloadable = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: publication.title)
+            let refreshed = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: publication.title)
+            guard !Task.isCancelled else { return }
+            downloadable = refreshed
         }
     }
 }
@@ -187,6 +193,14 @@ fileprivate struct DownloadableBookListRow: View {
             }
         }
         .contentShape(Rectangle())
+        .task(id: importIdentity) { @MainActor in
+            if importState.bind(to: importIdentity) {
+                importOperation.cancel()
+                presentedError = nil
+                isErrorPresented = false
+            }
+            await refreshDownloadable()
+        }
         .task(id: downloadable.isFinishedDownloading) { @MainActor in
             await refreshDownloadable()
         }
@@ -196,6 +210,14 @@ fileprivate struct DownloadableBookListRow: View {
         } message: {
             Text(presentedError ?? "")
         }
+    }
+
+    private var importIdentity: BookDownloadImportIdentity {
+        BookDownloadImportIdentity(
+            remoteURL: downloadable.url,
+            localDestination: downloadable.localDestination,
+            name: downloadable.name
+        )
     }
 
     private func buttonPress() {

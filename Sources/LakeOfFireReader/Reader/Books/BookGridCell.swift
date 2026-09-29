@@ -43,6 +43,14 @@ fileprivate struct BookGridCellContent: View {
         .truncationMode(.tail)
     }
 
+    private var importIdentity: BookDownloadImportIdentity {
+        BookDownloadImportIdentity(
+            remoteURL: downloadable.url,
+            localDestination: downloadable.localDestination,
+            name: downloadable.name
+        )
+    }
+
     private func buttonPress() {
         Task { @MainActor in
             onSelected?(true)
@@ -92,6 +100,14 @@ fileprivate struct DownloadableBookGridCell: View {
                 Button("Retry Import") { buttonPress() }
                     .accessibilityIdentifier("BookLibrary.RetryImport.\(title)")
             }
+        }
+        .task(id: importIdentity) { @MainActor in
+            if importState.bind(to: importIdentity) {
+                importOperation.cancel()
+                presentedError = nil
+                isErrorPresented = false
+            }
+            await refreshDownloadable()
         }
         .task(id: downloadable.isFinishedDownloading) { @MainActor in
             await refreshDownloadable()
@@ -184,16 +200,24 @@ struct BookGridCell: View {
                 BookGridCellContent(imageURL: imageURL, title: title, author: author, publicationDate: publicationDate, onSelected: onSelected)
             }
         }
-        .task { @MainActor in
+        .task(id: downloadRequestIdentity) { @MainActor in
             await refreshDownloadable()
         }
     }
 
+    private var downloadRequestIdentity: String {
+        (downloadURL?.absoluteString ?? "") + "\u{0}" + title
+    }
+
     private func refreshDownloadable() async {
-        if let downloadURL = downloadURL {
-            if downloadable?.url != downloadURL || downloadable?.name != title {
-                downloadable = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: title)
-            }
+        guard let downloadURL else {
+            downloadable = nil
+            return
+        }
+        if downloadable?.url != downloadURL || downloadable?.name != title {
+            let refreshed = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: title)
+            guard !Task.isCancelled else { return }
+            downloadable = refreshed
         }
     }
 }

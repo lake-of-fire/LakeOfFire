@@ -15,6 +15,65 @@ final class BookDownloadImportPortTests: XCTestCase {
         XCTAssertNil(state.errorMessage)
     }
 
+    func testRebindingClearsStateOnlyWhenBookIdentityChanges() async {
+        let first = BookDownloadImportIdentity(
+            remoteURL: URL(string: "https://example.com/first.epub")!,
+            localDestination: URL(fileURLWithPath: "/library/first.epub"),
+            name: "First"
+        )
+        let second = BookDownloadImportIdentity(
+            remoteURL: URL(string: "https://example.com/second.epub")!,
+            localDestination: URL(fileURLWithPath: "/library/second.epub"),
+            name: "Second"
+        )
+        var state = BookDownloadImportState()
+
+        XCTAssertTrue(state.bind(to: first))
+        state.receive(.imported(destination))
+        XCTAssertTrue(state.isImported)
+
+        XCTAssertFalse(state.bind(to: first))
+        XCTAssertTrue(state.isImported)
+        XCTAssertEqual(state.importedURL, destination)
+
+        XCTAssertTrue(state.bind(to: second))
+        XCTAssertFalse(state.isImported)
+        XCTAssertNil(state.importedURL)
+        XCTAssertNil(state.errorMessage)
+
+        state.receive(.failed(message: "Offline"))
+        XCTAssertFalse(state.bind(to: second))
+        XCTAssertEqual(state.errorMessage, "Offline")
+    }
+
+    func testRebindingDistinguishesDestinationAndNameChanges() async {
+        let remote = URL(string: "https://example.com/book.epub")!
+        let first = BookDownloadImportIdentity(
+            remoteURL: remote,
+            localDestination: URL(fileURLWithPath: "/library/a.epub"),
+            name: "Book"
+        )
+        let moved = BookDownloadImportIdentity(
+            remoteURL: remote,
+            localDestination: URL(fileURLWithPath: "/library/b.epub"),
+            name: "Book"
+        )
+        let renamed = BookDownloadImportIdentity(
+            remoteURL: remote,
+            localDestination: moved.localDestination,
+            name: "Renamed"
+        )
+        var state = BookDownloadImportState()
+
+        XCTAssertTrue(state.bind(to: first))
+        state.receive(.failed(message: "Old error"))
+        XCTAssertTrue(state.bind(to: moved))
+        XCTAssertNil(state.errorMessage)
+        state.receive(.imported(destination))
+        XCTAssertTrue(state.bind(to: renamed))
+        XCTAssertFalse(state.isImported)
+    }
+
     func testSuccessRecordsTheActualDestination() async {
         var state = BookDownloadImportState()
         XCTAssertTrue(state.receive(.imported(destination)))
