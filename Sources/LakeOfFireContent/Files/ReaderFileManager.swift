@@ -507,7 +507,6 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         private let lock = NSLock()
         private var value: UInt64 = 0
 
-        @MainActor
         func advance() {
             lock.lock()
             value &+= 1
@@ -744,7 +743,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     nonisolated(unsafe) public static var shared = ReaderFileManager()
 
     /// Keeps isolated import/index tests and callers on one content Realm.
-    var historyRealmConfigurationOverride: Realm.Configuration?
+    var historyRealmConfigurationOverride: Realm.Configuration? {
+        didSet { driveInventoryGeneration.advance() }
+    }
 
     private let defaultLocalRootURLProvider: @Sendable () -> URL
     private let allowsCloudDrive: Bool
@@ -857,6 +858,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     var refreshRelocationRemovalWillBeginForTesting: (() async -> Void)?
 
     @MainActor
+    var refreshOrphanCleanupWillBeginForTesting: (() async throws -> Void)?
+
+    @MainActor
     var refreshTaskCountForTesting: Int {
         refreshAllFilesMetadataTasks.count
     }
@@ -906,6 +910,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     
     /*@MainActor*/ public var cloudDrive: CloudDrive? {
         didSet {
+            driveInventoryGeneration.advance()
             Task { @MainActor in
                 objectWillChange.send()
             }
@@ -914,6 +919,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     //    /*@MainActor*/ @Published public var legacyCloudDrive: CloudDrive?
     /*@MainActor*/ public var localDrive: CloudDrive? {
         didSet {
+            driveInventoryGeneration.advance()
             Task { @MainActor in
                 objectWillChange.send()
             }
@@ -2273,17 +2279,27 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             throw ReaderFileManagerError.refreshSuperseded
                         }
                         let realm = try await Realm.open(configuration: realmConfiguration)
+                        try Task.checkCancellation()
+                        guard self.refreshMetadataIdentityIsCurrent(
+                            refreshIdentity,
+                            realmConfiguration: realmConfiguration
+                        ), self.driveInventoryGeneration.isCurrent(inventoryReceipt) else {
+                            throw ReaderFileManagerError.refreshSuperseded
+                        }
                         let files = try discoveredFiles.compactMap {
                             try Task.checkCancellation()
                             return realm.resolve($0)
                         }
-                        self.files = files
                         let discoveredURLs = try files.map {
                             try Task.checkCancellation()
                             return $0.url
                         }
+                        let discoveredIdentities = files.map {
+                            (primaryKey: $0.compoundKey, createdAt: $0.createdAt, url: $0.url)
+                        }
 
                         // Delete orphans (objects with no corresponding file on disk)
+                        try await self.refreshOrphanCleanupWillBeginForTesting?()
                         try await { @RealmBackgroundActor in
                             try Task.checkCancellation()
                             guard await MainActor.run(body: {
@@ -2295,6 +2311,15 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             let realm = try await RealmBackgroundActor.shared.cachedRealm(
                                 for: realmConfiguration
                             )
+                            try Task.checkCancellation()
+                            guard await MainActor.run(body: {
+                                self.refreshMetadataIdentityIsCurrent(
+                                    refreshIdentity,
+                                    realmConfiguration: realmConfiguration
+                                ) && self.driveInventoryGeneration.isCurrent(inventoryReceipt)
+                            }) else {
+                                throw ReaderFileManagerError.refreshSuperseded
+                            }
                             let existingURLs = try discoveredURLs.map {
                                 try Task.checkCancellation()
                                 return $0.absoluteString
@@ -2316,6 +2341,29 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 }
                             }
                         }()
+                        try Task.checkCancellation()
+                        let finalRealm = try await Realm.open(configuration: realmConfiguration)
+                        try await finalRealm.asyncRefresh()
+                        try Task.checkCancellation()
+                        guard self.refreshMetadataIdentityIsCurrent(
+                            refreshIdentity,
+                            realmConfiguration: realmConfiguration
+                        ), self.driveInventoryGeneration.isCurrent(inventoryReceipt) else {
+                            throw ReaderFileManagerError.refreshSuperseded
+                        }
+                        let completeFiles = try discoveredIdentities.map { identity in
+                            try Task.checkCancellation()
+                            guard let contentFile = finalRealm.object(
+                                ofType: ContentFile.self,
+                                forPrimaryKey: identity.primaryKey
+                            ), !contentFile.isDeleted,
+                            contentFile.createdAt == identity.createdAt,
+                            contentFile.url == identity.url else {
+                                throw ReaderFileManagerError.incompleteFileInventory
+                            }
+                            return contentFile
+                        }
+                        self.files = completeFiles
                     }()
                 } catch ReaderFileManagerError.refreshSuperseded
                     where refreshAllFilesMetadataNeedsFollowUp.contains(refreshIdentity)

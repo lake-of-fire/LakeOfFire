@@ -90,6 +90,7 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
             Bookmark.self,
             ContentFile.self,
             ContentPackageFile.self,
+            ReaderFilePostprocessingWorkItem.self,
             HistoryRecord.self,
             FeedEntry.self,
         ]
@@ -138,6 +139,171 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
             realm.object(ofType: ContentFile.self, forPrimaryKey: primaryKey)
         )
         return contentFile.isDeleted
+    }
+
+    @RealmBackgroundActor
+    private static func addPostprocessingWorkItem(
+        for primaryKey: String,
+        in configuration: Realm.Configuration
+    ) async throws -> String {
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: RealmBackgroundActor.shared
+        )
+        let workItem = ReaderFilePostprocessingWorkItem()
+        workItem.processorIdentifier = "inventory-publication-test"
+        workItem.processorVersion = 1
+        workItem.contentFilePrimaryKey = primaryKey
+        workItem.workItemIdentifier = ReaderFilePostprocessingWorkItem.makePortableWorkItemIdentifier(
+            processorIdentifier: workItem.processorIdentifier,
+            contentFilePrimaryKey: primaryKey
+        )
+        try await realm.asyncWrite { realm.add(workItem) }
+        return workItem.workItemIdentifier
+    }
+
+    @RealmBackgroundActor
+    private static func postprocessingWorkItemExists(
+        _ identifier: String,
+        in configuration: Realm.Configuration
+    ) async throws -> Bool {
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: RealmBackgroundActor.shared
+        )
+        return realm.object(
+            ofType: ReaderFilePostprocessingWorkItem.self,
+            forPrimaryKey: identifier
+        ) != nil
+    }
+
+    @MainActor
+    func testFailedOrphanCleanupDoesNotPublishIncompleteInventory() async throws {
+        let rootURL = try temporaryDirectory()
+        let configuration = makeHistoryRealmConfiguration()
+        let orphanPrimaryKey = try await Self.addContentFile(
+            at: rootURL.appendingPathComponent("missing-reader-content.epub"),
+            to: configuration
+        )
+        let workItemIdentifier = try await Self.addPostprocessingWorkItem(
+            for: orphanPrimaryKey,
+            in: configuration
+        )
+        let manager = CountingReaderFileManager()
+        manager.scanDelayNanoseconds = 0
+        manager.historyRealmConfigurationOverride = configuration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        manager.refreshOrphanCleanupWillBeginForTesting = {
+            throw MetadataScanError.failed
+        }
+
+        do {
+            try await manager.refreshAllFilesMetadata()
+            XCTFail("Expected orphan cleanup to fail before inventory publication.")
+        } catch MetadataScanError.failed {
+            XCTAssertNil(manager.files)
+            let orphanWasDeleted = try await Self.contentFileIsDeleted(
+                primaryKey: orphanPrimaryKey,
+                in: configuration
+            )
+            XCTAssertFalse(orphanWasDeleted)
+            let workItemStillExists = try await Self.postprocessingWorkItemExists(
+                workItemIdentifier,
+                in: configuration
+            )
+            XCTAssertTrue(workItemStillExists)
+        }
+
+        manager.refreshOrphanCleanupWillBeginForTesting = nil
+        try await manager.refreshAllFilesMetadata(force: true)
+        XCTAssertEqual(manager.files?.count, 0)
+        let orphanWasDeleted = try await Self.contentFileIsDeleted(
+            primaryKey: orphanPrimaryKey,
+            in: configuration
+        )
+        XCTAssertTrue(orphanWasDeleted)
+        let workItemStillExists = try await Self.postprocessingWorkItemExists(
+            workItemIdentifier,
+            in: configuration
+        )
+        XCTAssertFalse(workItemStillExists)
+    }
+
+    @MainActor
+    func testConfigurationReplacementBeforeOrphanWriteRetainsInventoryAndWorkItem() async throws {
+        let rootURL = try temporaryDirectory()
+        let firstConfiguration = makeHistoryRealmConfiguration()
+        let secondConfiguration = makeHistoryRealmConfiguration()
+        let orphanPrimaryKey = try await Self.addContentFile(
+            at: rootURL.appendingPathComponent("orphaned.epub"),
+            to: firstConfiguration
+        )
+        let workItemIdentifier = try await Self.addPostprocessingWorkItem(
+            for: orphanPrimaryKey,
+            in: firstConfiguration
+        )
+        let manager = CountingReaderFileManager()
+        manager.scanDelayNanoseconds = 0
+        manager.historyRealmConfigurationOverride = firstConfiguration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        manager.refreshOrphanCleanupWillBeginForTesting = {
+            manager.historyRealmConfigurationOverride = secondConfiguration
+        }
+
+        do {
+            try await manager.refreshAllFilesMetadata()
+            XCTFail("Expected the replaced inventory to be rejected.")
+        } catch ReaderFileManagerError.refreshSuperseded {
+            XCTAssertNil(manager.files)
+            let orphanWasDeleted = try await Self.contentFileIsDeleted(
+                primaryKey: orphanPrimaryKey,
+                in: firstConfiguration
+            )
+            XCTAssertFalse(orphanWasDeleted)
+            let workItemStillExists = try await Self.postprocessingWorkItemExists(
+                workItemIdentifier,
+                in: firstConfiguration
+            )
+            XCTAssertTrue(workItemStillExists)
+        }
+    }
+
+    @MainActor
+    func testSameRootDriveReplacementBeforeOrphanWriteRetainsInventoryAndWorkItem() async throws {
+        let rootURL = try temporaryDirectory()
+        let configuration = makeHistoryRealmConfiguration()
+        let orphanPrimaryKey = try await Self.addContentFile(
+            at: rootURL.appendingPathComponent("orphaned.epub"),
+            to: configuration
+        )
+        let workItemIdentifier = try await Self.addPostprocessingWorkItem(
+            for: orphanPrimaryKey,
+            in: configuration
+        )
+        let manager = CountingReaderFileManager()
+        manager.scanDelayNanoseconds = 0
+        manager.historyRealmConfigurationOverride = configuration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        manager.refreshOrphanCleanupWillBeginForTesting = {
+            manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        }
+
+        do {
+            try await manager.refreshAllFilesMetadata()
+            XCTFail("Expected the replaced drive inventory to be rejected.")
+        } catch ReaderFileManagerError.refreshSuperseded {
+            XCTAssertNil(manager.files)
+            let orphanWasDeleted = try await Self.contentFileIsDeleted(
+                primaryKey: orphanPrimaryKey,
+                in: configuration
+            )
+            XCTAssertFalse(orphanWasDeleted)
+            let workItemStillExists = try await Self.postprocessingWorkItemExists(
+                workItemIdentifier,
+                in: configuration
+            )
+            XCTAssertTrue(workItemStillExists)
+        }
     }
 
     @MainActor
