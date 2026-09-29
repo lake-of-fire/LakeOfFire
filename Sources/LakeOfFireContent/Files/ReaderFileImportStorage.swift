@@ -8,7 +8,10 @@ import LakeOfFireCore
 @MainActor
 enum ReaderFileImportStorage {
     static func install(fileURL: URL, targetDirectory: RootRelativePath, drive: CloudDrive) async throws -> RootRelativePath {
-        let isPackage = fileURL.isFilePackage()
+        let sourceValues = try fileURL.resourceValues(forKeys: [.isDirectoryKey])
+        guard let sourceIsDirectory = sourceValues.isDirectory else {
+            throw CocoaError(.fileReadUnknown)
+        }
         var originData: Data?
         var collisionHash: String?
         var collision = 0
@@ -19,9 +22,15 @@ enum ReaderFileImportStorage {
         func sourceIdentity() async throws -> Data {
             if let originData { return originData }
             let data: Data
-            if isPackage {
-                let work = Task.detached(priority: .utility) { try fileURL.packageManifestDigest() }
-                data = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+            if sourceIsDirectory {
+                let work = Task.detached(priority: .utility) {
+                    try fileURL.packageManifestDigest()
+                }
+                data = try await withTaskCancellationHandler {
+                    try await work.value
+                } onCancel: {
+                    work.cancel()
+                }
             } else {
                 data = try await CoordinatedFileManager().contentsOfFile(coordinatingAccessAt: fileURL)
             }
@@ -32,11 +41,19 @@ enum ReaderFileImportStorage {
 
         func existingMatches(_ path: RootRelativePath, at destination: URL) async throws -> Bool {
             if destination.standardizedFileURL == fileURL.standardizedFileURL { return true }
-            guard destination.isFilePackage() == isPackage else { return false }
+            let destinationIsDirectory = try await drive.directoryExists(at: path)
+            if destinationIsDirectory != sourceIsDirectory { return false }
+
             let source = try await sourceIdentity()
-            if isPackage {
-                let work = Task.detached(priority: .utility) { try destination.packageManifestDigest() }
-                let digest = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+            if sourceIsDirectory {
+                let work = Task.detached(priority: .utility) {
+                    try destination.packageManifestDigest()
+                }
+                let digest = try await withTaskCancellationHandler {
+                    try await work.value
+                } onCancel: {
+                    work.cancel()
+                }
                 try Task.checkCancellation()
                 return digest == source
             }
@@ -46,12 +63,9 @@ enum ReaderFileImportStorage {
         while true {
             try Task.checkCancellation()
             let destination = try candidate.fileURL(forRoot: drive.rootDirectory)
-            let exists: Bool
-            if destination.isFilePackage() {
-                exists = true
-            } else {
-                exists = try await drive.fileExists(at: candidate)
-            }
+            let fileExists = try await drive.fileExists(at: candidate)
+            let directoryExists = try await drive.directoryExists(at: candidate)
+            let exists = fileExists || directoryExists
             if exists {
                 if try await existingMatches(candidate, at: destination) { return candidate }
             } else {
