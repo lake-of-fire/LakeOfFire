@@ -490,6 +490,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
 
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
     @Environment(\.readerContentCellAnnotationStatusLoader) private var readerContentCellAnnotationStatusLoader
+    @Environment(\.readerContentCellAnnotationStatusUpdates) private var readerContentCellAnnotationStatusUpdates
     @State private var annotationStatus = ReaderContentCellAnnotationStatus()
 
     // Match the parent card's rounding minus its padding and scale it with the actual thumbnail size.
@@ -1221,11 +1222,16 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
                     item: item,
                     includeSource: appearance.includeSource
                 )
-                annotationStatus = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
             }
         }
-        .task(id: item.compoundKey) {
-            annotationStatus = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
+        .task(id: "\(item.compoundKey)|\(item.url.absoluteString)") {
+            let url = item.url
+            let contentID = item.compoundKey
+            await observeReaderContentCellAnnotationStatus(
+                updates: { readerContentCellAnnotationStatusUpdates?(url, contentID) },
+                initialStatus: { await readerContentCellAnnotationStatusLoader(url, contentID) },
+                publish: { annotationStatus = $0 }
+            )
         }
         .onChange(of: item.compoundKey) { _ in
             resolvedContentFile = nil
