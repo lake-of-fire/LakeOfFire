@@ -306,6 +306,7 @@ public struct ReaderWebView: View {
     @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject internal var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
+    @Environment(\.readerWebViewDataStore) private var readerWebViewDataStore
 
     private var ebookSchemeBindingState: String {
         [
@@ -393,6 +394,7 @@ public struct ReaderWebView: View {
         )
         let ebookURLSchemeHandler = configuredEBookURLSchemeHandler()
         let readerFileURLSchemeHandler = self.readerFileURLSchemeHandler
+        let websiteDataStore = readerWebViewDataStore ?? WKWebsiteDataStore.default()
         ReaderWebViewInternal(
             persistentWebViewID: persistentWebViewID,
             obscuredInsets: obscuredInsets,
@@ -415,12 +417,15 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler: ebookURLSchemeHandler,
             readerFileURLSchemeHandler: readerFileURLSchemeHandler,
             sharedReaderFontAsset: readerModeViewModel.sharedReaderFontAsset,
-            handler: handler
+            handler: handler,
+            websiteDataStore: websiteDataStore
         )
+        .id(ObjectIdentifier(websiteDataStore))
         .task(id: ebookSchemeBindingState) { @MainActor in
             navigator.shouldLoadFallbackOnAttach = false
             ebookURLSchemeHandler.ebookProcessedTextCacheReader = readerModeViewModel.ebookProcessedTextCacheReader
             ebookURLSchemeHandler.ebookProcessedTextCacheWriter = readerModeViewModel.ebookProcessedTextCacheWriter
+            ebookURLSchemeHandler.ebookProcessedPayloadAdmission = readerModeViewModel.ebookProcessedPayloadAdmission
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             ebookURLSchemeHandler.ebookProcessingVariantProvider = readerModeViewModel.ebookProcessingVariantProvider
             ebookURLSchemeHandler.ebookSectionPresentationProvider = readerModeViewModel.ebookSectionPresentationProvider
@@ -443,6 +448,25 @@ public struct ReaderWebView: View {
         }
     }
 }
+
+#if os(iOS)
+@MainActor
+final class ReaderWebViewPoolOwner: ObservableObject {
+    let prewarmer = WebViewPrewarmer(
+        warmUpCount: 1,
+        keepAliveCount: 0,
+        defaultResetURL: URL(string: "about:blank")
+    )
+
+    deinit {
+        // Older SwiftUIWebView factories retain their prewarmer through the
+        // creation closure. This owner is never passed into that closure.
+        MainActor.assumeIsolated {
+            prewarmer.pool.invalidate(resetURL: nil)
+        }
+    }
+}
+#endif
 
 fileprivate struct ReaderWebViewInternal: View {
     var persistentWebViewID: String? = nil
@@ -467,14 +491,11 @@ fileprivate struct ReaderWebViewInternal: View {
     var readerFileURLSchemeHandler: ReaderFileURLSchemeHandler
     let sharedReaderFontAsset: SharedReaderFontAsset?
     let handler: ReaderWebViewHandler
+    let websiteDataStore: WKWebsiteDataStore
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
 #if os(iOS)
-    @StateObject private var webViewPrewarmer = WebViewPrewarmer(
-        warmUpCount: 1,
-        keepAliveCount: 0,
-        defaultResetURL: URL(string: "about:blank")
-    )
+    @StateObject private var webViewPoolOwner = ReaderWebViewPoolOwner()
 #endif
 
     @Environment(\.readerWebViewConfigurationTransform) private var readerWebViewConfigurationTransform
@@ -483,7 +504,6 @@ fileprivate struct ReaderWebViewInternal: View {
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @Environment(\.readerNavigationActionHandler) private var readerNavigationActionHandler
     @Environment(\.readerNavigationActionContextHandler) private var readerNavigationActionContextHandler
-    @Environment(\.readerWebViewDataStore) private var readerWebViewDataStore
     @Environment(\.colorScheme) private var colorScheme
 
     private var readerThemeBackgroundColor: Color {
@@ -525,7 +545,7 @@ fileprivate struct ReaderWebViewInternal: View {
 
     public var body: some View {
 #if os(iOS)
-        let webViewPrewarmer: WebViewPrewarmer? = self.webViewPrewarmer
+        let webViewPrewarmer: WebViewPrewarmer? = webViewPoolOwner.prewarmer
 #else
         // A local macOS pool cannot warm before NSView construction. Loading its
         // spare views here launches WebKit services synchronously during layout.
@@ -539,7 +559,7 @@ fileprivate struct ReaderWebViewInternal: View {
                 trailing: 0
             )
         )
-        let resolvedWebsiteDataStore = readerWebViewDataStore ?? WKWebsiteDataStore.default()
+        let resolvedWebsiteDataStore = websiteDataStore
 
         let webViewConfig = WebViewConfig(
             dataDetectorsEnabled: false,
