@@ -8,6 +8,14 @@ import LakeOfFireCore
 @MainActor
 enum ReaderFileImportStorage {
     static func install(fileURL: URL, targetDirectory: RootRelativePath, drive: CloudDrive) async throws -> RootRelativePath {
+        // The managed library owns real file/directory entries. Importing a
+        // symlink would retain authority over data outside the selected drive.
+        guard (try? FileManager.default.destinationOfSymbolicLink(
+            atPath: fileURL.path
+        )) == nil else {
+            throw CocoaError(.fileReadUnsupportedScheme)
+        }
+
         let sourceValues = try fileURL.resourceValues(forKeys: [.isDirectoryKey])
         guard let sourceIsDirectory = sourceValues.isDirectory else {
             throw CocoaError(.fileReadUnknown)
@@ -41,6 +49,16 @@ enum ReaderFileImportStorage {
 
         func existingMatches(_ path: RootRelativePath, at destination: URL) async throws -> Bool {
             if destination.standardizedFileURL == fileURL.standardizedFileURL { return true }
+
+            // Never satisfy managed-library identity by following a link to an
+            // unrelated target. Leave the link untouched and collision-resolve
+            // the imported item beside it.
+            if (try? FileManager.default.destinationOfSymbolicLink(
+                atPath: destination.path
+            )) != nil {
+                return false
+            }
+
             let destinationIsDirectory = try await drive.directoryExists(at: path)
             if destinationIsDirectory != sourceIsDirectory { return false }
 
