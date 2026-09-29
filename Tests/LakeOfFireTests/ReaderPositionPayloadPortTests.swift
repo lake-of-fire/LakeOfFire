@@ -64,38 +64,50 @@ final class ReaderPositionPayloadPortTests: XCTestCase {
         XCTAssertNotNil(FractionalCompletionMessage(body: position()))
     }
 
-    func testInvalidOptionalIntegersAreOmittedWithoutTrapping() throws {
+    func testInvalidOptionalIntegersRejectTheMessageWithoutTrapping() {
         let keys = ["sectionIndex", "currentPageNumber", "totalPages", "visibleSegmentCount", "observedSegmentCount"]
-        for value: Any in [Double.nan, Double.infinity, -Double.infinity, Double.greatestFiniteMagnitude,
-                           Double(Int.max), true, false, "not-an-integer", NSNull()] {
-            let payload = position(Dictionary(uniqueKeysWithValues: keys.map { ($0, value) }))
-            let message = try XCTUnwrap(FractionalCompletionMessage(body: payload))
-            XCTAssertNil(message.sectionIndex)
-            XCTAssertNil(message.currentPageNumber)
-            XCTAssertNil(message.totalPages)
-            XCTAssertNil(message.visibleSegmentCount)
-            XCTAssertNil(message.observedSegmentCount)
+        for key in keys {
+            for value: Any in [
+                Double.nan,
+                Double.infinity,
+                -Double.infinity,
+                Double.greatestFiniteMagnitude,
+                -1,
+                -2.9,
+                2.9,
+                true,
+                false,
+                "10",
+                "not-an-integer",
+                NSNull(),
+            ] {
+                XCTAssertNil(
+                    FractionalCompletionMessage(body: position([key: value])),
+                    "Expected \(key)=\(value) to be rejected"
+                )
+            }
         }
     }
 
-    func testOptionalIntegerWireCompatibilityIsPreserved() throws {
+    func testOptionalIntegersAcceptOnlyExactNonnegativeJavaScriptSafeNumbers() throws {
         let message = try XCTUnwrap(FractionalCompletionMessage(body: position([
-            "sectionIndex": 0, "currentPageNumber": 2.9, "totalPages": "10",
-            "visibleSegmentCount": NSNumber(value: 3), "observedSegmentCount": -2.9,
+            "sectionIndex": 0,
+            "currentPageNumber": 2,
+            "totalPages": NSNumber(value: 10),
+            "visibleSegmentCount": NSNumber(value: 3),
+            "observedSegmentCount": 9_007_199_254_740_991.0,
         ])))
         XCTAssertEqual(message.sectionIndex, 0)
         XCTAssertEqual(message.currentPageNumber, 2)
         XCTAssertEqual(message.totalPages, 10)
         XCTAssertEqual(message.visibleSegmentCount, 3)
-        XCTAssertEqual(message.observedSegmentCount, -2)
+        XCTAssertEqual(message.observedSegmentCount, 9_007_199_254_740_991)
     }
 
-    func testRepresentableIntegerExtremesRemainValid() throws {
-        let message = try XCTUnwrap(FractionalCompletionMessage(body: position([
-            "sectionIndex": Int.max, "observedSegmentCount": Int.min,
+    func testOptionalIntegerAboveJavaScriptSafeRangeIsRejected() {
+        XCTAssertNil(FractionalCompletionMessage(body: position([
+            "sectionIndex": 9_007_199_254_740_992.0,
         ])))
-        XCTAssertEqual(message.sectionIndex, Int.max)
-        XCTAssertEqual(message.observedSegmentCount, Int.min)
     }
 
     func testKnownBlankViewportClassificationRemainsUnchanged() throws {
@@ -118,10 +130,17 @@ final class ReaderPositionPayloadPortTests: XCTestCase {
 
     func testVisibleJapaneseFlagAcceptsOnlyRealBooleans() throws {
         for value in [true, false] {
-            XCTAssertEqual(try XCTUnwrap(FractionalCompletionMessage(body: position(["hasVisibleJapaneseText": value]))).hasVisibleJapaneseText, value)
+            XCTAssertEqual(
+                try XCTUnwrap(
+                    FractionalCompletionMessage(body: position(["hasVisibleJapaneseText": value]))
+                ).hasVisibleJapaneseText,
+                value
+            )
         }
-        for value: Any in [0, 1, "true"] {
-            XCTAssertNil(try XCTUnwrap(FractionalCompletionMessage(body: position(["hasVisibleJapaneseText": value]))).hasVisibleJapaneseText)
+        for value: Any in [0, 1, "true", NSNull()] {
+            XCTAssertNil(FractionalCompletionMessage(body: position([
+                "hasVisibleJapaneseText": value,
+            ])))
         }
     }
 
