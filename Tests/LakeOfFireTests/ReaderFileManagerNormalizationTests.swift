@@ -610,6 +610,67 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         return realm.objects(ContentFile.self).where { !$0.isDeleted }.map { ($0.title, $0.sourceDownloadURL) }
     }
 
+    func testPackageManifestDigestIsDeterministicAndDoesNotFollowEscapingSymlink() throws {
+        let first = try temporaryDirectory()
+        let second = try temporaryDirectory()
+        let outsideRoot = try temporaryDirectory()
+        let outside = try writeFixture(relativePath: "outside.txt", under: outsideRoot)
+        for root in [first, second] {
+            _ = try writeFixture(relativePath: "b.txt", under: root)
+            _ = try writeFixture(relativePath: "a.txt", under: root)
+        }
+        try FileManager.default.createSymbolicLink(
+            at: first.appendingPathComponent("outside-link.txt"),
+            withDestinationURL: outside
+        )
+        let digest = try first.packageManifestDigest()
+        XCTAssertEqual(digest, try first.packageManifestDigest())
+        XCTAssertNotEqual(digest, try second.packageManifestDigest())
+        try Data("changed outside bytes".utf8).write(to: outside)
+        XCTAssertEqual(digest, try first.packageManifestDigest())
+    }
+
+    func testPackageManifestIncludesRelativePathsAndEmptyDirectories() throws {
+        let first = try temporaryDirectory()
+        let second = try temporaryDirectory()
+        _ = try writeFixture(relativePath: "first.txt", under: first)
+        _ = try writeFixture(relativePath: "renamed.txt", under: second)
+        XCTAssertNotEqual(try first.packageManifestDigest(), try second.packageManifestDigest())
+        let original = try first.packageManifestDigest()
+        try FileManager.default.createDirectory(
+            at: first.appendingPathComponent("empty"),
+            withIntermediateDirectories: true
+        )
+        XCTAssertNotEqual(original, try first.packageManifestDigest())
+    }
+
+    func testPackageManifestRejectsEntryByteAndDepthBudgetOverflow() throws {
+        let root = try temporaryDirectory()
+        _ = try writeFixture(relativePath: "Nested/book.txt", under: root)
+        for limits in [
+            ReaderImportPackageManifestLimits(maximumEntries: 1, maximumBytes: 1024, maximumDepth: 10),
+            ReaderImportPackageManifestLimits(maximumEntries: 10, maximumBytes: 1, maximumDepth: 10),
+            ReaderImportPackageManifestLimits(maximumEntries: 10, maximumBytes: 1024, maximumDepth: 0)
+        ] {
+            XCTAssertThrowsError(try root.packageManifestDigest(limits: limits)) { error in
+                guard let manifestError = error as? ReaderImportPackageManifestError,
+                      case .budgetExceeded = manifestError else {
+                    return XCTFail("Expected a typed package manifest budget rejection.")
+                }
+            }
+        }
+    }
+
+    func testPackageManifestDoesNotConflateFileBoundaries() throws {
+        let first = try temporaryDirectory()
+        let second = try temporaryDirectory()
+        for (root, firstBytes, secondBytes) in [(first, "ab", "c"), (second, "a", "bc")] {
+            try Data(firstBytes.utf8).write(to: root.appendingPathComponent("a.txt"))
+            try Data(secondBytes.utf8).write(to: root.appendingPathComponent("b.txt"))
+        }
+        XCTAssertNotEqual(try first.packageManifestDigest(), try second.packageManifestDigest())
+    }
+
     @MainActor
     private func collisionImportManager(libraryRootURL: URL) async throws -> ReaderFileManager {
         let manager = ReaderFileManager()
