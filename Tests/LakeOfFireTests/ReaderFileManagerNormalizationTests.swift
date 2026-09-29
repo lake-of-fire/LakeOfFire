@@ -34,6 +34,20 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         case failed
     }
 
+    @MainActor
+    func testRefreshWithoutAnyDriveReportsUnavailableStorage() async throws {
+        let manager = CountingReaderFileManager()
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+
+        do {
+            try await manager.refreshAllFilesMetadata(force: true)
+            XCTFail("Expected missing storage to reject the inventory.")
+        } catch ReaderFileManagerError.driveMissing {
+            XCTAssertNil(manager.files)
+            XCTAssertEqual(manager.metadataScanCount, 0)
+        }
+    }
+
     private actor ScanGate {
         private var didRelease = false
         private var waiter: CheckedContinuation<Void, Never>?

@@ -2266,7 +2266,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             repeat {
                 refreshAllFilesMetadataNeedsFollowUp.remove(refreshIdentity)
                 do {
-                    guard localDrive != nil || cloudDrive != nil else { return }
+                    guard localDrive != nil || cloudDrive != nil else {
+                        throw ReaderFileManagerError.driveMissing
+                    }
                     let inventoryReceipt = driveInventoryGeneration.receipt()
                     let drives: [(location: String, drive: CloudDrive)] = [
                         ("local", localDrive),
