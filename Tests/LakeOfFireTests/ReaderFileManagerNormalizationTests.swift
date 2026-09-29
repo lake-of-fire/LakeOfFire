@@ -603,6 +603,93 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testDriveReplacementDuringTargetedImportDiscoveryDoesNotAdmitMetadata() async throws {
+        try await assertReplacementDuringTargetedImportDiscovery(replacesConfiguration: false)
+    }
+
+    @MainActor
+    func testConfigurationReplacementDuringTargetedImportDiscoveryDoesNotAdmitMetadata() async throws {
+        try await assertReplacementDuringTargetedImportDiscovery(replacesConfiguration: true)
+    }
+
+    @MainActor
+    private func assertReplacementDuringTargetedImportDiscovery(replacesConfiguration: Bool) async throws {
+        let libraryRootURL = try temporaryDirectory()
+        let sourceRootURL = try temporaryDirectory()
+        let sourceURL = try writeFixture(relativePath: "retained.epub", under: sourceRootURL)
+        let firstConfiguration = makeHistoryRealmConfiguration()
+        let secondConfiguration = makeHistoryRealmConfiguration()
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = firstConfiguration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        let discoveryGate = ScanGate()
+        let discoveryStarted = expectation(description: "targeted import URL mapping suspended")
+        let processorCalls = ProcessorCallCounter()
+        let processorIdentifier = "targeted-import-authority-\(UUID().uuidString)"
+        manager.registerFileProcessorBundle(
+            identifier: processorIdentifier,
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in RootRelativePath(path: "Books") },
+            readerFileURLProcessor: { _, _ in
+                discoveryStarted.fulfill()
+                await discoveryGate.wait()
+                return nil
+            },
+            contextualFileProcessor: { context in
+                processorCalls.increment()
+                for contentFile in context.contentFiles {
+                    context.deferPostprocessing(for: contentFile)
+                }
+            }
+        )
+        let importTask = Task { @MainActor in
+            try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+        }
+        await fulfillment(of: [discoveryStarted], timeout: 5)
+        if replacesConfiguration {
+            manager.historyRealmConfigurationOverride = secondConfiguration
+        } else {
+            manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        }
+        await discoveryGate.release()
+        do {
+            _ = try await importTask.value
+            XCTFail("Expected obsolete targeted discovery to reject metadata admission.")
+        } catch ReaderFileManagerError.refreshSuperseded {
+            XCTAssertNil(manager.files)
+        }
+        let retainedURL = libraryRootURL.appendingPathComponent("Books/retained.epub")
+        XCTAssertEqual(try Data(contentsOf: retainedURL), try Data(contentsOf: sourceURL))
+        XCTAssertEqual(processorCalls.count, 0)
+        for configuration in [firstConfiguration, secondConfiguration] {
+            let counts = try await Self.inventoryCounts(in: configuration)
+            XCTAssertEqual(counts.activeFiles, 0)
+            XCTAssertEqual(counts.workItems, 0)
+        }
+
+        manager.registerFileProcessorBundle(
+            identifier: processorIdentifier,
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in RootRelativePath(path: "Books") },
+            readerFileURLProcessor: { _, _ in nil },
+            contextualFileProcessor: { context in
+                processorCalls.increment()
+                for contentFile in context.contentFiles {
+                    context.deferPostprocessing(for: contentFile)
+                }
+            }
+        )
+        let retryResult = try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+        let retryURL = try XCTUnwrap(retryResult)
+        XCTAssertEqual(manager.files?.map(\.url), [retryURL])
+        let currentConfiguration = replacesConfiguration ? secondConfiguration : firstConfiguration
+        let counts = try await Self.inventoryCounts(in: currentConfiguration)
+        XCTAssertEqual(counts.activeFiles, 1)
+        XCTAssertEqual(counts.workItems, 1)
+        XCTAssertGreaterThan(processorCalls.count, 0)
+    }
+
     private enum ImportInterruption: Equatable {
         case driveReplacement
         case configurationReplacement

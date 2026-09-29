@@ -456,6 +456,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let cloudContainerIdentifier: String?
     }
 
+    private struct ImportWriteAuthority: Sendable {
+        let managerIdentity: ObjectIdentifier
+        let configurationIdentity: String
+        let receipt: UInt64
+    }
+
     private struct InventoryOrphanCandidate: Sendable {
         let primaryKey: String
         let url: URL
@@ -631,6 +637,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     private let processorRegistry = ReaderFileProcessorRegistry()
     @TaskLocal private static var operationProcessorSnapshot: ReaderFileProcessorOperationSnapshot?
     @TaskLocal private static var inventoryDiscoveryStage: InventoryDiscoveryStage?
+    @TaskLocal private static var importWriteAuthority: ImportWriteAuthority?
 
     public static var fileDestinationProcessors: [(URL) async throws -> RootRelativePath?] {
         get { shared.processorRegistry.snapshot().destinationProcessors }
@@ -798,7 +805,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
     /// Keeps isolated import/index tests and callers on one content Realm.
     var historyRealmConfigurationOverride: Realm.Configuration? {
-        didSet { driveInventoryGeneration.advance() }
+        didSet {
+            storageAuthorityGeneration.advance()
+            driveInventoryGeneration.advance()
+        }
     }
 
     private let defaultLocalRootURLProvider: @Sendable () -> URL
@@ -970,6 +980,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     
     /*@MainActor*/ public var cloudDrive: CloudDrive? {
         didSet {
+            storageAuthorityGeneration.advance()
             driveInventoryGeneration.advance()
             Task { @MainActor in
                 objectWillChange.send()
@@ -979,6 +990,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     //    /*@MainActor*/ @Published public var legacyCloudDrive: CloudDrive?
     /*@MainActor*/ public var localDrive: CloudDrive? {
         didSet {
+            storageAuthorityGeneration.advance()
             driveInventoryGeneration.advance()
             Task { @MainActor in
                 objectWillChange.send()
@@ -1000,6 +1012,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     @MainActor private var lastRefreshAllFilesMetadataStartedAt = [RefreshMetadataIdentity: Date]()
     @MainActor private var refreshAllFilesMetadataNeedsFollowUp = Set<RefreshMetadataIdentity>()
     private let driveInventoryGeneration = DriveInventoryGeneration()
+    // Replacement authority is independent of ordinary filesystem observations.
+    private let storageAuthorityGeneration = DriveInventoryGeneration()
     private static let refreshAllFilesMetadataDebounceInterval: TimeInterval = 2
 
     private static let internalStorageRootPrefixes: Set<String> = [
@@ -2080,11 +2094,17 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         try Task.checkCancellation()
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
         let importIdentity = refreshMetadataIdentity(for: realmConfiguration)
+        let importWriteAuthority = ImportWriteAuthority(
+            managerIdentity: ObjectIdentifier(self),
+            configurationIdentity: Self.realmConfigurationIdentity(realmConfiguration),
+            receipt: storageAuthorityGeneration.receipt()
+        )
         let validateAuthority: @MainActor () throws -> Void = {
             try Task.checkCancellation()
             let currentDrive = ((self.cloudDrive?.isConnected ?? false) ? self.cloudDrive : nil) ?? self.localDrive
             guard let currentDrive,
                   ObjectIdentifier(currentDrive) == ObjectIdentifier(drive),
+                  self.storageAuthorityGeneration.isCurrent(importWriteAuthority.receipt),
                   self.refreshMetadataIdentityIsCurrent(
                     importIdentity,
                     realmConfiguration: realmConfiguration
@@ -2166,12 +2186,14 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         
         do {
             try validateAuthority()
-            _ = try await refreshFilesMetadata(
-                drive: drive,
-                relativePath: targetDirectory,
-                realmConfiguration: realmConfiguration,
-                processorSnapshot: processorSnapshot
-            )
+            _ = try await Self.$importWriteAuthority.withValue(importWriteAuthority) {
+                try await refreshFilesMetadata(
+                    drive: drive,
+                    relativePath: targetDirectory,
+                    realmConfiguration: realmConfiguration,
+                    processorSnapshot: processorSnapshot
+                )
+            }
             try validateAuthority()
             let realm = try await Realm.open(configuration: realmConfiguration)
             try validateAuthority()
@@ -2783,6 +2805,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     ) async throws -> [ThreadSafeReference<ContentFile>] {
         guard !discoveredFiles.isEmpty || inventoryCommit != nil else { return [] }
         let pendingFilesToUpdate = discoveredFiles
+        let importAuthority = Self.importWriteAuthority.flatMap { authority in
+            authority.managerIdentity == ObjectIdentifier(self)
+                && authority.configurationIdentity == Self.realmConfigurationIdentity(realmConfiguration)
+                ? authority : nil
+        }
         let updatedFiles = try await { @RealmBackgroundActor in
             var updatedFiles = [ContentFile]()
             var allFileRefs = [ThreadSafeReference<ContentFile>]()
@@ -2792,6 +2819,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(
                 for: realmConfiguration
             )
+            if let importAuthority,
+               !self.storageAuthorityGeneration.isCurrent(importAuthority.receipt) {
+                throw ReaderFileManagerError.refreshSuperseded
+            }
             if let inventoryCommit {
                 guard
                     await MainActor.run(body: {
@@ -2944,6 +2975,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         inventoryCommit.inventoryReceipt,
                         mutation: admitDiscoveredFilesAndCleanup
                     )
+                } else if let importAuthority {
+                    try self.storageAuthorityGeneration.mutateIfCurrent(
+                        importAuthority.receipt,
+                        mutation: admitDiscoveredFilesAndCleanup
+                    )
                 } else {
                     try admitDiscoveredFilesAndCleanup()
                 }
@@ -2957,6 +2993,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 }) else {
                     throw ReaderFileManagerError.refreshSuperseded
                 }
+            }
+            if let importAuthority,
+               !self.storageAuthorityGeneration.isCurrent(importAuthority.receipt) {
+                throw ReaderFileManagerError.refreshSuperseded
             }
             var firstPostprocessorError: (any Swift.Error)?
             for registration in processorSnapshot.filePostprocessors {
