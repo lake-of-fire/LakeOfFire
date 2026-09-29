@@ -3,6 +3,18 @@ import XCTest
 import SwiftCloudDrive
 @testable import LakeOfFireContent
 
+private func XCTAssertThrowsErrorAsync<T>(
+    _ expression: @autoclosure () async throws -> T,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    do {
+        _ = try await expression()
+        XCTFail("Expected error", file: file, line: line)
+    } catch {
+    }
+}
+
 @MainActor
 final class ReviewReaderFileImportTests: XCTestCase {
     private func fixture() async throws -> (URL, URL, CloudDrive) {
@@ -195,6 +207,56 @@ final class ReviewReaderFileImportTests: XCTestCase {
         XCTAssertEqual(
             try Data(contentsOf: occupiedDirectory.appendingPathComponent("nested.txt")),
             Data("keep".utf8)
+        )
+    }
+
+    func testSymlinkSourceIsRejectedInsteadOfImportingExternalAuthority() async throws {
+        let (incoming, library, drive) = try await fixture()
+        let outside = incoming.appendingPathComponent("outside.txt")
+        let sourceLink = incoming.appendingPathComponent("book.txt")
+        try Data("outside payload".utf8).write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            at: sourceLink,
+            withDestinationURL: outside
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            try await install(sourceLink, drive: drive)
+        )
+
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(
+                at: library,
+                includingPropertiesForKeys: nil
+            ).filter { !$0.lastPathComponent.hasPrefix(".") },
+            []
+        )
+        XCTAssertEqual(try Data(contentsOf: outside), Data("outside payload".utf8))
+    }
+
+    func testExistingSymlinkDestinationIsNotReusedEvenWhenTargetBytesMatch() async throws {
+        let (incoming, library, drive) = try await fixture()
+        let source = incoming.appendingPathComponent("book.txt")
+        let outside = incoming.appendingPathComponent("outside.txt")
+        let occupiedLink = library.appendingPathComponent("book.txt")
+        let payload = Data("same bytes".utf8)
+        try payload.write(to: source)
+        try payload.write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            at: occupiedLink,
+            withDestinationURL: outside
+        )
+
+        let result = try await install(source, drive: drive)
+
+        XCTAssertNotEqual(result.standardizedFileURL, occupiedLink.standardizedFileURL)
+        XCTAssertEqual(try Data(contentsOf: result), payload)
+        XCTAssertEqual(try Data(contentsOf: outside), payload)
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: occupiedLink.path
+            ),
+            outside.path
         )
     }
 }
