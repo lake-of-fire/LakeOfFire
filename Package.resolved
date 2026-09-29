@@ -158,8 +158,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lake-of-fire/PersistedLRUCache.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "92c910e0223cb415a7bf0a72d0e5e01eaa95e5b7"
+        "revision" : "fc486ae9e566106de8c4a319b012117055791525"
       }
     },
     {
@@ -212,8 +211,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/sqlite-data.git",
       "state" : {
-        "revision" : "93e0540441a6bfdba51df27ca6d01eb6508c82a5",
-        "version" : "1.7.0"
+        "revision" : "26471412f457f2c640bf5759a63870353a19f9e1",
+        "version" : "1.8.2"
       }
     },
     {

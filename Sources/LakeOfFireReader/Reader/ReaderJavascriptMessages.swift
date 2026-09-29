@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 import SwiftUIWebView
 import RealmSwift
@@ -277,6 +278,43 @@ public struct WritingDirectionMessage {
 //    }
 //}
 
+private enum WebKitScalarDecoder {
+    private static let maximumExactJavaScriptInteger = 9_007_199_254_740_991.0
+
+    static func boolean(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) == CFBooleanGetTypeID() else {
+            return nil
+        }
+        return number.boolValue
+    }
+
+    static func fraction(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else {
+            return nil
+        }
+        let value = number.doubleValue
+        guard value.isFinite, (0...1).contains(value) else { return nil }
+        return value
+    }
+
+    static func nonnegativeInteger(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else {
+            return nil
+        }
+        let value = number.doubleValue
+        guard value.isFinite,
+              value.rounded(.towardZero) == value,
+              value >= 0,
+              value <= maximumExactJavaScriptInteger else {
+            return nil
+        }
+        return Int(exactly: value)
+    }
+}
+
 public struct FractionalCompletionMessage: Sendable {
     public var fractionalCompletion: Float
     public var cfi: String
@@ -301,47 +339,48 @@ public struct FractionalCompletionMessage: Sendable {
     }
 
     public init?(body rawBody: Any?) {
-        guard let body = rawBody as? [String: Any], let completion = body["fractionalCompletion"] as? Double, let cfi = body["cfi"] as? String, let reason = body["reason"] as? String else { return nil }
+        guard let body = rawBody as? [String: Any],
+              let completion = WebKitScalarDecoder.fraction(body["fractionalCompletion"]),
+              let cfi = body["cfi"] as? String,
+              let reason = body["reason"] as? String else { return nil }
         fractionalCompletion = Float(completion)
         self.cfi = cfi
         self.reason = reason
-        hasVisibleJapaneseText = body["hasVisibleJapaneseText"] as? Bool
+        if let rawHasVisibleJapaneseText = body["hasVisibleJapaneseText"] {
+            guard let hasVisibleJapaneseText = WebKitScalarDecoder.boolean(rawHasVisibleJapaneseText) else {
+                return nil
+            }
+            self.hasVisibleJapaneseText = hasVisibleJapaneseText
+        }
         if let rawPage = body["mainDocumentURL"] as? String, let pageURL = URL(string: rawPage) {
             mainDocumentURL = pageURL
         }
-        if let rawSectionIndex = body["sectionIndex"] as? Int {
-            sectionIndex = rawSectionIndex
-        } else if let doubleIndex = body["sectionIndex"] as? Double {
-            sectionIndex = Int(doubleIndex)
+        guard Self.optionalNonnegativeIntegerIsValid(body, key: "sectionIndex"),
+              Self.optionalNonnegativeIntegerIsValid(body, key: "currentPageNumber"),
+              Self.optionalNonnegativeIntegerIsValid(body, key: "totalPages"),
+              Self.optionalNonnegativeIntegerIsValid(body, key: "visibleSegmentCount"),
+              Self.optionalNonnegativeIntegerIsValid(body, key: "observedSegmentCount") else {
+            return nil
         }
-        if let rawCurrentPageNumber = body["currentPageNumber"] as? Int {
-            currentPageNumber = rawCurrentPageNumber
-        } else if let doubleCurrentPageNumber = body["currentPageNumber"] as? Double {
-            currentPageNumber = Int(doubleCurrentPageNumber)
-        } else if let stringCurrentPageNumber = body["currentPageNumber"] as? String {
-            currentPageNumber = Int(stringCurrentPageNumber)
+        sectionIndex = body["sectionIndex"].flatMap { WebKitScalarDecoder.nonnegativeInteger($0) }
+        currentPageNumber = body["currentPageNumber"].flatMap {
+            WebKitScalarDecoder.nonnegativeInteger($0)
         }
-        if let rawTotalPages = body["totalPages"] as? Int {
-            totalPages = rawTotalPages
-        } else if let doubleTotalPages = body["totalPages"] as? Double {
-            totalPages = Int(doubleTotalPages)
-        } else if let stringTotalPages = body["totalPages"] as? String {
-            totalPages = Int(stringTotalPages)
+        totalPages = body["totalPages"].flatMap { WebKitScalarDecoder.nonnegativeInteger($0) }
+        visibleSegmentCount = body["visibleSegmentCount"].flatMap {
+            WebKitScalarDecoder.nonnegativeInteger($0)
         }
-        if let rawVisibleSegmentCount = body["visibleSegmentCount"] as? Int {
-            visibleSegmentCount = rawVisibleSegmentCount
-        } else if let doubleVisibleSegmentCount = body["visibleSegmentCount"] as? Double {
-            visibleSegmentCount = Int(doubleVisibleSegmentCount)
-        } else if let stringVisibleSegmentCount = body["visibleSegmentCount"] as? String {
-            visibleSegmentCount = Int(stringVisibleSegmentCount)
+        observedSegmentCount = body["observedSegmentCount"].flatMap {
+            WebKitScalarDecoder.nonnegativeInteger($0)
         }
-        if let rawObservedSegmentCount = body["observedSegmentCount"] as? Int {
-            observedSegmentCount = rawObservedSegmentCount
-        } else if let doubleObservedSegmentCount = body["observedSegmentCount"] as? Double {
-            observedSegmentCount = Int(doubleObservedSegmentCount)
-        } else if let stringObservedSegmentCount = body["observedSegmentCount"] as? String {
-            observedSegmentCount = Int(stringObservedSegmentCount)
-        }
+    }
+
+    private static func optionalNonnegativeIntegerIsValid(
+        _ body: [String: Any],
+        key: String
+    ) -> Bool {
+        guard let value = body[key] else { return true }
+        return WebKitScalarDecoder.nonnegativeInteger(value) != nil
     }
 }
 

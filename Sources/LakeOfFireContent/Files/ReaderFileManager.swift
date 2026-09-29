@@ -14,6 +14,11 @@ import LakeOfFireAdblock
 public enum ReaderFileManagerError: Swift.Error {
     case invalidFileURL
     case driveMissing
+    /// Enumeration did not establish a complete current inventory, so it is unsafe to
+    /// publish replacements or derive synchronized orphan tombstones from it.
+    case incompleteFileInventory
+    /// A drive root or Realm configuration changed while a refresh was in flight.
+    case refreshSuperseded
 }
 
 //public extension RootRelativePath {
@@ -64,6 +69,56 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         case index(reason: String, mimeType: String?)
     }
 
+    private struct RefreshMetadataIdentity: Hashable {
+        let realmConfiguration: String
+        let localDriveRoot: String?
+        let cloudDriveRoot: String?
+        let cloudContainerIdentifier: String?
+    }
+
+    /// A complete inventory is valid only until the next drive observation. The
+    /// receipt is intentionally separate from `RefreshMetadataIdentity`: a
+    /// changed inventory must make the in-flight scan retry, rather than run a
+    /// second concurrent scan for the same drive roots.
+    private final class DriveInventoryGeneration: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: UInt64 = 0
+
+        @MainActor
+        func advance() {
+            lock.lock()
+            value &+= 1
+            lock.unlock()
+        }
+
+        func receipt() -> UInt64 {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+
+        func isCurrent(_ receipt: UInt64) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return value == receipt
+        }
+
+        /// Holding the receipt lock through the synchronous Realm write keeps a
+        /// drive-change notification from admitting a replacement inventory in
+        /// the middle of an orphan-tombstone transaction.
+        func mutateIfCurrent(
+            _ receipt: UInt64,
+            mutation: () throws -> Void
+        ) throws {
+            lock.lock()
+            defer { lock.unlock() }
+            guard value == receipt else {
+                throw ReaderFileManagerError.refreshSuperseded
+            }
+            try mutation()
+        }
+    }
+
     // TODO: Migrate to a 'plugin registry' architecture instead of all these callbacks
     nonisolated(unsafe) public static var fileDestinationProcessors = [(URL) async throws -> RootRelativePath?]()
     nonisolated(unsafe) public static var readerFileURLProcessors = [@RealmBackgroundActor (URL, String) async throws -> URL?]()
@@ -86,6 +141,28 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
     private var resolvedHistoryRealmConfiguration: Realm.Configuration {
         historyRealmConfigurationOverride ?? ReaderContentLoader.historyRealmConfiguration
+    }
+
+    @MainActor
+    private func refreshMetadataIdentity(
+        for realmConfiguration: Realm.Configuration
+    ) -> RefreshMetadataIdentity {
+        RefreshMetadataIdentity(
+            realmConfiguration: Self.realmConfigurationIdentity(realmConfiguration),
+            localDriveRoot: localDrive?.rootDirectory.standardizedFileURL.absoluteString,
+            cloudDriveRoot: cloudDrive?.rootDirectory.standardizedFileURL.absoluteString,
+            cloudContainerIdentifier: cloudDrive?.ubiquityContainerIdentifier
+        )
+    }
+
+    private static func realmConfigurationIdentity(_ configuration: Realm.Configuration) -> String {
+        if let fileURL = configuration.fileURL {
+            return "file:\(fileURL.standardizedFileURL.absoluteString)"
+        }
+        if let inMemoryIdentifier = configuration.inMemoryIdentifier {
+            return "memory:\(inMemoryIdentifier)"
+        }
+        return "default"
     }
     
     // TODO: Pull these from callbacks per above
@@ -136,9 +213,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
     }
     
-    private var refreshAllFilesMetadataTask: Task<Void, any Swift.Error>?
-    @MainActor private var lastRefreshAllFilesMetadataStartedAt: Date?
-    @MainActor private var refreshAllFilesMetadataNeedsFollowUp = false
+    @MainActor private var refreshAllFilesMetadataTasks = [RefreshMetadataIdentity: Task<Void, any Swift.Error>]()
+    @MainActor private var lastRefreshAllFilesMetadataStartedAt = [RefreshMetadataIdentity: Date]()
+    @MainActor private var refreshAllFilesMetadataNeedsFollowUp = Set<RefreshMetadataIdentity>()
+    private let driveInventoryGeneration = DriveInventoryGeneration()
     private static let refreshAllFilesMetadataDebounceInterval: TimeInterval = 2
 
     private static let internalStorageRootPrefixes: Set<String> = [
@@ -209,7 +287,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     @MainActor
     public func appSuspendedDidChange(isSuspended: Bool) {
         if isSuspended {
-            refreshAllFilesMetadataTask?.cancel()
+            for task in refreshAllFilesMetadataTasks.values {
+                task.cancel()
+            }
         } else {
             Task { @MainActor in
                 try? await refreshAllFilesMetadata()
@@ -559,7 +639,13 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 return nil
             }
             try await refreshAllFilesMetadata(force: true, realmConfiguration: realmConfiguration)
-            return content.url
+            let finalRealm = try await Realm.open(configuration: realmConfiguration)
+            guard let finalContent = finalRealm.object(ofType: ContentFile.self, forPrimaryKey: content.compoundKey),
+                  !finalContent.isDeleted,
+                  finalContent.url == importedReaderFileURL else {
+                throw ReaderFileManagerError.incompleteFileInventory
+            }
+            return finalContent.url
         } catch {
             debugPrint("Error importing file:", error)
             throw error
@@ -579,31 +665,34 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         force: Bool,
         realmConfiguration: Realm.Configuration
     ) async throws {
-        if let refreshAllFilesMetadataTask {
+        let refreshIdentity = refreshMetadataIdentity(for: realmConfiguration)
+        if let refreshAllFilesMetadataTask = refreshAllFilesMetadataTasks[refreshIdentity] {
             if force {
-                refreshAllFilesMetadataNeedsFollowUp = true
+                refreshAllFilesMetadataNeedsFollowUp.insert(refreshIdentity)
             }
             try await refreshAllFilesMetadataTask.value
             return
         }
         if !force,
            files != nil,
-           let lastRefreshAllFilesMetadataStartedAt,
+           let lastRefreshAllFilesMetadataStartedAt = lastRefreshAllFilesMetadataStartedAt[refreshIdentity],
            Date().timeIntervalSince(lastRefreshAllFilesMetadataStartedAt)
                 < Self.refreshAllFilesMetadataDebounceInterval {
             return
         }
 
-        refreshAllFilesMetadataNeedsFollowUp = false
-        lastRefreshAllFilesMetadataStartedAt = Date()
-        refreshAllFilesMetadataTask = Task { @MainActor in
+        refreshAllFilesMetadataNeedsFollowUp.remove(refreshIdentity)
+        lastRefreshAllFilesMetadataStartedAt[refreshIdentity] = Date()
+        let refreshTask = Task { @MainActor in
             defer {
-                refreshAllFilesMetadataTask = nil
+                refreshAllFilesMetadataTasks.removeValue(forKey: refreshIdentity)
+                refreshAllFilesMetadataNeedsFollowUp.remove(refreshIdentity)
             }
             repeat {
-                refreshAllFilesMetadataNeedsFollowUp = false
+                refreshAllFilesMetadataNeedsFollowUp.remove(refreshIdentity)
                 do {
                     guard localDrive != nil || cloudDrive != nil else { return }
+                    let inventoryReceipt = driveInventoryGeneration.receipt()
                     var files = [ThreadSafeReference<ContentFile>]()
                     for drive in [localDrive, cloudDrive].compactMap({ $0 }) {
                         try Task.checkCancellation()
@@ -619,6 +708,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     try await { @MainActor [weak self] in
                         try Task.checkCancellation()
                         guard let self = self else { return }
+                        guard self.refreshMetadataIdentity(for: realmConfiguration) == refreshIdentity,
+                              Self.realmConfigurationIdentity(self.resolvedHistoryRealmConfiguration)
+                                == refreshIdentity.realmConfiguration,
+                              self.driveInventoryGeneration.isCurrent(inventoryReceipt) else {
+                            throw ReaderFileManagerError.refreshSuperseded
+                        }
                         let realm = try await Realm.open(configuration: realmConfiguration)
                         let files = try discoveredFiles.compactMap {
                             try Task.checkCancellation()
@@ -633,6 +728,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         // Delete orphans (objects with no corresponding file on disk)
                         try await { @RealmBackgroundActor in
                             try Task.checkCancellation()
+                            guard await MainActor.run(body: {
+                                self.refreshMetadataIdentity(for: realmConfiguration) == refreshIdentity
+                                    && self.driveInventoryGeneration.isCurrent(inventoryReceipt)
+                            }) else {
+                                throw ReaderFileManagerError.refreshSuperseded
+                            }
                             let realm = try await RealmBackgroundActor.shared.cachedRealm(
                                 for: realmConfiguration
                             )
@@ -643,23 +744,30 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND NOT (url IN %@)", NSNumber(booleanLiteral: false), existingURLs))
                             //await realm.asyncRefresh()
                             try await realm.asyncWrite {
-                                for orphan in orphans {
-                                    try Task.checkCancellation()
-                                    orphan.isDeleted = true
-                                    orphan.refreshChangeMetadata(explicitlyModified: true)
+                                try self.driveInventoryGeneration.mutateIfCurrent(inventoryReceipt) {
+                                    for orphan in orphans {
+                                        try Task.checkCancellation()
+                                        orphan.isDeleted = true
+                                        orphan.refreshChangeMetadata(explicitlyModified: true)
+                                    }
                                 }
                             }
                         }()
                     }()
+                } catch ReaderFileManagerError.refreshSuperseded
+                    where refreshAllFilesMetadataNeedsFollowUp.contains(refreshIdentity)
+                        && !Task.isCancelled {
+                    continue
                 } catch {
                     if !(error is CancellationError) {
                         Logger.shared.logger.error("\(error)")
                     }
                     throw error
                 }
-            } while refreshAllFilesMetadataNeedsFollowUp && !Task.isCancelled
+            } while refreshAllFilesMetadataNeedsFollowUp.contains(refreshIdentity) && !Task.isCancelled
         }
-        try await refreshAllFilesMetadataTask?.value
+        refreshAllFilesMetadataTasks[refreshIdentity] = refreshTask
+        try await refreshTask.value
     }
     
     static let additionalFilePackageSuffixesToAvoidDescendingInto = [
@@ -707,11 +815,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 } catch {
                     if Self.isMissingFileError(error) {
                         Self.logContentFileDecision(
-                            stage: "discovery.skipMissing",
+                            stage: "discovery.incompleteMissing",
                             path: tryRelativePath.path,
                             reason: "disappearedDuringRefresh"
                         )
-                        continue
+                        throw ReaderFileManagerError.incompleteFileInventory
                     }
                     throw error
                 }
@@ -760,11 +868,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         } catch {
             if Self.isMissingFileError(error) {
                 Self.logContentFileDecision(
-                    stage: "discovery.skipMissingDirectory",
+                    stage: "discovery.incompleteMissingDirectory",
                     path: relativePath?.path ?? "",
                     reason: "disappearedDuringRefresh"
                 )
-                return files
+                throw ReaderFileManagerError.incompleteFileInventory
             }
             if !(error is CancellationError) {
                 debugPrint("refreshFilesMetadata error:", error)
@@ -1319,7 +1427,9 @@ public extension ReaderFileManager {
 extension ReaderFileManager: CloudDriveObserver {
     nonisolated public func cloudDriveDidChange(_ drive: CloudDrive, rootRelativePaths: [RootRelativePath]) {
         Task { @MainActor [weak self] in
-            try await self?.refreshAllFilesMetadata()
+            guard let self else { return }
+            self.driveInventoryGeneration.advance()
+            try? await self.refreshAllFilesMetadata(force: true)
         }
     }
 }
