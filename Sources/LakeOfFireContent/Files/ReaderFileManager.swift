@@ -585,6 +585,17 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             return value == receipt
         }
 
+        /// Rejects stale admission without swallowing errors thrown by the mutation.
+        func applyIfCurrent(
+            _ receipt: UInt64,
+            mutation: () throws -> Bool
+        ) rethrows -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard value == receipt else { return false }
+            return try mutation()
+        }
+
         /// Holding the receipt lock through the synchronous Realm write keeps a
         /// drive-change notification from admitting a replacement inventory in
         /// the middle of an orphan-tombstone transaction.
@@ -3271,15 +3282,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         mutation: () throws -> Bool
     ) throws -> Bool {
         guard let receipt else { return try mutation() }
-        var didApply = false
-        do {
-            try storageAuthorityGeneration.mutateIfCurrent(receipt) {
-                didApply = try mutation()
-            }
-        } catch ReaderFileManagerError.refreshSuperseded {
-            return false
-        }
-        return didApply
+        return try storageAuthorityGeneration.applyIfCurrent(receipt, mutation: mutation)
     }
 
     @RealmBackgroundActor

@@ -611,6 +611,39 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     }
 
     @MainActor
+    func testImportProcessorMutationFailureRollsBackAndRetainsWorkItem() async throws {
+        let libraryRootURL = try temporaryDirectory()
+        let sourceRootURL = try temporaryDirectory()
+        let sourceURL = try writeFixture(relativePath: "rollback.epub", under: sourceRootURL)
+        let configuration = makeHistoryRealmConfiguration()
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = configuration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        manager.registerFileProcessorBundle(
+            identifier: "throwing-import-mutation",
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in RootRelativePath(path: "Books") },
+            readerFileURLProcessor: { _, _ in nil },
+            contextualFileProcessor: { context in
+                try await context.performCurrentWrite { _, contentFile in
+                    contentFile.title = "Uncommitted mutation"
+                    throw ReaderFileManagerError.refreshSuperseded
+                }
+            }
+        )
+        do {
+            _ = try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+            XCTFail("Expected a processor mutation error to reject import completion.")
+        } catch ReaderFileManagerError.refreshSuperseded {}
+        let metadata = try await Self.importedMetadata(in: configuration)
+        XCTAssertEqual(metadata.map { $0.0 }, ["rollback"])
+        let counts = try await Self.inventoryCounts(in: configuration)
+        XCTAssertEqual(counts.activeFiles, 1)
+        XCTAssertEqual(counts.workItems, 1)
+        XCTAssertNil(manager.files)
+    }
+
+    @MainActor
     func testReplacedImportProcessorCannotWriteOrRetireWorkItem() async throws {
         let libraryRootURL = try temporaryDirectory()
         let sourceRootURL = try temporaryDirectory()
