@@ -34,6 +34,8 @@ public enum ReaderFileManagerError: Swift.Error {
     case cloudInventoryUnavailable
     /// A drive root or Realm configuration changed while a refresh was in flight.
     case refreshSuperseded
+    /// Source or installed bytes changed before the import could be indexed.
+    case importContentChanged
 }
 
 struct ReaderFileSourceAccess: @unchecked Sendable {
@@ -2279,8 +2281,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         var candidate = targetDirectory.appending(sourceURL.lastPathComponent)
 
         @MainActor
-        func sourceIdentity() async throws -> Data {
-            if let sourceBytes { return sourceBytes }
+        func sourceIdentity(refresh: Bool = false) async throws -> Data {
+            if !refresh, let sourceBytes { return sourceBytes }
             let bytes: Data
             if sourceIsPackage {
                 let work = Task.detached(priority: .utility) { try sourceURL.packageManifestDigest() }
@@ -2289,13 +2291,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 bytes = try await CoordinatedFileManager().contentsOfFile(coordinatingAccessAt: sourceURL)
             }
             try validateAuthority()
-            sourceBytes = bytes
+            if !refresh { sourceBytes = bytes }
             return bytes
         }
 
         @MainActor
         func existingMatches(_ path: RootRelativePath, destination: URL) async throws -> Bool {
-            if destination.standardizedFileURL == sourceURL.standardizedFileURL { return true }
             guard destination.isFilePackage() == sourceIsPackage else { return false }
             let source = try await sourceIdentity()
             let destinationBytes: Data
@@ -2306,6 +2307,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 destinationBytes = try await drive.readFile(at: path)
             }
             try validateAuthority()
+            guard try await sourceIdentity(refresh: true) == source else {
+                throw ReaderFileManagerError.importContentChanged
+            }
             return destinationBytes == source
         }
 
@@ -2325,8 +2329,19 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             } else {
                 do {
                     try validateAuthority()
+                    // Capture even for a free destination; collision comparisons and
+                    // installation must refer to the same source content.
+                    let expectedSource = try await sourceIdentity()
+                    guard try await sourceIdentity(refresh: true) == expectedSource else {
+                        throw ReaderFileManagerError.importContentChanged
+                    }
                     try await drive.upload(from: sourceURL, to: candidate)
                     try validateAuthority()
+                    guard try await existingMatches(candidate, destination: destination) else {
+                        // Preserve the copy for recovery; never remove a path whose
+                        // ownership may have changed during an awaited operation.
+                        throw ReaderFileManagerError.importContentChanged
+                    }
                     return candidate
                 } catch {
                     // Only fail-on-existing copy races authorize candidate comparison.

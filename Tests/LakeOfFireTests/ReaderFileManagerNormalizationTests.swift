@@ -686,6 +686,33 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     }
 
     @MainActor
+    func testFreeDestinationImportInstallsAndIndexesSourceBytes() async throws {
+        let sourceRootURL = try temporaryDirectory()
+        let libraryRootURL = try temporaryDirectory()
+        let sourceURL = try writeFixture(relativePath: "book.txt", under: sourceRootURL)
+        let expectedBytes = Data("verified new import".utf8)
+        try expectedBytes.write(to: sourceURL)
+        let manager = try await collisionImportManager(libraryRootURL: libraryRootURL)
+        let result = try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+        XCTAssertEqual(result?.lastPathComponent, "book.txt")
+        let installedURL = libraryRootURL.appendingPathComponent("Books/book.txt")
+        XCTAssertEqual(try Data(contentsOf: installedURL), expectedBytes)
+        XCTAssertEqual(manager.files?.count, 1)
+    }
+
+    @MainActor
+    func testSameURLImportValidatesAndReusesInstalledBytes() async throws {
+        let libraryRootURL = try temporaryDirectory()
+        let sourceURL = try writeFixture(relativePath: "Books/book.txt", under: libraryRootURL)
+        let expectedBytes = try Data(contentsOf: sourceURL)
+        let manager = try await collisionImportManager(libraryRootURL: libraryRootURL)
+        let result = try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+        XCTAssertEqual(result?.lastPathComponent, "book.txt")
+        XCTAssertEqual(try Data(contentsOf: sourceURL), expectedBytes)
+        XCTAssertEqual(manager.files?.count, 1)
+    }
+
+    @MainActor
     func testIdenticalImportAtDifferentURLReusesExistingDestination() async throws {
         let sourceRootURL = try temporaryDirectory()
         let libraryRootURL = try temporaryDirectory()
