@@ -17,6 +17,7 @@ import FoundationXML
 enum OPDS1ParserError: Error {
     case missingTitle
     case rootNotFound
+    case invalidBaseURL
 }
 
 enum OPDSParserOpenSearchHelperError: Error {
@@ -30,8 +31,8 @@ private struct MimeTypeParameters {
 }
 
 enum OPDS1Parser {
-    static func parseURL(url: URL, completion: @escaping (ParseData?, Error?) -> Void) {
-        URLSession.shared.dataTask(with: url) { data, response, error in
+    static func parseURL(url: URL, session: URLSession = .shared, completion: @escaping (ParseData?, Error?) -> Void) {
+        OPDSParser.loadDocument(url: url, session: session) { data, response, error in
             guard let data, let response else {
                 completion(nil, error ?? OPDSParserError.documentNotFound)
                 return
@@ -42,7 +43,7 @@ enum OPDS1Parser {
             } catch {
                 completion(nil, error)
             }
-        }.resume()
+        }
     }
 
     static func parse(xmlData: Data, url: URL, response: URLResponse) throws -> ParseData {
@@ -61,55 +62,79 @@ enum OPDS1Parser {
         return parseData
     }
 
-    static func fetchOpenSearchTemplate(feed: Feed, completion: @escaping (String?, Error?) -> Void) {
+    static func fetchOpenSearchTemplate(feed: Feed, session: URLSession = .shared, completion: @escaping (String?, Error?) -> Void) {
         guard let href = feed.links.first(withRel: .search)?.href else {
             completion(nil, OPDSParserOpenSearchHelperError.searchLinkNotFound)
             return
         }
         let feedBaseURL = feed.links.first(withRel: .self).flatMap { URL(string: $0.href) }
-        guard let url = URL(string: href, relativeTo: feedBaseURL)?.absoluteURL,
-              url.scheme != nil
+        guard let url = URLHelper.resolve(href: href, base: feedBaseURL)
         else {
             completion(nil, OPDSParserOpenSearchHelperError.searchLinkNotFound)
             return
         }
 
-        URLSession.shared.dataTask(with: url) { data, response, error in
+        OPDSParser.loadDocument(url: url, session: session) { data, response, error in
             guard let data else {
                 completion(nil, error ?? OPDSParserOpenSearchHelperError.searchDocumentIsInvalid)
                 return
             }
 
             do {
-                let parser = try OpenSearchXMLParser(data: data)
-                let template = parser.bestTemplate(
-                    for: feed.links.first(withRel: .self)?.type,
-                    relativeTo: response?.url ?? url
-                )
-                guard let template else {
-                    completion(nil, OPDSParserOpenSearchHelperError.searchDocumentIsInvalid)
-                    return
-                }
-                completion(template, nil)
+                completion(try parseOpenSearchTemplate(
+                    data: data,
+                    selfType: feed.links.first(withRel: .self)?.type,
+                    baseURL: response?.url ?? url
+                ), nil)
             } catch {
                 completion(nil, OPDSParserOpenSearchHelperError.searchDocumentIsInvalid)
             }
-        }.resume()
+        }
+    }
+
+    static func parseOpenSearchTemplate(data: Data, selfType: String?, baseURL: URL?) throws -> String {
+        let parser = try OpenSearchXMLParser(data: data, baseURL: baseURL)
+        guard let template = parser.bestTemplate(for: selfType) else {
+            throw OPDSParserOpenSearchHelperError.searchDocumentIsInvalid
+        }
+        return template
     }
 
     fileprivate static func parseMimeType(mimeTypeString: String) -> MimeTypeParameters {
-        let parts = mimeTypeString.split(separator: ";")
-        let type = String(parts[0]).trimmingCharacters(in: .whitespaces)
+        // A parameter value can contain a quoted semicolon. Empty and malformed
+        // media types remain nonmatches rather than indexing an empty array.
+        var parts = [String]()
+        var part = ""
+        var quoted = false
+        var escaped = false
+        for character in mimeTypeString {
+            if escaped {
+                part.append(character)
+                escaped = false
+            } else if character == "\\", quoted {
+                escaped = true
+            } else if character == "\"" {
+                quoted.toggle()
+            } else if character == ";", !quoted {
+                parts.append(part)
+                part = ""
+            } else {
+                part.append(character)
+            }
+        }
+        guard !quoted, !escaped else { return MimeTypeParameters(type: "") }
+        parts.append(part)
+        let type = parts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         var parameters: [String: String] = [:]
         for part in parts.dropFirst() {
-            let halves = part.split(separator: "=", maxSplits: 1).map(String.init)
-            guard halves.count == 2 else {
-                continue
-            }
-            parameters[halves[0].trimmingCharacters(in: .whitespaces)] = halves[1].trimmingCharacters(in: .whitespaces)
+            let halves = part.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard halves.count == 2 else { continue }
+            let key = halves[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            parameters[key] = halves[1].trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return MimeTypeParameters(type: type, parameters: parameters)
     }
+
 }
 
 private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
@@ -144,8 +169,26 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
     private var parserError: Error?
 
     var rootKind: RootKind = .unknown
-    private var stack: [String] = []
-    private var textBuffers: [String] = []
+    private enum Role { case feed, entry, author, other }
+    private struct Element {
+        let name: String
+        let namespace: String
+        let role: Role
+        let baseURL: URL?
+        var text = ""
+    }
+    private var stack: [Element] = []
+    private var legacyNamespaceLessDocument = false
+    private var namespaceBindings: [String: [String]] = [:]
+    private static let atomNamespace = "http://www.w3.org/2005/Atom"
+    private static let dcNamespaces: Set<String> = [
+        "http://purl.org/dc/elements/1.1/", "http://purl.org/dc/terms/",
+    ]
+    private static let searchNamespaces: Set<String> = [
+        "http://a9.com/-/spec/opensearch/1.1/",
+        "http://a9.com/-/spec/opensearch/1.0/",
+        "http://a9.com/-/spec/opensearchrss/1.0/",
+    ]
 
     private var feedTitle: String?
     private var feedUpdated: Date?
@@ -156,7 +199,6 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
     private var currentEntry: EntryRecord?
     private var currentAuthorName: String?
     private var currentAuthorURI: String?
-    private var currentCategoryAttributes: [String: String]?
 
     init(baseURL: URL?) {
         self.baseURL = baseURL
@@ -165,12 +207,12 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
     func parse(data: Data) throws {
         let parser = XMLParser(data: data)
         parser.shouldProcessNamespaces = true
+        parser.shouldReportNamespacePrefixes = true
         parser.delegate = self
-        guard parser.parse() else {
+        let succeeded = parser.parse()
+        if let parserError { throw parserError }
+        guard succeeded else {
             throw parser.parserError ?? OPDS1ParserError.rootNotFound
-        }
-        if let parserError {
-            throw parserError
         }
     }
 
@@ -207,7 +249,9 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
                 }
                 .flatMap(makeLink(from:))
 
-            let isNavigation = !entry.links.contains { ($0.rel?.lowercased() ?? "").contains(LinkRelation.opdsAcquisition.string) }
+            let isNavigation = !entry.links.contains {
+                $0.rel.map { LinkRelation($0).isOPDSAcquisition } == true
+            }
             if isNavigation, let navigation = makeNavigationLink(from: entry) {
                 if let collectionLink {
                     addNavigation(in: feed, link: navigation, collectionLink: collectionLink)
@@ -257,7 +301,7 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
             if link.rels.contains(LinkRelation.collection) || link.rels.contains("http://opds-spec.org/group") {
                 continue
             }
-            if link.rels.contains(LinkRelation.cover) || link.rels.contains(LinkRelation.opdsImage) || link.rels.contains(LinkRelation.opdsImageThumbnail) {
+            if link.rels.contains(LinkRelation.cover) || link.rels.contains(where: \.isImage) {
                 images.append(link)
             } else {
                 links.append(link)
@@ -268,29 +312,30 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
     }
 
     private func makeNavigationLink(from entry: EntryRecord) -> Link? {
-        guard let record = entry.links.first,
-              let href = URLHelper.getAbsolute(href: record.href, base: baseURL)
-        else {
-            return nil
+        let candidates = entry.links.compactMap(makeLink(from:)).filter { link in
+            let isAuxiliary = link.rels.contains { relation in
+                relation.isImage || relation == .cover || relation == .collection
+                    || relation == "http://opds-spec.org/group"
+                    || relation == .self || relation == .search
+            }
+            let mediaType = OPDS1Parser.parseMimeType(mimeTypeString: link.type ?? "").type
+            return !isAuxiliary && !mediaType.hasPrefix("image/")
         }
-        return Link(
-            href: href,
-            type: record.type,
-            title: entry.title,
-            rel: record.rel.map { LinkRelation($0) }
-        )
+        // Prefer a catalog representation, not whichever artwork/HTML link the
+        // publisher happened to serialize first. Keep other-resource navigation.
+        let catalog = candidates.first { link in
+            let type = OPDS1Parser.parseMimeType(mimeTypeString: link.type ?? "").type
+            return type == "application/atom+xml" || type == "application/opds+json"
+        }
+        guard let link = catalog ?? candidates.first else { return nil }
+        return Link(href: link.href, type: link.type, title: entry.title, rels: link.rels)
     }
 
     private func makeLink(from record: LinkRecord) -> Link? {
-        guard let href = URLHelper.getAbsolute(href: record.href, base: baseURL) else {
-            return nil
-        }
-        return Link(
-            href: href,
-            type: record.type,
-            title: record.title,
-            rel: record.rel.map { LinkRelation($0) }
-        )
+        // Hrefs were resolved in their lexical XML scope while parsing.
+        guard let href = record.href else { return nil }
+        return Link(href: href, type: record.type, title: record.title,
+                    rel: record.rel.map { LinkRelation($0) })
     }
 
     private func addFacet(feed: Feed, link: Link, title: String) {
@@ -333,6 +378,29 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
         feed.groups.append(group)
     }
 
+    private func isAtom(_ namespace: String) -> Bool {
+        namespace == Self.atomNamespace || (legacyNamespaceLessDocument && namespace.isEmpty)
+    }
+
+    private func attribute(_ name: String, namespace: String, in attributes: [String: String]) -> String? {
+        for (key, value) in attributes {
+            let parts = key.split(separator: ":", maxSplits: 1)
+            if parts.count == 2, parts[1] == name,
+               namespaceBindings[String(parts[0])]?.last == namespace {
+                return value
+            }
+        }
+        return nil
+    }
+
+    func parser(_ parser: XMLParser, didStartMappingPrefix prefix: String, toURI namespaceURI: String) {
+        namespaceBindings[prefix, default: []].append(namespaceURI)
+    }
+
+    func parser(_ parser: XMLParser, didEndMappingPrefix prefix: String) {
+        _ = namespaceBindings[prefix]?.popLast()
+    }
+
     func parser(
         _ parser: XMLParser,
         didStartElement elementName: String,
@@ -340,44 +408,71 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
         qualifiedName qName: String?,
         attributes attributeDict: [String: String] = [:]
     ) {
-        let name = localName(from: qName ?? elementName)
-        stack.append(name)
-        textBuffers.append("")
-
-        switch name {
-        case "feed":
-            rootKind = .feed
-        case "entry":
-            if rootKind == .unknown {
-                rootKind = .entry
+        let namespace = namespaceURI ?? ""
+        let parent = stack.last
+        if stack.isEmpty {
+            legacyNamespaceLessDocument = namespace.isEmpty
+            guard isAtom(namespace), elementName == "feed" || elementName == "entry" else {
+                parserError = OPDS1ParserError.rootNotFound
+                parser.abortParsing()
+                return
             }
+            rootKind = elementName == "feed" ? .feed : .entry
+        }
+
+        let inheritedBase = parent?.baseURL ?? baseURL
+        let effectiveBase: URL?
+        if let declaredBase = attributeDict["xml:base"] {
+            guard let resolved = URLHelper.resolve(href: declaredBase, base: inheritedBase) else {
+                parserError = OPDS1ParserError.invalidBaseURL
+                parser.abortParsing()
+                return
+            }
+            effectiveBase = resolved
+        } else {
+            effectiveBase = inheritedBase
+        }
+
+        let role: Role
+        if isAtom(namespace), stack.isEmpty, elementName == "feed" {
+            role = .feed
+        } else if isAtom(namespace), elementName == "entry",
+                  stack.isEmpty || parent?.role == .feed {
+            role = .entry
             currentEntry = EntryRecord()
-        case "author":
+        } else if isAtom(namespace), elementName == "author", parent?.role == .entry {
+            role = .author
             currentAuthorName = nil
             currentAuthorURI = nil
-        case "category":
-            currentCategoryAttributes = attributeDict
-        case "link":
+        } else {
+            role = .other
+        }
+        stack.append(Element(name: elementName, namespace: namespace, role: role, baseURL: effectiveBase))
+
+        guard isAtom(namespace) else { return }
+        if elementName == "link", parent?.role == .entry || parent?.role == .feed {
             let record = LinkRecord(
-                href: attributeDict["href"],
-                type: attributeDict["type"],
-                title: attributeDict["title"],
-                rel: attributeDict["rel"],
-                facetGroup: attributeDict["facetGroup"]
+                href: URLHelper.getAbsolute(href: attributeDict["href"], base: effectiveBase),
+                type: attributeDict["type"], title: attributeDict["title"], rel: attributeDict["rel"],
+                facetGroup: attribute("facetGroup", namespace: "http://opds-spec.org/2010/catalog", in: attributeDict)
+                    ?? attributeDict["facetGroup"]
             )
-            if currentEntry != nil {
-                currentEntry?.links.append(record)
-            } else if rootKind == .feed {
-                feedLinks.append(record)
-            }
-        default:
-            break
+            if parent?.role == .entry { currentEntry?.links.append(record) }
+            else { feedLinks.append(record) }
+        } else if elementName == "category", parent?.role == .entry,
+                  let label = attributeDict["label"] ?? attributeDict["term"] {
+            currentEntry?.subjects.append(Subject(name: label, scheme: attributeDict["scheme"], code: attributeDict["term"]))
         }
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
-        guard !textBuffers.isEmpty else { return }
-        textBuffers[textBuffers.count - 1] += string
+        guard !stack.isEmpty else { return }
+        stack[stack.count - 1].text += string
+    }
+
+    func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
+        guard let text = String(data: CDATABlock, encoding: .utf8) else { return }
+        self.parser(parser, foundCharacters: text)
     }
 
     func parser(
@@ -386,150 +481,115 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
         namespaceURI: String?,
         qualifiedName qName: String?
     ) {
-        let name = localName(from: qName ?? elementName)
-        let rawText = textBuffers.popLast() ?? ""
-        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parent = stack.dropLast().last
+        guard let element = stack.popLast() else { return }
+        let parent = stack.last
+        let text = element.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let atom = isAtom(element.namespace)
+        let dc = Self.dcNamespaces.contains(element.namespace)
+            || (legacyNamespaceLessDocument && element.namespace.isEmpty)
 
-        if let currentEntry {
-            switch (parent, name) {
-            case ("entry", "title"):
-                self.currentEntry?.title = text.nilIfEmpty
-            case ("entry", "updated"):
-                self.currentEntry?.modified = text.dateFromISO8601
-            case ("entry", "id"), ("entry", "identifier"):
-                self.currentEntry?.identifier = text.nilIfEmpty
-            case ("entry", "published"), ("entry", "issued"):
-                self.currentEntry?.published = text.dateFromISO8601
-            case ("entry", "summary"), ("entry", "content"):
-                if self.currentEntry?.description == nil {
-                    self.currentEntry?.description = text.nilIfEmpty
-                }
-            case ("entry", "language"):
-                if let value = text.nilIfEmpty {
-                    self.currentEntry?.languages.append(value)
-                }
-            case ("entry", "publisher"):
-                if let value = text.nilIfEmpty {
-                    self.currentEntry?.publishers.append(Contributor(name: value))
-                }
-            case ("author", "name"):
-                currentAuthorName = text.nilIfEmpty
-            case ("author", "uri"):
-                currentAuthorURI = text.nilIfEmpty
+        if parent?.role == .entry {
+            switch element.name {
+            case "title" where atom:
+                currentEntry?.title = text.nilIfEmpty
+            case "updated" where atom:
+                currentEntry?.modified = text.dateFromISO8601
+            case "id" where atom:
+                currentEntry?.identifier = text.nilIfEmpty
+            case "identifier" where dc:
+                if currentEntry?.identifier == nil { currentEntry?.identifier = text.nilIfEmpty }
+            case "published" where atom, "issued" where dc:
+                currentEntry?.published = text.dateFromISO8601
+            case "summary" where atom, "content" where atom:
+                if currentEntry?.description == nil { currentEntry?.description = text.nilIfEmpty }
+            case "language" where dc:
+                if let value = text.nilIfEmpty { currentEntry?.languages.append(value) }
+            case "publisher" where dc:
+                if let value = text.nilIfEmpty { currentEntry?.publishers.append(Contributor(name: value)) }
             default:
                 break
             }
-
-            if name == "author", parent == "entry", let currentAuthorName {
-                self.currentEntry?.authors.append(Contributor(name: currentAuthorName, identifier: currentAuthorURI))
-                self.currentAuthorName = nil
-                self.currentAuthorURI = nil
-            } else if name == "category", parent == "entry", let attributes = currentCategoryAttributes, let label = attributes["label"] {
-                self.currentEntry?.subjects.append(Subject(name: label, scheme: attributes["scheme"], code: attributes["term"]))
-                currentCategoryAttributes = nil
-            } else if name == "entry" {
-                entryRecords.append(currentEntry)
-                self.currentEntry = nil
+        } else if parent?.role == .author, atom {
+            if element.name == "name" { currentAuthorName = text.nilIfEmpty }
+            if element.name == "uri" {
+                currentAuthorURI = text.nilIfEmpty.flatMap {
+                    URLHelper.getAbsolute(href: $0, base: element.baseURL)
+                }
             }
-        } else if rootKind == .feed {
-            switch (parent, name) {
-            case ("feed", "title"):
-                feedTitle = text.nilIfEmpty
-            case ("feed", "updated"):
-                feedUpdated = text.dateFromISO8601
-            case ("feed", "TotalResults"):
-                feedTotalResults = Int(text)
-            case ("feed", "ItemsPerPage"):
-                feedItemsPerPage = Int(text)
-            default:
-                break
+        } else if parent?.role == .feed {
+            if atom, element.name == "title" { feedTitle = text.nilIfEmpty }
+            if atom, element.name == "updated" { feedUpdated = text.dateFromISO8601 }
+            let search = Self.searchNamespaces.contains(element.namespace)
+                || (legacyNamespaceLessDocument && element.namespace.isEmpty)
+            if search {
+                switch element.name {
+                case "totalResults", "TotalResults": feedTotalResults = Int(text)
+                case "itemsPerPage", "ItemsPerPage": feedItemsPerPage = Int(text)
+                default: break
+                }
             }
         }
 
-        _ = stack.popLast()
-        if !textBuffers.isEmpty {
-            textBuffers[textBuffers.count - 1] += rawText
+        if element.role == .author {
+            if let name = currentAuthorName {
+                currentEntry?.authors.append(Contributor(name: name, identifier: currentAuthorURI))
+            }
+            currentAuthorName = nil
+            currentAuthorURI = nil
+        } else if element.role == .entry, let currentEntry {
+            entryRecords.append(currentEntry)
+            self.currentEntry = nil
         }
+
+        if !stack.isEmpty { stack[stack.count - 1].text += element.text }
     }
 
     func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
-        let error = parseError as NSError
-        if error.domain == XMLParser.errorDomain && error.code == XMLParser.ErrorCode.delegateAbortedParseError.rawValue {
-            return
-        }
-        parserError = parseError
-    }
-
-    private func localName(from qualifiedName: String) -> String {
-        qualifiedName.split(separator: ":").last.map(String.init) ?? qualifiedName
+        if parserError == nil { parserError = parseError }
     }
 }
 
 private final class OpenSearchXMLParser: NSObject, XMLParserDelegate {
-    struct URLRecord {
+    private struct URLRecord {
         let type: String
         let template: String
     }
 
-    private(set) var urls: [URLRecord] = []
+    private struct Element {
+        let baseURL: URL?
+    }
+    private var urls: [URLRecord] = []
+    private var stack: [Element] = []
+    private let documentURL: URL?
+    private var documentNamespace = ""
     private var parserError: Error?
 
-    init(data: Data) throws {
+    init(data: Data, baseURL: URL?) throws {
+        documentURL = baseURL
         super.init()
         let parser = XMLParser(data: data)
         parser.shouldProcessNamespaces = true
         parser.delegate = self
-        guard parser.parse() else {
+        let succeeded = parser.parse()
+        if let parserError { throw parserError }
+        guard succeeded else {
             throw parser.parserError ?? OPDSParserOpenSearchHelperError.searchDocumentIsInvalid
-        }
-        if let parserError {
-            throw parserError
         }
     }
 
-    func bestTemplate(for selfType: String?, relativeTo baseURL: URL?) -> String? {
-        guard !urls.isEmpty else {
-            return nil
-        }
-
-        func resolvedTemplate(_ template: String) -> String? {
-            if let absolute = URL(string: template), absolute.scheme != nil {
-                return template
-            }
-            guard let baseURL else {
-                return template
-            }
-            let resolved = URL(string: template, relativeTo: baseURL)?.absoluteURL.absoluteString ?? template
-            return resolved
-                .replacingOccurrences(of: "%7B", with: "{")
-                .replacingOccurrences(of: "%7D", with: "}")
-        }
-
-        guard let selfType else {
-            return urls.first.flatMap { resolvedTemplate($0.template) }
-        }
-
+    func bestTemplate(for selfType: String?) -> String? {
+        guard let selfType else { return urls.first?.template }
         let selfMime = OPDS1Parser.parseMimeType(mimeTypeString: selfType)
-        var typeAndProfileMatch: URLRecord?
         var typeMatch: URLRecord?
-
         for url in urls {
             let other = OPDS1Parser.parseMimeType(mimeTypeString: url.type)
-            guard selfMime.type == other.type else {
-                continue
-            }
-            if typeMatch == nil {
-                typeMatch = url
-            }
+            guard !selfMime.type.isEmpty, selfMime.type == other.type else { continue }
+            if typeMatch == nil { typeMatch = url }
             if selfMime.parameters["profile"] == other.parameters["profile"] {
-                typeAndProfileMatch = url
-                break
+                return url.template
             }
         }
-
-        let bestMatch = typeAndProfileMatch?.template ?? typeMatch?.template ?? urls.first?.template
-        return bestMatch.flatMap(resolvedTemplate)
+        return typeMatch?.template ?? urls.first?.template
     }
 
     func parser(
@@ -539,22 +599,49 @@ private final class OpenSearchXMLParser: NSObject, XMLParserDelegate {
         qualifiedName qName: String?,
         attributes attributeDict: [String: String] = [:]
     ) {
-        let name = (qName ?? elementName).split(separator: ":").last.map(String.init) ?? elementName
-        guard name == "Url",
-              let type = attributeDict["type"],
-              let template = attributeDict["template"]
-        else {
-            return
+        let namespace = namespaceURI ?? ""
+        if stack.isEmpty {
+            guard elementName == "OpenSearchDescription",
+                  namespace.isEmpty || namespace == "http://a9.com/-/spec/opensearch/1.1/"
+                    || namespace == "http://a9.com/-/spec/opensearch/1.0/" else {
+                parserError = OPDSParserOpenSearchHelperError.searchDocumentIsInvalid
+                parser.abortParsing()
+                return
+            }
+            documentNamespace = namespace
         }
-        urls.append(URLRecord(type: type, template: template))
+        let inheritedBase = stack.last?.baseURL ?? documentURL
+        let effectiveBase: URL?
+        if let declared = attributeDict["xml:base"] {
+            guard let resolved = URLHelper.resolve(href: declared, base: inheritedBase) else {
+                parserError = OPDSParserOpenSearchHelperError.searchDocumentIsInvalid
+                parser.abortParsing()
+                return
+            }
+            effectiveBase = resolved
+        } else {
+            effectiveBase = inheritedBase
+        }
+        let isDirectChild = stack.count == 1
+        stack.append(Element(baseURL: effectiveBase))
+        guard isDirectChild, namespace == documentNamespace, elementName == "Url",
+              let type = attributeDict["type"],
+              !OPDS1Parser.parseMimeType(mimeTypeString: type).type.isEmpty,
+              let template = attributeDict["template"] else { return }
+        if let resolved = URLHelper.resolveTemplate(template, base: effectiveBase) {
+            urls.append(URLRecord(type: type, template: resolved))
+        } else if effectiveBase == nil {
+            urls.append(URLRecord(type: type, template: template))
+        }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String,
+                namespaceURI: String?, qualifiedName qName: String?) {
+        _ = stack.popLast()
     }
 
     func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
-        let error = parseError as NSError
-        if error.domain == XMLParser.errorDomain && error.code == XMLParser.ErrorCode.delegateAbortedParseError.rawValue {
-            return
-        }
-        parserError = parseError
+        if parserError == nil { parserError = parseError }
     }
 }
 

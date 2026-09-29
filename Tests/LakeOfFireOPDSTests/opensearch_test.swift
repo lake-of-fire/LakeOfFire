@@ -13,13 +13,18 @@ import FoundationNetworking
 @testable import LakeOfFireOPDS
 
 final class opensearch_test: XCTestCase {
+    private var session: URLSession!
+
     override func setUp() {
         super.setUp()
-        URLProtocol.registerClass(MockURLProtocol.self)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        session = URLSession(configuration: configuration)
     }
 
     override func tearDown() {
-        URLProtocol.unregisterClass(MockURLProtocol.self)
+        session.invalidateAndCancel()
+        session = nil
         MockURLProtocol.requestHandler = nil
         super.tearDown()
     }
@@ -53,7 +58,7 @@ final class opensearch_test: XCTestCase {
 
         let expectation = expectation(description: "OpenSearch template")
 
-        OPDS1Parser.fetchOpenSearchTemplate(feed: feed) { template, error in
+        OPDS1Parser.fetchOpenSearchTemplate(feed: feed, session: session) { template, error in
             XCTAssertNil(error)
             XCTAssertEqual(template, "https://catalog.example.com/search?q={searchTerms}")
             expectation.fulfill()
@@ -90,7 +95,7 @@ final class opensearch_test: XCTestCase {
 
         let expectation = expectation(description: "Relative OpenSearch template")
 
-        OPDS1Parser.fetchOpenSearchTemplate(feed: feed) { template, error in
+        OPDS1Parser.fetchOpenSearchTemplate(feed: feed, session: session) { template, error in
             XCTAssertNil(error)
             XCTAssertEqual(template, "https://catalog.example.com/search?q={searchTerms}")
             expectation.fulfill()
@@ -132,7 +137,7 @@ final class opensearch_test: XCTestCase {
 
         let expectation = expectation(description: "Final OpenSearch template")
 
-        OPDS1Parser.fetchOpenSearchTemplate(feed: feed) { template, error in
+        OPDS1Parser.fetchOpenSearchTemplate(feed: feed, session: session) { template, error in
             XCTAssertNil(error)
             XCTAssertEqual(template, "https://cdn.example.net/search/search?q={searchTerms}")
             expectation.fulfill()

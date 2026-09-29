@@ -277,14 +277,7 @@ public struct Link: Hashable {
     }
 
     public func url(relativeTo baseURL: URL?) -> URL? {
-        if let absolute = URL(string: href), absolute.scheme != nil {
-            return absolute
-        }
-        guard let baseURL else {
-            return nil
-        }
-        let safeHref = (href.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? href).removingPrefix("/")
-        return URL(string: safeHref, relativeTo: baseURL)?.absoluteURL
+        URLHelper.resolve(href: href, base: baseURL)
     }
 
     static func links(from json: Any?, normalizeHREF: (String) -> String = { $0 }) throws -> [Link] {
@@ -321,11 +314,11 @@ public struct LinkRelation: Hashable, ExpressibleByStringLiteral {
     }
 
     public var isImage: Bool {
-        hasPrefix("http://opds-spec.org/image")
+        self == .opdsImage || hasPrefix(LinkRelation.opdsImage.string + "/")
     }
 
     public var isOPDSAcquisition: Bool {
-        hasPrefix("http://opds-spec.org/acquisition")
+        self == .opdsAcquisition || hasPrefix(LinkRelation.opdsAcquisition.string + "/")
     }
 
     public static let alternate = LinkRelation("alternate")
@@ -386,10 +379,6 @@ private extension String {
             return values
         }
         return []
-    }
-
-    func removingPrefix(_ prefix: String) -> String {
-        hasPrefix(prefix) ? String(dropFirst(prefix.count)) : self
     }
 }
 
