@@ -3,18 +3,6 @@ import XCTest
 import SwiftCloudDrive
 @testable import LakeOfFireContent
 
-private func XCTAssertThrowsErrorAsync<T>(
-    _ expression: @autoclosure () async throws -> T,
-    file: StaticString = #filePath,
-    line: UInt = #line
-) async {
-    do {
-        _ = try await expression()
-        XCTFail("Expected error", file: file, line: line)
-    } catch {
-    }
-}
-
 @MainActor
 final class ReviewReaderFileImportTests: XCTestCase {
     private func fixture() async throws -> (URL, URL, CloudDrive) {
@@ -220,9 +208,11 @@ final class ReviewReaderFileImportTests: XCTestCase {
             withDestinationURL: outside
         )
 
-        await XCTAssertThrowsErrorAsync(
-            try await install(sourceLink, drive: drive)
-        )
+        do {
+            _ = try await install(sourceLink, drive: drive)
+            XCTFail("A symlink source must not be installed into the managed library")
+        } catch {
+        }
 
         XCTAssertEqual(
             try FileManager.default.contentsOfDirectory(
