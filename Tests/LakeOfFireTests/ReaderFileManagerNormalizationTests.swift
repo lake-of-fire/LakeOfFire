@@ -610,6 +610,92 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         return realm.objects(ContentFile.self).where { !$0.isDeleted }.map { ($0.title, $0.sourceDownloadURL) }
     }
 
+    @MainActor
+    private func collisionImportManager(libraryRootURL: URL) async throws -> ReaderFileManager {
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        manager.registerFileProcessorBundle(
+            identifier: "collision-import",
+            destinationProcessor: { _ in RootRelativePath(path: "Books") },
+            readerFileURLProcessor: { _, _ in nil },
+            contextualFileProcessor: { _ in }
+        )
+        return manager
+    }
+
+    @MainActor
+    func testIdenticalImportAtDifferentURLReusesExistingDestination() async throws {
+        let sourceRootURL = try temporaryDirectory()
+        let libraryRootURL = try temporaryDirectory()
+        let sourceURL = try writeFixture(relativePath: "book.txt", under: sourceRootURL)
+        let destination = try writeFixture(relativePath: "Books/book.txt", under: libraryRootURL)
+        let manager = try await collisionImportManager(libraryRootURL: libraryRootURL)
+        let importResult = try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+        let readerURL = try XCTUnwrap(importResult)
+        XCTAssertEqual(readerURL.lastPathComponent, "book.txt")
+        XCTAssertEqual(try Data(contentsOf: destination), try Data(contentsOf: sourceURL))
+        XCTAssertEqual(manager.files?.count, 1)
+    }
+
+    @MainActor
+    func testRepeatedCollisionImportReusesPreviouslyRenamedFile() async throws {
+        let sourceRootURL = try temporaryDirectory()
+        let libraryRootURL = try temporaryDirectory()
+        let sourceURL = try writeFixture(relativePath: "book.txt", under: sourceRootURL)
+        let original = try writeFixture(relativePath: "Books/book.txt", under: libraryRootURL)
+        try Data("original user file".utf8).write(to: original)
+        let manager = try await collisionImportManager(libraryRootURL: libraryRootURL)
+        let first = try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+        let second = try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+        XCTAssertNotNil(first)
+        XCTAssertEqual(first, second)
+        XCTAssertNotEqual(first?.lastPathComponent, "book.txt")
+        XCTAssertEqual(try Data(contentsOf: original), Data("original user file".utf8))
+        XCTAssertEqual(manager.files?.count, 2)
+    }
+
+    @MainActor
+    func testOccupiedImportCollisionNameIsPreservedAndNextCandidateSelected() async throws {
+        let sourceRootURL = try temporaryDirectory()
+        let libraryRootURL = try temporaryDirectory()
+        let sourceURL = try writeFixture(relativePath: "book.txt", under: sourceRootURL)
+        let original = try writeFixture(relativePath: "Books/book.txt", under: libraryRootURL)
+        try Data("original".utf8).write(to: original)
+        let manager = try await collisionImportManager(libraryRootURL: libraryRootURL)
+        let firstResult = try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+        let first = try XCTUnwrap(firstResult)
+        let occupiedURL = libraryRootURL.appendingPathComponent("Books").appendingPathComponent(first.lastPathComponent)
+        try Data("edited renamed file".utf8).write(to: occupiedURL)
+        let nextResult = try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+        let next = try XCTUnwrap(nextResult)
+        XCTAssertNotEqual(first, next)
+        XCTAssertEqual(try Data(contentsOf: original), Data("original".utf8))
+        XCTAssertEqual(try Data(contentsOf: occupiedURL), Data("edited renamed file".utf8))
+        let nextURL = libraryRootURL.appendingPathComponent("Books").appendingPathComponent(next.lastPathComponent)
+        XCTAssertEqual(try Data(contentsOf: nextURL), try Data(contentsOf: sourceURL))
+        XCTAssertEqual(manager.files?.count, 3)
+    }
+
+    @MainActor
+    func testMissingImportSourceDoesNotReplaceExistingFile() async throws {
+        let sourceRootURL = try temporaryDirectory()
+        let libraryRootURL = try temporaryDirectory()
+        let original = try writeFixture(relativePath: "Books/missing.txt", under: libraryRootURL)
+        let originalBytes = try Data(contentsOf: original)
+        let manager = try await collisionImportManager(libraryRootURL: libraryRootURL)
+        do {
+            _ = try await manager.importFile(
+                fileURL: sourceRootURL.appendingPathComponent("missing.txt"),
+                fromDownloadURL: nil
+            )
+            XCTFail("Expected missing source to propagate its I/O failure.")
+        } catch {
+            XCTAssertEqual(try Data(contentsOf: original), originalBytes)
+            XCTAssertNil(manager.files)
+        }
+    }
+
     func testHistoryConfigurationAuthorityRejectsRestoredOldGeneration() throws {
         let firstConfiguration = makeHistoryRealmConfiguration()
         let secondConfiguration = makeHistoryRealmConfiguration()

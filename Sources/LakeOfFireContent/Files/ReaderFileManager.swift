@@ -2177,9 +2177,6 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             processorSnapshot: processorSnapshot
         )
         try validateAuthority()
-        var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
-        let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
-
         try Self.validateDestinationContainment(
             targetDirectory,
             in: drive.rootDirectory
@@ -2187,53 +2184,13 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         try await drive.createDirectory(at: targetDirectory)
         try validateAuthority()
 
-        try Self.validateDestinationContainment(
-            targetFilePath,
-            in: drive.rootDirectory
+        let targetFilePath = try await installImportFile(
+            fileURL,
+            targetDirectory: targetDirectory,
+            drive: drive,
+            validateAuthority: validateAuthority
         )
-        
-        var targetExists = false
-        var distinctTargetExists = false
-        var originData: Data?
-        if targetURL.isFilePackage() {
-            targetExists = true
-            if fileURL.isFilePackage() {
-                originData = try fileURL.concatenateDataInDirectory()
-                distinctTargetExists = try targetURL != fileURL && targetURL.concatenateDataInDirectory() != originData
-            } else {
-                distinctTargetExists = true
-            }
-        } else if try await drive.fileExists(at: targetFilePath) {
-            let coordinatedFileManager = CoordinatedFileManager()
-            originData = try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: fileURL)
-            targetExists = true
-            distinctTargetExists = targetURL != fileURL
-            if !distinctTargetExists {
-                distinctTargetExists = try await drive.readFile(at: targetFilePath) != originData
-            }
-        }
-        if distinctTargetExists, let originData = originData {
-            if try await drive.readFile(at: targetFilePath) != originData {
-                // Make a unique filename
-                var ext = fileURL.lakePathExtension
-                if !ext.isEmpty {
-                    ext = "." + ext
-                }
-                let hash = String(format: "%02X", stableHash(data: originData)).prefix(6).uppercased()
-                let newFileName = fileURL.deletingPathExtension().lastPathComponent + " (\(hash))" + ext
-                targetFilePath = targetDirectory.appending(newFileName)
-            }
-        }
-        try validateAuthority()
-        // Don't overwrite
-        if distinctTargetExists || !targetExists {
-            try Self.validateDestinationContainment(
-                targetFilePath,
-                in: drive.rootDirectory
-            )
-            try await drive.upload(from: fileURL, to: targetFilePath)
-        }
-        
+
         do {
             try validateAuthority()
             _ = try await Self.$importWriteAuthority.withValue(importWriteAuthority) {
@@ -2300,6 +2257,92 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         } catch {
             debugPrint("Error importing file:", error)
             throw error
+        }
+    }
+
+    /// Installs or reuses equal bytes without replacing an occupied candidate.
+    /// Package comparison retains the existing concatenation policy pending its
+    /// separate canonical, bounded package-manifest port.
+    @MainActor
+    private func installImportFile(
+        _ sourceURL: URL,
+        targetDirectory: RootRelativePath,
+        drive: CloudDrive,
+        validateAuthority: @MainActor () throws -> Void
+    ) async throws -> RootRelativePath {
+        let sourceIsPackage = sourceURL.isFilePackage()
+        var sourceBytes: Data?
+        var collisionHash: String?
+        var collision = 0
+        let baseName = sourceURL.deletingPathExtension().lastPathComponent
+        let pathExtension = sourceURL.lakePathExtension.isEmpty ? "" : "." + sourceURL.lakePathExtension
+        var candidate = targetDirectory.appending(sourceURL.lastPathComponent)
+
+        @MainActor
+        func sourceIdentity() async throws -> Data {
+            if let sourceBytes { return sourceBytes }
+            let bytes: Data
+            if sourceIsPackage {
+                bytes = try sourceURL.concatenateDataInDirectory()
+            } else {
+                bytes = try await CoordinatedFileManager().contentsOfFile(coordinatingAccessAt: sourceURL)
+            }
+            try validateAuthority()
+            sourceBytes = bytes
+            return bytes
+        }
+
+        @MainActor
+        func existingMatches(_ path: RootRelativePath, destination: URL) async throws -> Bool {
+            if destination.standardizedFileURL == sourceURL.standardizedFileURL { return true }
+            guard destination.isFilePackage() == sourceIsPackage else { return false }
+            let source = try await sourceIdentity()
+            let destinationBytes: Data
+            if sourceIsPackage {
+                destinationBytes = try destination.concatenateDataInDirectory()
+            } else {
+                destinationBytes = try await drive.readFile(at: path)
+            }
+            try validateAuthority()
+            return destinationBytes == source
+        }
+
+        while true {
+            try validateAuthority()
+            try Self.validateDestinationContainment(candidate, in: drive.rootDirectory)
+            let destination = try candidate.fileURL(forRoot: drive.rootDirectory)
+            let exists: Bool
+            if destination.isFilePackage() {
+                exists = true
+            } else {
+                exists = try await drive.fileExists(at: candidate)
+            }
+            try validateAuthority()
+            if exists {
+                if try await existingMatches(candidate, destination: destination) { return candidate }
+            } else {
+                do {
+                    try validateAuthority()
+                    try await drive.upload(from: sourceURL, to: candidate)
+                    try validateAuthority()
+                    return candidate
+                } catch {
+                    // Only fail-on-existing copy races authorize candidate comparison.
+                    let copyError = error as NSError
+                    guard copyError.domain == NSCocoaErrorDomain,
+                          copyError.code == CocoaError.fileWriteFileExists.rawValue else { throw error }
+                    try validateAuthority()
+                    if try await existingMatches(candidate, destination: destination) { return candidate }
+                }
+            }
+            if collisionHash == nil {
+                let identity = try await sourceIdentity()
+                collisionHash = String(format: "%02X", stableHash(data: identity)).prefix(6).uppercased()
+            }
+            guard collision < Int.max else { throw CocoaError(.fileWriteFileExists) }
+            collision += 1
+            let suffix = collision == 1 ? "" : "-\(collision)"
+            candidate = targetDirectory.appending(baseName + " (" + (collisionHash ?? "") + suffix + ")" + pathExtension)
         }
     }
 
