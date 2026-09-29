@@ -4,16 +4,14 @@ import XCTest
 
 @MainActor
 private final class AnnotationLoadGate {
-    let entered: XCTestExpectation
+    private(set) var entered = false
     private var continuation: CheckedContinuation<Void, Never>?
     private var released = false
 
-    init(_ entered: XCTestExpectation) { self.entered = entered }
-
     func wait() async {
+        entered = true
         await withCheckedContinuation { continuation in
             if released { continuation.resume() } else { self.continuation = continuation }
-            entered.fulfill()
         }
     }
 
@@ -92,7 +90,7 @@ final class ReaderContentCellAnnotationObservationTests: XCTestCase {
     }
 
     func testLateLegacyResultCannotPublishAfterCancellation() async {
-        let gate = AnnotationLoadGate(expectation(description: "loader suspended"))
+        let gate = AnnotationLoadGate()
         var published: [TestAnnotationStatus] = []
         let operation = Task { @MainActor in
             await observeReaderContentCellAnnotationStatus(
@@ -101,7 +99,9 @@ final class ReaderContentCellAnnotationObservationTests: XCTestCase {
                 publish: { published.append($0) }
             )
         }
-        await fulfillment(of: [gate.entered], timeout: 3)
+        while !gate.entered {
+            await Task.yield()
+        }
         operation.cancel()
         gate.release()
         await operation.value
