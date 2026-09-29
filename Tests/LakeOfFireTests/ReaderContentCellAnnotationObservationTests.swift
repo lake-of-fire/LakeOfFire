@@ -76,9 +76,15 @@ final class ReaderContentCellAnnotationObservationTests: XCTestCase {
         let operation = Task { @MainActor in
             withUnsafeCurrentTask { $0?.cancel() }
             await observeReaderContentCellAnnotationStatus(
-                updates: { calls += 1; return nil },
-                initialStatus: { calls += 1; return .init(count: 1) },
-                publish: { _ in calls += 1 }
+                updates: {
+                    calls += 1
+                    return nil as AsyncStream<TestAnnotationStatus>?
+                },
+                initialStatus: {
+                    calls += 1
+                    return TestAnnotationStatus(count: 1)
+                },
+                publish: { (_: TestAnnotationStatus) in calls += 1 }
             )
         }
         await operation.value
