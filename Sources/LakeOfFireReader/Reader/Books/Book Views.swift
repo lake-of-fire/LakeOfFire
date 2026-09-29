@@ -151,6 +151,7 @@ fileprivate struct DownloadableBookListRow: View {
 
     @State private var importState = BookDownloadImportState()
     @State private var importOperation = BookDownloadOperation()
+    @State private var activeSelection: BookLibraryViewModel.OpenSelection?
     @State private var presentedError: String?
     @State private var isErrorPresented = false
     @ObservedObject private var downloadController = DownloadController.shared
@@ -196,6 +197,7 @@ fileprivate struct DownloadableBookListRow: View {
         .contentShape(Rectangle())
         .task(id: importIdentity) { @MainActor in
             if importState.bind(to: importIdentity) {
+                revokeActiveSelection()
                 importOperation.cancel()
                 presentedError = nil
                 isErrorPresented = false
@@ -205,7 +207,10 @@ fileprivate struct DownloadableBookListRow: View {
         .task(id: downloadable.isFinishedDownloading) { @MainActor in
             await refreshDownloadable()
         }
-        .onDisappear { importOperation.cancel() }
+        .onDisappear {
+            importOperation.cancel()
+            revokeActiveSelection()
+        }
         .alert("Book Error", isPresented: $isErrorPresented) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -221,8 +226,21 @@ fileprivate struct DownloadableBookListRow: View {
         )
     }
 
+    private func revokeActiveSelection() {
+        guard let selection = activeSelection else { return }
+        _ = selectionOwner.cancelOpenSelection(ifCurrent: selection)
+        activeSelection = nil
+    }
+
     private func buttonPress() {
-        selectionOwner.startOpenSelection { selection in
+        selectionOwner.startOpenSelection(
+            onStart: { activeSelection = $0 }
+        ) { selection in
+            defer {
+                if activeSelection == selection {
+                    activeSelection = nil
+                }
+            }
             await performButtonPress(selection: selection)
         }
     }
@@ -266,7 +284,14 @@ fileprivate struct DownloadableBookListRow: View {
     }
 
     private func topTap() {
-        selectionOwner.startOpenSelection { selection in
+        selectionOwner.startOpenSelection(
+            onStart: { activeSelection = $0 }
+        ) { selection in
+            defer {
+                if activeSelection == selection {
+                    activeSelection = nil
+                }
+            }
             let alreadyDownloaded = await downloadable.existsLocally()
             guard selectionOwner.isCurrentOpenSelection(selection) else { return }
             if alreadyDownloaded {

@@ -31,6 +31,7 @@ final class BookOpenSelectionCoordinator {
 
     @discardableResult
     func start(
+        onStart: (@MainActor (Selection) -> Void)? = nil,
         _ operation: @escaping @MainActor (Selection) async -> Void
     ) -> Task<Void, Never>? {
         // A cancelled entrant must not revoke a healthy existing owner.
@@ -38,6 +39,7 @@ final class BookOpenSelectionCoordinator {
         task?.cancel()
         generation &+= 1
         let selection = Selection(generation: generation)
+        onStart?(selection)
         let started = Task { @MainActor [weak self] in
             guard let self, self.isCurrent(selection) else { return }
             await operation(selection)
@@ -51,6 +53,13 @@ final class BookOpenSelectionCoordinator {
 
     func isCurrent(_ selection: Selection) -> Bool {
         !Task.isCancelled && selection.generation == generation
+    }
+
+    @discardableResult
+    func cancel(ifCurrent selection: Selection) -> Bool {
+        guard selection.generation == generation else { return false }
+        cancel()
+        return true
     }
 
     func cancel() {

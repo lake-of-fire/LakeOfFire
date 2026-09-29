@@ -26,6 +26,47 @@ private actor BookOpenSelectionCoordinatorGate {
 }
 
 final class BookOpenSelectionCoordinatorTests: XCTestCase {
+
+    @MainActor
+    func testScopedCancelRevokesOnlyMatchingSelection() async throws {
+        let owner = BookOpenSelectionCoordinator()
+        var first: BookOpenSelectionCoordinator.Selection?
+        let firstTask = try XCTUnwrap(owner.start(onStart: { first = $0 }) { _ in
+            await Task.yield()
+        })
+        let firstSelection = try XCTUnwrap(first)
+
+        XCTAssertTrue(owner.cancel(ifCurrent: firstSelection))
+        XCTAssertFalse(owner.isCurrent(firstSelection))
+        await firstTask.value
+    }
+
+    @MainActor
+    func testScopedCancelCannotRevokeNewerSelection() async throws {
+        let owner = BookOpenSelectionCoordinator()
+        let gate = BookOpenSelectionCoordinatorGate()
+        var older: BookOpenSelectionCoordinator.Selection?
+        var newer: BookOpenSelectionCoordinator.Selection?
+
+        let olderTask = try XCTUnwrap(owner.start(onStart: { older = $0 }) { _ in
+            await gate.suspendIgnoringCancellation()
+        })
+        await gate.waitUntilSuspended()
+
+        let newerTask = try XCTUnwrap(owner.start(onStart: { newer = $0 }) { _ in
+            await Task.yield()
+        })
+        let olderSelection = try XCTUnwrap(older)
+        let newerSelection = try XCTUnwrap(newer)
+
+        XCTAssertFalse(owner.cancel(ifCurrent: olderSelection))
+        XCTAssertTrue(owner.isCurrent(newerSelection))
+
+        await newerTask.value
+        await gate.release()
+        await olderTask.value
+    }
+
     @MainActor
     func testCancellationIgnoringOlderSelectionCannotPublishAfterReplacement() async throws {
         let owner = BookOpenSelectionCoordinator()

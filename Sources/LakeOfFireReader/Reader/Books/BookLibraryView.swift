@@ -341,13 +341,19 @@ public class BookLibraryViewModel: ObservableObject {
 
     @discardableResult
     func startOpenSelection(
+        onStart: (@MainActor (OpenSelection) -> Void)? = nil,
         _ operation: @escaping @MainActor (OpenSelection) async -> Void
     ) -> Task<Void, Never>? {
-        openSelectionCoordinator.start(operation)
+        openSelectionCoordinator.start(onStart: onStart, operation)
     }
 
     func isCurrentOpenSelection(_ selection: OpenSelection) -> Bool {
         openSelectionCoordinator.isCurrent(selection)
+    }
+
+    @discardableResult
+    func cancelOpenSelection(ifCurrent selection: OpenSelection) -> Bool {
+        openSelectionCoordinator.cancel(ifCurrent: selection)
     }
 
     func cancelOpenSelection() {
