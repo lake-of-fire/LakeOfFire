@@ -172,8 +172,9 @@ final class ReaderLegacyDocumentsMigrationTests: XCTestCase {
         defer { fixture.remove() }
         try fixture.write("book.epub", Data([1]))
         let owner = ReaderLegacyDocumentsMigration()
-        async let first = owner.migrate(containerURL: fixture.root)
-        async let second = owner.migrate(containerURL: fixture.root)
+        let root = fixture.root
+        async let first = owner.migrate(containerURL: root)
+        async let second = owner.migrate(containerURL: root)
         let reports = try await [first, second]
         XCTAssertEqual(reports.map(\.movedItemCount).sorted(), [0, 1])
         XCTAssertFalse(fixture.exists("Documents/book (Recovered 1).epub"))
