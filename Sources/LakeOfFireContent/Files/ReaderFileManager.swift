@@ -2685,9 +2685,28 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         relativePath: RootRelativePath?,
         realmConfiguration: Realm.Configuration?,
         processorSnapshot: ReaderFileProcessorRegistrySnapshot,
-        inventoryDiscoveryStage: InventoryDiscoveryStage? = nil
+        inventoryDiscoveryStage: InventoryDiscoveryStage? = nil,
+        targetedWriteAuthority: ImportWriteAuthority? = nil
     ) async throws -> [ThreadSafeReference<ContentFile>]? {
         let realmConfiguration = realmConfiguration ?? resolvedHistoryRealmConfiguration
+        try Task.checkCancellation()
+        let inheritedAuthority = Self.importWriteAuthority.flatMap { authority in
+            authority.managerIdentity == ObjectIdentifier(self)
+                && authority.configurationIdentity == Self.realmConfigurationIdentity(realmConfiguration)
+                ? authority : nil
+        }
+        let discoveryAuthority = targetedWriteAuthority ?? inheritedAuthority ?? (
+            inventoryDiscoveryStage == nil
+                ? ImportWriteAuthority(
+                    managerIdentity: ObjectIdentifier(self),
+                    configurationIdentity: Self.realmConfigurationIdentity(realmConfiguration),
+                    receipt: storageAuthorityGeneration.receipt()
+                ) : nil
+        )
+        if let discoveryAuthority,
+           !storageAuthorityGeneration.isCurrent(discoveryAuthority.receipt) {
+            throw ReaderFileManagerError.refreshSuperseded
+        }
         var files = [ThreadSafeReference<ContentFile>]()
         var filesToUpdate: [(readerFileURL: URL, absoluteFileURL: URL)] = []
         do {
@@ -2738,7 +2757,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         relativePath: tryRelativePath,
                         realmConfiguration: realmConfiguration,
                         processorSnapshot: processorSnapshot,
-                        inventoryDiscoveryStage: inventoryDiscoveryStage
+                        inventoryDiscoveryStage: inventoryDiscoveryStage,
+                        targetedWriteAuthority: discoveryAuthority
                     )
                     files.append(contentsOf: discoveredFiles ?? [])
                 } else {
@@ -2796,6 +2816,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             throw error
         }
 
+        try Task.checkCancellation()
+        if let discoveryAuthority,
+           !storageAuthorityGeneration.isCurrent(discoveryAuthority.receipt) {
+            throw ReaderFileManagerError.refreshSuperseded
+        }
         let discoveredFiles = filesToUpdate.map { readerFileURL, absoluteFileURL in
             DiscoveredContentFile(
                 readerFileURL: readerFileURL,
@@ -2816,7 +2841,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         files.append(contentsOf: try await persistDiscoveredFileMetadata(
             discoveredFiles,
             realmConfiguration: realmConfiguration,
-            processorSnapshot: processorSnapshot
+            processorSnapshot: processorSnapshot,
+            targetedWriteAuthority: discoveryAuthority
         ))
         return files
     }
@@ -2826,11 +2852,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         _ discoveredFiles: [DiscoveredContentFile],
         realmConfiguration: Realm.Configuration,
         processorSnapshot: ReaderFileProcessorRegistrySnapshot,
-        inventoryCommit: InventoryCommitContext? = nil
+        inventoryCommit: InventoryCommitContext? = nil,
+        targetedWriteAuthority: ImportWriteAuthority? = nil
     ) async throws -> [ThreadSafeReference<ContentFile>] {
         guard !discoveredFiles.isEmpty || inventoryCommit != nil else { return [] }
         let pendingFilesToUpdate = discoveredFiles
-        let importAuthority = Self.importWriteAuthority.flatMap { authority in
+        let importAuthority = targetedWriteAuthority ?? Self.importWriteAuthority.flatMap { authority in
             authority.managerIdentity == ObjectIdentifier(self)
                 && authority.configurationIdentity == Self.realmConfigurationIdentity(realmConfiguration)
                 ? authority : nil

@@ -611,6 +611,89 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     }
 
     @MainActor
+    func testStandaloneTargetedDiscoveryRejectsSameRootDriveReplacementBeforeAdmission() async throws {
+        try await assertStandaloneTargetedDiscoveryReplacement(replacesConfiguration: false)
+    }
+
+    @MainActor
+    func testStandaloneTargetedDiscoveryRejectsConfigurationReplacementBeforeAdmission() async throws {
+        try await assertStandaloneTargetedDiscoveryReplacement(replacesConfiguration: true)
+    }
+
+    @MainActor
+    private func assertStandaloneTargetedDiscoveryReplacement(replacesConfiguration: Bool) async throws {
+        let libraryRootURL = try temporaryDirectory()
+        _ = try writeFixture(relativePath: "Books/Nested/targeted.epub", under: libraryRootURL)
+        let firstConfiguration = makeHistoryRealmConfiguration()
+        let secondConfiguration = makeHistoryRealmConfiguration()
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = firstConfiguration
+        let originalDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        manager.localDrive = originalDrive
+        let mappingGate = ScanGate()
+        let mappingStarted = expectation(description: "standalone recursive targeted discovery suspended")
+        let processorCalls = ProcessorCallCounter()
+        let processorIdentifier = "standalone-targeted-replacement"
+        manager.registerFileProcessorBundle(
+            identifier: processorIdentifier,
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in nil },
+            readerFileURLProcessor: { _, _ in
+                mappingStarted.fulfill()
+                await mappingGate.wait()
+                return nil
+            },
+            contextualFileProcessor: { _ in processorCalls.increment() }
+        )
+        let scan = Task { @MainActor in
+            try await manager.refreshFilesMetadata(
+                drive: originalDrive,
+                relativePath: RootRelativePath(path: "Books"),
+                realmConfiguration: firstConfiguration
+            )
+        }
+        await fulfillment(of: [mappingStarted], timeout: 5)
+        if replacesConfiguration {
+            manager.historyRealmConfigurationOverride = secondConfiguration
+        } else {
+            manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        }
+        await mappingGate.release()
+        do {
+            _ = try await scan.value
+            XCTFail("Expected obsolete recursive discovery to reject admission.")
+        } catch ReaderFileManagerError.refreshSuperseded {}
+        XCTAssertEqual(processorCalls.count, 0)
+        XCTAssertNil(manager.files)
+        for configuration in [firstConfiguration, secondConfiguration] {
+            let counts = try await Self.inventoryCounts(in: configuration)
+            XCTAssertEqual(counts.activeFiles, 0)
+            XCTAssertEqual(counts.workItems, 0)
+        }
+        manager.registerFileProcessorBundle(
+            identifier: processorIdentifier,
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in nil },
+            readerFileURLProcessor: { _, _ in nil },
+            contextualFileProcessor: { context in
+                processorCalls.increment()
+                for contentFile in context.contentFiles { context.deferPostprocessing(for: contentFile) }
+            }
+        )
+        let currentConfiguration = replacesConfiguration ? secondConfiguration : firstConfiguration
+        let references = try await manager.refreshFilesMetadata(
+            drive: XCTUnwrap(manager.localDrive),
+            relativePath: RootRelativePath(path: "Books"),
+            realmConfiguration: currentConfiguration
+        )
+        XCTAssertEqual(references?.count, 1)
+        let counts = try await Self.inventoryCounts(in: currentConfiguration)
+        XCTAssertEqual(counts.activeFiles, 1)
+        XCTAssertEqual(counts.workItems, 1)
+        XCTAssertEqual(processorCalls.count, 1)
+    }
+
+    @MainActor
     func testFullInventoryDriveReplacementRejectsProcessorWriteAndRetainsWork() async throws {
         try await assertFullInventoryProcessorReplacement(replacesConfiguration: false)
     }
