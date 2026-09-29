@@ -2286,9 +2286,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         ), self.driveInventoryGeneration.isCurrent(inventoryReceipt) else {
                             throw ReaderFileManagerError.refreshSuperseded
                         }
-                        let files = try discoveredFiles.compactMap {
+                        let files = try discoveredFiles.map { reference -> ContentFile in
                             try Task.checkCancellation()
-                            return realm.resolve($0)
+                            guard let contentFile = realm.resolve(reference) else {
+                                throw ReaderFileManagerError.incompleteFileInventory
+                            }
+                            return contentFile
                         }
                         let discoveredURLs = try files.map {
                             try Task.checkCancellation()

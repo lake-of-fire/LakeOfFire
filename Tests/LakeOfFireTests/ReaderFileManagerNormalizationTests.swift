@@ -11,6 +11,7 @@ private final class CountingReaderFileManager: ReaderFileManager, @unchecked Sen
     var scanDidStart: (() -> Void)?
     var scanBlocker: (@MainActor (Int) async -> Void)?
     var scanDelayNanoseconds: UInt64 = 100_000_000
+    var scanResults = [ThreadSafeReference<ContentFile>]()
 
     override func refreshFilesMetadata(
         drive: CloudDrive,
@@ -24,7 +25,7 @@ private final class CountingReaderFileManager: ReaderFileManager, @unchecked Sen
             throw scanError
         }
         try await Task.sleep(nanoseconds: scanDelayNanoseconds)
-        return []
+        return scanResults
     }
 }
 
@@ -139,6 +140,37 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
             realm.object(ofType: ContentFile.self, forPrimaryKey: primaryKey)
         )
         return contentFile.isDeleted
+    }
+
+    @RealmBackgroundActor
+    private static func contentFileReference(
+        primaryKey: String,
+        in configuration: Realm.Configuration
+    ) async throws -> ThreadSafeReference<ContentFile> {
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: RealmBackgroundActor.shared
+        )
+        let contentFile: ContentFile = try XCTUnwrap(
+            realm.object(ofType: ContentFile.self, forPrimaryKey: primaryKey)
+        )
+        return ThreadSafeReference(to: contentFile)
+    }
+
+    @RealmBackgroundActor
+    private static func removeContentFileFixture(
+        primaryKey: String,
+        in configuration: Realm.Configuration
+    ) async throws {
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: RealmBackgroundActor.shared
+        )
+        try await realm.asyncWrite {
+            if let contentFile = realm.object(ofType: ContentFile.self, forPrimaryKey: primaryKey) {
+                realm.delete(contentFile)
+            }
+        }
     }
 
     @RealmBackgroundActor
@@ -303,6 +335,49 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
                 in: configuration
             )
             XCTAssertTrue(workItemStillExists)
+        }
+    }
+
+    @MainActor
+    func testDisappearingResolvedRowDoesNotPublishPartialInventory() async throws {
+        let rootURL = try temporaryDirectory()
+        let realmRootURL = try temporaryDirectory()
+        let configuration = makeHistoryRealmConfiguration(
+            fileURL: realmRootURL.appendingPathComponent("inventory.realm")
+        )
+        let primaryKey = try await Self.addContentFile(
+            at: rootURL.appendingPathComponent("transient.epub"),
+            to: configuration
+        )
+        let reference = try await Self.contentFileReference(
+            primaryKey: primaryKey,
+            in: configuration
+        )
+        let manager = CountingReaderFileManager()
+        manager.scanDelayNanoseconds = 0
+        manager.scanResults = [reference]
+        manager.historyRealmConfigurationOverride = configuration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        let scanGate = ScanGate()
+        let scanStarted = expectation(description: "candidate inventory scan started")
+        manager.scanDidStart = { scanStarted.fulfill() }
+        manager.scanBlocker = { _ in await scanGate.wait() }
+
+        let refresh = Task { @MainActor in
+            try await manager.refreshAllFilesMetadata()
+        }
+        await fulfillment(of: [scanStarted], timeout: 1)
+        try await Self.removeContentFileFixture(
+            primaryKey: primaryKey,
+            in: configuration
+        )
+        await scanGate.release()
+
+        do {
+            try await refresh.value
+            XCTFail("Expected a missing resolved row to reject the inventory.")
+        } catch ReaderFileManagerError.incompleteFileInventory {
+            XCTAssertNil(manager.files)
         }
     }
 
