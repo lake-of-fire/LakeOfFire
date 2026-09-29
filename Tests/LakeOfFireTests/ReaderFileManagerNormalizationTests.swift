@@ -214,7 +214,7 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         let rootURL = try temporaryDirectory()
         let configuration = makeHistoryRealmConfiguration()
         let orphanPrimaryKey = try await Self.addContentFile(
-            at: rootURL.appendingPathComponent("missing-reader-content.epub"),
+            at: XCTUnwrap(URL(string: "reader-file://file/load/local/Books/missing-reader-content.epub")),
             to: configuration
         )
         let workItemIdentifier = try await Self.addPostprocessingWorkItem(
@@ -267,7 +267,7 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         let firstConfiguration = makeHistoryRealmConfiguration()
         let secondConfiguration = makeHistoryRealmConfiguration()
         let orphanPrimaryKey = try await Self.addContentFile(
-            at: rootURL.appendingPathComponent("orphaned.epub"),
+            at: XCTUnwrap(URL(string: "reader-file://file/load/local/Books/orphaned.epub")),
             to: firstConfiguration
         )
         let workItemIdentifier = try await Self.addPostprocessingWorkItem(
@@ -305,7 +305,7 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         let rootURL = try temporaryDirectory()
         let configuration = makeHistoryRealmConfiguration()
         let orphanPrimaryKey = try await Self.addContentFile(
-            at: rootURL.appendingPathComponent("orphaned.epub"),
+            at: XCTUnwrap(URL(string: "reader-file://file/load/local/Books/orphaned.epub")),
             to: configuration
         )
         let workItemIdentifier = try await Self.addPostprocessingWorkItem(
@@ -410,6 +410,82 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         } catch ReaderFileManagerError.refreshSuperseded {
             XCTAssertEqual(manager.metadataScanCount, 1)
             XCTAssertNil(manager.files)
+        }
+    }
+
+    @MainActor
+    func testConcurrentNewFileRowIsNotTombstonedByOlderInventory() async throws {
+        let rootURL = try temporaryDirectory()
+        let configuration = makeHistoryRealmConfiguration()
+        let manager = CountingReaderFileManager()
+        manager.scanDelayNanoseconds = 0
+        manager.historyRealmConfigurationOverride = configuration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+        let scanGate = ScanGate()
+        let scanStarted = expectation(description: "inventory scan started before import")
+        manager.scanDidStart = { scanStarted.fulfill() }
+        manager.scanBlocker = { _ in await scanGate.wait() }
+
+        let refresh = Task { @MainActor in
+            try await manager.refreshAllFilesMetadata()
+        }
+        await fulfillment(of: [scanStarted], timeout: 1)
+        let readerURL = try XCTUnwrap(URL(string: "reader-file://file/load/local/Books/new.epub"))
+        let primaryKey = try await Self.addContentFile(at: readerURL, to: configuration)
+        let workItemIdentifier = try await Self.addPostprocessingWorkItem(
+            for: primaryKey,
+            in: configuration
+        )
+        await scanGate.release()
+
+        do {
+            try await refresh.value
+            XCTFail("Expected the unobserved new row to reject complete publication.")
+        } catch ReaderFileManagerError.incompleteFileInventory {
+            XCTAssertNil(manager.files)
+            let isDeleted = try await Self.contentFileIsDeleted(
+                primaryKey: primaryKey,
+                in: configuration
+            )
+            XCTAssertFalse(isDeleted)
+            let workItemExists = try await Self.postprocessingWorkItemExists(
+                workItemIdentifier,
+                in: configuration
+            )
+            XCTAssertTrue(workItemExists)
+        }
+    }
+
+    @MainActor
+    func testUnavailableCloudRootCannotTombstoneItsExistingRow() async throws {
+        let rootURL = try temporaryDirectory()
+        let configuration = makeHistoryRealmConfiguration()
+        let readerURL = try XCTUnwrap(URL(string: "reader-file://file/load/icloud/Books/cloud.epub"))
+        let primaryKey = try await Self.addContentFile(at: readerURL, to: configuration)
+        let workItemIdentifier = try await Self.addPostprocessingWorkItem(
+            for: primaryKey,
+            in: configuration
+        )
+        let manager = CountingReaderFileManager()
+        manager.scanDelayNanoseconds = 0
+        manager.historyRealmConfigurationOverride = configuration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+
+        do {
+            try await manager.refreshAllFilesMetadata()
+            XCTFail("Expected an unavailable cloud root to prevent complete publication.")
+        } catch ReaderFileManagerError.incompleteFileInventory {
+            XCTAssertNil(manager.files)
+            let isDeleted = try await Self.contentFileIsDeleted(
+                primaryKey: primaryKey,
+                in: configuration
+            )
+            XCTAssertFalse(isDeleted)
+            let workItemExists = try await Self.postprocessingWorkItemExists(
+                workItemIdentifier,
+                in: configuration
+            )
+            XCTAssertTrue(workItemExists)
         }
     }
 

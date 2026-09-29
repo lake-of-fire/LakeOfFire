@@ -453,6 +453,14 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let cloudContainerIdentifier: String?
     }
 
+    private struct InventoryOrphanCandidate: Sendable {
+        let primaryKey: String
+        let url: URL
+        let createdAt: Date
+        let modifiedAt: Date
+        let location: String
+    }
+
     private struct PostprocessorSourceGeneration: Equatable, Sendable {
         let modifiedAt: Date?
         let fileSize: Int64
@@ -974,6 +982,14 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             return URL(string: absoluteString.replacingOccurrences(of: "mokuro://mokuro/load/", with: "reader-file://file/load/"))
         }
         return nil
+    }
+
+    private func inventoryLocation(for contentURL: URL) -> String? {
+        guard let backingURL = canonicalReaderBackingURL(for: contentURL) else {
+            return nil
+        }
+        let location = backingURL.pathComponents.dropFirst(2).first
+        return location == "local" || location == "icloud" ? location : nil
     }
 
     public func resolveReadableLocalURL(forReaderBackingURL readerBackingURL: URL) async throws -> URL {
@@ -2249,7 +2265,36 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 do {
                     guard localDrive != nil || cloudDrive != nil else { return }
                     let inventoryReceipt = driveInventoryGeneration.receipt()
-                    let drives = [localDrive, cloudDrive].compactMap { $0 }
+                    let drives: [(location: String, drive: CloudDrive)] = [
+                        ("local", localDrive),
+                        ("icloud", cloudDrive),
+                    ].compactMap { location, drive in
+                        guard let drive else { return nil }
+                        return (location, drive)
+                    }
+                    // Rows admitted after this snapshot must never become orphans of this scan.
+                    let orphanCandidates: [InventoryOrphanCandidate] = try await {
+                        @RealmBackgroundActor in
+                        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                            for: realmConfiguration
+                        )
+                        try await realm.asyncRefresh()
+                        return realm.objects(ContentFile.self)
+                            .where { !$0.isDeleted }
+                            .compactMap { contentFile in
+                                guard let location = inventoryLocation(for: contentFile.url) else {
+                                    return nil
+                                }
+                                return InventoryOrphanCandidate(
+                                    primaryKey: contentFile.compoundKey,
+                                    url: contentFile.url,
+                                    createdAt: contentFile.createdAt,
+                                    modifiedAt: contentFile.modifiedAt,
+                                    location: location
+                                )
+                            }
+                    }()
+                    var completeLocations = Set<String>()
                     let files = try await Self.$operationProcessorSnapshot.withValue(
                         ReaderFileProcessorOperationSnapshot(
                             managerIdentity: ObjectIdentifier(self),
@@ -2257,7 +2302,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         )
                     ) {
                         var files = [ThreadSafeReference<ContentFile>]()
-                        for drive in drives {
+                        for (location, drive) in drives {
                             try Task.checkCancellation()
                             guard refreshMetadataIdentityIsCurrent(
                                 refreshIdentity,
@@ -2278,8 +2323,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             ), driveInventoryGeneration.isCurrent(inventoryReceipt) else {
                                 throw ReaderFileManagerError.refreshSuperseded
                             }
+                            completeLocations.insert(location)
                         }
                         return files
+                    }
+                    guard orphanCandidates.allSatisfy({ completeLocations.contains($0.location) }) else {
+                        throw ReaderFileManagerError.incompleteFileInventory
                     }
 
                     let discoveredFiles = files
@@ -2307,13 +2356,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             }
                             return contentFile
                         }
-                        let discoveredURLs = try files.map {
-                            try Task.checkCancellation()
-                            return $0.url
-                        }
                         let discoveredIdentities = files.map {
                             (primaryKey: $0.compoundKey, createdAt: $0.createdAt, url: $0.url)
                         }
+                        let discoveredPrimaryKeys = Set(discoveredIdentities.map(\.primaryKey))
 
                         // Delete orphans (objects with no corresponding file on disk)
                         try await self.refreshOrphanCleanupWillBeginForTesting?()
@@ -2337,19 +2383,28 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             }) else {
                                 throw ReaderFileManagerError.refreshSuperseded
                             }
-                            let existingURLs = try discoveredURLs.map {
-                                try Task.checkCancellation()
-                                return $0.absoluteString
-                            }
-                            let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND NOT (url IN %@)", NSNumber(booleanLiteral: false), existingURLs))
-                            //await realm.asyncRefresh()
                             try await realm.asyncWrite {
                                 try self.driveInventoryGeneration.mutateIfCurrent(inventoryReceipt) {
-                                    let orphanPrimaryKeys = Array(orphans.map(\.compoundKey))
-                                    for orphan in orphans {
+                                    var orphanPrimaryKeys = [String]()
+                                    let timestamp = Date()
+                                    for candidate in orphanCandidates where
+                                        !discoveredPrimaryKeys.contains(candidate.primaryKey) {
                                         try Task.checkCancellation()
+                                        guard let orphan = realm.object(
+                                            ofType: ContentFile.self,
+                                            forPrimaryKey: candidate.primaryKey
+                                        ), !orphan.isDeleted,
+                                        orphan.url == candidate.url,
+                                        orphan.createdAt == candidate.createdAt,
+                                        orphan.modifiedAt == candidate.modifiedAt else {
+                                            continue
+                                        }
                                         orphan.isDeleted = true
-                                        orphan.refreshChangeMetadata(explicitlyModified: true)
+                                        orphan.refreshChangeMetadata(
+                                            explicitlyModified: true,
+                                            at: timestamp
+                                        )
+                                        orphanPrimaryKeys.append(candidate.primaryKey)
                                     }
                                     Self.deletePostprocessingWorkItems(
                                         contentFilePrimaryKeys: orphanPrimaryKeys,
@@ -2379,6 +2434,20 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 throw ReaderFileManagerError.incompleteFileInventory
                             }
                             return contentFile
+                        }
+                        // A new or concurrently edited row may survive cleanup without
+                        // appearing in the scan. Keep the previous visible list in that case.
+                        let activePrimaryKeys = Set(finalRealm.objects(ContentFile.self)
+                            .where { !$0.isDeleted }
+                            .filter { contentFile in
+                                guard let location = self.inventoryLocation(for: contentFile.url) else {
+                                    return false
+                                }
+                                return completeLocations.contains(location)
+                            }
+                            .map(\.compoundKey))
+                        guard activePrimaryKeys == discoveredPrimaryKeys else {
+                            throw ReaderFileManagerError.incompleteFileInventory
                         }
                         self.files = completeFiles
                     }()
