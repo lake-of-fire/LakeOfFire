@@ -2077,7 +2077,22 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         realmConfiguration: Realm.Configuration,
         processorSnapshot: ReaderFileProcessorRegistrySnapshot
     ) async throws -> URL? {
+        try Task.checkCancellation()
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
+        let importIdentity = refreshMetadataIdentity(for: realmConfiguration)
+        let validateAuthority: @MainActor () throws -> Void = {
+            try Task.checkCancellation()
+            let currentDrive = ((self.cloudDrive?.isConnected ?? false) ? self.cloudDrive : nil) ?? self.localDrive
+            guard let currentDrive,
+                  ObjectIdentifier(currentDrive) == ObjectIdentifier(drive),
+                  self.refreshMetadataIdentityIsCurrent(
+                    importIdentity,
+                    realmConfiguration: realmConfiguration
+                  ) else {
+                throw ReaderFileManagerError.refreshSuperseded
+            }
+        }
+        try validateAuthority()
 
         let shouldStopAccessingFile = try sourceAccess.start(fileURL)
         defer {
@@ -2091,6 +2106,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             drive: drive,
             processorSnapshot: processorSnapshot
         )
+        try validateAuthority()
         var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
         let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
 
@@ -2099,6 +2115,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             in: drive.rootDirectory
         )
         try await drive.createDirectory(at: targetDirectory)
+        try validateAuthority()
 
         try Self.validateDestinationContainment(
             targetFilePath,
@@ -2137,6 +2154,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 targetFilePath = targetDirectory.appending(newFileName)
             }
         }
+        try validateAuthority()
         // Don't overwrite
         if distinctTargetExists || !targetExists {
             try Self.validateDestinationContainment(
@@ -2147,13 +2165,16 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
         
         do {
+            try validateAuthority()
             _ = try await refreshFilesMetadata(
                 drive: drive,
                 relativePath: targetDirectory,
                 realmConfiguration: realmConfiguration,
                 processorSnapshot: processorSnapshot
             )
+            try validateAuthority()
             let realm = try await Realm.open(configuration: realmConfiguration)
+            try validateAuthority()
             let importedFileURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
             guard let importedReaderFileURL = try await readerFileURL(
                 for: importedFileURL,
@@ -2163,6 +2184,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 debugPrint("Warning: Unable to resolve reader file URL for imported file", importedFileURL)
                 return nil
             }
+            try validateAuthority()
             guard let content = realm.objects(ContentFile.self)
                 .filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), importedReaderFileURL.absoluteString as CVarArg))
                 .first else {
@@ -2174,7 +2196,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 realmConfiguration: realmConfiguration,
                 processorSnapshot: processorSnapshot
             )
+            try validateAuthority()
             let finalRealm = try await Realm.open(configuration: realmConfiguration)
+            try validateAuthority()
             guard let finalContent = finalRealm.object(ofType: ContentFile.self, forPrimaryKey: content.compoundKey),
                   !finalContent.isDeleted,
                   finalContent.url == importedReaderFileURL else {
@@ -2192,6 +2216,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     throw ReaderFileManagerError.incompleteFileInventory
                 }
             }
+            try validateAuthority()
             return finalContent.url
         } catch {
             debugPrint("Error importing file:", error)

@@ -603,6 +603,83 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         }
     }
 
+    private enum ImportInterruption: Equatable {
+        case driveReplacement
+        case configurationReplacement
+        case cancellation
+    }
+
+    @MainActor
+    func testSameRootDriveReplacementDuringImportClassificationDoesNotCopyOrIndex() async throws {
+        try await assertInterruptedImportClassification(.driveReplacement)
+    }
+
+    @MainActor
+    func testConfigurationReplacementDuringImportClassificationDoesNotCopyOrIndex() async throws {
+        try await assertInterruptedImportClassification(.configurationReplacement)
+    }
+
+    @MainActor
+    func testCancellationDuringImportClassificationDoesNotCopyOrIndex() async throws {
+        try await assertInterruptedImportClassification(.cancellation)
+    }
+
+    @MainActor
+    private func assertInterruptedImportClassification(_ interruption: ImportInterruption) async throws {
+        let libraryRootURL = try temporaryDirectory()
+        let sourceRootURL = try temporaryDirectory()
+        let sourceURL = try writeFixture(relativePath: "interrupted.epub", under: sourceRootURL)
+        let firstConfiguration = makeHistoryRealmConfiguration()
+        let secondConfiguration = makeHistoryRealmConfiguration()
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = firstConfiguration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        let classificationGate = ScanGate()
+        let classificationStarted = expectation(description: "public import classification suspended")
+        let processorCalls = ProcessorCallCounter()
+        manager.registerFileProcessorBundle(
+            identifier: "interrupted-import-\(UUID().uuidString)",
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in
+                classificationStarted.fulfill()
+                await classificationGate.wait()
+                return RootRelativePath(path: "Books")
+            },
+            readerFileURLProcessor: { _, _ in nil },
+            contextualFileProcessor: { _ in processorCalls.increment() }
+        )
+        let importTask = Task { @MainActor in
+            try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+        }
+        await fulfillment(of: [classificationStarted], timeout: 5)
+        switch interruption {
+        case .driveReplacement:
+            manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        case .configurationReplacement:
+            manager.historyRealmConfigurationOverride = secondConfiguration
+        case .cancellation:
+            importTask.cancel()
+        }
+        await classificationGate.release()
+        do {
+            _ = try await importTask.value
+            XCTFail("Expected an interrupted import to stop before copying or indexing.")
+        } catch is CancellationError {
+            XCTAssertEqual(interruption, .cancellation)
+        } catch ReaderFileManagerError.refreshSuperseded {
+            XCTAssertNotEqual(interruption, .cancellation)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: libraryRootURL.appendingPathComponent("Books").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceURL.path))
+        XCTAssertNil(manager.files)
+        XCTAssertEqual(processorCalls.count, 0)
+        for configuration in [firstConfiguration, secondConfiguration] {
+            let counts = try await Self.inventoryCounts(in: configuration)
+            XCTAssertEqual(counts.activeFiles, 0)
+            XCTAssertEqual(counts.workItems, 0)
+        }
+    }
+
     @MainActor
     func testConcurrentImportWaitsForFollowUpInsteadOfFailingOlderInventory() async throws {
         let libraryRootURL = try temporaryDirectory()
