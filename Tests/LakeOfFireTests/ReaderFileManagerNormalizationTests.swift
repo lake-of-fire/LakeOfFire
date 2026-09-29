@@ -610,6 +610,108 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         return realm.objects(ContentFile.self).where { !$0.isDeleted }.map { ($0.title, $0.sourceDownloadURL) }
     }
 
+    func testHistoryConfigurationAuthorityRejectsRestoredOldGeneration() throws {
+        let firstConfiguration = makeHistoryRealmConfiguration()
+        let secondConfiguration = makeHistoryRealmConfiguration()
+        let authority = ReaderHistoryRealmConfigurationAuthority(configuration: firstConfiguration)
+        let oldReceipt = authority.receipt()
+        authority.configuration = secondConfiguration
+        authority.configuration = firstConfiguration
+        var didMutate = false
+        let didApply = try authority.applyIfCurrent(oldReceipt) {
+            didMutate = true
+            return true
+        }
+        XCTAssertFalse(didApply)
+        XCTAssertFalse(didMutate)
+        XCTAssertEqual(authority.configuration.inMemoryIdentifier, firstConfiguration.inMemoryIdentifier)
+        let currentReceipt = authority.receipt()
+        XCTAssertTrue(try authority.applyIfCurrent(currentReceipt) {
+            // Processor mutations may read configuration synchronously.
+            authority.configuration.inMemoryIdentifier == firstConfiguration.inMemoryIdentifier
+        })
+    }
+
+    func testHistoryConfigurationAuthorityRejectsReentrantReplacement() throws {
+        let authority = ReaderHistoryRealmConfigurationAuthority(configuration: makeHistoryRealmConfiguration())
+        let receipt = authority.receipt()
+        XCTAssertThrowsError(try authority.applyIfCurrent(receipt) {
+            authority.configuration = self.makeHistoryRealmConfiguration()
+            return true
+        }) { error in
+            guard let managerError = error as? ReaderFileManagerError,
+                  case .refreshSuperseded = managerError else {
+                return XCTFail("Expected replacement inside a mutation to reject commit admission.")
+            }
+        }
+    }
+
+    @MainActor
+    func testDefaultRealmReplacementRejectsInventoryProcessorWriteAndRetainsWork() async throws {
+        let previousDefault = ReaderContentLoader.historyRealmConfiguration
+        defer { ReaderContentLoader.historyRealmConfiguration = previousDefault }
+        let firstConfiguration = makeHistoryRealmConfiguration()
+        let secondConfiguration = makeHistoryRealmConfiguration()
+        ReaderContentLoader.historyRealmConfiguration = firstConfiguration
+        let libraryRootURL = try temporaryDirectory()
+        _ = try writeFixture(relativePath: "Books/default.epub", under: libraryRootURL)
+        let manager = ReaderFileManager()
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        let processorGate = ScanGate()
+        let processorStarted = expectation(description: "default-Realm inventory processor suspended")
+        let appliedWrites = ProcessorCallCounter()
+        manager.registerFileProcessorBundle(
+            identifier: "default-realm-replacement",
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in nil },
+            readerFileURLProcessor: { _, _ in nil },
+            contextualFileProcessor: { context in
+                processorStarted.fulfill()
+                await processorGate.wait()
+                let didApply = try await context.performCurrentWrite { _, contentFile in
+                    contentFile.title = "Obsolete default processor"
+                    contentFile.refreshChangeMetadata(explicitlyModified: true)
+                }
+                if didApply { appliedWrites.increment() }
+            }
+        )
+        let refresh = Task { @MainActor in try await manager.refreshAllFilesMetadata(force: true) }
+        await fulfillment(of: [processorStarted], timeout: 5)
+        ReaderContentLoader.historyRealmConfiguration = secondConfiguration
+        await processorGate.release()
+        do {
+            try await refresh.value
+            XCTFail("Expected default-Realm replacement to reject the old inventory.")
+        } catch ReaderFileManagerError.refreshSuperseded {}
+        XCTAssertEqual(appliedWrites.count, 0)
+        XCTAssertNil(manager.files)
+        let oldMetadata = try await Self.importedMetadata(in: firstConfiguration)
+        XCTAssertEqual(oldMetadata.map { $0.0 }, ["default"])
+        let oldCounts = try await Self.inventoryCounts(in: firstConfiguration)
+        XCTAssertEqual(oldCounts.workItems, 1)
+        let newCounts = try await Self.inventoryCounts(in: secondConfiguration)
+        XCTAssertEqual(newCounts.activeFiles, 0)
+        manager.registerFileProcessorBundle(
+            identifier: "default-realm-replacement",
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in nil },
+            readerFileURLProcessor: { _, _ in nil },
+            contextualFileProcessor: { context in
+                try await context.performCurrentWrite { _, contentFile in
+                    contentFile.title = "Current default processor"
+                    contentFile.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+        )
+        try await manager.refreshAllFilesMetadata(force: true)
+        let currentMetadata = try await Self.importedMetadata(in: secondConfiguration)
+        XCTAssertEqual(currentMetadata.map { $0.0 }, ["Current default processor"])
+        let retainedCounts = try await Self.inventoryCounts(in: firstConfiguration)
+        XCTAssertEqual(retainedCounts.workItems, 1)
+        let currentCounts = try await Self.inventoryCounts(in: secondConfiguration)
+        XCTAssertEqual(currentCounts.workItems, 0)
+    }
+
     @MainActor
     func testStandaloneTargetedDiscoveryRejectsSameRootDriveReplacementBeforeAdmission() async throws {
         try await assertStandaloneTargetedDiscoveryReplacement(replacesConfiguration: false)

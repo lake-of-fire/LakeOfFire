@@ -167,6 +167,7 @@ fileprivate struct ReaderFilePostprocessorAdmission: Sendable {
     let sourceModifiedAt: Date?
     let sourceFileSize: Int64
     let storageAuthorityReceipt: UInt64?
+    let defaultHistoryAuthorityReceipt: UInt64?
 }
 
 private let defaultReaderContentMimeTypes: [UTType] = [
@@ -461,6 +462,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let managerIdentity: ObjectIdentifier
         let configurationIdentity: String
         let receipt: UInt64
+        let defaultHistoryAuthorityReceipt: UInt64?
     }
 
     private struct InventoryOrphanCandidate: Sendable {
@@ -476,6 +478,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let completeLocations: Set<String>
         let inventoryReceipt: UInt64
         let refreshIdentity: RefreshMetadataIdentity
+        let defaultHistoryAuthorityReceipt: UInt64?
     }
 
     private struct DiscoveredContentFile: Sendable {
@@ -904,6 +907,36 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         refreshMetadataIdentity(for: realmConfiguration) == refreshIdentity
             && Self.realmConfigurationIdentity(resolvedHistoryRealmConfiguration)
                 == refreshIdentity.realmConfiguration
+    }
+
+    @MainActor
+    private func captureDefaultHistoryAuthority(for configuration: Realm.Configuration) throws -> UInt64? {
+        guard historyRealmConfigurationOverride == nil else { return nil }
+        let authority = ReaderContentLoader.historyRealmConfigurationAuthority
+        let receipt = authority.receipt()
+        guard Self.realmConfigurationIdentity(authority.configuration) == Self.realmConfigurationIdentity(configuration),
+              authority.isCurrent(receipt) else {
+            throw ReaderFileManagerError.refreshSuperseded
+        }
+        return receipt
+    }
+
+    private func defaultHistoryAuthorityIsCurrent(_ receipt: UInt64?) -> Bool {
+        receipt.map { ReaderContentLoader.historyRealmConfigurationAuthority.isCurrent($0) } ?? true
+    }
+
+    private func performDefaultHistoryAuthorityMutation<Result>(
+        receipt: UInt64?,
+        mutation: () throws -> Result
+    ) throws -> Result {
+        guard let receipt else { return try mutation() }
+        var result: Result?
+        let didApply = try ReaderContentLoader.historyRealmConfigurationAuthority.applyIfCurrent(receipt) {
+            result = try mutation()
+            return true
+        }
+        guard didApply, let result else { throw ReaderFileManagerError.refreshSuperseded }
+        return result
     }
 
     private static func realmConfigurationIdentity(_ configuration: Realm.Configuration) -> String {
@@ -2112,7 +2145,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let importWriteAuthority = ImportWriteAuthority(
             managerIdentity: ObjectIdentifier(self),
             configurationIdentity: Self.realmConfigurationIdentity(realmConfiguration),
-            receipt: storageAuthorityGeneration.receipt()
+            receipt: storageAuthorityGeneration.receipt(),
+            defaultHistoryAuthorityReceipt: try captureDefaultHistoryAuthority(for: realmConfiguration)
         )
         let validateAuthority: @MainActor () throws -> Void = {
             try Task.checkCancellation()
@@ -2120,6 +2154,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             guard let currentDrive,
                   ObjectIdentifier(currentDrive) == ObjectIdentifier(drive),
                   self.storageAuthorityGeneration.isCurrent(importWriteAuthority.receipt),
+                  self.defaultHistoryAuthorityIsCurrent(importWriteAuthority.defaultHistoryAuthorityReceipt),
                   self.refreshMetadataIdentityIsCurrent(
                     importIdentity,
                     realmConfiguration: realmConfiguration
@@ -2252,7 +2287,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     expectedCreatedAt: finalCreatedAt,
                     expectedReaderURL: finalReaderURL,
                     realmConfiguration: realmConfiguration,
-                    storageAuthorityReceipt: importWriteAuthority.receipt
+                    storageAuthorityReceipt: importWriteAuthority.receipt,
+                    defaultHistoryAuthorityReceipt: importWriteAuthority.defaultHistoryAuthorityReceipt
                 )
                 try validateAuthority()
                 guard didRecordProvenance else {
@@ -2277,14 +2313,18 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         expectedCreatedAt: Date,
         expectedReaderURL: URL,
         realmConfiguration: Realm.Configuration,
-        storageAuthorityReceipt: UInt64
+        storageAuthorityReceipt: UInt64,
+        defaultHistoryAuthorityReceipt: UInt64?
     ) async throws -> Bool {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
             for: realmConfiguration
         )
         return try await realm.asyncWrite {
             try Task.checkCancellation()
-            return try self.performStorageAuthorityMutation(receipt: storageAuthorityReceipt) {
+            return try self.performStorageAuthorityMutation(
+                receipt: storageAuthorityReceipt,
+                defaultHistoryReceipt: defaultHistoryAuthorityReceipt
+            ) {
                 guard let target = realm.object(
                     ofType: ContentFile.self,
                     forPrimaryKey: primaryKey
@@ -2391,6 +2431,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         throw ReaderFileManagerError.driveMissing
                     }
                     let inventoryReceipt = driveInventoryGeneration.receipt()
+                    let defaultHistoryReceipt = try captureDefaultHistoryAuthority(for: realmConfiguration)
                     let drives: [(location: String, drive: CloudDrive)] = [
                         ("local", localDrive),
                         ("icloud", cloudDrive),
@@ -2491,7 +2532,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 orphanCandidates: orphanCandidates,
                                 completeLocations: completeLocations,
                                 inventoryReceipt: inventoryReceipt,
-                                refreshIdentity: refreshIdentity
+                                refreshIdentity: refreshIdentity,
+                                defaultHistoryAuthorityReceipt: defaultHistoryReceipt
                             )
                         ))
                     }
@@ -2553,32 +2595,34 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                     throw ReaderFileManagerError.refreshSuperseded
                                 }
                                 try await realm.asyncWrite {
-                                    try self.driveInventoryGeneration.mutateIfCurrent(inventoryReceipt) {
-                                        var orphanPrimaryKeys = [String]()
-                                        let timestamp = Date()
-                                        for candidate in orphanCandidates where
-                                            !discoveredPrimaryKeys.contains(candidate.primaryKey) {
-                                            try Task.checkCancellation()
-                                            guard let orphan = realm.object(
-                                                ofType: ContentFile.self,
-                                                forPrimaryKey: candidate.primaryKey
-                                            ), !orphan.isDeleted,
-                                            orphan.url == candidate.url,
-                                            orphan.createdAt == candidate.createdAt,
-                                            orphan.modifiedAt == candidate.modifiedAt else {
-                                                continue
+                                    try self.performDefaultHistoryAuthorityMutation(receipt: defaultHistoryReceipt) {
+                                        try self.driveInventoryGeneration.mutateIfCurrent(inventoryReceipt) {
+                                            var orphanPrimaryKeys = [String]()
+                                            let timestamp = Date()
+                                            for candidate in orphanCandidates where
+                                                !discoveredPrimaryKeys.contains(candidate.primaryKey) {
+                                                try Task.checkCancellation()
+                                                guard let orphan = realm.object(
+                                                    ofType: ContentFile.self,
+                                                    forPrimaryKey: candidate.primaryKey
+                                                ), !orphan.isDeleted,
+                                                orphan.url == candidate.url,
+                                                orphan.createdAt == candidate.createdAt,
+                                                orphan.modifiedAt == candidate.modifiedAt else {
+                                                    continue
+                                                }
+                                                orphan.isDeleted = true
+                                                orphan.refreshChangeMetadata(
+                                                    explicitlyModified: true,
+                                                    at: timestamp
+                                                )
+                                                orphanPrimaryKeys.append(candidate.primaryKey)
                                             }
-                                            orphan.isDeleted = true
-                                            orphan.refreshChangeMetadata(
-                                                explicitlyModified: true,
-                                                at: timestamp
+                                            Self.deletePostprocessingWorkItems(
+                                                contentFilePrimaryKeys: orphanPrimaryKeys,
+                                                in: realm
                                             )
-                                            orphanPrimaryKeys.append(candidate.primaryKey)
                                         }
-                                        Self.deletePostprocessingWorkItems(
-                                            contentFilePrimaryKeys: orphanPrimaryKeys,
-                                            in: realm
-                                        )
                                     }
                                 }
                             }()
@@ -2633,6 +2677,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 throw ReaderFileManagerError.refreshSuperseded
                             }
                             throw ReaderFileManagerError.incompleteFileInventory
+                        }
+                        guard self.defaultHistoryAuthorityIsCurrent(defaultHistoryReceipt) else {
+                            throw ReaderFileManagerError.refreshSuperseded
                         }
                         self.files = completeFiles
                     }()
@@ -2695,16 +2742,18 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 && authority.configurationIdentity == Self.realmConfigurationIdentity(realmConfiguration)
                 ? authority : nil
         }
-        let discoveryAuthority = targetedWriteAuthority ?? inheritedAuthority ?? (
+        let discoveryAuthority = try targetedWriteAuthority ?? inheritedAuthority ?? (
             inventoryDiscoveryStage == nil
                 ? ImportWriteAuthority(
                     managerIdentity: ObjectIdentifier(self),
                     configurationIdentity: Self.realmConfigurationIdentity(realmConfiguration),
-                    receipt: storageAuthorityGeneration.receipt()
+                    receipt: storageAuthorityGeneration.receipt(),
+                    defaultHistoryAuthorityReceipt: try captureDefaultHistoryAuthority(for: realmConfiguration)
                 ) : nil
         )
         if let discoveryAuthority,
-           !storageAuthorityGeneration.isCurrent(discoveryAuthority.receipt) {
+           (!storageAuthorityGeneration.isCurrent(discoveryAuthority.receipt)
+            || !defaultHistoryAuthorityIsCurrent(discoveryAuthority.defaultHistoryAuthorityReceipt)) {
             throw ReaderFileManagerError.refreshSuperseded
         }
         var files = [ThreadSafeReference<ContentFile>]()
@@ -2818,7 +2867,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
         try Task.checkCancellation()
         if let discoveryAuthority,
-           !storageAuthorityGeneration.isCurrent(discoveryAuthority.receipt) {
+           (!storageAuthorityGeneration.isCurrent(discoveryAuthority.receipt)
+            || !defaultHistoryAuthorityIsCurrent(discoveryAuthority.defaultHistoryAuthorityReceipt)) {
             throw ReaderFileManagerError.refreshSuperseded
         }
         let discoveredFiles = filesToUpdate.map { readerFileURL, absoluteFileURL in
@@ -2863,6 +2913,14 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 ? authority : nil
         }
         let processorStorageAuthorityReceipt = importAuthority?.receipt ?? storageAuthorityGeneration.receipt()
+        let processorDefaultHistoryReceipt: UInt64?
+        if let inventoryCommit {
+            processorDefaultHistoryReceipt = inventoryCommit.defaultHistoryAuthorityReceipt
+        } else if let importAuthority {
+            processorDefaultHistoryReceipt = importAuthority.defaultHistoryAuthorityReceipt
+        } else {
+            processorDefaultHistoryReceipt = try captureDefaultHistoryAuthority(for: realmConfiguration)
+        }
         let updatedFiles = try await { @RealmBackgroundActor in
             var updatedFiles = [ContentFile]()
             var allFileRefs = [ThreadSafeReference<ContentFile>]()
@@ -3023,18 +3081,20 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         )
                     }
                 }
-                if let inventoryCommit {
-                    try self.driveInventoryGeneration.mutateIfCurrent(
-                        inventoryCommit.inventoryReceipt,
-                        mutation: admitDiscoveredFilesAndCleanup
-                    )
-                } else if let importAuthority {
-                    try self.storageAuthorityGeneration.mutateIfCurrent(
-                        importAuthority.receipt,
-                        mutation: admitDiscoveredFilesAndCleanup
-                    )
-                } else {
-                    try admitDiscoveredFilesAndCleanup()
+                try self.performDefaultHistoryAuthorityMutation(receipt: processorDefaultHistoryReceipt) {
+                    if let inventoryCommit {
+                        try self.driveInventoryGeneration.mutateIfCurrent(
+                            inventoryCommit.inventoryReceipt,
+                            mutation: admitDiscoveredFilesAndCleanup
+                        )
+                    } else if let importAuthority {
+                        try self.storageAuthorityGeneration.mutateIfCurrent(
+                            importAuthority.receipt,
+                            mutation: admitDiscoveredFilesAndCleanup
+                        )
+                    } else {
+                        try admitDiscoveredFilesAndCleanup()
+                    }
                 }
             }
             if let inventoryCommit {
@@ -3047,13 +3107,15 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     throw ReaderFileManagerError.refreshSuperseded
                 }
             }
-            guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt) else {
+            guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt),
+                  self.defaultHistoryAuthorityIsCurrent(processorDefaultHistoryReceipt) else {
                 throw ReaderFileManagerError.refreshSuperseded
             }
             var firstPostprocessorError: (any Swift.Error)?
             for registration in processorSnapshot.filePostprocessors {
                 try Task.checkCancellation()
-                guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt) else {
+                guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt),
+                      self.defaultHistoryAuthorityIsCurrent(processorDefaultHistoryReceipt) else {
                     throw ReaderFileManagerError.refreshSuperseded
                 }
                 if let processorIdentity = registration.identity {
@@ -3103,13 +3165,15 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 absoluteFileURL: candidate.absoluteFileURL,
                                 sourceModifiedAt: candidate.sourceGeneration.modifiedAt,
                                 sourceFileSize: candidate.sourceGeneration.fileSize,
-                                storageAuthorityReceipt: processorStorageAuthorityReceipt
+                                storageAuthorityReceipt: processorStorageAuthorityReceipt,
+                                defaultHistoryAuthorityReceipt: processorDefaultHistoryReceipt
                             )
                         )
                     }
                     for (contentFile, admission) in pending {
                         try Task.checkCancellation()
-                        guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt) else {
+                        guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt),
+                              self.defaultHistoryAuthorityIsCurrent(processorDefaultHistoryReceipt) else {
                             throw ReaderFileManagerError.refreshSuperseded
                         }
                         let outcome = ReaderFilePostprocessorOutcome()
@@ -3132,7 +3196,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             continue
                         }
                         try Task.checkCancellation()
-                        guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt) else {
+                        guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt),
+                              self.defaultHistoryAuthorityIsCurrent(processorDefaultHistoryReceipt) else {
                             throw ReaderFileManagerError.refreshSuperseded
                         }
                         if outcome.isDeferred(
@@ -3142,7 +3207,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         }
                         try await realm.asyncWrite {
                             try Task.checkCancellation()
-                            return try self.performStorageAuthorityMutation(receipt: admission.storageAuthorityReceipt) {
+                            return try self.performStorageAuthorityMutation(
+                                receipt: admission.storageAuthorityReceipt,
+                                defaultHistoryReceipt: admission.defaultHistoryAuthorityReceipt
+                            ) {
                                 self.processorRegistry.mutateIfCurrentFilePostprocessor(
                                     registrationIdentifier: admission.registrationIdentifier
                                 ) {
@@ -3183,7 +3251,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     }
                 }
             }
-            guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt) else {
+            guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt),
+                  self.defaultHistoryAuthorityIsCurrent(processorDefaultHistoryReceipt) else {
                 throw ReaderFileManagerError.refreshSuperseded
             }
             if let firstPostprocessorError {
@@ -3292,7 +3361,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         try Task.checkCancellation()
         return try await realm.asyncWrite {
             try Task.checkCancellation()
-            return try self.performStorageAuthorityMutation(receipt: admission.storageAuthorityReceipt) {
+            return try self.performStorageAuthorityMutation(
+                receipt: admission.storageAuthorityReceipt,
+                defaultHistoryReceipt: admission.defaultHistoryAuthorityReceipt
+            ) {
                 try self.processorRegistry.mutateIfCurrentFilePostprocessor(
                     registrationIdentifier: admission.registrationIdentifier
                 ) {
@@ -3314,10 +3386,17 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     /// stale callback leaves its durable work pending rather than acknowledging it.
     private func performStorageAuthorityMutation(
         receipt: UInt64?,
+        defaultHistoryReceipt: UInt64?,
         mutation: () throws -> Bool
     ) throws -> Bool {
-        guard let receipt else { return try mutation() }
-        return try storageAuthorityGeneration.applyIfCurrent(receipt, mutation: mutation)
+        guard let defaultHistoryReceipt else {
+            guard let receipt else { return try mutation() }
+            return try storageAuthorityGeneration.applyIfCurrent(receipt, mutation: mutation)
+        }
+        return try ReaderContentLoader.historyRealmConfigurationAuthority.applyIfCurrent(defaultHistoryReceipt) {
+            guard let receipt else { return try mutation() }
+            return try self.storageAuthorityGeneration.applyIfCurrent(receipt, mutation: mutation)
+        }
     }
 
     @RealmBackgroundActor

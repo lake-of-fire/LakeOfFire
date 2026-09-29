@@ -10,6 +10,53 @@ import UIKit
 import RealmSwiftGaps
 import UniformTypeIdentifiers
 
+/// Owns configuration replacement and permits generation-fenced synchronous
+/// mutations without treating restoration of an old path as the old authority.
+final class ReaderHistoryRealmConfigurationAuthority: @unchecked Sendable {
+    private let lock = NSRecursiveLock()
+    private var currentConfiguration: Realm.Configuration
+    private var generation: UInt64 = 0
+
+    init(configuration: Realm.Configuration) {
+        currentConfiguration = configuration
+    }
+
+    var configuration: Realm.Configuration {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return currentConfiguration
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            currentConfiguration = newValue
+            generation &+= 1
+        }
+    }
+
+    func receipt() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return generation
+    }
+
+    func isCurrent(_ receipt: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return generation == receipt
+    }
+
+    func applyIfCurrent(_ receipt: UInt64, mutation: () throws -> Bool) throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard generation == receipt else { return false }
+        let didApply = try mutation()
+        guard generation == receipt else { throw ReaderFileManagerError.refreshSuperseded }
+        return didApply
+    }
+}
+
 private func logReaderLoad(_ message: String) {
 #if DEBUG
     debugPrint("# READERLOAD \(message)")
@@ -114,7 +161,13 @@ public struct ReaderContentLoader {
     }
 
     nonisolated(unsafe) public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
-    nonisolated(unsafe) public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
+    static let historyRealmConfigurationAuthority = ReaderHistoryRealmConfigurationAuthority(
+        configuration: .defaultConfiguration
+    )
+    public static var historyRealmConfiguration: Realm.Configuration {
+        get { historyRealmConfigurationAuthority.configuration }
+        set { historyRealmConfigurationAuthority.configuration = newValue }
+    }
     nonisolated(unsafe) public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
     nonisolated(unsafe) public static var transcriptRealmConfiguration: Realm.Configuration = .defaultConfiguration
     nonisolated(unsafe) public static var additionalContentProviders: [ReaderContentAdditionalProvider] = []
