@@ -2272,7 +2272,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         drive: CloudDrive,
         validateAuthority: @MainActor () throws -> Void
     ) async throws -> RootRelativePath {
-        let sourceIsPackage = sourceURL.isFilePackage()
+        let sourceIsPackage = try sourceURL.readerImportRequiresManifest()
         var sourceBytes: Data?
         var collisionHash: String?
         var collision = 0
@@ -2297,7 +2297,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
         @MainActor
         func existingMatches(_ path: RootRelativePath, destination: URL) async throws -> Bool {
-            guard destination.isFilePackage() == sourceIsPackage else { return false }
+            guard try destination.readerImportRequiresManifest() == sourceIsPackage else { return false }
             let source = try await sourceIdentity()
             let destinationBytes: Data
             if sourceIsPackage {
@@ -2318,7 +2318,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             try Self.validateDestinationContainment(candidate, in: drive.rootDirectory)
             let destination = try candidate.fileURL(forRoot: drive.rootDirectory)
             let exists: Bool
-            if destination.isFilePackage() {
+            if FileManager.default.isDirectory(atPath: destination.path) {
                 exists = true
             } else {
                 exists = try await drive.fileExists(at: candidate)
@@ -2858,7 +2858,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     }
                     throw error
                 }
-                if !url.isFilePackage(),
+                if !absoluteFileURL.isFilePackage(),
                    !Self.additionalFilePackageSuffixesToAvoidDescendingInto.contains(where: { lastPathComponent.hasSuffix($0) }),
                    isDirectory {
                     let discoveredFiles = try await refreshFilesMetadata(
@@ -4328,12 +4328,21 @@ private struct ReaderImportPackageManifest {
 }
 
 extension URL {
+    /// Import identity is structural: every directory uses a manifest, even if
+    /// Launch Services does not recognize its extension as a document package.
+    /// Root symlinks and special files cannot supply a stable import identity.
+    func readerImportRequiresManifest() throws -> Bool {
+        let identity = try ReaderImportPackageEntryIdentity.read(self)
+        switch identity.mode & mode_t(S_IFMT) {
+        case mode_t(S_IFDIR): return true
+        case mode_t(S_IFREG): return false
+        default: throw ReaderImportPackageManifestError.unsupportedEntry
+        }
+    }
+
     func isFilePackage() -> Bool {
-#if os(macOS)
-        return NSWorkspace.shared.isFilePackage(atPath: path)
-#else
-        return false
-#endif
+        // Foundation exposes package metadata on both iOS and macOS.
+        (try? resourceValues(forKeys: [.isPackageKey]).isPackage) == true
     }
     
     func packageManifestDigest(limits: ReaderImportPackageManifestLimits = .init()) throws -> Data {

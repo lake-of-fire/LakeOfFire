@@ -610,6 +610,30 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         return realm.objects(ContentFile.self).where { !$0.isDeleted }.map { ($0.title, $0.sourceDownloadURL) }
     }
 
+    func testImportManifestClassificationUsesFilesystemType() throws {
+        let root = try temporaryDirectory()
+        let directory = root.appendingPathComponent("unregistered-package.txt")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let regularFile = try writeFixture(relativePath: "archive.epub", under: root)
+        XCTAssertTrue(try directory.readerImportRequiresManifest())
+        XCTAssertFalse(try regularFile.readerImportRequiresManifest())
+    }
+
+    func testImportManifestClassificationRejectsRootSymlinkAndMissingSource() throws {
+        let root = try temporaryDirectory()
+        let directory = root.appendingPathComponent("package")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let link = root.appendingPathComponent("linked-package")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: directory)
+        XCTAssertThrowsError(try link.readerImportRequiresManifest()) { error in
+            guard let manifestError = error as? ReaderImportPackageManifestError,
+                  case .unsupportedEntry = manifestError else {
+                return XCTFail("Expected unsupported root symlink, got \(error)")
+            }
+        }
+        XCTAssertThrowsError(try root.appendingPathComponent("missing").readerImportRequiresManifest())
+    }
+
     func testPackageManifestDigestIsDeterministicAndDoesNotFollowEscapingSymlink() throws {
         let first = try temporaryDirectory()
         let second = try temporaryDirectory()
