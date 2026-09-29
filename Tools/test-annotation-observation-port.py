@@ -19,6 +19,7 @@ with tempfile.TemporaryDirectory(prefix="annotation-observation-port-") as d:
 import PackageDescription
 let package = Package(
     name: "AnnotationObservationPort",
+    platforms: [.macOS(.v15)],
     targets: [
         .target(name: "LakeOfFireContentUI"),
         .testTarget(name: "LakeOfFireContentUITests", dependencies: ["LakeOfFireContentUI"])
