@@ -2835,6 +2835,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 && authority.configurationIdentity == Self.realmConfigurationIdentity(realmConfiguration)
                 ? authority : nil
         }
+        let processorStorageAuthorityReceipt = importAuthority?.receipt ?? storageAuthorityGeneration.receipt()
         let updatedFiles = try await { @RealmBackgroundActor in
             var updatedFiles = [ContentFile]()
             var allFileRefs = [ThreadSafeReference<ContentFile>]()
@@ -3019,13 +3020,15 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     throw ReaderFileManagerError.refreshSuperseded
                 }
             }
-            if let importAuthority,
-               !self.storageAuthorityGeneration.isCurrent(importAuthority.receipt) {
+            guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt) else {
                 throw ReaderFileManagerError.refreshSuperseded
             }
             var firstPostprocessorError: (any Swift.Error)?
             for registration in processorSnapshot.filePostprocessors {
                 try Task.checkCancellation()
+                guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt) else {
+                    throw ReaderFileManagerError.refreshSuperseded
+                }
                 if let processorIdentity = registration.identity {
                     let pending = candidatePrimaryKeys.compactMap {
                         primaryKey -> (
@@ -3073,12 +3076,15 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 absoluteFileURL: candidate.absoluteFileURL,
                                 sourceModifiedAt: candidate.sourceGeneration.modifiedAt,
                                 sourceFileSize: candidate.sourceGeneration.fileSize,
-                                storageAuthorityReceipt: importAuthority?.receipt
+                                storageAuthorityReceipt: processorStorageAuthorityReceipt
                             )
                         )
                     }
                     for (contentFile, admission) in pending {
                         try Task.checkCancellation()
+                        guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt) else {
+                            throw ReaderFileManagerError.refreshSuperseded
+                        }
                         let outcome = ReaderFilePostprocessorOutcome()
                         let postprocessorContext = ReaderFilePostprocessorContext(
                             readerFileManager: self,
@@ -3099,8 +3105,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             continue
                         }
                         try Task.checkCancellation()
-                        if let importAuthority,
-                           !self.storageAuthorityGeneration.isCurrent(importAuthority.receipt) {
+                        guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt) else {
                             throw ReaderFileManagerError.refreshSuperseded
                         }
                         if outcome.isDeferred(
@@ -3150,6 +3155,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         firstPostprocessorError = error
                     }
                 }
+            }
+            guard self.storageAuthorityGeneration.isCurrent(processorStorageAuthorityReceipt) else {
+                throw ReaderFileManagerError.refreshSuperseded
             }
             if let firstPostprocessorError {
                 throw firstPostprocessorError

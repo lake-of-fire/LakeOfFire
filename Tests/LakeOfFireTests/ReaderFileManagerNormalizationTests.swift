@@ -611,6 +611,93 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     }
 
     @MainActor
+    func testFullInventoryDriveReplacementRejectsProcessorWriteAndRetainsWork() async throws {
+        try await assertFullInventoryProcessorReplacement(replacesConfiguration: false)
+    }
+
+    @MainActor
+    func testFullInventoryConfigurationReplacementRejectsProcessorWriteAndRetainsWork() async throws {
+        try await assertFullInventoryProcessorReplacement(replacesConfiguration: true)
+    }
+
+    @MainActor
+    private func assertFullInventoryProcessorReplacement(replacesConfiguration: Bool) async throws {
+        let libraryRootURL = try temporaryDirectory()
+        _ = try writeFixture(relativePath: "Books/inventory.epub", under: libraryRootURL)
+        let firstConfiguration = makeHistoryRealmConfiguration()
+        let secondConfiguration = makeHistoryRealmConfiguration()
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = firstConfiguration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        let processorGate = ScanGate()
+        let processorStarted = expectation(description: "full inventory processor suspended")
+        let appliedWrites = ProcessorCallCounter()
+        manager.registerFileProcessorBundle(
+            identifier: "full-inventory-replacement",
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in nil },
+            readerFileURLProcessor: { _, _ in nil },
+            contextualFileProcessor: { context in
+                processorStarted.fulfill()
+                await processorGate.wait()
+                let didApply = try await context.performCurrentWrite { _, contentFile in
+                    contentFile.title = "Obsolete inventory processor"
+                    contentFile.refreshChangeMetadata(explicitlyModified: true)
+                }
+                if didApply { appliedWrites.increment() }
+            }
+        )
+        let refresh = Task { @MainActor in
+            try await manager.refreshAllFilesMetadata(force: true)
+        }
+        await fulfillment(of: [processorStarted], timeout: 5)
+        if replacesConfiguration {
+            manager.historyRealmConfigurationOverride = secondConfiguration
+        } else {
+            manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        }
+        await processorGate.release()
+        do {
+            try await refresh.value
+            XCTFail("Expected the obsolete inventory processor to reject publication.")
+        } catch ReaderFileManagerError.refreshSuperseded {}
+        XCTAssertEqual(appliedWrites.count, 0)
+        XCTAssertNil(manager.files)
+        let oldMetadata = try await Self.importedMetadata(in: firstConfiguration)
+        XCTAssertEqual(oldMetadata.map { $0.0 }, ["inventory"])
+        let oldCounts = try await Self.inventoryCounts(in: firstConfiguration)
+        XCTAssertEqual(oldCounts.activeFiles, 1)
+        XCTAssertEqual(oldCounts.workItems, 1)
+        let replacementCounts = try await Self.inventoryCounts(in: secondConfiguration)
+        XCTAssertEqual(replacementCounts.activeFiles, 0)
+
+        manager.registerFileProcessorBundle(
+            identifier: "full-inventory-replacement",
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in nil },
+            readerFileURLProcessor: { _, _ in nil },
+            contextualFileProcessor: { context in
+                try await context.performCurrentWrite { _, contentFile in
+                    contentFile.title = "Current inventory processor"
+                    contentFile.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+        )
+        try await manager.refreshAllFilesMetadata(force: true)
+        let currentConfiguration = replacesConfiguration ? secondConfiguration : firstConfiguration
+        let currentMetadata = try await Self.importedMetadata(in: currentConfiguration)
+        XCTAssertEqual(currentMetadata.map { $0.0 }, ["Current inventory processor"])
+        XCTAssertEqual(manager.files?.count, 1)
+        let currentCounts = try await Self.inventoryCounts(in: currentConfiguration)
+        XCTAssertEqual(currentCounts.activeFiles, 1)
+        XCTAssertEqual(currentCounts.workItems, 0)
+        if replacesConfiguration {
+            let retainedCounts = try await Self.inventoryCounts(in: firstConfiguration)
+            XCTAssertEqual(retainedCounts.workItems, 1)
+        }
+    }
+
+    @MainActor
     func testImportProcessorMutationFailureRollsBackAndRetainsWorkItem() async throws {
         let libraryRootURL = try temporaryDirectory()
         let sourceRootURL = try temporaryDirectory()
