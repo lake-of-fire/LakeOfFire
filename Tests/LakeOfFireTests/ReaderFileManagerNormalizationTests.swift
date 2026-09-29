@@ -604,6 +604,73 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     }
 
     @MainActor
+    func testConcurrentImportWaitsForFollowUpInsteadOfFailingOlderInventory() async throws {
+        let libraryRootURL = try temporaryDirectory()
+        let sourceRootURL = try temporaryDirectory()
+        _ = try writeFixture(relativePath: "Books/existing.epub", under: libraryRootURL)
+        let sourceURL = try writeFixture(relativePath: "imported.epub", under: sourceRootURL)
+        let configuration = makeHistoryRealmConfiguration()
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = configuration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        manager.registerFileProcessorBundle(
+            identifier: "concurrent-import-inventory-\(UUID().uuidString)",
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in RootRelativePath(path: "Books") },
+            readerFileURLProcessor: { _, _ in nil },
+            contextualFileProcessor: { context in
+                for contentFile in context.contentFiles {
+                    context.deferPostprocessing(for: contentFile)
+                }
+            }
+        )
+        try await manager.refreshAllFilesMetadata(force: true)
+        let previousURLs = try XCTUnwrap(manager.files).map(\.url)
+        XCTAssertEqual(previousURLs.count, 1)
+
+        let finalRefreshGate = ScanGate()
+        let finalRefreshStarted = expectation(description: "old scan reached final publication")
+        let importRequestedFollowUp = expectation(description: "public import requested follow-up scan")
+        manager.refreshFinalInventoryWillRefreshForTesting = {
+            manager.refreshFinalInventoryWillRefreshForTesting = nil
+            finalRefreshStarted.fulfill()
+            await finalRefreshGate.wait()
+        }
+        manager.refreshTaskWaiterDidAdmitForTesting = { role in
+            if case .forcedJoiner = role {
+                importRequestedFollowUp.fulfill()
+            }
+        }
+        let refresh = Task { @MainActor in
+            try await manager.refreshAllFilesMetadata(force: true)
+        }
+        await fulfillment(of: [finalRefreshStarted], timeout: 5)
+        let importTask = Task { @MainActor in
+            try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+        }
+        await fulfillment(of: [importRequestedFollowUp], timeout: 5)
+        XCTAssertEqual(manager.files?.map(\.url), previousURLs)
+        let admittedCounts = try await Self.inventoryCounts(in: configuration)
+        XCTAssertEqual(admittedCounts.activeFiles, 2)
+        XCTAssertEqual(admittedCounts.workItems, 2)
+        await finalRefreshGate.release()
+
+        try await refresh.value
+        let importResult = try await importTask.value
+        let importedURL = try XCTUnwrap(importResult)
+        let visibleURLs = try XCTUnwrap(manager.files).map(\.url)
+        XCTAssertEqual(visibleURLs.count, 2)
+        XCTAssertTrue(visibleURLs.contains(importedURL))
+        XCTAssertTrue(visibleURLs.contains(previousURLs[0]))
+        XCTAssertEqual(importedURL.lastPathComponent, "imported.epub")
+        let importedBytes = try Data(contentsOf: libraryRootURL.appendingPathComponent("Books/imported.epub"))
+        XCTAssertEqual(importedBytes, try Data(contentsOf: sourceURL))
+        let finalCounts = try await Self.inventoryCounts(in: configuration)
+        XCTAssertEqual(finalCounts.activeFiles, 2)
+        XCTAssertEqual(finalCounts.workItems, 2)
+    }
+
+    @MainActor
     func testConcurrentNewFileRowIsNotTombstonedByOlderInventory() async throws {
         let rootURL = try temporaryDirectory()
         let configuration = makeHistoryRealmConfiguration()

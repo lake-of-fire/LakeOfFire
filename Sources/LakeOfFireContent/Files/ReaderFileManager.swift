@@ -2554,6 +2554,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             }
                             .map(\.compoundKey))
                         guard activePrimaryKeys == discoveredPrimaryKeys else {
+                            // A targeted import can commit after discovery, then join
+                            // this owner with a forced scan. Let that requested scan
+                            // establish the new inventory instead of failing its waiter.
+                            if self.refreshAllFilesMetadataNeedsFollowUp.contains(refreshIdentity) {
+                                throw ReaderFileManagerError.refreshSuperseded
+                            }
                             throw ReaderFileManagerError.incompleteFileInventory
                         }
                         self.files = completeFiles
