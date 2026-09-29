@@ -215,6 +215,7 @@ struct BookGridCell: View {
             return
         }
         if downloadable?.url != downloadURL || downloadable?.name != title {
+            downloadable = nil
             let refreshed = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: title)
             guard !Task.isCancelled else { return }
             downloadable = refreshed

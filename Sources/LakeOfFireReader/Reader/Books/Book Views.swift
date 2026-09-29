@@ -114,6 +114,7 @@ struct BookListRow: View {
             return
         }
         if downloadable?.url != downloadURL || downloadable?.name != publication.title {
+            downloadable = nil
             let refreshed = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: publication.title)
             guard !Task.isCancelled else { return }
             downloadable = refreshed
