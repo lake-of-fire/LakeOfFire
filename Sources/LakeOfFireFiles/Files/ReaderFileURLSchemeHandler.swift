@@ -186,14 +186,16 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             limits: .image
                         )
                         let imageData = try packageSource.readEntry(subpath: subpathValue)
+                        let responseMetadata = try packageSource.mimeType(
+                            subpath: subpathValue
+                        )
                         try Task.checkCancellation()
 
-                        let subpathExtension = (subpathValue as NSString).pathExtension.lowercased()
                         let response = HTTPURLResponse(
                             url: url,
-                            mimeType: "image/\(subpathExtension)",
+                            mimeType: responseMetadata.mimeType,
                             expectedContentLength: imageData.count,
-                            textEncodingName: nil
+                            textEncodingName: responseMetadata.textEncodingName
                         )
                         await { @MainActor in
                             self.finishActiveTask(

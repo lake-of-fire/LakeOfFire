@@ -154,3 +154,39 @@ final class ReaderFileOperationMessageMapperTests: XCTestCase {
         XCTAssertEqual(alert?.message, "Couldn't delete the iCloud file. The file couldn’t be coordinated.")
     }
 }
+
+
+final class ReaderPackageEntryResponseMetadataTests: XCTestCase {
+    private func source() throws -> (ReaderPackageEntrySource, URL) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reader-package-mime-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return (try ReaderPackageEntrySource(localURL: root), root)
+    }
+
+    func testCommonImageTypesUseCanonicalMIMETypes() throws {
+        let (source, _) = try source()
+
+        XCTAssertEqual(try source.mimeType(subpath: "cover.jpg").mimeType, "image/jpeg")
+        XCTAssertEqual(try source.mimeType(subpath: "cover.jpeg").mimeType, "image/jpeg")
+        XCTAssertEqual(try source.mimeType(subpath: "cover.png").mimeType, "image/png")
+        XCTAssertEqual(try source.mimeType(subpath: "cover.webp").mimeType, "image/webp")
+    }
+
+    func testSVGUsesXMLMIMEAndUTF8Encoding() throws {
+        let (source, _) = try source()
+        let metadata = try source.mimeType(subpath: "images/cover.svg")
+
+        XCTAssertEqual(metadata.mimeType, "image/svg+xml")
+        XCTAssertEqual(metadata.textEncodingName, "utf-8")
+    }
+
+    func testUnknownExtensionFallsBackToBinaryInsteadOfInventingImageType() throws {
+        let (source, _) = try source()
+        let metadata = try source.mimeType(subpath: "images/cover.unknown-manabi-format")
+
+        XCTAssertEqual(metadata.mimeType, "application/octet-stream")
+        XCTAssertNil(metadata.textEncodingName)
+    }
+}
