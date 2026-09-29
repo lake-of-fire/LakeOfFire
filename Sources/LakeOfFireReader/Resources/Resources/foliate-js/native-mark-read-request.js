@@ -52,7 +52,19 @@ export const createNativeMarkReadRequestCoordinator = ({
     if (typeof postMessage !== 'function') throw new TypeError('postMessage must be a function')
     if (typeof postControlMessage !== 'function') throw new TypeError('postControlMessage must be a function')
     const pendingByRequestID = new Map()
-    const issuedRequestIDs = new Set()
+    // A document-local namespace and increasing sequence keep request IDs
+    // distinct without retaining every completed request for its lifetime.
+    let requestNamespace
+    for (let attempts = 0; attempts < 32; attempts += 1) {
+        const candidate = makeRequestID()
+        if (typeof candidate === 'string' && candidate
+            && new TextEncoder().encode(candidate).length <= 480) {
+            requestNamespace = candidate
+            break
+        }
+    }
+    if (!requestNamespace) throw new Error('Could not allocate a native request namespace')
+    let requestSequence = 0
     let observing = true
     let listening = false
     const attachLifecycle = () => {
@@ -156,19 +168,14 @@ export const createNativeMarkReadRequestCoordinator = ({
             return Promise.resolve({ requestID: null, context, success: false,
                 stale: false, errorCode: 'pendingTargetBusy', presentationAllowed: false })
         }
-        if (!observing || pendingByRequestID.size >= 32 || issuedRequestIDs.size >= 2048) {
+        if (!observing || pendingByRequestID.size >= 32) {
             return Promise.resolve({ requestID: null, context, success: false,
                 stale: false, errorCode: 'pendingCapacityExceeded', presentationAllowed: false })
         }
-        let requestID
-        for (let attempts = 0; attempts < 32; attempts += 1) {
-            const candidate = makeRequestID()
-            if (typeof candidate === 'string' && candidate && !issuedRequestIDs.has(candidate)) {
-                requestID = candidate
-                break
-            }
+        if (!Number.isSafeInteger(requestSequence + 1)) {
+            throw new Error('Could not allocate a unique native request identity')
         }
-        if (!requestID) throw new Error('Could not allocate a unique native request identity')
+        const requestID = `${requestNamespace}-${++requestSequence}`
         const bytes = new Uint8Array(16)
         globalThis.crypto.getRandomValues(bytes)
         const frozenMessage = JSON.parse(JSON.stringify({
@@ -189,7 +196,6 @@ export const createNativeMarkReadRequestCoordinator = ({
         const pending = { requestID, sectionID, message: frozenMessage, fingerprint,
             owner, context, resolve, completion, timeoutHandle: null,
             cancelling: false, slow: false }
-        issuedRequestIDs.add(requestID)
         pendingByRequestID.set(requestID, pending)
         attachLifecycle()
         observe(pending, timeoutMilliseconds)
