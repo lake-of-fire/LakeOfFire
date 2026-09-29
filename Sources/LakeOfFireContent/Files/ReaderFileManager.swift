@@ -166,6 +166,7 @@ fileprivate struct ReaderFilePostprocessorAdmission: Sendable {
     let absoluteFileURL: URL
     let sourceModifiedAt: Date?
     let sourceFileSize: Int64
+    let storageAuthorityReceipt: UInt64?
 }
 
 private let defaultReaderContentMimeTypes: [UTType] = [
@@ -923,6 +924,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
     @MainActor
     var refreshOrphanCleanupWillBeginForTesting: (() async throws -> Void)?
+
+    @MainActor
+    var importProvenanceWillWriteForTesting: (() async throws -> Void)?
 
     @MainActor
     var refreshFinalInventoryWillRefreshForTesting: (() async throws -> Void)?
@@ -2226,20 +2230,26 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                   finalContent.url == importedReaderFileURL else {
                 throw ReaderFileManagerError.incompleteFileInventory
             }
+            let finalPrimaryKey = finalContent.compoundKey
+            let finalCreatedAt = finalContent.createdAt
+            let finalReaderURL = finalContent.url
             if let fromDownloadURL {
+                try await importProvenanceWillWriteForTesting?()
                 let didRecordProvenance = try await recordDownloadProvenance(
                     fromDownloadURL,
-                    onContentFilePrimaryKey: finalContent.compoundKey,
-                    expectedCreatedAt: finalContent.createdAt,
-                    expectedReaderURL: finalContent.url,
-                    realmConfiguration: realmConfiguration
+                    onContentFilePrimaryKey: finalPrimaryKey,
+                    expectedCreatedAt: finalCreatedAt,
+                    expectedReaderURL: finalReaderURL,
+                    realmConfiguration: realmConfiguration,
+                    storageAuthorityReceipt: importWriteAuthority.receipt
                 )
+                try validateAuthority()
                 guard didRecordProvenance else {
                     throw ReaderFileManagerError.incompleteFileInventory
                 }
             }
             try validateAuthority()
-            return finalContent.url
+            return finalReaderURL
         } catch {
             debugPrint("Error importing file:", error)
             throw error
@@ -2255,41 +2265,45 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         onContentFilePrimaryKey primaryKey: String,
         expectedCreatedAt: Date,
         expectedReaderURL: URL,
-        realmConfiguration: Realm.Configuration
+        realmConfiguration: Realm.Configuration,
+        storageAuthorityReceipt: UInt64
     ) async throws -> Bool {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
             for: realmConfiguration
         )
         return try await realm.asyncWrite {
-            guard let target = realm.object(
-                ofType: ContentFile.self,
-                forPrimaryKey: primaryKey
-            ),
-            !target.isDeleted,
-            target.createdAt == expectedCreatedAt,
-            target.url == expectedReaderURL else {
-                return false
-            }
+            try Task.checkCancellation()
+            return try self.performStorageAuthorityMutation(receipt: storageAuthorityReceipt) {
+                guard let target = realm.object(
+                    ofType: ContentFile.self,
+                    forPrimaryKey: primaryKey
+                ),
+                !target.isDeleted,
+                target.createdAt == expectedCreatedAt,
+                target.url == expectedReaderURL else {
+                    return false
+                }
 
-            let timestamp = Date()
-            for contentFile in realm.objects(ContentFile.self).filter(NSPredicate(
-                format: "isDeleted == %@ AND sourceDownloadURL == %@",
-                NSNumber(booleanLiteral: false),
-                downloadURL.absoluteString as CVarArg
-            )) where contentFile.compoundKey != primaryKey {
-                contentFile.sourceDownloadURL = nil
-                contentFile.refreshChangeMetadata(
-                    explicitlyModified: true,
-                    at: timestamp
-                )
+                let timestamp = Date()
+                for contentFile in realm.objects(ContentFile.self).filter(NSPredicate(
+                    format: "isDeleted == %@ AND sourceDownloadURL == %@",
+                    NSNumber(booleanLiteral: false),
+                    downloadURL.absoluteString as CVarArg
+                )) where contentFile.compoundKey != primaryKey {
+                    contentFile.sourceDownloadURL = nil
+                    contentFile.refreshChangeMetadata(
+                        explicitlyModified: true,
+                        at: timestamp
+                    )
+                }
+                guard target.sourceDownloadURL != downloadURL else { return true }
+                target.sourceDownloadURL = downloadURL
+                target.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                return true
             }
-            guard target.sourceDownloadURL != downloadURL else { return true }
-            target.sourceDownloadURL = downloadURL
-            target.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
-            return true
         }
     }
-    
+
     @MainActor
     public func refreshAllFilesMetadata(force: Bool = false) async throws {
         try await refreshAllFilesMetadata(
@@ -3047,7 +3061,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 readerFileURLString: contentFile.url.absoluteString,
                                 absoluteFileURL: candidate.absoluteFileURL,
                                 sourceModifiedAt: candidate.sourceGeneration.modifiedAt,
-                                sourceFileSize: candidate.sourceGeneration.fileSize
+                                sourceFileSize: candidate.sourceGeneration.fileSize,
+                                storageAuthorityReceipt: importAuthority?.receipt
                             )
                         )
                     }
@@ -3073,29 +3088,36 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             continue
                         }
                         try Task.checkCancellation()
+                        if let importAuthority,
+                           !self.storageAuthorityGeneration.isCurrent(importAuthority.receipt) {
+                            throw ReaderFileManagerError.refreshSuperseded
+                        }
                         if outcome.isDeferred(
                             contentFilePrimaryKey: contentFile.compoundKey
                         ) {
                             continue
                         }
                         try await realm.asyncWrite {
-                            self.processorRegistry.mutateIfCurrentFilePostprocessor(
-                                registrationIdentifier: admission.registrationIdentifier
-                            ) {
-                                guard
-                                    self.postprocessorStateIsCurrent(
-                                        admission,
-                                        in: realm
-                                    ),
-                                    let workItem = realm.object(
-                                        ofType: ReaderFilePostprocessingWorkItem.self,
-                                        forPrimaryKey: admission.workItemIdentifier
-                                    )
-                                else {
-                                    return false
-                                }
-                                realm.delete(workItem)
-                                return true
+                            try Task.checkCancellation()
+                            return try self.performStorageAuthorityMutation(receipt: admission.storageAuthorityReceipt) {
+                                self.processorRegistry.mutateIfCurrentFilePostprocessor(
+                                    registrationIdentifier: admission.registrationIdentifier
+                                ) {
+                                    guard
+                                        self.postprocessorStateIsCurrent(
+                                            admission,
+                                            in: realm
+                                        ),
+                                        let workItem = realm.object(
+                                            ofType: ReaderFilePostprocessingWorkItem.self,
+                                            forPrimaryKey: admission.workItemIdentifier
+                                        )
+                                    else {
+                                        return false
+                                    }
+                                    realm.delete(workItem)
+                                    return true
+                                } ?? false
                             }
                         }
                     }
@@ -3223,20 +3245,41 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     ) async throws -> Bool {
         try Task.checkCancellation()
         return try await realm.asyncWrite {
-            try processorRegistry.mutateIfCurrentFilePostprocessor(
-                registrationIdentifier: admission.registrationIdentifier
-            ) {
-                guard postprocessorStateIsCurrent(admission, in: realm),
-                      let contentFile = realm.object(
-                        ofType: ContentFile.self,
-                        forPrimaryKey: admission.contentFilePrimaryKey
-                      ) else {
-                    return nil
-                }
-                try mutation(realm, contentFile)
-                return true
-            } ?? false
+            try Task.checkCancellation()
+            return try self.performStorageAuthorityMutation(receipt: admission.storageAuthorityReceipt) {
+                try self.processorRegistry.mutateIfCurrentFilePostprocessor(
+                    registrationIdentifier: admission.registrationIdentifier
+                ) {
+                    guard self.postprocessorStateIsCurrent(admission, in: realm),
+                          let contentFile = realm.object(
+                            ofType: ContentFile.self,
+                            forPrimaryKey: admission.contentFilePrimaryKey
+                          ) else {
+                        return nil
+                    }
+                    try mutation(realm, contentFile)
+                    return true
+                } ?? false
+            }
         }
+    }
+
+    /// Holds replacement authority through a synchronous Realm mutation. A
+    /// stale callback leaves its durable work pending rather than acknowledging it.
+    private func performStorageAuthorityMutation(
+        receipt: UInt64?,
+        mutation: () throws -> Bool
+    ) throws -> Bool {
+        guard let receipt else { return try mutation() }
+        var didApply = false
+        do {
+            try storageAuthorityGeneration.mutateIfCurrent(receipt) {
+                didApply = try mutation()
+            }
+        } catch ReaderFileManagerError.refreshSuperseded {
+            return false
+        }
+        return didApply
     }
 
     @RealmBackgroundActor

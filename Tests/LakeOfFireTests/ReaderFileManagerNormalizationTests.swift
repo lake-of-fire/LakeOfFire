@@ -603,6 +603,121 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         }
     }
 
+    @RealmBackgroundActor
+    private static func importedMetadata(in configuration: Realm.Configuration) async throws -> [(String, URL?)] {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        try await realm.asyncRefresh()
+        return realm.objects(ContentFile.self).where { !$0.isDeleted }.map { ($0.title, $0.sourceDownloadURL) }
+    }
+
+    @MainActor
+    func testReplacedImportProcessorCannotWriteOrRetireWorkItem() async throws {
+        let libraryRootURL = try temporaryDirectory()
+        let sourceRootURL = try temporaryDirectory()
+        let sourceURL = try writeFixture(relativePath: "callback.epub", under: sourceRootURL)
+        let configuration = makeHistoryRealmConfiguration()
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = configuration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        let processorGate = ScanGate()
+        let processorStarted = expectation(description: "import processor suspended")
+        let appliedWrites = ProcessorCallCounter()
+        manager.registerFileProcessorBundle(
+            identifier: "callback-replacement",
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in RootRelativePath(path: "Books") },
+            readerFileURLProcessor: { _, _ in nil },
+            contextualFileProcessor: { context in
+                processorStarted.fulfill()
+                await processorGate.wait()
+                let didApply = try await context.performCurrentWrite { _, contentFile in
+                    contentFile.title = "Obsolete callback"
+                    contentFile.refreshChangeMetadata(explicitlyModified: true)
+                }
+                if didApply { appliedWrites.increment() }
+            }
+        )
+        let importTask = Task { @MainActor in
+            try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+        }
+        await fulfillment(of: [processorStarted], timeout: 5)
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        await processorGate.release()
+        do {
+            _ = try await importTask.value
+            XCTFail("Expected an obsolete callback to reject import completion.")
+        } catch ReaderFileManagerError.refreshSuperseded {}
+        XCTAssertEqual(appliedWrites.count, 0)
+        let metadata = try await Self.importedMetadata(in: configuration)
+        XCTAssertEqual(metadata.map { $0.0 }, ["callback"])
+        let counts = try await Self.inventoryCounts(in: configuration)
+        XCTAssertEqual(counts.activeFiles, 1)
+        XCTAssertEqual(counts.workItems, 1)
+        XCTAssertNil(manager.files)
+
+        manager.registerFileProcessorBundle(
+            identifier: "callback-replacement",
+            fileProcessorVersion: 1,
+            destinationProcessor: { _ in RootRelativePath(path: "Books") },
+            readerFileURLProcessor: { _, _ in nil },
+            contextualFileProcessor: { context in
+                try await context.performCurrentWrite { _, contentFile in
+                    contentFile.title = "Current callback"
+                    contentFile.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+        )
+        let retryResult = try await manager.importFile(fileURL: sourceURL, fromDownloadURL: nil)
+        XCTAssertNotNil(retryResult)
+        let retriedMetadata = try await Self.importedMetadata(in: configuration)
+        XCTAssertEqual(retriedMetadata.map { $0.0 }, ["Current callback"])
+        let retriedCounts = try await Self.inventoryCounts(in: configuration)
+        XCTAssertEqual(retriedCounts.workItems, 0)
+    }
+
+    @MainActor
+    func testConfigurationReplacementBeforeImportProvenanceWriteRetainsOldMetadata() async throws {
+        let libraryRootURL = try temporaryDirectory()
+        let sourceRootURL = try temporaryDirectory()
+        let sourceURL = try writeFixture(relativePath: "provenance.epub", under: sourceRootURL)
+        let downloadURL = try XCTUnwrap(URL(string: "https://example.com/provenance.epub"))
+        let firstConfiguration = makeHistoryRealmConfiguration()
+        let secondConfiguration = makeHistoryRealmConfiguration()
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = firstConfiguration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRootURL))
+        let provenanceGate = ScanGate()
+        let provenanceStarted = expectation(description: "import provenance write suspended")
+        manager.importProvenanceWillWriteForTesting = {
+            provenanceStarted.fulfill()
+            await provenanceGate.wait()
+        }
+        let importTask = Task { @MainActor in
+            try await manager.importFile(fileURL: sourceURL, fromDownloadURL: downloadURL)
+        }
+        await fulfillment(of: [provenanceStarted], timeout: 5)
+        manager.historyRealmConfigurationOverride = secondConfiguration
+        await provenanceGate.release()
+        do {
+            _ = try await importTask.value
+            XCTFail("Expected obsolete provenance admission to reject import completion.")
+        } catch ReaderFileManagerError.refreshSuperseded {}
+        let oldMetadata = try await Self.importedMetadata(in: firstConfiguration)
+        XCTAssertEqual(oldMetadata.count, 1)
+        XCTAssertNil(oldMetadata.first?.1)
+        let newCounts = try await Self.inventoryCounts(in: secondConfiguration)
+        XCTAssertEqual(newCounts.activeFiles, 0)
+
+        manager.importProvenanceWillWriteForTesting = nil
+        let retryResult = try await manager.importFile(fileURL: sourceURL, fromDownloadURL: downloadURL)
+        XCTAssertNotNil(retryResult)
+        let currentMetadata = try await Self.importedMetadata(in: secondConfiguration)
+        XCTAssertEqual(currentMetadata.count, 1)
+        XCTAssertEqual(currentMetadata.first?.1, downloadURL)
+        let unchangedMetadata = try await Self.importedMetadata(in: firstConfiguration)
+        XCTAssertNil(unchangedMetadata.first?.1)
+    }
+
     @MainActor
     func testDriveReplacementDuringTargetedImportDiscoveryDoesNotAdmitMetadata() async throws {
         try await assertReplacementDuringTargetedImportDiscovery(replacesConfiguration: false)
