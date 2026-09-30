@@ -22,29 +22,34 @@ jobs:
           root="$RUNNER_TEMP/reader-refresh-queue"
           rm -rf "$root"
           mkdir -p "$root/Sources/LakeOfFireContent" "$root/Tests/LakeOfFireTests"
-          cp Sources/LakeOfFireContent/Files/ReaderFileRefreshQueue.swift              "$root/Sources/LakeOfFireContent/ReaderFileRefreshQueue.swift"
-          cp Tests/LakeOfFireTests/ReaderFileRefreshQueueTests.swift              "$root/Tests/LakeOfFireTests/ReaderFileRefreshQueueTests.swift"
+          cp Sources/LakeOfFireContent/Files/ReaderFileRefreshQueue.swift \
+            "$root/Sources/LakeOfFireContent/ReaderFileRefreshQueue.swift"
+          cp Tests/LakeOfFireTests/ReaderFileRefreshQueueTests.swift \
+            "$root/Tests/LakeOfFireTests/ReaderFileRefreshQueueTests.swift"
           cat > "$root/Package.swift" <<'SWIFT'
-// swift-tools-version: 5.10
-import PackageDescription
-let package = Package(
-    name: "ReaderRefreshQueueChecks",
-    targets: [
-        .target(name: "LakeOfFireContent"),
-        .testTarget(
-            name: "LakeOfFireTests",
-            dependencies: ["LakeOfFireContent"]
-        ),
-    ]
-)
-SWIFT
-          printf '%s\n' "$root" >> "$GITHUB_ENV"
+          // swift-tools-version: 5.10
+          import PackageDescription
+          let package = Package(
+              name: "ReaderRefreshQueueChecks",
+              targets: [
+                  .target(name: "LakeOfFireContent"),
+                  .testTarget(
+                      name: "LakeOfFireTests",
+                      dependencies: ["LakeOfFireContent"]
+                  ),
+              ]
+          )
+          SWIFT
           echo "QUEUE_FIXTURE_ROOT=$root" >> "$GITHUB_ENV"
       - name: Debug
         run: |
           cd "$QUEUE_FIXTURE_ROOT"
-          swift test --configuration debug             -Xswiftc -swift-version -Xswiftc 6             -Xswiftc -warnings-as-errors
+          swift test --configuration debug \
+            -Xswiftc -swift-version -Xswiftc 6 \
+            -Xswiftc -warnings-as-errors
       - name: Release
         run: |
           cd "$QUEUE_FIXTURE_ROOT"
-          swift test --configuration release             -Xswiftc -swift-version -Xswiftc 6             -Xswiftc -warnings-as-errors
+          swift test --configuration release \
+            -Xswiftc -swift-version -Xswiftc 6 \
+            -Xswiftc -warnings-as-errors
