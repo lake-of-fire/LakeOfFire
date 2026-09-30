@@ -46,6 +46,7 @@ import { OwnedAsyncResource, OwnedPromiseSlot, OwnedScheduledTask } from './owne
 import { createOwnedAsyncCache } from './owned-async-cache.js'
 import { OwnedEventBindings, OwnedEventBindingScopes } from './owned-event-bindings.js'
 import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
+import { navButtonRefreshIsCurrent } from './nav-button-refresh-ownership.js'
 import { OwnedObjectURL } from './owned-object-url.js'
 import {
     activeRendererContentsForLookup,
@@ -3842,6 +3843,7 @@ class Reader {
     #ownedEventBindings = new OwnedEventBindings()
     #documentEventBindings = new OwnedEventBindingScopes()
     #navButtonOperations = new Set()
+    #navButtonOperationSequence = 0
     #sidebarCloseHandle = null
     #sidebarCoverURL = new OwnedObjectURL()
     #sidebarCoverLoadPromise = null
@@ -6581,8 +6583,22 @@ class Reader {
     }
 
     async updateNavButtons() {
+        const r = this.view?.renderer ?? null;
+        const operationSequence = this.#navButtonOperationSequence;
+        const isCurrentUpdate = () => navButtonRefreshIsCurrent({
+            closed: this.#closed,
+            capturedRenderer: r,
+            currentRenderer: this.view?.renderer ?? null,
+            capturedOperationSequence: operationSequence,
+            currentOperationSequence: this.#navButtonOperationSequence,
+            activeOperationCount: this.#navButtonOperations.size,
+        });
+        if (!r || !isCurrentUpdate()) return false;
+
         const navVisibilityBefore = captureNavVisibilityState();
-        // Remove any nav-spinner left over from chapter navigation click
+        // Remove only spinners owned before this refresh starts. If a chapter
+        // operation begins while a renderer await is suspended, the ownership
+        // checks below prevent this older refresh from publishing over it.
         document.querySelectorAll('.ispinner.nav-spinner').forEach(spinner => {
             const btn = spinner.closest('button');
             if (btn && btn._originalIcon) {
@@ -6592,14 +6608,17 @@ class Reader {
             const label = btn.querySelector('.button-label');
             if (label) label.style.visibility = '';
         });
-        if (!this.view?.renderer) return;
-        const r = this.view.renderer;
-        // Use new section start/end helpers if available
+
+        // Use new section start/end helpers if available.
         const atSectionStart = typeof r.isAtSectionStart === "function" ? await r.isAtSectionStart() : false;
+        if (!isCurrentUpdate()) return false;
         const atSectionEnd = typeof r.isAtSectionEnd === "function" ? await r.isAtSectionEnd() : false;
-        // Use public helpers to detect prev/next section
+        if (!isCurrentUpdate()) return false;
+        // Use public helpers to detect prev/next section.
         const hasPrevSection = typeof r.getHasPrevSection === "function" ? await r.getHasPrevSection() : true;
+        if (!isCurrentUpdate()) return false;
         const hasNextSection = typeof r.getHasNextSection === "function" ? await r.getHasNextSection() : true;
+        if (!isCurrentUpdate()) return false;
         const sectionIndex = typeof this.navHUD?.lastRelocateDetail?.sectionIndex === 'number'
             ? this.navHUD.lastRelocateDetail.sectionIndex
             : (typeof this.navHUD?.lastRelocateDetail?.index === 'number'
@@ -6699,6 +6718,7 @@ class Reader {
             });
         }
         this.#schedulePageTrackingSync('nav-buttons', null, 1, 96);
+        return true;
     }
     async #handleKeydown(event) {
         const k = event.key;
@@ -7996,6 +8016,10 @@ class Reader {
             }
             if (label) label.style.visibility = previousLabelVisibility;
         });
+        // Remember that this operation happened even after it finishes. An
+        // older refresh suspended in renderer metrics must never regain control
+        // merely because the newer operation already left the active set.
+        this.#navButtonOperationSequence += 1
         this.#navButtonOperations.add(operation)
         fallbackTimer = setTimeout(refreshAfterFinish, navSpinnerMaximumMs);
 
