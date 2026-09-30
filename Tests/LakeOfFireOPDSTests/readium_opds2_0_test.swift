@@ -45,6 +45,10 @@ final class readium_opds2_0_test: XCTestCase {
             {
               "metadata": {
                 "title": "Relative Book",
+                "subject": [{
+                  "name": "Topic",
+                  "links": [{ "href": "topics/topic.json" }]
+                }],
                 "author": [
                   { "name": "Author One" },
                   { "name": "Author Two" }
@@ -79,6 +83,9 @@ final class readium_opds2_0_test: XCTestCase {
 
         let publication = try XCTUnwrap(parseData.feed?.publications.first)
         let authors = publication.metadata.authors.map(\.name).joined(separator: ", ")
+        let subjectURL = publication.metadata.subjects.first?.links.first?.url(
+            relativeTo: URL(string: "https://catalog.example.com/")!
+        )
         let coverURL = (publication.images.first(withRel: .cover)
             ?? publication.images.first(withRel: .opdsImage)
             ?? publication.images.first(withRel: .opdsImageThumbnail))?
@@ -87,8 +94,40 @@ final class readium_opds2_0_test: XCTestCase {
 
         XCTAssertEqual(publication.metadata.title, "Relative Book")
         XCTAssertEqual(authors, "Author One, Author Two")
+        XCTAssertEqual(subjectURL?.absoluteString, "https://catalog.example.com/topics/topic.json")
         XCTAssertEqual(publication.metadata.published?.timeIntervalSince1970, 1_577_923_200)
         XCTAssertEqual(coverURL?.absoluteString, "https://catalog.example.com/images/thumb.png")
         XCTAssertEqual(downloadURL?.absoluteString, "https://catalog.example.com/downloads/book.epub")
+    }
+
+    func testRelativeLinksUseFinalResponseURLAfterRedirect() throws {
+        let json = """
+        {
+          "metadata": { "title": "Redirected Catalog" },
+          "links": [{ "href": "next.json", "rel": "next" }],
+          "publications": [{
+            "metadata": { "title": "Book" },
+            "links": [{ "href": "books/book.epub", "rel": "http://opds-spec.org/acquisition" }]
+          }]
+        }
+        """
+        let requestedURL = URL(string: "https://catalog.example.com/feed.json")!
+        let finalURL = URL(string: "https://cdn.example.net/opds/catalog/feed.json")!
+        let response = try XCTUnwrap(
+            HTTPURLResponse(url: finalURL, statusCode: 200, httpVersion: nil, headerFields: nil)
+        )
+
+        let parseData = try OPDS2Parser.parse(
+            jsonData: Data(json.utf8),
+            url: requestedURL,
+            response: response
+        )
+        let feed = try XCTUnwrap(parseData.feed)
+
+        XCTAssertEqual(feed.links.first?.href, "https://cdn.example.net/opds/catalog/next.json")
+        XCTAssertEqual(
+            feed.publications.first?.links.first?.href,
+            "https://cdn.example.net/opds/catalog/books/book.epub"
+        )
     }
 }

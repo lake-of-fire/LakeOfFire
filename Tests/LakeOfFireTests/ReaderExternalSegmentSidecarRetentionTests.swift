@@ -1,6 +1,6 @@
 import XCTest
 import WebKit
-@testable import LakeOfFireReader
+@_spi(ReaderProcessing) @testable import LakeOfFireReader
 
 private final class CapturingURLSchemeTask: NSObject, WKURLSchemeTask {
     let request: URLRequest
@@ -42,7 +42,40 @@ private actor SidecarProcessorInvocationCounter {
     }
 }
 
+private final class SidecarRetentionClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var currentDate: Date
+
+    init(_ currentDate: Date) {
+        self.currentDate = currentDate
+    }
+
+    func value() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentDate
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        currentDate = currentDate.addingTimeInterval(interval)
+        lock.unlock()
+    }
+}
+
 final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
+    func testStoreRejectsSidecarAboveProducerConsumerEntryLimit() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            maximumEntryByteCount: 8
+        )
+
+        XCTAssertNotNil(store.insert(Data(repeating: 1, count: 8)))
+        XCTAssertNil(store.insert(Data(repeating: 1, count: 9)))
+    }
+
     @MainActor
     func testInternalReaderSchemeHandlerServesStoredSidecar() throws {
         let directoryURL = temporaryDirectoryURL()
@@ -97,6 +130,130 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
 
         XCTAssertEqual(recreatedStore.entry(for: retained.token)?.data, retainedData)
         XCTAssertEqual(recreatedStore.entry(for: retained.token)?.signature, retained.signature)
+    }
+
+    func testDiskRetentionPrunesEvictedProducerEntriesImmediatelyAfterPublication() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: 1,
+            countLimit: 1,
+            diskByteLimit: Int.max,
+            diskCountLimit: 1,
+            maximumDiskAge: 365 * 24 * 60 * 60,
+            descriptorLeaseDuration: 0
+        )
+        let first = try XCTUnwrap(store.insert(validSidecarData(runtimeIDToken: "!first")))
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -10)],
+            ofItemAtPath: directoryURL.appendingPathComponent(first.token).path
+        )
+        let secondData = validSidecarData(runtimeIDToken: "!second")
+        let second = try XCTUnwrap(store.insert(secondData))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(first.token).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(second.token).path))
+        XCTAssertEqual(
+            ReaderExternalSegmentSidecarStore(directoryURL: directoryURL).entry(for: second.token)?.data,
+            secondData
+        )
+    }
+
+    func testCrossStoreLeasePreventsPruningUntilTheReaderLeaseExpires() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let clock = SidecarRetentionClock(Date(timeIntervalSinceReferenceDate: 1_000))
+        let firstStore = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: 1,
+            countLimit: 1,
+            diskByteLimit: Int.max,
+            diskCountLimit: 1,
+            maximumDiskAge: 365 * 24 * 60 * 60,
+            descriptorLeaseDuration: 60,
+            now: { clock.value() }
+        )
+        let first = try XCTUnwrap(firstStore.insert(validSidecarData(runtimeIDToken: "!first")))
+
+        clock.advance(by: 1)
+        let secondStore = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: 1,
+            countLimit: 1,
+            diskByteLimit: Int.max,
+            diskCountLimit: 1,
+            maximumDiskAge: 365 * 24 * 60 * 60,
+            descriptorLeaseDuration: 60,
+            now: { clock.value() }
+        )
+        let second = try XCTUnwrap(secondStore.insert(validSidecarData(runtimeIDToken: "!second")))
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(first.token).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(second.token).path))
+
+        clock.advance(by: 60)
+        XCTAssertEqual(secondStore.entry(for: second.token)?.data, validSidecarData(runtimeIDToken: "!second"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(first.token).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(second.token).path))
+    }
+
+    func testLeaseRenewalPublishesANewLeaseFileBeforeRetiringThePriorLease() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let clock = SidecarRetentionClock(Date(timeIntervalSinceReferenceDate: 1_000))
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            descriptorLeaseDuration: 60,
+            now: { clock.value() }
+        )
+        let stored = try XCTUnwrap(store.insert(validSidecarData(runtimeIDToken: "!renewed")))
+        let leaseDirectoryURL = directoryURL.appendingPathComponent(".leases", isDirectory: true)
+        let originalLeaseFiles = try FileManager.default.contentsOfDirectory(
+            at: leaseDirectoryURL,
+            includingPropertiesForKeys: nil
+        ).map(\.lastPathComponent)
+
+        clock.advance(by: 30)
+        XCTAssertNotNil(store.entry(for: stored.token))
+        let renewedLeaseFiles = try FileManager.default.contentsOfDirectory(
+            at: leaseDirectoryURL,
+            includingPropertiesForKeys: nil
+        ).map(\.lastPathComponent)
+
+        XCTAssertEqual(originalLeaseFiles.count, 1)
+        XCTAssertEqual(renewedLeaseFiles.count, 1)
+        XCTAssertNotEqual(originalLeaseFiles, renewedLeaseFiles)
+    }
+
+    func testProducerRetryFenceAdvancesWithoutChangingContentAddress() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let data = validSidecarData(runtimeIDToken: "!runtime")
+        let documentHTML = Data("<html><head></head><body><m-m id=\"runtime\">猫</m-m></body></html>".utf8)
+
+        let first = externalizingReaderSegmentSidecar(
+            documentHTML: documentHTML,
+            canonicalSidecar: data,
+            scheme: .internalReader,
+            store: store
+        )
+        let second = externalizingReaderSegmentSidecar(
+            documentHTML: documentHTML,
+            canonicalSidecar: data,
+            scheme: .internalReader,
+            store: store
+        )
+        let firstHTML = String(decoding: first.documentHTML, as: UTF8.self)
+        let secondHTML = String(decoding: second.documentHTML, as: UTF8.self)
+        let firstRetryToken = try XCTUnwrap(sidecarRetryToken(in: firstHTML))
+        let secondRetryToken = try XCTUnwrap(sidecarRetryToken(in: secondHTML))
+
+        XCTAssertEqual(first.endpointURL, second.endpointURL)
+        XCTAssertEqual(first.signature, second.signature)
+        XCTAssertNotEqual(firstRetryToken, secondRetryToken)
+        XCTAssertEqual(firstRetryToken.count, 32)
     }
 
     func testOversizedDurableSidecarIsNotRetainedAboveMemoryBudget() throws {
@@ -347,5 +504,20 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         return "<html><body>\(segments)<script id=\"mnb-segment-metadata\">"
             + String(decoding: sidecarData, as: UTF8.self)
             + "</script></body></html>"
+    }
+
+    private func sidecarRetryToken(in html: String) -> String? {
+        guard let range = html.range(
+            of: #"data-mnb-segment-sidecar-retry=\"([0-9a-f]{32})\""#,
+            options: .regularExpression
+        ) else {
+            return nil
+        }
+        let attribute = String(html[range])
+        return String(
+            attribute
+                .replacingOccurrences(of: "data-mnb-segment-sidecar-retry=\"", with: "")
+                .dropLast()
+        )
     }
 }
