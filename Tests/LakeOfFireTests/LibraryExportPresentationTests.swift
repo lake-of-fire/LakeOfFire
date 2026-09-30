@@ -43,6 +43,7 @@ final class LibraryExportPresentationTests: XCTestCase {
         XCTAssertTrue(failed)
         XCTAssertNil(manager.exportedOPML)
         XCTAssertNil(manager.exportedOPMLFileURL)
+        XCTAssertNil(manager.exportedOPMLShareItem)
         XCTAssertEqual(writeAttempts, 1)
 
         // A second registration and ordinary preparation request must not retry a failed write.
@@ -121,6 +122,7 @@ final class LibraryExportPresentationTests: XCTestCase {
         XCTAssertNotNil(manager.exportedOPML)
         XCTAssertTrue(preparedURL.isFileURL)
         XCTAssertEqual(preparedURL.pathExtension, "opml")
+        XCTAssertEqual(manager.exportedOPMLShareItem?.data, try Data(contentsOf: preparedURL))
         XCTAssertTrue(try String(contentsOf: preparedURL, encoding: .utf8).contains("Explicit retry export"))
     }
 
@@ -325,6 +327,33 @@ final class LibraryExportPresentationTests: XCTestCase {
         )
     }
 
+    func testShareSnapshotRemainsReadableAfterItsPreparedFileIsRemoved()
+    async throws {
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        manager.exportUserOPML = {
+            OPML(entries: [OPMLEntry(text: "original share snapshot")])
+        }
+        let registration = UUID()
+        manager.registerOPMLExportUI(registration)
+
+        let firstURL = try XCTUnwrap(
+            await waitForExport(manager, containing: "original share snapshot")
+        )
+        let firstShareItem = try XCTUnwrap(manager.exportedOPMLShareItem)
+        XCTAssertEqual(firstShareItem.data, try Data(contentsOf: firstURL))
+
+        manager.invalidateOPMLExport()
+        _ = try XCTUnwrap(await waitForExport(manager, after: firstURL))
+        manager.unregisterOPMLExportUI(registration)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstURL.path))
+        XCTAssertTrue(
+            try XCTUnwrap(String(data: firstShareItem.data, encoding: .utf8))
+                .contains("original share snapshot"),
+            "An already-created share item must own its bytes after file cleanup"
+        )
+    }
+
     func testFailedRetiredFileRemovalRemainsOwnedForLaterCleanupRetry()
     async throws {
         let manager = LibraryManagerViewModel(observesRealm: false)
@@ -378,6 +407,45 @@ final class LibraryExportPresentationTests: XCTestCase {
             FileManager.default.fileExists(atPath: secondURL.path),
             "The current prepared generation remains reusable"
         )
+    }
+
+    func testPermissionFailureRetainsCleanupOwnershipEvenWhenPathIsAbsent()
+    async throws {
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        manager.exportUserOPML = {
+            OPML(entries: [OPMLEntry(text: "explicit removal error")])
+        }
+        let registration = UUID()
+        manager.registerOPMLExportUI(registration)
+
+        let firstURL = try XCTUnwrap(
+            await waitForExport(manager, containing: "explicit removal error")
+        )
+        manager.invalidateOPMLExport()
+        _ = try XCTUnwrap(await waitForExport(manager, after: firstURL))
+        try FileManager.default.removeItem(at: firstURL)
+
+        var attempts = 0
+        manager.removeOPMLFile = { url in
+            XCTAssertEqual(url, firstURL)
+            attempts += 1
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        manager.unregisterOPMLExportUI(registration)
+        XCTAssertEqual(attempts, 1)
+
+        manager.removeOPMLFile = { url in
+            XCTAssertEqual(url, firstURL)
+            attempts += 1
+            throw CocoaError(.fileNoSuchFile)
+        }
+        manager.registerOPMLExportUI(registration)
+        manager.unregisterOPMLExportUI(registration)
+        XCTAssertEqual(attempts, 2, "Permission failure must retain the URL for retry")
+
+        manager.registerOPMLExportUI(registration)
+        manager.unregisterOPMLExportUI(registration)
+        XCTAssertEqual(attempts, 2, "A confirmed missing file needs no further retry")
     }
 
     func testSecondExportViewKeepsRetiredFilesAliveUntilItAlsoUnregisters()

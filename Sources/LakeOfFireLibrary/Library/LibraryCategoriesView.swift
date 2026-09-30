@@ -219,8 +219,15 @@ struct LibraryCategoriesView: View {
 
     @ViewBuilder var importExportView: some View {
         Group {
-            if let fileURL = libraryManagerViewModel.exportedOPMLFileURL {
-                ShareLink(item: fileURL, message: Text(""), preview: SharePreview("Manabi Reader User Feeds OPML File", image: Image(systemName: "doc"))) {
+            if let shareItem = libraryManagerViewModel.exportedOPMLShareItem {
+                ShareLink(
+                    item: shareItem,
+                    message: Text(""),
+                    preview: SharePreview(
+                        "Manabi Reader User Feeds OPML File",
+                        image: Image(systemName: "doc")
+                    )
+                ) {
 #if os(macOS)
                     Text("Share My Library…")
                         .frame(maxWidth: .infinity)

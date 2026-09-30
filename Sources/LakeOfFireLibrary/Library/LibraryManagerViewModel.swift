@@ -9,6 +9,7 @@ import RealmSwift
 import Combine
 import OPML
 import UniformTypeIdentifiers
+import CoreTransferable
 import RealmSwiftGaps
 import LakeKit
 
@@ -19,6 +20,19 @@ public enum LibraryRoute: Hashable, Codable {
 public enum LibrarySidebarDestination: Hashable {
     case userScripts
     case category(UUID)
+}
+
+struct OPMLExportShareItem: Transferable {
+    let data: Data
+
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(
+            exportedContentType: UTType(exportedAs: "public.opml")
+        ) { item in
+            item.data
+        }
+        .suggestedFileName("ManabiReaderUserLibrary.opml")
+    }
 }
 
 //
@@ -118,9 +132,12 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     @Published public var isLibraryPresented = false
     
-    @Published private var preparedOPMLExport: (opml: OPML, fileURL: URL)?
+    @Published private var preparedOPMLExport: (opml: OPML, fileURL: URL, data: Data)?
     var exportedOPML: OPML? { preparedOPMLExport?.opml }
     var exportedOPMLFileURL: URL? { preparedOPMLExport?.fileURL }
+    var exportedOPMLShareItem: OPMLExportShareItem? {
+        preparedOPMLExport.map { OPMLExportShareItem(data: $0.data) }
+    }
     @Published var opmlExportFailed = false
     
 //    @AppStorage("LibraryManagerViewModel.presentedCategories") var presentedCategories = [LibraryRoute]()
@@ -130,9 +147,8 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     private var reprepareOPMLTask: Task<Void, Never>?
     private var exportOPMLGeneration = 0
     private var opmlExportUIRegistrations = Set<UUID>()
-    // Each successful generation uses an immutable temporary file so an
-    // already-presented ShareLink never observes replacement bytes. Retired
-    // generations are needed only while export UI remains mounted.
+    // Each successful generation has a readiness-checked file and immutable
+    // share bytes. Retired files remain available while export UI is mounted.
     private var retiredOPMLExportFileURLs = Set<URL>()
     var exportUserOPML: @Sendable () async throws -> OPML = {
         try await LibraryDataManager.shared.exportUserOPML()
@@ -338,11 +354,19 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                 // A transient filesystem failure must not orphan an immutable
                 // export by forgetting ownership. Missing files are already
                 // gone; every other failure remains tracked for a later retry.
-                if !FileManager.default.fileExists(atPath: url.path) {
+                if Self.isMissingOPMLFileError(error) {
                     retiredOPMLExportFileURLs.remove(url)
                 }
             }
         }
+    }
+
+    private static func isMissingOPMLFileError(_ error: Error) -> Bool {
+        let error = error as NSError
+        return (error.domain == NSCocoaErrorDomain &&
+                error.code == CocoaError.Code.fileNoSuchFile.rawValue) ||
+            (error.domain == NSPOSIXErrorDomain &&
+             error.code == Int(POSIXErrorCode.ENOENT.rawValue))
     }
 
     @MainActor
@@ -382,7 +406,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                         guard FileManager.default.fileExists(atPath: resultURL.path) else {
                             throw CocoaError(.fileNoSuchFile)
                         }
-                        self.preparedOPMLExport = (opml, resultURL)
+                        self.preparedOPMLExport = (opml, resultURL, data)
                     } catch {
                         try? FileManager.default.removeItem(at: resultURL)
                         self.opmlExportFailed = true

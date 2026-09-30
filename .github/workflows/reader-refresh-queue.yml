@@ -19,8 +19,7 @@ jobs:
       - name: Build exact queue fixture
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/reader-refresh-queue"
-          rm -rf "$root"
+          root="$(mktemp -d "$RUNNER_TEMP/reader-refresh-queue.XXXXXX")"
           mkdir -p "$root/Sources/LakeOfFireContent" "$root/Tests/LakeOfFireTests"
           cp Sources/LakeOfFireContent/Files/ReaderFileRefreshQueue.swift \
             "$root/Sources/LakeOfFireContent/ReaderFileRefreshQueue.swift"
