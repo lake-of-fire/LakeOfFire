@@ -31,7 +31,8 @@ final class ReaderFileRefreshQueue {
                 if Task.isCancelled {
                     return .failure(CancellationError())
                 }
-                return await withCheckedContinuation { continuation in
+                let resolved = await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
                     if let result {
                         continuation.resume(returning: result)
                     } else if Task.isCancelled {
@@ -47,6 +48,13 @@ final class ReaderFileRefreshQueue {
                     self?.cancelWaiter(id)
                 }
             }
+            // Cancellation delivery hops back to MainActor. A producer may
+            // finish in the same actor turn before that hop removes this
+            // waiter; never let that ordering convert cancellation to success.
+            if Task.isCancelled {
+                return .failure(CancellationError())
+            }
+            return resolved
         }
 
         private func cancelWaiter(_ id: UUID) {
