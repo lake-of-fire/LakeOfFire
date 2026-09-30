@@ -27,9 +27,9 @@ final class ReaderFileRefreshQueue {
             }
 
             let id = UUID()
-            return await withTaskCancellationHandler {
+            let settled = await withTaskCancellationHandler {
                 if Task.isCancelled {
-                    return .failure(CancellationError())
+                    return Result<Void, Error>.failure(CancellationError())
                 }
                 return await withCheckedContinuation { continuation in
                     if let result {
@@ -47,6 +47,12 @@ final class ReaderFileRefreshQueue {
                     self?.cancelWaiter(id)
                 }
             }
+            // Producer settlement and this waiter's delivery are distinct.
+            // If cancellation wins after the shared result was accepted but
+            // before this caller resumes, it still owns this caller's return.
+            return Task.isCancelled
+                ? .failure(CancellationError())
+                : settled
         }
 
         private func cancelWaiter(_ id: UUID) {

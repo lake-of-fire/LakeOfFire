@@ -427,6 +427,28 @@ final class ReaderFileRefreshQueueTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(successorRan)
     }
 
+    func testCancellationAfterProducerSettlementOwnsWaiterDelivery() async {
+        let completion = ReaderFileRefreshQueue.Completion()
+        let entered = expectation(description: "waiter entered")
+        let waiter = Task { @MainActor in
+            entered.fulfill()
+            return await completion.wait()
+        }
+        await fulfillment(of: [entered], timeout: 2)
+        // Let wait() install its continuation, then settle and cancel without
+        // yielding the MainActor between those two events. The producer result
+        // is real, but cancellation must own this waiter's eventual delivery.
+        await Task.yield()
+        completion.finish(.success(()))
+        waiter.cancel()
+
+        let result = await waiter.value
+        guard case .failure(let error) = result else {
+            return XCTFail("Late-cancelled waiter reported producer success")
+        }
+        XCTAssertTrue(error is CancellationError)
+    }
+
     func testCancelledCompletionWaiterGetsCancellationWithoutCancellingProducer()
     async {
         let queue = ReaderFileRefreshQueue(interval: 0)
