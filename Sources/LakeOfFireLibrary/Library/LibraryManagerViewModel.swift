@@ -197,7 +197,12 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             guard let self = self else { return }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
 
-            let exportableTypes: [ObjectBase.Type] = [FeedCategory.self, FeedDirectory.self, Feed.self, LibraryConfiguration.self]
+            // Script contents and their independently edited domain records are
+            // part of OPML too; neither edit needs to mutate LibraryConfiguration.
+            let exportableTypes: [ObjectBase.Type] = [
+                FeedCategory.self, FeedDirectory.self, Feed.self, LibraryConfiguration.self,
+                UserScript.self, UserScriptAllowedDomain.self,
+            ]
             for objectType in exportableTypes {
                 guard let objectType = objectType as? Object.Type else { continue }
                 realm.objects(objectType)

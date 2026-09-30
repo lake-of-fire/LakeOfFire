@@ -1,5 +1,7 @@
 #if os(macOS)
 import AppKit
+#endif
+import BigSyncKit
 import OPML
 import RealmSwift
 import RealmSwiftGaps
@@ -8,14 +10,16 @@ import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireLibrary
 
+@available(iOS 16.0, macOS 15.0, *)
 @MainActor
 final class LibraryExportPresentationTests: XCTestCase {
+#if os(macOS)
     func testFailedFileWriteExposesRetryAndOnlySharesPreparedOPML() async throws {
         let previous = LibraryDataManager.realmConfiguration
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         configuration.objectTypes = [
             LibraryConfiguration.self, FeedCategory.self, FeedDirectory.self,
-            Feed.self, UserScript.self,
+            Feed.self, UserScript.self, UserScriptAllowedDomain.self,
         ]
         configureLakeOfFireMutationTrackingForTesting(&configuration)
         LibraryDataManager.realmConfiguration = configuration
@@ -77,6 +81,125 @@ final class LibraryExportPresentationTests: XCTestCase {
         }
         XCTAssertTrue(shareVisible)
         XCTAssertNil(accessibilityElement(in: exportWindow.contentView, identifier: "library-opml-retry"))
+    }
+
+#endif
+
+    func testFailedFileWriteKeepsExportUnpreparedUntilExplicitRetry() async throws {
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        manager.exportUserOPML = { OPML(entries: [OPMLEntry(text: "Explicit retry export")]) }
+        var writeAttempts = 0
+        manager.writeOPMLFile = { data, url in
+            writeAttempts += 1
+            if writeAttempts == 1 { throw CocoaError(.fileWriteOutOfSpace) }
+            try data.write(to: url, options: [.atomic])
+        }
+        let firstRegistration = UUID()
+        let secondRegistration = UUID()
+        manager.registerOPMLExportUI(firstRegistration)
+        defer {
+            manager.unregisterOPMLExportUI(firstRegistration)
+            manager.unregisterOPMLExportUI(secondRegistration)
+        }
+        let failed = await waitUntil { manager.opmlExportFailed }
+        XCTAssertTrue(failed)
+        XCTAssertNil(manager.exportedOPML)
+        XCTAssertNil(manager.exportedOPMLFileURL)
+        XCTAssertEqual(writeAttempts, 1)
+
+        manager.registerOPMLExportUI(secondRegistration)
+        manager.ensureOPMLExportPrepared()
+        await Task.yield()
+        XCTAssertEqual(writeAttempts, 1)
+        XCTAssertTrue(manager.opmlExportFailed)
+
+        manager.refreshOPMLExport()
+        let preparedResult = await waitForExport(manager, containing: "Explicit retry export")
+        let preparedURL = try XCTUnwrap(preparedResult)
+        XCTAssertEqual(writeAttempts, 2)
+        XCTAssertFalse(manager.opmlExportFailed)
+        XCTAssertNotNil(manager.exportedOPML)
+        XCTAssertTrue(preparedURL.isFileURL)
+        XCTAssertEqual(preparedURL.pathExtension, "opml")
+        XCTAssertTrue(try String(contentsOf: preparedURL, encoding: .utf8).contains("Explicit retry export"))
+    }
+
+    func testVisibleExportRepreparesAfterScriptAndIndependentDomainEdits() async throws {
+        let previous = LibraryDataManager.realmConfiguration
+        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        configuration.objectTypes = [
+            LibraryConfiguration.self, FeedCategory.self, FeedDirectory.self,
+            Feed.self, UserScript.self, UserScriptAllowedDomain.self,
+        ]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        LibraryDataManager.realmConfiguration = configuration
+        defer { LibraryDataManager.realmConfiguration = previous }
+        let identifiers = try await Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            let library = LibraryConfiguration()
+            let script = UserScript()
+            script.title = "Original script export"
+            script.script = "console.log('original');"
+            let domain = UserScriptAllowedDomain()
+            domain.domain = "original.example.org"
+            script.allowedDomainIDs.append(domain.id)
+            library.userScriptIDs.append(script.id)
+            try await realm.asyncWrite {
+                realm.add([library, script, domain])
+                library.refreshChangeMetadata(explicitlyModified: true)
+                script.refreshChangeMetadata(explicitlyModified: true)
+                domain.refreshChangeMetadata(explicitlyModified: true)
+            }
+            return (script.id, domain.id)
+        }.value
+        let manager = LibraryManagerViewModel()
+        let registration = UUID()
+        manager.registerOPMLExportUI(registration)
+        defer { manager.unregisterOPMLExportUI(registration) }
+        let initialResult = await waitForExport(manager, containing: "Original script export")
+        let initialURL = try XCTUnwrap(initialResult)
+        let initialBytes = try Data(contentsOf: initialURL)
+
+        // Each edit writes its own exported record, without touching the library configuration.
+        try await Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            let script = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: identifiers.0))
+            try await realm.asyncWrite {
+                script.title = "Changed script export"
+                script.script = "console.log('changed');"
+                script.mainFrameOnly = false
+                script.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }.value
+        let scriptResult = await waitForExport(manager, after: initialURL, containing: "Changed script export")
+        let scriptURL = try XCTUnwrap(scriptResult)
+        let scriptBytes = try Data(contentsOf: scriptURL)
+        XCTAssertEqual(try Data(contentsOf: initialURL), initialBytes)
+
+        try await Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            let domain = try XCTUnwrap(realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: identifiers.1))
+            try await realm.asyncWrite {
+                domain.domain = "changed.example.org"
+                domain.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }.value
+        let domainResult = await waitForExport(manager, after: scriptURL, containing: "changed.example.org")
+        let domainURL = try XCTUnwrap(domainResult)
+        let domainXML = try String(contentsOf: domainURL, encoding: .utf8)
+        XCTAssertTrue(domainXML.contains("Changed script export"))
+        XCTAssertFalse(domainXML.contains("original.example.org"))
+        XCTAssertEqual(try Data(contentsOf: initialURL), initialBytes)
+        XCTAssertEqual(try Data(contentsOf: scriptURL), scriptBytes)
+        let journaledEdits = try await Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            return (
+                realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: "UserScript.\(identifiers.0)") != nil,
+                realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: "UserScriptAllowedDomain.\(identifiers.1)") != nil
+            )
+        }.value
+        XCTAssertTrue(journaledEdits.0)
+        XCTAssertTrue(journaledEdits.1)
     }
 
     func testVisibleInvalidationRepreparesAfterFailedFileWrite() async throws {
@@ -159,12 +282,13 @@ final class LibraryExportPresentationTests: XCTestCase {
         XCTAssertFalse(xml.contains("stale"))
     }
 
+#if os(macOS)
     func testVisibleViewsReprepareAfterMutationAndKeepEarlierSharedFile() async throws {
         let previous = LibraryDataManager.realmConfiguration
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         configuration.objectTypes = [
             LibraryConfiguration.self, FeedCategory.self, FeedDirectory.self,
-            Feed.self, UserScript.self,
+            Feed.self, UserScript.self, UserScriptAllowedDomain.self,
         ]
         configureLakeOfFireMutationTrackingForTesting(&configuration)
         LibraryDataManager.realmConfiguration = configuration
@@ -230,6 +354,8 @@ final class LibraryExportPresentationTests: XCTestCase {
         return window
     }
 
+#endif
+
     private func waitForExport(
         _ manager: LibraryManagerViewModel,
         after previousURL: URL? = nil,
@@ -255,6 +381,7 @@ final class LibraryExportPresentationTests: XCTestCase {
         return condition()
     }
 
+#if os(macOS)
     private func accessibilityElement(in root: NSView?, identifier: String) -> NSAccessibilityProtocol? {
         guard let root else { return nil }
         root.layoutSubtreeIfNeeded()
@@ -271,6 +398,8 @@ final class LibraryExportPresentationTests: XCTestCase {
         }
         return nil
     }
+
+#endif
 }
 
 private actor DelayedOPMLExporter {
@@ -295,4 +424,3 @@ private actor DelayedOPMLExporter {
         return OPML(entries: [OPMLEntry(text: "fresh")])
     }
 }
-#endif
