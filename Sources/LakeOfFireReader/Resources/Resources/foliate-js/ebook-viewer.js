@@ -5495,6 +5495,7 @@ class Reader {
     #postInitialOpenWorkHandle = null;
     #sidebarCloseHandle = null;
     #navButtonOperations = new Set();
+    #navButtonOperationSequence = 0;
     #completionActionSequence = 0;
     bookEndcap = null;
     bookActionBridge = null;
@@ -9913,8 +9914,13 @@ class Reader {
     async updateNavButtons({ relocateSequence = null } = {}) {
         const lifecycleGeneration = this.#lifecycleGeneration;
         const r = this.view?.renderer ?? null;
+        const navigationSequence = this.#navButtonOperationSequence;
         const isCurrentUpdate = () =>
             this.#isRendererLifecycleCurrent(lifecycleGeneration, r)
+            // A chapter operation that started during any renderer await owns
+            // its controls, even if it finished before this refresh resumed.
+            && navigationSequence === this.#navButtonOperationSequence
+            && this.#navButtonOperations.size === 0
             && (
                 !Number.isInteger(relocateSequence)
                 || relocateSequence === this.#relocateSequence
@@ -11835,6 +11841,7 @@ class Reader {
             }
             if (label) label.style.visibility = previousLabelVisibility;
         });
+        this.#navButtonOperationSequence += 1;
         this.#navButtonOperations.add(operation);
         fallbackTimer = setTimeout(refreshAfterFinish, navSpinnerMaximumMs);
 
