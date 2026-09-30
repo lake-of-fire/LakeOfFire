@@ -3475,7 +3475,7 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
         }
         const segmentMetadata = segmentMetadataForNode(segmentNode, bootstrap);
         const segmentIdentifier = segmentIdentifierForNode(segmentNode, bootstrap, segmentMetadata);
-        if (!segmentIdentifier) {
+        if (!segmentIdentifier && bootstrap?.renderabilityOnly !== true) {
             missingIdentifierCount += 1;
             continue;
         }
@@ -3878,12 +3878,12 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         }, 50);
         return cachedCollection;
     }
-    // A renderability-only probe needs a runtime DOM ID, not durable lookup
-    // identity. Avoid expanding the whole external sidecar until lookup/status
-    // enrichment actually asks for metadata.
+    // A geometric reveal probe does not require or manufacture semantic identity.
+    // Avoid expanding the external sidecar until lookup/status enrichment asks
+    // for metadata; unidentified visible nodes may count only in this probe.
     const bootstrap = includeSegmentMetadata
         ? segmentMetadataBootstrap(doc)
-        : emptySegmentMetadataBootstrap();
+        : { ...emptySegmentMetadataBootstrap(), renderabilityOnly: true };
     const expandedRangeResult = useVisibleRange
         ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds, { includeClientRects, bootstrap })
         : null;
@@ -3917,6 +3917,24 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
                 trustVisible: !seedNodes,
             }
             : null;
+        if (isEbookDoc && primarySampleDensity === 'minimal' && !expandedRangeResult && !viewportSample) {
+            // Short text can lie between every point in the minimal sample.
+            // Probe one DOM anchor and let the normal bounds check decide visibility.
+            const rangeStart = visibleRange?.startContainer ?? null;
+            const rangeStartElement = rangeStart?.nodeType === Node.ELEMENT_NODE
+                ? rangeStart
+                : rangeStart?.parentElement;
+            const anchorSegment = rangeStartElement?.closest?.('m-m')
+                || rangeStartElement?.querySelector?.('m-m')
+                || doc.body?.querySelector?.('m-m');
+            if (anchorSegment) {
+                viewportSample = {
+                    nodes: [anchorSegment],
+                    source: 'minimal-anchor-probe',
+                    trustVisible: false,
+                };
+            }
+        }
         if (
             isEbookDoc
             && !seedNodes
@@ -4035,7 +4053,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         }
         const segmentMetadata = segmentMetadataForNode(segmentNode, bootstrap);
         const segmentIdentifier = segmentIdentifierForNode(segmentNode, bootstrap, segmentMetadata);
-        if (!segmentIdentifier) {
+        if (!segmentIdentifier && bootstrap.renderabilityOnly !== true) {
             missingIdentifierCount += 1;
             continue;
         }
@@ -8217,7 +8235,7 @@ class Reader {
             && snapshot.generation === this.visiblePageCollectionGeneration
             && snapshot.doc === doc
             && snapshot.visibleRange === collectionVisibleRange
-            && (snapshot.includeSegmentMetadata === true || includeSegmentMetadata === false)
+            && snapshot.includeSegmentMetadata === includeSegmentMetadata
             && (snapshot.includeClientRects === effectiveIncludeClientRects || (snapshot.includeClientRects === true && effectiveIncludeClientRects === false))) {
             manabiTimelineMeasure('visibleSegments.snapshot', collectionStartedAt, {
                 reason,
@@ -8270,6 +8288,7 @@ class Reader {
         if (isEmptyBroadEbookResult
             && snapshot
             && snapshot.doc === doc
+            && snapshot.includeSegmentMetadata === includeSegmentMetadata
             && (snapshot.result?.visibleSegments?.length ?? 0) > 0) {
             this.#restoreVisiblePageLookupIndex(doc, snapshot, `${reason}:preserved`, prepareLookupIndex, {
                 includeSurfaceText: includeLookupSurfaceText,
