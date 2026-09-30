@@ -6614,12 +6614,15 @@ class Reader {
     async updateNavButtons() {
         const r = this.view?.renderer ?? null;
         const operationSequence = this.#navButtonOperationSequence;
+        const viewGeneration = this.visiblePageCollectionGeneration;
         const isCurrentUpdate = () => navButtonRefreshIsCurrent({
             closed: this.#closed,
             capturedRenderer: r,
             currentRenderer: this.view?.renderer ?? null,
             capturedOperationSequence: operationSequence,
             currentOperationSequence: this.#navButtonOperationSequence,
+            capturedViewGeneration: viewGeneration,
+            currentViewGeneration: this.visiblePageCollectionGeneration,
             activeOperationCount: this.#navButtonOperations.size,
         });
         if (!r || !isCurrentUpdate()) return false;
