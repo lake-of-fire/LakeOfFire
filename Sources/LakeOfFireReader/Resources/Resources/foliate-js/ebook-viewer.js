@@ -3917,6 +3917,24 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
                 trustVisible: !seedNodes,
             }
             : null;
+        if (isEbookDoc && primarySampleDensity === 'minimal' && !expandedRangeResult && !viewportSample) {
+            // Short text can lie between every point in the minimal sample.
+            // Probe one DOM anchor and let the normal bounds check decide visibility.
+            const rangeStart = visibleRange?.startContainer ?? null;
+            const rangeStartElement = rangeStart?.nodeType === Node.ELEMENT_NODE
+                ? rangeStart
+                : rangeStart?.parentElement;
+            const anchorSegment = rangeStartElement?.closest?.('m-m')
+                || rangeStartElement?.querySelector?.('m-m')
+                || doc.body?.querySelector?.('m-m');
+            if (anchorSegment) {
+                viewportSample = {
+                    nodes: [anchorSegment],
+                    source: 'minimal-anchor-probe',
+                    trustVisible: false,
+                };
+            }
+        }
         if (
             isEbookDoc
             && !seedNodes
@@ -8217,7 +8235,7 @@ class Reader {
             && snapshot.generation === this.visiblePageCollectionGeneration
             && snapshot.doc === doc
             && snapshot.visibleRange === collectionVisibleRange
-            && (snapshot.includeSegmentMetadata === true || includeSegmentMetadata === false)
+            && snapshot.includeSegmentMetadata === includeSegmentMetadata
             && (snapshot.includeClientRects === effectiveIncludeClientRects || (snapshot.includeClientRects === true && effectiveIncludeClientRects === false))) {
             manabiTimelineMeasure('visibleSegments.snapshot', collectionStartedAt, {
                 reason,
@@ -8270,6 +8288,7 @@ class Reader {
         if (isEmptyBroadEbookResult
             && snapshot
             && snapshot.doc === doc
+            && snapshot.includeSegmentMetadata === includeSegmentMetadata
             && (snapshot.result?.visibleSegments?.length ?? 0) > 0) {
             this.#restoreVisiblePageLookupIndex(doc, snapshot, `${reason}:preserved`, prepareLookupIndex, {
                 includeSurfaceText: includeLookupSurfaceText,
