@@ -22,12 +22,13 @@ public enum LibrarySidebarDestination: Hashable {
     case category(UUID)
 }
 
+@available(iOS 16.0, macOS 13.0, *)
 struct OPMLExportShareItem: Transferable {
     let data: Data
 
     static var transferRepresentation: some TransferRepresentation {
         DataRepresentation(
-            exportedContentType: UTType(exportedAs: "public.opml")
+            exportedContentType: UTType(exportedAs: "public.opml", conformingTo: .xml)
         ) { item in
             item.data
         }

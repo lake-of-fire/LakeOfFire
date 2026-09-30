@@ -277,25 +277,22 @@ final class LibraryExportPresentationTests: XCTestCase {
         let registration = UUID()
         manager.registerOPMLExportUI(registration)
 
-        let firstURL = try XCTUnwrap(
-            await waitForExport(manager, containing: "retained immutable export")
-        )
+        let firstResult = await waitForExport(manager, containing: "retained immutable export")
+        let firstURL = try XCTUnwrap(firstResult)
         manager.invalidateOPMLExport()
-        let secondURL = try XCTUnwrap(
-            await waitForExport(
-                manager,
-                after: firstURL,
-                containing: "retained immutable export"
-            )
+        let secondResult = await waitForExport(
+            manager,
+            after: firstURL,
+            containing: "retained immutable export"
         )
+        let secondURL = try XCTUnwrap(secondResult)
         manager.invalidateOPMLExport()
-        let thirdURL = try XCTUnwrap(
-            await waitForExport(
-                manager,
-                after: secondURL,
-                containing: "retained immutable export"
-            )
+        let thirdResult = await waitForExport(
+            manager,
+            after: secondURL,
+            containing: "retained immutable export"
         )
+        let thirdURL = try XCTUnwrap(thirdResult)
 
         XCTAssertNotEqual(firstURL, secondURL)
         XCTAssertNotEqual(secondURL, thirdURL)
@@ -336,14 +333,14 @@ final class LibraryExportPresentationTests: XCTestCase {
         let registration = UUID()
         manager.registerOPMLExportUI(registration)
 
-        let firstURL = try XCTUnwrap(
-            await waitForExport(manager, containing: "original share snapshot")
-        )
+        let firstResult = await waitForExport(manager, containing: "original share snapshot")
+        let firstURL = try XCTUnwrap(firstResult)
         let firstShareItem = try XCTUnwrap(manager.exportedOPMLShareItem)
         XCTAssertEqual(firstShareItem.data, try Data(contentsOf: firstURL))
 
         manager.invalidateOPMLExport()
-        _ = try XCTUnwrap(await waitForExport(manager, after: firstURL))
+        let secondResult = await waitForExport(manager, after: firstURL)
+        _ = try XCTUnwrap(secondResult)
         manager.unregisterOPMLExportUI(registration)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: firstURL.path))
@@ -363,17 +360,15 @@ final class LibraryExportPresentationTests: XCTestCase {
         let firstRegistration = UUID()
         manager.registerOPMLExportUI(firstRegistration)
 
-        let firstURL = try XCTUnwrap(
-            await waitForExport(manager, containing: "retry retired cleanup")
-        )
+        let firstResult = await waitForExport(manager, containing: "retry retired cleanup")
+        let firstURL = try XCTUnwrap(firstResult)
         manager.invalidateOPMLExport()
-        let secondURL = try XCTUnwrap(
-            await waitForExport(
-                manager,
-                after: firstURL,
-                containing: "retry retired cleanup"
-            )
+        let secondResult = await waitForExport(
+            manager,
+            after: firstURL,
+            containing: "retry retired cleanup"
         )
+        let secondURL = try XCTUnwrap(secondResult)
 
         var removeAttempts = 0
         manager.removeOPMLFile = { url in
@@ -418,11 +413,11 @@ final class LibraryExportPresentationTests: XCTestCase {
         let registration = UUID()
         manager.registerOPMLExportUI(registration)
 
-        let firstURL = try XCTUnwrap(
-            await waitForExport(manager, containing: "explicit removal error")
-        )
+        let firstResult = await waitForExport(manager, containing: "explicit removal error")
+        let firstURL = try XCTUnwrap(firstResult)
         manager.invalidateOPMLExport()
-        _ = try XCTUnwrap(await waitForExport(manager, after: firstURL))
+        let secondResult = await waitForExport(manager, after: firstURL)
+        _ = try XCTUnwrap(secondResult)
         try FileManager.default.removeItem(at: firstURL)
 
         var attempts = 0
@@ -459,17 +454,15 @@ final class LibraryExportPresentationTests: XCTestCase {
         manager.registerOPMLExportUI(firstRegistration)
         manager.registerOPMLExportUI(secondRegistration)
 
-        let firstURL = try XCTUnwrap(
-            await waitForExport(manager, containing: "two-owner export")
-        )
+        let firstResult = await waitForExport(manager, containing: "two-owner export")
+        let firstURL = try XCTUnwrap(firstResult)
         manager.invalidateOPMLExport()
-        _ = try XCTUnwrap(
-            await waitForExport(
-                manager,
-                after: firstURL,
-                containing: "two-owner export"
-            )
+        let secondResult = await waitForExport(
+            manager,
+            after: firstURL,
+            containing: "two-owner export"
         )
+        _ = try XCTUnwrap(secondResult)
 
         manager.unregisterOPMLExportUI(firstRegistration)
         XCTAssertTrue(
