@@ -70,3 +70,80 @@ test('media hydration ignores external sources', async () => {
     assert.deepEqual(results, [false]);
     assert.equal(audio.src, 'https://example.com/voice.m4a');
 });
+
+const sessionURL = suffix =>
+    `ebook://ebook/entry-session/source/g1-${'b'.repeat(64)}/371cf379-d180-449d-bca2-13b902c3634d/OPS/Media/${suffix}`;
+
+test('native session-backed media retains its exact capability during hydration', async () => {
+    const audio = makeElement(`${sessionURL('voice.m4a')}#t=3`);
+    let requested;
+    assert.equal(isPackageMediaURL(audio.src), true);
+    const result = await hydratePackageMedia({
+        document: { querySelectorAll: () => [audio] },
+        fetch: async url => { requested = url; return { ok: true, blob: async () => ({}) }; },
+        createObjectURL: () => 'blob:session',
+    });
+    assert.deepEqual(result, [true]);
+    assert.equal(requested, sessionURL('voice.m4a'));
+    assert.equal(audio.src, 'blob:session#t=3');
+});
+
+test('package media does not borrow another native host or credential-bearing URL', () => {
+    assert.equal(isPackageMediaURL(sessionURL('voice.m4a').replace('ebook://ebook/', 'ebook://other/')), false);
+    assert.equal(isPackageMediaURL(sessionURL('voice.m4a').replace('ebook://ebook/', 'ebook://name@ebook/')), false);
+});
+
+test('page hide before a held media response cannot create or publish a leaked blob URL', async () => {
+    const audio = makeElement(sessionURL('voice.m4a'));
+    let release, hide, created = 0, loaded = 0;
+    audio.load = () => { loaded += 1; };
+    const result = hydratePackageMedia({
+        document: { querySelectorAll: () => [audio] },
+        fetch: () => new Promise(resolve => { release = resolve; }),
+        addPageHideListener: listener => { hide = listener; },
+        createObjectURL: () => { created += 1; return 'blob:unexpected'; },
+    });
+    hide();
+    release({ ok: true, blob: async () => ({}) });
+    assert.deepEqual(await result, [false]);
+    assert.equal(created, 0);
+    assert.equal(loaded, 0);
+    assert.equal(audio.src, sessionURL('voice.m4a'));
+});
+
+test('late media response cannot overwrite an explicitly replaced source', async () => {
+    const audio = makeElement(sessionURL('voice.m4a'));
+    let release, hide, loaded = 0;
+    const revoked = [];
+    audio.load = () => { loaded += 1; };
+    const result = hydratePackageMedia({
+        document: { querySelectorAll: () => [audio] },
+        fetch: () => new Promise(resolve => { release = resolve; }),
+        createObjectURL: () => 'blob:old-source',
+        revokeObjectURL: url => revoked.push(url),
+        addPageHideListener: listener => { hide = listener; },
+    });
+    audio.src = 'https://example.com/replacement.m4a';
+    release({ ok: true, blob: async () => ({}) });
+    assert.deepEqual(await result, [false]);
+    assert.equal(audio.src, 'https://example.com/replacement.m4a');
+    assert.equal(loaded, 0);
+    hide();
+    assert.deepEqual(revoked, ['blob:old-source']);
+});
+
+test('reentrant document closure during blob creation releases it without publishing', async () => {
+    const audio = makeElement(sessionURL('voice.m4a'));
+    let hide;
+    const revoked = [];
+    const result = await hydratePackageMedia({
+        document: { querySelectorAll: () => [audio] },
+        fetch: async () => ({ ok: true, blob: async () => ({}) }),
+        createObjectURL: () => { hide(); return 'blob:closing'; },
+        revokeObjectURL: url => revoked.push(url),
+        addPageHideListener: listener => { hide = listener; },
+    });
+    assert.deepEqual(result, [false]);
+    assert.deepEqual(revoked, ['blob:closing']);
+    assert.equal(audio.src, sessionURL('voice.m4a'));
+});
