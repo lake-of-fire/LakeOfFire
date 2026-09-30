@@ -252,9 +252,10 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     @MainActor
     func invalidateOPMLExport() {
-        let shouldReprepare = !opmlExportUIRegistrations.isEmpty &&
-            (exportedOPML != nil || exportedOPMLFileURL != nil || exportOPMLTask != nil || reprepareOPMLTask != nil)
-        guard exportedOPML != nil || exportedOPMLFileURL != nil || exportOPMLTask != nil || reprepareOPMLTask != nil else { return }
+        let hasExportState = exportedOPML != nil || exportedOPMLFileURL != nil ||
+            exportOPMLTask != nil || reprepareOPMLTask != nil || opmlExportFailed
+        let shouldReprepare = !opmlExportUIRegistrations.isEmpty && hasExportState
+        guard hasExportState else { return }
         exportOPMLGeneration += 1
         let generation = exportOPMLGeneration
         preparedOPMLExport = nil
@@ -307,7 +308,10 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @MainActor
     func refreshOPMLExport() {
         invalidateOPMLExport()
-        opmlExportFailed = false
+        // This explicit retry starts the export itself; discard any reprepare
+        // scheduled by invalidation so a quick second failure stays failed.
+        reprepareOPMLTask?.cancel()
+        reprepareOPMLTask = nil
         let exportGeneration = exportOPMLGeneration
         let exportUserOPML = exportUserOPML
         exportOPMLTask = Task.detached {

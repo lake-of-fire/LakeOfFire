@@ -64,6 +64,61 @@ final class LibraryExportPresentationTests: XCTestCase {
         XCTAssertNil(accessibilityElement(in: exportWindow.contentView, identifier: "library-opml-retry"))
     }
 
+    func testVisibleInvalidationRepreparesAfterFailedFileWrite() async throws {
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        manager.exportUserOPML = {
+            OPML(entries: [OPMLEntry(text: "Updated after failure")])
+        }
+        var writeAttempts = 0
+        manager.writeOPMLFile = { data, url in
+            writeAttempts += 1
+            if writeAttempts == 1 {
+                throw CocoaError(.fileWriteOutOfSpace)
+            }
+            try data.write(to: url, options: [.atomic])
+        }
+
+        let registration = UUID()
+        manager.registerOPMLExportUI(registration)
+        defer { manager.unregisterOPMLExportUI(registration) }
+        let failed = await waitUntil { manager.opmlExportFailed }
+        XCTAssertTrue(failed)
+        XCTAssertNil(manager.exportedOPMLFileURL)
+        XCTAssertEqual(writeAttempts, 1)
+
+        // This is the same invalidation entry point used by library changes.
+        manager.invalidateOPMLExport()
+        let preparedResult = await waitForExport(manager, containing: "Updated after failure")
+        let preparedURL = try XCTUnwrap(preparedResult)
+        XCTAssertEqual(writeAttempts, 2)
+        XCTAssertFalse(manager.opmlExportFailed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: preparedURL.path))
+    }
+
+    func testInvalidationClearsFailureWithoutRestartAfterLastViewDisappears() async {
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        manager.exportUserOPML = { OPML(entries: []) }
+        var writeAttempts = 0
+        manager.writeOPMLFile = { _, _ in
+            writeAttempts += 1
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+
+        let registration = UUID()
+        manager.registerOPMLExportUI(registration)
+        let failed = await waitUntil { manager.opmlExportFailed }
+        XCTAssertTrue(failed)
+        XCTAssertEqual(writeAttempts, 1)
+
+        manager.unregisterOPMLExportUI(registration)
+        XCTAssertEqual(manager.opmlExportUIRegistrationCount, 0)
+        manager.invalidateOPMLExport()
+        XCTAssertFalse(manager.opmlExportFailed)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(writeAttempts, 1)
+        XCTAssertNil(manager.exportedOPMLFileURL)
+    }
+
     func testStaleAsynchronousExportCannotReplaceNewerPreparedFile() async throws {
         let gate = DelayedOPMLExporter()
         let manager = LibraryManagerViewModel(observesRealm: false)
