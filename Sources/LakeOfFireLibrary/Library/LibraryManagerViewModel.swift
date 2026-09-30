@@ -395,8 +395,8 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                     try Task.checkCancellation()
                     self.exportOPMLTask = nil
                     
-                    // A ShareLink may still be consuming an older export. Give each
-                    // generation its own immutable file instead of replacing that URL.
+                    // Verify each generation's file before publishing it. ShareLink
+                    // receives the same bytes as a value it can retain independently.
                     let resultURL = FileManager.default.temporaryDirectory
                         .appending(component: "ManabiReaderUserLibrary-\(UUID().uuidString)", directoryHint: .notDirectory)
                         .appendingPathExtension("opml")
