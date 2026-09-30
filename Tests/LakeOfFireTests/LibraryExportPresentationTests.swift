@@ -325,6 +325,61 @@ final class LibraryExportPresentationTests: XCTestCase {
         )
     }
 
+    func testFailedRetiredFileRemovalRemainsOwnedForLaterCleanupRetry()
+    async throws {
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        manager.exportUserOPML = {
+            OPML(entries: [OPMLEntry(text: "retry retired cleanup")])
+        }
+        let firstRegistration = UUID()
+        manager.registerOPMLExportUI(firstRegistration)
+
+        let firstURL = try XCTUnwrap(
+            await waitForExport(manager, containing: "retry retired cleanup")
+        )
+        manager.invalidateOPMLExport()
+        let secondURL = try XCTUnwrap(
+            await waitForExport(
+                manager,
+                after: firstURL,
+                containing: "retry retired cleanup"
+            )
+        )
+
+        var removeAttempts = 0
+        manager.removeOPMLFile = { url in
+            removeAttempts += 1
+            XCTAssertEqual(url, firstURL)
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        manager.unregisterOPMLExportUI(firstRegistration)
+
+        XCTAssertEqual(removeAttempts, 1)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: firstURL.path),
+            "A failed deletion must leave the retired generation owned"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secondURL.path))
+
+        let secondRegistration = UUID()
+        manager.registerOPMLExportUI(secondRegistration)
+        manager.removeOPMLFile = { url in
+            removeAttempts += 1
+            try FileManager.default.removeItem(at: url)
+        }
+        manager.unregisterOPMLExportUI(secondRegistration)
+
+        XCTAssertEqual(removeAttempts, 2)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: firstURL.path),
+            "The next final-owner cleanup must retry the retained deletion"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: secondURL.path),
+            "The current prepared generation remains reusable"
+        )
+    }
+
     func testSecondExportViewKeepsRetiredFilesAliveUntilItAlsoUnregisters()
     async throws {
         let manager = LibraryManagerViewModel(observesRealm: false)

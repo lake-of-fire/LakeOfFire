@@ -140,6 +140,9 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     var writeOPMLFile: @MainActor (Data, URL) throws -> Void = { data, url in
         try data.write(to: url, options: [.atomic])
     }
+    var removeOPMLFile: @MainActor (URL) throws -> Void = { url in
+        try FileManager.default.removeItem(at: url)
+    }
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
@@ -262,7 +265,8 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @MainActor
     func invalidateOPMLExport() {
         let hasExportState = exportedOPML != nil || exportedOPMLFileURL != nil ||
-            exportOPMLTask != nil || reprepareOPMLTask != nil || opmlExportFailed
+            exportOPMLTask != nil || reprepareOPMLTask != nil || opmlExportFailed ||
+            !retiredOPMLExportFileURLs.isEmpty
         let shouldReprepare = !opmlExportUIRegistrations.isEmpty && hasExportState
         guard hasExportState else { return }
         exportOPMLGeneration += 1
@@ -273,6 +277,9 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         exportOPMLTask = nil
         reprepareOPMLTask?.cancel()
         reprepareOPMLTask = nil
+        if opmlExportUIRegistrations.isEmpty {
+            removeRetiredOPMLExportFiles()
+        }
         if shouldReprepare {
             reprepareOPMLTask = Task { @MainActor [weak self] in
                 await Task.yield()
@@ -323,9 +330,18 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @MainActor
     private func removeRetiredOPMLExportFiles() {
         let urls = retiredOPMLExportFileURLs
-        retiredOPMLExportFileURLs.removeAll(keepingCapacity: false)
         for url in urls {
-            try? FileManager.default.removeItem(at: url)
+            do {
+                try removeOPMLFile(url)
+                retiredOPMLExportFileURLs.remove(url)
+            } catch {
+                // A transient filesystem failure must not orphan an immutable
+                // export by forgetting ownership. Missing files are already
+                // gone; every other failure remains tracked for a later retry.
+                if !FileManager.default.fileExists(atPath: url.path) {
+                    retiredOPMLExportFileURLs.remove(url)
+                }
+            }
         }
     }
 
