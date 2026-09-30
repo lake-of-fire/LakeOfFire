@@ -130,6 +130,10 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     private var reprepareOPMLTask: Task<Void, Never>?
     private var exportOPMLGeneration = 0
     private var opmlExportUIRegistrations = Set<UUID>()
+    // Each successful generation uses an immutable temporary file so an
+    // already-presented ShareLink never observes replacement bytes. Retired
+    // generations are needed only while export UI remains mounted.
+    private var retiredOPMLExportFileURLs = Set<URL>()
     var exportUserOPML: @Sendable () async throws -> OPML = {
         try await LibraryDataManager.shared.exportUserOPML()
     }
@@ -263,7 +267,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         guard hasExportState else { return }
         exportOPMLGeneration += 1
         let generation = exportOPMLGeneration
-        preparedOPMLExport = nil
+        retirePreparedOPMLExport()
         opmlExportFailed = false
         exportOPMLTask?.cancel()
         exportOPMLTask = nil
@@ -300,6 +304,29 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
               opmlExportUIRegistrations.isEmpty else { return }
         reprepareOPMLTask?.cancel()
         reprepareOPMLTask = nil
+        removeRetiredOPMLExportFiles()
+    }
+
+    @MainActor
+    private func retirePreparedOPMLExport() {
+        guard let fileURL = preparedOPMLExport?.fileURL else {
+            preparedOPMLExport = nil
+            return
+        }
+        preparedOPMLExport = nil
+        retiredOPMLExportFileURLs.insert(fileURL)
+        if opmlExportUIRegistrations.isEmpty {
+            removeRetiredOPMLExportFiles()
+        }
+    }
+
+    @MainActor
+    private func removeRetiredOPMLExportFiles() {
+        let urls = retiredOPMLExportFileURLs
+        retiredOPMLExportFileURLs.removeAll(keepingCapacity: false)
+        for url in urls {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     @MainActor
