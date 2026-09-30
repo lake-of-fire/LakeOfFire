@@ -27,7 +27,8 @@ final class ReaderFileRefreshQueue {
             }
 
             let id = UUID()
-            let delivered = await withTaskCancellationHandler {
+            let delivered: Result<Void, Error> =
+                await withTaskCancellationHandler {
                 if Task.isCancelled {
                     return .failure(CancellationError())
                 }
