@@ -126,6 +126,68 @@ final class LibraryExportPresentationTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: preparedURL, encoding: .utf8).contains("Explicit retry export"))
     }
 
+    func testFailedPreparationCleanupIsRetriedBeforeExplicitRetryPublishes() async throws {
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        manager.exportUserOPML = {
+            OPML(entries: [OPMLEntry(text: "orphan cleanup retry")])
+        }
+        var writeAttempts = 0
+        var firstFailedURL: URL?
+        manager.writeOPMLFile = { data, url in
+            writeAttempts += 1
+            if writeAttempts == 1 {
+                firstFailedURL = url
+                try Data("partial unpublished export".utf8).write(
+                    to: url,
+                    options: [.atomic]
+                )
+                throw CocoaError(.fileWriteOutOfSpace)
+            }
+            try data.write(to: url, options: [.atomic])
+        }
+
+        var failedURLRemovalAttempts = 0
+        manager.removeOPMLFile = { url in
+            if url == firstFailedURL {
+                failedURLRemovalAttempts += 1
+                if failedURLRemovalAttempts == 1 {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+            }
+            try FileManager.default.removeItem(at: url)
+        }
+
+        let registration = UUID()
+        manager.registerOPMLExportUI(registration)
+        defer { manager.unregisterOPMLExportUI(registration) }
+
+        XCTAssertTrue(await waitUntil { manager.opmlExportFailed })
+        let orphanURL = try XCTUnwrap(firstFailedURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: orphanURL.path))
+        XCTAssertEqual(
+            failedURLRemovalAttempts, 1,
+            "Initial failed preparation must attempt cleanup immediately"
+        )
+        XCTAssertNil(manager.exportedOPMLFileURL)
+        XCTAssertNil(manager.exportedOPMLShareItem)
+
+        manager.refreshOPMLExport()
+        let prepared = try XCTUnwrap(
+            await waitForExport(manager, containing: "orphan cleanup retry")
+        )
+        XCTAssertEqual(writeAttempts, 2)
+        XCTAssertEqual(
+            failedURLRemovalAttempts, 2,
+            "Explicit Retry must retry cleanup of the unpublished orphan"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphanURL.path))
+        XCTAssertNotEqual(prepared, orphanURL)
+        XCTAssertEqual(
+            manager.exportedOPMLShareItem?.data,
+            try Data(contentsOf: prepared)
+        )
+    }
+
     func testVisibleExportRepreparesAfterScriptAndIndependentDomainEdits() async throws {
         let previous = LibraryDataManager.realmConfiguration
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
