@@ -51,6 +51,23 @@ private actor InventoryTestSleeper {
 @MainActor
 private final class InventoryTestClock { var value: TimeInterval = 0 }
 
+@MainActor
+private final class InventoryLateCancellationOwner {
+    var waiter: Task<Result<Void, Error>, Never>?
+    private(set) var nowCalls = 0
+
+    func sampleNow() -> TimeInterval {
+        nowCalls += 1
+        // The first sample starts the producer. The second happens in the
+        // driver's next loop after the first completion has been settled but
+        // before its resumed waiter can run on MainActor.
+        if nowCalls == 2 {
+            waiter?.cancel()
+        }
+        return 0
+    }
+}
+
 private enum InventoryRefreshTestError: Error, Equatable {
     case failed
 }
@@ -428,25 +445,39 @@ final class ReaderFileRefreshQueueTests: XCTestCase, @unchecked Sendable {
     }
 
     func testCancellationAfterProducerSettlementOwnsWaiterDelivery() async {
-        let completion = ReaderFileRefreshQueue.Completion()
-        let entered = expectation(description: "waiter entered")
-        let waiter = Task { @MainActor in
-            entered.fulfill()
-            return await completion.wait()
+        let entered = InventoryTestGate()
+        let release = InventoryTestGate()
+        let owner = InventoryLateCancellationOwner()
+        let queue = ReaderFileRefreshQueue(
+            interval: 0,
+            now: { owner.sampleNow() }
+        )
+        let completion = queue.enqueue(scope: "first", force: false) {
+            await entered.open()
+            await release.wait()
         }
-        await fulfillment(of: [entered], timeout: 2)
-        // Let wait() install its continuation, then settle and cancel without
-        // yielding the MainActor between those two events. The producer result
-        // is real, but cancellation must own this waiter's eventual delivery.
+        // Keep a second request queued. After the first producer settles, the
+        // driver samples now for this request in the same MainActor turn,
+        // before the first waiter's resumed continuation can execute.
+        queue.enqueue(scope: "second", force: false) {}
+
+        await entered.wait()
+        let waiter = Task { @MainActor in
+            await completion.wait()
+        }
+        owner.waiter = waiter
+        // Let wait() install its continuation before allowing the producer to
+        // complete. The second now sample then cancels after settlement.
         await Task.yield()
-        completion.finish(.success(()))
-        waiter.cancel()
+        await release.open()
+        await queue.waitForIdle()
 
         let result = await waiter.value
         guard case .failure(let error) = result else {
             return XCTFail("Late-cancelled waiter reported producer success")
         }
         XCTAssertTrue(error is CancellationError)
+        XCTAssertGreaterThanOrEqual(owner.nowCalls, 2)
     }
 
     func testCancelledCompletionWaiterGetsCancellationWithoutCancellingProducer()
