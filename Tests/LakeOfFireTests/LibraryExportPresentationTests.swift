@@ -266,6 +266,100 @@ final class LibraryExportPresentationTests: XCTestCase {
         XCTAssertNil(manager.exportedOPMLFileURL)
     }
 
+    func testRetiredExportFilesStayReadableUntilLastExportViewUnregisters()
+    async throws {
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        manager.exportUserOPML = {
+            OPML(entries: [OPMLEntry(text: "retained immutable export")])
+        }
+        let registration = UUID()
+        manager.registerOPMLExportUI(registration)
+
+        let firstURL = try XCTUnwrap(
+            await waitForExport(manager, containing: "retained immutable export")
+        )
+        manager.invalidateOPMLExport()
+        let secondURL = try XCTUnwrap(
+            await waitForExport(
+                manager,
+                after: firstURL,
+                containing: "retained immutable export"
+            )
+        )
+        manager.invalidateOPMLExport()
+        let thirdURL = try XCTUnwrap(
+            await waitForExport(
+                manager,
+                after: secondURL,
+                containing: "retained immutable export"
+            )
+        )
+
+        XCTAssertNotEqual(firstURL, secondURL)
+        XCTAssertNotEqual(secondURL, thirdURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firstURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secondURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: thirdURL.path))
+
+        manager.unregisterOPMLExportUI(registration)
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: firstURL.path),
+            "A retired generation should be deleted after the final UI owner leaves"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: secondURL.path),
+            "All retired generations should drain together"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: thirdURL.path),
+            "The current prepared export remains reusable after UI dismissal"
+        )
+        XCTAssertEqual(manager.exportedOPMLFileURL, thirdURL)
+
+        manager.invalidateOPMLExport()
+        XCTAssertNil(manager.exportedOPMLFileURL)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: thirdURL.path),
+            "Without a registered export UI, invalidating the current generation can delete it"
+        )
+    }
+
+    func testSecondExportViewKeepsRetiredFilesAliveUntilItAlsoUnregisters()
+    async throws {
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        manager.exportUserOPML = {
+            OPML(entries: [OPMLEntry(text: "two-owner export")])
+        }
+        let firstRegistration = UUID()
+        let secondRegistration = UUID()
+        manager.registerOPMLExportUI(firstRegistration)
+        manager.registerOPMLExportUI(secondRegistration)
+
+        let firstURL = try XCTUnwrap(
+            await waitForExport(manager, containing: "two-owner export")
+        )
+        manager.invalidateOPMLExport()
+        _ = try XCTUnwrap(
+            await waitForExport(
+                manager,
+                after: firstURL,
+                containing: "two-owner export"
+            )
+        )
+
+        manager.unregisterOPMLExportUI(firstRegistration)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: firstURL.path),
+            "One remaining export view still owns retired generations"
+        )
+
+        manager.unregisterOPMLExportUI(secondRegistration)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: firstURL.path)
+        )
+    }
+
     func testStaleAsynchronousExportCannotReplaceNewerPreparedFile() async throws {
         let gate = DelayedOPMLExporter()
         let manager = LibraryManagerViewModel(observesRealm: false)
