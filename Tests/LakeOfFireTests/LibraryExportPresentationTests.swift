@@ -126,6 +126,73 @@ final class LibraryExportPresentationTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: preparedURL, encoding: .utf8).contains("Explicit retry export"))
     }
 
+    func testFailedWriteCleanupRemainsOwnedUntilLaterRemovalSucceeds()
+    async throws {
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        manager.exportUserOPML = {
+            OPML(entries: [OPMLEntry(text: "failed write cleanup owner")])
+        }
+
+        var writeAttempts = 0
+        var failedURL: URL?
+        manager.writeOPMLFile = { data, url in
+            writeAttempts += 1
+            if writeAttempts == 1 {
+                // Reproduce a writer that created bytes before reporting a
+                // terminal failure. The export must never publish this path.
+                try Data("partial-opml".utf8).write(to: url, options: [.atomic])
+                failedURL = url
+                throw CocoaError(.fileWriteOutOfSpace)
+            }
+            try data.write(to: url, options: [.atomic])
+        }
+
+        var removalAttempts = 0
+        manager.removeOPMLFile = { url in
+            removalAttempts += 1
+            XCTAssertEqual(url, failedURL)
+            throw CocoaError(.fileWriteNoPermission)
+        }
+
+        let registration = UUID()
+        manager.registerOPMLExportUI(registration)
+
+        let failed = await waitUntil { manager.opmlExportFailed }
+        XCTAssertTrue(failed)
+        let orphan = try XCTUnwrap(failedURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: orphan.path))
+        XCTAssertEqual(removalAttempts, 1)
+        XCTAssertNil(manager.exportedOPMLFileURL)
+        XCTAssertNil(manager.exportedOPMLShareItem)
+
+        manager.removeOPMLFile = { url in
+            removalAttempts += 1
+            try FileManager.default.removeItem(at: url)
+        }
+        manager.refreshOPMLExport()
+
+        let prepared = try XCTUnwrap(
+            await waitForExport(
+                manager,
+                containing: "failed write cleanup owner"
+            )
+        )
+        XCTAssertEqual(removalAttempts, 2)
+        XCTAssertEqual(writeAttempts, 2)
+        XCTAssertNotEqual(prepared, orphan)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: prepared.path))
+        XCTAssertFalse(manager.opmlExportFailed)
+        XCTAssertEqual(
+            manager.exportedOPMLShareItem?.data,
+            try Data(contentsOf: prepared)
+        )
+
+        manager.unregisterOPMLExportUI(registration)
+        manager.invalidateOPMLExport()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: prepared.path))
+    }
+
     func testVisibleExportRepreparesAfterScriptAndIndependentDomainEdits() async throws {
         let previous = LibraryDataManager.realmConfiguration
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
