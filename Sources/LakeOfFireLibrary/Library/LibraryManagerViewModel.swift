@@ -151,6 +151,10 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     // Each successful generation has a readiness-checked file and immutable
     // share bytes. Retired files remain available while export UI is mounted.
     private var retiredOPMLExportFileURLs = Set<URL>()
+    // A failed preparation can leave a partial file even though no ShareLink
+    // ever owned it. Keep those URLs separate from share-retained generations:
+    // they may be retried immediately while export UI remains mounted.
+    private var unpublishedOPMLExportFileURLs = Set<URL>()
     var exportUserOPML: @Sendable () async throws -> OPML = {
         try await LibraryDataManager.shared.exportUserOPML()
     }
@@ -283,7 +287,8 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     func invalidateOPMLExport() {
         let hasExportState = exportedOPML != nil || exportedOPMLFileURL != nil ||
             exportOPMLTask != nil || reprepareOPMLTask != nil || opmlExportFailed ||
-            !retiredOPMLExportFileURLs.isEmpty
+            !retiredOPMLExportFileURLs.isEmpty ||
+            !unpublishedOPMLExportFileURLs.isEmpty
         let shouldReprepare = !opmlExportUIRegistrations.isEmpty && hasExportState
         guard hasExportState else { return }
         exportOPMLGeneration += 1
@@ -296,6 +301,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         reprepareOPMLTask = nil
         if opmlExportUIRegistrations.isEmpty {
             removeRetiredOPMLExportFiles()
+            removeUnpublishedOPMLExportFiles()
         }
         if shouldReprepare {
             reprepareOPMLTask = Task { @MainActor [weak self] in
@@ -329,6 +335,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         reprepareOPMLTask?.cancel()
         reprepareOPMLTask = nil
         removeRetiredOPMLExportFiles()
+        removeUnpublishedOPMLExportFiles()
     }
 
     @MainActor
@@ -362,6 +369,24 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         }
     }
 
+    @MainActor
+    private func removeUnpublishedOPMLExportFiles() {
+        let urls = unpublishedOPMLExportFileURLs
+        for url in urls {
+            do {
+                try removeOPMLFile(url)
+                unpublishedOPMLExportFileURLs.remove(url)
+            } catch {
+                // Only an explicit missing-file result proves cleanup is done.
+                // Permission/busy/I/O failures retain ownership for the next
+                // Retry, invalidation, or final export-UI teardown.
+                if Self.isMissingOPMLFileError(error) {
+                    unpublishedOPMLExportFileURLs.remove(url)
+                }
+            }
+        }
+    }
+
     private static func isMissingOPMLFileError(_ error: Error) -> Bool {
         let error = error as NSError
         return (error.domain == NSCocoaErrorDomain &&
@@ -381,6 +406,9 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @MainActor
     func refreshOPMLExport() {
         invalidateOPMLExport()
+        // Failed preparation never produced a share-owned generation, so its
+        // orphan cleanup may be retried even while export UI is still mounted.
+        removeUnpublishedOPMLExportFiles()
         // This explicit retry starts the export itself; discard any reprepare
         // scheduled by invalidation so a quick second failure stays failed.
         reprepareOPMLTask?.cancel()
@@ -409,7 +437,19 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                         }
                         self.preparedOPMLExport = (opml, resultURL, data)
                     } catch {
-                        try? FileManager.default.removeItem(at: resultURL)
+                        // Preparation never published this generation. If a
+                        // partial file cannot be removed now, retain explicit
+                        // ownership and retry it independently of share-file
+                        // lifetime. Never drop a permission/busy/I/O failure.
+                        do {
+                            try self.removeOPMLFile(resultURL)
+                        } catch let cleanupError {
+                            if !Self.isMissingOPMLFileError(cleanupError) {
+                                self.unpublishedOPMLExportFileURLs.insert(
+                                    resultURL
+                                )
+                            }
+                        }
                         self.opmlExportFailed = true
                     }
                 }
