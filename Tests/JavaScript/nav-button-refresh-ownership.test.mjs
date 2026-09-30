@@ -12,6 +12,8 @@ const current = overrides => navButtonRefreshIsCurrent({
     currentRenderer: renderer,
     capturedOperationSequence: 7,
     currentOperationSequence: 7,
+    capturedViewGeneration: 13,
+    currentViewGeneration: 13,
     activeOperationCount: 0,
     ...overrides,
 })
@@ -21,6 +23,7 @@ test('a refresh remains current only while renderer and chapter-operation owners
     assert.equal(current({ closed: true }), false)
     assert.equal(current({ currentRenderer: {} }), false)
     assert.equal(current({ activeOperationCount: 1 }), false)
+    assert.equal(current({ currentViewGeneration: 14 }), false)
 })
 
 test('a completed newer chapter operation permanently supersedes an older suspended refresh', () => {
@@ -46,5 +49,12 @@ test('active-operation cleanup alone cannot restore stale ownership', () => {
         capturedOperationSequence,
         currentOperationSequence: capturedOperationSequence + 1,
         activeOperationCount: 0,
+    }), false)
+})
+
+test('a renderer relocation supersedes a refresh even when the renderer instance is reused', () => {
+    assert.equal(current({
+        capturedViewGeneration: 21,
+        currentViewGeneration: 22,
     }), false)
 })
