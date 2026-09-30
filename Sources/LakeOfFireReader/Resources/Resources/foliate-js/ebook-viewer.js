@@ -3474,7 +3474,8 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
             continue;
         }
         const segmentMetadata = segmentMetadataForNode(segmentNode, bootstrap);
-        const segmentIdentifier = segmentIdentifierForNode(segmentNode, bootstrap, segmentMetadata);
+        const segmentIdentifier = segmentIdentifierForNode(segmentNode, bootstrap, segmentMetadata)
+            || (bootstrap?.renderabilityOnly === true ? segmentNode.id : null);
         if (!segmentIdentifier) {
             missingIdentifierCount += 1;
             continue;
@@ -3883,7 +3884,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
     // enrichment actually asks for metadata.
     const bootstrap = includeSegmentMetadata
         ? segmentMetadataBootstrap(doc)
-        : emptySegmentMetadataBootstrap();
+        : { ...emptySegmentMetadataBootstrap(), renderabilityOnly: true };
     const expandedRangeResult = useVisibleRange
         ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds, { includeClientRects, bootstrap })
         : null;
@@ -4034,7 +4035,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
             continue;
         }
         const segmentMetadata = segmentMetadataForNode(segmentNode, bootstrap);
-        const segmentIdentifier = segmentIdentifierForNode(segmentNode, bootstrap, segmentMetadata);
+        const segmentIdentifier = segmentIdentifierForNode(segmentNode, bootstrap, segmentMetadata)
+            || (bootstrap.renderabilityOnly === true ? segmentNode.id : null);
         if (!segmentIdentifier) {
             missingIdentifierCount += 1;
             continue;
