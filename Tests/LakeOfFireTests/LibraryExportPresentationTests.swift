@@ -150,7 +150,13 @@ final class LibraryExportPresentationTests: XCTestCase {
                 script.refreshChangeMetadata(explicitlyModified: true)
                 domain.refreshChangeMetadata(explicitlyModified: true)
             }
-            return (script.id, domain.id)
+            let scriptJournal = try XCTUnwrap(realm.object(
+                ofType: BigSyncPendingMutation.self, forPrimaryKey: "UserScript.\(script.id)"
+            ))
+            let domainJournal = try XCTUnwrap(realm.object(
+                ofType: BigSyncPendingMutation.self, forPrimaryKey: "UserScriptAllowedDomain.\(domain.id)"
+            ))
+            return (script.id, domain.id, scriptJournal.generation, domainJournal.generation)
         }.value
         let manager = LibraryManagerViewModel()
         let registration = UUID()
@@ -193,13 +199,16 @@ final class LibraryExportPresentationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: scriptURL), scriptBytes)
         let journaledEdits = try await Task { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-            return (
-                realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: "UserScript.\(identifiers.0)") != nil,
-                realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: "UserScriptAllowedDomain.\(identifiers.1)") != nil
-            )
+            let scriptJournal = try XCTUnwrap(realm.object(
+                ofType: BigSyncPendingMutation.self, forPrimaryKey: "UserScript.\(identifiers.0)"
+            ))
+            let domainJournal = try XCTUnwrap(realm.object(
+                ofType: BigSyncPendingMutation.self, forPrimaryKey: "UserScriptAllowedDomain.\(identifiers.1)"
+            ))
+            return (scriptJournal.generation, domainJournal.generation)
         }.value
-        XCTAssertTrue(journaledEdits.0)
-        XCTAssertTrue(journaledEdits.1)
+        XCTAssertNotEqual(journaledEdits.0, identifiers.2)
+        XCTAssertNotEqual(journaledEdits.1, identifiers.3)
     }
 
     func testVisibleInvalidationRepreparesAfterFailedFileWrite() async throws {
