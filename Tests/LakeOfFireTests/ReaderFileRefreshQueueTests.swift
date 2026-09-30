@@ -459,6 +459,51 @@ final class ReaderFileRefreshQueueTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(producerCompleted)
     }
 
+    func testCancellationWinsDeliveryWhenProducerSettlesBeforeCancelCallback()
+    async {
+        let queue = ReaderFileRefreshQueue(interval: 0)
+        let producerEntered = InventoryTestGate()
+        let releaseProducer = InventoryTestGate()
+        let waiterStarted = InventoryTestGate()
+        var waiter: Task<Result<Void, Error>, Never>?
+
+        let completion = queue.enqueue(scope: "library", force: false) {
+            await producerEntered.open()
+            await releaseProducer.wait()
+            // This executes on MainActor. Cancellation schedules this
+            // completion's cancelWaiter hop onto the same actor, but the
+            // producer returns first and the queue settles shared success
+            // before that hop can execute.
+            waiter?.cancel()
+        }
+        await producerEntered.wait()
+
+        waiter = Task { @MainActor in
+            await waiterStarted.open()
+            return await completion.wait()
+        }
+        await waiterStarted.wait()
+        // Let the waiter enter Completion.wait() and suspend before releasing
+        // the producer. The producer itself creates the final ordering race.
+        await Task.yield()
+        await Task.yield()
+
+        await releaseProducer.open()
+        let cancelledResult = await waiter?.value
+        guard case .failure(let error)? = cancelledResult else {
+            return XCTFail(
+                "Cancellation must own waiter delivery even when producer success settles first"
+            )
+        }
+        XCTAssertTrue(error is CancellationError)
+
+        guard case .success = await completion.wait() else {
+            return XCTFail(
+                "Waiter cancellation must not change the shared producer outcome"
+            )
+        }
+    }
+
     func testSuspendedProducerReplaysWithoutPublishingCancellationFailure()
     async {
         let queue = ReaderFileRefreshQueue(interval: 0)
