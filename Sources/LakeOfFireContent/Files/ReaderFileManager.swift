@@ -738,91 +738,130 @@ public class ReaderFileManager: ObservableObject {
         force: Bool,
         realmConfiguration: Realm.Configuration
     ) async throws {
-        guard !Task.isCancelled else { return }
+        try Task.checkCancellation()
         let scope = realmConfiguration.inMemoryIdentifier.map { "memory:\($0)" }
             ?? "file:\(realmConfiguration.fileURL?.standardizedFileURL.absoluteString ?? "")"
         let queue = resolvedInventoryRefreshQueue()
-        let completion = queue.enqueue(scope: scope, force: force) { @MainActor [weak self] in
+        let completion = queue.enqueue(
+            scope: scope,
+            force: force
+        ) { @MainActor [weak self] in
             guard let self else { return }
-            do {
-                guard localDrive != nil || cloudDrive != nil else { return }
-                // Capture candidates before scanning. New imports and edits that
-                // occur while enumeration suspends are not orphan candidates.
-                let candidates: [InventoryCandidate] = try await { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-                    let results = realm.objects(ContentFile.self).where { !$0.isDeleted }
-                    var snapshot = [InventoryCandidate]()
-                    snapshot.reserveCapacity(results.count)
-                    for file in results {
-                        snapshot.append(InventoryCandidate(
+            guard localDrive != nil || cloudDrive != nil else { return }
+
+            // Capture candidates before scanning. New imports and edits that
+            // occur while enumeration suspends are not orphan candidates.
+            let candidates: [InventoryCandidate] = try await {
+                @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: realmConfiguration
+                )
+                let results = realm.objects(ContentFile.self).where {
+                    !$0.isDeleted
+                }
+                var snapshot = [InventoryCandidate]()
+                snapshot.reserveCapacity(results.count)
+                for file in results {
+                    snapshot.append(
+                        InventoryCandidate(
                             id: file.compoundKey,
                             url: file.url,
                             modifiedAt: file.modifiedAt
-                        ))
-                    }
-                    return snapshot
-                }()
-                var discoveredIDs = Set<String>()
-                var completeLocations = Set<String>()
-                for (location, drive) in [("local", localDrive), ("icloud", cloudDrive)] {
-                    try Task.checkCancellation()
-                    guard let drive, drive.isConnected else { continue }
-                    do {
-                        let scan = try await coalescedFilesMetadataRefresh(
-                            drive: drive, relativePath: nil, realmConfiguration: realmConfiguration
                         )
-                        discoveredIDs.formUnion(scan.contentFileIDs)
-                        if scan.isComplete { completeLocations.insert(location) }
-                    } catch is CancellationError {
-                        throw CancellationError()
-                    } catch {
-                        // This root is unknown, not empty. Other successful roots
-                        // can still be refreshed without deleting its records.
-                        Logger.shared.logger.error("File inventory unavailable: \(error)")
-                    }
+                    )
                 }
-                let completed = completeLocations
-                let discovered = discoveredIDs
-                let activeIDs: [String] = try await { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-                    try await realm.asyncWrite {
-                        try Task.checkCancellation()
-                        let date = Date()
-                        for candidate in candidates {
-                            guard !discovered.contains(candidate.id),
-                                  let canonical = self.canonicalReaderBackingURL(for: candidate.url),
-                                  let location = canonical.pathComponents.dropFirst(2).first,
-                                  completed.contains(location),
-                                  let file = realm.object(ofType: ContentFile.self, forPrimaryKey: candidate.id),
-                                  !file.isDeleted, file.url == candidate.url,
-                                  file.modifiedAt == candidate.modifiedAt else { continue }
-                            file.isDeleted = true
-                            file.refreshChangeMetadata(explicitlyModified: true, at: date)
-                        }
-                    }
-                    let results = realm.objects(ContentFile.self).where { !$0.isDeleted }
-                    var snapshot = [String]()
-                    snapshot.reserveCapacity(results.count)
-                    for file in results {
-                        snapshot.append(file.compoundKey)
-                    }
-                    return snapshot
-                }()
-                try Task.checkCancellation()
-                let realm = try await Realm.open(configuration: realmConfiguration)
-                try Task.checkCancellation()
-                // Retain unknown-root records in the published inventory too.
-                self.files = activeIDs.compactMap {
-                    realm.object(ofType: ContentFile.self, forPrimaryKey: $0)
-                }.filter { !$0.isDeleted }
+                return snapshot
+            }()
 
-            } catch {
-                if !(error is CancellationError) {
-                    Logger.shared.logger.error("\(error)")
+            var discoveredIDs = Set<String>()
+            var completeLocations = Set<String>()
+            for (location, drive) in [
+                ("local", localDrive),
+                ("icloud", cloudDrive),
+            ] {
+                try Task.checkCancellation()
+                guard let drive, drive.isConnected else { continue }
+                do {
+                    let scan = try await coalescedFilesMetadataRefresh(
+                        drive: drive,
+                        relativePath: nil,
+                        realmConfiguration: realmConfiguration
+                    )
+                    discoveredIDs.formUnion(scan.contentFileIDs)
+                    if scan.isComplete {
+                        completeLocations.insert(location)
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    // This root is unknown, not empty. Other successful roots
+                    // can still refresh without deleting its records.
+                    Logger.shared.logger.error(
+                        "File inventory unavailable: \(error)"
+                    )
                 }
             }
+
+            let completed = completeLocations
+            let discovered = discoveredIDs
+            let activeIDs: [String] = try await {
+                @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: realmConfiguration
+                )
+                try await realm.asyncWrite {
+                    try Task.checkCancellation()
+                    let date = Date()
+                    for candidate in candidates {
+                        guard !discovered.contains(candidate.id),
+                              let canonical = self.canonicalReaderBackingURL(
+                                for: candidate.url
+                              ),
+                              let location = canonical.pathComponents
+                                .dropFirst(2).first,
+                              completed.contains(location),
+                              let file = realm.object(
+                                ofType: ContentFile.self,
+                                forPrimaryKey: candidate.id
+                              ),
+                              !file.isDeleted,
+                              file.url == candidate.url,
+                              file.modifiedAt == candidate.modifiedAt
+                        else {
+                            continue
+                        }
+                        file.isDeleted = true
+                        file.refreshChangeMetadata(
+                            explicitlyModified: true,
+                            at: date
+                        )
+                    }
+                }
+
+                let results = realm.objects(ContentFile.self).where {
+                    !$0.isDeleted
+                }
+                var snapshot = [String]()
+                snapshot.reserveCapacity(results.count)
+                for file in results {
+                    snapshot.append(file.compoundKey)
+                }
+                return snapshot
+            }()
+
+            try Task.checkCancellation()
+            let realm = try await Realm.open(configuration: realmConfiguration)
+            try Task.checkCancellation()
+            // Retain unknown-root records in the published inventory too.
+            self.files = activeIDs.compactMap {
+                realm.object(
+                    ofType: ContentFile.self,
+                    forPrimaryKey: $0
+                )
+            }.filter { !$0.isDeleted }
         }
-        await completion.wait()
+
+        try await completion.wait().get()
     }
     
     static let additionalFilePackageSuffixesToAvoidDescendingInto = [
