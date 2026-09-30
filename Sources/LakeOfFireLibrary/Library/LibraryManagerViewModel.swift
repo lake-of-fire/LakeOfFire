@@ -118,8 +118,10 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     @Published public var isLibraryPresented = false
     
-    @Published var exportedOPML: OPML?
-    @Published var exportedOPMLFileURL: URL?
+    @Published private var preparedOPMLExport: (opml: OPML, fileURL: URL)?
+    var exportedOPML: OPML? { preparedOPMLExport?.opml }
+    var exportedOPMLFileURL: URL? { preparedOPMLExport?.fileURL }
+    @Published var opmlExportFailed = false
     
 //    @AppStorage("LibraryManagerViewModel.presentedCategories") var presentedCategories = [LibraryRoute]()
     @Published var selectedFeed: Feed?
@@ -130,6 +132,9 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     private var opmlExportUIRegistrations = Set<UUID>()
     var exportUserOPML: @Sendable () async throws -> OPML = {
         try await LibraryDataManager.shared.exportUserOPML()
+    }
+    var writeOPMLFile: @MainActor (Data, URL) throws -> Void = { data, url in
+        try data.write(to: url, options: [.atomic])
     }
     
     @RealmBackgroundActor
@@ -252,8 +257,8 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         guard exportedOPML != nil || exportedOPMLFileURL != nil || exportOPMLTask != nil || reprepareOPMLTask != nil else { return }
         exportOPMLGeneration += 1
         let generation = exportOPMLGeneration
-        exportedOPML = nil
-        exportedOPMLFileURL = nil
+        preparedOPMLExport = nil
+        opmlExportFailed = false
         exportOPMLTask?.cancel()
         exportOPMLTask = nil
         reprepareOPMLTask?.cancel()
@@ -293,6 +298,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
 
     @MainActor
     func ensureOPMLExportPrepared() {
+        guard !opmlExportFailed else { return }
         guard exportedOPML == nil || exportedOPMLFileURL == nil else { return }
         guard exportOPMLTask == nil else { return }
         refreshOPMLExport()
@@ -301,6 +307,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @MainActor
     func refreshOPMLExport() {
         invalidateOPMLExport()
+        opmlExportFailed = false
         let exportGeneration = exportOPMLGeneration
         let exportUserOPML = exportUserOPML
         exportOPMLTask = Task.detached {
@@ -308,10 +315,9 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                 try Task.checkCancellation()
                 let opml = try await exportUserOPML()
                 Task { @MainActor [weak self] in
-                    guard self?.exportOPMLGeneration == exportGeneration else { return }
+                    guard let self, self.exportOPMLGeneration == exportGeneration else { return }
                     try Task.checkCancellation()
-                    self?.exportOPMLTask = nil
-                    self?.exportedOPML = opml
+                    self.exportOPMLTask = nil
                     
                     // A ShareLink may still be consuming an older export. Give each
                     // generation its own immutable file instead of replacing that URL.
@@ -320,16 +326,21 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                         .appendingPathExtension("opml")
                     do {
                         let data = opml.xml.data(using: .utf8) ?? Data()
-                        try data.write(to: resultURL, options: [.atomic])
-                        self?.exportedOPMLFileURL = resultURL
+                        try self.writeOPMLFile(data, resultURL)
+                        guard FileManager.default.fileExists(atPath: resultURL.path) else {
+                            throw CocoaError(.fileNoSuchFile)
+                        }
+                        self.preparedOPMLExport = (opml, resultURL)
                     } catch {
-                        print("Failed to write OPML file")
+                        try? FileManager.default.removeItem(at: resultURL)
+                        self.opmlExportFailed = true
                     }
                 }
             } catch {
                 Task { @MainActor [weak self] in
                     guard self?.exportOPMLGeneration == exportGeneration else { return }
                     self?.exportOPMLTask = nil
+                    self?.opmlExportFailed = true
                 }
             }
         }

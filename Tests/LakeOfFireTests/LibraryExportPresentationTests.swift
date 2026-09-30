@@ -10,6 +10,60 @@ import XCTest
 
 @MainActor
 final class LibraryExportPresentationTests: XCTestCase {
+    func testFailedFileWriteExposesRetryAndOnlySharesPreparedOPML() async throws {
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        manager.exportUserOPML = {
+            OPML(entries: [OPMLEntry(text: "Retry export entry")])
+        }
+        var writeAttempts = 0
+        manager.writeOPMLFile = { data, url in
+            writeAttempts += 1
+            if writeAttempts == 1 {
+                throw CocoaError(.fileWriteOutOfSpace)
+            }
+            try data.write(to: url, options: [.atomic])
+        }
+
+        let exportWindow = window(for: manager)
+        defer { exportWindow.contentView = nil; exportWindow.close() }
+        let failed = await waitUntil { manager.opmlExportFailed }
+        XCTAssertTrue(failed)
+        XCTAssertNil(manager.exportedOPML)
+        XCTAssertNil(manager.exportedOPMLFileURL)
+        XCTAssertEqual(writeAttempts, 1)
+        XCTAssertNil(accessibilityElement(in: exportWindow.contentView, identifier: "library-opml-share"))
+
+        // A second registration and ordinary preparation request must not retry a failed write.
+        let secondWindow = window(for: manager)
+        defer { secondWindow.contentView = nil; secondWindow.close() }
+        let bothViewsRegistered = await waitUntil { manager.opmlExportUIRegistrationCount == 2 }
+        XCTAssertTrue(bothViewsRegistered)
+        manager.ensureOPMLExportPrepared()
+        await Task.yield()
+        XCTAssertEqual(writeAttempts, 1)
+
+        let retryVisible = await waitUntil {
+            accessibilityElement(in: exportWindow.contentView, identifier: "library-opml-retry") != nil
+        }
+        XCTAssertTrue(retryVisible)
+        let retry = try XCTUnwrap(accessibilityElement(in: exportWindow.contentView, identifier: "library-opml-retry"))
+        XCTAssertTrue(retry.accessibilityPerformPress())
+
+        let preparedResult = await waitForExport(manager, containing: "Retry export entry")
+        let preparedURL = try XCTUnwrap(preparedResult)
+        XCTAssertEqual(writeAttempts, 2)
+        XCTAssertFalse(manager.opmlExportFailed)
+        XCTAssertEqual(preparedURL.pathExtension, "opml")
+        XCTAssertTrue(preparedURL.isFileURL)
+        XCTAssertNotEqual(preparedURL.absoluteString, "about:blank")
+        XCTAssertTrue(try String(contentsOf: preparedURL, encoding: .utf8).contains("Retry export entry"))
+        let shareVisible = await waitUntil {
+            accessibilityElement(in: exportWindow.contentView, identifier: "library-opml-share") != nil
+        }
+        XCTAssertTrue(shareVisible)
+        XCTAssertNil(accessibilityElement(in: exportWindow.contentView, identifier: "library-opml-retry"))
+    }
+
     func testStaleAsynchronousExportCannotReplaceNewerPreparedFile() async throws {
         let gate = DelayedOPMLExporter()
         let manager = LibraryManagerViewModel(observesRealm: false)
@@ -129,6 +183,23 @@ final class LibraryExportPresentationTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(20))
         }
         return condition()
+    }
+
+    private func accessibilityElement(in root: NSView?, identifier: String) -> NSAccessibility? {
+        guard let root else { return nil }
+        root.layoutSubtreeIfNeeded()
+        return accessibilityElement(in: root as NSAccessibility, identifier: identifier)
+    }
+
+    private func accessibilityElement(in element: NSAccessibility, identifier: String) -> NSAccessibility? {
+        if element.accessibilityIdentifier() == identifier { return element }
+        for child in element.accessibilityChildren() ?? [] {
+            if let child = child as? NSAccessibility,
+               let match = accessibilityElement(in: child, identifier: identifier) {
+                return match
+            }
+        }
+        return nil
     }
 }
 
