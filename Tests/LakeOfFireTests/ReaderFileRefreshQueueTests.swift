@@ -427,6 +427,30 @@ final class ReaderFileRefreshQueueTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(successorRan)
     }
 
+    func testCancellationWinsWhenProducerFinishesBeforeMainActorCancellationCleanup()
+    async {
+        for _ in 0..<32 {
+            let completion = ReaderFileRefreshQueue.Completion()
+            let waiter = Task { @MainActor in
+                await completion.wait()
+            }
+
+            // Let the waiter install its continuation, then keep this test's
+            // MainActor turn while cancellation schedules its cleanup hop.
+            await Task.yield()
+            waiter.cancel()
+            completion.finish(.success(()))
+
+            let result = await waiter.value
+            guard case .failure(let error) = result else {
+                return XCTFail(
+                    "Producer completion converted a cancelled waiter to success"
+                )
+            }
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
     func testCancelledCompletionWaiterGetsCancellationWithoutCancellingProducer()
     async {
         let queue = ReaderFileRefreshQueue(interval: 0)
