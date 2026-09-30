@@ -11,6 +11,15 @@ import XCTest
 @MainActor
 final class LibraryExportPresentationTests: XCTestCase {
     func testFailedFileWriteExposesRetryAndOnlySharesPreparedOPML() async throws {
+        let previous = LibraryDataManager.realmConfiguration
+        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        configuration.objectTypes = [
+            LibraryConfiguration.self, FeedCategory.self, FeedDirectory.self,
+            Feed.self, UserScript.self,
+        ]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        LibraryDataManager.realmConfiguration = configuration
+        defer { LibraryDataManager.realmConfiguration = previous }
         let manager = LibraryManagerViewModel(observesRealm: false)
         manager.exportUserOPML = {
             OPML(entries: [OPMLEntry(text: "Retry export entry")])
