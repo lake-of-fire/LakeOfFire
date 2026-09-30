@@ -102,10 +102,17 @@ BRIDGE = '''(() => {
     };
 })();'''
 
+class ViewerAssetServer(ThreadingHTTPServer):
+    # A browser discovers the complete ES module graph concurrently. The
+    # default five-connection backlog can reset those requests before our
+    # loopback server accepts them, leaving the viewer script uninitialized.
+    request_queue_size = 128
+
+
 class BookEndcapShellTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = ThreadingHTTPServer(('127.0.0.1', 0), partial(Handler, directory=str(ROOT)))
+        cls.server = ViewerAssetServer(('127.0.0.1', 0), partial(Handler, directory=str(ROOT)))
         Thread(target=cls.server.serve_forever, daemon=True).start()
         cls.pw = sync_playwright().start()
         cls.browser = cls.pw.chromium.launch(executable_path=os.environ.get('CHROMIUM_PATH'), headless=True)
