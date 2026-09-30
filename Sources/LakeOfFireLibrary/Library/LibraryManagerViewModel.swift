@@ -151,6 +151,10 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     // Each successful generation has a readiness-checked file and immutable
     // share bytes. Retired files remain available while export UI is mounted.
     private var retiredOPMLExportFileURLs = Set<URL>()
+    // A write can create bytes before throwing. Those bytes were never
+    // published to ShareLink, so they need no UI lifetime; retain only cleanup
+    // ownership until removal succeeds or reports that the path is already gone.
+    private var failedOPMLExportFileURLs = Set<URL>()
     var exportUserOPML: @Sendable () async throws -> OPML = {
         try await LibraryDataManager.shared.exportUserOPML()
     }
@@ -281,9 +285,10 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     @MainActor
     func invalidateOPMLExport() {
+        removeFailedOPMLExportFiles()
         let hasExportState = exportedOPML != nil || exportedOPMLFileURL != nil ||
             exportOPMLTask != nil || reprepareOPMLTask != nil || opmlExportFailed ||
-            !retiredOPMLExportFileURLs.isEmpty
+            !retiredOPMLExportFileURLs.isEmpty || !failedOPMLExportFileURLs.isEmpty
         let shouldReprepare = !opmlExportUIRegistrations.isEmpty && hasExportState
         guard hasExportState else { return }
         exportOPMLGeneration += 1
@@ -329,6 +334,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         reprepareOPMLTask?.cancel()
         reprepareOPMLTask = nil
         removeRetiredOPMLExportFiles()
+        removeFailedOPMLExportFiles()
     }
 
     @MainActor
@@ -347,18 +353,29 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @MainActor
     private func removeRetiredOPMLExportFiles() {
         let urls = retiredOPMLExportFileURLs
-        for url in urls {
-            do {
-                try removeOPMLFile(url)
-                retiredOPMLExportFileURLs.remove(url)
-            } catch {
-                // A transient filesystem failure must not orphan an immutable
-                // export by forgetting ownership. Missing files are already
-                // gone; every other failure remains tracked for a later retry.
-                if Self.isMissingOPMLFileError(error) {
-                    retiredOPMLExportFileURLs.remove(url)
-                }
-            }
+        for url in urls where removeOwnedOPMLExportFile(url) {
+            retiredOPMLExportFileURLs.remove(url)
+        }
+    }
+
+    @MainActor
+    private func removeFailedOPMLExportFiles() {
+        let urls = failedOPMLExportFileURLs
+        for url in urls where removeOwnedOPMLExportFile(url) {
+            failedOPMLExportFileURLs.remove(url)
+        }
+    }
+
+    @MainActor
+    private func removeOwnedOPMLExportFile(_ url: URL) -> Bool {
+        do {
+            try removeOPMLFile(url)
+            return true
+        } catch {
+            // Explicit removal errors are authoritative. In particular, a
+            // permission error must stay retryable even when an independent
+            // path probe would claim absence.
+            return Self.isMissingOPMLFileError(error)
         }
     }
 
@@ -409,7 +426,12 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                         }
                         self.preparedOPMLExport = (opml, resultURL, data)
                     } catch {
-                        try? FileManager.default.removeItem(at: resultURL)
+                        // A failed atomic write may still have created a
+                        // temporary path. Own that unpublished artifact until
+                        // removal succeeds; unlike retired successful exports,
+                        // it is never retained for ShareLink consumers.
+                        self.failedOPMLExportFileURLs.insert(resultURL)
+                        self.removeFailedOPMLExportFiles()
                         self.opmlExportFailed = true
                     }
                 }
