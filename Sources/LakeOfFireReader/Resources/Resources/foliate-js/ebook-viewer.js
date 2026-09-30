@@ -3474,9 +3474,8 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
             continue;
         }
         const segmentMetadata = segmentMetadataForNode(segmentNode, bootstrap);
-        const segmentIdentifier = segmentIdentifierForNode(segmentNode, bootstrap, segmentMetadata)
-            || (bootstrap?.renderabilityOnly === true ? segmentNode.id : null);
-        if (!segmentIdentifier) {
+        const segmentIdentifier = segmentIdentifierForNode(segmentNode, bootstrap, segmentMetadata);
+        if (!segmentIdentifier && bootstrap?.renderabilityOnly !== true) {
             missingIdentifierCount += 1;
             continue;
         }
@@ -3879,9 +3878,9 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         }, 50);
         return cachedCollection;
     }
-    // A renderability-only probe needs a runtime DOM ID, not durable lookup
-    // identity. Avoid expanding the whole external sidecar until lookup/status
-    // enrichment actually asks for metadata.
+    // A geometric reveal probe does not require or manufacture semantic identity.
+    // Avoid expanding the external sidecar until lookup/status enrichment asks
+    // for metadata; unidentified visible nodes may count only in this probe.
     const bootstrap = includeSegmentMetadata
         ? segmentMetadataBootstrap(doc)
         : { ...emptySegmentMetadataBootstrap(), renderabilityOnly: true };
@@ -4035,9 +4034,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
             continue;
         }
         const segmentMetadata = segmentMetadataForNode(segmentNode, bootstrap);
-        const segmentIdentifier = segmentIdentifierForNode(segmentNode, bootstrap, segmentMetadata)
-            || (bootstrap.renderabilityOnly === true ? segmentNode.id : null);
-        if (!segmentIdentifier) {
+        const segmentIdentifier = segmentIdentifierForNode(segmentNode, bootstrap, segmentMetadata);
+        if (!segmentIdentifier && bootstrap.renderabilityOnly !== true) {
             missingIdentifierCount += 1;
             continue;
         }
