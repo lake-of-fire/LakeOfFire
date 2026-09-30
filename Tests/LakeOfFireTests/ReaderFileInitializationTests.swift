@@ -73,4 +73,22 @@ final class ReaderFileInitializationTests: XCTestCase {
         XCTAssertNil(manager.cloudDrive)
         XCTAssertNil(manager.localDrive)
     }
+
+    @MainActor
+    func testAlreadyCancelledInventoryRefreshThrowsInsteadOfReportingSuccess()
+    async throws {
+        let manager = ReaderFileManager()
+
+        let refresh = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await manager.refreshAllFilesMetadata()
+        }
+
+        do {
+            try await refresh.value
+            XCTFail("Cancelled refresh must not report successful completion")
+        } catch is CancellationError {
+        }
+    }
+
 }
