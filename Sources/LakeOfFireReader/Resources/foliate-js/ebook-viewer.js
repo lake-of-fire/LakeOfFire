@@ -18,6 +18,10 @@ import {
 } from './ebook-render-readiness.js'
 import { createNativeEpubLoader } from './ebook-native-loader.js'
 import { applyEbookViewerWritingDirection } from './ebook-viewer-writing-direction.js'
+import {
+    boundedRenderabilityAnchorSegment,
+    visibleSegmentProbeAcceptsIdentity,
+} from './ebook-renderability-segment-probe.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import { ebookProcessTextResponseIsAuthoritative } from './ebook-process-text-response.js'
 import { createNativeMarkReadRequestCoordinator } from './native-mark-read-request.js'
@@ -2446,7 +2450,10 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
         const segmentIdentifier = includeSegmentMetadata
             ? segmentIdentifierForNode(segmentNode)
             : runtimeSegmentIdentifier;
-        if (!segmentIdentifier) {
+        if (!visibleSegmentProbeAcceptsIdentity({
+            includeSegmentMetadata,
+            segmentIdentifier,
+        })) {
             missingIdentifierCount += 1;
             continue;
         }
@@ -2623,9 +2630,28 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
     const expandedRangeResult = useVisibleRange
         ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds, { includeSegmentMetadata })
         : null;
-    const viewportSampleSegmentNodes = isEbookDoc && !expandedRangeResult
+    let viewportSampleSegmentNodes = isEbookDoc && !expandedRangeResult
         ? collectViewportSampleSegmentNodes(doc, visibleBounds, { sampleDensity: viewportSampleDensity })
         : null;
+    let viewportSampleSource = viewportSampleSegmentNodes
+        ? `viewport-sample-${viewportSampleDensity}`
+        : null;
+    if (
+        isEbookDoc
+        && !expandedRangeResult
+        && viewportSampleDensity === 'minimal'
+        && includeSegmentMetadata === false
+        && (viewportSampleSegmentNodes?.length ?? 0) === 0
+    ) {
+        // Nine fixed sample points can all miss a short line of visible text.
+        // Probe one bounded DOM anchor; normal range/geometry checks below still
+        // decide whether it is actually visible. This does not load sidecars.
+        const anchorSegment = boundedRenderabilityAnchorSegment(doc, visibleRange);
+        if (anchorSegment) {
+            viewportSampleSegmentNodes = [anchorSegment];
+            viewportSampleSource = 'minimal-anchor-probe';
+        }
+    }
     const boundedSegmentNodes = expandedRangeResult?.segmentNodes ?? viewportSampleSegmentNodes ?? null;
     const segmentSearchRoot = useVisibleRange && !expandedRangeResult && !isBroadEbookRange
         && rangeCommonAncestorElement?.querySelectorAll
@@ -2640,7 +2666,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         ? allSegmentNodes.length
         : null;
     const segmentCandidateSource = expandedRangeResult?.segmentCandidateSource
-        || (viewportSampleSegmentNodes ? `viewport-sample-${viewportSampleDensity}` : null)
+        || viewportSampleSource
         || (isBroadEbookRange ? 'ebook-broad-range-empty' : null)
         || (isEbookDoc && segmentSearchRoot === doc ? 'ebook-bounded-empty' : null)
         || (segmentSearchRoot === doc ? 'document' : 'range-ancestor');
@@ -2664,7 +2690,10 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         const segmentIdentifier = includeSegmentMetadata
             ? segmentIdentifierForNode(segmentNode)
             : runtimeSegmentIdentifier;
-        if (!segmentIdentifier) {
+        if (!visibleSegmentProbeAcceptsIdentity({
+            includeSegmentMetadata,
+            segmentIdentifier,
+        })) {
             missingIdentifierCount += 1;
             continue;
         }
