@@ -27,7 +27,7 @@ final class ReaderFileRefreshQueue {
             }
 
             let id = UUID()
-            return await withTaskCancellationHandler {
+            let delivered = await withTaskCancellationHandler {
                 if Task.isCancelled {
                     return .failure(CancellationError())
                 }
@@ -47,6 +47,13 @@ final class ReaderFileRefreshQueue {
                     self?.cancelWaiter(id)
                 }
             }
+            // Producer settlement and the cancellation callback both hop onto
+            // MainActor. If success wins that actor queue after the caller was
+            // already cancelled, cancellation still owns this waiter's
+            // delivery. Shared producer truth remains available to other waits.
+            return Task.isCancelled
+                ? .failure(CancellationError())
+                : delivered
         }
 
         private func cancelWaiter(_ id: UUID) {
