@@ -249,16 +249,16 @@ final class LibraryExportPresentationTests: XCTestCase {
         return condition()
     }
 
-    private func accessibilityElement(in root: NSView?, identifier: String) -> NSAccessibility? {
+    private func accessibilityElement(in root: NSView?, identifier: String) -> NSAccessibilityProtocol? {
         guard let root else { return nil }
         root.layoutSubtreeIfNeeded()
-        return accessibilityElement(in: root as NSAccessibility, identifier: identifier)
+        return accessibilityElement(in: root as NSAccessibilityProtocol, identifier: identifier)
     }
 
-    private func accessibilityElement(in element: NSAccessibility, identifier: String) -> NSAccessibility? {
+    private func accessibilityElement(in element: NSAccessibilityProtocol, identifier: String) -> NSAccessibilityProtocol? {
         if element.accessibilityIdentifier() == identifier { return element }
         for child in element.accessibilityChildren() ?? [] {
-            if let child = child as? NSAccessibility,
+            if let child = child as? NSAccessibilityProtocol,
                let match = accessibilityElement(in: child, identifier: identifier) {
                 return match
             }
