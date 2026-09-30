@@ -56,7 +56,7 @@ private enum InventoryRefreshTestError: Error, Equatable {
 }
 
 @MainActor
-final class ReaderFileRefreshQueueTests: XCTestCase {
+final class ReaderFileRefreshQueueTests: XCTestCase, @unchecked Sendable {
     func testOrdinaryInvalidationDuringScanRunsAnotherSnapshot() async {
         let queue = ReaderFileRefreshQueue(interval: 0)
         let entered = InventoryTestGate()
