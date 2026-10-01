@@ -522,6 +522,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         }
         
         let allImportedCategoryIDs = allImportedCategories.map { $0.id }
+        let importedCategoryIDSet = Set(allImportedCategoryIDs)
         let allImportedDirectoryIDs = allImportedDirectories.map { $0.id }
         let allImportedFeedIDs = allImportedFeeds.map { $0.id }
         let allImportedScriptIDs = allImportedScripts.map { $0.id }
@@ -663,7 +664,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         try Task.checkCancellation()
         var desiredCategories = allImportedCategories
         for (idx, categoryID) in Array(configuration.categoryIDs).enumerated() {
-            if allImportedCategories.map({ $0.id }).contains(categoryID), !desiredCategories.isEmpty {
+            if importedCategoryIDSet.contains(categoryID), !desiredCategories.isEmpty {
                 let desiredCategory = desiredCategories.removeFirst()
                 if let fromIdx = configuration.categoryIDs.firstIndex(of: desiredCategory.id), fromIdx != idx {
 //                    await realm.asyncRefresh()

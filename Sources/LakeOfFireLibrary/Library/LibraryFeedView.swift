@@ -673,7 +673,21 @@ struct LibraryFeedFormSections: View {
     }
     
     private func refresh(entries: [FeedEntry]? = nil, forceRefresh: Bool = false) {
-        guard let feed = try! Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration).object(ofType: Feed.self, forPrimaryKey: viewModel.feed.id) else {
+        let realm: Realm
+        do {
+            realm = try Realm(
+                configuration: ReaderContentLoader.feedEntryRealmConfiguration
+            )
+        } catch {
+            // Keep the already-visible preview alive. A later edit, reload, or
+            // feed update can retry instead of terminating the editor process.
+            print("Failed to open feed Realm while refreshing preview:", error)
+            return
+        }
+        guard let feed = realm.object(
+            ofType: Feed.self,
+            forPrimaryKey: viewModel.feed.id
+        ) else {
             readerFeedEntry = nil
             readerContent.content = nil
             readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
