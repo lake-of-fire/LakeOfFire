@@ -655,6 +655,20 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     private func refreshScripts(realmConfiguration: Realm.Configuration) async throws {
+        // Realm collection publishers emit an initial empty snapshot. Do not
+        // create a library configuration merely because an observer was
+        // attached to a freshly opened, explicitly scoped Realm. A later
+        // script/configuration write will publish again and perform the normal
+        // consolidation, while callers that intentionally create library data
+        // still use the explicit configuration passed to their operation.
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: realmConfiguration
+        )
+        guard !realm.objects(LibraryConfiguration.self).where({ !$0.isDeleted }).isEmpty
+            || !realm.objects(UserScript.self).where({ !$0.isDeleted }).isEmpty
+        else {
+            return
+        }
         try await Realm.asyncWrite(
             ThreadSafeReference(to: LibraryConfiguration.getConsolidatedOrCreate(
                 realmConfiguration: realmConfiguration
