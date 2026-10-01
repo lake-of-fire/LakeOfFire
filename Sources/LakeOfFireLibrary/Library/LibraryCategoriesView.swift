@@ -21,6 +21,8 @@ let libraryCategoriesQueue = DispatchQueue(label: "LibraryCategories")
 
 @MainActor
 class LibraryCategoriesViewModel: ObservableObject {
+    let realmConfiguration: Realm.Configuration
+
     @Published var categories: [FeedCategory]? = nil
     @Published var userLibraryCategories: [FeedCategory]? = nil
     @Published var editorsPicksLibraryCategories: [FeedCategory]? = nil
@@ -31,10 +33,14 @@ class LibraryCategoriesViewModel: ObservableObject {
     
     @Published var libraryConfiguration: LibraryConfiguration?
     
-    init(observesRealm: Bool = true) {
+    init(
+        observesRealm: Bool = true,
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+    ) {
+        self.realmConfiguration = realmConfiguration
         guard observesRealm else { return }
         Task { @RealmBackgroundActor [weak self] in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
 
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
@@ -62,14 +68,17 @@ class LibraryCategoriesViewModel: ObservableObject {
         }
     }
         
-    private func refreshData() {
-        Task { @RealmBackgroundActor in
-            let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+    @discardableResult
+    func refreshData() -> Task<Void, Error> {
+        Task { @RealmBackgroundActor [realmConfiguration] in
+            let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(
+                realmConfiguration: realmConfiguration
+            )
             let libraryConfigurationID = libraryConfiguration.id
             
             try await { @MainActor [weak self] in
                 guard let self else { return }
-                let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                let realm = try await Realm.open(configuration: realmConfiguration)
                 
                 guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID) else { return }
                 self.libraryConfiguration = libraryConfiguration
@@ -101,24 +110,34 @@ class LibraryCategoriesViewModel: ObservableObject {
 
     @MainActor
     func deleteCategory(_ category: FeedCategory) async throws {
-        let ref = ThreadSafeReference(to: category)
-        async let task = { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-            guard let category = realm.resolve(ref) else { return }
-            try await LibraryDataManager.shared.deleteCategory(category)
-        }()
-        try await task
+        let categoryID = category.id
+        try await Task { @RealmBackgroundActor [realmConfiguration] in
+            try await LibraryDataManager.shared.deleteCategory(
+                categoryID: categoryID,
+                realmConfiguration: realmConfiguration
+            )
+        }.value
     }
     
     @MainActor
     func restoreCategory(_ category: FeedCategory) async throws {
-        let ref = ThreadSafeReference(to: category)
-        async let task = { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-            guard let category = realm.resolve(ref) else { return }
-            try await LibraryDataManager.shared.restoreCategory(category)
-        }()
-        try await task
+        let categoryID = category.id
+        try await Task { @RealmBackgroundActor [realmConfiguration] in
+            try await LibraryDataManager.shared.restoreCategory(
+                categoryID: categoryID,
+                realmConfiguration: realmConfiguration
+            )
+        }.value
+    }
+
+    @MainActor
+    func createCategory() async throws -> UUID {
+        try await Task { @RealmBackgroundActor [realmConfiguration] in
+            try await LibraryDataManager.shared.createEmptyCategory(
+                addToLibrary: true,
+                realmConfiguration: realmConfiguration
+            )
+        }.value
     }
     
     @MainActor
@@ -137,11 +156,11 @@ class LibraryCategoriesViewModel: ObservableObject {
         }
         return Task { @MainActor in
             for categoryID in categoryIDsToDelete {
-                try await Task { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                    guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
-                          category.isUserEditable else { return }
-                    try await LibraryDataManager.shared.deleteCategory(category)
+                try await Task { @RealmBackgroundActor [realmConfiguration] in
+                    try await LibraryDataManager.shared.deleteCategory(
+                        categoryID: categoryID,
+                        realmConfiguration: realmConfiguration
+                    )
                 }.value
             }
         }
@@ -161,37 +180,42 @@ class LibraryCategoriesViewModel: ObservableObject {
         guard reorderedIDs != visibleIDs else { return nil }
         let configurationID = libraryConfiguration.id
         let configurationCreatedAt = libraryConfiguration.createdAt
-        let configurationRef = ThreadSafeReference(to: libraryConfiguration)
         return Task { @MainActor in
-            try await Realm.asyncWrite(configurationRef, configuration: LibraryDataManager.realmConfiguration) { realm, libraryConfiguration in
-                guard libraryConfiguration.id == configurationID,
-                      libraryConfiguration.createdAt == configurationCreatedAt,
-                      Array(libraryConfiguration.categoryIDs) == originalIDs else { return }
-                let visibleIDSet = Set(visibleIDs)
-                let currentVisibleIDs = originalIDs.compactMap { categoryID -> UUID? in
-                    guard visibleIDSet.contains(categoryID),
-                          let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
-                          !category.isDeleted,
-                          category.isUserEditable else { return nil }
-                    return categoryID
+            try await Task { @RealmBackgroundActor [realmConfiguration] in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+                try await realm.asyncWrite {
+                    guard let libraryConfiguration = realm.object(
+                        ofType: LibraryConfiguration.self,
+                        forPrimaryKey: configurationID
+                    ),
+                    libraryConfiguration.createdAt == configurationCreatedAt,
+                    Array(libraryConfiguration.categoryIDs) == originalIDs else { return }
+                    let visibleIDSet = Set(visibleIDs)
+                    let currentVisibleIDs = originalIDs.compactMap { categoryID -> UUID? in
+                        guard visibleIDSet.contains(categoryID),
+                              let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                              !category.isDeleted,
+                              category.isUserEditable else { return nil }
+                        return categoryID
+                    }
+                    guard currentVisibleIDs == visibleIDs,
+                          reorderedIDs.count == currentVisibleIDs.count,
+                          Set(reorderedIDs) == Set(currentVisibleIDs) else { return }
+                    var nextRawIDs = originalIDs
+                    var reorderedIndex = 0
+                    for index in nextRawIDs.indices where visibleIDSet.contains(nextRawIDs[index]) {
+                        guard reorderedIndex < reorderedIDs.count else { return }
+                        nextRawIDs[index] = reorderedIDs[reorderedIndex]
+                        reorderedIndex += 1
+                    }
+                    guard reorderedIndex == reorderedIDs.count,
+                          nextRawIDs.count == originalIDs.count,
+                          nextRawIDs != originalIDs else { return }
+                    libraryConfiguration.categoryIDs.removeAll()
+                    libraryConfiguration.categoryIDs.append(objectsIn: nextRawIDs)
+                    libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
                 }
-                guard currentVisibleIDs == visibleIDs,
-                      reorderedIDs.count == currentVisibleIDs.count,
-                      Set(reorderedIDs) == Set(currentVisibleIDs) else { return }
-                var nextRawIDs = originalIDs
-                var reorderedIndex = 0
-                for index in nextRawIDs.indices where visibleIDSet.contains(nextRawIDs[index]) {
-                    guard reorderedIndex < reorderedIDs.count else { return }
-                    nextRawIDs[index] = reorderedIDs[reorderedIndex]
-                    reorderedIndex += 1
-                }
-                guard reorderedIndex == reorderedIDs.count,
-                      nextRawIDs.count == originalIDs.count,
-                      nextRawIDs != originalIDs else { return }
-                libraryConfiguration.categoryIDs.removeAll()
-                libraryConfiguration.categoryIDs.append(objectsIn: nextRawIDs)
-                libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
-            }
+            }.value
         }
     }
 }
@@ -218,21 +242,43 @@ struct LibraryCategoriesView: View {
     }
 
     @ViewBuilder var importExportView: some View {
-        ShareLink(item: libraryManagerViewModel.exportedOPMLFileURL ?? URL(string: "about:blank")!, message: Text(""), preview: SharePreview("Manabi Reader User Feeds OPML File", image: Image(systemName: "doc"))) {
+        Group {
+            if let shareItem = libraryManagerViewModel.exportedOPMLShareItem {
+                ShareLink(
+                    item: shareItem,
+                    message: Text(""),
+                    preview: SharePreview(
+                        "Manabi Reader User Feeds OPML File",
+                        image: Image(systemName: "doc")
+                    )
+                ) {
 #if os(macOS)
-            Text("Share My Library…")
-                .frame(maxWidth: .infinity)
+                    Text("Share My Library…")
+                        .frame(maxWidth: .infinity)
 #else
-            Text("Export My Library…")
+                    Text("Export My Library…")
 #endif
+                }
+                .labelStyle(.titleAndIcon)
+                .accessibilityIdentifier("library-opml-share")
+            } else {
+                Button {
+                } label: {
+#if os(macOS)
+                    Text("Share My Library…")
+                        .frame(maxWidth: .infinity)
+#else
+                    Text("Export My Library…")
+#endif
+                }
+                .disabled(true)
+            }
         }
-        .labelStyle(.titleAndIcon)
-        .disabled(libraryManagerViewModel.exportedOPML == nil)
-        .onAppear {
-            libraryManagerViewModel.registerOPMLExportUI(exportViewRegistrationID)
-        }
-        .onDisappear {
-            libraryManagerViewModel.unregisterOPMLExportUI(exportViewRegistrationID)
+        if libraryManagerViewModel.opmlExportFailed {
+            Button("Export failed. Retry") {
+                libraryManagerViewModel.refreshOPMLExport()
+            }
+            .accessibilityIdentifier("library-opml-retry")
         }
 #if os(macOS)
         Button {
@@ -443,6 +489,12 @@ struct LibraryCategoriesView: View {
                 Section(header: EmptyView(), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. My Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
                     importExportView
                 }
+                .onAppear {
+                    libraryManagerViewModel.registerOPMLExportUI(exportViewRegistrationID)
+                }
+                .onDisappear {
+                    libraryManagerViewModel.unregisterOPMLExportUI(exportViewRegistrationID)
+                }
                 .labelStyle(.titleOnly)
                 .accentColor(appTint)
                 
@@ -523,15 +575,13 @@ struct LibraryCategoriesView: View {
     }
 
     private func createCategory(scrollProxy: ScrollViewProxy) {
-        Task { @RealmBackgroundActor in
-            let categoryID = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
-            try await { @MainActor in
-                let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
-                categoryIDNeedsScrollTo = category.id.uuidString
-                try await Task.sleep(nanoseconds: 100_000_000)
-                libraryManagerViewModel.showCategory(category.id)
-            }()
+        Task { @MainActor in
+            let categoryID = try await viewModel.createCategory()
+            let realm = try await Realm.open(configuration: viewModel.realmConfiguration)
+            guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
+            categoryIDNeedsScrollTo = category.id.uuidString
+            try await Task.sleep(nanoseconds: 100_000_000)
+            libraryManagerViewModel.showCategory(category.id)
         }
     }
 }

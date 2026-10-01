@@ -103,7 +103,7 @@ final class ReviewReaderFileImportTests: XCTestCase {
 
         let result = try await install(source, drive: drive)
 
-        XCTAssertEqual(result.standardizedFileURL, target.standardizedFileURL)
+        XCTAssertEqual(result.standardizedFileURL.path, target.standardizedFileURL.path)
         XCTAssertEqual(
             try FileManager.default.contentsOfDirectory(
                 at: library,

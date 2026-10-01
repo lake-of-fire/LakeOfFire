@@ -60,6 +60,10 @@ private func urlsMatchWithoutHashForHotfix(_ lhs: URL?, _ rhs: URL?) -> Bool {
     }
 }
 
+private enum ReaderModeRuntimeAuthorityError: Error {
+    case unavailable
+}
+
 private func readerFontCSSValues(horizontalFamily: String) -> (
     horizontalFamily: String,
     verticalFamily: String,
@@ -771,17 +775,163 @@ internal func hasCanonicalReadabilityMarkup(in html: String) -> Bool {
     hasReadabilityModeBodyClassMarkup(in: html) && hasReaderContentNodeMarkup(in: html)
 }
 
-internal func hasPublishedReaderSegmentMetadataMarkup(in html: String) -> Bool {
+internal func hasPersistedReaderSegmentMarkup(in html: String) -> Bool {
     guard hasCanonicalReadabilityMarkup(in: html) else { return false }
-    let hasSegments = html.range(
-        of: #"<m-m(?:\s|>)"#,
+    // Persisted scripts may have been stripped or externalized. Native-owned
+    // wrappers still require re-admission or clean regeneration in both cases.
+    return html.range(
+        of: #"<m-(?:m|s|c|t)(?:\s|>)"#,
         options: [.regularExpression, .caseInsensitive]
     ) != nil
-    let hasSidecar = html.range(
-        of: #"(?:id|data-mnb-seg-meta)=['\"][^'\"]*mnb-segment-metadata[^'\"]*['\"]"#,
-        options: [.regularExpression, .caseInsensitive]
-    ) != nil
-    return hasSegments && hasSidecar
+}
+
+/// Removes only markup that the native reader processor owns from a persisted
+/// snippet so it can be submitted to the current readability processor again.
+/// Source ruby is left intact unless the native ruby marker identifies it as
+/// generated. The reader tags are structural wrappers, so unwrapping them
+/// preserves text and the order of adjacent source nodes.
+internal func recoverPersistedSnippetSourceHTMLForProcessing(_ html: String) -> String? {
+    guard let document = try? SwiftSoup.parse(html),
+          (try? document.getElementById("reader-content")) != nil else {
+        return nil
+    }
+    document.outputSettings().prettyPrint(pretty: false).syntax(syntax: .html)
+    document.outputSettings().charset(.utf8)
+
+    let generatedSidecarSelectors = [
+        "script#mnb-segment-metadata",
+        "script#mnb-segment-metadata-aggregate",
+        "meta[name=mnb-segment-sidecar]",
+        "[data-mnb-seg-meta]",
+        "[data-mnb-seg-meta-aggregate]",
+        "[data-mnb-title-seg-meta]",
+    ]
+    for selector in generatedSidecarSelectors {
+        try? document.select(selector).remove()
+    }
+
+    for ruby in (try? document.getElementsByTag("ruby").array()) ?? [] {
+        let isGenerated = (try? ruby.hasClass("mnb-gen")) == true
+            || (try? ruby.attr("data-mnb-generated")) == "true"
+        guard isGenerated else { continue }
+        try? ruby.select("rt, rp").remove()
+        try? ruby.unwrap()
+    }
+
+    for selector in ["m-m", "m-t", "m-s", "m-c"] {
+        try? document.select(selector).unwrap()
+    }
+
+    let generatedAttributes = [
+        "data-mnb-cache-reset-epoch",
+        "data-mnb-cache-reset-generation",
+        "data-mnb-analysis-session-cache-identifier",
+        "data-mnb-native-sidecar-content-fingerprint",
+        "data-mnb-initial-source-reading-memory",
+        "data-mnb-source-reading-memory-changed",
+        "data-mnb-native-dictionaries-key",
+        "data-mnb-native-processor-schema",
+        "data-mnb-has-reader-segments",
+        "data-mnb-seg-meta-token",
+        "data-mnb-reader-render-ready",
+        "data-mnb-reader-render-generation",
+        "data-mnb-reader-mode-available",
+        "data-mnb-reader-mode-available-for",
+    ]
+    for element in (try? document.select("html, body, [data-mnb-seg-meta-token]").array()) ?? [] {
+        for attribute in generatedAttributes {
+            try? element.removeAttr(attribute)
+        }
+    }
+
+    guard let body = document.body(),
+          let content = try? body.getElementById("reader-content"),
+          let contentHTML = try? content.html(),
+          !contentHTML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return nil
+    }
+    return try? document.outerHtml()
+}
+
+internal func processPersistedSnippetWithCurrentReadabilityProcessor(
+    document: SwiftSoup.Document,
+    readabilityContent: String,
+    url: URL,
+    tracksReadingProgress: Bool,
+    processReadabilityContent: EbookReadabilityContentProcessor?,
+    republishReaderModeRuntimeAuthority: ((SwiftSoup.Document, URL, URL?) async -> Bool)?,
+    preprocessDoc: @escaping EbookDocumentTransform
+) async throws -> SwiftSoup.Document {
+    if let republishReaderModeRuntimeAuthority,
+       await republishReaderModeRuntimeAuthority(document, url, nil) {
+        return document
+    }
+
+    guard let processReadabilityContent,
+          let sourceHTML = recoverPersistedSnippetSourceHTMLForProcessing(readabilityContent) else {
+        throw ReaderModeRuntimeAuthorityError.unavailable
+    }
+    return try await processReadabilityContent(
+        sourceHTML,
+        url,
+        nil,
+        false,
+        tracksReadingProgress,
+        nil,
+        preprocessDoc
+    )
+}
+
+internal struct ReaderSnippetFinalDocumentSnapshot: Equatable, Sendable {
+    let parsedSuccessfully: Bool
+    let readerContentContainerPresent: Bool
+    let segmentCount: Int
+    let inlineSidecarPresent: Bool
+    let externalSidecarDescriptorPresent: Bool
+
+    static func make(htmlBytes: [UInt8]) -> ReaderSnippetFinalDocumentSnapshot {
+        guard let html = String(bytes: htmlBytes, encoding: .utf8),
+              let document = try? SwiftSoup.parse(html) else {
+            return ReaderSnippetFinalDocumentSnapshot(
+                parsedSuccessfully: false,
+                readerContentContainerPresent: false,
+                segmentCount: 0,
+                inlineSidecarPresent: false,
+                externalSidecarDescriptorPresent: false
+            )
+        }
+        return ReaderSnippetFinalDocumentSnapshot(
+            parsedSuccessfully: true,
+            readerContentContainerPresent: (try? document.getElementById("reader-content")) != nil,
+            segmentCount: (try? document.select("m-m").count) ?? 0,
+            inlineSidecarPresent: (try? document.getElementById("mnb-segment-metadata")) != nil,
+            externalSidecarDescriptorPresent: !((try? document.select(
+                "meta[name=mnb-segment-sidecar]"
+            ).array()) ?? []).isEmpty
+        )
+    }
+}
+
+private enum ReaderSnippetFinalDocumentDiagnostics {
+    static let logPrefix = "ReaderSnippetProcessingDiagnostics"
+
+    static func emitIfEnabled(htmlBytes: [UInt8], contentURL: URL) {
+#if DEBUG
+        guard contentURL.isSnippetURL,
+              ProcessInfo.processInfo.arguments.contains("--ui-test-enable-lookup-probe") else {
+            return
+        }
+        let snapshot = ReaderSnippetFinalDocumentSnapshot.make(htmlBytes: htmlBytes)
+        print(
+            "\(logPrefix) stage=finalDocument isSnippet=true contentURL=\(contentURL.absoluteString) "
+                + "parsedSuccessfully=\(snapshot.parsedSuccessfully) "
+                + "readerContentContainerPresent=\(snapshot.readerContentContainerPresent) "
+                + "segmentCount=\(snapshot.segmentCount) "
+                + "inlineSidecarPresent=\(snapshot.inlineSidecarPresent) "
+                + "externalSidecarDescriptorPresent=\(snapshot.externalSidecarDescriptorPresent)"
+        )
+#endif
+    }
 }
 
 private func stripRuntimeReadabilityAssets(from html: String) -> String {
@@ -1228,6 +1378,12 @@ public class ReaderModeViewModel: ObservableObject {
         willSet { processingDependencyWillChange() }
     }
     public var processReadabilityContent: ((String, URL, URL?, Bool, Bool, String?, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    /// Re-admits native segment authority when a persisted snippet already has
+    /// canonical markup. A failed admission causes the caller to regenerate
+    /// semantic content through its current readability processor.
+    public var republishReaderModeRuntimeAuthority: ((SwiftSoup.Document, URL, URL?) async -> Bool)? = nil {
         willSet { processingDependencyWillChange() }
     }
     public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil {
@@ -2568,8 +2724,9 @@ public class ReaderModeViewModel: ObservableObject {
         let processReadabilityContent = processReadabilityContent
         let processHTMLBytes = processHTMLBytes
         let processHTML = processHTML
+        let republishReaderModeRuntimeAuthority = republishReaderModeRuntimeAuthority
         let prefersDirectSnippetReadabilityParse = url.isSnippetURL
-            && hasPublishedReaderSegmentMetadataMarkup(in: readabilityContent)
+            && hasPersistedReaderSegmentMarkup(in: readabilityContent)
         let snippetRawTitle = content.title
         let snippetNeedsClipboardIndicator = content.needsClipboardIndicator
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
@@ -2625,7 +2782,7 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
 
-            guard let doc else {
+            guard var doc else {
                 print("Error: Unexpectedly failed to receive doc")
                 await self.cancelReaderModeLoad(
                     for: requestedURL,
@@ -2633,6 +2790,34 @@ public class ReaderModeViewModel: ObservableObject {
                     readerContent: readerContent
                 )
                 return
+            }
+            if prefersDirectSnippetReadabilityParse {
+                doc = try await processPersistedSnippetWithCurrentReadabilityProcessor(
+                    document: doc,
+                    readabilityContent: readabilityContent,
+                    url: url,
+                    tracksReadingProgress: tracksReadingProgress,
+                    processReadabilityContent: processReadabilityContent,
+                    republishReaderModeRuntimeAuthority: republishReaderModeRuntimeAuthority,
+                    preprocessDoc: { doc in
+                        do {
+                            return try await preprocessWebContentForReaderMode(
+                                doc: doc,
+                                url: url,
+                                fallbackTitle: titleForDisplay
+                            )
+                        } catch {
+                            print(error)
+                            return doc
+                        }
+                    }
+                )
+                guard await self.isCurrentRender(
+                    for: requestedURL,
+                    generation: renderGeneration
+                ) else {
+                    return
+                }
             }
             let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
             await propagateReaderModeDefaults(
@@ -2756,6 +2941,11 @@ public class ReaderModeViewModel: ObservableObject {
                     scheme: .internalReader
                 ).documentHTML)
             }
+
+            ReaderSnippetFinalDocumentDiagnostics.emitIfEnabled(
+                htmlBytes: transformedHTMLBytes,
+                contentURL: url
+            )
 
             let transformedContentForFrameInjection: String?
             let transformedBodyClassesForFrameInjection: String?

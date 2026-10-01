@@ -6,41 +6,76 @@ import Foundation
 final class ReaderFileRefreshQueue {
     @MainActor
     final class Completion {
-        private var finished: Bool
-        private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+        private var result: Result<Void, Error>?
+        private var waiters: [
+            UUID: CheckedContinuation<Result<Void, Error>, Never>
+        ] = [:]
 
-        init(finished: Bool = false) { self.finished = finished }
+        init(result: Result<Void, Error>? = nil) {
+            self.result = result
+        }
 
-        func wait() async {
-            guard !finished, !Task.isCancelled else { return }
-            let id = UUID()
-            await withTaskCancellationHandler {
-                guard !finished, !Task.isCancelled else { return }
-                await withCheckedContinuation { waiters[id] = $0 }
-            } onCancel: {
-                // Only this waiter is cancelled, not the shared scan or another
-                // caller coalesced into its completion.
-                Task { @MainActor [weak self] in self?.cancelWaiter(id) }
+        /// Waiting owns only this caller. Cancelling it never cancels the
+        /// shared inventory producer or another caller coalesced onto it.
+        @discardableResult
+        func wait() async -> Result<Void, Error> {
+            if Task.isCancelled {
+                return .failure(CancellationError())
             }
+            if let result {
+                return result
+            }
+
+            let id = UUID()
+            let settled = await withTaskCancellationHandler {
+                if Task.isCancelled {
+                    return Result<Void, Error>.failure(CancellationError())
+                }
+                return await withCheckedContinuation { continuation in
+                    if let result {
+                        continuation.resume(returning: result)
+                    } else if Task.isCancelled {
+                        continuation.resume(
+                            returning: .failure(CancellationError())
+                        )
+                    } else {
+                        waiters[id] = continuation
+                    }
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in
+                    self?.cancelWaiter(id)
+                }
+            }
+            // Producer settlement and this waiter's delivery are distinct.
+            // If cancellation wins after the shared result was accepted but
+            // before this caller resumes, it still owns this caller's return.
+            return Task.isCancelled
+                ? .failure(CancellationError())
+                : settled
         }
 
         private func cancelWaiter(_ id: UUID) {
-            waiters.removeValue(forKey: id)?.resume()
+            waiters.removeValue(forKey: id)?.resume(
+                returning: .failure(CancellationError())
+            )
         }
 
-        fileprivate func finish() {
-            guard !finished else { return }
-            finished = true
+        fileprivate func finish(_ result: Result<Void, Error>) {
+            guard self.result == nil else { return }
+            self.result = result
             let pending = Array(waiters.values)
             waiters.removeAll()
-            for waiter in pending { waiter.resume() }
+            for waiter in pending {
+                waiter.resume(returning: result)
+            }
         }
     }
 
     private struct Request {
         let scope: String
         var force: Bool
-        var operation: @MainActor () async -> Void
+        var operation: @MainActor () async throws -> Void
         var completions: [Completion]
     }
 
@@ -71,9 +106,11 @@ final class ReaderFileRefreshQueue {
     func enqueue(
         scope: String,
         force: Bool,
-        operation: @escaping @MainActor () async -> Void
+        operation: @escaping @MainActor () async throws -> Void
     ) -> Completion {
-        guard !Task.isCancelled else { return Completion(finished: true) }
+        guard !Task.isCancelled else {
+            return Completion(result: .failure(CancellationError()))
+        }
         let completion: Completion
         if let index = pending.firstIndex(where: { $0.scope == scope }) {
             pending[index].force = pending[index].force || force
@@ -159,12 +196,26 @@ final class ReaderFileRefreshQueue {
             }
             inFlight = pending.remove(at: index)
             lastStartedAt = now()
-            await inFlight?.operation()
-            if Task.isCancelled || isSuspended { return }
-            // Finish this batch's callers even if later notifications keep the
-            // queue busy. Waiting for global idle would starve book-open/import.
-            for completion in inFlight?.completions ?? [] { completion.finish() }
-            inFlight = nil
+            do {
+                try await inFlight?.operation()
+                if Task.isCancelled || isSuspended { return }
+                // Finish this batch's callers even if later notifications keep
+                // the queue busy. Waiting for global idle would starve
+                // book-open/import.
+                for completion in inFlight?.completions ?? [] {
+                    completion.finish(.success(()))
+                }
+                inFlight = nil
+            } catch {
+                // Suspension cancels the driver, not the logical request.
+                // Keep its completions attached so resume can replay it.
+                if Task.isCancelled || isSuspended { return }
+
+                for completion in inFlight?.completions ?? [] {
+                    completion.finish(.failure(error))
+                }
+                inFlight = nil
+            }
         }
     }
 }

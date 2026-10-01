@@ -52,7 +52,28 @@ private actor InventoryTestSleeper {
 private final class InventoryTestClock { var value: TimeInterval = 0 }
 
 @MainActor
-final class ReaderFileRefreshQueueTests: XCTestCase {
+private final class InventoryLateCancellationOwner {
+    var waiter: Task<Result<Void, Error>, Never>?
+    private(set) var nowCalls = 0
+
+    func sampleNow() -> TimeInterval {
+        nowCalls += 1
+        // The first sample starts the producer. The second happens in the
+        // driver's next loop after the first completion has been settled but
+        // before its resumed waiter can run on MainActor.
+        if nowCalls == 2 {
+            waiter?.cancel()
+        }
+        return 0
+    }
+}
+
+private enum InventoryRefreshTestError: Error, Equatable {
+    case failed
+}
+
+@MainActor
+final class ReaderFileRefreshQueueTests: XCTestCase, @unchecked Sendable {
     func testOrdinaryInvalidationDuringScanRunsAnotherSnapshot() async {
         let queue = ReaderFileRefreshQueue(interval: 0)
         let entered = InventoryTestGate()
@@ -389,6 +410,136 @@ final class ReaderFileRefreshQueueTests: XCTestCase {
         await waiter.value
         await completion.wait()
         XCTAssertTrue(completed)
+    }
+
+
+    func testProducerFailureReachesAllCoalescedCallersAndQueueContinues()
+    async {
+        let queue = ReaderFileRefreshQueue(interval: 0)
+
+        let first = queue.enqueue(scope: "library", force: false) {
+            XCTFail("The later coalesced snapshot should replace this operation")
+        }
+        let second = queue.enqueue(scope: "library", force: false) {
+            throw InventoryRefreshTestError.failed
+        }
+
+        let firstResult = await first.wait()
+        let secondResult = await second.wait()
+
+        for result in [firstResult, secondResult] {
+            guard case .failure(let error) = result else {
+                return XCTFail("Expected the shared producer failure")
+            }
+            XCTAssertEqual(error as? InventoryRefreshTestError, .failed)
+        }
+
+        var successorRan = false
+        let successor = queue.enqueue(scope: "library", force: true) {
+            successorRan = true
+        }
+        guard case .success = await successor.wait() else {
+            return XCTFail("A failed snapshot must not poison the queue")
+        }
+        XCTAssertTrue(successorRan)
+    }
+
+    func testCancellationAfterProducerSettlementOwnsWaiterDelivery() async {
+        let entered = InventoryTestGate()
+        let release = InventoryTestGate()
+        let owner = InventoryLateCancellationOwner()
+        let queue = ReaderFileRefreshQueue(
+            interval: 0,
+            now: { owner.sampleNow() }
+        )
+        let completion = queue.enqueue(scope: "first", force: false) {
+            await entered.open()
+            await release.wait()
+        }
+        // Keep a second request queued. After the first producer settles, the
+        // driver samples now for this request in the same MainActor turn,
+        // before the first waiter's resumed continuation can execute.
+        queue.enqueue(scope: "second", force: false) {}
+
+        await entered.wait()
+        let waiter = Task { @MainActor in
+            await completion.wait()
+        }
+        owner.waiter = waiter
+        // Let wait() install its continuation before allowing the producer to
+        // complete. The second now sample then cancels after settlement.
+        await Task.yield()
+        await release.open()
+        await queue.waitForIdle()
+
+        let result = await waiter.value
+        guard case .failure(let error) = result else {
+            return XCTFail("Late-cancelled waiter reported producer success")
+        }
+        XCTAssertTrue(error is CancellationError)
+        XCTAssertGreaterThanOrEqual(owner.nowCalls, 2)
+    }
+
+    func testCancelledCompletionWaiterGetsCancellationWithoutCancellingProducer()
+    async {
+        let queue = ReaderFileRefreshQueue(interval: 0)
+        let entered = InventoryTestGate()
+        let release = InventoryTestGate()
+        var producerCompleted = false
+
+        let completion = queue.enqueue(scope: "library", force: false) {
+            await entered.open()
+            await release.wait()
+            XCTAssertFalse(Task.isCancelled)
+            producerCompleted = true
+        }
+        await entered.wait()
+
+        let waiter = Task { await completion.wait() }
+        waiter.cancel()
+        let cancelledResult = await waiter.value
+        guard case .failure(let error) = cancelledResult else {
+            return XCTFail("Cancelled waiter reported success")
+        }
+        XCTAssertTrue(error is CancellationError)
+        XCTAssertFalse(producerCompleted)
+
+        await release.open()
+        let producerResult = await completion.wait()
+        guard case .success = producerResult else {
+            return XCTFail("Shared producer was cancelled with its waiter")
+        }
+        XCTAssertTrue(producerCompleted)
+    }
+
+    func testSuspendedProducerReplaysWithoutPublishingCancellationFailure()
+    async {
+        let queue = ReaderFileRefreshQueue(interval: 0)
+        let entered = InventoryTestGate()
+        let release = InventoryTestGate()
+        var runs = 0
+
+        let completion = queue.enqueue(scope: "library", force: false) {
+            runs += 1
+            if runs == 1 {
+                await entered.open()
+                await release.wait()
+                try Task.checkCancellation()
+            }
+        }
+
+        await entered.wait()
+        queue.suspend()
+        await release.open()
+        await queue.waitForIdle()
+
+        queue.resume()
+        let result = await completion.wait()
+
+        guard case .success = result else {
+            return XCTFail("Lifecycle suspension should replay, not fail, the request")
+        }
+        XCTAssertEqual(runs, 2)
     }
 
 }

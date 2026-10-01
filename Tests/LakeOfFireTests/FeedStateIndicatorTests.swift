@@ -114,7 +114,10 @@ final class FeedStateIndicatorTests: XCTestCase {
             lastViewedAt: baseDate
         )
 
-        XCTAssertTrue(feed.hasEntriesNewerThanLastViewedAt)
+        let configuration = try XCTUnwrap(feed.realm).configuration
+        withReaderContentLoaderConfigurations(configuration: configuration) {
+            XCTAssertTrue(feed.hasEntriesNewerThanLastViewedAt)
+        }
     }
 
     func testFeedUnreadBadgeUsesNewestLiveCanonicalHistoryDate() throws {
