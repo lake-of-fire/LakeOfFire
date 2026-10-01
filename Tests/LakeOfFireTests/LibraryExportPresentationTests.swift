@@ -279,6 +279,131 @@ final class LibraryExportPresentationTests: XCTestCase {
         XCTAssertNotEqual(journaledEdits.1, identifiers.3)
     }
 
+    func testObservedRealmPublisherKeepsReconciliationAndExportInCapturedConfiguration()
+    async throws {
+        let previousConfiguration = LibraryDataManager.realmConfiguration
+        let observedConfiguration = makeLibraryRealmConfiguration()
+        let replacementConfiguration = makeLibraryRealmConfiguration()
+        LibraryDataManager.realmConfiguration = observedConfiguration
+        defer { LibraryDataManager.realmConfiguration = previousConfiguration }
+
+        let observedIDs = try await Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: observedConfiguration
+            )
+            let primary = LibraryConfiguration()
+            primary.createdAt = Date(timeIntervalSinceReferenceDate: 1_000)
+            try await realm.asyncWrite {
+                realm.add(primary)
+            }
+            return primary.id
+        }.value
+
+        // The default export closure uses the shared data manager. Initializing
+        // it while A is active keeps its own retained subscription out of B.
+        _ = LibraryDataManager.shared
+        let manager = LibraryManagerViewModel()
+        let initiallyReconciled = await waitUntil {
+            manager.libraryConfiguration?.id == observedIDs
+        }
+        XCTAssertTrue(initiallyReconciled)
+
+        let replacementIDs = try await Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: replacementConfiguration
+            )
+            let configuration = LibraryConfiguration()
+            let orphanScript = UserScript()
+            orphanScript.title = "Replacement orphan script"
+            try await realm.asyncWrite {
+                realm.add([configuration, orphanScript])
+            }
+            return (configuration.id, orphanScript.id)
+        }.value
+
+        LibraryDataManager.realmConfiguration = replacementConfiguration
+        let observedDuplicateIDs = try await Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: observedConfiguration
+            )
+            let duplicate = LibraryConfiguration()
+            duplicate.createdAt = Date(timeIntervalSinceReferenceDate: 2_000)
+            let script = UserScript()
+            script.title = "Observed second script"
+            duplicate.userScriptIDs.append(script.id)
+            try await realm.asyncWrite {
+                realm.add([duplicate, script])
+            }
+            return (duplicate.id, script.id)
+        }.value
+
+        let observedUpdatePublished = await waitUntil {
+            manager.libraryConfiguration?.id == observedIDs &&
+                manager.libraryConfiguration?.userScriptIDs.contains(observedDuplicateIDs.1) == true
+        }
+        XCTAssertTrue(observedUpdatePublished)
+
+        let registration = UUID()
+        manager.registerOPMLExportUI(registration)
+        defer { manager.unregisterOPMLExportUI(registration) }
+        let exportedResult = await waitForExport(
+            manager,
+            containing: "Observed second script"
+        )
+        let exportedURL = try XCTUnwrap(exportedResult)
+        let exportedXML = try String(contentsOf: exportedURL, encoding: .utf8)
+        XCTAssertTrue(exportedXML.contains("Observed second script"))
+        XCTAssertFalse(exportedXML.contains("Replacement orphan script"))
+
+        let result = try await Task { @RealmBackgroundActor in
+            let observedRealm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: observedConfiguration
+            )
+            let replacementRealm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: replacementConfiguration
+            )
+            let observedPrimary = try XCTUnwrap(observedRealm.object(
+                ofType: LibraryConfiguration.self, forPrimaryKey: observedIDs
+            ))
+            let observedDuplicate = try XCTUnwrap(observedRealm.object(
+                ofType: LibraryConfiguration.self, forPrimaryKey: observedDuplicateIDs.0
+            ))
+            let observedJournal = try XCTUnwrap(observedRealm.object(
+                ofType: BigSyncPendingMutation.self,
+                forPrimaryKey: "LibraryConfiguration.\(observedIDs)"
+            ))
+            let replacementLibrary = try XCTUnwrap(replacementRealm.object(
+                ofType: LibraryConfiguration.self, forPrimaryKey: replacementIDs.0
+            ))
+            return (
+                Array(observedPrimary.userScriptIDs),
+                observedDuplicate.isDeleted,
+                observedJournal.recordName,
+                observedRealm.object(
+                    ofType: BigSyncPendingMutation.self,
+                    forPrimaryKey: "LibraryConfiguration.\(observedDuplicateIDs.0)"
+                ) != nil,
+                Array(replacementLibrary.userScriptIDs),
+                replacementRealm.object(
+                    ofType: BigSyncPendingMutation.self,
+                    forPrimaryKey: "LibraryConfiguration.\(replacementIDs.0)"
+                ) != nil,
+                replacementRealm.object(
+                    ofType: BigSyncPendingMutation.self,
+                    forPrimaryKey: "UserScript.\(replacementIDs.1)"
+                ) != nil
+            )
+        }.value
+
+        XCTAssertEqual(result.0, [observedDuplicateIDs.1])
+        XCTAssertTrue(result.1)
+        XCTAssertEqual(result.2, "LibraryConfiguration.\(observedIDs)")
+        XCTAssertTrue(result.3)
+        XCTAssertEqual(result.4, [])
+        XCTAssertFalse(result.5)
+        XCTAssertFalse(result.6)
+    }
+
     func testVisibleInvalidationRepreparesAfterFailedFileWrite() async throws {
         let manager = LibraryManagerViewModel(observesRealm: false)
         manager.exportUserOPML = {
@@ -664,6 +789,20 @@ final class LibraryExportPresentationTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(20))
         }
         return condition()
+    }
+
+    private func makeLibraryRealmConfiguration() -> Realm.Configuration {
+        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        configuration.objectTypes = [
+            LibraryConfiguration.self,
+            FeedCategory.self,
+            FeedDirectory.self,
+            Feed.self,
+            UserScript.self,
+            UserScriptAllowedDomain.self,
+        ]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        return configuration
     }
 
 #if os(macOS)

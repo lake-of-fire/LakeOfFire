@@ -155,9 +155,8 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     // published to ShareLink, so they need no UI lifetime; retain only cleanup
     // ownership until removal succeeds or reports that the path is already gone.
     private var failedOPMLExportFileURLs = Set<URL>()
-    var exportUserOPML: @Sendable () async throws -> OPML = {
-        try await LibraryDataManager.shared.exportUserOPML()
-    }
+    private let realmConfiguration: Realm.Configuration
+    var exportUserOPML: @Sendable () async throws -> OPML
     var writeOPMLFile: @MainActor (Data, URL) throws -> Void = { data, url in
         try data.write(to: url, options: [.atomic])
     }
@@ -211,19 +210,36 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     }
 
     public override init() {
+        let realmConfiguration = LibraryDataManager.realmConfiguration
+        self.realmConfiguration = realmConfiguration
+        exportUserOPML = {
+            try await LibraryDataManager.shared.exportUserOPML(
+                realmConfiguration: realmConfiguration
+            )
+        }
         super.init()
         observeRealm()
     }
 
     init(observesRealm: Bool) {
+        let realmConfiguration = LibraryDataManager.realmConfiguration
+        self.realmConfiguration = realmConfiguration
+        exportUserOPML = {
+            try await LibraryDataManager.shared.exportUserOPML(
+                realmConfiguration: realmConfiguration
+            )
+        }
         super.init()
         if observesRealm { observeRealm() }
     }
 
     private func observeRealm() {
+        let realmConfiguration = self.realmConfiguration
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: realmConfiguration
+            )
 
             // Script contents and their independently edited domain records are
             // part of OPML too; neither edit needs to mutate LibraryConfiguration.
@@ -267,7 +283,9 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
                         try await { @RealmBackgroundActor in
-                            let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+                            let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(
+                                realmConfiguration: realmConfiguration
+                            )
                             let frozenLibraryConfiguration = libraryConfiguration.freeze()
                             await MainActor.run { [weak self] in
                                 guard let self else { return }
