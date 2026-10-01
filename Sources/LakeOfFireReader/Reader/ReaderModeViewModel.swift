@@ -825,7 +825,7 @@ private enum ReaderSnippetFinalDocumentDiagnostics {
         }
         let snapshot = ReaderSnippetFinalDocumentSnapshot.make(htmlBytes: htmlBytes)
         print(
-            "\(logPrefix) stage=finalDocument isSnippet=true "
+            "\(logPrefix) stage=finalDocument isSnippet=true contentURL=\(contentURL.absoluteString) "
                 + "parsedSuccessfully=\(snapshot.parsedSuccessfully) "
                 + "readerContentContainerPresent=\(snapshot.readerContentContainerPresent) "
                 + "segmentCount=\(snapshot.segmentCount) "
