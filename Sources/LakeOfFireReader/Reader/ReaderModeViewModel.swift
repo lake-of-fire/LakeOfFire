@@ -784,6 +784,58 @@ internal func hasPublishedReaderSegmentMetadataMarkup(in html: String) -> Bool {
     return hasSegments && hasSidecar
 }
 
+internal struct ReaderSnippetFinalDocumentSnapshot: Equatable, Sendable {
+    let parsedSuccessfully: Bool
+    let readerContentContainerPresent: Bool
+    let segmentCount: Int
+    let inlineSidecarPresent: Bool
+    let externalSidecarDescriptorPresent: Bool
+
+    static func make(htmlBytes: [UInt8]) -> ReaderSnippetFinalDocumentSnapshot {
+        guard let html = String(bytes: htmlBytes, encoding: .utf8),
+              let document = try? SwiftSoup.parse(html) else {
+            return ReaderSnippetFinalDocumentSnapshot(
+                parsedSuccessfully: false,
+                readerContentContainerPresent: false,
+                segmentCount: 0,
+                inlineSidecarPresent: false,
+                externalSidecarDescriptorPresent: false
+            )
+        }
+        return ReaderSnippetFinalDocumentSnapshot(
+            parsedSuccessfully: true,
+            readerContentContainerPresent: (try? document.getElementById("reader-content")) != nil,
+            segmentCount: (try? document.select("m-m").count) ?? 0,
+            inlineSidecarPresent: (try? document.getElementById("mnb-segment-metadata")) != nil,
+            externalSidecarDescriptorPresent: !((try? document.select(
+                "meta[name=mnb-segment-sidecar]"
+            ).array()) ?? []).isEmpty
+        )
+    }
+}
+
+private enum ReaderSnippetFinalDocumentDiagnostics {
+    static let logPrefix = "ReaderSnippetProcessingDiagnostics"
+
+    static func emitIfEnabled(htmlBytes: [UInt8], contentURL: URL) {
+#if DEBUG
+        guard contentURL.isSnippetURL,
+              ProcessInfo.processInfo.arguments.contains("--ui-test-enable-lookup-probe") else {
+            return
+        }
+        let snapshot = ReaderSnippetFinalDocumentSnapshot.make(htmlBytes: htmlBytes)
+        print(
+            "\(logPrefix) stage=finalDocument isSnippet=true "
+                + "parsedSuccessfully=\(snapshot.parsedSuccessfully) "
+                + "readerContentContainerPresent=\(snapshot.readerContentContainerPresent) "
+                + "segmentCount=\(snapshot.segmentCount) "
+                + "inlineSidecarPresent=\(snapshot.inlineSidecarPresent) "
+                + "externalSidecarDescriptorPresent=\(snapshot.externalSidecarDescriptorPresent)"
+        )
+#endif
+    }
+}
+
 private func stripRuntimeReadabilityAssets(from html: String) -> String {
     guard hasCanonicalReadabilityMarkup(in: html),
           let doc = try? SwiftSoup.parse(html) else {
@@ -2756,6 +2808,11 @@ public class ReaderModeViewModel: ObservableObject {
                     scheme: .internalReader
                 ).documentHTML)
             }
+
+            ReaderSnippetFinalDocumentDiagnostics.emitIfEnabled(
+                htmlBytes: transformedHTMLBytes,
+                contentURL: url
+            )
 
             let transformedContentForFrameInjection: String?
             let transformedBodyClassesForFrameInjection: String?
