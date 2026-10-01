@@ -82,8 +82,8 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         let capturedConfiguration = makeConfiguration()
         let replacementConfiguration = makeConfiguration()
         defer { LibraryDataManager.realmConfiguration = previousConfiguration }
-        let capturedRealm = try Realm(configuration: capturedConfiguration)
-        let replacementRealm = try Realm(configuration: replacementConfiguration)
+        let capturedRealm = try await Realm.open(configuration: capturedConfiguration)
+        let replacementRealm = try await Realm.open(configuration: replacementConfiguration)
 
         let configurationID = UUID()
         let firstID = UUID()
@@ -168,8 +168,8 @@ final class LibraryCategoryPresentationTests: XCTestCase {
             LibraryDataManager.realmConfiguration = previousLibraryConfiguration
             ReaderContentLoader.feedEntryRealmConfiguration = previousFeedConfiguration
         }
-        let capturedRealm = try Realm(configuration: capturedConfiguration)
-        let replacementRealm = try Realm(configuration: replacementConfiguration)
+        let capturedRealm = try await Realm.open(configuration: capturedConfiguration)
+        let replacementRealm = try await Realm.open(configuration: replacementConfiguration)
 
         let configurationID = UUID()
         let categoryID = UUID()
@@ -273,8 +273,8 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         let capturedConfiguration = makeConfiguration()
         let replacementConfiguration = makeConfiguration()
         defer { LibraryDataManager.realmConfiguration = previousConfiguration }
-        let capturedRealm = try Realm(configuration: capturedConfiguration)
-        let replacementRealm = try Realm(configuration: replacementConfiguration)
+        let capturedRealm = try await Realm.open(configuration: capturedConfiguration)
+        let replacementRealm = try await Realm.open(configuration: replacementConfiguration)
 
         let configurationID = UUID()
         let categoryID = UUID()
@@ -355,8 +355,8 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         let capturedConfiguration = makeConfiguration()
         let replacementConfiguration = makeConfiguration()
         defer { LibraryDataManager.realmConfiguration = previousConfiguration }
-        let capturedRealm = try Realm(configuration: capturedConfiguration)
-        let replacementRealm = try Realm(configuration: replacementConfiguration)
+        let capturedRealm = try await Realm.open(configuration: capturedConfiguration)
+        let replacementRealm = try await Realm.open(configuration: replacementConfiguration)
 
         let configurationID = UUID()
         let firstID = UUID()
