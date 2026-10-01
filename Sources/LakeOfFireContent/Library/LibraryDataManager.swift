@@ -679,8 +679,11 @@ public class LibraryDataManager: NSObject {
     }
     
     @RealmBackgroundActor
-    public func createEmptyCategory(addToLibrary: Bool) async throws -> UUID {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+    public func createEmptyCategory(
+        addToLibrary: Bool,
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+    ) async throws -> UUID {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         let category = FeedCategory()
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
@@ -688,7 +691,9 @@ public class LibraryDataManager: NSObject {
             category.refreshChangeMetadata(explicitlyModified: true)
         }
         if addToLibrary {
-            let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
+            let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(
+                realmConfiguration: realmConfiguration
+            )
             let categoryID = category.id
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
@@ -701,8 +706,11 @@ public class LibraryDataManager: NSObject {
     }
     
     @RealmBackgroundActor
-    public func createEmptyFeed(inCategory category: ThreadSafeReference<FeedCategory>) async throws -> UUID? {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration)
+    public func createEmptyFeed(
+        inCategory category: ThreadSafeReference<FeedCategory>,
+        realmConfiguration: Realm.Configuration = ReaderContentLoader.feedEntryRealmConfiguration
+    ) async throws -> UUID? {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         guard let category = realm.resolve(category) else { return nil }
         let feed = Feed()
         feed.categoryID = category.id
@@ -786,8 +794,13 @@ public class LibraryDataManager: NSObject {
     }
     
     @RealmBackgroundActor
-    public func duplicateFeed(_ feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws -> UUID? {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration)
+    public func duplicateFeed(
+        _ feed: ThreadSafeReference<Feed>,
+        inCategory category: ThreadSafeReference<FeedCategory>,
+        overwriteExisting: Bool,
+        realmConfiguration: Realm.Configuration = ReaderContentLoader.feedEntryRealmConfiguration
+    ) async throws -> UUID? {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         guard let category = realm.resolve(category), let feed = realm.resolve(feed) else { return nil }
         let existing = category.getFeeds()?.filter { $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
         let value = try JSONDecoder().decode(Feed.self, from: JSONEncoder().encode(feed))
@@ -804,8 +817,11 @@ public class LibraryDataManager: NSObject {
     }
     
     @RealmBackgroundActor
-    public func createEmptyScript(addToLibrary: Bool) async throws -> UUID {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+    public func createEmptyScript(
+        addToLibrary: Bool,
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+    ) async throws -> UUID {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         let script = UserScript()
         script.title = ""
         if addToLibrary {
@@ -814,7 +830,9 @@ public class LibraryDataManager: NSObject {
                 realm.add(script, update: .modified)
                 script.refreshChangeMetadata(explicitlyModified: true)
             }
-            let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
+            let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(
+                realmConfiguration: realmConfiguration
+            )
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 configuration.userScriptIDs.append(script.id)

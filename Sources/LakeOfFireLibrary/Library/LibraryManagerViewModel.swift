@@ -465,13 +465,15 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     @RealmBackgroundActor
     func add(rssURL: URL, title: String?, toCategory categoryRef: ThreadSafeReference<FeedCategory>? = nil) async throws {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         var category: FeedCategory?
         if let categoryRef = categoryRef {
             category = realm.resolve(categoryRef)
         }
         if category == nil {
-            let categoryID = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
+            let categoryID = try await LibraryDataManager.shared.createEmptyCategory(
+                addToLibrary: true, realmConfiguration: realmConfiguration
+            )
             category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID)
             
             if let category {
@@ -483,7 +485,10 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         }
         guard let category = category else { return }
 //        await realm.asyncRefresh()
-        guard let feedID = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ThreadSafeReference(to: category)) else { return }
+        guard let feedID = try await LibraryDataManager.shared.createEmptyFeed(
+            inCategory: ThreadSafeReference(to: category),
+            realmConfiguration: realmConfiguration
+        ) else { return }
 //        await realm.asyncRefresh()
         guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
         try await realm.asyncWrite {
@@ -495,7 +500,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         }
         let assignRef = ThreadSafeReference(to: category)
         try await { @MainActor in
-            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+            let realm = try await Realm.open(configuration: realmConfiguration)
             await realm.asyncRefresh()
             if let category = realm.resolve(assignRef) {
                 showCategory(category.id)
@@ -511,15 +516,16 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         guard let newFeedID = try await LibraryDataManager.shared.duplicateFeed(
             feed,
             inCategory: category,
-            overwriteExisting: overwriteExisting
+            overwriteExisting: overwriteExisting,
+            realmConfiguration: realmConfiguration
         ) else { return }
-        Task { @MainActor in
-            let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+        try await { @MainActor in
+            let realm = try await Realm(configuration: realmConfiguration)
             guard let newFeed = realm.object(ofType: Feed.self, forPrimaryKey: newFeedID),
                   let categoryID = newFeed.categoryID
             else { return }
             showCategory(categoryID)
             selectedFeed = newFeed
-        }
+        }()
     }
 }

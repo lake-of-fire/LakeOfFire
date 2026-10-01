@@ -279,6 +279,77 @@ final class LibraryExportPresentationTests: XCTestCase {
         XCTAssertNotEqual(journaledEdits.1, identifiers.3)
     }
 
+    func testLibraryAddAndDuplicateKeepCapturedRealmAfterGlobalReplacement() async throws {
+        let previousLibraryConfiguration = LibraryDataManager.realmConfiguration
+        let previousFeedConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let capturedConfiguration = makeLibraryRealmConfiguration()
+        let replacementConfiguration = makeLibraryRealmConfiguration()
+        LibraryDataManager.realmConfiguration = capturedConfiguration
+        ReaderContentLoader.feedEntryRealmConfiguration = capturedConfiguration
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        LibraryDataManager.realmConfiguration = replacementConfiguration
+        ReaderContentLoader.feedEntryRealmConfiguration = replacementConfiguration
+        defer {
+            LibraryDataManager.realmConfiguration = previousLibraryConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeedConfiguration
+        }
+
+        let rssURL = URL(string: "https://example.org/captured-feed.xml")!
+        try await manager.add(rssURL: rssURL, title: "Captured feed")
+        let feed = try XCTUnwrap(manager.selectedFeed)
+        XCTAssertEqual(feed.rssUrl, rssURL)
+        XCTAssertEqual(feed.title, "Captured feed")
+        let categoryID = try XCTUnwrap(feed.categoryID)
+        let mainRealm = try await Realm.open(configuration: capturedConfiguration)
+        let category = try XCTUnwrap(mainRealm.object(
+            ofType: FeedCategory.self, forPrimaryKey: categoryID
+        ))
+        let originalFeedID = feed.id
+        try await manager.duplicate(
+            feed: ThreadSafeReference(to: feed),
+            inCategory: ThreadSafeReference(to: category),
+            overwriteExisting: false
+        )
+        let duplicate = try XCTUnwrap(manager.selectedFeed)
+        XCTAssertNotEqual(duplicate.id, originalFeedID)
+        XCTAssertEqual(duplicate.categoryID, categoryID)
+        XCTAssertEqual(duplicate.rssUrl, rssURL)
+
+        let duplicateFeedID = duplicate.id
+
+        // Script creation uses the same explicit configuration contract as the
+        // category/feed helpers, including its post-write consolidation hop.
+        let scriptID = try await LibraryDataManager.shared.createEmptyScript(
+            addToLibrary: true, realmConfiguration: capturedConfiguration
+        )
+        try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: capturedConfiguration
+            )
+            let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
+            XCTAssertTrue(library.categoryIDs.contains(categoryID))
+            XCTAssertTrue(library.userScriptIDs.contains(scriptID))
+            XCTAssertEqual(realm.objects(Feed.self).count, 2)
+            for key in [
+                "FeedCategory.\(categoryID)", "Feed.\(originalFeedID)",
+                "Feed.\(duplicateFeedID)", "UserScript.\(scriptID)",
+                "LibraryConfiguration.\(library.id)",
+            ] {
+                XCTAssertNotNil(realm.object(
+                    ofType: BigSyncPendingMutation.self, forPrimaryKey: key
+                ))
+            }
+            let replacement = try await RealmBackgroundActor.shared.cachedRealm(
+                for: replacementConfiguration
+            )
+            XCTAssertTrue(replacement.objects(LibraryConfiguration.self).isEmpty)
+            XCTAssertTrue(replacement.objects(FeedCategory.self).isEmpty)
+            XCTAssertTrue(replacement.objects(Feed.self).isEmpty)
+            XCTAssertTrue(replacement.objects(UserScript.self).isEmpty)
+            XCTAssertTrue(replacement.objects(BigSyncPendingMutation.self).isEmpty)
+        }()
+    }
+
     func testObservedRealmPublisherKeepsReconciliationAndExportInCapturedConfiguration()
     async throws {
         let previousConfiguration = LibraryDataManager.realmConfiguration
