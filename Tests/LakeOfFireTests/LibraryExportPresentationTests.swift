@@ -874,12 +874,15 @@ final class LibraryExportPresentationTests: XCTestCase {
         let categoryID = try await Task { @RealmBackgroundActor in
             try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
         }.value
+        try await Task { @RealmBackgroundActor in
+            let writerRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            let category = try XCTUnwrap(writerRealm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+            try await writerRealm.asyncWrite {
+                category.title = "Visible export mutation"
+                category.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }.value
         realm.refresh()
-        let category = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
-        try realm.write {
-            category.title = "Visible export mutation"
-            category.refreshChangeMetadata(explicitlyModified: true)
-        }
         let preparedUpdatedURL = await waitForExport(manager, after: firstURL, containing: "Visible export mutation")
         let updatedURL = try XCTUnwrap(preparedUpdatedURL)
         XCTAssertNotEqual(updatedURL, firstURL)
