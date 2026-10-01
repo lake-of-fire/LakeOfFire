@@ -407,13 +407,13 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         replacementRealm.refresh()
         XCTAssertEqual(
             Array(capturedLibrary.userScriptIDs),
-            [secondID, hiddenID, firstID, lockedID]
+            [secondID, hiddenID, lockedID, firstID]
         )
         XCTAssertEqual(Array(replacementLibrary.userScriptIDs), originalIDs)
         XCTAssertNotNil(journal(for: capturedLibrary, in: capturedRealm))
         XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
 
-        model.userScripts = [capturedSecond, capturedFirst, capturedLocked]
+        model.userScripts = [capturedSecond, capturedLocked, capturedFirst]
         let beforeNoOps = journalGenerations(in: capturedRealm)
         XCTAssertNil(model.moveScripts(fromOffsets: IndexSet(integer: 0), toOffset: 0))
         model.userScripts = [capturedLocked, capturedSecond, capturedFirst]
@@ -422,8 +422,8 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         XCTAssertEqual(journalGenerations(in: capturedRealm), beforeNoOps)
         XCTAssertFalse(capturedLocked.isArchived)
 
-        model.userScripts = [capturedSecond, capturedFirst, capturedLocked]
-        let deletion = model.deleteScript(at: IndexSet(integer: 1))
+        model.userScripts = [capturedSecond, capturedLocked, capturedFirst]
+        let deletion = model.deleteScript(at: IndexSet(integer: 2))
         model.userScripts = [capturedLocked, capturedSecond]
         try await deletion.value
         capturedRealm.refresh()
@@ -452,6 +452,60 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
     }
 
+    func testScriptMoveAndDeleteRejectStaleConfigurationWithoutChangingJournals() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let first = script("First", id: UUID())
+        let second = script("Second", id: UUID())
+        let library = libraryConfiguration(id: UUID(), scriptIDs: [first.id, second.id])
+        try realm.write {
+            realm.add([first, second])
+            realm.add(library)
+        }
+        let model = LibraryScriptsListViewModel(observesRealm: false)
+        model.libraryConfiguration = library
+        model.userScripts = [first, second]
+
+        let move = try XCTUnwrap(model.moveScripts(fromOffsets: IndexSet(integer: 0), toOffset: 2))
+        // The caller remains on MainActor, so the queued command cannot begin
+        // before this external configuration edit has completed.
+        try realm.write {
+            library.createdAt = library.createdAt.addingTimeInterval(1)
+            library.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let beforeRejectedMove = journalGenerations(in: realm)
+        try await move.value
+        realm.refresh()
+        XCTAssertEqual(Array(library.userScriptIDs), [first.id, second.id])
+        XCTAssertEqual(journalGenerations(in: realm), beforeRejectedMove)
+
+        let deletion = model.deleteScript(at: IndexSet(integer: 0))
+        try realm.write {
+            library.createdAt = library.createdAt.addingTimeInterval(1)
+            library.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let beforeRejectedDeletion = journalGenerations(in: realm)
+        try await deletion.value
+        realm.refresh()
+        XCTAssertFalse(first.isArchived)
+        XCTAssertFalse(first.isDeleted)
+        XCTAssertEqual(Array(library.userScriptIDs), [first.id, second.id])
+        XCTAssertEqual(journalGenerations(in: realm), beforeRejectedDeletion)
+
+        let changedEditabilityMove = try XCTUnwrap(model.moveScripts(
+            fromOffsets: IndexSet(integer: 0), toOffset: 2
+        ))
+        try realm.write {
+            first.opmlURL = URL(string: "https://example.org/locked.opml")
+            first.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let beforeRejectedEditabilityChange = journalGenerations(in: realm)
+        try await changedEditabilityMove.value
+        realm.refresh()
+        XCTAssertEqual(Array(library.userScriptIDs), [first.id, second.id])
+        XCTAssertEqual(journalGenerations(in: realm), beforeRejectedEditabilityChange)
+    }
+
     private func makeRealm() throws -> (Realm, () -> Void) {
         let previous = LibraryDataManager.realmConfiguration
         let configuration = makeConfiguration()
@@ -465,7 +519,7 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         configuration.objectTypes = [
             LibraryConfiguration.self, FeedCategory.self, Feed.self,
-            FeedDirectory.self, UserScript.self,
+            FeedDirectory.self, UserScript.self, UserScriptAllowedDomain.self,
         ]
         configureLakeOfFireMutationTrackingForTesting(&configuration)
         return configuration

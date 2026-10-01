@@ -122,9 +122,14 @@ class LibraryScriptsListViewModel: ObservableObject {
               fromOffsets.allSatisfy(visibleIDs.indices.contains),
               fromOffsets.allSatisfy { userScripts[$0].isUserEditable },
               visibleIDs.indices.contains(toOffset) || toOffset == visibleIDs.endIndex else { return nil }
-        var reorderedIDs = visibleIDs
-        reorderedIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
-        guard reorderedIDs != visibleIDs else { return nil }
+        let editableIDs = Set(userScripts.filter(\.isUserEditable).map(\.id))
+        var reorderedVisibleIDs = visibleIDs
+        reorderedVisibleIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
+        // A displayed locked row may be crossed by a drag but it is not a
+        // mutable ordering slot. Keep its raw position, as with hidden IDs.
+        let originalEditableIDs = visibleIDs.filter(editableIDs.contains)
+        let reorderedIDs = reorderedVisibleIDs.filter(editableIDs.contains)
+        guard reorderedIDs != originalEditableIDs else { return nil }
         let configurationID = libraryConfiguration.id
         let configurationCreatedAt = libraryConfiguration.createdAt
         return Task { @MainActor in
@@ -144,12 +149,16 @@ class LibraryScriptsListViewModel: ObservableObject {
                               !script.isDeleted else { return nil }
                         return scriptID
                     }
+                    let currentEditableIDs = Set(currentVisibleIDs.filter {
+                        realm.object(ofType: UserScript.self, forPrimaryKey: $0)?.isUserEditable == true
+                    })
                     guard currentVisibleIDs == visibleIDs,
-                          reorderedIDs.count == currentVisibleIDs.count,
-                          Set(reorderedIDs) == Set(currentVisibleIDs) else { return }
+                          currentEditableIDs == editableIDs,
+                          reorderedIDs.count == originalEditableIDs.count,
+                          Set(reorderedIDs) == editableIDs else { return }
                     var nextRawIDs = originalIDs
                     var reorderedIndex = 0
-                    for index in nextRawIDs.indices where visibleIDSet.contains(nextRawIDs[index]) {
+                    for index in nextRawIDs.indices where editableIDs.contains(nextRawIDs[index]) {
                         guard reorderedIndex < reorderedIDs.count else { return }
                         nextRawIDs[index] = reorderedIDs[reorderedIndex]
                         reorderedIndex += 1
@@ -182,15 +191,16 @@ class LibraryScriptsListViewModel: ObservableObject {
     ) async throws {
         try await Task { @RealmBackgroundActor [realmConfiguration] in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            guard let libraryConfiguration = realm.object(
-                ofType: LibraryConfiguration.self,
-                forPrimaryKey: configurationID
-            ),
-            libraryConfiguration.createdAt == configurationCreatedAt,
-            let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
-            script.isUserEditable,
-            !script.isDeleted else { return }
             try await realm.asyncWrite {
+                guard let libraryConfiguration = realm.object(
+                    ofType: LibraryConfiguration.self,
+                    forPrimaryKey: configurationID
+                ),
+                !libraryConfiguration.isDeleted,
+                libraryConfiguration.createdAt == configurationCreatedAt,
+                let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
+                script.isUserEditable,
+                !script.isDeleted else { return }
                 if let index = libraryConfiguration.userScriptIDs.firstIndex(of: scriptID) {
                     libraryConfiguration.userScriptIDs.remove(at: index)
                     libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)

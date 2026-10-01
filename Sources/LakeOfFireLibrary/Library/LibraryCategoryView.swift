@@ -112,6 +112,10 @@ class LibraryCategoryViewModel: ObservableObject {
                     }
                     guard category.title != categoryTitle else { return }
                     try await realm.asyncWrite {
+                        guard let category = realm.object(
+                            ofType: FeedCategory.self, forPrimaryKey: categoryID
+                        ), category.isUserEditable, !category.isDeleted,
+                           category.title != categoryTitle else { return }
                         category.title = categoryTitle
                         category.refreshChangeMetadata(explicitlyModified: true)
                     }
@@ -143,6 +147,10 @@ class LibraryCategoryViewModel: ObservableObject {
                     }
                     guard category.backgroundImageUrl != newURL else { return }
                     try await realm.asyncWrite {
+                        guard let category = realm.object(
+                            ofType: FeedCategory.self, forPrimaryKey: categoryID
+                        ), category.isUserEditable, !category.isDeleted,
+                           category.backgroundImageUrl != newURL else { return }
                         category.backgroundImageUrl = newURL
                         category.refreshChangeMetadata(explicitlyModified: true)
                     }

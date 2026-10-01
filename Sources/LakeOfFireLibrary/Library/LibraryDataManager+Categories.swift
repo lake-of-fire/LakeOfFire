@@ -29,7 +29,13 @@ public extension LibraryDataManager {
         )
 
         await realm.asyncRefresh()
+        let configurationID = libraryConfiguration.id
         try await realm.asyncWrite {
+            guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                  category.isUserEditable, !category.isDeleted,
+                  let libraryConfiguration = realm.object(
+                    ofType: LibraryConfiguration.self, forPrimaryKey: configurationID
+                  ), !libraryConfiguration.isDeleted else { return }
             if let idx = libraryConfiguration.categoryIDs.firstIndex(of: category.id) {
                 libraryConfiguration.categoryIDs.remove(at: idx)
                 libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
@@ -64,7 +70,13 @@ public extension LibraryDataManager {
         )
 
         await realm.asyncRefresh()
+        let configurationID = libraryConfiguration.id
         try await realm.asyncWrite {
+            guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                  category.isUserEditable,
+                  let libraryConfiguration = realm.object(
+                    ofType: LibraryConfiguration.self, forPrimaryKey: configurationID
+                  ), !libraryConfiguration.isDeleted else { return }
             if category.isArchived || category.isDeleted {
                 category.isArchived = false
                 category.isDeleted = false
