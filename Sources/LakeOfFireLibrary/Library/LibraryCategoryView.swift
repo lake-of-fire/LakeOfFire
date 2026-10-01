@@ -210,7 +210,7 @@ class LibraryCategoryViewModel: ObservableObject {
     @MainActor
     func createFeed() async throws -> UUID? {
         let categoryID = category.id
-        let feedID = try await Task { @RealmBackgroundActor [realmConfiguration] in
+        let feedID: UUID? = try await Task { @RealmBackgroundActor [realmConfiguration] in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
                   category.isUserEditable else { return nil }
