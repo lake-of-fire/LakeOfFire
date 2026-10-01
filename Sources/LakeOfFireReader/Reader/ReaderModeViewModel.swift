@@ -788,6 +788,19 @@ internal func hasPublishedReaderSegmentMetadataMarkup(in html: String) -> Bool {
     return hasSegments && hasSidecar
 }
 
+/// A persisted snippet remains usable source input even when its native
+/// lookup authority belongs to a different dictionary publication. In that
+/// case callers must regenerate the document through the current processor;
+/// they must not turn an authority rejection into a reader-load failure.
+internal func readerSnippetDocumentAfterAuthorityAttempt(
+    persistedDocument: SwiftSoup.Document,
+    didRepublish: Bool,
+    regenerate: () async throws -> SwiftSoup.Document
+) async throws -> SwiftSoup.Document {
+    guard !didRepublish else { return persistedDocument }
+    return try await regenerate()
+}
+
 internal struct ReaderSnippetFinalDocumentSnapshot: Equatable, Sendable {
     let parsedSuccessfully: Bool
     let readerContentContainerPresent: Bool
@@ -2687,35 +2700,42 @@ public class ReaderModeViewModel: ObservableObject {
             // the visible reader recovers instead of failing after the
             // authority republish check.
             if prefersDirectSnippetReadabilityParse {
-                let didRepublish = if let republishReaderModeRuntimeAuthority, let doc {
-                    await republishReaderModeRuntimeAuthority(doc, url, nil)
+                guard let persistedDocument = doc else {
+                    throw ReaderModeRuntimeAuthorityError.unavailable
+                }
+                let didRepublish = if let republishReaderModeRuntimeAuthority {
+                    await republishReaderModeRuntimeAuthority(persistedDocument, url, nil)
                 } else {
                     false
                 }
-                if !didRepublish {
-                    guard let processReadabilityContent else {
-                        throw ReaderModeRuntimeAuthorityError.unavailable
-                    }
-                    doc = try await processReadabilityContent(
-                        readabilityContent,
-                        url,
-                        nil,
-                        false,
-                        tracksReadingProgress,
-                        nil,
-                        { doc in
-                            do {
-                                return try await preprocessWebContentForReaderMode(
-                                    doc: doc,
-                                    url: url,
-                                    fallbackTitle: titleForDisplay
-                                )
-                            } catch {
-                                print(error)
-                                return doc
+                if let processReadabilityContent {
+                    doc = try await readerSnippetDocumentAfterAuthorityAttempt(
+                        persistedDocument: persistedDocument,
+                        didRepublish: didRepublish
+                    ) {
+                        try await processReadabilityContent(
+                            readabilityContent,
+                            url,
+                            nil,
+                            false,
+                            tracksReadingProgress,
+                            nil,
+                            { doc in
+                                do {
+                                    return try await preprocessWebContentForReaderMode(
+                                        doc: doc,
+                                        url: url,
+                                        fallbackTitle: titleForDisplay
+                                    )
+                                } catch {
+                                    print(error)
+                                    return doc
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
+                } else if !didRepublish {
+                    throw ReaderModeRuntimeAuthorityError.unavailable
                 }
             }
 
