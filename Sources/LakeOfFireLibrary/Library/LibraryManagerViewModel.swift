@@ -312,14 +312,16 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
 
     @MainActor
     private func removeRetiredOPMLExportFiles() {
-        for url in retiredOPMLExportFileURLs where removeOwnedOPMLExportFile(url) {
+        let urls = retiredOPMLExportFileURLs
+        for url in urls where removeOwnedOPMLExportFile(url) {
             retiredOPMLExportFileURLs.remove(url)
         }
     }
 
     @MainActor
     private func removeFailedOPMLExportFiles() {
-        for url in failedOPMLExportFileURLs where removeOwnedOPMLExportFile(url) {
+        let urls = failedOPMLExportFileURLs
+        for url in urls where removeOwnedOPMLExportFile(url) {
             failedOPMLExportFileURLs.remove(url)
         }
     }
