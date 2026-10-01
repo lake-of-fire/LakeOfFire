@@ -633,7 +633,7 @@ public class LibraryDataManager: NSObject {
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         guard let self = self else { return }
-                        try await refreshScripts()
+                        try await refreshScripts(realmConfiguration: realmConfiguration)
                     }
                 })
                 .store(in: &realmCancellables)
@@ -646,7 +646,7 @@ public class LibraryDataManager: NSObject {
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         guard let self = self else { return }
-                        try await refreshScripts()
+                        try await refreshScripts(realmConfiguration: realmConfiguration)
                     }
                 })
                 .store(in: &realmCancellables)
@@ -654,8 +654,13 @@ public class LibraryDataManager: NSObject {
     }
     
     @RealmBackgroundActor
-    private func refreshScripts() async throws {
-        try await Realm.asyncWrite(ThreadSafeReference(to: LibraryConfiguration.getConsolidatedOrCreate()), configuration: LibraryDataManager.realmConfiguration) { realm, configuration in
+    private func refreshScripts(realmConfiguration: Realm.Configuration) async throws {
+        try await Realm.asyncWrite(
+            ThreadSafeReference(to: LibraryConfiguration.getConsolidatedOrCreate(
+                realmConfiguration: realmConfiguration
+            )),
+            configuration: realmConfiguration
+        ) { realm, configuration in
             let scripts = Array(realm.objects(UserScript.self))
             for script in scripts {
                 if script.isDeleted {
