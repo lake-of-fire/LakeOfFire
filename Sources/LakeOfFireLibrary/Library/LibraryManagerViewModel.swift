@@ -120,11 +120,20 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     private var reprepareOPMLTask: Task<Void, Never>?
     private var exportOPMLGeneration = 0
     private var opmlExportUIRegistrations = Set<UUID>()
+    // Successful generations retired while an export UI remains mounted stay
+    // readable for ShareLink consumers until the final UI owner leaves.
+    private var retiredOPMLExportFileURLs = Set<URL>()
+    // Failed writes can still leave bytes behind. Keep cleanup ownership until
+    // removal succeeds or the filesystem confirms the path is absent.
+    private var failedOPMLExportFileURLs = Set<URL>()
     var exportUserOPML: @Sendable () async throws -> OPML = {
         try await LibraryDataManager.shared.exportUserOPML()
     }
     var writeOPMLFile: @MainActor (Data, URL) throws -> Void = { data, url in
         try data.write(to: url, options: [.atomic])
+    }
+    var removeOPMLFile: @MainActor (URL) throws -> Void = { url in
+        try FileManager.default.removeItem(at: url)
     }
     
     @RealmBackgroundActor
@@ -235,22 +244,32 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
 
     @MainActor
     func invalidateOPMLExport() {
+        removeFailedOPMLExportFiles()
         let hasExportState =
             preparedOPMLExport != nil
             || exportOPMLTask != nil
             || reprepareOPMLTask != nil
             || opmlExportFailed
+            || !retiredOPMLExportFileURLs.isEmpty
+            || !failedOPMLExportFileURLs.isEmpty
         let shouldReprepare = !opmlExportUIRegistrations.isEmpty && hasExportState
         guard hasExportState else { return }
 
         exportOPMLGeneration += 1
         let generation = exportOPMLGeneration
+        if let currentURL = preparedOPMLExport?.fileURL {
+            retiredOPMLExportFileURLs.insert(currentURL)
+        }
         preparedOPMLExport = nil
         opmlExportFailed = false
         exportOPMLTask?.cancel()
         exportOPMLTask = nil
         reprepareOPMLTask?.cancel()
         reprepareOPMLTask = nil
+
+        if opmlExportUIRegistrations.isEmpty {
+            removeRetiredOPMLExportFiles()
+        }
 
         if shouldReprepare {
             reprepareOPMLTask = Task { @MainActor [weak self] in
@@ -287,6 +306,39 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         }
         reprepareOPMLTask?.cancel()
         reprepareOPMLTask = nil
+        removeRetiredOPMLExportFiles()
+        removeFailedOPMLExportFiles()
+    }
+
+    @MainActor
+    private func removeRetiredOPMLExportFiles() {
+        for url in retiredOPMLExportFileURLs where removeOwnedOPMLExportFile(url) {
+            retiredOPMLExportFileURLs.remove(url)
+        }
+    }
+
+    @MainActor
+    private func removeFailedOPMLExportFiles() {
+        for url in failedOPMLExportFileURLs where removeOwnedOPMLExportFile(url) {
+            failedOPMLExportFileURLs.remove(url)
+        }
+    }
+
+    @MainActor
+    private func removeOwnedOPMLExportFile(_ url: URL) -> Bool {
+        do {
+            try removeOPMLFile(url)
+            return true
+        } catch {
+            return Self.isMissingOPMLFileError(error)
+        }
+    }
+
+    private static func isMissingOPMLFileError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return (nsError.domain == NSCocoaErrorDomain
+                && nsError.code == CocoaError.Code.fileNoSuchFile.rawValue)
+            || (nsError.domain == NSPOSIXErrorDomain && nsError.code == 2)
     }
 
     @MainActor
@@ -336,7 +388,8 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                         self.preparedOPMLExport = (opml, resultURL)
                         self.opmlExportFailed = false
                     } catch {
-                        try? FileManager.default.removeItem(at: resultURL)
+                        self.failedOPMLExportFileURLs.insert(resultURL)
+                        self.removeFailedOPMLExportFiles()
                         self.preparedOPMLExport = nil
                         self.opmlExportFailed = true
                     }
