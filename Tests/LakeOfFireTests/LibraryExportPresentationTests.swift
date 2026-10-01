@@ -1,5 +1,7 @@
 #if os(macOS)
 import AppKit
+#elseif os(iOS)
+import UIKit
 #endif
 import BigSyncKit
 import OPML
@@ -835,6 +837,75 @@ final class LibraryExportPresentationTests: XCTestCase {
         return window
     }
 
+#endif
+
+#if os(iOS)
+    func testVisibleViewsReprepareAfterMutationAndKeepEarlierSharedFile() async throws {
+        let previous = LibraryDataManager.realmConfiguration
+        let configuration = makeLibraryRealmConfiguration()
+        LibraryDataManager.realmConfiguration = configuration
+        defer { LibraryDataManager.realmConfiguration = previous }
+        let realm = try await Realm(configuration: configuration)
+        let manager = LibraryManagerViewModel()
+
+        func mountedExportWindow() -> UIWindow {
+            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 600, height: 800))
+            window.rootViewController = UIHostingController(rootView:
+                NavigationStack { LibraryCategoriesView().environmentObject(manager) }
+            )
+            window.isHidden = false
+            window.rootViewController?.view.layoutIfNeeded()
+            return window
+        }
+        let firstWindow = mountedExportWindow()
+        let secondWindow = mountedExportWindow()
+        defer {
+            firstWindow.rootViewController = nil
+            secondWindow.rootViewController = nil
+            firstWindow.isHidden = true
+            secondWindow.isHidden = true
+        }
+        let bothViewsRegistered = await waitUntil { manager.opmlExportUIRegistrationCount == 2 }
+        XCTAssertTrue(bothViewsRegistered)
+        let preparedFirstURL = await waitForExport(manager)
+        let firstURL = try XCTUnwrap(preparedFirstURL)
+        let originalBytes = try Data(contentsOf: firstURL)
+
+        let categoryID = try await Task { @RealmBackgroundActor in
+            try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
+        }.value
+        realm.refresh()
+        let category = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+        try realm.write {
+            category.title = "Visible export mutation"
+            category.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let preparedUpdatedURL = await waitForExport(manager, after: firstURL, containing: "Visible export mutation")
+        let updatedURL = try XCTUnwrap(preparedUpdatedURL)
+        XCTAssertNotEqual(updatedURL, firstURL)
+        XCTAssertEqual(try Data(contentsOf: firstURL), originalBytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firstURL.path))
+        XCTAssertTrue(try String(contentsOf: updatedURL, encoding: .utf8).contains("Visible export mutation"))
+
+        firstWindow.rootViewController = nil
+        let oneViewRegistered = await waitUntil { manager.opmlExportUIRegistrationCount == 1 }
+        XCTAssertTrue(oneViewRegistered)
+        manager.invalidateOPMLExport()
+        manager.invalidateOPMLExport()
+        let preparedRapidURL = await waitForExport(manager, after: updatedURL)
+        let rapidURL = try XCTUnwrap(preparedRapidURL)
+        XCTAssertNotEqual(rapidURL, updatedURL)
+        XCTAssertEqual(try Data(contentsOf: firstURL), originalBytes)
+
+        secondWindow.rootViewController = nil
+        let noViewsRegistered = await waitUntil { manager.opmlExportUIRegistrationCount == 0 }
+        XCTAssertTrue(noViewsRegistered)
+        manager.invalidateOPMLExport()
+        XCTAssertNil(manager.exportedOPMLFileURL)
+        await Task.yield()
+        XCTAssertNil(manager.exportedOPMLFileURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstURL.path))
+    }
 #endif
 
     private func waitForExport(
