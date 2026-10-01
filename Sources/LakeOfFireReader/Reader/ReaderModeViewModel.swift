@@ -2680,6 +2680,45 @@ public class ReaderModeViewModel: ObservableObject {
                 }
             }
 
+            // Persisted snippets can outlive the dictionary publication that
+            // produced their sidecar. A foreign or missing processing
+            // fingerprint cannot be admitted as current lookup authority, but
+            // it is still valid source content. Reprocess that source now so
+            // the visible reader recovers instead of failing after the
+            // authority republish check.
+            if prefersDirectSnippetReadabilityParse {
+                let didRepublish = if let republishReaderModeRuntimeAuthority, let doc {
+                    await republishReaderModeRuntimeAuthority(doc, url, nil)
+                } else {
+                    false
+                }
+                if !didRepublish {
+                    guard let processReadabilityContent else {
+                        throw ReaderModeRuntimeAuthorityError.unavailable
+                    }
+                    doc = try await processReadabilityContent(
+                        readabilityContent,
+                        url,
+                        nil,
+                        false,
+                        tracksReadingProgress,
+                        nil,
+                        { doc in
+                            do {
+                                return try await preprocessWebContentForReaderMode(
+                                    doc: doc,
+                                    url: url,
+                                    fallbackTitle: titleForDisplay
+                                )
+                            } catch {
+                                print(error)
+                                return doc
+                            }
+                        }
+                    )
+                }
+            }
+
             guard await self.isCurrentRender(
                 for: requestedURL,
                 generation: renderGeneration
@@ -2721,14 +2760,6 @@ public class ReaderModeViewModel: ObservableObject {
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
                 defaultFontSize: defaultFontSize ?? 21
             )
-            if prefersDirectSnippetReadabilityParse {
-                guard let republishReaderModeRuntimeAuthority else {
-                    throw ReaderModeRuntimeAuthorityError.unavailable
-                }
-                guard await republishReaderModeRuntimeAuthority(doc, url, nil) else {
-                    throw ReaderModeRuntimeAuthorityError.unavailable
-                }
-            }
             guard await self.isCurrentRender(
                 for: requestedURL,
                 generation: renderGeneration
