@@ -11,12 +11,22 @@ import RealmSwiftGaps
 public extension LibraryDataManager {
     @RealmBackgroundActor
     func deleteCategory(_ category: FeedCategory) async throws {
-        if !category.isUserEditable || (category.isArchived && category.opmlURL != nil) {
-            return
-        }
-        
-        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+        let realmConfiguration = category.realm?.configuration ?? LibraryDataManager.realmConfiguration
+        try await deleteCategory(categoryID: category.id, realmConfiguration: realmConfiguration)
+    }
+
+    @RealmBackgroundActor
+    func deleteCategory(
+        categoryID: UUID,
+        realmConfiguration: Realm.Configuration
+    ) async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+              category.isUserEditable,
+              !category.isDeleted else { return }
+        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: realmConfiguration
+        )
 
         await realm.asyncRefresh()
         try await realm.asyncWrite {
@@ -37,8 +47,21 @@ public extension LibraryDataManager {
     
     @RealmBackgroundActor
     func restoreCategory(_ category: FeedCategory) async throws {
-        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+        let realmConfiguration = category.realm?.configuration ?? LibraryDataManager.realmConfiguration
+        try await restoreCategory(categoryID: category.id, realmConfiguration: realmConfiguration)
+    }
+
+    @RealmBackgroundActor
+    func restoreCategory(
+        categoryID: UUID,
+        realmConfiguration: Realm.Configuration
+    ) async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+              category.isUserEditable else { return }
+        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: realmConfiguration
+        )
 
         await realm.asyncRefresh()
         try await realm.asyncWrite {
