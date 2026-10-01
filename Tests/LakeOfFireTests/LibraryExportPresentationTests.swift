@@ -161,7 +161,8 @@ final class LibraryExportPresentationTests: XCTestCase {
         manager.registerOPMLExportUI(registration)
         defer { manager.unregisterOPMLExportUI(registration) }
 
-        XCTAssertTrue(await waitUntil { manager.opmlExportFailed })
+        let failed = await waitUntil { manager.opmlExportFailed }
+        XCTAssertTrue(failed)
         let orphanURL = try XCTUnwrap(firstFailedURL)
         XCTAssertTrue(FileManager.default.fileExists(atPath: orphanURL.path))
         XCTAssertEqual(
@@ -172,9 +173,8 @@ final class LibraryExportPresentationTests: XCTestCase {
         XCTAssertNil(manager.exportedOPMLShareItem)
 
         manager.refreshOPMLExport()
-        let prepared = try XCTUnwrap(
-            await waitForExport(manager, containing: "orphan cleanup retry")
-        )
+        let preparedResult = await waitForExport(manager, containing: "orphan cleanup retry")
+        let prepared = try XCTUnwrap(preparedResult)
         XCTAssertEqual(writeAttempts, 2)
         XCTAssertEqual(
             failedURLRemovalAttempts, 2,
