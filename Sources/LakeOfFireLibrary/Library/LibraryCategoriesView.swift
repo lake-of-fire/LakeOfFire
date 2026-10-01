@@ -274,12 +274,6 @@ struct LibraryCategoriesView: View {
                 .disabled(true)
             }
         }
-        .onAppear {
-            libraryManagerViewModel.registerOPMLExportUI(exportViewRegistrationID)
-        }
-        .onDisappear {
-            libraryManagerViewModel.unregisterOPMLExportUI(exportViewRegistrationID)
-        }
         if libraryManagerViewModel.opmlExportFailed {
             Button("Export failed. Retry") {
                 libraryManagerViewModel.refreshOPMLExport()
@@ -494,6 +488,12 @@ struct LibraryCategoriesView: View {
 
                 Section(header: EmptyView(), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. My Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
                     importExportView
+                }
+                .onAppear {
+                    libraryManagerViewModel.registerOPMLExportUI(exportViewRegistrationID)
+                }
+                .onDisappear {
+                    libraryManagerViewModel.unregisterOPMLExportUI(exportViewRegistrationID)
                 }
                 .labelStyle(.titleOnly)
                 .accentColor(appTint)
