@@ -60,6 +60,10 @@ private func urlsMatchWithoutHashForHotfix(_ lhs: URL?, _ rhs: URL?) -> Bool {
     }
 }
 
+private enum ReaderModeRuntimeAuthorityError: Error {
+    case unavailable
+}
+
 private func readerFontCSSValues(horizontalFamily: String) -> (
     horizontalFamily: String,
     verticalFamily: String,
@@ -1280,6 +1284,11 @@ public class ReaderModeViewModel: ObservableObject {
         willSet { processingDependencyWillChange() }
     }
     public var processReadabilityContent: ((String, URL, URL?, Bool, Bool, String?, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    /// Re-admits native segment authority when a persisted snippet already has
+    /// canonical markup and therefore bypasses readability reprocessing.
+    public var republishReaderModeRuntimeAuthority: ((SwiftSoup.Document, URL, URL?) async -> Bool)? = nil {
         willSet { processingDependencyWillChange() }
     }
     public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil {
@@ -2620,6 +2629,7 @@ public class ReaderModeViewModel: ObservableObject {
         let processReadabilityContent = processReadabilityContent
         let processHTMLBytes = processHTMLBytes
         let processHTML = processHTML
+        let republishReaderModeRuntimeAuthority = republishReaderModeRuntimeAuthority
         let prefersDirectSnippetReadabilityParse = url.isSnippetURL
             && hasPublishedReaderSegmentMetadataMarkup(in: readabilityContent)
         let snippetRawTitle = content.title
@@ -2711,6 +2721,14 @@ public class ReaderModeViewModel: ObservableObject {
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
                 defaultFontSize: defaultFontSize ?? 21
             )
+            if prefersDirectSnippetReadabilityParse {
+                guard let republishReaderModeRuntimeAuthority else {
+                    throw ReaderModeRuntimeAuthorityError.unavailable
+                }
+                guard await republishReaderModeRuntimeAuthority(doc, url, nil) else {
+                    throw ReaderModeRuntimeAuthorityError.unavailable
+                }
+            }
             guard await self.isCurrentRender(
                 for: requestedURL,
                 generation: renderGeneration
