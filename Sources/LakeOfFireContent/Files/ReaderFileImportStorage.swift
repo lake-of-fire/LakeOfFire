@@ -26,6 +26,9 @@ enum ReaderFileImportStorage {
         let baseName = fileURL.deletingPathExtension().lastPathComponent
         let ext = fileURL.lakePathExtension.isEmpty ? "" : "." + fileURL.lakePathExtension
         var candidate = targetDirectory.appending(fileURL.lastPathComponent)
+        // Validate the parent before inspecting an occupied leaf. A leaf link
+        // is a name collision, while a parent link must never escape the drive.
+        let validatedTargetDirectory = try targetDirectory.directoryURL(forRoot: drive.rootDirectory)
 
         func sourceIdentity() async throws -> Data {
             if let originData { return originData }
@@ -80,23 +83,33 @@ enum ReaderFileImportStorage {
 
         while true {
             try Task.checkCancellation()
-            let destination = try candidate.fileURL(forRoot: drive.rootDirectory)
-            let fileExists = try await drive.fileExists(at: candidate)
-            let directoryExists = try await drive.directoryExists(at: candidate)
-            let exists = fileExists || directoryExists
-            if exists {
-                if try await existingMatches(candidate, at: destination) { return candidate }
-            } else {
-                do {
-                    try await drive.upload(from: fileURL, to: candidate)
-                    return candidate
-                } catch {
-                    // A concurrent import may have installed the same name after our check.
-                    // Only an existing-destination error is retried; never swallow I/O failure.
-                    let nsError = error as NSError
-                    guard nsError.domain == NSCocoaErrorDomain,
-                          nsError.code == CocoaError.fileWriteFileExists.rawValue else { throw error }
+            let lexicalDestination = validatedTargetDirectory.appendingPathComponent(
+                (candidate.path as NSString).lastPathComponent
+            )
+            let occupiedBySymlink = (try? FileManager.default.destinationOfSymbolicLink(
+                atPath: lexicalDestination.path
+            )) != nil
+            // Do not ask the strict drive resolver to follow an occupied leaf
+            // link. Keep it intact and choose the next collision-free name.
+            if !occupiedBySymlink {
+                let destination = try candidate.fileURL(forRoot: drive.rootDirectory)
+                let fileExists = try await drive.fileExists(at: candidate)
+                let directoryExists = try await drive.directoryExists(at: candidate)
+                let exists = fileExists || directoryExists
+                if exists {
                     if try await existingMatches(candidate, at: destination) { return candidate }
+                } else {
+                    do {
+                        try await drive.upload(from: fileURL, to: candidate)
+                        return candidate
+                    } catch {
+                        // A concurrent import may have installed the same name after our check.
+                        // Only an existing-destination error is retried; never swallow I/O failure.
+                        let nsError = error as NSError
+                        guard nsError.domain == NSCocoaErrorDomain,
+                              nsError.code == CocoaError.fileWriteFileExists.rawValue else { throw error }
+                        if try await existingMatches(candidate, at: destination) { return candidate }
+                    }
                 }
             }
             if collisionHash == nil {

@@ -1372,7 +1372,12 @@ public class ReaderFileManager: ObservableObject {
         within rootURL: URL
     ) throws {
         let standardizedRootURL = rootURL.standardizedFileURL
-        let candidateURL = try relativePath.fileURL(forRoot: rootURL).standardizedFileURL
+        let candidateURL: URL
+        do {
+            candidateURL = try relativePath.fileURL(forRoot: rootURL).standardizedFileURL
+        } catch is RootRelativePathError {
+            throw ReaderFileManagerError.invalidFileURL
+        }
         let lexicalRootComponents = standardizedRootURL.pathComponents
         let lexicalCandidateComponents = candidateURL.pathComponents
         guard lexicalCandidateComponents.count > lexicalRootComponents.count,
