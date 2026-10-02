@@ -3286,6 +3286,12 @@ public class ReaderModeViewModel: ObservableObject {
             let html = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
             if let html {
                 try Task.checkCancellation()
+                if let navigationBindingToken {
+                    guard scriptCaller.currentJavaScriptBindingToken
+                            == navigationBindingToken else {
+                        throw CancellationError()
+                    }
+                }
 
                 let currentURL = readerContent.pageURL
                 guard committedURL.matchesReaderURL(currentURL) else {
@@ -3294,6 +3300,16 @@ public class ReaderModeViewModel: ObservableObject {
                     return
                 }
                 let publicationDateFallback = await readerContentPublicationDateFallback(for: content)
+                try Task.checkCancellation()
+                if let navigationBindingToken {
+                    guard scriptCaller.currentJavaScriptBindingToken
+                            == navigationBindingToken else {
+                        throw CancellationError()
+                    }
+                }
+                guard committedURL.matchesReaderURL(readerContent.pageURL) else {
+                    return
+                }
                 if committedURL.isSnippetURL,
                    let snippetHTML = buildSnippetCanonicalReadabilityHTML(
                     html: html,
