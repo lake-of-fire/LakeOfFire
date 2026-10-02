@@ -144,6 +144,54 @@ final class ReaderFileImportStorageNativeTests: XCTestCase {
         )
     }
 
+    func testSymlinkedTargetParentStillFailsClosed() async throws {
+        let f = try Fixture()
+        try f.put(f.source, "new")
+        let outside = f.root.appendingPathComponent(
+            "outside-library",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: outside,
+            withIntermediateDirectories: true
+        )
+        let linkedParent = f.library.appendingPathComponent(
+            "imports",
+            isDirectory: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: linkedParent,
+            withDestinationURL: outside
+        )
+        let drive = try await f.drive()
+
+        do {
+            _ = try await ReaderFileImportStorage.install(
+                fileURL: f.source,
+                targetDirectory: RootRelativePath(path: "imports"),
+                drive: drive,
+                pathExtension: "epub",
+                collisionTag: { _ in "ABCDEF" }
+            )
+            XCTFail("Expected symlinked parent rejection")
+        } catch {
+            // Root-relative validation owns the exact error type. The security
+            // invariant is that the external destination is never written.
+        }
+
+        XCTAssertTrue(
+            try FileManager.default.contentsOfDirectory(
+                atPath: outside.path
+            ).isEmpty
+        )
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: linkedParent.path
+            ),
+            outside.path
+        )
+    }
+
     func testSourceSymlinkIsRejectedWithoutInstallation() async throws {
         let f = try Fixture(); let target = f.root.appendingPathComponent("outside")
         try f.put(target, "private")
