@@ -6,6 +6,20 @@ import {
     nativeMarkReadCommandMessage,
 } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
 
+test('carries a native tap account presentation stamp into the immutable command', () => {
+    const message = nativeMarkReadCommandMessage({
+        stableIdentityVersion: 1,
+        segments: [{ stableSegmentID: 'segment-a' }],
+        sentenceIdentifiers: [],
+    }, {
+        topWindowURL: 'file:///book.epub',
+        manualReadOriginAccountPresentation: '42:1',
+    })
+
+    assert.equal(message.manualReadOriginAccountPresentation, '42:1')
+    assert.equal(message.topWindowURL, 'file:///book.epub')
+})
+
 test('projects semantic renderer payload onto durable native subject identifiers', () => {
     const message = nativeMarkReadCommandMessage({
         stableIdentityVersion: 1,
