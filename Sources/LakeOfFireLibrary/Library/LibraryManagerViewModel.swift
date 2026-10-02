@@ -126,9 +126,8 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     // Failed writes can still leave bytes behind. Keep cleanup ownership until
     // removal succeeds or the filesystem confirms the path is absent.
     private var failedOPMLExportFileURLs = Set<URL>()
-    var exportUserOPML: @Sendable () async throws -> OPML = {
-        try await LibraryDataManager.shared.exportUserOPML()
-    }
+    private let realmConfiguration: Realm.Configuration
+    var exportUserOPML: @Sendable () async throws -> OPML
     var writeOPMLFile: @MainActor (Data, URL) throws -> Void = { data, url in
         try data.write(to: url, options: [.atomic])
     }
@@ -153,11 +152,25 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     }
 
     public override init() {
+        let realmConfiguration = LibraryDataManager.realmConfiguration
+        self.realmConfiguration = realmConfiguration
+        self.exportUserOPML = {
+            try await LibraryDataManager.shared.exportUserOPML(
+                realmConfiguration: realmConfiguration
+            )
+        }
         super.init()
         observeRealm()
     }
 
     init(observesRealm: Bool) {
+        let realmConfiguration = LibraryDataManager.realmConfiguration
+        self.realmConfiguration = realmConfiguration
+        self.exportUserOPML = {
+            try await LibraryDataManager.shared.exportUserOPML(
+                realmConfiguration: realmConfiguration
+            )
+        }
         super.init()
         if observesRealm {
             observeRealm()
@@ -165,9 +178,12 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     }
 
     private func observeRealm() {
+        let realmConfiguration = self.realmConfiguration
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: realmConfiguration
+            )
 
             let exportableTypes: [ObjectBase.Type] = [
                 FeedCategory.self,
@@ -223,10 +239,12 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                             guard let self else { return }
                             let currentConfigurationID = self.libraryConfiguration?.id
                             let newLibraryConfigurationID = try await { @RealmBackgroundActor in
-                                try await LibraryConfiguration.getConsolidatedOrCreate().id
+                                try await LibraryConfiguration.getConsolidatedOrCreate(
+                                    realmConfiguration: realmConfiguration
+                                ).id
                             }()
                             if newLibraryConfigurationID != currentConfigurationID {
-                                let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                                let realm = try await Realm.open(configuration: realmConfiguration)
                                 guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: newLibraryConfigurationID) else { return }
                                 if self.isLibraryPresented {
                                     self.objectWillChange.send()
