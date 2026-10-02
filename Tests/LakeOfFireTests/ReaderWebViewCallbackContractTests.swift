@@ -417,6 +417,33 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         await fulfillment(of: [pendingURLCalled], timeout: 0.05)
     }
 
+    func testSharedFontInjectionRejectsMountedCallerWithoutDocumentIdentity() async throws {
+        let viewModel = ReaderModeViewModel()
+        let caller = WebViewScriptCaller()
+        let owner = UUID()
+        var evaluations = 0
+        caller.installBinding(
+            ownedBy: owner,
+            asyncCaller: { _, _, _, _ in
+                evaluations += 1
+                return .init(nil)
+            },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil },
+            documentGenerationProvider: { nil }
+        )
+        defer { _ = caller.clearBinding(ownedBy: owner) }
+        XCTAssertTrue(caller.canEvaluateJavaScript)
+        XCTAssertNil(caller.currentJavaScriptBindingToken)
+
+        await viewModel.injectSharedFontIfNeeded(
+            scriptCaller: caller,
+            pageURL: URL(string: "ebook:///missing-document-identity.epub")!
+        )
+        XCTAssertEqual(evaluations, 0)
+    }
+
     func testSharedFontInjectionCannotAdoptReplacementBinding() async throws {
         let viewModel = ReaderModeViewModel()
         let caller = WebViewScriptCaller()

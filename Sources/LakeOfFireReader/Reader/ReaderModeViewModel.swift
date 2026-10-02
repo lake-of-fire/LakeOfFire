@@ -1718,6 +1718,9 @@ public class ReaderModeViewModel: ObservableObject {
                 requiring: bindingToken
             )
         }
+        guard !scriptCaller.canEvaluateJavaScript else {
+            throw CancellationError()
+        }
         return try await scriptCaller.evaluateJavaScript(
             js,
             arguments: arguments,
@@ -1743,6 +1746,7 @@ public class ReaderModeViewModel: ObservableObject {
         pageURL: URL,
         requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil
     ) async {
+        let bindingToken = bindingToken ?? scriptCaller.currentJavaScriptBindingToken
         guard pageURL.absoluteString != "about:blank" else {
             return
         }
