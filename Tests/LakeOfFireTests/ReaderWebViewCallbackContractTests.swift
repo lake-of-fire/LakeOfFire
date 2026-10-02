@@ -437,11 +437,14 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         _ = caller.clearBinding(ownedBy: firstOwner)
 
         let replacementOwner = UUID()
-        var replacementEvaluations = 0
+        let replacementEvaluation = expectation(
+            description: "retired injection must not run on replacement binding"
+        )
+        replacementEvaluation.isInverted = true
         caller.installBinding(
             ownedBy: replacementOwner,
             asyncCaller: { _, _, _, _ in
-                replacementEvaluations += 1
+                replacementEvaluation.fulfill()
                 return .init(nil)
             },
             unsafeCaller: nil,
@@ -456,7 +459,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             requiring: retiredBinding
         )
 
-        XCTAssertEqual(replacementEvaluations, 0)
+        await fulfillment(of: [replacementEvaluation], timeout: 0.05)
     }
 
     func testNavigationFinishedCannotSettleReplacementBindingAfterFontWait()
