@@ -108,14 +108,32 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     @Published public var isLibraryPresented = false
     
-    @Published var exportedOPML: OPML?
-    @Published var exportedOPMLFileURL: URL?
+    @Published private var preparedOPMLExport: (opml: OPML, fileURL: URL)?
+    var exportedOPML: OPML? { preparedOPMLExport?.opml }
+    var exportedOPMLFileURL: URL? { preparedOPMLExport?.fileURL }
+    @Published var opmlExportFailed = false
     
 //    @AppStorage("LibraryManagerViewModel.presentedCategories") var presentedCategories = [LibraryRoute]()
     @Published var selectedFeed: Feed?
     
     private var exportOPMLTask: Task<Void, Never>?
+    private var reprepareOPMLTask: Task<Void, Never>?
     private var exportOPMLGeneration = 0
+    private var opmlExportUIRegistrations = Set<UUID>()
+    // Successful generations retired while an export UI remains mounted stay
+    // readable for ShareLink consumers until the final UI owner leaves.
+    private var retiredOPMLExportFileURLs = Set<URL>()
+    // Failed writes can still leave bytes behind. Keep cleanup ownership until
+    // removal succeeds or the filesystem confirms the path is absent.
+    private var failedOPMLExportFileURLs = Set<URL>()
+    private let realmConfiguration: Realm.Configuration
+    var exportUserOPML: @Sendable () async throws -> OPML
+    var writeOPMLFile: @MainActor (Data, URL) throws -> Void = { data, url in
+        try data.write(to: url, options: [.atomic])
+    }
+    var removeOPMLFile: @MainActor (URL) throws -> Void = { url in
+        try FileManager.default.removeItem(at: url)
+    }
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
@@ -134,13 +152,47 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     }
 
     public override init() {
+        let realmConfiguration = LibraryDataManager.realmConfiguration
+        self.realmConfiguration = realmConfiguration
+        self.exportUserOPML = {
+            try await LibraryDataManager.shared.exportUserOPML(
+                realmConfiguration: realmConfiguration
+            )
+        }
         super.init()
-        
+        observeRealm()
+    }
+
+    init(observesRealm: Bool) {
+        let realmConfiguration = LibraryDataManager.realmConfiguration
+        self.realmConfiguration = realmConfiguration
+        self.exportUserOPML = {
+            try await LibraryDataManager.shared.exportUserOPML(
+                realmConfiguration: realmConfiguration
+            )
+        }
+        super.init()
+        if observesRealm {
+            observeRealm()
+        }
+    }
+
+    private func observeRealm() {
+        let realmConfiguration = self.realmConfiguration
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: realmConfiguration
+            )
 
-            let exportableTypes: [ObjectBase.Type] = [FeedCategory.self, Feed.self, LibraryConfiguration.self]
+            let exportableTypes: [ObjectBase.Type] = [
+                FeedCategory.self,
+                FeedDirectory.self,
+                Feed.self,
+                LibraryConfiguration.self,
+                UserScript.self,
+                UserScriptAllowedDomain.self,
+            ]
             for objectType in exportableTypes {
                 guard let objectType = objectType as? Object.Type else { continue }
                 realm.objects(objectType)
@@ -187,10 +239,12 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                             guard let self else { return }
                             let currentConfigurationID = self.libraryConfiguration?.id
                             let newLibraryConfigurationID = try await { @RealmBackgroundActor in
-                                try await LibraryConfiguration.getConsolidatedOrCreate().id
+                                try await LibraryConfiguration.getConsolidatedOrCreate(
+                                    realmConfiguration: realmConfiguration
+                                ).id
                             }()
                             if newLibraryConfigurationID != currentConfigurationID {
-                                let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                                let realm = try await Realm.open(configuration: realmConfiguration)
                                 guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: newLibraryConfigurationID) else { return }
                                 if self.isLibraryPresented {
                                     self.objectWillChange.send()
@@ -205,20 +259,112 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                 .store(in: &cancellables)
         }
     }
-    
+
     @MainActor
-    private func invalidateOPMLExport() {
-        guard exportedOPML != nil || exportedOPMLFileURL != nil || exportOPMLTask != nil else { return }
+    func invalidateOPMLExport() {
+        removeFailedOPMLExportFiles()
+        let hasExportState =
+            preparedOPMLExport != nil
+            || exportOPMLTask != nil
+            || reprepareOPMLTask != nil
+            || opmlExportFailed
+            || !retiredOPMLExportFileURLs.isEmpty
+            || !failedOPMLExportFileURLs.isEmpty
+        let shouldReprepare = !opmlExportUIRegistrations.isEmpty && hasExportState
+        guard hasExportState else { return }
+
         exportOPMLGeneration += 1
-        exportedOPML = nil
-        exportedOPMLFileURL = nil
+        let generation = exportOPMLGeneration
+        if let currentURL = preparedOPMLExport?.fileURL {
+            retiredOPMLExportFileURLs.insert(currentURL)
+        }
+        preparedOPMLExport = nil
+        opmlExportFailed = false
         exportOPMLTask?.cancel()
         exportOPMLTask = nil
+        reprepareOPMLTask?.cancel()
+        reprepareOPMLTask = nil
+
+        if opmlExportUIRegistrations.isEmpty {
+            removeRetiredOPMLExportFiles()
+        }
+
+        if shouldReprepare {
+            reprepareOPMLTask = Task { @MainActor [weak self] in
+                await Task.yield()
+                guard !Task.isCancelled,
+                      let self,
+                      !self.opmlExportUIRegistrations.isEmpty,
+                      self.exportOPMLGeneration == generation else {
+                    return
+                }
+                self.reprepareOPMLTask = nil
+                self.ensureOPMLExportPrepared()
+            }
+        }
+    }
+
+    var opmlExportUIRegistrationCount: Int {
+        opmlExportUIRegistrations.count
+    }
+
+    @MainActor
+    func registerOPMLExportUI(_ registrationID: UUID) {
+        guard opmlExportUIRegistrations.insert(registrationID).inserted else { return }
+        reprepareOPMLTask?.cancel()
+        reprepareOPMLTask = nil
+        ensureOPMLExportPrepared()
+    }
+
+    @MainActor
+    func unregisterOPMLExportUI(_ registrationID: UUID) {
+        guard opmlExportUIRegistrations.remove(registrationID) != nil,
+              opmlExportUIRegistrations.isEmpty else {
+            return
+        }
+        reprepareOPMLTask?.cancel()
+        reprepareOPMLTask = nil
+        removeRetiredOPMLExportFiles()
+        removeFailedOPMLExportFiles()
+    }
+
+    @MainActor
+    private func removeRetiredOPMLExportFiles() {
+        let urls = retiredOPMLExportFileURLs
+        for url in urls where removeOwnedOPMLExportFile(url) {
+            retiredOPMLExportFileURLs.remove(url)
+        }
+    }
+
+    @MainActor
+    private func removeFailedOPMLExportFiles() {
+        let urls = failedOPMLExportFileURLs
+        for url in urls where removeOwnedOPMLExportFile(url) {
+            failedOPMLExportFileURLs.remove(url)
+        }
+    }
+
+    @MainActor
+    private func removeOwnedOPMLExportFile(_ url: URL) -> Bool {
+        do {
+            try removeOPMLFile(url)
+            return true
+        } catch {
+            return Self.isMissingOPMLFileError(error)
+        }
+    }
+
+    private static func isMissingOPMLFileError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return (nsError.domain == NSCocoaErrorDomain
+                && nsError.code == CocoaError.Code.fileNoSuchFile.rawValue)
+            || (nsError.domain == NSPOSIXErrorDomain && nsError.code == 2)
     }
 
     @MainActor
     func ensureOPMLExportPrepared() {
-        guard exportedOPML == nil || exportedOPMLFileURL == nil else { return }
+        guard !opmlExportFailed else { return }
+        guard preparedOPMLExport == nil else { return }
         guard exportOPMLTask == nil else { return }
         refreshOPMLExport()
     }
@@ -226,35 +372,54 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @MainActor
     func refreshOPMLExport() {
         invalidateOPMLExport()
+        // Explicit Retry starts the export itself. Do not let invalidation's
+        // visible-view reprepare create a second concurrent generation.
+        reprepareOPMLTask?.cancel()
+        reprepareOPMLTask = nil
+
         let exportGeneration = exportOPMLGeneration
+        let exportUserOPML = exportUserOPML
         exportOPMLTask = Task.detached {
             do {
                 try Task.checkCancellation()
-                let opml = try await LibraryDataManager.shared.exportUserOPML()
+                let opml = try await exportUserOPML()
                 Task { @MainActor [weak self] in
-                    guard self?.exportOPMLGeneration == exportGeneration else { return }
+                    guard let self,
+                          self.exportOPMLGeneration == exportGeneration else {
+                        return
+                    }
                     try Task.checkCancellation()
-                    self?.exportOPMLTask = nil
-                    self?.exportedOPML = opml
-                    
+                    self.exportOPMLTask = nil
+
+                    // A ShareLink may still be consuming an older generation.
+                    // Publish each completed export at a distinct immutable URL.
                     let resultURL = FileManager.default.temporaryDirectory
-                        .appending(component: "ManabiReaderUserLibrary", directoryHint: .notDirectory)
+                        .appending(
+                            component: "ManabiReaderUserLibrary-\(UUID().uuidString)",
+                            directoryHint: .notDirectory
+                        )
                         .appendingPathExtension("opml")
                     do {
-                        if FileManager.default.fileExists(atPath: resultURL.path(percentEncoded: false)) {
-                            try FileManager.default.removeItem(at: resultURL)
-                        }
                         let data = opml.xml.data(using: .utf8) ?? Data()
-                        try data.write(to: resultURL, options: [.atomic])
-                        self?.exportedOPMLFileURL = resultURL
+                        try self.writeOPMLFile(data, resultURL)
+                        guard FileManager.default.fileExists(atPath: resultURL.path) else {
+                            throw CocoaError(.fileNoSuchFile)
+                        }
+                        self.preparedOPMLExport = (opml, resultURL)
+                        self.opmlExportFailed = false
                     } catch {
-                        print("Failed to write OPML file")
+                        self.failedOPMLExportFileURLs.insert(resultURL)
+                        self.removeFailedOPMLExportFiles()
+                        self.preparedOPMLExport = nil
+                        self.opmlExportFailed = true
                     }
                 }
             } catch {
                 Task { @MainActor [weak self] in
                     guard self?.exportOPMLGeneration == exportGeneration else { return }
                     self?.exportOPMLTask = nil
+                    self?.preparedOPMLExport = nil
+                    self?.opmlExportFailed = true
                 }
             }
         }

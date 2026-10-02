@@ -23,6 +23,7 @@ struct LibraryCategoriesView: View {
 #endif
     
     @State private var categoryIDNeedsScrollTo: String?
+    @State private var exportViewRegistrationID = UUID()
     
 #if os(macOS)
     @State private var savePanel: NSSavePanel?
@@ -30,18 +31,43 @@ struct LibraryCategoriesView: View {
 #endif
     
     @ViewBuilder var importExportView: some View {
-        ShareLink(item: libraryManagerViewModel.exportedOPMLFileURL ?? URL(string: "about:blank")!, message: Text(""), preview: SharePreview("Manabi Reader User Feeds OPML File", image: Image(systemName: "doc"))) {
+        Group {
+            if let fileURL = libraryManagerViewModel.exportedOPMLFileURL {
+                ShareLink(
+                    item: fileURL,
+                    message: Text(""),
+                    preview: SharePreview(
+                        "Manabi Reader User Feeds OPML File",
+                        image: Image(systemName: "doc")
+                    )
+                ) {
 #if os(macOS)
-            Text("Share My Library…")
-                .frame(maxWidth: .infinity)
+                    Text("Share My Library…")
+                        .frame(maxWidth: .infinity)
 #else
-            Text("Export My Library…")
+                    Text("Export My Library…")
 #endif
+                }
+                .labelStyle(.titleAndIcon)
+                .accessibilityIdentifier("library-opml-share")
+            } else {
+                Button {
+                } label: {
+#if os(macOS)
+                    Text("Share My Library…")
+                        .frame(maxWidth: .infinity)
+#else
+                    Text("Export My Library…")
+#endif
+                }
+                .disabled(true)
+            }
         }
-        .labelStyle(.titleAndIcon)
-        .disabled(libraryManagerViewModel.exportedOPML == nil)
-        .task {
-            libraryManagerViewModel.ensureOPMLExportPrepared()
+        if libraryManagerViewModel.opmlExportFailed {
+            Button("Export failed. Retry") {
+                libraryManagerViewModel.refreshOPMLExport()
+            }
+            .accessibilityIdentifier("library-opml-retry")
         }
 #if os(macOS)
         Button {
@@ -237,6 +263,12 @@ struct LibraryCategoriesView: View {
 
                 Section(header: EmptyView(), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. My Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
                     importExportView
+                }
+                .onAppear {
+                    libraryManagerViewModel.registerOPMLExportUI(exportViewRegistrationID)
+                }
+                .onDisappear {
+                    libraryManagerViewModel.unregisterOPMLExportUI(exportViewRegistrationID)
                 }
                 .labelStyle(.titleOnly)
                 .accentColor(appTint)
