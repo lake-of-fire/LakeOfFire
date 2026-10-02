@@ -23,6 +23,13 @@ enum ReaderFileImportStorage {
         let baseName = fileURL.deletingPathExtension().lastPathComponent
         let ext = pathExtension.isEmpty ? "" : "." + pathExtension
 
+        // Resolve the parent before inspecting an occupied leaf. A leaf symlink
+        // is only a name collision; a symlinked/escaped parent must still fail
+        // the drive's root-relative validation.
+        let validatedTargetDirectory = try targetDirectory.directoryURL(
+            forRoot: drive.rootDirectory
+        )
+
         func packageIdentity(at url: URL) async throws -> Data {
             let task = Task.detached(priority: .utility) {
                 try ReaderFileImportPackageManifest.digest(at: url)
@@ -56,12 +63,19 @@ enum ReaderFileImportStorage {
             },
             inspect: { name in
                 let path = targetDirectory.appending(name)
-                let destination = try path.fileURL(forRoot: drive.rootDirectory)
-                // Do not compare through links, including dangling links. Their
-                // names are occupied even when fileExists follows a missing target.
-                if (try? FileManager.default.destinationOfSymbolicLink(atPath: destination.path)) != nil {
+                let lexicalDestination = validatedTargetDirectory
+                    .appendingPathComponent(name)
+
+                // Do not invoke the strict resolver on an occupied leaf symlink:
+                // that would reject the collision before the resolver can choose
+                // the next suffix. Preserve the link and treat its name as busy.
+                if (try? FileManager.default.destinationOfSymbolicLink(
+                    atPath: lexicalDestination.path
+                )) != nil {
                     return .different
                 }
+
+                let destination = try path.fileURL(forRoot: drive.rootDirectory)
                 let destinationIsDirectory = try await drive.directoryExists(at: path)
                 let exists: Bool
                 if destinationIsDirectory { exists = true }
