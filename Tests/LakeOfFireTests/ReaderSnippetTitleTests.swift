@@ -198,6 +198,210 @@ final class ReaderSnippetTitleTests: XCTestCase {
     }
 
     @MainActor
+    func testCapturedSnippetStorageUpdatesBookmarkAndHistoryAfterGlobalReplacement() async throws {
+        try await withSnippetRealm { originalConfiguration in
+            let loaded = try await ReaderContentLoader.load(html: snippetHTML(token: "captured-storage"))
+            let snippet = try XCTUnwrap(loaded)
+            let snippetURL = snippet.url
+            try await snippet.addBookmark(realmConfiguration: originalConfiguration)
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: originalConfiguration
+                )
+                let secondHistory = HistoryRecord()
+                secondHistory.compoundKey = UUID().uuidString
+                secondHistory.url = snippetURL
+                secondHistory.title = "Second history representation"
+                secondHistory.html = "<p>Old duplicate body.</p>"
+                try await realm.asyncWrite {
+                    realm.add(secondHistory)
+                    secondHistory.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }()
+            let replacementConfiguration = makeRealmConfiguration()
+            ReaderContentLoader.bookmarkRealmConfiguration = replacementConfiguration
+            ReaderContentLoader.historyRealmConfiguration = replacementConfiguration
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
+
+            let changed = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: snippetURL,
+                title: "Original account edit",
+                html: updatedSnippetHTML(token: "captured-storage"),
+                storage: storage,
+                permitsCommit: { true }
+            )
+            XCTAssertTrue(changed)
+
+            let originalRealm = try await Realm(configuration: originalConfiguration)
+            try await originalRealm.asyncRefresh()
+            let histories = originalRealm.objects(HistoryRecord.self)
+                .filter(NSPredicate(format: "url == %@", snippetURL.absoluteString))
+            let bookmarks = originalRealm.objects(Bookmark.self)
+                .filter(NSPredicate(format: "url == %@", snippetURL.absoluteString))
+            XCTAssertEqual(histories.count, 2)
+            XCTAssertEqual(bookmarks.count, 1)
+            let objects: [any ReaderContentProtocol] = histories.map { $0 as any ReaderContentProtocol }
+                + bookmarks.map { $0 as any ReaderContentProtocol }
+            for object in objects {
+                XCTAssertEqual(object.title, "Original account edit")
+                XCTAssertTrue(object.html?.contains("Replacement bullet") == true)
+                let recordName = object.objectSchema.className + "." + object.compoundKey
+                XCTAssertNotNil(originalRealm.object(
+                    ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName
+                ))
+            }
+            let replacementRealm = try await Realm(configuration: replacementConfiguration)
+            XCTAssertEqual(replacementRealm.objects(HistoryRecord.self).count, 0)
+            XCTAssertEqual(replacementRealm.objects(Bookmark.self).count, 0)
+        }
+    }
+
+    @MainActor
+    func testCapturedSnippetSaveNoOpAndExpiredFenceDoNotAdvanceJournal() async throws {
+        try await withSnippetRealm { configuration in
+            let loaded = try await ReaderContentLoader.load(html: snippetHTML(token: "save-no-op"))
+            let snippet = try XCTUnwrap(loaded)
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
+            let html = updatedSnippetHTML(token: "save-no-op")
+            let first = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: snippet.url, title: "Manual title", html: html,
+                storage: storage, permitsCommit: { true }
+            )
+            XCTAssertTrue(first)
+            let realm = try await Realm(configuration: configuration)
+            try await realm.asyncRefresh()
+            let recordName = snippet.objectSchema.className + "." + snippet.compoundKey
+            let generation = try XCTUnwrap(realm.object(
+                ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName
+            )?.generation)
+
+            let repeated = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: snippet.url, title: "Manual title", html: html,
+                storage: storage, permitsCommit: { true }
+            )
+            let expired = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: snippet.url, title: "Rejected title", html: html,
+                storage: storage, permitsCommit: { false }
+            )
+            try await realm.asyncRefresh()
+            XCTAssertFalse(repeated)
+            XCTAssertFalse(expired)
+            XCTAssertEqual(realm.object(
+                ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName
+            )?.generation, generation)
+            XCTAssertEqual(realm.object(
+                ofType: HistoryRecord.self, forPrimaryKey: snippet.compoundKey
+            )?.title, "Manual title")
+        }
+    }
+
+    @MainActor
+    func testSnippetSaveLosingAdmissionAfterMutationRollsBackBodyTitleAndJournal() async throws {
+        try await withSnippetRealm { configuration in
+            let loaded = try await ReaderContentLoader.load(html: snippetHTML(token: "rollback-save"))
+            let snippet = try XCTUnwrap(loaded)
+            let originalTitle = snippet.title
+            let originalHTML = snippet.html
+            let key = snippet.compoundKey
+            let recordName = snippet.objectSchema.className + "." + key
+            let realm = try await Realm(configuration: configuration)
+            let generation = try XCTUnwrap(realm.object(
+                ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName
+            )?.generation)
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
+            let fence = SnippetSaveAdmissionFence(allowedChecks: 2)
+            do {
+                _ = try await ReaderContentLoader.updateSnippetContent(
+                    contentURL: snippet.url, title: "Must roll back",
+                    html: updatedSnippetHTML(token: "rollback-save"), storage: storage,
+                    permitsCommit: { fence.permitsCommit() }
+                )
+                XCTFail("Admission lost after provisional mutation must reject the transaction")
+            } catch is CancellationError {
+                // The final transaction fence rejects after provisional fields
+                // and metadata changed, rather than only at entry admission.
+            }
+            try await realm.asyncRefresh()
+            let persisted = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+            XCTAssertEqual(persisted.title, originalTitle)
+            XCTAssertEqual(persisted.html, originalHTML)
+            XCTAssertEqual(realm.object(
+                ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName
+            )?.generation, generation)
+        }
+    }
+
+    @MainActor
+    func testTitleOnlySnippetSavePreservesPersistedHTMLBytes() async throws {
+        try await withSnippetRealm { configuration in
+            let loaded = try await ReaderContentLoader.load(html: snippetHTML(token: "title-only"))
+            let snippet = try XCTUnwrap(loaded)
+            let snippetKey = snippet.compoundKey
+            let rawHTML = "<html><head></head><body><div class='mnb-snippet'><p>Keep body bytes.</p></div></body></html>\n"
+            let editorHTML = ReaderContentLoader.snippetHTML(fromHTML: rawHTML)
+            XCTAssertNotEqual(rawHTML, editorHTML)
+            let snippetKey = snippet.compoundKey
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                let record = try XCTUnwrap(realm.object(
+                    ofType: HistoryRecord.self, forPrimaryKey: snippetKey
+                ))
+                try await realm.asyncWrite {
+                    record.html = rawHTML
+                    record.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }()
+
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
+            let changed = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: snippet.url, title: "Title only", html: editorHTML,
+                storage: storage, permitsCommit: { true }
+            )
+            XCTAssertTrue(changed)
+            let realm = try await Realm(configuration: configuration)
+            try await realm.asyncRefresh()
+            let updated = try XCTUnwrap(realm.object(
+                ofType: HistoryRecord.self, forPrimaryKey: snippetKey
+            ))
+            XCTAssertEqual(updated.title, "Title only")
+            XCTAssertEqual(updated.html, rawHTML)
+        }
+    }
+
+    @MainActor
+    func testCapturedRenameAndAppendKeepOriginalStorageAfterGlobalReplacement() async throws {
+        try await withSnippetRealm { originalConfiguration in
+            let loaded = try await ReaderContentLoader.load(html: snippetHTML(token: "captured-actions"))
+            let snippet = try XCTUnwrap(loaded)
+            let replacementConfiguration = makeRealmConfiguration()
+            ReaderContentLoader.bookmarkRealmConfiguration = replacementConfiguration
+            ReaderContentLoader.historyRealmConfiguration = replacementConfiguration
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
+
+            let renamed = try await ReaderContentLoader.updateSnippetTitle(
+                contentURL: snippet.url, title: "Original account note",
+                storage: storage, permitsCommit: { true }
+            )
+            let appended = try await ReaderContentLoader.appendSnippetHTML(
+                "<p>Captured append.</p>", toContentURL: snippet.url,
+                storage: storage, permitsCommit: { true }
+            )
+            XCTAssertTrue(renamed)
+            XCTAssertTrue(appended)
+
+            let originalRealm = try await Realm(configuration: originalConfiguration)
+            try await originalRealm.asyncRefresh()
+            let originalRecord = try XCTUnwrap(originalRealm.object(
+                ofType: HistoryRecord.self, forPrimaryKey: snippet.compoundKey
+            ))
+            XCTAssertEqual(originalRecord.title, "Original account note")
+            XCTAssertTrue(originalRecord.html?.contains("Captured append.") == true)
+            let replacementRealm = try await Realm(configuration: replacementConfiguration)
+            XCTAssertEqual(replacementRealm.objects(HistoryRecord.self).count, 0)
+        }
+    }
+
+    @MainActor
     func testUpdateSnippetContentPreservesManualTitlesAndClearsPrefixFlag() async throws {
         let snippetHTML = self.snippetHTML(token: "manual-title")
         let updatedSnippetHTML = self.updatedSnippetHTML(token: "manual-title")
@@ -499,5 +703,20 @@ final class ReaderSnippetTitleTests: XCTestCase {
             XCTAssertTrue(bookmark.isTitlePrefixOfContent)
             XCTAssertEqual(bookmark.locationBarTitle, bookmark.defaultSnippetChromeTitle)
         }
+    }
+}
+
+private final class SnippetSaveAdmissionFence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var remainingChecks: Int
+
+    init(allowedChecks: Int) { remainingChecks = allowedChecks }
+
+    func permitsCommit() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard remainingChecks > 0 else { return false }
+        remainingChecks -= 1
+        return true
     }
 }
