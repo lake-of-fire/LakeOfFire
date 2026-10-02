@@ -589,6 +589,9 @@ final class ReaderSnippetTitleTests: XCTestCase {
                     bookmark.url = url
                     bookmark.title = "Captured bookmark"
                     bookmark.html = "<p>Captured body</p>"
+                    // This historical field means full content for every source,
+                    // not just RSS. A summary-only source must not become a body.
+                    bookmark.rssContainsFullContent = true
                     bookmark.createdAt = .distantFuture
                     bookmark.updateCompoundKey()
                     bookmarks.add(bookmark)
