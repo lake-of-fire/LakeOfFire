@@ -417,6 +417,130 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         await fulfillment(of: [pendingURLCalled], timeout: 0.05)
     }
 
+    func testSharedFontInjectionRejectsMountedCallerWithoutDocumentIdentity() async throws {
+        let viewModel = ReaderModeViewModel()
+        let caller = WebViewScriptCaller()
+        let owner = UUID()
+        var evaluations = 0
+        caller.installBinding(
+            ownedBy: owner,
+            asyncCaller: { _, _, _, _ in
+                evaluations += 1
+                return .init(nil)
+            },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil },
+            documentGenerationProvider: { nil }
+        )
+        defer { _ = caller.clearBinding(ownedBy: owner) }
+        XCTAssertTrue(caller.canEvaluateJavaScript)
+        XCTAssertNil(caller.currentJavaScriptBindingToken)
+
+        await viewModel.injectSharedFontIfNeeded(
+            scriptCaller: caller,
+            pageURL: URL(string: "ebook:///missing-document-identity.epub")!
+        )
+        XCTAssertEqual(evaluations, 0)
+    }
+
+    func testSharedFontInjectionCannotAdoptReplacementBinding() async throws {
+        let viewModel = ReaderModeViewModel()
+        let caller = WebViewScriptCaller()
+        let firstOwner = UUID()
+        caller.installBinding(
+            ownedBy: firstOwner,
+            asyncCaller: { _, _, _, _ in
+                XCTFail("Retired binding must not execute")
+                return .init(nil)
+            },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+        let retiredBinding = try XCTUnwrap(
+            caller.currentJavaScriptBindingToken
+        )
+        _ = caller.clearBinding(ownedBy: firstOwner)
+
+        let replacementOwner = UUID()
+        let replacementEvaluation = expectation(
+            description: "retired injection must not run on replacement binding"
+        )
+        replacementEvaluation.isInverted = true
+        caller.installBinding(
+            ownedBy: replacementOwner,
+            asyncCaller: { _, _, _, _ in
+                replacementEvaluation.fulfill()
+                return .init(nil)
+            },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+        defer { _ = caller.clearBinding(ownedBy: replacementOwner) }
+
+        await viewModel.injectSharedFontIfNeeded(
+            scriptCaller: caller,
+            pageURL: URL(string: "ebook:///binding-fence.epub")!,
+            requiring: retiredBinding
+        )
+
+        await fulfillment(of: [replacementEvaluation], timeout: 0.05)
+    }
+
+    func testNavigationFinishedCannotSettleReplacementBindingAfterFontWait()
+    async throws {
+        let viewModel = ReaderModeViewModel()
+        let caller = WebViewScriptCaller()
+        let firstOwner = UUID()
+        let fontEvaluationStarted = expectation(
+            description: "original document font injection started"
+        )
+        let gate = ReaderCallbackGate()
+        caller.installBinding(
+            ownedBy: firstOwner,
+            asyncCaller: { _, _, _, _ in
+                fontEvaluationStarted.fulfill()
+                await gate.wait()
+                return .init(nil)
+            },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+
+        let url = URL(string: "ebook:///same-url-replacement.epub")!
+        viewModel.beginReaderModeLoad(for: url)
+        var state = WebViewState.empty
+        state.pageURL = url
+
+        let finish = Task { @MainActor in
+            await viewModel.onNavigationFinished(
+                newState: state,
+                scriptCaller: caller
+            )
+        }
+        await fulfillment(of: [fontEvaluationStarted], timeout: 1)
+
+        _ = caller.clearBinding(ownedBy: firstOwner)
+        let replacementOwner = UUID()
+        caller.installBinding(
+            ownedBy: replacementOwner,
+            asyncCaller: { _, _, _, _ in .init(nil) },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+        defer { _ = caller.clearBinding(ownedBy: replacementOwner) }
+
+        await gate.release()
+        await finish.value
+
+        XCTAssertTrue(viewModel.isReaderModeLoading)
+        XCTAssertTrue(viewModel.isReaderModeLoadPending(for: url))
+    }
+
     func testPreservedDocumentFailureKeepsSettledURLLifecycleAvailable() async throws {
         let manager = NavigationTaskManager()
         var order: [String] = []

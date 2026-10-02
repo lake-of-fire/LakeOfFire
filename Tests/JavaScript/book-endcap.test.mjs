@@ -110,3 +110,18 @@ test('without an admitted native state no semantic action is issued',async()=>{
     const calls=[];const {cap}=fixture(x=>calls.push(x));cap.setReady(false);cap.enter()
     assert.equal(await cap.activate(),false);assert.deepEqual(calls,[])
 })
+
+
+
+test('account replacement retires old busy and recovery effects before its promise settles',async()=>{
+    const old=deferred(),fresh=deferred();let calls=0
+    const {cap}=fixture(()=>++calls===1?old.promise:fresh.promise)
+    cap.enter();const first=cap.activate();assert.equal(cap.busy,true)
+    cap.accountDidChange();assert.equal(cap.busy,false);assert.equal(cap.button.disabled,true)
+    cap.setReady(true);const second=cap.activate();assert.equal(cap.busy,true)
+    old.resolve({ok:true,committed:true,requestID:'old',navigation:{status:'failed'}})
+    assert.equal(await first,false);assert.equal(cap.busy,true)
+    assert.equal(cap.error.hidden,true);assert.equal(cap.button.textContent,'Finish Book')
+    fresh.resolve({ok:true,committed:true});assert.equal(await second,true)
+    assert.equal(cap.busy,false);cap.destroy()
+})

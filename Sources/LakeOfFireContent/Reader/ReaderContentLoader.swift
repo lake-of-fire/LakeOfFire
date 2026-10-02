@@ -65,6 +65,40 @@ public struct ReaderContentLoader {
     public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
     public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
 
+    /// The storage selected when a snippet edit began. A delayed save must not
+    /// follow mutable global configurations into another account's Realm.
+    public struct SnippetStorage {
+        public let bookmarkConfiguration: Realm.Configuration
+        public let historyConfiguration: Realm.Configuration
+
+        private init(
+            bookmarkConfiguration: Realm.Configuration,
+            historyConfiguration: Realm.Configuration
+        ) {
+            self.bookmarkConfiguration = bookmarkConfiguration
+            self.historyConfiguration = historyConfiguration
+        }
+
+        /// The app stores both snippet representations in the selected
+        /// content's Reader Realm. Its owning Realm outranks mutable globals.
+        @MainActor
+        public init?(content: any ReaderContentProtocol) {
+            guard let configuration = content.realm?.configuration else { return nil }
+            bookmarkConfiguration = configuration
+            historyConfiguration = configuration
+        }
+
+        /// Legacy storage can span two Realms. Its edits are atomic per Realm,
+        /// not across stores; a later failure may follow an earlier commit.
+        @MainActor
+        public static func capture() -> Self {
+            Self(
+                bookmarkConfiguration: ReaderContentLoader.bookmarkRealmConfiguration,
+                historyConfiguration: ReaderContentLoader.historyRealmConfiguration
+            )
+        }
+    }
+
     public static func resetTransientCachesForTesting() async {
         await MainActor.run {
             inFlightGetContentTasks.removeAll()
@@ -922,6 +956,51 @@ This snippet loads when the pasteboard is empty in a debug build.
     }
 
     @MainActor
+    public static func appendSnippetHTML(
+        _ appendedHTML: String,
+        toContentURL contentURL: URL,
+        storage: SnippetStorage,
+        permitsCommit: @escaping @Sendable () -> Bool
+    ) async throws -> Bool {
+        guard contentURL.isSnippetURL, permitsCommit() else { return false }
+        let normalizedAppendedHTML = normalizeSnippetSourceHTML(appendedHTML)
+        return try await { @RealmBackgroundActor in
+            try await updateCapturedSnippetRecords(
+                contentURL: contentURL, storage: storage, permitsCommit: permitsCommit
+            ) { object in
+                let currentHTML = object.html
+                guard let mergedHTML = try? appendSnippetHTML(
+                    normalizedAppendedHTML, toExistingHTML: currentHTML
+                ) else { return false }
+                let normalizedCurrentHTML = snippetHTML(
+                    fromHTML: currentHTML ?? "<html><body></body></html>"
+                )
+                let normalizedMergedHTML = snippetHTML(fromHTML: mergedHTML)
+                let resolvedTitleUpdate = resolvedSnippetTitleAfterHTMLUpdate(
+                    currentTitle: object.title,
+                    currentHTML: currentHTML,
+                    updatedHTML: mergedHTML,
+                    currentIsTitlePrefixOfContent: object.isTitlePrefixOfContent
+                )
+                let objectDidChange = normalizedCurrentHTML != normalizedMergedHTML
+                    || object.title != resolvedTitleUpdate.title
+                    || object.isTitlePrefixOfContent != resolvedTitleUpdate.isTitlePrefixOfContent
+                    || !object.rssContainsFullContent
+                    || !object.isReaderModeByDefault
+                guard objectDidChange else { return false }
+                if normalizedCurrentHTML != normalizedMergedHTML {
+                    object.html = mergedHTML
+                }
+                object.title = resolvedTitleUpdate.title
+                object.isTitlePrefixOfContent = resolvedTitleUpdate.isTitlePrefixOfContent
+                object.rssContainsFullContent = true
+                object.isReaderModeByDefault = true
+                return true
+            }
+        }()
+    }
+
+    @MainActor
     public static func updateSnippetHTML(
         contentURL: URL,
         html: String
@@ -989,46 +1068,144 @@ This snippet loads when the pasteboard is empty in a debug build.
     }
 
     @MainActor
+    public static func updateSnippetTitle(
+        contentURL: URL,
+        title: String,
+        storage: SnippetStorage,
+        permitsCommit: @escaping @Sendable () -> Bool
+    ) async throws -> Bool {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard contentURL.isSnippetURL, !trimmedTitle.isEmpty, permitsCommit() else { return false }
+        return try await { @RealmBackgroundActor in
+            try await updateCapturedSnippetRecords(
+                contentURL: contentURL, storage: storage, permitsCommit: permitsCommit
+            ) { object in
+                let isTitlePrefixOfContent = snippetTitleMatchesGeneratedPrefix(
+                    trimmedTitle, sourceHTML: object.html
+                )
+                guard object.title != trimmedTitle
+                    || object.isTitlePrefixOfContent != isTitlePrefixOfContent else { return false }
+                object.title = trimmedTitle
+                object.isTitlePrefixOfContent = isTitlePrefixOfContent
+                return true
+            }
+        }()
+    }
+
+    @MainActor
     public static func updateSnippetContent(
         contentURL: URL,
         title: String,
         html: String
     ) async throws -> Bool {
+        try await updateSnippetContent(
+            contentURL: contentURL,
+            title: title,
+            html: html,
+            storage: .capture(),
+            permitsCommit: { !Task.isCancelled }
+        )
+    }
+
+    /// Update every live bookmark and history representation in the original
+    /// storage. Check admission inside the transaction, after any Realm wait.
+    @MainActor
+    public static func updateSnippetContent(
+        contentURL: URL,
+        title: String,
+        html: String,
+        originalEditorHTML: String? = nil,
+        storage: SnippetStorage,
+        permitsCommit: @escaping @Sendable () -> Bool
+    ) async throws -> Bool {
+        guard contentURL.isSnippetURL, permitsCommit() else { return false }
         let normalizedHTML = snippetHTML(fromHTML: html)
         return try await { @RealmBackgroundActor in
-            var didChange = false
-            try await updateContent(url: contentURL) { object in
+            try await updateCapturedSnippetRecords(
+                contentURL: contentURL, storage: storage, permitsCommit: permitsCommit
+            ) { object in
+                // The unchanged draft is the exact source supplied to the
+                // editor. Do not reserialize its body, even if current storage
+                // has since received a newer body from another writer.
+                let bodyIsUnchanged = html == object.html
+                    || originalEditorHTML.map { $0 == html } == true
                 let currentHTML = snippetHTML(fromHTML: object.html ?? "<html><body></body></html>")
-                let currentTitle = object.title
+                let updatedHTML = bodyIsUnchanged ? currentHTML : normalizedHTML
                 let resolvedTitleUpdate = resolvedSnippetTitleAfterHTMLUpdate(
-                    currentTitle: currentTitle,
+                    currentTitle: object.title,
                     currentHTML: object.html,
-                    updatedHTML: normalizedHTML,
+                    updatedHTML: updatedHTML,
                     requestedTitle: title,
                     currentIsTitlePrefixOfContent: object.isTitlePrefixOfContent
                 )
-                var objectDidChange = false
-
-                if currentTitle != resolvedTitleUpdate.title {
-                    object.title = resolvedTitleUpdate.title
-                    objectDidChange = true
-                }
-                if object.isTitlePrefixOfContent != resolvedTitleUpdate.isTitlePrefixOfContent {
-                    object.isTitlePrefixOfContent = resolvedTitleUpdate.isTitlePrefixOfContent
-                    objectDidChange = true
-                }
-                if currentHTML != normalizedHTML {
+                let objectDidChange = object.title != resolvedTitleUpdate.title
+                    || object.isTitlePrefixOfContent != resolvedTitleUpdate.isTitlePrefixOfContent
+                    || (!bodyIsUnchanged && currentHTML != normalizedHTML)
+                guard objectDidChange else { return false }
+                object.title = resolvedTitleUpdate.title
+                object.isTitlePrefixOfContent = resolvedTitleUpdate.isTitlePrefixOfContent
+                if !bodyIsUnchanged && currentHTML != normalizedHTML {
                     object.html = normalizedHTML
-                    objectDidChange = true
                 }
-
-                if objectDidChange {
-                    didChange = true
-                }
-                return objectDidChange
+                return true
             }
-            return didChange
         }()
+    }
+
+    @RealmBackgroundActor
+    // Shared transaction boundary for append, rename and editor saves. Internal
+    // visibility allows deterministic tests of real writer interleavings.
+    // Separate-store compatibility remains atomic per Realm only: a thrown
+    // error can follow a prior store's commit and must not imply total rollback.
+    static func updateCapturedSnippetRecords(
+        contentURL: URL,
+        storage: SnippetStorage,
+        permitsCommit: @escaping @Sendable () -> Bool,
+        mutate: (any ReaderContentProtocol) -> Bool
+    ) async throws -> Bool {
+        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: storage.bookmarkConfiguration
+        )
+        let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: storage.historyConfiguration
+        )
+        // App-owned snippets put both representations in the same Realm.
+        // Group before writing so an account/cancellation change cannot commit
+        // one representation and roll back the other in that same store.
+        let groups: [(realm: Realm, bookmarks: Bool, histories: Bool)] = bookmarkRealm == historyRealm
+            ? [(bookmarkRealm, true, true)]
+            : [(bookmarkRealm, true, false), (historyRealm, false, true)]
+        var didChange = false
+        for group in groups {
+            let groupDidChange = try await group.realm.asyncWrite { () throws -> Bool in
+                guard !Task.isCancelled, permitsCommit() else { throw CancellationError() }
+                // Query live records only after acquiring the write. No
+                // managed object selected before an await can be revived or
+                // mutated after another writer deletes/replaces it.
+                var objects = [any ReaderContentProtocol]()
+                if group.bookmarks {
+                    objects += group.realm.objects(Bookmark.self)
+                        .filter(NSPredicate(format: "isDeleted == false AND url == %@", contentURL.absoluteString))
+                        .map { $0 as any ReaderContentProtocol }
+                }
+                if group.histories {
+                    objects += HistoryRecord.openedRecords(matching: contentURL, in: group.realm)
+                        .map { $0 as any ReaderContentProtocol }
+                }
+                let timestamp = Date()
+                var changed = false
+                for object in objects {
+                    if mutate(object) {
+                        object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                        changed = true
+                    }
+                }
+                guard !Task.isCancelled, permitsCommit() else { throw CancellationError() }
+                return changed
+            }
+            didChange = didChange || groupDidChange
+        }
+        return didChange
     }
 
     static func preferredPasteboardPayload(html: String?, text: String?) -> (text: String, explicitHTML: Bool)? {

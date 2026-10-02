@@ -522,6 +522,10 @@ final class LibraryCategoryPresentationTests: XCTestCase {
             FeedDirectory.self, UserScript.self, UserScriptAllowedDomain.self,
         ]
         configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let fixtureConfiguration = configuration
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
+        }
         return configuration
     }
 

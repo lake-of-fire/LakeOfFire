@@ -6642,8 +6642,12 @@ class Reader {
             }
             this.#markPageClusterAsRead(stateID).catch((error) => console.error(error));
         });
-        this.#bindGlobal(window, 'manabi_markVisiblePageAsRead', async (source = 'native') => {
-            return await this.markVisiblePageAsRead(source);
+        this.#bindGlobal(window, 'manabi_markVisiblePageAsRead', async (
+            source = 'native', originAccountPresentation = null
+        ) => {
+            return await this.markVisiblePageAsRead(
+                source, originAccountPresentation
+            );
         });
         this.#listen(window, 'resize', () => {
             this.#invalidateVisiblePageSegmentSnapshot();
@@ -7139,6 +7143,7 @@ class Reader {
         reason,
         animateStateID = null,
         producerOwner = null,
+        originAccountPresentation = null,
     }) {
         const validatedPayload = this.#validatedMarkReadPayload(payload);
         if (!validatedPayload) {
@@ -7171,6 +7176,11 @@ class Reader {
                 documentStartedAtMs: Number.isFinite(window.top?.performance?.timeOrigin)
                     ? window.top.performance.timeOrigin
                     : readerDocumentStartedAtMs(),
+                ...(typeof originAccountPresentation === 'string'
+                    && originAccountPresentation.length > 0
+                    ? { manualReadOriginAccountPresentation:
+                        originAccountPresentation }
+                    : {}),
                 producerOwner,
             }),
         });
@@ -7289,7 +7299,10 @@ class Reader {
             ? (payload.segments.length || payload.sentenceIdentifiers.length)
             : 0;
     }
-    async #markPageClusterAsRead(stateID, producerOwner = null, bookEvent = null) {
+    async #markPageClusterAsRead(
+        stateID, producerOwner = null, bookEvent = null,
+        originAccountPresentation = null
+    ) {
         producerOwner ??= this.#captureProducerEvidence();
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
         if (!pageTrackingState) {
@@ -7325,6 +7338,7 @@ class Reader {
                 reason: 'native-mark-read-committed',
                 animateStateID: stateID,
                 producerOwner,
+                originAccountPresentation,
             });
             if (!success) return false;
             await this.#advanceAfterMarkRead(advanceOwner);
@@ -7334,8 +7348,17 @@ class Reader {
             this.#renderPageTrackingButtons('mark-read-finished');
         }
     }
-    async markVisiblePageAsRead(source = 'native') {
+    async markVisiblePageAsRead(
+        source = 'native', originAccountPresentation = null
+    ) {
         if (this.bookEndcap?.visible || (this.bookReadingRuntime && !this.bookReadingRuntime.state.ready)) return false;
+        if (originAccountPresentation !== null) {
+            if (typeof originAccountPresentation !== 'string'
+                || this.bookReadingRuntime?.state?.accountPresentation
+                    !== originAccountPresentation) {
+                return false;
+            }
+        }
         // Capture before any demand-hydration await. A command admitted under A
         // must never acquire B's grant after a same-document lifetime rotation.
         const producerOwner = this.#captureProducerEvidence();
@@ -7350,6 +7373,11 @@ class Reader {
         if (!pageTrackingState) {
             return false;
         }
+        if (originAccountPresentation !== null
+            && this.bookReadingRuntime?.state?.accountPresentation
+                !== originAccountPresentation) {
+            return false;
+        }
         if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) return false;
         const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
         if (wasHidden) {
@@ -7362,7 +7390,9 @@ class Reader {
         } else {
             ignoreNextIncomingHideNavigation('native-page-tracking-button');
         }
-        return await this.#markPageClusterAsRead(stateID, producerOwner, bookEvent);
+        return await this.#markPageClusterAsRead(
+            stateID, producerOwner, bookEvent, originAccountPresentation
+        );
     }
     async #ensureVisiblePageTrackingState(reason = 'native-demand', explicitDoc = null) {
         const doc = this.#currentPageTrackingDocument(explicitDoc);
@@ -13455,6 +13485,8 @@ window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})
 window.manabi_bookActionDidComplete = (requestID, result) =>
     globalThis.reader?.bookActionBridge?.acknowledge(requestID, result) ?? false;
 
+window.manabi_bookAccountPresentationDidChange = stamp =>
+    globalThis.reader?.bookReadingRuntime?.accountDidChange(stamp) ?? false;
 window.manabi_refreshBookReadingState = () => globalThis.reader?.bookReadingRuntime?.state.refresh() ?? false;
 window.manabi_bookReadingStateDidUpdate = (requestID, result) =>
     globalThis.reader?.bookReadingRuntime?.state.apply(requestID, result) ?? false;

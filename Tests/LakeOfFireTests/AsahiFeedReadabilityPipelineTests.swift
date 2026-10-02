@@ -129,14 +129,6 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         let realmURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("realm")
-        addTeardownBlock {
-            let sidecarExtensions = ["realm", "realm.lock", "realm.management", "realm.note"]
-            for ext in sidecarExtensions {
-                try? FileManager.default.removeItem(
-                    at: realmURL.deletingPathExtension().appendingPathExtension(ext)
-                )
-            }
-        }
         var configuration = DefaultRealmConfiguration.configuration
         configuration.inMemoryIdentifier = nil
         configuration.fileURL = realmURL
@@ -147,6 +139,16 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             HistoryRecord.self,
         ]
         configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let fixtureConfiguration = configuration
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
+            let sidecarExtensions = ["realm", "realm.lock", "realm.management", "realm.note"]
+            for ext in sidecarExtensions {
+                try? FileManager.default.removeItem(
+                    at: realmURL.deletingPathExtension().appendingPathExtension(ext)
+                )
+            }
+        }
         return configuration
     }
 
