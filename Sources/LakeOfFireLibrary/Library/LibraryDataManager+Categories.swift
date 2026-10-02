@@ -64,7 +64,12 @@ public extension LibraryDataManager {
             }
 
             if category.isArchived,
-               !LibraryConfiguration.opmlURLs.contains(category.opmlURL) {
+               let opmlURL = category.opmlURL,
+               !LibraryConfiguration.opmlURLs.contains(opmlURL) {
+                category.isDeleted = true
+                category.refreshChangeMetadata(explicitlyModified: true)
+            } else if category.isArchived,
+                      category.opmlURL == nil {
                 category.isDeleted = true
                 category.refreshChangeMetadata(explicitlyModified: true)
             } else if !category.isArchived {
