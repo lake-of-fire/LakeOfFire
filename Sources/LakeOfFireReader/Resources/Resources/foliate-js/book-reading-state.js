@@ -1,5 +1,20 @@
 // An ordered native projection, never an epoch writer or a DOM-derived read model.
 const clone = value => JSON.parse(JSON.stringify(value))
+const accountPresentationValue = value => {
+    if (typeof value !== 'string' || !/^(0|[1-9][0-9]{0,19}):[01]$/.test(value)) return null
+    const [generation, phase] = value.split(':')
+    const integer = BigInt(generation)
+    return integer <= 18446744073709551615n ? [integer, Number(phase)] : null
+}
+// This stamp only orders presentation. It grants no producer or write authority.
+export const compareBookAccountPresentation = (next, current) => {
+    const value = accountPresentationValue(next)
+    if (!value) return null
+    if (current === null) return 1
+    const prior = accountPresentationValue(current)
+    if (!prior) return null
+    return value[0] === prior[0] ? Math.sign(value[1] - prior[1]) : value[0] > prior[0] ? 1 : -1
+}
 const sameLocation = (a, b) => !!a && !!b && a.sectionURL === b.sectionURL && a.isEndPage === b.isEndPage
 export const bookScopeKey = scope => scope ? JSON.stringify([
     scope.articleProgressID, scope.articleEpochID, scope.chapterKey, scope.chapterEpochID,
@@ -10,10 +25,23 @@ const validScope = scope => scope && typeof scope.articleProgressID === 'string'
     && typeof scope.chapterKey === 'string' && /^[0-9a-f]{64}$/.test(scope.chapterKey)
 export class BookReadingStateController {
     #location = null; #revision = 0; #pendingID = null; #state = null; #context = null
-    #closed = false; #lastSnapshotSequence = 0
+    #closed = false; #lastSnapshotSequence = 0; #accountPresentation = null
     constructor({ postMessage, documentStartedAtMs, topWindowURL,
-        onState = () => {}, onInvalidate = () => {}, isLocationCurrent = () => true, makeRequestID = () => globalThis.crypto.randomUUID().toLowerCase() }) {
-        Object.assign(this, { postMessage, documentStartedAtMs, topWindowURL, onState, onInvalidate, isLocationCurrent, makeRequestID })
+        onState = () => {}, onInvalidate = () => {}, onAccountChange = () => {},
+        requiresAccountPresentation = false, isLocationCurrent = () => true, makeRequestID = () => globalThis.crypto.randomUUID().toLowerCase() }) {
+        Object.assign(this, { postMessage, documentStartedAtMs, topWindowURL, onState, onInvalidate, onAccountChange,
+            requiresAccountPresentation, isLocationCurrent, makeRequestID })
+    }
+    get accountPresentation() { return this.#accountPresentation }
+    setAccountPresentation(stamp) {
+        const order = compareBookAccountPresentation(stamp, this.#accountPresentation)
+        if (this.#closed || order !== 1) return false
+        this.#accountPresentation = stamp
+        this.#pendingID = null; this.#state = null; this.#context = null; this.#lastSnapshotSequence = 0
+        this.onAccountChange(stamp)
+        if (this.#closed || this.#accountPresentation !== stamp) return false
+        this.onInvalidate()
+        return !this.#closed && this.#accountPresentation === stamp
     }
     get ready() { return this.#context !== null && this.isLocationCurrent() }
     get locationRevision() { return this.#revision }
@@ -45,6 +73,22 @@ export class BookReadingStateController {
         if (result.nativeRefresh === true) {
             if (!sameLocation(result.location, this.#location) || result.location.locationRevision !== this.#revision) return false
         } else if (requestID !== this.#pendingID) return false
+        const location = this.#location, revision = this.#revision
+        let expectedPendingID = this.#pendingID
+        const stamp = result.accountPresentation
+        if (stamp !== undefined || this.requiresAccountPresentation || this.#accountPresentation !== null) {
+            const order = compareBookAccountPresentation(stamp, this.#accountPresentation)
+            if (order === null || order < 0) return false
+            if (order > 0) {
+                this.setAccountPresentation(stamp)
+                expectedPendingID = null
+            }
+            if (this.#accountPresentation !== stamp) return false
+        }
+        // Account callbacks can synchronously close, relocate or refresh the
+        // reader. The older response cannot adopt that successor request.
+        if (this.#closed || this.#location !== location || this.#revision !== revision
+            || this.#pendingID !== expectedPendingID || !this.isLocationCurrent()) return false
         if (result.ok !== true) { this.#pendingID = null; this.#context = null; this.onInvalidate(); return false }
         const state = result.state, context = result.context
         if (!state || !context || !Number.isSafeInteger(state.revision) || state.revision <= 0

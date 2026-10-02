@@ -83,6 +83,14 @@ export class BookEndcap {
         return true
     }
 
+    accountDidChange() {
+        if (this.#destroyed) return
+        this.#generation += 1
+        this.#busy = false; this.#ready = false; this.#finished = false; this.#recovery = null
+        this.error.hidden = true
+        this.#render()
+    }
+
     setReady(ready) {
         this.#ready = ready === true
         this.#render()

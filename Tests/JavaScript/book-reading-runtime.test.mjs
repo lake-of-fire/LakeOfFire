@@ -39,12 +39,12 @@ function fixture() {
     }}};
     const runtime=installBookReadingRuntime({reader,view,document,window,documentStartedAtMs:1,
         applyProjection:p=>projections.push(p),invalidateProjection:()=>{},onVisibility:()=>{}});
-    const publish=(revision,parent='E1')=>{
+    const publish=(revision,parent='E1',accountPresentation='0:1')=>{
         const request=requests.at(-1), end=request.isEndPage;
         const location=renderer.displayedIndex===0?'a.xhtml':'b.xhtml';
         const scope=end?null:{articleProgressID:'book',articleEpochID:parent,
             chapterKey:(renderer.displayedIndex===0?'a':'b').repeat(64),chapterEpochID:null};
-        return runtime.state.apply(request.requestID,{ok:true,
+        return runtime.state.apply(request.requestID,{ok:true,accountPresentation,
             state:{revision,articleProgressID:'book',articleEpochID:parent,scope,finished:false,
                 bookReadPresence:'present',chapterReadPresence:end?'empty':'present',
                 readSegmentIdentifiers:end?[]:['read'],sentenceIdentifiersRead:[]},
@@ -85,7 +85,7 @@ test('terminal location never leaves hidden chapter coverage active',()=>{
     f.runtime.close();
 });
 test('missing post-commit projection is retryable without repeating the reset',async()=>{
-    const f=fixture();const target={action:'startBookOver',articleProgressID:'book',articleEpochID:'E2',
+    const f=fixture();const target={accountPresentation:'0:1',action:'startBookOver',articleProgressID:'book',articleEpochID:'E2',
         locationRevision:f.runtime.state.locationRevision};
     assert.deepEqual(await f.runtime.navigate(target),{status:'failed'});
     assert.equal(f.moves.length,0);
@@ -96,7 +96,7 @@ test('missing post-commit projection is retryable without repeating the reset',a
 });
 test('a moved or replaced reader is superseded rather than navigated again',async()=>{
     const f=fixture();f.publish(1);
-    const target={action:'startBookOver',articleProgressID:'book',articleEpochID:'E1',
+    const target={accountPresentation:'0:1',action:'startBookOver',articleProgressID:'book',articleEpochID:'E1',
         locationRevision:f.runtime.state.locationRevision};
     f.runtime.updateLocation(true);
     assert.deepEqual(await f.runtime.navigate(target),{status:'superseded'});
@@ -137,7 +137,7 @@ test('same-URL document replacement withdraws scope until its own publication',(
 test('replaced renderer cannot complete a suspended book restart navigation',async()=>{
     const f=fixture();f.publish(1);let resolve;
     f.renderer.goTo=()=>new Promise(r=>{resolve=r;});
-    const target={action:'startBookOver',articleProgressID:'book',articleEpochID:'E1',locationRevision:f.runtime.state.locationRevision};
+    const target={accountPresentation:'0:1',action:'startBookOver',articleProgressID:'book',articleEpochID:'E1',locationRevision:f.runtime.state.locationRevision};
     const pending=f.runtime.navigate(target);
     f.view.renderer={displayedIndex:1,getContents:()=>[{index:1,doc:f.b}]};
     resolve(true);assert.deepEqual(await pending,{status:'superseded'});f.runtime.close();
@@ -186,3 +186,38 @@ test('closing an end-page reader cannot publish a false return-to-chapter event'
     assert.equal(f.runtime.captureScope(f.a),null);
     f.runtime.close();assert.equal(f.requests.length,count);
 });
+
+
+
+test('same-document account signal withdraws scopes and requests a fresh book binding',()=>{
+    const f=fixture();assert.equal(f.publish(1,'E1','1:1'),true)
+    const oldEvent=f.runtime.captureEvent(f.a),oldScope=f.runtime.captureScope(f.a),before=f.requests.length
+    assert.equal(f.runtime.accountDidChange('2:0'),true)
+    assert.equal(f.requests.length,before+1);assert.equal(f.runtime.state.ready,false)
+    assert.equal(f.a.defaultView.manabi_bookReadingScope,null)
+    assert.equal(f.publish(2,'E1','2:1'),true)
+    assert.equal(f.runtime.isEventCurrent(oldEvent),false)
+    assert.equal(f.runtime.isScopeCurrent(oldScope,f.a),false,'Same book/pass IDs must not reacquire another account')
+    assert.equal(f.runtime.isEventCurrent(f.runtime.captureEvent(f.a)),true)
+    const count=f.requests.length
+    assert.equal(f.runtime.accountDidChange('2:0'),false)
+    assert.equal(f.runtime.accountDidChange('1:1'),false)
+    assert.equal(f.requests.length,count);assert.equal(f.runtime.state.ready,true)
+    f.runtime.close()
+})
+
+
+test('account change during awaited restart navigation cannot acknowledge successor movement',async()=>{
+    const f=fixture();f.publish(1,'E1','1:1');let resolve
+    f.renderer.goTo=()=>new Promise(r=>{resolve=r})
+    const target={accountPresentation:'1:1',action:'startBookOver',articleProgressID:'book',
+        articleEpochID:'E1',locationRevision:f.runtime.state.locationRevision}
+    const pending=f.runtime.navigate(target)
+    f.runtime.accountDidChange('2:1');f.publish(2,'E1','2:1')
+    resolve(true);assert.deepEqual(await pending,{status:'superseded'})
+    // The already-started physical scroll is not rollback-capable. A delayed
+    // old delivery, however, must not start another navigation or resume native work.
+    let calls=0;f.renderer.goTo=async()=>{calls++;return true}
+    assert.deepEqual(await f.runtime.navigate(target),{status:'superseded'})
+    assert.equal(calls,0);f.runtime.close()
+})

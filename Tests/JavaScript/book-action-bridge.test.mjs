@@ -83,3 +83,59 @@ test('command preserves its original producer while recovery uses fresh non-muta
  bridge.acknowledge(messages[1].deliveryID,{requestID:messages[1].requestID,ok:false,error:'stale'})
  await status
 })
+
+
+
+const accountFixture = () => {
+    const messages = [], timers = new Map(); let n = 0, timer = 0
+    const bridge = createBookActionBridge({postMessage:r=>messages.push(r),documentStartedAtMs:1,
+        topWindowURL:'ebook://book',captureContext:()=>({contextID:'context',locationRevision:1}),
+        makeRequestID:()=>`00000000-0000-4000-8000-${String(++n).padStart(12,'0')}`,
+        captureProducerOwner:()=>({token:`P${n}`}),carryProducerOwner:(body,owner)=>({...body,readerArticleProducer:owner}),
+        setTimer:fn=>{timers.set(++timer,fn);return timer},clearTimer:id=>timers.delete(id)})
+    const ack=(message,accountPresentation,extra={})=>bridge.acknowledge(message.deliveryID,
+        {requestID:message.requestID,accountPresentation,ok:true,committed:true,...extra})
+    return {bridge,messages,timers,ack}
+}
+test('account replacement releases old pending presentation as unknown and permits a fresh action', async () => {
+    const f=accountFixture();f.bridge.setAccountPresentation('1:1')
+    const old=f.bridge.perform('finishBook'), oldMessage=f.messages[0]
+    const rejected=assert.rejects(old,e=>e.outcomeUnknown===true&&e.presentationSuperseded===true)
+    assert.equal(f.bridge.setAccountPresentation('2:1'),true);await rejected
+    assert.equal(f.bridge.recoveryInfo,null);assert.equal(f.timers.size,0)
+    assert.equal(f.messages.length,1,'Account replacement must not replay a mutation')
+    assert.equal(f.ack(oldMessage,'1:1'),false)
+    const fresh=f.bridge.perform('finishBook'), freshMessage=f.messages.at(-1)
+    assert.equal(f.ack(freshMessage,undefined),false,'An unstamped reply cannot settle a stamped action')
+    assert.equal(f.ack(freshMessage,'2:1'),true);assert.equal((await fresh).committed,true)
+})
+test('cached committed outcome cannot be recovered under a successor account', async () => {
+    const f=accountFixture();f.bridge.setAccountPresentation('1:1')
+    const first=f.bridge.perform('finishBook'), message=f.messages[0]
+    f.ack(message,'1:1');assert.equal((await first).committed,true)
+    const recovery={requestID:message.requestID,action:'finishBook',kind:'status'}
+    assert.equal((await f.bridge.recover(recovery)).committed,true)
+    assert.equal(f.messages.length,1)
+    f.bridge.setAccountPresentation('2:1')
+    await assert.rejects(f.bridge.recover(recovery),e=>e.outcomeUnknown===true)
+    assert.equal(f.messages.length,1,'Cached recovery must not become a successor-account command')
+})
+test('delayed invalidation cannot clear a newer pending command even beyond Number precision', async () => {
+    const f=accountFixture();f.bridge.setAccountPresentation('9007199254740993:1')
+    const pending=f.bridge.perform('finishBook'), message=f.messages[0]
+    assert.equal(f.bridge.setAccountPresentation('9007199254740992:1'),false)
+    assert.equal(f.bridge.setAccountPresentation('9007199254740993:0'),false)
+    assert.equal(f.bridge.recoveryInfo.requestID,message.requestID)
+    assert.equal(f.ack(message,'9007199254740992:1'),false)
+    assert.equal(f.ack(message,'9007199254740993:1'),true);assert.equal((await pending).ok,true)
+})
+test('same-account publication preserves committed navigation-only recovery', async () => {
+    const f=accountFixture();f.bridge.setAccountPresentation('7:1')
+    const first=f.bridge.perform('startBookOver'), message=f.messages[0]
+    f.ack(message,'7:1',{navigation:{status:'failed'}});await first
+    assert.equal(f.bridge.setAccountPresentation('7:1'),false)
+    const recovery=f.bridge.recover();assert.equal(f.messages.at(-1).kind,'navigate')
+    f.ack(f.messages.at(-1),'7:1',{navigation:{status:'completed'}})
+    assert.equal((await recovery).navigation.status,'completed')
+    assert.deepEqual(f.messages.map(x=>x.kind),['command','navigate'])
+})

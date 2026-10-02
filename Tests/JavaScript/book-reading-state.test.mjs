@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { BookReadingStateController } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-state.js'
+import { BookReadingStateController, compareBookAccountPresentation } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-state.js'
 const make = () => {
     const messages=[], updates=[]; let n=0
     const state=new BookReadingStateController({postMessage:x=>messages.push(x),documentStartedAtMs:1,topWindowURL:'ebook://book',onState:x=>updates.push(x),makeRequestID:()=>String(++n)})
@@ -69,4 +69,69 @@ test('malformed or unqualified epoch data is not an initial-pass fallback',()=>{
         const {state,messages}=make();state.relocate({sectionURL:'chapter'});const r=response();mutate(r)
         assert.equal(state.apply(messages[0].requestID,r),false)
     }
+})
+
+
+
+test('account presentation ordering preserves full UInt64 generation and transition phase', () => {
+    assert.equal(compareBookAccountPresentation('9007199254740993:1', '9007199254740992:1'), 1)
+    assert.equal(compareBookAccountPresentation('42:0', '42:1'), -1)
+    assert.equal(compareBookAccountPresentation('42:1', '42:0'), 1)
+    assert.equal(compareBookAccountPresentation('18446744073709551615:1', '42:1'), 1)
+    for (const invalid of [undefined, '01:1', '-1:1', '42:2', '18446744073709551616:1', '2e3:1']) {
+        assert.equal(compareBookAccountPresentation(invalid, null), null)
+    }
+})
+test('new production state fails closed until native supplies an account stamp', () => {
+    const messages = []
+    const state = new BookReadingStateController({postMessage:r=>messages.push(r),
+        documentStartedAtMs:1, topWindowURL:'ebook://book', requiresAccountPresentation:true})
+    state.relocate({sectionURL:'chapter'})
+    assert.equal(state.apply(messages[0].requestID, response()), false)
+    assert.equal(state.ready, false)
+    assert.equal(state.apply(messages[0].requestID, {...response(),accountPresentation:'0:1'}), true)
+    state.refresh()
+    assert.equal(state.apply(messages.at(-1).requestID, response(2)), false)
+    assert.equal(state.accountPresentation, '0:1')
+})
+test('account invalidation before initial reply rejects old state and admits fresh same-document state', () => {
+    const {state,messages}=make();state.relocate({sectionURL:'chapter'})
+    const old=messages[0]
+    assert.equal(state.setAccountPresentation('2:0'),true)
+    state.refresh();const fresh=messages.at(-1)
+    assert.equal(state.apply(old.requestID,{...response(),accountPresentation:'1:1'}),false)
+    assert.equal(state.apply(fresh.requestID,{...response(),accountPresentation:'2:1'}),true)
+    assert.equal(state.ready,true)
+    assert.equal(state.setAccountPresentation('2:0'),false)
+    assert.equal(state.ready,true)
+})
+test('old native refresh and delayed account signal cannot replace the successor account', () => {
+    const {state,messages}=make();state.relocate({sectionURL:'chapter'})
+    state.apply(messages[0].requestID,{...response(9),accountPresentation:'1:1'})
+    state.setAccountPresentation('2:1');state.refresh()
+    assert.equal(state.apply(messages.at(-1).requestID,{...response(1),accountPresentation:'2:1'}),true)
+    const old={...response(10),accountPresentation:'1:1',nativeRefresh:true,
+        location:{sectionURL:'chapter',isEndPage:false,locationRevision:state.locationRevision}}
+    assert.equal(state.apply('old-refresh',old),false)
+    assert.equal(state.setAccountPresentation('1:1'),false)
+    assert.equal(state.accountPresentation,'2:1');assert.equal(state.state.revision,1)
+})
+test('reentrant successor account invalidation wins over an older state reply', () => {
+    const messages=[]
+    const state=new BookReadingStateController({postMessage:r=>messages.push(r),documentStartedAtMs:1,
+        topWindowURL:'ebook://book',onAccountChange:stamp=>{if(stamp==='1:1')state.setAccountPresentation('2:1')}})
+    state.relocate({sectionURL:'chapter'})
+    assert.equal(state.apply(messages[0].requestID,{...response(),accountPresentation:'1:1'}),false)
+    assert.equal(state.accountPresentation,'2:1');assert.equal(state.ready,false)
+})
+
+
+test('account adoption callback cannot attach its reply to a reentrant successor request',()=>{
+    const messages=[]
+    const state=new BookReadingStateController({postMessage:r=>messages.push(r),documentStartedAtMs:1,
+        topWindowURL:'ebook://book',onAccountChange:()=>state.refresh()})
+    state.relocate({sectionURL:'chapter'});const old=messages[0]
+    assert.equal(state.apply(old.requestID,{...response(),accountPresentation:'1:1'}),false)
+    assert.equal(state.ready,false);assert.notEqual(messages.at(-1).requestID,old.requestID)
+    assert.equal(state.apply(messages.at(-1).requestID,{...response(),accountPresentation:'1:1'}),true)
 })

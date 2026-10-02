@@ -5,6 +5,8 @@ import {
     carryReaderArticleProducerOwner,
 } from './reader-producer-evidence.js'
 
+import { compareBookAccountPresentation } from './book-reading-state.js'
+
 const actions = new Set(['finishBook', 'startChapterOver', 'startBookOver'])
 const copy = value => JSON.parse(JSON.stringify(value))
 export class BookActionUnacknowledgedError extends Error {
@@ -22,7 +24,7 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
     captureProducerOwner = captureReaderArticleProducerOwner,
     carryProducerOwner = carryReaderArticleProducerOwner,
 }) => {
-    let closed = false, current = null
+    let closed = false, current = null, accountPresentation = null
     const deliveries = new Map(), completed = new Map()
     const settle = (delivery, result, error) => {
         if (delivery.settled) return
@@ -33,6 +35,8 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
     }
     const deliver = (request, kind) => {
         if (closed) return Promise.reject(new Error('Reader closed'))
+        if (request.accountPresentation !== accountPresentation) return Promise.reject(new BookActionUnacknowledgedError(
+            'The account changed. Reopen Book Actions for the current account.', request))
         if (request.active && !request.active.settled) return request.active.promise
         if (kind === 'status' && request.result) return Promise.resolve(copy(request.result))
         // The semantic command keeps the producer captured with its Book scope.
@@ -75,6 +79,21 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
         return promise
     }
     return {
+        setAccountPresentation(stamp) {
+            if (closed || compareBookAccountPresentation(stamp, accountPresentation) !== 1) return false
+            accountPresentation = stamp
+            // Withdraw old presentation, never report an unobserved write as
+            // failed or replay it under the successor account's producer.
+            const old = Array.from(deliveries.values())
+            deliveries.clear(); completed.clear(); current = null
+            for (const delivery of old) {
+                const error = new BookActionUnacknowledgedError(
+                    'The account changed. The previous account action is no longer displayed.', delivery.request)
+                error.presentationSuperseded = true
+                settle(delivery, null, error)
+            }
+            return true
+        },
         get recoveryInfo() { return current ? { requestID: current.requestID, action: current.action,
             kind: current.result?.navigation?.status === 'failed' ? 'navigate' : 'status' } : null },
         perform(action, expectedContext = null) {
@@ -93,7 +112,7 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
             }
             const requestID = makeRequestID()
             if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(requestID)) return Promise.reject(new Error('Invalid action identifier'))
-            current = { requestID, action, context: copy(context), producerOwner,
+            current = { requestID, action, context: copy(context), producerOwner, accountPresentation,
                 sequence: 0, active: null, result: null }
             return deliver(current, 'command')
         },
@@ -111,6 +130,8 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
         acknowledge(deliveryID, result) {
             const delivery = deliveries.get(deliveryID)
             if (closed || !delivery || !result || result.requestID !== delivery.request.requestID) return false
+            const replyAccount = result.accountPresentation ?? null
+            if (replyAccount !== delivery.request.accountPresentation || replyAccount !== accountPresentation) return false
             if (result.ok === true && result.committed !== true) return false
             if (result.pending !== true && result.outcomeUnknown !== true && typeof result.ok !== 'boolean') return false
             deliveries.delete(deliveryID)
