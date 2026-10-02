@@ -35,10 +35,15 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
             clearDocumentScope(content?.doc ?? content?.document)
         }
     }
-    let endcap, observedDocument = null, observedRenderer = null
+    let endcap, bridge, observedDocument = null, observedRenderer = null
     const state = new BookReadingStateController({
         postMessage: body => handlers.ebookBookReadingState.postMessage(body),
         documentStartedAtMs, topWindowURL: window.location.href,
+        requiresAccountPresentation: true,
+        onAccountChange: stamp => {
+            bridge?.setAccountPresentation(stamp)
+            endcap?.accountDidChange()
+        },
         isLocationCurrent: () => !closed && reader.view === view
             && view.renderer === observedRenderer && primaryDocument() === observedDocument,
         onInvalidate: () => {
@@ -66,7 +71,7 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
             applyProjection(projection, details)
         },
     })
-    const bridge = createBookActionBridge({
+    bridge = createBookActionBridge({
         postMessage: payload => handlers.ebookBookAction.postMessage(payload),
         documentStartedAtMs, topWindowURL: window.location.href,
         captureContext: expected => state.captureContext(expected),
@@ -80,9 +85,16 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         return state.relocate({ sectionURL: endcap?.visible ? null : documentURL(),
             isEndPage: endcap?.visible === true }, { moved, replaced })
     }
-    const captureScope = doc => isPrimaryDocument(doc) && doc === observedDocument
-        && view.renderer === observedRenderer ? state.captureScope(doc.location?.href ?? doc.URL) : null
-    const isScopeCurrent = (scope, doc) => !!scope && bookScopeKey(scope) === bookScopeKey(captureScope(doc))
+    const scopeAccounts = new WeakMap()
+    const captureScope = doc => {
+        if (!isPrimaryDocument(doc) || doc !== observedDocument || view.renderer !== observedRenderer) return null
+        const scope = state.captureScope(doc.location?.href ?? doc.URL)
+        if (scope) scopeAccounts.set(scope, state.accountPresentation)
+        return scope
+    }
+    const isScopeCurrent = (scope, doc) => !!scope
+        && scopeAccounts.has(scope) && scopeAccounts.get(scope) === state.accountPresentation
+        && bookScopeKey(scope) === bookScopeKey(captureScope(doc))
     endcap = new BookEndcap({ document, host: document.getElementById('reader-stage'), publication: view,
         performAction: action => bridge.perform(action), recoverAction: recovery => bridge.recover(recovery),
         onChange: visible => { if (!closed) { updateLocation(); onVisibility(visible) } },
@@ -90,6 +102,13 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
     view.renderer.bookEndcap = endcap
     return {
         state, bridge, endcap, updateLocation,
+        accountDidChange(stamp) {
+            if (!state.setAccountPresentation(stamp)) return false
+            // Native withdrew its old account bind. Request a new account-owned
+            // book snapshot even when the chapter/document did not change.
+            state.refresh()
+            return true
+        },
         captureScope, isScopeCurrent,
         // Capture before a timer, promise or layout wait. A later same-URL
         // document, renderer, position or pass cannot adopt this event.
@@ -104,7 +123,11 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
                 && isScopeCurrent(event.scope, event.document)
         },
         async navigate(target) {
-            if (reader.view !== view || !view.renderer || target.locationRevision !== state.locationRevision) {
+            const accountPresentation = state.accountPresentation
+            if (accountPresentation === null) return { status: 'failed' }
+            const ownsAccount = () => !closed && state.accountPresentation === accountPresentation
+                && target.accountPresentation === accountPresentation
+            if (!ownsAccount() || reader.view !== view || !view.renderer || target.locationRevision !== state.locationRevision) {
                 return { status: 'superseded' }
             }
             // Native already committed this pass. An unavailable or still-old
@@ -118,7 +141,7 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
             if (index < 0) return { status: 'failed' }
             const renderer = view.renderer
             const result = await renderer.goTo({ index, anchor: 0, bookAction: true })
-            if (reader.view !== view || view.renderer !== renderer) return { status: 'superseded' }
+            if (!ownsAccount() || reader.view !== view || view.renderer !== renderer) return { status: 'superseded' }
             if (result !== true || getPrimaryRendererContentIndex(renderer) !== index) return { status: 'failed' }
             return { status: 'completed' }
         },

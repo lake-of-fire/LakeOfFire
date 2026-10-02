@@ -13455,6 +13455,8 @@ window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})
 window.manabi_bookActionDidComplete = (requestID, result) =>
     globalThis.reader?.bookActionBridge?.acknowledge(requestID, result) ?? false;
 
+window.manabi_bookAccountPresentationDidChange = stamp =>
+    globalThis.reader?.bookReadingRuntime?.accountDidChange(stamp) ?? false;
 window.manabi_refreshBookReadingState = () => globalThis.reader?.bookReadingRuntime?.state.refresh() ?? false;
 window.manabi_bookReadingStateDidUpdate = (requestID, result) =>
     globalThis.reader?.bookReadingRuntime?.state.apply(requestID, result) ?? false;
