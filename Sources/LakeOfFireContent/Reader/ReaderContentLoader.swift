@@ -1112,6 +1112,7 @@ This snippet loads when the pasteboard is empty in a debug build.
         contentURL: URL,
         title: String,
         html: String,
+        originalEditorHTML: String? = nil,
         storage: SnippetStorage,
         permitsCommit: @escaping @Sendable () -> Bool
     ) async throws -> Bool {
@@ -1121,21 +1122,27 @@ This snippet loads when the pasteboard is empty in a debug build.
             try await updateCapturedSnippetRecords(
                 contentURL: contentURL, storage: storage, permitsCommit: permitsCommit
             ) { object in
+                // The unchanged draft is the exact source supplied to the
+                // editor. Do not reserialize its body, even if current storage
+                // has since received a newer body from another writer.
+                let bodyIsUnchanged = html == object.html
+                    || originalEditorHTML.map { $0 == html } == true
                 let currentHTML = snippetHTML(fromHTML: object.html ?? "<html><body></body></html>")
+                let updatedHTML = bodyIsUnchanged ? currentHTML : normalizedHTML
                 let resolvedTitleUpdate = resolvedSnippetTitleAfterHTMLUpdate(
                     currentTitle: object.title,
                     currentHTML: object.html,
-                    updatedHTML: normalizedHTML,
+                    updatedHTML: updatedHTML,
                     requestedTitle: title,
                     currentIsTitlePrefixOfContent: object.isTitlePrefixOfContent
                 )
                 let objectDidChange = object.title != resolvedTitleUpdate.title
                     || object.isTitlePrefixOfContent != resolvedTitleUpdate.isTitlePrefixOfContent
-                    || currentHTML != normalizedHTML
+                    || (!bodyIsUnchanged && currentHTML != normalizedHTML)
                 guard objectDidChange else { return false }
                 object.title = resolvedTitleUpdate.title
                 object.isTitlePrefixOfContent = resolvedTitleUpdate.isTitlePrefixOfContent
-                if currentHTML != normalizedHTML {
+                if !bodyIsUnchanged && currentHTML != normalizedHTML {
                     object.html = normalizedHTML
                 }
                 return true

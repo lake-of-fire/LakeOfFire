@@ -354,7 +354,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
             let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
             let changed = try await ReaderContentLoader.updateSnippetContent(
                 contentURL: snippet.url, title: "Title only", html: editorHTML,
-                storage: storage, permitsCommit: { true }
+                originalEditorHTML: editorHTML, storage: storage, permitsCommit: { true }
             )
             XCTAssertTrue(changed)
             let realm = try await Realm(configuration: configuration)
