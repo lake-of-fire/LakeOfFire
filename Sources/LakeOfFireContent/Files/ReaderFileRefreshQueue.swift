@@ -160,6 +160,11 @@ final class ReaderFileRefreshQueue {
             // for its scope already subsumes it; otherwise replay it on resume.
             if let inFlight {
                 if let index = pending.firstIndex(where: { $0.scope == inFlight.scope }) {
+                    // Replay transfers the original admission's force too.
+                    // A later ordinary notification may replace its snapshot,
+                    // but cannot put the still-waiting forced caller behind a
+                    // throttle or ordinary work from another storage scope.
+                    pending[index].force = pending[index].force || inFlight.force
                     pending[index].completions += inFlight.completions
                 } else {
                     pending.insert(inFlight, at: 0)
