@@ -91,11 +91,14 @@ class LibraryScriptsListViewModel: ObservableObject {
     
     @MainActor
     @discardableResult
-    func deleteScript(at offsets: IndexSet) -> Task<Void, Error> {
-        let scripts = userScripts ?? []
+    func deleteScript(
+        at offsets: IndexSet,
+        displayedScriptIDs: [UUID]? = nil
+    ) -> Task<Void, Error> {
+        let visibleIDs = displayedScriptIDs ?? userScripts?.map(\.id) ?? []
         let scriptIDs = offsets.compactMap { offset -> UUID? in
-            guard scripts.indices.contains(offset), scripts[offset].isUserEditable else { return nil }
-            return scripts[offset].id
+            guard visibleIDs.indices.contains(offset) else { return nil }
+            return visibleIDs[offset]
         }
         let configurationID = libraryConfiguration?.id
         let configurationCreatedAt = libraryConfiguration?.createdAt
@@ -113,16 +116,22 @@ class LibraryScriptsListViewModel: ObservableObject {
     
     @MainActor
     @discardableResult
-    func moveScripts(fromOffsets: IndexSet, toOffset: Int) -> Task<Void, Error>? {
-        guard let libraryConfiguration, let userScripts else { return nil }
+    func moveScripts(
+        fromOffsets: IndexSet,
+        toOffset: Int,
+        displayedScriptIDs: [UUID]? = nil,
+        displayedEditableScriptIDs: Set<UUID>? = nil
+    ) -> Task<Void, Error>? {
+        guard let libraryConfiguration else { return nil }
         let originalIDs = Array(libraryConfiguration.userScriptIDs)
-        let visibleIDs = userScripts.map(\.id)
+        let visibleIDs = displayedScriptIDs ?? userScripts?.map(\.id) ?? []
+        let editableIDs = displayedEditableScriptIDs
+            ?? Set((userScripts ?? []).filter(\.isUserEditable).map(\.id))
         guard !visibleIDs.isEmpty,
               Set(visibleIDs).count == visibleIDs.count,
               fromOffsets.allSatisfy(visibleIDs.indices.contains),
-              fromOffsets.allSatisfy { userScripts[$0].isUserEditable },
+              fromOffsets.allSatisfy { editableIDs.contains(visibleIDs[$0]) },
               visibleIDs.indices.contains(toOffset) || toOffset == visibleIDs.endIndex else { return nil }
-        let editableIDs = Set(userScripts.filter(\.isUserEditable).map(\.id))
         var reorderedVisibleIDs = visibleIDs
         reorderedVisibleIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
         // A displayed locked row may be crossed by a drag but it is not a
@@ -242,6 +251,8 @@ struct LibraryScriptsListView: View {
     }
     
     @ViewBuilder func list(libraryConfiguration: LibraryConfiguration, userScripts: [UserScript]) -> some View {
+        let displayedScriptIDs = userScripts.map(\.id)
+        let displayedEditableScriptIDs = Set(userScripts.filter(\.isUserEditable).map(\.id))
         ScrollViewReader { scrollProxy in
             List(selection: $selectedScript) {
                 ForEach(userScripts) { script in
@@ -280,10 +291,14 @@ struct LibraryScriptsListView: View {
                 }
 //                .onMove(perform: $libraryConfiguration.userScripts.move)
                 .onMove {
-                    viewModel.moveScripts(fromOffsets: $0, toOffset: $1)
+                    viewModel.moveScripts(
+                        fromOffsets: $0, toOffset: $1,
+                        displayedScriptIDs: displayedScriptIDs,
+                        displayedEditableScriptIDs: displayedEditableScriptIDs
+                    )
                 }
                 .onDelete {
-                    viewModel.deleteScript(at: $0)
+                    viewModel.deleteScript(at: $0, displayedScriptIDs: displayedScriptIDs)
                 }
             }
 #if os(iOS)

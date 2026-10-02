@@ -868,10 +868,16 @@ public class LibraryDataManager: NSObject {
         }
     }
     
-    public func importOPML(fileURLs: [URL]) async {
+    public func importOPML(
+        fileURLs: [URL],
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+    ) async {
         for fileURL in fileURLs {
             do {
-                try await importOPML(fileURL: fileURL)
+                try Task.checkCancellation()
+                try await importOPML(fileURL: fileURL, realmConfiguration: realmConfiguration)
+            } catch is CancellationError {
+                return
             } catch {
                 print("Failed to import OPML from local file \(fileURL.absoluteString). Error: \(error.localizedDescription)")
             }

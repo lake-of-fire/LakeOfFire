@@ -149,10 +149,15 @@ class LibraryCategoriesViewModel: ObservableObject {
     @MainActor
     @discardableResult
     func deleteCategory(at offsets: IndexSet, from categories: [FeedCategory]?) -> Task<Void, Error> {
-        let categoryIDsToDelete: [UUID] = offsets.compactMap { offset in
-            guard let categories, categories.indices.contains(offset) else { return nil }
-            guard categories[offset].isUserEditable else { return nil }
-            return categories[offset].id
+        deleteCategory(at: offsets, fromCategoryIDs: categories?.map(\.id) ?? [])
+    }
+
+    @MainActor
+    @discardableResult
+    func deleteCategory(at offsets: IndexSet, fromCategoryIDs categoryIDs: [UUID]) -> Task<Void, Error> {
+        let categoryIDsToDelete = offsets.compactMap { offset -> UUID? in
+            guard categoryIDs.indices.contains(offset) else { return nil }
+            return categoryIDs[offset]
         }
         return Task { @MainActor in
             for categoryID in categoryIDsToDelete {
@@ -168,10 +173,14 @@ class LibraryCategoriesViewModel: ObservableObject {
    
     @MainActor
     @discardableResult
-    func moveCategories(fromOffsets: IndexSet, toOffset: Int) -> Task<Void, Error>? {
-        guard let libraryConfiguration, let userLibraryCategories else { return nil }
+    func moveCategories(
+        fromOffsets: IndexSet,
+        toOffset: Int,
+        displayedCategoryIDs: [UUID]? = nil
+    ) -> Task<Void, Error>? {
+        guard let libraryConfiguration else { return nil }
         let originalIDs = Array(libraryConfiguration.categoryIDs)
-        let visibleIDs = userLibraryCategories.map(\.id)
+        let visibleIDs = displayedCategoryIDs ?? userLibraryCategories?.map(\.id) ?? []
         guard !visibleIDs.isEmpty,
               fromOffsets.allSatisfy(visibleIDs.indices.contains),
               visibleIDs.indices.contains(toOffset) || toOffset == visibleIDs.endIndex else { return nil }
@@ -282,6 +291,7 @@ struct LibraryCategoriesView: View {
         }
 #if os(macOS)
         Button {
+            guard let exportedXML = libraryManagerViewModel.exportedOPML?.xml else { return }
             savePanel = savePanel ?? NSSavePanel()
             guard let savePanel = savePanel else { return }
             savePanel.allowedContentTypes = [UTType(exportedAs: "public.opml")]
@@ -294,11 +304,11 @@ struct LibraryCategoriesView: View {
             savePanel.nameFieldStringValue = "ManabiReaderUserLibrary.opml"
             guard let window = window else { return }
             savePanel.beginSheetModal(for: window) { result in
-                if result == NSApplication.ModalResponse.OK, let url = savePanel.url, let opml = libraryManagerViewModel.exportedOPML {
+                if result == NSApplication.ModalResponse.OK, let url = savePanel.url {
                     Task { @MainActor in
                         //                                    let filename = url.lastPathComponent
                         do {
-                            try opml.xml.write(to: url, atomically: true, encoding: String.Encoding.utf8)
+                            try exportedXML.write(to: url, atomically: true, encoding: String.Encoding.utf8)
                         }
                         catch let error as NSError {
                             NSApplication.shared.presentError(error)
@@ -314,8 +324,11 @@ struct LibraryCategoriesView: View {
         .disabled(libraryManagerViewModel.exportedOPML == nil)
 #endif
         FilePicker(types: [UTType(exportedAs: "public.opml"), .xml], allowMultiple: true, afterPresented: nil, onPicked: { urls in
+            let realmConfiguration = viewModel.realmConfiguration
             Task.detached {
-                await LibraryDataManager.shared.importOPML(fileURLs: urls)
+                await LibraryDataManager.shared.importOPML(
+                    fileURLs: urls, realmConfiguration: realmConfiguration
+                )
             }
         }, label: {
             Label("Import My Library…", systemImage: "square.and.arrow.down")
@@ -327,6 +340,7 @@ struct LibraryCategoriesView: View {
     
     @ViewBuilder var userLibraryView: some View {
         let categories = viewModel.userLibraryCategories ?? []
+        let displayedCategoryIDs = categories.map(\.id)
         ForEach(categories) { category in
             NavigationLink(value: LibrarySidebarDestination.category(category.id)) {
                 FeedCategoryButtonLabel(
@@ -367,10 +381,12 @@ struct LibraryCategoriesView: View {
             }
         }
         .onMove {
-            _ = viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
+            _ = viewModel.moveCategories(
+                fromOffsets: $0, toOffset: $1, displayedCategoryIDs: displayedCategoryIDs
+            )
         }
         .onDelete {
-            _ = viewModel.deleteCategory(at: $0, from: categories)
+            _ = viewModel.deleteCategory(at: $0, fromCategoryIDs: displayedCategoryIDs)
         }
     }
 
@@ -394,6 +410,7 @@ struct LibraryCategoriesView: View {
     
     @ViewBuilder var archiveView: some View {
         let categories = viewModel.archivedCategories ?? []
+        let displayedCategoryIDs = categories.map(\.id)
         ForEach(categories) { category in
             NavigationLink(value: LibrarySidebarDestination.category(category.id)) {
                 FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, isCompact: true)
@@ -450,7 +467,7 @@ struct LibraryCategoriesView: View {
             }
         }
         .onDelete {
-            _ = viewModel.deleteCategory(at: $0, from: categories)
+            _ = viewModel.deleteCategory(at: $0, fromCategoryIDs: displayedCategoryIDs)
         }
     }
     

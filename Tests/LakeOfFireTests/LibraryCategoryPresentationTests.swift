@@ -23,8 +23,14 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         model.libraryConfiguration = configuration
         model.userLibraryCategories = [second, first]
         model.archivedCategories = [archived]
+        let displayedUserCategoryIDs = model.userLibraryCategories!.map(\.id)
+        let displayedArchivedCategoryIDs = model.archivedCategories!.map(\.id)
+        model.userLibraryCategories = [first, second]
+        model.archivedCategories = []
 
-        try await model.deleteCategory(at: IndexSet(integer: 0), from: model.userLibraryCategories).value
+        try await model.deleteCategory(
+            at: IndexSet(integer: 0), fromCategoryIDs: displayedUserCategoryIDs
+        ).value
         realm.refresh()
         XCTAssertTrue(second.isArchived)
         XCTAssertFalse(first.isArchived)
@@ -32,7 +38,9 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         XCTAssertNotNil(journal(for: second, in: realm))
         XCTAssertNotNil(journal(for: configuration, in: realm))
 
-        try await model.deleteCategory(at: IndexSet(integer: 0), from: model.archivedCategories).value
+        try await model.deleteCategory(
+            at: IndexSet(integer: 0), fromCategoryIDs: displayedArchivedCategoryIDs
+        ).value
         realm.refresh()
         XCTAssertTrue(archived.isDeleted)
         XCTAssertNotNil(journal(for: archived, in: realm))
@@ -75,6 +83,119 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         realm.refresh()
         XCTAssertEqual(Array(configuration.categoryIDs), [second.id, hidden.id, first.id, late.id])
         XCTAssertEqual(journalGenerations(in: realm), afterNewerWrite)
+    }
+
+    func testRetainedDisplayedCategoryMoveUsesItsIDsAndRejectsNewerStoredOrdering() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let first = category("First")
+        let hidden = category("Managed")
+        hidden.opmlURL = URL(string: "https://example.com/managed.opml")
+        let second = category("Second")
+        let configuration = libraryConfiguration(
+            id: UUID(), categoryIDs: [first.id, hidden.id, second.id]
+        )
+        try realm.write { realm.add([first, hidden, second]); realm.add(configuration) }
+
+        let model = LibraryCategoriesViewModel(observesRealm: false)
+        model.libraryConfiguration = configuration
+        model.userLibraryCategories = [first, second]
+        let displayedCategoryIDs = model.userLibraryCategories!.map(\.id)
+        // The retained row callback still refers to First, even after a newer
+        // presentation has published a different row order.
+        model.userLibraryCategories = [second, first]
+        let move = try XCTUnwrap(model.moveCategories(
+            fromOffsets: IndexSet(integer: 0), toOffset: 2,
+            displayedCategoryIDs: displayedCategoryIDs
+        ))
+        try await move.value
+        realm.refresh()
+        XCTAssertEqual(Array(configuration.categoryIDs), [second.id, hidden.id, first.id])
+        XCTAssertNotNil(journal(for: configuration, in: realm))
+        XCTAssertFalse(first.isDeleted)
+        XCTAssertFalse(second.isDeleted)
+        XCTAssertNil(journal(for: hidden, in: realm))
+
+        // A callback from the earlier rendered order may not overwrite the
+        // newer stored ordering, even though its indices remain valid.
+        let beforeStaleMove = journalGenerations(in: realm)
+        let staleMove = try XCTUnwrap(model.moveCategories(
+            fromOffsets: IndexSet(integer: 0), toOffset: 2,
+            displayedCategoryIDs: displayedCategoryIDs
+        ))
+        try await staleMove.value
+        realm.refresh()
+        XCTAssertEqual(Array(configuration.categoryIDs), [second.id, hidden.id, first.id])
+        XCTAssertEqual(journalGenerations(in: realm), beforeStaleMove)
+    }
+
+    func testRetainedDisplayedFeedDeletionSurvivesRenameWithoutDeletingNewFirstRow() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let parent = category("Feeds")
+        let first = feed("Alpha", id: UUID(), categoryID: parent.id)
+        let second = feed("Beta", id: UUID(), categoryID: parent.id)
+        let configuration = libraryConfiguration(id: UUID(), categoryIDs: [parent.id])
+        try realm.write { realm.add([parent, first, second]); realm.add(configuration) }
+        let model = LibraryCategoryViewModel(
+            category: parent, libraryConfiguration: configuration,
+            selectedFeed: .constant(nil)
+        )
+        let displayedFeedIDs = try XCTUnwrap(parent.getFeeds()).map(\.id)
+        XCTAssertEqual(displayedFeedIDs, [first.id, second.id])
+        try realm.write {
+            first.title = "Zulu"
+            first.refreshChangeMetadata(explicitlyModified: true)
+        }
+        XCTAssertEqual(parent.getFeeds()?.map(\.id), [second.id, first.id])
+        let beforeDeletion = journalGenerations(in: realm)
+
+        try await model.deleteFeed(
+            at: IndexSet(integer: 0), fromFeedIDs: displayedFeedIDs
+        ).value
+        realm.refresh()
+        XCTAssertTrue(first.isDeleted)
+        XCTAssertFalse(second.isDeleted)
+        XCTAssertNotEqual(journalGenerations(in: realm), beforeDeletion)
+        XCTAssertNotNil(journal(for: first, in: realm))
+        XCTAssertNil(journal(for: second, in: realm))
+        XCTAssertNil(journal(for: parent, in: realm))
+        XCTAssertNil(journal(for: configuration, in: realm))
+
+        let afterDeletion = journalGenerations(in: realm)
+        try await model.deleteFeed(
+            at: IndexSet(integer: 0), fromFeedIDs: displayedFeedIDs
+        ).value
+        realm.refresh()
+        XCTAssertFalse(second.isDeleted)
+        XCTAssertEqual(journalGenerations(in: realm), afterDeletion)
+    }
+
+    func testDisplayedFeedDeletionRejectsNewlyManagedCategoryWithoutChangingJournals() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let parent = category("Feeds")
+        let target = feed("Target", id: UUID(), categoryID: parent.id)
+        let configuration = libraryConfiguration(id: UUID(), categoryIDs: [parent.id])
+        try realm.write { realm.add([parent, target]); realm.add(configuration) }
+        let model = LibraryCategoryViewModel(
+            category: parent, libraryConfiguration: configuration,
+            selectedFeed: .constant(nil)
+        )
+        let displayedFeedIDs = try XCTUnwrap(parent.getFeeds()).map(\.id)
+        let deletion = model.deleteFeed(at: IndexSet(integer: 0), fromFeedIDs: displayedFeedIDs)
+        // The command is queued on MainActor; editability changes before its
+        // background write turn, while the displayed row remains the same.
+        try realm.write {
+            parent.opmlURL = URL(string: "https://example.com/managed.opml")
+            parent.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let beforeRejectedDeletion = journalGenerations(in: realm)
+        try await deletion.value
+        realm.refresh()
+        XCTAssertFalse(target.isDeleted)
+        XCTAssertNil(journal(for: target, in: realm))
+        XCTAssertEqual(journalGenerations(in: realm), beforeRejectedDeletion)
     }
 
     func testCategoryCommandsAndRefreshStayInCapturedRealmAfterGlobalReplacement() async throws {
@@ -396,11 +517,16 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         )
         model.libraryConfiguration = capturedLibrary
         model.userScripts = [capturedFirst, capturedLocked, capturedSecond]
+        let displayedScriptIDs = model.userScripts!.map(\.id)
+        let displayedEditableScriptIDs = Set(model.userScripts!.filter(\.isUserEditable).map(\.id))
+        model.userScripts = [capturedSecond, capturedLocked, capturedFirst]
         LibraryDataManager.realmConfiguration = replacementConfiguration
 
         let move = try XCTUnwrap(model.moveScripts(
             fromOffsets: IndexSet(integer: 2),
-            toOffset: 0
+            toOffset: 0,
+            displayedScriptIDs: displayedScriptIDs,
+            displayedEditableScriptIDs: displayedEditableScriptIDs
         ))
         try await move.value
         capturedRealm.refresh()
@@ -413,6 +539,17 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         XCTAssertNotNil(journal(for: capturedLibrary, in: capturedRealm))
         XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
 
+        let beforeStaleMove = journalGenerations(in: capturedRealm)
+        let staleMove = try XCTUnwrap(model.moveScripts(
+            fromOffsets: IndexSet(integer: 2), toOffset: 0,
+            displayedScriptIDs: displayedScriptIDs,
+            displayedEditableScriptIDs: displayedEditableScriptIDs
+        ))
+        try await staleMove.value
+        capturedRealm.refresh()
+        XCTAssertEqual(Array(capturedLibrary.userScriptIDs), [secondID, hiddenID, lockedID, firstID])
+        XCTAssertEqual(journalGenerations(in: capturedRealm), beforeStaleMove)
+
         model.userScripts = [capturedSecond, capturedLocked, capturedFirst]
         let beforeNoOps = journalGenerations(in: capturedRealm)
         XCTAssertNil(model.moveScripts(fromOffsets: IndexSet(integer: 0), toOffset: 0))
@@ -423,8 +560,11 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         XCTAssertFalse(capturedLocked.isArchived)
 
         model.userScripts = [capturedSecond, capturedLocked, capturedFirst]
-        let deletion = model.deleteScript(at: IndexSet(integer: 2))
+        let displayedDeletionIDs = model.userScripts!.map(\.id)
         model.userScripts = [capturedLocked, capturedSecond]
+        let deletion = model.deleteScript(
+            at: IndexSet(integer: 2), displayedScriptIDs: displayedDeletionIDs
+        )
         try await deletion.value
         capturedRealm.refresh()
         replacementRealm.refresh()
