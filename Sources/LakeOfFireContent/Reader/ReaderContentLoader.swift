@@ -88,6 +88,8 @@ public struct ReaderContentLoader {
             historyConfiguration = configuration
         }
 
+        /// Legacy storage can span two Realms. Its edits are atomic per Realm,
+        /// not across stores; a later failure may follow an earlier commit.
         @MainActor
         public static func capture() -> Self {
             Self(
@@ -1151,7 +1153,11 @@ This snippet loads when the pasteboard is empty in a debug build.
     }
 
     @RealmBackgroundActor
-    private static func updateCapturedSnippetRecords(
+    // Shared transaction boundary for append, rename and editor saves. Internal
+    // visibility allows deterministic tests of real writer interleavings.
+    // Separate-store compatibility remains atomic per Realm only: a thrown
+    // error can follow a prior store's commit and must not imply total rollback.
+    static func updateCapturedSnippetRecords(
         contentURL: URL,
         storage: SnippetStorage,
         permitsCommit: @escaping @Sendable () -> Bool,
@@ -1163,25 +1169,41 @@ This snippet loads when the pasteboard is empty in a debug build.
         let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(
             for: storage.historyConfiguration
         )
-        let bookmarks = Array(bookmarkRealm.objects(Bookmark.self)
-            .filter(NSPredicate(format: "isDeleted == false AND url == %@", contentURL.absoluteString)))
-        let histories = Array(HistoryRecord.openedRecords(matching: contentURL, in: historyRealm))
-        let objects: [any ReaderContentProtocol] = bookmarks.map { $0 as any ReaderContentProtocol }
-            + histories.map { $0 as any ReaderContentProtocol }
-        let timestamp = Date()
+        // App-owned snippets put both representations in the same Realm.
+        // Group before writing so an account/cancellation change cannot commit
+        // one representation and roll back the other in that same store.
+        let groups: [(realm: Realm, bookmarks: Bool, histories: Bool)] = bookmarkRealm == historyRealm
+            ? [(bookmarkRealm, true, true)]
+            : [(bookmarkRealm, true, false), (historyRealm, false, true)]
         var didChange = false
-
-        for object in objects {
-            guard let realm = object.realm else { continue }
-            try await realm.asyncWrite {
-                guard permitsCommit() else { throw CancellationError() }
-                let objectDidChange = mutate(object)
-                if objectDidChange {
-                    object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+        for group in groups {
+            let groupDidChange = try await group.realm.asyncWrite { () throws -> Bool in
+                guard !Task.isCancelled, permitsCommit() else { throw CancellationError() }
+                // Query live records only after acquiring the write. No
+                // managed object selected before an await can be revived or
+                // mutated after another writer deletes/replaces it.
+                var objects = [any ReaderContentProtocol]()
+                if group.bookmarks {
+                    objects += group.realm.objects(Bookmark.self)
+                        .filter(NSPredicate(format: "isDeleted == false AND url == %@", contentURL.absoluteString))
+                        .map { $0 as any ReaderContentProtocol }
                 }
-                guard permitsCommit() else { throw CancellationError() }
-                didChange = didChange || objectDidChange
+                if group.histories {
+                    objects += HistoryRecord.openedRecords(matching: contentURL, in: group.realm)
+                        .map { $0 as any ReaderContentProtocol }
+                }
+                let timestamp = Date()
+                var changed = false
+                for object in objects {
+                    if mutate(object) {
+                        object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                        changed = true
+                    }
+                }
+                guard !Task.isCancelled, permitsCommit() else { throw CancellationError() }
+                return changed
             }
+            didChange = didChange || groupDidChange
         }
         return didChange
     }
