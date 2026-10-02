@@ -3,7 +3,7 @@ import BigSyncKit
 import RealmSwift
 import RealmSwiftGaps
 @testable import LakeOfFireContent
-import LakeOfFireReader
+@testable import LakeOfFireReader
 import SwiftUIWebView
 
 final class ReaderSnippetTitleTests: XCTestCase {
@@ -93,6 +93,51 @@ final class ReaderSnippetTitleTests: XCTestCase {
             XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, destination.absoluteString)
             XCTAssertFalse(mode.isReaderModeLoading)
         }
+    }
+
+    @MainActor
+    func testSuspendedOldSnippetLoadCannotChangeSuccessorReaderMode() async throws {
+        let navigator = WebViewNavigator()
+        let mode = ReaderModeViewModel()
+        let original = HistoryRecord()
+        original.url = URL(string: "https://example.com/original")!
+        original.isReaderModeByDefault = true
+        let successor = URL(string: "https://example.com/successor")!
+        let entered = expectation(description: "Old resolution suspended")
+        var continuation: CheckedContinuation<URL?, Never>?
+        let task = Task { @MainActor in
+            try await navigator.loadResolvedContent(
+                content: original, readerModeViewModel: mode, shouldLoad: { true },
+                resolveURL: {
+                    await withCheckedContinuation {
+                        continuation = $0
+                        entered.fulfill()
+                    }
+                }
+            )
+        }
+        await fulfillment(of: [entered], timeout: 3)
+        navigator.load(URLRequest(url: successor))
+        continuation?.resume(returning: original.url)
+        try await task.value
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, successor.absoluteString)
+        XCTAssertFalse(mode.isReaderModeLoading)
+        XCTAssertNil(mode.lastRenderedURL)
+    }
+
+    @MainActor
+    func testCurrentResolvedSnippetStillStartsReaderModeAndNavigates() async throws {
+        let navigator = WebViewNavigator()
+        let mode = ReaderModeViewModel()
+        let content = HistoryRecord()
+        content.url = URL(string: "https://example.com/current")!
+        content.isReaderModeByDefault = true
+        try await navigator.loadResolvedContent(
+            content: content, readerModeViewModel: mode, shouldLoad: { true },
+            resolveURL: { content.url }
+        )
+        XCTAssertTrue(mode.isReaderModeLoading)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, content.url.absoluteString)
     }
 
     @MainActor

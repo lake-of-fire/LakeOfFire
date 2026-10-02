@@ -1035,22 +1035,29 @@ public extension WebViewNavigator {
         readerModeViewModel: ReaderModeViewModel?,
         shouldLoad: @MainActor () -> Bool = { true }
     ) async throws {
-        let loadStartedAt = CFAbsoluteTimeGetCurrent()
+        try await loadResolvedContent(
+            content: content, readerModeViewModel: readerModeViewModel, shouldLoad: shouldLoad,
+            resolveURL: {
+                try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager)
+            }
+        )
+    }
+
+    /// Shared execution path; the resolver permits deterministic suspension tests
+    /// without replacing navigation or presentation effects with a model.
+    @MainActor
+    internal func loadResolvedContent(
+        content: any ReaderContentProtocol,
+        readerModeViewModel: ReaderModeViewModel?,
+        shouldLoad: @MainActor () -> Bool,
+        resolveURL: @MainActor () async throws -> URL?
+    ) async throws {
         let beginSnapshot = debugLoadSnapshot
-        if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
+        if let url = try await resolveURL() {
             // Callers refreshing an existing document can lose ownership while
             // native content is being resolved. Check before any UI mutation.
             guard shouldLoad() else { return }
             let loadSnapshot = debugLoadSnapshot
-            let resolvedAt = CFAbsoluteTimeGetCurrent()
-            if let readerModeViewModel {
-                if url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
-                    let isLoading = content.isReaderModeByDefault || url.isReaderURLLoaderURL
-                    readerModeViewModel.readerModeLoading(isLoading)
-                } else {
-                }
-            } else {
-            }
             if loadSnapshot.lastRequestURL == url.absoluteString
                 || loadSnapshot.lastDataLoadBaseURL == url.absoluteString
                 || loadSnapshot.lastHTMLBaseURL == url.absoluteString
@@ -1072,8 +1079,12 @@ public extension WebViewNavigator {
             if navigatorMovedSinceBegin && !targetStillCurrent {
                 return
             }
+            // No presentation effect may precede the stale-navigation check.
+            if let readerModeViewModel,
+               url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
+                readerModeViewModel.readerModeLoading(content.isReaderModeByDefault || url.isReaderURLLoaderURL)
+            }
             load(URLRequest(url: url))
-            let afterDispatchSnapshot = debugLoadSnapshot
         } else {
         }
     }
