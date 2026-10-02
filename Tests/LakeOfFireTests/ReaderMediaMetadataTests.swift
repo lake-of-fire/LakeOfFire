@@ -174,7 +174,12 @@ final class ReaderMediaMetadataTests: XCTestCase {
         let realmURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(name)
             .appendingPathExtension("realm")
+        var configuration = Realm.Configuration(fileURL: realmURL)
+        configuration.objectTypes = [Bookmark.self, ContentFile.self, HistoryRecord.self, FeedEntry.self]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let fixtureConfiguration = configuration
         addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
             let sidecarExtensions = ["realm", "realm.lock", "realm.management", "realm.note"]
             for ext in sidecarExtensions {
                 try? FileManager.default.removeItem(
@@ -182,9 +187,6 @@ final class ReaderMediaMetadataTests: XCTestCase {
                 )
             }
         }
-        var configuration = Realm.Configuration(fileURL: realmURL)
-        configuration.objectTypes = [Bookmark.self, ContentFile.self, HistoryRecord.self, FeedEntry.self]
-        configureLakeOfFireMutationTrackingForTesting(&configuration)
         return configuration
     }
 

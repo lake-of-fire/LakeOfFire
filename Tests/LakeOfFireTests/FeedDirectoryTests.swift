@@ -11,6 +11,10 @@ final class FeedDirectoryTests: XCTestCase {
         var config = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         config.objectTypes = [FeedCategory.self, FeedDirectory.self, Feed.self]
         configureLakeOfFireMutationTrackingForTesting(&config)
+        let fixtureConfiguration = config
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
+        }
         let realm = try Realm(configuration: config)
 
         let categoryID = UUID()
@@ -75,11 +79,15 @@ final class FeedDirectoryTests: XCTestCase {
         let originalConfiguration = LibraryDataManager.realmConfiguration
         defer { LibraryDataManager.realmConfiguration = originalConfiguration }
         let realmURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).realm")
-        defer { try? FileManager.default.removeItem(at: realmURL) }
         var config = DefaultRealmConfiguration.configuration
         config.inMemoryIdentifier = nil
         config.fileURL = realmURL
         configureLakeOfFireMutationTrackingForTesting(&config)
+        let fixtureConfiguration = config
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
+            try? FileManager.default.removeItem(at: realmURL)
+        }
         XCTAssertNotNil(config.fileURL)
         LibraryDataManager.realmConfiguration = config
 
@@ -184,10 +192,14 @@ final class FeedDirectoryTests: XCTestCase {
         }
         var config = DefaultRealmConfiguration.configuration
         let realmURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).realm")
-        defer { try? FileManager.default.removeItem(at: realmURL) }
         config.inMemoryIdentifier = nil
         config.fileURL = realmURL
         configureLakeOfFireMutationTrackingForTesting(&config)
+        let fixtureConfiguration = config
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
+            try? FileManager.default.removeItem(at: realmURL)
+        }
         XCTAssertNotNil(config.fileURL)
         LibraryDataManager.realmConfiguration = config
 

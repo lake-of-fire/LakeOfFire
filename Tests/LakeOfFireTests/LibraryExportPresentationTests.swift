@@ -18,12 +18,7 @@ final class LibraryExportPresentationTests: XCTestCase {
 #if os(macOS)
     func testFailedFileWriteExposesRetryAndOnlySharesPreparedOPML() async throws {
         let previous = LibraryDataManager.realmConfiguration
-        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
-        configuration.objectTypes = [
-            LibraryConfiguration.self, FeedCategory.self, FeedDirectory.self,
-            Feed.self, UserScript.self, UserScriptAllowedDomain.self,
-        ]
-        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let configuration = makeLibraryRealmConfiguration()
         LibraryDataManager.realmConfiguration = configuration
         defer { LibraryDataManager.realmConfiguration = previous }
         let manager = LibraryManagerViewModel(observesRealm: false)
@@ -196,12 +191,7 @@ final class LibraryExportPresentationTests: XCTestCase {
 
     func testVisibleExportRepreparesAfterScriptAndIndependentDomainEdits() async throws {
         let previous = LibraryDataManager.realmConfiguration
-        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
-        configuration.objectTypes = [
-            LibraryConfiguration.self, FeedCategory.self, FeedDirectory.self,
-            Feed.self, UserScript.self, UserScriptAllowedDomain.self,
-        ]
-        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let configuration = makeLibraryRealmConfiguration()
         LibraryDataManager.realmConfiguration = configuration
         defer { LibraryDataManager.realmConfiguration = previous }
         let identifiers = try await Task { @RealmBackgroundActor in
@@ -768,12 +758,7 @@ final class LibraryExportPresentationTests: XCTestCase {
 #if os(macOS)
     func testVisibleViewsReprepareAfterMutationAndKeepEarlierSharedFile() async throws {
         let previous = LibraryDataManager.realmConfiguration
-        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
-        configuration.objectTypes = [
-            LibraryConfiguration.self, FeedCategory.self, FeedDirectory.self,
-            Feed.self, UserScript.self, UserScriptAllowedDomain.self,
-        ]
-        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let configuration = makeLibraryRealmConfiguration()
         LibraryDataManager.realmConfiguration = configuration
         defer { LibraryDataManager.realmConfiguration = previous }
         let realm = try await Realm(configuration: configuration)
@@ -947,6 +932,10 @@ final class LibraryExportPresentationTests: XCTestCase {
             UserScriptAllowedDomain.self,
         ]
         configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let fixtureConfiguration = configuration
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
+        }
         return configuration
     }
 
