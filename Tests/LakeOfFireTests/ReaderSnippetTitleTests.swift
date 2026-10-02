@@ -11,7 +11,14 @@ final class ReaderSnippetTitleTests: XCTestCase {
         let realmURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(name)
             .appendingPathExtension("realm")
+        var configuration = Realm.Configuration(fileURL: realmURL)
+        configuration.objectTypes = [Bookmark.self, ContentFile.self, HistoryRecord.self, FeedEntry.self]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let fixtureConfiguration = configuration
         addTeardownBlock {
+            let released = await RealmBackgroundActor.shared.releaseSnippetTitleFixture(fixtureConfiguration)
+            XCTAssertTrue(released, "Snippet fixture writers must finish before file cleanup")
+            guard released else { return }
             let sidecarExtensions = ["realm", "realm.lock", "realm.management", "realm.note"]
             for ext in sidecarExtensions {
                 try? FileManager.default.removeItem(
@@ -19,9 +26,6 @@ final class ReaderSnippetTitleTests: XCTestCase {
                 )
             }
         }
-        var configuration = Realm.Configuration(fileURL: realmURL)
-        configuration.objectTypes = [Bookmark.self, ContentFile.self, HistoryRecord.self, FeedEntry.self]
-        configureLakeOfFireMutationTrackingForTesting(&configuration)
         return configuration
     }
 
@@ -332,6 +336,159 @@ final class ReaderSnippetTitleTests: XCTestCase {
     }
 
     @MainActor
+    func testCapturedSnippetRepresentationsRollBackTogetherAtFinalFence() async throws {
+        try await withSnippetRealm { configuration in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Atomic original.</p>")
+            let snippet = try XCTUnwrap(loaded)
+            let url = snippet.url
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                try Self.seedSnippetRepresentations(url: url, in: realm)
+                let before = Self.snippetWriteSnapshot(in: realm)
+                let probe = SnippetAtomicWriteProbe(realm: realm, url: url)
+                do {
+                    _ = try await ReaderContentLoader.updateCapturedSnippetRecords(
+                        contentURL: url, storage: storage,
+                        permitsCommit: { probe.permitsCommitBeforeHistoryChanges() },
+                        mutate: { Self.writeSnippetTestContent($0) }
+                    )
+                    XCTFail("A rejected final fence must roll back every representation")
+                } catch is CancellationError {}
+                XCTAssertTrue(probe.observedProvisionalBookmark)
+                XCTAssertTrue(probe.observedProvisionalHistory)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: realm), before)
+
+                let changed = try await ReaderContentLoader.updateCapturedSnippetRecords(
+                    contentURL: url, storage: storage, permitsCommit: { true },
+                    mutate: { Self.writeSnippetTestContent($0) }
+                )
+                XCTAssertTrue(changed)
+                let committed = Self.snippetWriteSnapshot(in: realm)
+                XCTAssertTrue(realm.objects(Bookmark.self).allSatisfy { $0.title == "Atomic saved" })
+                XCTAssertTrue(HistoryRecord.openedRecords(matching: url, in: realm).allSatisfy {
+                    $0.title == "Atomic saved"
+                })
+                let dates = Set(realm.objects(Bookmark.self).map(\.modifiedAt)
+                    + HistoryRecord.openedRecords(matching: url, in: realm).map(\.modifiedAt))
+                XCTAssertEqual(dates.count, 1)
+                let repeated = try await ReaderContentLoader.updateCapturedSnippetRecords(
+                    contentURL: url, storage: storage, permitsCommit: { true },
+                    mutate: { Self.writeSnippetTestContent($0) }
+                )
+                XCTAssertFalse(repeated)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: realm), committed)
+            }()
+        }
+    }
+
+    @MainActor
+    func testCapturedSnippetWriterRequeriesLiveRowsAfterWriteAdmission() async throws {
+        try await withSnippetRealm { configuration in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Live selection.</p>")
+            let snippet = try XCTUnwrap(loaded)
+            let url = snippet.url
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                try Self.seedSnippetRepresentations(url: url, in: realm)
+                let probe = SnippetAtomicWriteProbe(realm: realm, url: url)
+                let changed = try await ReaderContentLoader.updateCapturedSnippetRecords(
+                    contentURL: url, storage: storage,
+                    permitsCommit: { probe.deleteBookmarkAtWriteAdmission() },
+                    mutate: { Self.writeSnippetTestContent($0) }
+                )
+                XCTAssertTrue(changed)
+                XCTAssertTrue(probe.didDeleteBookmark)
+                let bookmark = try XCTUnwrap(realm.object(ofType: Bookmark.self, forPrimaryKey: "atomic-bookmark"))
+                XCTAssertTrue(bookmark.isDeleted)
+                XCTAssertEqual(bookmark.title, "Original bookmark")
+                XCTAssertEqual(bookmark.html, "<p>Original bookmark.</p>")
+                XCTAssertTrue(HistoryRecord.openedRecords(matching: url, in: realm).allSatisfy {
+                    $0.title == "Atomic saved"
+                })
+            }()
+        }
+    }
+
+    @MainActor
+    func testSeparateCapturedStoresDoNotClaimWholeSaveAfterLaterFenceWithdraws() async throws {
+        try await withSnippetRealm { bookmarkConfiguration in
+            let historyConfiguration = makeRealmConfiguration()
+            ReaderContentLoader.historyRealmConfiguration = historyConfiguration
+            let storage = ReaderContentLoader.SnippetStorage.capture()
+            let url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "separate-store-change"))
+            try await { @RealmBackgroundActor in
+                let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkConfiguration)
+                let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyConfiguration)
+                let bookmark = Bookmark()
+                bookmark.compoundKey = "separate-bookmark"
+                bookmark.url = url
+                bookmark.title = "Original bookmark"
+                let history = HistoryRecord()
+                history.compoundKey = "separate-history"
+                history.url = url
+                history.title = "Original history"
+                try bookmarkRealm.write { bookmarkRealm.add(bookmark) }
+                try historyRealm.write { historyRealm.add(history) }
+                let historyBefore = Self.snippetWriteSnapshot(in: historyRealm)
+                let probe = SnippetCommittedStoreProbe(bookmarkRealm: bookmarkRealm)
+                do {
+                    _ = try await ReaderContentLoader.updateCapturedSnippetRecords(
+                        contentURL: url, storage: storage, permitsCommit: { probe.permitsCommit() },
+                        mutate: { Self.writeSnippetTestContent($0) }
+                    )
+                    XCTFail("Separate stores cannot claim the whole edit completed after ownership leaves")
+                } catch is CancellationError {
+                    // Compatibility is atomic per store. The prior committed
+                    // bookmark is retained; the later history was not changed.
+                }
+                XCTAssertTrue(probe.observedCommittedStore)
+                XCTAssertEqual(bookmark.title, "Atomic saved")
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: historyRealm), historyBefore)
+            }()
+        }
+    }
+
+    @RealmBackgroundActor
+    private static func seedSnippetRepresentations(url: URL, in realm: Realm) throws {
+        let bookmark = Bookmark()
+        bookmark.compoundKey = "atomic-bookmark"
+        bookmark.url = url
+        bookmark.title = "Original bookmark"
+        bookmark.html = "<p>Original bookmark.</p>"
+        let history = HistoryRecord()
+        history.compoundKey = "atomic-second-history"
+        history.url = url
+        history.title = "Original second history"
+        history.html = "<p>Original second history.</p>"
+        try realm.write { realm.add(bookmark); realm.add(history) }
+    }
+
+    @RealmBackgroundActor
+    private static func writeSnippetTestContent(_ object: any ReaderContentProtocol) -> Bool {
+        guard object.title != "Atomic saved" else { return false }
+        object.title = "Atomic saved"
+        object.html = "<p>Atomic replacement body.</p>"
+        return true
+    }
+
+    @RealmBackgroundActor
+    private static func snippetWriteSnapshot(in realm: Realm) -> [String: String] {
+        var snapshot = [String: String]()
+        let objects: [any ReaderContentProtocol] = realm.objects(Bookmark.self).map { $0 as any ReaderContentProtocol }
+            + realm.objects(HistoryRecord.self).map { $0 as any ReaderContentProtocol }
+        for object in objects {
+            snapshot[object.objectSchema.className + "." + object.compoundKey] =
+                "\(object.title)|\(object.html ?? "")|\(object.modifiedAt)|\(object.explicitlyModifiedAt?.description ?? "nil")|\(object.isDeleted)"
+        }
+        for journal in realm.objects(BigSyncPendingMutation.self) {
+            snapshot["journal." + journal.recordName] = journal.generation
+        }
+        return snapshot
+    }
+
+    @MainActor
     func testTitleOnlySnippetSavePreservesPersistedHTMLBytes() async throws {
         try await withSnippetRealm { configuration in
             let loaded = try await ReaderContentLoader.load(html: snippetHTML(token: "title-only"))
@@ -340,7 +497,6 @@ final class ReaderSnippetTitleTests: XCTestCase {
             let rawHTML = "<html><head></head><body><div class='mnb-snippet'><p>Keep body bytes.</p></div></body></html>\n"
             let editorHTML = ReaderContentLoader.snippetHTML(fromHTML: rawHTML)
             XCTAssertNotEqual(rawHTML, editorHTML)
-            let snippetKey = snippet.compoundKey
             try await { @RealmBackgroundActor in
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
                 let record = try XCTUnwrap(realm.object(
@@ -718,5 +874,59 @@ private final class SnippetSaveAdmissionFence: @unchecked Sendable {
         guard remainingChecks > 0 else { return false }
         remainingChecks -= 1
         return true
+    }
+}
+
+/// These probes are used only by the internal RealmBackgroundActor writer;
+/// unlike public admission callbacks, they are never called on MainActor.
+private final class SnippetAtomicWriteProbe: @unchecked Sendable {
+    let realm: Realm
+    let url: URL
+    private(set) var observedProvisionalBookmark = false
+    private(set) var observedProvisionalHistory = false
+    private(set) var didDeleteBookmark = false
+
+    init(realm: Realm, url: URL) { self.realm = realm; self.url = url }
+
+    func permitsCommitBeforeHistoryChanges() -> Bool {
+        precondition(realm.isInWriteTransaction)
+        observedProvisionalBookmark = observedProvisionalBookmark
+            || realm.objects(Bookmark.self).contains { $0.title == "Atomic saved" }
+        observedProvisionalHistory = observedProvisionalHistory
+            || HistoryRecord.openedRecords(matching: url, in: realm).contains { $0.title == "Atomic saved" }
+        return !observedProvisionalHistory
+    }
+
+    func deleteBookmarkAtWriteAdmission() -> Bool {
+        precondition(realm.isInWriteTransaction)
+        if !didDeleteBookmark,
+           let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: "atomic-bookmark") {
+            didDeleteBookmark = true
+            bookmark.isDeleted = true
+            bookmark.refreshChangeMetadata(explicitlyModified: true)
+        }
+        return true
+    }
+}
+
+private final class SnippetCommittedStoreProbe: @unchecked Sendable {
+    let bookmarkRealm: Realm
+    private(set) var observedCommittedStore = false
+    init(bookmarkRealm: Realm) { self.bookmarkRealm = bookmarkRealm }
+    func permitsCommit() -> Bool {
+        let priorCommit = !bookmarkRealm.isInWriteTransaction
+            && bookmarkRealm.objects(Bookmark.self).contains { $0.title == "Atomic saved" }
+        observedCommittedStore = observedCommittedStore || priorCommit
+        return !priorCommit
+    }
+}
+
+private extension RealmBackgroundActor {
+    /// Runs on the owning actor instance after the fixture's awaited work.
+    func releaseSnippetTitleFixture(_ configuration: Realm.Configuration) -> Bool {
+        let key = realmCacheKey(for: configuration)
+        guard let realm = cachedRealms[key] else { return true }
+        guard !realm.isInWriteTransaction else { return false }
+        return removeCachedRealm(for: configuration)
     }
 }
