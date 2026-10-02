@@ -262,11 +262,12 @@ final class LibraryRegressionTests: XCTestCase {
             configuration: capturedConfiguration, actor: RealmBackgroundActor.shared
         )
         let library = try XCTUnwrap(capturedRealm.objects(LibraryConfiguration.self).first)
+        let libraryID = library.id
         XCTAssertEqual(Array(library.categoryIDs), [firstCategoryID])
         let firstRecordNames = [
             "FeedCategory.\(firstCategoryID)",
             "Feed.\(firstFeedID)",
-            "LibraryConfiguration.\(library.id)",
+            "LibraryConfiguration.\(libraryID)",
         ]
         let committedGenerations = try firstRecordNames.map { recordName in
             try XCTUnwrap(capturedRealm.object(
@@ -298,7 +299,7 @@ final class LibraryRegressionTests: XCTestCase {
             ofType: Feed.self, forPrimaryKey: firstFeedID
         )?.categoryID, firstCategoryID)
         XCTAssertEqual(Array(try XCTUnwrap(reopenedRealm.object(
-            ofType: LibraryConfiguration.self, forPrimaryKey: library.id
+            ofType: LibraryConfiguration.self, forPrimaryKey: libraryID
         )).categoryIDs), [firstCategoryID])
         for (recordName, generation) in zip(firstRecordNames, committedGenerations) {
             XCTAssertEqual(reopenedRealm.object(
