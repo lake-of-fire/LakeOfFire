@@ -135,6 +135,8 @@ final class ReaderFileRefreshQueueTests: XCTestCase, @unchecked Sendable {
         var results: [Int] = []
         queue.enqueue(scope: "library", force: false) { results.append(1) }
         await queue.waitForIdle()
+        queue.enqueue(scope: "library", force: false) { results.append(2) }
+        await sleeper.entered.wait()
         queue.enqueue(scope: "library", force: true) {
             XCTAssertFalse(Task.isCancelled)
             results.append(3)
@@ -541,6 +543,7 @@ final class ReaderFileRefreshQueueTests: XCTestCase, @unchecked Sendable {
     }
 
 }
+
 
 // Replay must retain every outstanding admission obligation, not just its waiters.
 @MainActor
