@@ -1,3 +1,4 @@
+import SwiftUI
 import RealmSwift
 import RealmSwiftGaps
 import XCTest
