@@ -872,10 +872,25 @@ public class LibraryDataManager: NSObject {
         fileURLs: [URL],
         realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
     ) async {
+        await importOPML(
+            fileURLs: fileURLs,
+            realmConfiguration: realmConfiguration,
+            afterImportingFile: nil
+        )
+    }
+
+    // Keep the completed-file boundary observable without replacing the real
+    // single-file importer or relying on Realm notification timing in tests.
+    func importOPML(
+        fileURLs: [URL],
+        realmConfiguration: Realm.Configuration,
+        afterImportingFile: (@Sendable (URL) async -> Void)?
+    ) async {
         for fileURL in fileURLs {
             do {
                 try Task.checkCancellation()
                 try await importOPML(fileURL: fileURL, realmConfiguration: realmConfiguration)
+                await afterImportingFile?(fileURL)
             } catch is CancellationError {
                 return
             } catch {
