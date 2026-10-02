@@ -1,6 +1,9 @@
 import Foundation
 import OPML
+import RealmSwift
+import RealmSwiftGaps
 import XCTest
+@testable import LakeOfFireContent
 @testable import LakeOfFireLibrary
 
 @available(iOS 16.0, macOS 13.0, *)
@@ -87,6 +90,59 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
             try String(contentsOf: secondURL, encoding: .utf8)
                 .contains("Second immutable export")
         )
+    }
+
+    func testDefaultExporterStaysBoundToRealmCapturedAtManagerCreation() async throws {
+        let previous = LibraryDataManager.realmConfiguration
+        defer { LibraryDataManager.realmConfiguration = previous }
+
+        func makeConfiguration(_ name: String) -> Realm.Configuration {
+            var configuration = DefaultRealmConfiguration.configuration
+            configuration.fileURL = nil
+            configuration.inMemoryIdentifier = name
+            return configuration
+        }
+
+        let observed = makeConfiguration("opml-observed-\(UUID().uuidString)")
+        let replacement = makeConfiguration("opml-replacement-\(UUID().uuidString)")
+        LibraryDataManager.realmConfiguration = observed
+
+        try await Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: observed)
+            let library = LibraryConfiguration()
+            let script = UserScript()
+            script.title = "Observed export script"
+            script.script = "console.log('observed')"
+            library.userScriptIDs.append(script.id)
+            try await realm.asyncWrite {
+                realm.add([library, script])
+            }
+        }.value
+
+        let manager = LibraryManagerViewModel(observesRealm: false)
+
+        try await Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: replacement)
+            let library = LibraryConfiguration()
+            let script = UserScript()
+            script.title = "Replacement export script"
+            script.script = "console.log('replacement')"
+            library.userScriptIDs.append(script.id)
+            try await realm.asyncWrite {
+                realm.add([library, script])
+            }
+        }.value
+        LibraryDataManager.realmConfiguration = replacement
+
+        let registration = UUID()
+        manager.registerOPMLExportUI(registration)
+        defer { manager.unregisterOPMLExportUI(registration) }
+
+        XCTAssertTrue(await waitUntil { manager.exportedOPMLFileURL != nil })
+        let url = try XCTUnwrap(manager.exportedOPMLFileURL)
+        let xml = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(xml.contains("Observed export script"))
+        XCTAssertFalse(xml.contains("Replacement export script"))
     }
 
     func testRetiredExportRemainsReadableUntilLastVisibleOwnerLeaves() async throws {
