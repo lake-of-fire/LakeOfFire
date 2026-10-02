@@ -204,7 +204,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
     @MainActor
     func testCapturedSnippetStorageUpdatesBookmarkAndHistoryAfterGlobalReplacement() async throws {
         try await withSnippetRealm { originalConfiguration in
-            let loaded = try await ReaderContentLoader.load(html: snippetHTML(token: "captured-storage"))
+            let loaded = try await ReaderContentLoader.load(html: self.snippetHTML(token: "captured-storage"))
             let snippet = try XCTUnwrap(loaded)
             let snippetURL = snippet.url
             try await snippet.addBookmark(realmConfiguration: originalConfiguration)
@@ -222,7 +222,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
                     secondHistory.refreshChangeMetadata(explicitlyModified: true)
                 }
             }()
-            let replacementConfiguration = makeRealmConfiguration()
+            let replacementConfiguration = self.makeRealmConfiguration()
             ReaderContentLoader.bookmarkRealmConfiguration = replacementConfiguration
             ReaderContentLoader.historyRealmConfiguration = replacementConfiguration
             let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
@@ -230,7 +230,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
             let changed = try await ReaderContentLoader.updateSnippetContent(
                 contentURL: snippetURL,
                 title: "Original account edit",
-                html: updatedSnippetHTML(token: "captured-storage"),
+                html: self.updatedSnippetHTML(token: "captured-storage"),
                 storage: storage,
                 permitsCommit: { true }
             )
@@ -263,10 +263,10 @@ final class ReaderSnippetTitleTests: XCTestCase {
     @MainActor
     func testCapturedSnippetSaveNoOpAndExpiredFenceDoNotAdvanceJournal() async throws {
         try await withSnippetRealm { configuration in
-            let loaded = try await ReaderContentLoader.load(html: snippetHTML(token: "save-no-op"))
+            let loaded = try await ReaderContentLoader.load(html: self.snippetHTML(token: "save-no-op"))
             let snippet = try XCTUnwrap(loaded)
             let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
-            let html = updatedSnippetHTML(token: "save-no-op")
+            let html = self.updatedSnippetHTML(token: "save-no-op")
             let first = try await ReaderContentLoader.updateSnippetContent(
                 contentURL: snippet.url, title: "Manual title", html: html,
                 storage: storage, permitsCommit: { true }
@@ -302,7 +302,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
     @MainActor
     func testSnippetSaveLosingAdmissionAfterMutationRollsBackBodyTitleAndJournal() async throws {
         try await withSnippetRealm { configuration in
-            let loaded = try await ReaderContentLoader.load(html: snippetHTML(token: "rollback-save"))
+            let loaded = try await ReaderContentLoader.load(html: self.snippetHTML(token: "rollback-save"))
             let snippet = try XCTUnwrap(loaded)
             let originalTitle = snippet.title
             let originalHTML = snippet.html
@@ -317,7 +317,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
             do {
                 _ = try await ReaderContentLoader.updateSnippetContent(
                     contentURL: snippet.url, title: "Must roll back",
-                    html: updatedSnippetHTML(token: "rollback-save"), storage: storage,
+                    html: self.updatedSnippetHTML(token: "rollback-save"), storage: storage,
                     permitsCommit: { fence.permitsCommit() }
                 )
                 XCTFail("Admission lost after provisional mutation must reject the transaction")
@@ -414,7 +414,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
     @MainActor
     func testSeparateCapturedStoresDoNotClaimWholeSaveAfterLaterFenceWithdraws() async throws {
         try await withSnippetRealm { bookmarkConfiguration in
-            let historyConfiguration = makeRealmConfiguration()
+            let historyConfiguration = self.makeRealmConfiguration()
             ReaderContentLoader.historyRealmConfiguration = historyConfiguration
             let storage = ReaderContentLoader.SnippetStorage.capture()
             let url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "separate-store-change"))
@@ -491,12 +491,12 @@ final class ReaderSnippetTitleTests: XCTestCase {
     @MainActor
     func testTitleOnlySnippetSavePreservesPersistedHTMLBytes() async throws {
         try await withSnippetRealm { configuration in
-            let loaded = try await ReaderContentLoader.load(html: snippetHTML(token: "title-only"))
+            let loaded = try await ReaderContentLoader.load(html: self.snippetHTML(token: "title-only"))
             let snippet = try XCTUnwrap(loaded)
-            let snippetKey = snippet.compoundKey
             let rawHTML = "<html><head></head><body><div class='mnb-snippet'><p>Keep body bytes.</p></div></body></html>\n"
             let editorHTML = ReaderContentLoader.snippetHTML(fromHTML: rawHTML)
             XCTAssertNotEqual(rawHTML, editorHTML)
+            let snippetKey = snippet.compoundKey
             try await { @RealmBackgroundActor in
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
                 let record = try XCTUnwrap(realm.object(
@@ -527,9 +527,9 @@ final class ReaderSnippetTitleTests: XCTestCase {
     @MainActor
     func testCapturedRenameAndAppendKeepOriginalStorageAfterGlobalReplacement() async throws {
         try await withSnippetRealm { originalConfiguration in
-            let loaded = try await ReaderContentLoader.load(html: snippetHTML(token: "captured-actions"))
+            let loaded = try await ReaderContentLoader.load(html: self.snippetHTML(token: "captured-actions"))
             let snippet = try XCTUnwrap(loaded)
-            let replacementConfiguration = makeRealmConfiguration()
+            let replacementConfiguration = self.makeRealmConfiguration()
             ReaderContentLoader.bookmarkRealmConfiguration = replacementConfiguration
             ReaderContentLoader.historyRealmConfiguration = replacementConfiguration
             let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
