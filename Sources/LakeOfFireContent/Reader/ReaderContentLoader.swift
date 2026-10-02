@@ -624,23 +624,7 @@ public struct ReaderContentLoader {
         allowContentMatch: Bool = true
     ) async throws -> (any ReaderContentProtocol)? {
         var match: (any ReaderContentProtocol)?
-        
-#if os(macOS)
-        let html = NSPasteboard.general.string(forType: .html)
-        let text = NSPasteboard.general.string(forType: .string)
-#else
-        let pasteboard = UIPasteboard.general
-        let htmlData = pasteboard.data(forPasteboardType: UTType.html.identifier)
-        let htmlFromData = htmlData.flatMap {
-            String(data: $0, encoding: .utf8)
-                ?? String(data: $0, encoding: .unicode)
-                ?? String(data: $0, encoding: .utf16LittleEndian)
-                ?? String(data: $0, encoding: .utf16BigEndian)
-        }
-        let htmlFromValue = pasteboard.value(forPasteboardType: UTType.html.identifier) as? String
-        let html = htmlFromData ?? htmlFromValue
-        let text = pasteboard.string
-#endif
+        let (html, text) = pasteboardImportStrings()
         
         if let text, let url = URL(string: text), url.absoluteString == text, url.scheme != nil, url.host != nil {
             match = try await load(url: url, countsAsHistoryVisit: true)
@@ -674,6 +658,28 @@ public struct ReaderContentLoader {
             }
         }
         return nil
+    }
+
+    @MainActor
+    private static func pasteboardImportStrings() -> (html: String?, text: String?) {
+
+#if os(macOS)
+        let html = NSPasteboard.general.string(forType: .html)
+        let text = NSPasteboard.general.string(forType: .string)
+#else
+        let pasteboard = UIPasteboard.general
+        let htmlData = pasteboard.data(forPasteboardType: UTType.html.identifier)
+        let htmlFromData = htmlData.flatMap {
+            String(data: $0, encoding: .utf8)
+                ?? String(data: $0, encoding: .unicode)
+                ?? String(data: $0, encoding: .utf16LittleEndian)
+                ?? String(data: $0, encoding: .utf16BigEndian)
+        }
+        let htmlFromValue = pasteboard.value(forPasteboardType: UTType.html.identifier) as? String
+        let html = htmlFromData ?? htmlFromValue
+        let text = pasteboard.string
+#endif
+        return (html, text)
     }
 
     public static func snippetHTML(fromRawText text: String) -> String {
@@ -1338,5 +1344,243 @@ open class PasteboardHTMLGenerator: HtmlGenerator {
 fileprivate extension URL {
     var contentType: UTType {
         return UTType(filenameExtension: self.pathExtension) ?? .data
+    }
+}
+
+// MARK: - User-owned Home imports
+
+public extension ReaderContentLoader {
+    enum ImportPayload: Sendable {
+        case url(URL, fromClipboard: Bool = false)
+        case html(String, fromClipboard: Bool)
+    }
+
+    /// Capture alongside the logical account admission, before permissions,
+    /// transferable loading, OCR, or an actor hop can suspend the user action.
+    struct ImportStorage {
+        let bookmarks: Realm.Configuration
+        let history: Realm.Configuration
+        let feeds: Realm.Configuration
+
+        @MainActor
+        public static func capture() -> Self {
+            Self(bookmarks: bookmarkRealmConfiguration,
+                 history: historyRealmConfiguration,
+                 feeds: feedEntryRealmConfiguration)
+        }
+    }
+
+    static func importPayload(fromText text: String) -> ImportPayload? {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        if let url = URL(string: text), ["http", "https"].contains(url.scheme ?? ""), url.host != nil {
+            return .url(url)
+        }
+        return .html(snippetHTML(fromRawText: text), fromClipboard: false)
+    }
+
+    /// Snapshot the pasteboard at the user action, not in a later Task.
+    @MainActor
+    static func capturePasteboardImportPayload() -> ImportPayload? {
+        let (html, text) = pasteboardImportStrings()
+        if let text, let url = URL(string: text), url.absoluteString == text,
+           url.scheme != nil, url.host != nil {
+            return .url(url, fromClipboard: true)
+        }
+        guard let payload = preferredPasteboardPayload(html: html, text: text) else { return nil }
+        let normalized = normalizeIngestedText(payload.text, explicitHTML: payload.explicitHTML, source: .paste)
+        return .html(normalized.html, fromClipboard: true)
+    }
+
+    /// Creates a fresh snippet or records an explicit URL visit in one owned
+    /// History transaction. Generic readers keep their existing load semantics.
+    /// A returned reference is a durable result; resolving/displaying it is a
+    /// separate operation and must never turn a later cancellation into rollback.
+    @RealmBackgroundActor
+    static func importContent(
+        _ payload: ImportPayload,
+        storage: ImportStorage,
+        permitsCommit: @escaping @Sendable () -> Bool
+    ) async throws -> ContentReference? {
+        guard !Task.isCancelled, permitsCommit(), !Task.isCancelled else { throw CancellationError() }
+        let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: storage.history)
+        switch payload {
+        case let .html(html, fromClipboard):
+            let normalizedHTML = normalizeSnippetSourceHTML(html)
+            let data = normalizedHTML.readerContentData
+            let title = generatedSnippetTitle(fromSourceHTML: normalizedHTML) ?? ""
+            return try await historyRealm.asyncWrite { () throws -> ContentReference? in
+                guard !Task.isCancelled, permitsCommit(), !Task.isCancelled else { throw CancellationError() }
+                let timestamp = Date()
+                let record = HistoryRecord()
+                let key = UUID().uuidString.uppercased()
+                record.compoundKey = key
+                record.createdAt = timestamp
+                record.lastVisitedAt = timestamp
+                record.url = snippetURL(key: key) ?? record.url
+                record.publicationDate = timestamp
+                record.content = data
+                record.title = title
+                record.isTitlePrefixOfContent = !title.isEmpty
+                record.isReaderModeByDefault = true
+                record.isDemoted = false
+                record.rssContainsFullContent = true
+                record.isFromClipboard = fromClipboard
+                historyRealm.add(record)
+                record.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                guard !Task.isCancelled, permitsCommit(), !Task.isCancelled else { throw CancellationError() }
+                return ContentReference(content: record)
+            }
+
+        case let .url(url, fromClipboard):
+            guard url.absoluteString != "about:blank",
+                  !(url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/")) else {
+                return nil
+            }
+            let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: storage.bookmarks)
+            let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: storage.feeds)
+            return try await historyRealm.asyncWrite { () throws -> ContentReference? in
+                guard !Task.isCancelled, permitsCommit(), !Task.isCancelled else { throw CancellationError() }
+                // These are read-only source stores. All import writes, including
+                // bookmark links and demotion metadata, stay in captured History.
+                if bookmarkRealm != historyRealm { bookmarkRealm.refresh() }
+                if feedRealm != historyRealm && feedRealm != bookmarkRealm { feedRealm.refresh() }
+                let timestamp = Date()
+                let source = importSource(for: url, bookmarks: bookmarkRealm,
+                                          history: historyRealm, feeds: feedRealm)
+                let record: HistoryRecord
+                if let history = source as? HistoryRecord {
+                    record = history
+                } else if let source {
+                    let historyURL = HistoryRecord.canonicalHistoryURL(for: url)
+                    let records = HistoryRecord.records(matching: historyURL, in: historyRealm)
+                    let canonical = HistoryRecord.makePrimaryKey(url: historyURL, html: source.html)
+                        .flatMap { historyRealm.object(ofType: HistoryRecord.self, forPrimaryKey: $0) }
+                    let sort = [SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
+                                SortDescriptor(keyPath: "compoundKey", ascending: true)]
+                    if let existing = records.where({ !$0.isDeleted }).sorted(by: sort).first
+                        ?? canonical ?? records.where({ $0.isDeleted }).sorted(by: sort).first {
+                        record = existing
+                    } else {
+                        record = HistoryRecord()
+                        record.url = historyURL
+                    }
+                    configureImportHistory(record, from: source)
+                    record.isDeleted = false
+                    if record.realm == nil {
+                        record.createdAt = timestamp
+                        record.updateCompoundKey()
+                        historyRealm.add(record)
+                    }
+                    // Do not invoke configureBookmark: its legacy implementation
+                    // schedules an unfenced Task after this transaction returns.
+                    if source.objectSchema.objectClass == Bookmark.self {
+                        let deletedIDs = Set(bookmarkRealm.objects(Bookmark.self)
+                            .where { $0.isDeleted }.map(\.compoundKey))
+                        for linked in HistoryRecord.openedRecords(matching: source.url, in: historyRealm)
+                            .where({ $0.bookmarkID == nil || $0.bookmarkID.in(deletedIDs) }) {
+                            linked.bookmarkID = source.compoundKey
+                            if linked !== record {
+                                linked.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                            }
+                        }
+                    }
+                } else {
+                    guard !url.isEBookURL else { return nil }
+                    let candidate = HistoryRecord()
+                    candidate.url = url
+                    candidate.updateCompoundKey()
+                    if let existing = historyRealm.object(ofType: HistoryRecord.self, forPrimaryKey: candidate.compoundKey) {
+                        record = existing
+                    } else {
+                        record = candidate
+                        record.createdAt = timestamp
+                        historyRealm.add(record)
+                    }
+                }
+                record.lastVisitedAt = timestamp
+                record.isDeleted = false
+                if fromClipboard && record.url.isSnippetURL {
+                    record.isFromClipboard = true
+                    record.rssContainsFullContent = true
+                    record.isReaderModeByDefault = true
+                    record.url = snippetURL(key: record.compoundKey) ?? record.url
+                }
+                if (url.isReaderFileURL && url.contains(.plainText)) || url.isEBookURL {
+                    record.isReaderModeByDefault = true
+                }
+                if record.isDemoted != false {
+                    let bookmarked = bookmarkRealm.objects(Bookmark.self)
+                        .filter(NSPredicate(format: "isDeleted == false AND url == %@", record.url.absoluteString))
+                        .first != nil
+                    record.isDemoted = !(record.isReaderModeByDefault || record.isReaderModeAvailable
+                        || record.rssContainsFullContent || record.isFromClipboard
+                        || record.isPhysicalMedia || bookmarked)
+                }
+                record.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                guard !Task.isCancelled, permitsCommit(), !Task.isCancelled else { throw CancellationError() }
+                return ContentReference(content: record)
+            }
+        }
+    }
+}
+
+private extension ReaderContentLoader {
+    @RealmBackgroundActor
+    static func importSource(for url: URL, bookmarks: Realm, history: Realm, feeds: Realm) -> (any ReaderContentProtocol)? {
+        let exactURL = NSPredicate(format: "isDeleted == false AND url == %@", url.absoluteString)
+        let file = bookmarks.objects(ContentFile.self).filter(exactURL).sorted(byKeyPath: "createdAt", ascending: false).first
+        let bookmark = bookmarks.objects(Bookmark.self).filter(exactURL).sorted(byKeyPath: "createdAt", ascending: false).first
+        let opened = HistoryRecord.openedRecords(matching: url, in: history)
+            .sorted(by: [SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
+                         SortDescriptor(keyPath: "compoundKey", ascending: true)]).first
+        var feed: FeedEntry?
+        if url.scheme == "https" {
+            feed = feeds.objects(FeedEntry.self)
+                .filter(NSPredicate(format: "isDeleted == false AND (url == %@ OR url == %@)",
+                                    url.absoluteString, url.settingScheme("http").absoluteString))
+                .sorted(byKeyPath: "createdAt", ascending: false).first
+        } else if !url.isReaderFileURL {
+            feed = feeds.objects(FeedEntry.self).filter(exactURL).sorted(byKeyPath: "createdAt", ascending: false).first
+        }
+        let candidates: [any ReaderContentProtocol] = [file, bookmark, opened, feed].compactMap { $0 }
+        return candidates.max {
+            (($0 as? HistoryRecord)?.lastVisitedAt ?? $0.createdAt)
+                < (($1 as? HistoryRecord)?.lastVisitedAt ?? $1.createdAt)
+        }
+    }
+
+    @RealmBackgroundActor
+    static func configureImportHistory(_ record: HistoryRecord, from source: any ReaderContentProtocol) {
+        record.title = source.title
+        record.isTitlePrefixOfContent = source.isTitlePrefixOfContent
+        record.imageUrl = source.imageUrl
+        if record.imageUrl == nil, let feed = source as? FeedEntry {
+            record.imageUrl = feed.importImageURLWithoutCaching()
+        }
+        record.sourceIconURL = source.sourceIconURL
+        record.isFromClipboard = source.isFromClipboard
+        record.rssContainsFullContent = source.rssContainsFullContent
+        if source.rssContainsFullContent { record.content = source.content }
+        record.voiceFrameUrl = source.voiceFrameUrl
+        let audio = source.resolvedVoiceAudioURLs
+        record.voiceAudioURL = audio.first
+        record.voiceAudioURLs.removeAll()
+        record.voiceAudioURLs.append(objectsIn: audio)
+        record.audioSubtitlesURL = source.audioSubtitlesURL
+        record.audioSubtitlesRoleRawValue = source.audioSubtitlesRoleRawValue
+            ?? (source.audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+        record.autoOpenMediaPlayer = source.autoOpenMediaPlayer
+        record.injectEntryImageIntoHeader = source.injectEntryImageIntoHeader
+        record.publicationDate = source.publicationDate
+        record.readerContentKind = source.readerContentKind
+        record.feedEntryCollectionKey = source.feedEntryCollectionKey
+        record.feedEntryCollectionScheme = source.feedEntryCollectionScheme
+        record.feedEntryCollectionTerm = source.feedEntryCollectionTerm
+        record.feedEntryCollectionTitle = source.feedEntryCollectionTitle
+        record.isReaderModeByDefault = source.isReaderModeByDefault
+        record.isReaderModeAvailable = source.isReaderModeAvailable
+        record.isReaderModeOfferHidden = source.isReaderModeOfferHidden
+        record.displayPublicationDate = source.displayPublicationDate
     }
 }

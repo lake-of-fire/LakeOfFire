@@ -12,7 +12,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
             .appendingPathComponent(name)
             .appendingPathExtension("realm")
         var configuration = Realm.Configuration(fileURL: realmURL)
-        configuration.objectTypes = [Bookmark.self, ContentFile.self, HistoryRecord.self, FeedEntry.self]
+        configuration.objectTypes = [Bookmark.self, ContentFile.self, HistoryRecord.self, FeedEntry.self, Feed.self]
         configureLakeOfFireMutationTrackingForTesting(&configuration)
         let fixtureConfiguration = configuration
         addTeardownBlock {
@@ -446,6 +446,282 @@ final class ReaderSnippetTitleTests: XCTestCase {
                 XCTAssertTrue(probe.observedCommittedStore)
                 XCTAssertEqual(bookmark.title, "Atomic saved")
                 XCTAssertEqual(Self.snippetWriteSnapshot(in: historyRealm), historyBefore)
+            }()
+        }
+    }
+
+    @MainActor
+    func testOwnedFreshImportRejectsExpiredAndFinalFencesWithoutRowsOrJournal() async throws {
+        try await withSnippetRealm { configuration in
+            let storage = ReaderContentLoader.ImportStorage.capture()
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                for payload in [ReaderContentLoader.ImportPayload.html("<p>Rejected text</p>", fromClipboard: true),
+                                .url(URL(string: "https://example.com/rejected-import")!)] {
+                    do {
+                        _ = try await ReaderContentLoader.importContent(payload, storage: storage, permitsCommit: { false })
+                        XCTFail("Expired input must not start an import")
+                    } catch is CancellationError {}
+                    let probe = OwnedImportWriteProbe(realm: realm, mode: .rejectNewHistory)
+                    do {
+                        _ = try await ReaderContentLoader.importContent(
+                            payload, storage: storage, permitsCommit: { probe.permitsCommit() }
+                        )
+                        XCTFail("The final fence must reject provisional rows and metadata")
+                    } catch is CancellationError {}
+                    XCTAssertTrue(probe.observedMutation)
+                    XCTAssertTrue(realm.objects(HistoryRecord.self).isEmpty)
+                    XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+                }
+            }()
+        }
+    }
+
+    @MainActor
+    func testOwnedImportFinalTaskCancellationRollsBackProvisionalCreation() async throws {
+        try await withSnippetRealm { configuration in
+            let storage = ReaderContentLoader.ImportStorage.capture()
+            let task = Task { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                let probe = OwnedImportWriteProbe(realm: realm, mode: .cancelNewHistory)
+                do {
+                    _ = try await ReaderContentLoader.importContent(
+                        .html("<p>Cancelled final write</p>", fromClipboard: false),
+                        storage: storage, permitsCommit: { probe.permitsCommit() }
+                    )
+                    XCTFail("Cancellation during the final fence must still roll back")
+                } catch is CancellationError {}
+                return probe.observedMutation && realm.objects(HistoryRecord.self).isEmpty
+                    && realm.objects(BigSyncPendingMutation.self).isEmpty
+            }
+            let rolledBack = try await task.value
+            XCTAssertTrue(rolledBack)
+        }
+    }
+
+    @MainActor
+    func testOwnedImportUsesCapturedStorageAndReturnsCommittedReferenceBeforeCancellation() async throws {
+        try await withSnippetRealm { originalConfiguration in
+            let storage = ReaderContentLoader.ImportStorage.capture()
+            let replacement = self.makeRealmConfiguration()
+            ReaderContentLoader.bookmarkRealmConfiguration = replacement
+            ReaderContentLoader.historyRealmConfiguration = replacement
+            ReaderContentLoader.feedEntryRealmConfiguration = replacement
+            let task = Task { @MainActor in
+                let reference = try await ReaderContentLoader.importContent(
+                    .html("<p>Original captured import</p>", fromClipboard: true),
+                    storage: storage, permitsCommit: { true }
+                )
+                let key = try XCTUnwrap(reference).contentKey
+                // The caller can be cancelled after the real write joined.
+                // Its durable reference remains a success, with UI separate.
+                withUnsafeCurrentTask { $0?.cancel() }
+                return key
+            }
+            let key = try await task.value
+            let realm = try await Realm(configuration: originalConfiguration)
+            let record = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+            XCTAssertTrue(record.isFromClipboard)
+            XCTAssertTrue(record.isReaderModeByDefault)
+            XCTAssertTrue(record.rssContainsFullContent)
+            XCTAssertEqual(record.isDemoted, false)
+            XCTAssertEqual(record.createdAt, record.explicitlyModifiedAt)
+            XCTAssertEqual(record.lastVisitedAt, record.explicitlyModifiedAt)
+            XCTAssertTrue(record.html?.contains("Original captured import") == true)
+            let mutation = try XCTUnwrap(realm.object(
+                ofType: BigSyncPendingMutation.self, forPrimaryKey: HistoryRecord.className() + "." + key
+            ))
+            XCTAssertEqual(mutation.changedAt, record.explicitlyModifiedAt)
+            let other = try await Realm(configuration: replacement)
+            XCTAssertTrue(other.objects(HistoryRecord.self).isEmpty)
+        }
+    }
+
+    @MainActor
+    func testOwnedURLImportRollsBackVisitMetadataAndBookmarkLinksTogether() async throws {
+        try await withSnippetRealm { configuration in
+            let storage = ReaderContentLoader.ImportStorage.capture()
+            let url = URL(string: "https://example.com/owned-bookmark-import")!
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                try Self.seedSnippetRepresentations(url: url, in: realm)
+                try realm.write {
+                    realm.objects(Bookmark.self).first!.createdAt = .distantFuture
+                    for history in realm.objects(HistoryRecord.self) { history.lastVisitedAt = .distantPast }
+                }
+                let before = Self.snippetWriteSnapshot(in: realm)
+                let oldVisit = realm.objects(HistoryRecord.self).first!.lastVisitedAt
+                let probe = OwnedImportWriteProbe(realm: realm, mode: .rejectBookmarkLink)
+                do {
+                    _ = try await ReaderContentLoader.importContent(
+                        .url(url), storage: storage, permitsCommit: { probe.permitsCommit() }
+                    )
+                    XCTFail("Visit, copied title, demotion and bookmark links must roll back together")
+                } catch is CancellationError {}
+                XCTAssertTrue(probe.observedMutation)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: realm), before)
+                XCTAssertEqual(realm.objects(HistoryRecord.self).first!.lastVisitedAt, oldVisit)
+                XCTAssertNil(realm.objects(HistoryRecord.self).first!.bookmarkID)
+                XCTAssertNil(realm.objects(HistoryRecord.self).first!.isDemoted)
+            }()
+        }
+    }
+
+    @MainActor
+    func testOwnedURLImportWithSplitStoresKeepsSourcesReadOnlyAndRollsBackHistory() async throws {
+        try await withSnippetRealm { historyConfiguration in
+            let bookmarkConfiguration = self.makeRealmConfiguration()
+            let feedConfiguration = self.makeRealmConfiguration()
+            let replacementConfiguration = self.makeRealmConfiguration()
+            ReaderContentLoader.bookmarkRealmConfiguration = bookmarkConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = feedConfiguration
+            let storage = ReaderContentLoader.ImportStorage.capture()
+            ReaderContentLoader.bookmarkRealmConfiguration = replacementConfiguration
+            ReaderContentLoader.historyRealmConfiguration = replacementConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = replacementConfiguration
+            let url = URL(string: "https://example.com/split-owned-import")!
+            try await { @RealmBackgroundActor in
+                let bookmarks = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkConfiguration)
+                let history = try await RealmBackgroundActor.shared.cachedRealm(for: historyConfiguration)
+                let feeds = try await RealmBackgroundActor.shared.cachedRealm(for: feedConfiguration)
+                try bookmarks.write {
+                    let bookmark = Bookmark()
+                    bookmark.url = url
+                    bookmark.title = "Captured bookmark"
+                    bookmark.html = "<p>Captured body</p>"
+                    // This historical field means full content for every source,
+                    // not just RSS. A summary-only source must not become a body.
+                    bookmark.rssContainsFullContent = true
+                    bookmark.createdAt = .distantFuture
+                    bookmark.updateCompoundKey()
+                    bookmarks.add(bookmark)
+                    bookmark.refreshChangeMetadata(explicitlyModified: true)
+                }
+                let sourceBefore = Self.snippetWriteSnapshot(in: bookmarks)
+                let feedBefore = Self.snippetWriteSnapshot(in: feeds)
+                let historyBefore = Self.snippetWriteSnapshot(in: history)
+                let probe = OwnedImportWriteProbe(realm: history, mode: .rejectNewHistory)
+                do {
+                    _ = try await ReaderContentLoader.importContent(
+                        .url(url), storage: storage, permitsCommit: { probe.permitsCommit() }
+                    )
+                    XCTFail("A rejected split-store visit must not leave a History row")
+                } catch is CancellationError {}
+                XCTAssertTrue(probe.observedMutation)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: history), historyBefore)
+                let savedReference = try await ReaderContentLoader.importContent(
+                    .url(url), storage: storage, permitsCommit: { true }
+                )
+                let reference = try XCTUnwrap(savedReference)
+                XCTAssertEqual(reference.realmConfiguration.fileURL, historyConfiguration.fileURL)
+                let record = try XCTUnwrap(history.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey))
+                XCTAssertEqual(record.title, "Captured bookmark")
+                XCTAssertEqual(record.html, "<p>Captured body</p>")
+                XCTAssertNotNil(record.bookmarkID)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: bookmarks), sourceBefore)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: feeds), feedBefore)
+                let replacement = try await RealmBackgroundActor.shared.cachedRealm(for: replacementConfiguration)
+                XCTAssertTrue(replacement.objects(HistoryRecord.self).isEmpty)
+                XCTAssertTrue(replacement.objects(BigSyncPendingMutation.self).isEmpty)
+            }()
+        }
+    }
+
+    @MainActor
+    func testOwnedURLImportRevalidatesSourceAfterWriteAdmission() async throws {
+        try await withSnippetRealm { configuration in
+            let storage = ReaderContentLoader.ImportStorage.capture()
+            let url = URL(string: "https://example.com/live-import-source")!
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                try Self.seedSnippetRepresentations(url: url, in: realm)
+                let probe = OwnedImportWriteProbe(realm: realm, mode: .deleteBookmarkAtEntry)
+                let reference = try await ReaderContentLoader.importContent(
+                    .url(url), storage: storage, permitsCommit: { probe.permitsCommit() }
+                )
+                XCTAssertTrue(probe.observedMutation)
+                let history = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: try XCTUnwrap(reference).contentKey))
+                XCTAssertEqual(history.title, "Original second history")
+                XCTAssertNil(history.bookmarkID)
+                XCTAssertTrue(realm.objects(Bookmark.self).first!.isDeleted)
+            }()
+        }
+    }
+
+    @MainActor
+    func testOwnedURLImportRevivesCanonicalHistoryWithoutErasingRetainedBody() async throws {
+        try await withSnippetRealm { configuration in
+            let storage = ReaderContentLoader.ImportStorage.capture()
+            let url = URL(string: "https://example.com/canonical-import")!
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                let canonical = HistoryRecord()
+                canonical.url = url
+                canonical.updateCompoundKey()
+                canonical.html = "<p>Keep downloaded body bytes.</p>"
+                canonical.isDeleted = true
+                let alias = HistoryRecord()
+                alias.compoundKey = "deleted-alias"
+                alias.url = ReaderContentLoader.readerLoaderURL(for: url)!
+                alias.lastVisitedAt = .distantFuture
+                alias.isDeleted = true
+                let bookmark = Bookmark()
+                bookmark.compoundKey = "canonical-import-bookmark"
+                bookmark.url = url
+                bookmark.title = "Imported bookmark title"
+                bookmark.rssContainsFullContent = false
+                bookmark.voiceAudioURLs.append(URL(string: "https://example.com/audio.mp3")!)
+                bookmark.audioSubtitlesURL = URL(string: "https://example.com/audio.vtt")!
+                bookmark.readerContentKind = .readerContent
+                bookmark.feedEntryCollectionTitle = "Collection title"
+                try realm.write { realm.add(canonical); realm.add(alias); realm.add(bookmark) }
+                let reference = try await ReaderContentLoader.importContent(.url(url), storage: storage, permitsCommit: { true })
+                XCTAssertEqual(reference?.contentKey, canonical.compoundKey)
+                XCTAssertFalse(canonical.isDeleted)
+                XCTAssertTrue(alias.isDeleted)
+                XCTAssertEqual(canonical.html, "<p>Keep downloaded body bytes.</p>")
+                XCTAssertEqual(canonical.title, bookmark.title)
+                XCTAssertEqual(canonical.bookmarkID, bookmark.compoundKey)
+                XCTAssertEqual(canonical.voiceAudioURLs.first, bookmark.voiceAudioURLs.first)
+                XCTAssertEqual(canonical.audioSubtitlesURL, bookmark.audioSubtitlesURL)
+                XCTAssertEqual(canonical.audioSubtitlesRole, .content)
+                XCTAssertEqual(canonical.feedEntryCollectionTitle, bookmark.feedEntryCollectionTitle)
+                XCTAssertEqual(canonical.isDemoted, false)
+                XCTAssertEqual(realm.objects(HistoryRecord.self).count, 2)
+            }()
+        }
+    }
+
+    @MainActor
+    func testOwnedHTTPSImportUsesHTTPFeedWithoutWritingLazyImageCache() async throws {
+        try await withSnippetRealm { configuration in
+            let storage = ReaderContentLoader.ImportStorage.capture()
+            let url = URL(string: "https://example.com/feed-import")!
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                let feed = Feed()
+                feed.extractImageFromContent = true
+                feed.rssContainsFullContent = true
+                let entry = FeedEntry()
+                entry.compoundKey = "http-feed-import"
+                entry.feedID = feed.id
+                entry.url = URL(string: "http://example.com/feed-import")!
+                entry.title = "HTTPS fallback title"
+                entry.html = "<html><body><img src='https://example.com/photo.jpg'><p>Full feed body.</p></body></html>"
+                try realm.write { realm.add(feed); realm.add(entry) }
+                let beforeImage = entry.imageUrl
+                let beforeModified = entry.modifiedAt
+                let feedRecordName = FeedEntry.className() + "." + entry.compoundKey
+                let beforeGeneration = realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: feedRecordName)?.generation
+                let reference = try await ReaderContentLoader.importContent(.url(url), storage: storage, permitsCommit: { true })
+                let history = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: try XCTUnwrap(reference).contentKey))
+                XCTAssertEqual(history.url, url)
+                XCTAssertEqual(history.title, entry.title)
+                XCTAssertEqual(history.content, entry.content)
+                XCTAssertEqual(history.imageUrl, URL(string: "https://example.com/photo.jpg"))
+                XCTAssertEqual(entry.imageUrl, beforeImage)
+                XCTAssertEqual(entry.modifiedAt, beforeModified)
+                XCTAssertEqual(realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: feedRecordName)?.generation, beforeGeneration)
             }()
         }
     }
@@ -1020,5 +1296,39 @@ private extension RealmBackgroundActor {
         guard let realm = cachedRealms[key] else { return true }
         guard !realm.isInWriteTransaction else { return false }
         return removeCachedRealm(for: configuration)
+    }
+}
+
+/// The owned import API invokes this only on RealmBackgroundActor. It observes
+/// actual provisional rows/links instead of assuming a number of fence calls.
+private final class OwnedImportWriteProbe: @unchecked Sendable {
+    enum Mode { case rejectNewHistory, cancelNewHistory, rejectBookmarkLink, deleteBookmarkAtEntry }
+    let realm: Realm
+    let mode: Mode
+    private(set) var observedMutation = false
+    init(realm: Realm, mode: Mode) { self.realm = realm; self.mode = mode }
+    func permitsCommit() -> Bool {
+        guard realm.isInWriteTransaction else { return true }
+        switch mode {
+        case .rejectNewHistory:
+            observedMutation = observedMutation || !realm.objects(HistoryRecord.self).isEmpty
+            return !observedMutation
+        case .cancelNewHistory:
+            if !realm.objects(HistoryRecord.self).isEmpty {
+                observedMutation = true
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+            return true
+        case .rejectBookmarkLink:
+            observedMutation = observedMutation || realm.objects(HistoryRecord.self).contains { $0.bookmarkID != nil }
+            return !observedMutation
+        case .deleteBookmarkAtEntry:
+            if !observedMutation, let bookmark = realm.objects(Bookmark.self).first {
+                observedMutation = true
+                bookmark.isDeleted = true
+                bookmark.refreshChangeMetadata(explicitlyModified: true)
+            }
+            return true
+        }
     }
 }
