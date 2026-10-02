@@ -1703,7 +1703,11 @@ public class ReaderModeViewModel: ObservableObject {
         return false
     }
 
-    func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
+    func injectSharedFontIfNeeded(
+        scriptCaller: WebViewScriptCaller,
+        pageURL: URL,
+        requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil
+    ) async {
         guard pageURL.absoluteString != "about:blank" else {
             return
         }
@@ -1845,15 +1849,28 @@ public class ReaderModeViewModel: ObservableObject {
                 });
             })();
             """
-            try? await scriptCaller.evaluateJavaScript(
-                js,
-                arguments: [
-                    "stylesheetURLTemplate": stylesheetURLTemplate,
-                    "horizontalFontFamily": fontValues.horizontalFamily,
-                    "verticalFontFamily": fontValues.verticalFamily,
-                ],
-                duplicateInMultiTargetFrames: true
-            )
+            if let bindingToken {
+                _ = try? await scriptCaller.evaluateJavaScript(
+                    js,
+                    arguments: [
+                        "stylesheetURLTemplate": stylesheetURLTemplate,
+                        "horizontalFontFamily": fontValues.horizontalFamily,
+                        "verticalFontFamily": fontValues.verticalFamily,
+                    ],
+                    duplicateInMultiTargetFrames: true,
+                    requiring: bindingToken
+                )
+            } else {
+                _ = try? await scriptCaller.evaluateJavaScript(
+                    js,
+                    arguments: [
+                        "stylesheetURLTemplate": stylesheetURLTemplate,
+                        "horizontalFontFamily": fontValues.horizontalFamily,
+                        "verticalFontFamily": fontValues.verticalFamily,
+                    ],
+                    duplicateInMultiTargetFrames: true
+                )
+            }
             return
         }
 
@@ -2035,16 +2052,30 @@ public class ReaderModeViewModel: ObservableObject {
             });
         })();
         """
-        try? await scriptCaller.evaluateJavaScript(
-            js,
-            arguments: [
-                "fontCSSBase64": blobPayload.base64CSS,
-                "fontHash": fontHash,
-                "horizontalFontFamily": fontValues.horizontalFamily,
-                "verticalFontFamily": fontValues.verticalFamily,
-            ],
-            duplicateInMultiTargetFrames: true
-        )
+        if let bindingToken {
+            _ = try? await scriptCaller.evaluateJavaScript(
+                js,
+                arguments: [
+                    "fontCSSBase64": blobPayload.base64CSS,
+                    "fontHash": fontHash,
+                    "horizontalFontFamily": fontValues.horizontalFamily,
+                    "verticalFontFamily": fontValues.verticalFamily,
+                ],
+                duplicateInMultiTargetFrames: true,
+                requiring: bindingToken
+            )
+        } else {
+            _ = try? await scriptCaller.evaluateJavaScript(
+                js,
+                arguments: [
+                    "fontCSSBase64": blobPayload.base64CSS,
+                    "fontHash": fontHash,
+                    "horizontalFontFamily": fontValues.horizontalFamily,
+                    "verticalFontFamily": fontValues.verticalFamily,
+                ],
+                duplicateInMultiTargetFrames: true
+            )
+        }
     }
     
     public func isReaderModeVisibleInMenu(content: any ReaderContentProtocol) -> Bool {
@@ -3187,17 +3218,46 @@ public class ReaderModeViewModel: ObservableObject {
         }
         try Task.checkCancellation()
 
-        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: committedURL)
+        let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
+        await injectSharedFontIfNeeded(
+            scriptCaller: scriptCaller,
+            pageURL: committedURL,
+            requiring: navigationBindingToken
+        )
+        try Task.checkCancellation()
+        if let navigationBindingToken {
+            guard scriptCaller.currentJavaScriptBindingToken == navigationBindingToken else {
+                throw CancellationError()
+            }
+        }
         if !scriptCaller.hasAsyncCaller {
         } else {
             do {
-                try await scriptCaller.evaluateJavaScript(
-                    "window.paginationTrackingBookKey = bookKey;",
-                    arguments: ["bookKey": newState.pageURL.absoluteString],
-                    in: nil,
-                    duplicateInMultiTargetFrames: true
-                )
+                if let navigationBindingToken {
+                    try await scriptCaller.evaluateJavaScript(
+                        "window.paginationTrackingBookKey = bookKey;",
+                        arguments: ["bookKey": newState.pageURL.absoluteString],
+                        in: nil,
+                        duplicateInMultiTargetFrames: true,
+                        requiring: navigationBindingToken
+                    )
+                } else {
+                    try await scriptCaller.evaluateJavaScript(
+                        "window.paginationTrackingBookKey = bookKey;",
+                        arguments: ["bookKey": newState.pageURL.absoluteString],
+                        in: nil,
+                        duplicateInMultiTargetFrames: true
+                    )
+                }
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
+            }
+        }
+        try Task.checkCancellation()
+        if let navigationBindingToken {
+            guard scriptCaller.currentJavaScriptBindingToken == navigationBindingToken else {
+                throw CancellationError()
             }
         }
 
@@ -3266,7 +3326,18 @@ public class ReaderModeViewModel: ObservableObject {
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller
     ) async {
-        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: newState.pageURL)
+        let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
+        await injectSharedFontIfNeeded(
+            scriptCaller: scriptCaller,
+            pageURL: newState.pageURL,
+            requiring: navigationBindingToken
+        )
+        guard !Task.isCancelled else { return }
+        if let navigationBindingToken {
+            guard scriptCaller.currentJavaScriptBindingToken == navigationBindingToken else {
+                return
+            }
+        }
         if navigationFinishedDeferral(newState: newState) != nil {
             return
         }
@@ -3293,11 +3364,36 @@ public class ReaderModeViewModel: ObservableObject {
         }
         if !newState.pageURL.isReaderURLLoaderURL {
             do {
-                let isNextReaderMode = try await scriptCaller.evaluateJavaScript("return document.body?.dataset.isNextLoadInReaderMode === 'true'") as? Bool ?? false
+                let result: Any?
+                if let navigationBindingToken {
+                    result = try await scriptCaller.evaluateJavaScript(
+                        "return document.body?.dataset.isNextLoadInReaderMode === 'true'",
+                        requiring: navigationBindingToken
+                    )
+                } else {
+                    result = try await scriptCaller.evaluateJavaScript(
+                        "return document.body?.dataset.isNextLoadInReaderMode === 'true'"
+                    )
+                }
+                guard !Task.isCancelled else { return }
+                if let navigationBindingToken {
+                    guard scriptCaller.currentJavaScriptBindingToken
+                            == navigationBindingToken else {
+                        return
+                    }
+                }
+                let isNextReaderMode = result as? Bool ?? false
                 if !isNextReaderMode {
                     readerModeLoading(false)
                 }
             } catch {
+                guard !Task.isCancelled else { return }
+                if let navigationBindingToken {
+                    guard scriptCaller.currentJavaScriptBindingToken
+                            == navigationBindingToken else {
+                        return
+                    }
+                }
                 readerModeLoading(false)
             }
         }
