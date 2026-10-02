@@ -232,8 +232,7 @@ class LibraryCategoryViewModel: ObservableObject {
     @MainActor
     func createFeed() async throws -> UUID? {
         let categoryID = category.id
-        let feedID = try await Task {
-            @RealmBackgroundActor [realmConfiguration] in
+        let feedID = try await Task { @RealmBackgroundActor [realmConfiguration] in
             let realm =
                 try await RealmBackgroundActor.shared.cachedRealm(
                     for: realmConfiguration
