@@ -160,7 +160,9 @@ final class LibraryRegressionTests: XCTestCase {
         addTeardownBlock {
             await RealmBackgroundActor.shared.removeCachedRealm(for: cleanupConfiguration)
             await RealmBackgroundActor.shared.removeCachedRealm(for: cleanupReplacementConfiguration)
-            let trash = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+            let trash = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+                .appendingPathComponent(".Trash")
+            try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
             try FileManager.default.moveItem(
                 at: directory, to: trash.appendingPathComponent("opml-import-test-\(directory.lastPathComponent)")
             )
