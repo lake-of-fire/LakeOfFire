@@ -1729,7 +1729,12 @@ public class ReaderModeViewModel: ObservableObject {
         _ bindingToken: WebViewScriptCaller.JavaScriptBindingToken?,
         scriptCaller: WebViewScriptCaller
     ) -> Bool {
-        guard let bindingToken else { return true }
+        guard let bindingToken else {
+            // An unmounted caller has no successor document to protect. A
+            // mounted caller that cannot provide exact document identity must
+            // fail closed instead of allowing resumed work to adopt it.
+            return !scriptCaller.canEvaluateJavaScript
+        }
         return scriptCaller.currentJavaScriptBindingToken == bindingToken
     }
 
