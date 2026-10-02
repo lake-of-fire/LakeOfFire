@@ -525,6 +525,98 @@ final class ReaderSnippetTitleTests: XCTestCase {
     }
 
     @MainActor
+    func testTitleOnlySnippetSavePreservesConcurrentBodiesAndJournalsEachRepresentation() async throws {
+        try await withSnippetRealm { configuration in
+            let loaded = try await ReaderContentLoader.load(html: self.snippetHTML(token: "concurrent-title"))
+            let snippet = try XCTUnwrap(loaded)
+            let snippetURL = snippet.url
+            let historyKey = snippet.compoundKey
+            let bookmarkKey = UUID().uuidString
+            let originalTitle = snippet.title
+            let editorHTML = try await ReaderContentLoader.snippetEditorHTML(for: snippet)
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
+            let historyHTML = """
+            <html><head></head><body><div class='mnb-snippet'><p>New history body.</p>
+            <p><ruby>漢<rt>かん</rt></ruby>語</p></div></body></html>
+
+            """
+            let bookmarkHTML = "<html><body><div class='mnb-snippet'><p>New bookmark body.</p></div></body></html>\n"
+            XCTAssertNotEqual(editorHTML, ReaderContentLoader.snippetHTML(fromHTML: historyHTML))
+            XCTAssertNotEqual(editorHTML, ReaderContentLoader.snippetHTML(fromHTML: bookmarkHTML))
+
+            // Both representations receive newer bodies after the editor has
+            // captured its draft, with deliberately different persisted bytes.
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                let history = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: historyKey))
+                let bookmark = Bookmark()
+                bookmark.compoundKey = bookmarkKey
+                bookmark.url = snippetURL
+                bookmark.title = originalTitle
+                bookmark.isTitlePrefixOfContent = true
+                try await realm.asyncWrite {
+                    realm.add(bookmark)
+                    history.html = historyHTML
+                    bookmark.html = bookmarkHTML
+                    history.refreshChangeMetadata(explicitlyModified: true)
+                    bookmark.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }()
+
+            let realm = try await Realm(configuration: configuration)
+            try await realm.asyncRefresh()
+            let history = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: historyKey))
+            let bookmark = try XCTUnwrap(realm.object(ofType: Bookmark.self, forPrimaryKey: bookmarkKey))
+            let objects: [any ReaderContentProtocol] = [history, bookmark]
+            var previousGenerations = [String: String]()
+            for object in objects {
+                let recordName = object.objectSchema.className + "." + object.compoundKey
+                previousGenerations[recordName] = try XCTUnwrap(realm.object(
+                    ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName
+                )?.generation)
+            }
+            let requestedTitle = try XCTUnwrap(ReaderContentLoader.generatedSnippetTitle(fromSourceHTML: historyHTML))
+            let changed = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: snippetURL, title: requestedTitle, html: editorHTML,
+                originalEditorHTML: editorHTML, storage: storage, permitsCommit: { true }
+            )
+            XCTAssertTrue(changed)
+            try await realm.asyncRefresh()
+            XCTAssertEqual(history.html, historyHTML)
+            XCTAssertEqual(bookmark.html, bookmarkHTML)
+            XCTAssertTrue(history.isTitlePrefixOfContent)
+            XCTAssertFalse(bookmark.isTitlePrefixOfContent)
+            XCTAssertEqual(history.explicitlyModifiedAt, bookmark.explicitlyModifiedAt)
+
+            var savedGenerations = [String: String]()
+            for object in objects {
+                XCTAssertEqual(object.title, requestedTitle)
+                let recordName = object.objectSchema.className + "." + object.compoundKey
+                let mutation = try XCTUnwrap(realm.object(
+                    ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName
+                ))
+                XCTAssertNotEqual(mutation.generation, previousGenerations[recordName])
+                XCTAssertEqual(mutation.changedAt, object.explicitlyModifiedAt)
+                savedGenerations[recordName] = mutation.generation
+            }
+
+            let repeated = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: snippetURL, title: requestedTitle, html: editorHTML,
+                originalEditorHTML: editorHTML, storage: storage, permitsCommit: { true }
+            )
+            XCTAssertFalse(repeated)
+            try await realm.asyncRefresh()
+            XCTAssertEqual(history.html, historyHTML)
+            XCTAssertEqual(bookmark.html, bookmarkHTML)
+            for (recordName, generation) in savedGenerations {
+                XCTAssertEqual(realm.object(
+                    ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName
+                )?.generation, generation)
+            }
+        }
+    }
+
+    @MainActor
     func testCapturedRenameAndAppendKeepOriginalStorageAfterGlobalReplacement() async throws {
         try await withSnippetRealm { originalConfiguration in
             let loaded = try await ReaderContentLoader.load(html: self.snippetHTML(token: "captured-actions"))
