@@ -104,6 +104,46 @@ final class ReaderFileImportStorageNativeTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: f.library.appendingPathComponent("book.epub").path), target.path)
     }
 
+    func testOccupiedLeafSymlinkAndFirstCollisionSymlinkAdvanceToNextSuffix() async throws {
+        let f = try Fixture(); try f.put(f.source, "new")
+        let firstTarget = f.root.appendingPathComponent("missing-one")
+        let secondTarget = f.root.appendingPathComponent("missing-two")
+        try FileManager.default.createSymbolicLink(
+            at: f.library.appendingPathComponent("book.epub"),
+            withDestinationURL: firstTarget
+        )
+        try FileManager.default.createSymbolicLink(
+            at: f.library.appendingPathComponent("book (ABCDEF).epub"),
+            withDestinationURL: secondTarget
+        )
+        let drive = try await f.drive()
+
+        let result = try await f.install(using: drive)
+
+        XCTAssertEqual(result.path, "book (ABCDEF-2).epub")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstTarget.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: secondTarget.path))
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: f.library.appendingPathComponent("book.epub").path
+            ),
+            firstTarget.path
+        )
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: f.library.appendingPathComponent("book (ABCDEF).epub").path
+            ),
+            secondTarget.path
+        )
+        XCTAssertEqual(
+            try String(
+                contentsOf: f.library.appendingPathComponent("book (ABCDEF-2).epub"),
+                encoding: .utf8
+            ),
+            "new"
+        )
+    }
+
     func testSourceSymlinkIsRejectedWithoutInstallation() async throws {
         let f = try Fixture(); let target = f.root.appendingPathComponent("outside")
         try f.put(target, "private")
