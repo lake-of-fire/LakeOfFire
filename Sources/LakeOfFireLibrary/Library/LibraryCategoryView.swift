@@ -17,6 +17,7 @@ import LakeOfFireContent
 class LibraryCategoryViewModel: ObservableObject {
     let category: FeedCategory
     let libraryConfiguration: LibraryConfiguration
+    let realmConfiguration: Realm.Configuration
     @Binding var selectedFeed: Feed?
     
     @Published var categoryTitle = ""
@@ -57,17 +58,26 @@ class LibraryCategoryViewModel: ObservableObject {
     }
     
     init(category: FeedCategory, libraryConfiguration: LibraryConfiguration, selectedFeed: Binding<Feed?>) {
+        self.realmConfiguration =
+            category.realm?.configuration
+            ?? libraryConfiguration.realm?.configuration
+            ?? LibraryDataManager.realmConfiguration
         self.category = category
         self.libraryConfiguration = libraryConfiguration
         _selectedFeed = selectedFeed
         categoryTitle = category.title
         categoryBackgroundImageURL = category.backgroundImageUrl.absoluteString == "about:blank" ? "" : category.backgroundImageUrl.absoluteString
         
-        let ref = ThreadSafeReference(to: category)
+        let categoryID = category.id
         Task { @RealmBackgroundActor [weak self] in
-            guard let self = self else { return }
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-            guard let category = realm.resolve(ref) else { return }
+            guard let self else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: realmConfiguration
+            )
+            guard let category = realm.object(
+                ofType: FeedCategory.self,
+                forPrimaryKey: categoryID
+            ) else { return }
             objectNotificationToken = category
                 .observe { [weak self] change in
                     switch change {
@@ -91,8 +101,10 @@ class LibraryCategoryViewModel: ObservableObject {
             .sink { [weak self] categoryTitle in
                 guard let self else { return }
                 let categoryID = category.id
-                Task { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+                Task { @RealmBackgroundActor [realmConfiguration] in
+                    let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                        for: realmConfiguration
+                    )
                     guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
                     guard category.isUserEditable else {
                         await self.refresh()
@@ -100,6 +112,15 @@ class LibraryCategoryViewModel: ObservableObject {
                     }
                     guard category.title != categoryTitle else { return }
                     try await realm.asyncWrite {
+                        guard let category = realm.object(
+                            ofType: FeedCategory.self,
+                            forPrimaryKey: categoryID
+                        ),
+                        category.isUserEditable,
+                        !category.isDeleted,
+                        category.title != categoryTitle else {
+                            return
+                        }
                         category.title = categoryTitle
                         category.refreshChangeMetadata(explicitlyModified: true)
                     }
@@ -113,8 +134,10 @@ class LibraryCategoryViewModel: ObservableObject {
             .sink { [weak self] categoryBackgroundImageURL in
                 guard let self else { return }
                 let categoryID = category.id
-                Task { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+                Task { @RealmBackgroundActor [realmConfiguration] in
+                    let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                        for: realmConfiguration
+                    )
                     guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
                     guard category.isUserEditable else {
                         await self.refresh()
@@ -131,6 +154,15 @@ class LibraryCategoryViewModel: ObservableObject {
                     }
                     guard category.backgroundImageUrl != newURL else { return }
                     try await realm.asyncWrite {
+                        guard let category = realm.object(
+                            ofType: FeedCategory.self,
+                            forPrimaryKey: categoryID
+                        ),
+                        category.isUserEditable,
+                        !category.isDeleted,
+                        category.backgroundImageUrl != newURL else {
+                            return
+                        }
                         category.backgroundImageUrl = newURL
                         category.refreshChangeMetadata(explicitlyModified: true)
                     }
@@ -153,47 +185,106 @@ class LibraryCategoryViewModel: ObservableObject {
     
     @MainActor
     func deleteFeed(_ feed: Feed) async throws {
-        guard feed.isUserEditable() else { return }
-        try await Realm.asyncWrite(ThreadSafeReference(to: feed), configuration: ReaderContentLoader.feedEntryRealmConfiguration) { _, feed in
-            feed.isDeleted = true
-            feed.refreshChangeMetadata(explicitlyModified: true)
-        }
+        try await deleteFeed(feedID: feed.id)
     }
-    
+
     @MainActor
-    func deleteFeed(at offsets: IndexSet) {
-        if category.opmlURL != nil {
-            return
+    @discardableResult
+    func deleteFeed(at offsets: IndexSet) -> Task<Void, Error> {
+        let feeds = category.getFeeds() ?? []
+        let feedIDs = offsets.compactMap { offset -> UUID? in
+            guard category.opmlURL == nil,
+                  feeds.indices.contains(offset),
+                  feeds[offset].isUserEditable() else {
+                return nil
+            }
+            return feeds[offset].id
         }
-        
-        for offset in offsets {
-            let feed = category.getFeeds()?[offset]
-            guard let feed, feed.isUserEditable() else { continue }
-            Task { @MainActor in
-                try await deleteFeed(feed)
+        return Task { @MainActor in
+            for feedID in feedIDs {
+                try await deleteFeed(feedID: feedID)
             }
         }
     }
-    
+
+    @MainActor
+    private func deleteFeed(feedID: UUID) async throws {
+        try await Task { @RealmBackgroundActor [realmConfiguration] in
+            let realm =
+                try await RealmBackgroundActor.shared.cachedRealm(
+                    for: realmConfiguration
+                )
+            try await realm.asyncWrite {
+                guard let feed = realm.object(
+                    ofType: Feed.self,
+                    forPrimaryKey: feedID
+                ),
+                feed.isUserEditable(),
+                !feed.isDeleted else {
+                    return
+                }
+                feed.isDeleted = true
+                feed.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }.value
+    }
+
+    @MainActor
+    func createFeed() async throws -> UUID? {
+        let categoryID = category.id
+        let feedID = try await Task {
+            @RealmBackgroundActor [realmConfiguration] in
+            let realm =
+                try await RealmBackgroundActor.shared.cachedRealm(
+                    for: realmConfiguration
+                )
+            guard let category = realm.object(
+                ofType: FeedCategory.self,
+                forPrimaryKey: categoryID
+            ),
+            category.isUserEditable,
+            !category.isDeleted else {
+                return nil
+            }
+            return try await LibraryDataManager.shared.createEmptyFeed(
+                inCategory: ThreadSafeReference(to: category),
+                realmConfiguration: realmConfiguration
+            )
+        }.value
+
+        guard let feedID else { return nil }
+        let realm = try await Realm.open(
+            configuration: realmConfiguration
+        )
+        selectedFeed = realm.object(
+            ofType: Feed.self,
+            forPrimaryKey: feedID
+        )
+        return feedID
+    }
+
     @MainActor
     func deleteCategory() async throws {
-        let ref = ThreadSafeReference(to: category)
-        try await Task { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-            guard let category = realm.resolve(ref) else { return }
-            try await LibraryDataManager.shared.deleteCategory(category)
+        let categoryID = category.id
+        try await Task { @RealmBackgroundActor [realmConfiguration] in
+            try await LibraryDataManager.shared.deleteCategory(
+                categoryID: categoryID,
+                realmConfiguration: realmConfiguration
+            )
         }.value
     }
-    
+
     @MainActor
     func restoreCategory() async throws {
-        let ref = ThreadSafeReference(to: category)
-        try await Task { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-            guard let category = realm.resolve(ref) else { return }
-            try await LibraryDataManager.shared.restoreCategory(category)
+        let categoryID = category.id
+        try await Task { @RealmBackgroundActor [realmConfiguration] in
+            try await LibraryDataManager.shared.restoreCategory(
+                categoryID: categoryID,
+                realmConfiguration: realmConfiguration
+            )
         }.value
     }
+
 }
 
 @available(iOS 16.0, macOS 13.0, *)
@@ -407,16 +498,13 @@ struct LibraryCategoryView: View {
     @ViewBuilder private func addFeedButton(scrollProxy: ScrollViewProxy) -> some View {
         let button = Button {
             Task { @MainActor in
-                let ref = ThreadSafeReference(to: libraryCategoryViewModel.category)
-                let createdFeedID: UUID? = try await { @RealmBackgroundActor in
-                    try await LibraryDataManager.shared.createEmptyFeed(inCategory: ref)
-                }()
-                guard let feedID = createdFeedID else { return }
-                scrollProxy.scrollTo("library-sidebar-\(feedID.uuidString)")
-                let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                if let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) {
-                    libraryCategoryViewModel.selectedFeed = feed
+                guard let feedID =
+                    try await libraryCategoryViewModel.createFeed() else {
+                    return
                 }
+                scrollProxy.scrollTo(
+                    "library-sidebar-\(feedID.uuidString)"
+                )
             }
         } label: {
             Label("Add Feed", systemImage: "plus.circle")
