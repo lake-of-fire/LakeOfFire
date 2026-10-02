@@ -117,6 +117,76 @@ final class LibraryRegressionTests: XCTestCase {
         XCTAssertEqual(destinationCategory.getFeeds()?.count, 2)
     }
 
+    @RealmBackgroundActor
+    func testMultiFileOPMLImportKeepsCapturedRealmAfterGlobalReplacement() async throws {
+        var capturedConfiguration = DefaultRealmConfiguration.configuration
+        capturedConfiguration.fileURL = nil
+        capturedConfiguration.inMemoryIdentifier = UUID().uuidString
+        configureLakeOfFireMutationTrackingForTesting(&capturedConfiguration)
+        var replacementConfiguration = capturedConfiguration
+        replacementConfiguration.inMemoryIdentifier = UUID().uuidString
+        let originalConfiguration = LibraryDataManager.realmConfiguration
+        defer { LibraryDataManager.realmConfiguration = originalConfiguration }
+        let capturedRealm = try await Realm(
+            configuration: capturedConfiguration, actor: RealmBackgroundActor.shared
+        )
+        let replacementRealm = try await Realm(
+            configuration: replacementConfiguration, actor: RealmBackgroundActor.shared
+        )
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let firstCategoryID = UUID()
+        let secondCategoryID = UUID()
+        let firstFeedID = UUID()
+        let secondFeedID = UUID()
+        let firstURL = directory.appendingPathComponent("first.opml")
+        let secondURL = directory.appendingPathComponent("second.opml")
+        for (fileURL, categoryID, feedID, title) in [
+            (firstURL, firstCategoryID, firstFeedID, "First"),
+            (secondURL, secondCategoryID, secondFeedID, "Second"),
+        ] {
+            let xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <opml version="2.0"><head/><body>
+              <outline text="\(title)" uuid="\(categoryID.uuidString)">
+                <outline text="\(title) feed" uuid="\(feedID.uuidString)" xmlUrl="https://example.com/\(title).xml"/>
+              </outline>
+            </body></opml>
+            """
+            try xml.write(to: fileURL, atomically: true, encoding: .utf8)
+        }
+        let cleanupConfiguration = capturedConfiguration
+        let cleanupReplacementConfiguration = replacementConfiguration
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: cleanupConfiguration)
+            await RealmBackgroundActor.shared.removeCachedRealm(for: cleanupReplacementConfiguration)
+            let trash = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+                .appendingPathComponent(".Trash")
+            try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+            try FileManager.default.moveItem(
+                at: directory, to: trash.appendingPathComponent("opml-import-test-\(directory.lastPathComponent)")
+            )
+        }
+
+        LibraryDataManager.realmConfiguration = replacementConfiguration
+        let manager = LibraryDataManager()
+        defer { manager.realmCancellables.forEach { $0.cancel() } }
+        await manager.importOPML(
+            fileURLs: [firstURL, secondURL], realmConfiguration: capturedConfiguration
+        )
+
+        for categoryID in [firstCategoryID, secondCategoryID] {
+            XCTAssertNotNil(capturedRealm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+            XCTAssertNil(replacementRealm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+        }
+        for feedID in [firstFeedID, secondFeedID] {
+            XCTAssertNotNil(capturedRealm.object(ofType: Feed.self, forPrimaryKey: feedID))
+            XCTAssertNil(replacementRealm.object(ofType: Feed.self, forPrimaryKey: feedID))
+        }
+        XCTAssertFalse(capturedRealm.objects(BigSyncPendingMutation.self).isEmpty)
+        XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
     private func makeConfiguration() -> Realm.Configuration {
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         configuration.objectTypes = [

@@ -179,12 +179,16 @@ class LibraryCategoryViewModel: ObservableObject {
     @MainActor
     @discardableResult
     func deleteFeed(at offsets: IndexSet) -> Task<Void, Error> {
-        let feeds = category.getFeeds() ?? []
+        deleteFeed(at: offsets, fromFeedIDs: (category.getFeeds() ?? []).map(\.id))
+    }
+
+    @MainActor
+    @discardableResult
+    func deleteFeed(at offsets: IndexSet, fromFeedIDs displayedFeedIDs: [UUID]) -> Task<Void, Error> {
         let feedIDs = offsets.compactMap { offset -> UUID? in
             guard category.opmlURL == nil,
-                  feeds.indices.contains(offset),
-                  feeds[offset].isUserEditable() else { return nil }
-            return feeds[offset].id
+                  displayedFeedIDs.indices.contains(offset) else { return nil }
+            return displayedFeedIDs[offset]
         }
         return Task { @MainActor in
             for feedID in feedIDs {
@@ -197,10 +201,10 @@ class LibraryCategoryViewModel: ObservableObject {
     private func deleteFeed(feedID: UUID) async throws {
         try await Task { @RealmBackgroundActor [realmConfiguration] in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
-                  feed.isUserEditable(),
-                  !feed.isDeleted else { return }
             try await realm.asyncWrite {
+                guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
+                      feed.isUserEditable(),
+                      !feed.isDeleted else { return }
                 feed.isDeleted = true
                 feed.refreshChangeMetadata(explicitlyModified: true)
             }
@@ -327,6 +331,8 @@ struct LibraryCategoryView: View {
     }
     
     var body: some View {
+        let visibleFeeds = self.visibleFeeds
+        let displayedFeedIDs = visibleFeeds.map(\.id)
         ScrollViewReader { scrollProxy in
             Group {
                 List(selection: $libraryCategoryViewModel.selectedFeed) {
@@ -415,7 +421,7 @@ struct LibraryCategoryView: View {
                                 }
                             }
                             .onDelete {
-                                libraryCategoryViewModel.deleteFeed(at: $0)
+                                libraryCategoryViewModel.deleteFeed(at: $0, fromFeedIDs: displayedFeedIDs)
                             }
                         }
                     } header: {
