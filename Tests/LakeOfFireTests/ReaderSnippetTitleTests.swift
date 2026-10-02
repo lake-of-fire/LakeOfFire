@@ -568,6 +568,63 @@ final class ReaderSnippetTitleTests: XCTestCase {
     }
 
     @MainActor
+    func testOwnedURLImportWithSplitStoresKeepsSourcesReadOnlyAndRollsBackHistory() async throws {
+        try await withSnippetRealm { historyConfiguration in
+            let bookmarkConfiguration = self.makeRealmConfiguration()
+            let feedConfiguration = self.makeRealmConfiguration()
+            let replacementConfiguration = self.makeRealmConfiguration()
+            ReaderContentLoader.bookmarkRealmConfiguration = bookmarkConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = feedConfiguration
+            let storage = ReaderContentLoader.ImportStorage.capture()
+            ReaderContentLoader.bookmarkRealmConfiguration = replacementConfiguration
+            ReaderContentLoader.historyRealmConfiguration = replacementConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = replacementConfiguration
+            let url = URL(string: "https://example.com/split-owned-import")!
+            try await { @RealmBackgroundActor in
+                let bookmarks = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkConfiguration)
+                let history = try await RealmBackgroundActor.shared.cachedRealm(for: historyConfiguration)
+                let feeds = try await RealmBackgroundActor.shared.cachedRealm(for: feedConfiguration)
+                try bookmarks.write {
+                    let bookmark = Bookmark()
+                    bookmark.url = url
+                    bookmark.title = "Captured bookmark"
+                    bookmark.html = "<p>Captured body</p>"
+                    bookmark.createdAt = .distantFuture
+                    bookmark.updateCompoundKey()
+                    bookmarks.add(bookmark)
+                    bookmark.refreshChangeMetadata(explicitlyModified: true)
+                }
+                let sourceBefore = Self.snippetWriteSnapshot(in: bookmarks)
+                let feedBefore = Self.snippetWriteSnapshot(in: feeds)
+                let historyBefore = Self.snippetWriteSnapshot(in: history)
+                let probe = OwnedImportWriteProbe(realm: history, mode: .rejectNewHistory)
+                do {
+                    _ = try await ReaderContentLoader.importContent(
+                        .url(url), storage: storage, permitsCommit: { probe.permitsCommit() }
+                    )
+                    XCTFail("A rejected split-store visit must not leave a History row")
+                } catch is CancellationError {}
+                XCTAssertTrue(probe.observedMutation)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: history), historyBefore)
+                let savedReference = try await ReaderContentLoader.importContent(
+                    .url(url), storage: storage, permitsCommit: { true }
+                )
+                let reference = try XCTUnwrap(savedReference)
+                XCTAssertEqual(reference.realmConfiguration.fileURL, historyConfiguration.fileURL)
+                let record = try XCTUnwrap(history.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey))
+                XCTAssertEqual(record.title, "Captured bookmark")
+                XCTAssertEqual(record.html, "<p>Captured body</p>")
+                XCTAssertNotNil(record.bookmarkID)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: bookmarks), sourceBefore)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: feeds), feedBefore)
+                let replacement = try await RealmBackgroundActor.shared.cachedRealm(for: replacementConfiguration)
+                XCTAssertTrue(replacement.objects(HistoryRecord.self).isEmpty)
+                XCTAssertTrue(replacement.objects(BigSyncPendingMutation.self).isEmpty)
+            }()
+        }
+    }
+
+    @MainActor
     func testOwnedURLImportRevalidatesSourceAfterWriteAdmission() async throws {
         try await withSnippetRealm { configuration in
             let storage = ReaderContentLoader.ImportStorage.capture()
