@@ -135,8 +135,6 @@ final class ReaderFileRefreshQueueTests: XCTestCase, @unchecked Sendable {
         var results: [Int] = []
         queue.enqueue(scope: "library", force: false) { results.append(1) }
         await queue.waitForIdle()
-        queue.enqueue(scope: "library", force: false) { results.append(2) }
-        await sleeper.entered.wait()
         queue.enqueue(scope: "library", force: true) {
             XCTAssertFalse(Task.isCancelled)
             results.append(3)
@@ -542,4 +540,214 @@ final class ReaderFileRefreshQueueTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(runs, 2)
     }
 
+}
+
+// Replay must retain every outstanding admission obligation, not just its waiters.
+@MainActor
+private final class ReplayGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+}
+
+@MainActor
+private final class ReplayClock {
+    var now: TimeInterval = 0
+    var sleeps: [TimeInterval] = []
+
+    func sleep(_ interval: TimeInterval) throws {
+        try Task.checkCancellation()
+        sleeps.append(interval)
+        now += interval
+    }
+}
+
+private enum ReplayFailure: Error { case rejected }
+
+@MainActor
+extension ReaderFileRefreshQueueTests {
+    func testSuspendedForcedRefreshDoesNotAcquireSuccessorThrottle() async {
+        let clock = ReplayClock()
+        let queue = ReaderFileRefreshQueue(
+            interval: 2, now: { clock.now }, sleep: { try await clock.sleep($0) }
+        )
+        let entered = ReplayGate()
+        let release = ReplayGate()
+        var snapshots: [String] = []
+        let original = queue.enqueue(scope: "library", force: true) {
+            snapshots.append("original")
+            entered.open()
+            await release.wait()
+        }
+        await entered.wait()
+        queue.suspend()
+        queue.enqueue(scope: "other-storage", force: true) {
+            snapshots.append("other")
+        }
+        let replacement = queue.enqueue(scope: "library", force: false) {
+            snapshots.append("replacement")
+        }
+        release.open()
+        await queue.waitForIdle()
+        queue.resume()
+        await queue.waitForIdle()
+
+        XCTAssertEqual(snapshots, ["original", "other", "replacement"])
+        XCTAssertEqual(clock.sleeps, [], "The original force request still owns its throttle bypass")
+        guard case .success = await original.wait(),
+              case .success = await replacement.wait() else {
+            return XCTFail("Both callers must receive the latest snapshot's success")
+        }
+    }
+
+    func testResumedForcedRefreshKeepsPriorityOverOrdinaryOtherScope() async {
+        let clock = ReplayClock()
+        let queue = ReaderFileRefreshQueue(
+            interval: 2, now: { clock.now }, sleep: { try await clock.sleep($0) }
+        )
+        let entered = ReplayGate()
+        let release = ReplayGate()
+        var snapshots: [String] = []
+        let original = queue.enqueue(scope: "library", force: true) {
+            snapshots.append("original")
+            entered.open()
+            await release.wait()
+        }
+        await entered.wait()
+        queue.suspend()
+        queue.enqueue(scope: "ordinary-other", force: false) {
+            snapshots.append("other")
+        }
+        let replacement = queue.enqueue(scope: "library", force: false) {
+            snapshots.append("replacement")
+        }
+        // Resume before the cancelled driver joins. It still owns execution;
+        // the replacement driver must retain the same force obligation.
+        queue.resume()
+        release.open()
+        await queue.waitForIdle()
+
+        XCTAssertEqual(snapshots, ["original", "replacement", "other"])
+        XCTAssertEqual(clock.sleeps, [2], "Only the unrelated ordinary request is throttled")
+        guard case .success = await original.wait(),
+              case .success = await replacement.wait() else {
+            return XCTFail("Replay must settle both logical callers")
+        }
+    }
+
+    func testReplayUnionPreservesForceAndLatestOutcomeAcrossAdmissionCombinations() async {
+        for originalForce in [false, true] {
+            for replacementForce in [false, true] {
+                for fails in [false, true] {
+                    for resumeBeforeJoin in [false, true] {
+                        let history = "old=\(originalForce),new=\(replacementForce),failure=\(fails),earlyResume=\(resumeBeforeJoin)"
+                        let clock = ReplayClock()
+                        let queue = ReaderFileRefreshQueue(
+                            interval: 2, now: { clock.now }, sleep: { try await clock.sleep($0) }
+                        )
+                        let entered = ReplayGate()
+                        let release = ReplayGate()
+                        var originalRuns = 0
+                        var replacementRuns = 0
+                        let original = queue.enqueue(scope: "library", force: originalForce) {
+                            originalRuns += 1
+                            entered.open()
+                            await release.wait()
+                        }
+                        await entered.wait()
+                        queue.suspend()
+                        queue.enqueue(scope: "other", force: true) {}
+                        let replacement = queue.enqueue(scope: "library", force: replacementForce) {
+                            replacementRuns += 1
+                            if fails { throw ReplayFailure.rejected }
+                        }
+                        if resumeBeforeJoin { queue.resume() }
+                        release.open()
+                        await queue.waitForIdle()
+                        if !resumeBeforeJoin {
+                            queue.resume()
+                            await queue.waitForIdle()
+                        }
+                        XCTAssertEqual(originalRuns, 1, history)
+                        XCTAssertEqual(replacementRuns, 1, history)
+                        XCTAssertEqual(clock.sleeps, originalForce || replacementForce ? [] : [2], history)
+                        for completion in [original, replacement] {
+                            switch await completion.wait() {
+                            case .success: XCTAssertFalse(fails, history)
+                            case .failure(let error):
+                                XCTAssertTrue(fails, history)
+                                XCTAssertTrue(error is ReplayFailure, history)
+                            }
+                        }
+                        let live = queue.enqueue(scope: "library", force: true) {}
+                        guard case .success = await live.wait() else {
+                            return XCTFail("A replayed failure poisoned later work: \(history)")
+                        }
+                        let ordinary = queue.enqueue(scope: "library", force: false) {}
+                        guard case .success = await ordinary.wait() else {
+                            return XCTFail("Later ordinary work did not complete: \(history)")
+                        }
+                        let expectedSleeps: [TimeInterval] = originalForce || replacementForce
+                            ? [2] : [2, 2]
+                        XCTAssertEqual(clock.sleeps, expectedSleeps,
+                            "Replay force must end with the logical request: \(history)")
+                    }
+                }
+            }
+        }
+    }
+
+    func testRepeatedSuspensionKeepsOriginalForceAndAllCompletionOwners() async {
+        let clock = ReplayClock()
+        let queue = ReaderFileRefreshQueue(
+            interval: 2, now: { clock.now }, sleep: { try await clock.sleep($0) }
+        )
+        let entered = [ReplayGate(), ReplayGate()]
+        let release = [ReplayGate(), ReplayGate()]
+        var snapshots: [String] = []
+        let first = queue.enqueue(scope: "library", force: true) {
+            snapshots.append("first")
+            entered[0].open()
+            await release[0].wait()
+        }
+        await entered[0].wait()
+        queue.suspend()
+        let second = queue.enqueue(scope: "library", force: false) {
+            snapshots.append("second")
+            entered[1].open()
+            await release[1].wait()
+        }
+        release[0].open()
+        await queue.waitForIdle()
+        queue.resume()
+        await entered[1].wait()
+        queue.suspend()
+        queue.enqueue(scope: "other", force: true) { snapshots.append("other") }
+        let third = queue.enqueue(scope: "library", force: false) {
+            snapshots.append("third")
+        }
+        release[1].open()
+        await queue.waitForIdle()
+        queue.resume()
+        await queue.waitForIdle()
+
+        XCTAssertEqual(snapshots, ["first", "second", "other", "third"])
+        XCTAssertEqual(clock.sleeps, [], "Force remains attached until the logical request completes")
+        for completion in [first, second, third] {
+            guard case .success = await completion.wait() else {
+                return XCTFail("Replay lost a caller's completion")
+            }
+        }
+    }
 }
