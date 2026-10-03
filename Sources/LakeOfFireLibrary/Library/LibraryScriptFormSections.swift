@@ -62,7 +62,7 @@ private enum LibraryScriptFieldEdit: Equatable, Sendable {
     }
 }
 
-private struct LibraryScriptFieldCommand {
+private struct LibraryScriptFieldCommand: Sendable {
     let scriptID: UUID
     let realmConfiguration: Realm.Configuration
     let edit: LibraryScriptFieldEdit
@@ -87,11 +87,15 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     let realmConfiguration: Realm.Configuration
     private let observesRealm: Bool
     private var isRefreshing = false
-    private var nextWriteSequence: UInt64 = 0
-    private let writeOrdering = LibraryEditorWriteOrdering()
+    private var pendingFieldCommands: [Int: LibraryScriptFieldCommand] = [:]
+    private let writeOrdering: LibraryEditorWriteOrdering
     private var scriptObservationGeneration: UInt64 = 0
     @RealmBackgroundActor private var installedScriptObservationGeneration: UInt64 = 0
     var script: UserScript? {
+        willSet {
+            finishEditing()
+            pendingFieldCommands.removeAll()
+        }
         didSet {
             scriptObservationGeneration &+= 1
             let generation = scriptObservationGeneration
@@ -143,6 +147,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         observesRealm: Bool = true
     ) {
         self.realmConfiguration = realmConfiguration
+        writeOrdering = .shared(configuration: realmConfiguration, recordKind: "script")
         self.observesRealm = observesRealm
         observe($scriptTitle, edit: LibraryScriptFieldEdit.title, debounced: true)
         observe($scriptText, edit: LibraryScriptFieldEdit.text, debounced: true)
@@ -162,27 +167,52 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             .compactMap { [weak self] value -> LibraryScriptFieldCommand? in
                 // @Published emits synchronously. Capture the originating record
                 // before debounce, and never enqueue hydration as a user edit.
-                guard let self, !self.isRefreshing, let script = self.script else { return nil }
-                self.nextWriteSequence &+= 1
-                return LibraryScriptFieldCommand(
+                guard let self, !self.isRefreshing, let script = self.script, !script.isInvalidated else { return nil }
+                let sequence = self.writeOrdering.issueSequence()
+                let command = LibraryScriptFieldCommand(
                     scriptID: script.id, realmConfiguration: self.realmConfiguration, edit: edit(value),
-                    sequence: self.nextWriteSequence, writeOrdering: self.writeOrdering
+                    sequence: sequence, writeOrdering: self.writeOrdering
                 )
+                self.pendingFieldCommands[command.edit.fieldIdentifier] = command
+                return command
             }
             .eraseToAnyPublisher()
         let writes = debounced
             ? commands.debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
                 .eraseToAnyPublisher()
             : commands
-        writes.sink { command in
-            Task { @RealmBackgroundActor in
-                try await command.write()
-            }
-        }
+        writes.sink { [weak self] command in self?.submit(command) }
         .store(in: &cancellables)
     }
 
+    private func submit(_ command: LibraryScriptFieldCommand) {
+        Task { @RealmBackgroundActor [weak self] in
+            do { try await command.write() }
+            catch { print("LibraryScriptEditor field write failed: \(error)") }
+            await self?.settle(command)
+        }
+    }
+
+    private func settle(_ command: LibraryScriptFieldCommand) {
+        let field = command.edit.fieldIdentifier
+        guard let pending = pendingFieldCommands[field],
+              pending.scriptID == command.scriptID, pending.sequence == command.sequence else { return }
+        pendingFieldCommands[field] = nil
+        refresh()
+    }
+
+    func finishEditing() {
+        for command in pendingFieldCommands.values { submit(command) }
+    }
+
     deinit {
+        let commands = Array(pendingFieldCommands.values)
+        Task { @RealmBackgroundActor in
+            for command in commands {
+                do { try await command.write() }
+                catch { print("LibraryScriptEditor retirement write failed: \(error)") }
+            }
+        }
         Task { @RealmBackgroundActor [weak objectNotificationToken] in
             objectNotificationToken?.invalidate()
         }
@@ -190,6 +220,8 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     
     @MainActor
     func refresh() {
+        if let script, !script.isFrozen { script.realm?.refresh() }
+        guard script?.isInvalidated != true else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         if let allowedDomainIDs = script?.allowedDomainIDs {
@@ -198,13 +230,13 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             allowedDomainIDs = nil
         }
         
-        scriptTitle = script?.title ?? ""
-        scriptText = script?.script ?? ""
-        scriptEnabled = !(script?.isArchived ?? true || script?.isDeleted ?? true)
-        scriptInjectAtStart = script?.injectAtStart ?? false
-        scriptMainFrameOnly = script?.mainFrameOnly ?? true
-        scriptSandboxed = script?.sandboxed ?? false
-        scriptPreviewURL = script?.previewURL?.absoluteString ?? ""
+        if pendingFieldCommands[0] == nil { scriptTitle = script?.title ?? "" }
+        if pendingFieldCommands[1] == nil { scriptText = script?.script ?? "" }
+        if pendingFieldCommands[2] == nil { scriptEnabled = !(script?.isArchived ?? true || script?.isDeleted ?? true) }
+        if pendingFieldCommands[3] == nil { scriptInjectAtStart = script?.injectAtStart ?? false }
+        if pendingFieldCommands[4] == nil { scriptMainFrameOnly = script?.mainFrameOnly ?? true }
+        if pendingFieldCommands[5] == nil { scriptSandboxed = script?.sandboxed ?? false }
+        if pendingFieldCommands[6] == nil { scriptPreviewURL = script?.previewURL?.absoluteString ?? "" }
     }
     
     @discardableResult
@@ -276,8 +308,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         // Replace buffered field edits with this explicit current input. The
         // transaction equality check makes the later trailing write a no-op.
         scriptPreviewURL = url.absoluteString
-        nextWriteSequence &+= 1
-        let sequence = nextWriteSequence
+        let sequence = writeOrdering.issueSequence()
         return Task { @RealmBackgroundActor [realmConfiguration, writeOrdering] in
             guard let scriptID else { return }
             try await LibraryScriptFieldCommand(
@@ -508,6 +539,7 @@ struct LibraryScriptFormSections: View {
         .task(id: script.id) { @MainActor in
             viewModel.script = script
         }
+        .onDisappear { viewModel.finishEditing() }
     }
     
     private func refresh(url: URL? = nil, forceRefresh: Bool = false) {
