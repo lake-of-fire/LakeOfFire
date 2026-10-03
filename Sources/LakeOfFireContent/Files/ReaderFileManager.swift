@@ -2836,8 +2836,21 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     )
                     continue
                 }
+                let validatedPath = try Self.validatedDestinationPath(tryRelativePath)
+                let lexicalFileURL = drive.rootDirectory.appendingPathComponent(validatedPath.path)
+                if (try? FileManager.default.destinationOfSymbolicLink(atPath: lexicalFileURL.path)) != nil {
+                    // Links are occupied names, not reader payloads. Do not resolve
+                    // them, recurse through directory links, or index target bytes.
+                    Self.logContentFileDecision(
+                        stage: "discovery.skipSymbolicLink",
+                        path: tryRelativePath.path,
+                        reason: "symbolicLink"
+                    )
+                    continue
+                }
                 let lastPathComponent = url.lastPathComponent.lowercased()
-                let absoluteFileURL = try tryRelativePath.fileURL(forRoot: drive.rootDirectory)
+                try Self.validateDestinationContainment(validatedPath, in: drive.rootDirectory)
+                let absoluteFileURL = try validatedPath.fileURL(forRoot: drive.rootDirectory)
                 let isDirectory: Bool
                 do {
                     isDirectory = try await Self.isDiscoveredDirectory(

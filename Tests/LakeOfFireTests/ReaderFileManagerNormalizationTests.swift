@@ -1001,6 +1001,52 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     }
 
     @MainActor
+    func testImportCompletesMetadataAdmissionWithOccupiedDanglingLeafSymlink() async throws {
+        let sourceRoot = try temporaryDirectory()
+        let libraryRoot = try temporaryDirectory()
+        let source = try writeFixture(relativePath: "book.txt", under: sourceRoot)
+        let books = libraryRoot.appendingPathComponent("Books", isDirectory: true)
+        try FileManager.default.createDirectory(at: books, withIntermediateDirectories: true)
+        let missingTarget = sourceRoot.appendingPathComponent("missing.txt")
+        let link = books.appendingPathComponent("book.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: missingTarget)
+        let manager = try await collisionImportManager(libraryRootURL: libraryRoot)
+        let result = try await manager.importFile(fileURL: source, fromDownloadURL: nil)
+        XCTAssertNotNil(result)
+        XCTAssertNotEqual(result?.lastPathComponent, "book.txt")
+        XCTAssertEqual(manager.files?.count, 1)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), missingTarget.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missingTarget.path))
+    }
+
+    @MainActor
+    func testDiscoverySkipsExternalAndCyclicSymlinksWithoutIndexingTargets() async throws {
+        let libraryRoot = try temporaryDirectory()
+        let outside = try temporaryDirectory()
+        let externalFile = try writeFixture(relativePath: "outside.txt", under: outside)
+        let original = try Data(contentsOf: externalFile)
+        _ = try writeFixture(relativePath: "Books/real.txt", under: libraryRoot)
+        try FileManager.default.createSymbolicLink(
+            at: libraryRoot.appendingPathComponent("external.txt"), withDestinationURL: externalFile
+        )
+        try FileManager.default.createSymbolicLink(
+            at: libraryRoot.appendingPathComponent("external-directory"), withDestinationURL: outside
+        )
+        try FileManager.default.createSymbolicLink(
+            at: libraryRoot.appendingPathComponent("Books/cycle"), withDestinationURL: libraryRoot
+        )
+        let manager = try await collisionImportManager(libraryRootURL: libraryRoot)
+        try await manager.refreshAllFilesMetadata(force: true)
+        XCTAssertEqual(manager.files?.count, 1)
+        XCTAssertEqual(manager.files?.first?.url.lastPathComponent, "real.txt")
+        XCTAssertEqual(try Data(contentsOf: externalFile), original)
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: libraryRoot.appendingPathComponent("Books/cycle").path),
+            libraryRoot.path
+        )
+    }
+
+    @MainActor
     func testIdenticalImportAtDifferentURLReusesExistingDestination() async throws {
         let sourceRootURL = try temporaryDirectory()
         let libraryRootURL = try temporaryDirectory()
