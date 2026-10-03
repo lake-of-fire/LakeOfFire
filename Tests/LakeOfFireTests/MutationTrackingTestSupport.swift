@@ -23,6 +23,7 @@ func configureLakeOfFireMutationTrackingForTesting(
             LibraryOPMLImportLease.className(),
             ReaderFilePostprocessingWorkItem.className(),
             ReaderFileLegacyRootRelocationReceipt.className(),
+            ReaderPendingFileImport.className(),
         ]
     )
 }

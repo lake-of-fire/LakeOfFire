@@ -121,6 +121,7 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
             ContentFile.self,
             ContentPackageFile.self,
             ReaderFilePostprocessingWorkItem.self,
+            ReaderPendingFileImport.self,
             HistoryRecord.self,
             FeedEntry.self,
         ]
@@ -610,6 +611,68 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
         try await realm.asyncRefresh()
         return realm.objects(ContentFile.self).where { !$0.isDeleted }.map { ($0.title, $0.sourceDownloadURL) }
+    }
+
+    @RealmBackgroundActor
+    private static func pendingImportCount(in configuration: Realm.Configuration) async throws -> Int {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        try await realm.asyncRefresh()
+        return realm.objects(ReaderPendingFileImport.self).count
+    }
+
+    @MainActor
+    func testInstalledLocalImportRecoversProvenanceAfterManagerRecreation() async throws {
+        let root = try temporaryDirectory()
+        let libraryRoot = try temporaryDirectory()
+        let source = try writeFixture(relativePath: "book.txt", under: root)
+        let configuration = makeHistoryRealmConfiguration(fileURL: root.appendingPathComponent("history.realm"))
+        let downloadURL = try XCTUnwrap(URL(string: "https://example.com/book.txt"))
+        let manager = try await collisionImportManager(libraryRootURL: libraryRoot)
+        manager.historyRealmConfigurationOverride = configuration
+        manager.importProvenanceWillWriteForTesting = { throw CancellationError() }
+        do {
+            _ = try await manager.importFile(fileURL: source, fromDownloadURL: downloadURL)
+            XCTFail("Expected interrupted completion")
+        } catch is CancellationError {}
+        let pendingBefore = try await Self.pendingImportCount(in: configuration)
+        XCTAssertEqual(pendingBefore, 1)
+        let before = try await Self.importedMetadata(in: configuration)
+        XCTAssertNil(before.first?.1)
+        let recreated = try await collisionImportManager(libraryRootURL: libraryRoot)
+        recreated.historyRealmConfigurationOverride = configuration
+        try await recreated.refreshAllFilesMetadata(force: true)
+        let recovered = try await Self.importedMetadata(in: configuration)
+        XCTAssertEqual(recovered.count, 1)
+        XCTAssertEqual(recovered.first?.1, downloadURL)
+        let pendingAfter = try await Self.pendingImportCount(in: configuration)
+        XCTAssertEqual(pendingAfter, 0)
+    }
+
+    @MainActor
+    func testPendingLocalImportRetainsReceiptWhenInstalledBytesChanged() async throws {
+        let root = try temporaryDirectory()
+        let libraryRoot = try temporaryDirectory()
+        let source = try writeFixture(relativePath: "book.txt", under: root)
+        let configuration = makeHistoryRealmConfiguration(fileURL: root.appendingPathComponent("history.realm"))
+        let downloadURL = try XCTUnwrap(URL(string: "https://example.com/book.txt"))
+        let manager = try await collisionImportManager(libraryRootURL: libraryRoot)
+        manager.historyRealmConfigurationOverride = configuration
+        manager.importProvenanceWillWriteForTesting = { throw CancellationError() }
+        do {
+            _ = try await manager.importFile(fileURL: source, fromDownloadURL: downloadURL)
+            XCTFail("Expected interrupted completion")
+        } catch is CancellationError {}
+        let installed = libraryRoot.appendingPathComponent("Books/book.txt")
+        let changed = Data("user edited installed file".utf8)
+        try changed.write(to: installed)
+        let recreated = try await collisionImportManager(libraryRootURL: libraryRoot)
+        recreated.historyRealmConfigurationOverride = configuration
+        try await recreated.refreshAllFilesMetadata(force: true)
+        let metadata = try await Self.importedMetadata(in: configuration)
+        XCTAssertNil(metadata.first?.1)
+        let pending = try await Self.pendingImportCount(in: configuration)
+        XCTAssertEqual(pending, 1)
+        XCTAssertEqual(try Data(contentsOf: installed), changed)
     }
 
     func testInstallationReceiptRejectsBackingFileChangedAfterMetadataWork() async throws {

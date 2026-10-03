@@ -1065,6 +1065,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     private let driveInventoryGeneration = DriveInventoryGeneration()
     // Replacement authority is independent of ordinary filesystem observations.
     private let storageAuthorityGeneration = DriveInventoryGeneration()
+    private var activePendingFileImportIdentifiers = Set<String>()
     private static let refreshAllFilesMetadataDebounceInterval: TimeInterval = 2
 
     private static let internalStorageRootPrefixes: Set<String> = [
@@ -2195,6 +2196,21 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         )
 
         let targetFilePath = installation.relativePath
+        let pendingIdentifier = UUID().uuidString
+        activePendingFileImportIdentifiers.insert(pendingIdentifier)
+        defer { activePendingFileImportIdentifiers.remove(pendingIdentifier) }
+        let pendingScope = Self.postprocessorStorageScopeIdentifier(drive: drive, realmConfiguration: realmConfiguration)
+        let admittedPendingImport: Bool
+        if drive.ubiquityContainerIdentifier == nil {
+            admittedPendingImport = try await admitPendingFileImport(
+                identifier: pendingIdentifier, storageScopeIdentifier: pendingScope,
+                installation: installation, downloadURL: fromDownloadURL,
+                realmConfiguration: realmConfiguration, authority: importWriteAuthority
+            )
+            try validateAuthority()
+        } else {
+            admittedPendingImport = false
+        }
         do {
             try validateAuthority()
             _ = try await Self.$importWriteAuthority.withValue(importWriteAuthority) {
@@ -2271,10 +2287,184 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             try Self.validateDestinationContainment(targetFilePath, in: drive.rootDirectory)
             try await installation.validateContent(at: installedURL)
             try validateAuthority()
+            if admittedPendingImport {
+                try await retirePendingFileImport(
+                    identifier: pendingIdentifier, scope: pendingScope, expectedDigest: installation.identity.digest,
+                    realmConfiguration: realmConfiguration, storageReceipt: importWriteAuthority.receipt,
+                    defaultHistoryReceipt: importWriteAuthority.defaultHistoryAuthorityReceipt
+                )
+                try validateAuthority()
+            }
             return finalReaderURL
         } catch {
             debugPrint("Error importing file:", error)
             throw error
+        }
+    }
+
+    private struct PendingFileImportSnapshot: Sendable {
+        let identifier: String
+        let installation: ReaderImportInstallationReceipt
+        let downloadURL: URL?
+    }
+
+    @RealmBackgroundActor
+    private func admitPendingFileImport(
+        identifier: String,
+        storageScopeIdentifier: String,
+        installation: ReaderImportInstallationReceipt,
+        downloadURL: URL?,
+        realmConfiguration: Realm.Configuration,
+        authority: ImportWriteAuthority
+    ) async throws -> Bool {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        // Custom package clients may intentionally supply a smaller Realm schema.
+        guard realm.schema.objectSchema.contains(where: {
+            $0.className == ReaderPendingFileImport.className()
+        }) else { return false }
+        let didAdmit = try await realm.asyncWrite {
+            try self.performStorageAuthorityMutation(
+                receipt: authority.receipt,
+                defaultHistoryReceipt: authority.defaultHistoryAuthorityReceipt
+            ) {
+                let pending = ReaderPendingFileImport()
+                pending.importIdentifier = identifier
+                pending.storageScopeIdentifier = storageScopeIdentifier
+                pending.relativePath = installation.relativePath.path
+                pending.requiresManifest = installation.requiresManifest
+                pending.identityDigest = installation.identity.digest
+                pending.collisionHashString = String(installation.identity.collisionHash)
+                pending.downloadURLString = downloadURL?.absoluteString
+                pending.enqueuedAt = Date()
+                realm.add(pending)
+                return true
+            }
+        }
+        guard didAdmit else { throw ReaderFileManagerError.refreshSuperseded }
+        return true
+    }
+
+    @RealmBackgroundActor
+    private func pendingFileImportSnapshots(
+        scope: String,
+        realmConfiguration: Realm.Configuration
+    ) async throws -> [PendingFileImportSnapshot] {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        try await realm.asyncRefresh()
+        guard realm.schema.objectSchema.contains(where: {
+            $0.className == ReaderPendingFileImport.className()
+        }) else { return [] }
+        return realm.objects(ReaderPendingFileImport.self).where {
+            $0.storageScopeIdentifier == scope
+        }.compactMap { pending in
+            // Unknown/corrupt identities remain pending instead of being guessed.
+            guard pending.identityVersion == 1, pending.identityDigest.count == 32,
+                  let collisionHash = UInt64(pending.collisionHashString) else { return nil }
+            let downloadURL = pending.downloadURLString.flatMap(URL.init(string:))
+            guard pending.downloadURLString == nil || downloadURL != nil else { return nil }
+            return PendingFileImportSnapshot(
+                identifier: pending.importIdentifier,
+                installation: ReaderImportInstallationReceipt(
+                    relativePath: RootRelativePath(path: pending.relativePath),
+                    requiresManifest: pending.requiresManifest,
+                    identity: ReaderImportContentIdentity(digest: pending.identityDigest, collisionHash: collisionHash)
+                ),
+                downloadURL: downloadURL
+            )
+        }
+    }
+
+    @RealmBackgroundActor
+    private func retirePendingFileImport(
+        identifier: String,
+        scope: String,
+        expectedDigest: Data,
+        realmConfiguration: Realm.Configuration,
+        storageReceipt: UInt64,
+        defaultHistoryReceipt: UInt64?
+    ) async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        let didRetire = try await realm.asyncWrite {
+            try self.performStorageAuthorityMutation(
+                receipt: storageReceipt, defaultHistoryReceipt: defaultHistoryReceipt
+            ) {
+                guard let pending = realm.object(ofType: ReaderPendingFileImport.self, forPrimaryKey: identifier)
+                else { return true }
+                guard pending.storageScopeIdentifier == scope, pending.identityDigest == expectedDigest else { return false }
+                realm.delete(pending)
+                return true
+            }
+        }
+        guard didRetire else { throw ReaderFileManagerError.refreshSuperseded }
+    }
+
+    @MainActor
+    private func drainPendingFileImports(
+        realmConfiguration: Realm.Configuration,
+        processorSnapshot: ReaderFileProcessorRegistrySnapshot,
+        refreshIdentity: RefreshMetadataIdentity
+    ) async throws {
+        // Cloud recovery requires persisted account ownership, which is not yet
+        // available here. Never replay a local receipt against a cloud account.
+        guard let drive = localDrive, drive.isConnected, drive.ubiquityContainerIdentifier == nil else { return }
+        let storageReceipt = storageAuthorityGeneration.receipt()
+        let historyReceipt = try captureDefaultHistoryAuthority(for: realmConfiguration)
+        let scope = Self.postprocessorStorageScopeIdentifier(drive: drive, realmConfiguration: realmConfiguration)
+        let validate: () throws -> Void = {
+            try Task.checkCancellation()
+            guard self.storageAuthorityGeneration.isCurrent(storageReceipt),
+                  self.defaultHistoryAuthorityIsCurrent(historyReceipt),
+                  self.refreshMetadataIdentityIsCurrent(refreshIdentity, realmConfiguration: realmConfiguration) else {
+                throw ReaderFileManagerError.refreshSuperseded
+            }
+        }
+        let pending = try await pendingFileImportSnapshots(scope: scope, realmConfiguration: realmConfiguration)
+        try validate()
+        for item in pending where !activePendingFileImportIdentifiers.contains(item.identifier) {
+            try validate()
+            let path = try Self.validatedDestinationPath(item.installation.relativePath)
+            try Self.validateDestinationContainment(path, in: drive.rootDirectory)
+            let fileURL = try path.fileURL(forRoot: drive.rootDirectory)
+            do {
+                try await item.installation.validateContent(at: fileURL)
+            } catch {
+                if error is CancellationError { throw error }
+                try validate()
+                // Missing/changed postimages remain pending and are never removed.
+                continue
+            }
+            try validate()
+            guard let readerURL = try await readerFileURL(
+                for: fileURL, drive: drive, processorSnapshot: processorSnapshot
+            ) else { continue }
+            try validate()
+            let realm = try await Realm.open(configuration: realmConfiguration)
+            try validate()
+            guard let content = realm.objects(ContentFile.self).where({ !$0.isDeleted && $0.url == readerURL }).first
+            else { continue }
+            let primaryKey = content.compoundKey
+            let createdAt = content.createdAt
+            if let downloadURL = item.downloadURL {
+                // A later explicit acquisition must not be replaced by recovery
+                // of an older interrupted import that happens to have equal bytes.
+                guard content.sourceDownloadURL == nil || content.sourceDownloadURL == downloadURL else { continue }
+                let didRecord = try await recordDownloadProvenance(
+                    downloadURL, onContentFilePrimaryKey: primaryKey, expectedCreatedAt: createdAt,
+                    expectedReaderURL: readerURL, realmConfiguration: realmConfiguration,
+                    storageAuthorityReceipt: storageReceipt, defaultHistoryAuthorityReceipt: historyReceipt,
+                    allowsProvenanceReplacement: false
+                )
+                try validate()
+                guard didRecord else { continue }
+            }
+            try await item.installation.validateContent(at: fileURL)
+            try validate()
+            try await retirePendingFileImport(
+                identifier: item.identifier, scope: scope, expectedDigest: item.installation.identity.digest,
+                realmConfiguration: realmConfiguration, storageReceipt: storageReceipt,
+                defaultHistoryReceipt: historyReceipt
+            )
+            try validate()
         }
     }
 
@@ -2419,7 +2609,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         expectedReaderURL: URL,
         realmConfiguration: Realm.Configuration,
         storageAuthorityReceipt: UInt64,
-        defaultHistoryAuthorityReceipt: UInt64?
+        defaultHistoryAuthorityReceipt: UInt64?,
+        allowsProvenanceReplacement: Bool = true
     ) async throws -> Bool {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
             for: realmConfiguration
@@ -2440,6 +2631,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     return false
                 }
 
+                guard allowsProvenanceReplacement || target.sourceDownloadURL == nil
+                    || target.sourceDownloadURL == downloadURL else { return false }
                 let timestamp = Date()
                 for contentFile in realm.objects(ContentFile.self).filter(NSPredicate(
                     format: "isDeleted == %@ AND sourceDownloadURL == %@",
@@ -2784,6 +2977,17 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             throw ReaderFileManagerError.incompleteFileInventory
                         }
                         guard self.defaultHistoryAuthorityIsCurrent(defaultHistoryReceipt) else {
+                            throw ReaderFileManagerError.refreshSuperseded
+                        }
+                        try await self.drainPendingFileImports(
+                            realmConfiguration: realmConfiguration,
+                            processorSnapshot: processorSnapshot,
+                            refreshIdentity: refreshIdentity
+                        )
+                        try Task.checkCancellation()
+                        guard self.refreshMetadataIdentityIsCurrent(refreshIdentity, realmConfiguration: realmConfiguration),
+                              self.driveInventoryGeneration.isCurrent(inventoryReceipt),
+                              self.defaultHistoryAuthorityIsCurrent(defaultHistoryReceipt) else {
                             throw ReaderFileManagerError.refreshSuperseded
                         }
                         self.files = completeFiles
