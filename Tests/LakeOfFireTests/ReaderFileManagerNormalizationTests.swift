@@ -630,6 +630,48 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         }
     }
 
+    @RealmBackgroundActor
+    private static func replacePendingImportDownloadURL(_ url: URL, in configuration: Realm.Configuration) async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        try await realm.asyncWrite {
+            let pending = try XCTUnwrap(realm.objects(ReaderPendingFileImport.self).first)
+            pending.downloadURLString = url.absoluteString
+        }
+    }
+
+    @MainActor
+    func testRecoveryDoesNotPublishStaleIntentWhenPendingReceiptChangesDuringCompletion() async throws {
+        let root = try temporaryDirectory()
+        let libraryRoot = try temporaryDirectory()
+        let source = try writeFixture(relativePath: "book.txt", under: root)
+        let configuration = makeHistoryRealmConfiguration(fileURL: root.appendingPathComponent("history.realm"))
+        let originalURL = try XCTUnwrap(URL(string: "https://example.com/original.txt"))
+        let replacementURL = try XCTUnwrap(URL(string: "https://example.com/replacement.txt"))
+        let manager = try await collisionImportManager(libraryRootURL: libraryRoot)
+        manager.historyRealmConfigurationOverride = configuration
+        manager.importProvenanceWillWriteForTesting = { throw CancellationError() }
+        do {
+            _ = try await manager.importFile(fileURL: source, fromDownloadURL: originalURL)
+            XCTFail("Expected interrupted completion")
+        } catch is CancellationError {}
+        let recreated = try await collisionImportManager(libraryRootURL: libraryRoot)
+        recreated.historyRealmConfigurationOverride = configuration
+        recreated.pendingImportWillCompleteForTesting = {
+            try await Self.replacePendingImportDownloadURL(replacementURL, in: configuration)
+        }
+        try await recreated.refreshAllFilesMetadata(force: true)
+        let metadata = try await Self.importedMetadata(in: configuration)
+        XCTAssertNil(metadata.first?.1)
+        let pending = try await Self.pendingImportCount(in: configuration)
+        XCTAssertEqual(pending, 1)
+        recreated.pendingImportWillCompleteForTesting = nil
+        try await recreated.refreshAllFilesMetadata(force: true)
+        let retried = try await Self.importedMetadata(in: configuration)
+        XCTAssertEqual(retried.first?.1, replacementURL)
+        let retired = try await Self.pendingImportCount(in: configuration)
+        XCTAssertEqual(retired, 0)
+    }
+
     @MainActor
     func testPendingImportRecoveryRetiresReceiptWhenProvenanceIsAlreadyRecorded() async throws {
         let root = try temporaryDirectory()

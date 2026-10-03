@@ -974,6 +974,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
     @MainActor
     var importProvenanceWillWriteForTesting: (() async throws -> Void)?
+    var pendingImportWillCompleteForTesting: (() async throws -> Void)?
 
     @MainActor
     var refreshFinalInventoryWillRefreshForTesting: (() async throws -> Void)?
@@ -2279,7 +2280,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     defaultHistoryAuthorityReceipt: importWriteAuthority.defaultHistoryAuthorityReceipt,
                     pendingImportRetirement: admittedPendingImport ? PendingFileImportRetirement(
                         identifier: pendingIdentifier, storageScope: pendingScope,
-                        expectedDigest: installation.identity.digest
+                        expectedDigest: installation.identity.digest,
+                        relativePath: installation.relativePath.path, requiresManifest: installation.requiresManifest,
+                        collisionHashString: String(installation.identity.collisionHash),
+                        downloadURLString: fromDownloadURL.absoluteString
                     ) : nil
                 )
                 try validateAuthority()
@@ -2293,7 +2297,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             try validateAuthority()
             if admittedPendingImport && fromDownloadURL == nil {
                 try await retirePendingFileImport(
-                    identifier: pendingIdentifier, scope: pendingScope, expectedDigest: installation.identity.digest,
+                    retirement: PendingFileImportRetirement(
+                        identifier: pendingIdentifier, storageScope: pendingScope,
+                        expectedDigest: installation.identity.digest,
+                        relativePath: installation.relativePath.path, requiresManifest: installation.requiresManifest,
+                        collisionHashString: String(installation.identity.collisionHash), downloadURLString: nil
+                    ),
                     contentPrimaryKey: finalPrimaryKey, contentCreatedAt: finalCreatedAt, readerURL: finalReaderURL,
                     realmConfiguration: realmConfiguration, storageReceipt: importWriteAuthority.receipt,
                     defaultHistoryReceipt: importWriteAuthority.defaultHistoryAuthorityReceipt
@@ -2311,6 +2320,22 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let identifier: String
         let storageScope: String
         let expectedDigest: Data
+        let relativePath: String
+        let requiresManifest: Bool
+        let collisionHashString: String
+        let downloadURLString: String?
+
+        @RealmBackgroundActor
+        func matches(_ pending: ReaderPendingFileImport) -> Bool {
+            pending.importIdentifier == identifier
+                && pending.storageScopeIdentifier == storageScope
+                && pending.identityVersion == 1
+                && pending.identityDigest == expectedDigest
+                && pending.relativePath == relativePath
+                && pending.requiresManifest == requiresManifest
+                && pending.collisionHashString == collisionHashString
+                && pending.downloadURLString == downloadURLString
+        }
     }
 
     private struct PendingFileImportSnapshot: Sendable {
@@ -2387,9 +2412,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
     @RealmBackgroundActor
     private func retirePendingFileImport(
-        identifier: String,
-        scope: String,
-        expectedDigest: Data,
+        retirement: PendingFileImportRetirement,
         contentPrimaryKey: String,
         contentCreatedAt: Date,
         readerURL: URL,
@@ -2402,9 +2425,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             try self.performStorageAuthorityMutation(
                 receipt: storageReceipt, defaultHistoryReceipt: defaultHistoryReceipt
             ) {
-                guard let pending = realm.object(ofType: ReaderPendingFileImport.self, forPrimaryKey: identifier)
+                guard let pending = realm.object(ofType: ReaderPendingFileImport.self, forPrimaryKey: retirement.identifier)
                 else { return true }
-                guard pending.storageScopeIdentifier == scope, pending.identityDigest == expectedDigest else { return false }
+                guard retirement.matches(pending) else { return false }
                 guard let content = realm.object(ofType: ContentFile.self, forPrimaryKey: contentPrimaryKey),
                       !content.isDeleted, content.createdAt == contentCreatedAt, content.url == readerURL else {
                     return false
@@ -2462,10 +2485,13 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             else { continue }
             let primaryKey = content.compoundKey
             let createdAt = content.createdAt
+            let existingDownloadURL = content.sourceDownloadURL
+            try await pendingImportWillCompleteForTesting?()
+            try validate()
             if let downloadURL = item.downloadURL {
                 // A later explicit acquisition must not be replaced by recovery
                 // of an older interrupted import that happens to have equal bytes.
-                guard content.sourceDownloadURL == nil || content.sourceDownloadURL == downloadURL else { continue }
+                guard existingDownloadURL == nil || existingDownloadURL == downloadURL else { continue }
                 let didRecord = try await recordDownloadProvenance(
                     downloadURL, onContentFilePrimaryKey: primaryKey, expectedCreatedAt: createdAt,
                     expectedReaderURL: readerURL, realmConfiguration: realmConfiguration,
@@ -2473,7 +2499,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     allowsProvenanceReplacement: false,
                     pendingImportRetirement: PendingFileImportRetirement(
                         identifier: item.identifier, storageScope: scope,
-                        expectedDigest: item.installation.identity.digest
+                        expectedDigest: item.installation.identity.digest,
+                        relativePath: item.installation.relativePath.path,
+                        requiresManifest: item.installation.requiresManifest,
+                        collisionHashString: String(item.installation.identity.collisionHash),
+                        downloadURLString: downloadURL.absoluteString
                     )
                 )
                 try validate()
@@ -2483,7 +2513,13 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             try validate()
             if item.downloadURL == nil {
                 try await retirePendingFileImport(
-                    identifier: item.identifier, scope: scope, expectedDigest: item.installation.identity.digest,
+                    retirement: PendingFileImportRetirement(
+                        identifier: item.identifier, storageScope: scope,
+                        expectedDigest: item.installation.identity.digest,
+                        relativePath: item.installation.relativePath.path,
+                        requiresManifest: item.installation.requiresManifest,
+                        collisionHashString: String(item.installation.identity.collisionHash), downloadURLString: nil
+                    ),
                     contentPrimaryKey: primaryKey, contentCreatedAt: createdAt, readerURL: readerURL,
                     realmConfiguration: realmConfiguration, storageReceipt: storageReceipt,
                     defaultHistoryReceipt: historyReceipt
@@ -2663,9 +2699,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 if let retirement = pendingImportRetirement {
                     guard let pending = realm.object(
                         ofType: ReaderPendingFileImport.self, forPrimaryKey: retirement.identifier
-                    ), pending.storageScopeIdentifier == retirement.storageScope,
-                       pending.identityVersion == 1,
-                       pending.identityDigest == retirement.expectedDigest else { return false }
+                    ), retirement.matches(pending) else { return false }
                     pendingImport = pending
                 } else {
                     pendingImport = nil
