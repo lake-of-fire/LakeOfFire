@@ -163,7 +163,7 @@ private final class LibraryFeedMetadataAdmission: @unchecked Sendable {
 @MainActor
 class LibraryFeedFormSectionsViewModel: ObservableObject {
     let feed: Feed
-    private let feedID: UUID
+    let feedID: UUID
     let realmConfiguration: Realm.Configuration
     
     @Published var feedTitle = "" {
@@ -649,8 +649,13 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         }
         return Task { @MainActor [weak self] in
             try await write.value
-            self?.feed.realm?.refresh()
-            self?.refresh()
+            guard let self else { return }
+            feed.realm?.refresh()
+            guard let rssURL = currentRSSURL else { return }
+            // Paste owns URL input only; other fields can still have drafts.
+            isRefreshing = true
+            defer { isRefreshing = false }
+            feedURL = rssURL.isNativeReaderView ? "" : rssURL.absoluteString
         }
     }
 }
@@ -844,7 +849,7 @@ struct LibraryFeedFormSections: View {
         .onChange(of: viewModel.feedEntries ?? []) { [oldEntries = viewModel.feedEntries] entries in
             let entry = entries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) })
             let oldEntry = oldEntries?.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) })
-            let expectedRSSURL = viewModel.feed.rssUrl
+            guard let expectedRSSURL = viewModel.currentRSSURL else { return }
             let expectedGeneration = metadataRefreshGeneration
             Task { @MainActor in
                 if entry?.id != oldEntry?.id {
@@ -897,7 +902,7 @@ struct LibraryFeedFormSections: View {
                 refresh()
             }
         }
-        .task(id: viewModel.feed.id) { @MainActor in
+        .task(id: viewModel.feedID) { @MainActor in
             reinitializeState()
         }
     }
@@ -908,7 +913,7 @@ struct LibraryFeedFormSections: View {
         readerModeViewModel.navigator = webNavigator
         readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
         
-        refresh(entries: Array(viewModel.feed.getEntries() ?? []))
+        refresh()
     }
     
     @MainActor

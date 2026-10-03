@@ -656,6 +656,23 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
         }
     }
 
+    func testRSSPasteCompletionPreservesOtherPublishedFieldDrafts() async throws {
+        let realm = try Realm(configuration: configuration())
+        let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "Persisted", in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        model.feedTitle = "Pending title"
+        model.feedDescription = "Pending description"
+        model.feedIconURL = "https://example.com/pending.png"
+        try await model.pasteRSSURL(strings: ["https://example.com/new.xml"]).value
+        realm.refresh()
+        XCTAssertEqual(model.feedURL, "https://example.com/new.xml")
+        XCTAssertEqual(model.feedTitle, "Pending title")
+        XCTAssertEqual(model.feedDescription, "Pending description")
+        XCTAssertEqual(model.feedIconURL, "https://example.com/pending.png")
+        XCTAssertEqual(feed.title, "Persisted")
+        XCTAssertNil(feed.markdownDescription)
+    }
+
     private func configuration() -> Realm.Configuration {
         var result = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         result.objectTypes = [
