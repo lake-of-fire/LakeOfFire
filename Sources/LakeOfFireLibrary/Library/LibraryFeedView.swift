@@ -435,7 +435,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         expectedRSSURL: URL,
         expectedGeneration: UUID,
         delay: @escaping @Sendable () async throws -> Void = {
-            try await Task.sleep(for: .seconds(1.5))
+            try await Task.sleep(nanoseconds: 1_500_000_000)
         },
         performRefresh: (@MainActor @Sendable () async -> Void)? = nil
     ) async {
