@@ -653,6 +653,37 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         XCTAssertThrowsError(try ReaderImportSnapshot.capture(from: root.appendingPathComponent("missing.txt")))
     }
 
+    func testStreamingSnapshotCopyMatchesSourceAcrossChunkBoundaries() throws {
+        let root = try temporaryDirectory()
+        let source = root.appendingPathComponent("source.txt")
+        let destination = root.appendingPathComponent("snapshot.txt")
+        let bytes = Data((0..<150_000).map { UInt8($0 % 251) })
+        try bytes.write(to: source)
+        let expected = try ReaderImportSnapshot.contentIdentity(at: source, requiresManifest: false)
+        let copied = try ReaderImportSnapshot.contentIdentity(
+            at: source,
+            requiresManifest: false,
+            copyingTo: destination
+        )
+        XCTAssertEqual(copied, expected)
+        XCTAssertEqual(try Data(contentsOf: destination), bytes)
+        XCTAssertEqual(try Data(contentsOf: source), bytes)
+    }
+
+    func testStreamingSnapshotCopyDoesNotReplaceOccupiedDestination() throws {
+        let root = try temporaryDirectory()
+        let source = try writeFixture(relativePath: "source.txt", under: root)
+        let destination = try writeFixture(relativePath: "occupied.txt", under: root)
+        let original = Data("existing destination".utf8)
+        try original.write(to: destination)
+        XCTAssertThrowsError(try ReaderImportSnapshot.contentIdentity(
+            at: source,
+            requiresManifest: false,
+            copyingTo: destination
+        ))
+        XCTAssertEqual(try Data(contentsOf: destination), original)
+    }
+
     func testStreamingImportIdentityPreservesCollisionHashAcrossChunkBoundaries() throws {
         let root = try temporaryDirectory()
         let source = root.appendingPathComponent("large.txt")

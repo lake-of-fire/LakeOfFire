@@ -4212,7 +4212,18 @@ struct ReaderImportSnapshot: Sendable {
                         throw ReaderFileManagerError.importContentChanged
                     }
                     let identity = try contentIdentity(at: coordinatedURL, requiresManifest: requiresManifest)
-                    try FileManager.default.copyItem(at: coordinatedURL, to: snapshotURL)
+                    if requiresManifest {
+                        try FileManager.default.copyItem(at: coordinatedURL, to: snapshotURL)
+                    } else {
+                        let copiedIdentity = try contentIdentity(
+                            at: coordinatedURL,
+                            requiresManifest: false,
+                            copyingTo: snapshotURL
+                        )
+                        guard copiedIdentity == identity else {
+                            throw ReaderFileManagerError.importContentChanged
+                        }
+                    }
                     try Task.checkCancellation()
                     guard try snapshotURL.readerImportRequiresManifest() == requiresManifest,
                           try contentIdentity(at: snapshotURL, requiresManifest: requiresManifest) == identity,
@@ -4238,12 +4249,17 @@ struct ReaderImportSnapshot: Sendable {
         }
     }
 
-    static func contentIdentity(at url: URL, requiresManifest: Bool) throws -> ReaderImportContentIdentity {
+    static func contentIdentity(
+        at url: URL,
+        requiresManifest: Bool,
+        copyingTo destinationURL: URL? = nil
+    ) throws -> ReaderImportContentIdentity {
         try Task.checkCancellation()
         guard try url.readerImportRequiresManifest() == requiresManifest else {
             throw ReaderFileManagerError.importContentChanged
         }
         if requiresManifest {
+            guard destinationURL == nil else { throw ReaderImportPackageManifestError.unsupportedEntry }
             let digest = try url.packageManifestDigest()
             return ReaderImportContentIdentity(digest: digest, collisionHash: stableHash(data: digest))
         }
@@ -4260,6 +4276,23 @@ struct ReaderImportSnapshot: Sendable {
               ReaderImportPackageEntryIdentity(opened) == before else {
             throw ReaderFileManagerError.importContentChanged
         }
+        // The caller supplies a fresh path inside its private temporary root.
+        // Exclusive creation prevents accidentally replacing any existing file.
+        let output: FileHandle?
+        if let destinationURL {
+            let outputDescriptor = open(
+                destinationURL.path,
+                O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                mode_t(0o600)
+            )
+            guard outputDescriptor >= 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            output = FileHandle(fileDescriptor: outputDescriptor, closeOnDealloc: true)
+        } else {
+            output = nil
+        }
+        defer { try? output?.close() }
         var hasher = SHA256()
         hasher.update(data: Data("reader-import-regular-file-v1\0".utf8))
         hasher.update(data: Data("\(before.size)\0".utf8))
@@ -4270,6 +4303,7 @@ struct ReaderImportSnapshot: Sendable {
             guard Int64(chunk.count) <= Int64(before.size) - readBytes else {
                 throw ReaderFileManagerError.importContentChanged
             }
+            try output?.write(contentsOf: chunk)
             readBytes += Int64(chunk.count)
             hasher.update(data: chunk)
             for byte in chunk {
