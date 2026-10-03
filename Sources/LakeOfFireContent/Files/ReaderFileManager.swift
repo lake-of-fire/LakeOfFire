@@ -2224,6 +2224,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 debugPrint("Warning: No matching content metadata returned for imported file", importedReaderFileURL)
                 return nil
             }
+            let importedContentPrimaryKey = content.compoundKey
             try await refreshAllFilesMetadata(
                 force: true,
                 realmConfiguration: realmConfiguration,
@@ -2238,7 +2239,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             try validateAuthority()
             let finalRealm = try await Realm.open(configuration: realmConfiguration)
             try validateAuthority()
-            guard let finalContent = finalRealm.object(ofType: ContentFile.self, forPrimaryKey: content.compoundKey),
+            guard let finalContent = finalRealm.object(ofType: ContentFile.self, forPrimaryKey: importedContentPrimaryKey),
                   !finalContent.isDeleted,
                   finalContent.url == importedReaderFileURL else {
                 throw ReaderFileManagerError.incompleteFileInventory
