@@ -37,6 +37,9 @@ struct LibraryFeedView: View {
                         viewModel: libraryFeedFormSectionsViewModel,
                         feed: feed
                     )
+                        .id(LibraryRecordPresentationIdentity(
+                            recordID: feed.id, configuration: libraryFeedFormSectionsViewModel.realmConfiguration
+                        ))
                         .disabled(!feed.isUserEditable())
                 }
                 .formStyle(.grouped)
@@ -104,21 +107,78 @@ private struct LibraryFeedMenu: View {
     }
 }
 
-enum LibraryFeedEditorField: Int, Sendable {
+enum LibraryFeedEditorField: Int, Hashable, Sendable {
     case title, description, enabled, url, iconURL, readerMode, headerImage
     case extractImage, fullContent, publicationDate, other
+}
+
+struct LibraryFeedOpenGraphMetadata: Sendable {
+    let url: URL?
+    let title: String?
+    let description: String?
+}
+
+private struct LibraryFeedMetadataRequest: Sendable {
+    let identifier: UUID
+    let rssURL: URL
+    let revisions: [LibraryFeedEditorField: UInt64]
+}
+
+// Only plain input revisions cross actors. Realm objects stay on their owner.
+// The lock makes synchronous UI input publication visible in the final writer
+// without suspending a Realm transaction to consult MainActor state.
+private final class LibraryFeedMetadataAdmission: @unchecked Sendable {
+    private let lock = NSLock()
+    private var identifier = UUID()
+    private var revisions: [LibraryFeedEditorField: UInt64] = [:]
+    private var values: [LibraryFeedEditorField: String] = [:]
+
+    func update(field: LibraryFeedEditorField, value: String, isUserEdit: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        if isUserEdit || values[field] != value {
+            revisions[field, default: 0] &+= 1
+        }
+        values[field] = value
+    }
+
+    func begin(identifier: UUID, rssURL: URL) -> LibraryFeedMetadataRequest {
+        lock.lock()
+        defer { lock.unlock() }
+        self.identifier = identifier
+        return LibraryFeedMetadataRequest(identifier: identifier, rssURL: rssURL, revisions: revisions)
+    }
+
+    func admits(_ request: LibraryFeedMetadataRequest, field: LibraryFeedEditorField) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return identifier == request.identifier
+            && values[.url] == request.rssURL.absoluteString
+            && revisions[.url] == request.revisions[.url]
+            && revisions[field] == request.revisions[field]
+            && (values[field] ?? "").isEmpty
+    }
 }
 
 @MainActor
 class LibraryFeedFormSectionsViewModel: ObservableObject {
     let feed: Feed
+    private let feedID: UUID
     let realmConfiguration: Realm.Configuration
     
-    @Published var feedTitle = ""
-    @Published var feedDescription = ""
+    @Published var feedTitle = "" {
+        didSet { metadataAdmission.update(field: .title, value: feedTitle, isUserEdit: !isRefreshing) }
+    }
+    @Published var feedDescription = "" {
+        didSet { metadataAdmission.update(field: .description, value: feedDescription, isUserEdit: !isRefreshing) }
+    }
     @Published var feedEnabled = false
-    @Published var feedURL = ""
-    @Published var feedIconURL = ""
+    @Published var feedURL = "" {
+        didSet { metadataAdmission.update(field: .url, value: feedURL, isUserEdit: !isRefreshing) }
+    }
+    @Published var feedIconURL = "" {
+        didSet { metadataAdmission.update(field: .iconURL, value: feedIconURL, isUserEdit: !isRefreshing) }
+    }
     @Published var feedIsReaderModeByDefault = false
     @Published var feedInjectEntryImageIntoHeader = false
     @Published var feedExtractImageFromContent = false
@@ -132,6 +192,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     private var isRefreshing = false
     private var nextWriteSequence: UInt64 = 0
     private let writeOrdering = LibraryEditorWriteOrdering()
+    private let metadataAdmission = LibraryFeedMetadataAdmission()
+    private var metadataRequest: LibraryFeedMetadataRequest?
     
     var cancellables = Set<AnyCancellable>()
     
@@ -143,12 +205,11 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     init(feed: Feed, observesRealm: Bool = true) {
         realmConfiguration = feed.realm?.configuration ?? LibraryDataManager.realmConfiguration
         self.feed = feed
+        feedID = feed.id
+        refresh()
         // TODO: only resolve this once instead of repeatedly below...
         let feedID = feed.id
-        guard observesRealm else {
-            refresh()
-            return
-        }
+        guard observesRealm else { return }
         Task { @RealmBackgroundActor [weak self, realmConfiguration] in
             guard let self else { return }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
@@ -330,7 +391,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil,
         _ block: @escaping @RealmBackgroundActor @Sendable (Feed) -> Bool
     ) -> Task<Void, Error> {
-        let feedID = feed.id
+        let feedID = self.feedID
         nextWriteSequence &+= 1
         let sequence = nextWriteSequence
         return Task { @RealmBackgroundActor [realmConfiguration, writeOrdering] in
@@ -365,6 +426,157 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         feedDisplayPublicationDate = feed.displayPublicationDate
     }
     
+    func beginMetadataRefresh(rssURL: URL, identifier: UUID) {
+        metadataRequest = metadataAdmission.begin(identifier: identifier, rssURL: rssURL)
+    }
+
+    func refreshFromOpenGraph(
+        expectedRSSURL rssURL: URL,
+        expectedGeneration: UUID,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil,
+        fetch: @escaping @Sendable (URL) async throws -> LibraryFeedOpenGraphMetadata = { url in
+            let metadata = try await OpenGraph.fetch(url: url)
+            return LibraryFeedOpenGraphMetadata(
+                url: metadata[.url].flatMap { URL(string: $0) },
+                title: metadata[.siteName] ?? metadata[.title],
+                description: metadata[.description]
+            )
+        }
+    ) async {
+        guard let request = metadataRequest, request.identifier == expectedGeneration,
+              request.rssURL == rssURL, !feed.isInvalidated, !feed.isDeleted,
+              feed.rssUrl == rssURL, feed.isUserEditable(),
+              !rssURL.isNativeReaderView else { return }
+        let baseDomain = rssURL.domainURL
+        var titleSet = !feed.title.isEmpty
+        var descriptionSet = feed.markdownDescription != nil
+
+        @MainActor
+        func needsTitle() -> Bool {
+            !titleSet && metadataAdmission.admits(request, field: .title)
+        }
+
+        @MainActor
+        func needsDescription() -> Bool {
+            !descriptionSet && metadataAdmission.admits(request, field: .description)
+        }
+
+        @MainActor
+        func apply(_ metadata: LibraryFeedOpenGraphMetadata, allowDescription: Bool) async {
+            guard !Task.isCancelled, !feed.isInvalidated, !feed.isDeleted, feed.rssUrl == rssURL,
+                  metadata.url?.domainURL == baseDomain else { return }
+            if !titleSet, let title = metadata.title, !title.isEmpty {
+                await applyMetadataValue(title, field: .title, request: request, beforeWrite: beforeWrite)
+                guard !feed.isInvalidated, !feed.isDeleted else { return }
+                titleSet = !feed.title.isEmpty
+            }
+            if allowDescription, !descriptionSet,
+               let description = metadata.description?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !description.isEmpty {
+                await applyMetadataValue(description, field: .description, request: request, beforeWrite: beforeWrite)
+                guard !feed.isInvalidated, !feed.isDeleted else { return }
+                descriptionSet = feed.markdownDescription != nil
+            }
+        }
+
+        let stripped = rssURL.deletingLastPathComponent()
+        if (needsTitle() || needsDescription()), stripped != rssURL,
+           let metadata = try? await fetch(stripped) {
+            await apply(metadata, allowDescription: true)
+        }
+        if needsTitle(), !Task.isCancelled,
+           metadataRequest?.identifier == expectedGeneration, !feed.isInvalidated, !feed.isDeleted,
+           feed.rssUrl == rssURL,
+           let entryURL = feed.getEntries()?.first?.url,
+           let metadata = try? await fetch(entryURL) {
+            await apply(metadata, allowDescription: false)
+        }
+        if (needsTitle() || needsDescription()), !Task.isCancelled,
+           metadataRequest?.identifier == expectedGeneration, !feed.isInvalidated, !feed.isDeleted,
+           feed.rssUrl == rssURL,
+           let metadata = try? await fetch(baseDomain) {
+            await apply(metadata, allowDescription: true)
+        }
+    }
+
+    func refreshIcon(
+        expectedRSSURL: URL,
+        expectedGeneration: UUID,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil,
+        fetch: @escaping @Sendable (URL) async throws -> URL
+    ) async {
+        guard let request = metadataRequest, request.identifier == expectedGeneration,
+              request.rssURL == expectedRSSURL, !feed.isInvalidated, !feed.isDeleted,
+              feed.rssUrl == expectedRSSURL,
+              feed.iconUrl.isNativeReaderView, !expectedRSSURL.isNativeReaderView else { return }
+        do {
+            let iconURL = try await fetch(expectedRSSURL.domainURL)
+            guard !Task.isCancelled, !iconURL.isNativeReaderView else { return }
+            await applyMetadataValue(iconURL.absoluteString, field: .iconURL, request: request, beforeWrite: beforeWrite)
+        } catch is CancellationError {
+            return
+        } catch {
+            print("Error finding favicon:", error)
+        }
+    }
+
+    private func applyMetadataValue(
+        _ value: String, field: LibraryFeedEditorField, request: LibraryFeedMetadataRequest,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)?
+    ) async {
+        guard !Task.isCancelled, !feed.isInvalidated, !feed.isDeleted, feed.rssUrl == request.rssURL,
+              metadataAdmission.admits(request, field: field) else { return }
+        let admission = metadataAdmission
+        do {
+            let write = writeFeedAsync(field: field, beforeWrite: beforeWrite) { feed in
+                guard feed.rssUrl == request.rssURL, admission.admits(request, field: field) else { return false }
+                switch field {
+                case .title:
+                    guard feed.title.isEmpty else { return false }
+                    feed.title = value
+                case .description:
+                    guard feed.markdownDescription == nil else { return false }
+                    feed.markdownDescription = value
+                case .iconURL:
+                    guard feed.iconUrl.isNativeReaderView, let url = URL(string: value),
+                          feed.iconUrl != url else { return false }
+                    feed.iconUrl = url
+                default:
+                    return false
+                }
+                return true
+            }
+            try await withTaskCancellationHandler {
+                try await write.value
+            } onCancel: {
+                write.cancel()
+            }
+            feed.realm?.refresh()
+            // Hydrate only the admitted field. Another field may have buffered
+            // input, and this completion must not reset the whole form.
+            guard !Task.isCancelled, !feed.isInvalidated, !feed.isDeleted,
+                  metadataAdmission.admits(request, field: field) else { return }
+            isRefreshing = true
+            defer { isRefreshing = false }
+            switch field {
+            case .title: feedTitle = feed.title
+            case .description: feedDescription = feed.markdownDescription ?? ""
+            case .iconURL: feedIconURL = feed.iconUrl.isNativeReaderView ? "" : feed.iconUrl.absoluteString
+            default: break
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            print("Failed to apply feed metadata:", error)
+        }
+    }
+
+    func previewEntries() throws -> [FeedEntry]? {
+        let realm = try Realm(configuration: realmConfiguration)
+        guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID), !feed.isDeleted else { return nil }
+        return Array(feed.getEntries() ?? [])
+    }
+
     @discardableResult
     func pasteRSSURL(strings: [String]) -> Task<Void, Error> {
         let url = URL(string: strings.first ?? "") ?? URL(string: "about:blank")!
@@ -400,7 +612,7 @@ struct LibraryFeedFormSections: View {
     
     @StateObject private var webNavigator = WebViewNavigator()
     @StateObject private var readerContent = ReaderContent()
-    @StateObject private var readerViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
+    @StateObject private var readerViewModel: ReaderViewModel
     @StateObject private var readerModeViewModel = ReaderModeViewModel()
     @StateObject private var readerLocationBarViewModel = ReaderLocationBarViewModel()
     @StateObject private var readerMediaPlayerViewModel = ReaderMediaPlayerViewModel()
@@ -412,6 +624,14 @@ struct LibraryFeedFormSections: View {
     
     @Environment(\.openURL) private var openURL
     
+    init(viewModel: LibraryFeedFormSectionsViewModel, feed: Feed) {
+        self.viewModel = viewModel
+        self.feed = feed
+        _readerViewModel = StateObject(wrappedValue: ReaderViewModel(
+            realmConfiguration: viewModel.realmConfiguration, systemScripts: []
+        ))
+    }
+
     @ViewBuilder private var synchronizationSection: some View {
         Section("Synced") {
             Text("Manabi Reader manages this feed for you.")
@@ -463,6 +683,7 @@ struct LibraryFeedFormSections: View {
             let expectedRSSURL = viewModel.feed.rssUrl
             let expectedGeneration = UUID()
             metadataRefreshGeneration = expectedGeneration
+            viewModel.beginMetadataRefresh(rssURL: expectedRSSURL, identifier: expectedGeneration)
             do {
                 try await Task.sleep(for: .seconds(1.5))
                 try Task.checkCancellation()
@@ -655,81 +876,18 @@ struct LibraryFeedFormSections: View {
     }
     
     @MainActor
-    private func refreshFromOpenGraph(
-        expectedRSSURL rssURL: URL,
-        expectedGeneration: UUID
-    ) async {
-        guard viewModel.feed.rssUrl == rssURL,
-              metadataRefreshGeneration == expectedGeneration,
-              viewModel.feed.isUserEditable(),
-              !rssURL.isNativeReaderView else { return }
-            
-        let baseDomain = rssURL.domainURL
-        var titleSet = !viewModel.feed.title.isEmpty
-        var descSet = viewModel.feed.markdownDescription != nil
-            
-        @MainActor
-        func applyOG(_ og: OpenGraph, allowDescription: Bool) {
-            guard !Task.isCancelled,
-                  viewModel.feed.rssUrl == rssURL,
-                  metadataRefreshGeneration == expectedGeneration else { return }
-            if !titleSet, let name = og[.siteName] ?? og[.title], !name.isEmpty {
-                viewModel.feedTitle = name
-                titleSet = true
-            }
-            if allowDescription,
-               !descSet,
-               let description = og[.description]?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !description.isEmpty {
-                viewModel.feedDescription = description
-                descSet = true
-            }
-        }
-
-        // 1. Try RSS URL with last path component removed (e.g. .../feed.rss -> .../newsroom/)
-        if !titleSet || !descSet {
-            let stripped = rssURL.deletingLastPathComponent()
-            if stripped != rssURL,
-               let og = try? await OpenGraph.fetch(url: stripped),
-               let raw = og[.url], let u = URL(string: raw), u.domainURL == baseDomain {
-                applyOG(og, allowDescription: true)
-            }
-        }
-
-        // 2. Fall back to first entry URL – title only (description will come from pure domain)
-        if !titleSet,
-           !Task.isCancelled,
-           viewModel.feed.rssUrl == rssURL,
-           metadataRefreshGeneration == expectedGeneration,
-           let entryURL = viewModel.feed.getEntries()?.first?.url,
-           let og = try? await OpenGraph.fetch(url: entryURL),
-           let raw = og[.url], let u = URL(string: raw), u.domainURL == baseDomain {
-            applyOG(og, allowDescription: false)
-        }
-            
-        // 3. Finally, fetch the bare domain for description (or still-missing title/desc)
-        if (!descSet || !titleSet),
-           !Task.isCancelled,
-           viewModel.feed.rssUrl == rssURL,
-           metadataRefreshGeneration == expectedGeneration,
-           let og = try? await OpenGraph.fetch(url: baseDomain),
-           let raw = og[.url], let u = URL(string: raw), u.domainURL == baseDomain {
-            applyOG(og, allowDescription: true)
-        }
+    private func refreshFromOpenGraph(expectedRSSURL: URL, expectedGeneration: UUID) async {
+        await viewModel.refreshFromOpenGraph(
+            expectedRSSURL: expectedRSSURL, expectedGeneration: expectedGeneration
+        )
     }
 
     @MainActor
-    private func refreshIcon(
-        expectedRSSURL: URL,
-        expectedGeneration: UUID
-    ) async {
-        guard viewModel.feed.rssUrl == expectedRSSURL,
-              metadataRefreshGeneration == expectedGeneration,
-              viewModel.feed.iconUrl.isNativeReaderView,
-              !expectedRSSURL.isNativeReaderView else { return }
-        let url = expectedRSSURL.domainURL
-        do {
-            let favicon = try await Task.detached {
+    private func refreshIcon(expectedRSSURL: URL, expectedGeneration: UUID) async {
+        await viewModel.refreshIcon(
+            expectedRSSURL: expectedRSSURL, expectedGeneration: expectedGeneration
+        ) { url in
+            try await Task.detached {
                 try await FaviconFinder(
                     url: url,
                     configuration: .init(
@@ -743,39 +901,26 @@ struct LibraryFeedFormSections: View {
                 )
                 .fetchFaviconURLs()
                 .largest()
+                .source
             }.value
-            guard !Task.isCancelled,
-                  viewModel.feed.rssUrl == expectedRSSURL,
-                  metadataRefreshGeneration == expectedGeneration,
-                  viewModel.feed.iconUrl.isNativeReaderView,
-                  !favicon.source.isNativeReaderView else { return }
-            viewModel.feedIconURL = favicon.source.absoluteString
-        } catch is CancellationError {
-            return
-        } catch {
-            print("Error finding favicon: \(error)")
         }
     }
-    
+
     private func refresh(entries: [FeedEntry]? = nil, forceRefresh: Bool = false) {
-        let realm: Realm
+        let resolvedEntries: [FeedEntry]?
         do {
-            realm = try Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+            resolvedEntries = try viewModel.previewEntries()
         } catch {
-            // A transient Realm open failure should not terminate the feed editor
-            // or discard the preview which is already on screen. A later edit,
-            // reload, or feed update will retry this refresh.
             print("Failed to open feed Realm while refreshing preview:", error)
             return
         }
-        guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: viewModel.feed.id) else {
+        guard let resolvedEntries else {
             readerFeedEntry = nil
             readerContent.content = nil
             readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
             return
         }
-        
-        let entries: [FeedEntry] = entries ?? Array(feed.getEntries() ?? [])
+        let entries = entries ?? resolvedEntries
         Task { @MainActor in
             //            if let entry = entries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) }) {
             if let entry = entries.last {

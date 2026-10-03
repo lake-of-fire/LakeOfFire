@@ -205,6 +205,368 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
         XCTAssertEqual(journalGenerations(in: realm), before)
     }
 
+    func testDelayedMetadataPreservesBufferedUserInputsWithoutJournaling() async throws {
+        let realm = try Realm(configuration: configuration())
+        let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let generation = UUID()
+        model.beginMetadataRefresh(rssURL: feed.rssUrl, identifier: generation)
+        let suspended = expectation(description: "Metadata I/O suspended")
+        let gate = FeedEditorWriteGate()
+        let metadata = Task { @MainActor in
+            await model.refreshFromOpenGraph(expectedRSSURL: feed.rssUrl, expectedGeneration: generation) { _ in
+                suspended.fulfill()
+                await gate.wait()
+                return LibraryFeedOpenGraphMetadata(
+                    url: URL(string: "https://example.com/"), title: "Suggested", description: "Suggested description"
+                )
+            }
+        }
+        defer { metadata.cancel(); Task { await gate.release() } }
+        await fulfillment(of: [suspended], timeout: 5)
+        // Uncommitted published input is precisely the state that a persisted
+        // field check alone misses. Observation is disabled to retain that state
+        // deterministically, without racing a wall-clock debounce.
+        model.feedTitle = "Buffered title"
+        model.feedDescription = "Buffered description"
+        let before = journalGenerations(in: realm)
+        await gate.release()
+        await metadata.value
+        realm.refresh()
+        XCTAssertEqual(model.feedTitle, "Buffered title")
+        XCTAssertEqual(model.feedDescription, "Buffered description")
+        XCTAssertEqual(feed.title, "")
+        XCTAssertNil(feed.markdownDescription)
+        XCTAssertEqual(journalGenerations(in: realm), before)
+    }
+
+    func testDelayedMetadataPreservesCommittedUserInputsAndJournalGenerations() async throws {
+        let realm = try Realm(configuration: configuration())
+        let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let generation = UUID()
+        model.beginMetadataRefresh(rssURL: feed.rssUrl, identifier: generation)
+        let suspended = expectation(description: "Metadata I/O suspended")
+        let gate = FeedEditorWriteGate()
+        let metadata = Task { @MainActor in
+            await model.refreshFromOpenGraph(expectedRSSURL: feed.rssUrl, expectedGeneration: generation) { _ in
+                suspended.fulfill()
+                await gate.wait()
+                return LibraryFeedOpenGraphMetadata(
+                    url: URL(string: "https://example.com/"), title: "Suggested", description: "Suggested description"
+                )
+            }
+        }
+        defer { metadata.cancel(); Task { await gate.release() } }
+        await fulfillment(of: [suspended], timeout: 5)
+        model.feedTitle = "User title"
+        model.feedDescription = "User description"
+        try await model.writeFeedAsync(field: .title) { feed in
+            feed.title = "User title"
+            return true
+        }.value
+        try await model.writeFeedAsync(field: .description) { feed in
+            feed.markdownDescription = "User description"
+            return true
+        }.value
+        realm.refresh()
+        let before = journalGenerations(in: realm)
+        await gate.release()
+        await metadata.value
+        realm.refresh()
+        XCTAssertEqual(feed.title, "User title")
+        XCTAssertEqual(feed.markdownDescription, "User description")
+        XCTAssertEqual(model.feedTitle, "User title")
+        XCTAssertEqual(model.feedDescription, "User description")
+        XCTAssertEqual(journalGenerations(in: realm), before)
+    }
+
+    func testMetadataFinalWriteRejectsChangedPublishedAndPersistedFields() async throws {
+        for committed in [false, true] {
+            for field in [LibraryFeedEditorField.title, .description, .iconURL] {
+                let realm = try Realm(configuration: configuration())
+                let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
+                let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+                let generation = UUID()
+                model.beginMetadataRefresh(rssURL: feed.rssUrl, identifier: generation)
+                let suspended = expectation(description: "Metadata final writer suspended")
+                let gate = FeedEditorWriteGate()
+                let metadata = Task { @MainActor in
+                    let beforeWrite: @RealmBackgroundActor @Sendable () async -> Void = {
+                        suspended.fulfill()
+                        await gate.wait()
+                    }
+                    if field == .iconURL {
+                        await model.refreshIcon(
+                            expectedRSSURL: feed.rssUrl, expectedGeneration: generation, beforeWrite: beforeWrite
+                        ) { _ in URL(string: "https://example.com/suggested.png")! }
+                    } else {
+                        await model.refreshFromOpenGraph(
+                            expectedRSSURL: feed.rssUrl, expectedGeneration: generation, beforeWrite: beforeWrite
+                        ) { _ in
+                            LibraryFeedOpenGraphMetadata(
+                                url: URL(string: "https://example.com/"),
+                                title: field == .title ? "Suggested" : nil,
+                                description: field == .description ? "Suggested description" : nil
+                            )
+                        }
+                    }
+                }
+                defer { metadata.cancel(); Task { await gate.release() } }
+                await fulfillment(of: [suspended], timeout: 5)
+                if committed {
+                    // Change only persisted state, without model hydration, so
+                    // rejection must come from the final transaction's guard.
+                    try realm.write {
+                        switch field {
+                        case .title: feed.title = "User title"
+                        case .description: feed.markdownDescription = "User description"
+                        case .iconURL: feed.iconUrl = URL(string: "https://example.com/user.png")!
+                        default: break
+                        }
+                        feed.refreshChangeMetadata(explicitlyModified: true)
+                    }
+                } else {
+                    switch field {
+                    case .title: model.feedTitle = "Buffered title"
+                    case .description: model.feedDescription = "Buffered description"
+                    case .iconURL: model.feedIconURL = "https://example.com/buffered.png"
+                    default: break
+                    }
+                }
+                realm.refresh()
+                let before = journalGenerations(in: realm)
+                let title = feed.title
+                let description = feed.markdownDescription
+                let iconURL = feed.iconUrl
+                await gate.release()
+                await metadata.value
+                realm.refresh()
+                XCTAssertEqual(feed.title, title)
+                XCTAssertEqual(feed.markdownDescription, description)
+                XCTAssertEqual(feed.iconUrl, iconURL)
+                XCTAssertEqual(journalGenerations(in: realm), before)
+                if !committed {
+                    switch field {
+                    case .title: XCTAssertEqual(model.feedTitle, "Buffered title")
+                    case .description: XCTAssertEqual(model.feedDescription, "Buffered description")
+                    case .iconURL: XCTAssertEqual(model.feedIconURL, "https://example.com/buffered.png")
+                    default: break
+                    }
+                }
+            }
+        }
+    }
+
+    func testDelayedIconPreservesBufferedUserInputWithoutJournaling() async throws {
+        let realm = try Realm(configuration: configuration())
+        let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let generation = UUID()
+        model.beginMetadataRefresh(rssURL: feed.rssUrl, identifier: generation)
+        let suspended = expectation(description: "Icon I/O suspended")
+        let gate = FeedEditorWriteGate()
+        let metadata = Task { @MainActor in
+            await model.refreshIcon(expectedRSSURL: feed.rssUrl, expectedGeneration: generation) { _ in
+                suspended.fulfill()
+                await gate.wait()
+                return URL(string: "https://example.com/suggested.png")!
+            }
+        }
+        defer { metadata.cancel(); Task { await gate.release() } }
+        await fulfillment(of: [suspended], timeout: 5)
+        model.feedIconURL = "https://example.com/buffered.png"
+        let before = journalGenerations(in: realm)
+        await gate.release()
+        await metadata.value
+        realm.refresh()
+        XCTAssertEqual(model.feedIconURL, "https://example.com/buffered.png")
+        XCTAssertEqual(feed.iconUrl.absoluteString, "about:blank")
+        XCTAssertEqual(journalGenerations(in: realm), before)
+    }
+
+    func testCurrentMetadataFillsEmptyFieldsAndRepeatedCompletionDoesNotJournal() async throws {
+        let realm = try Realm(configuration: configuration())
+        let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let generation = UUID()
+        model.beginMetadataRefresh(rssURL: feed.rssUrl, identifier: generation)
+        let fetch: @Sendable (URL) async throws -> LibraryFeedOpenGraphMetadata = { _ in
+            LibraryFeedOpenGraphMetadata(
+                url: URL(string: "https://example.com/"), title: "Suggested", description: "Suggested description"
+            )
+        }
+        await model.refreshFromOpenGraph(expectedRSSURL: feed.rssUrl, expectedGeneration: generation, fetch: fetch)
+        await model.refreshIcon(expectedRSSURL: feed.rssUrl, expectedGeneration: generation) { _ in
+            URL(string: "https://example.com/suggested.png")!
+        }
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Suggested")
+        XCTAssertEqual(feed.markdownDescription, "Suggested description")
+        XCTAssertEqual(feed.iconUrl.absoluteString, "https://example.com/suggested.png")
+        XCTAssertEqual(model.feedTitle, "Suggested")
+        XCTAssertEqual(model.feedDescription, "Suggested description")
+        XCTAssertEqual(model.feedIconURL, "https://example.com/suggested.png")
+        let before = journalGenerations(in: realm)
+        XCTAssertEqual(before.count, 1)
+        await model.refreshFromOpenGraph(expectedRSSURL: feed.rssUrl, expectedGeneration: generation, fetch: fetch)
+        await model.refreshIcon(expectedRSSURL: feed.rssUrl, expectedGeneration: generation) { _ in
+            URL(string: "https://example.com/suggested.png")!
+        }
+        realm.refresh()
+        XCTAssertEqual(journalGenerations(in: realm), before)
+    }
+
+    func testSupersededMetadataRequestCannotApplyLateCompletion() async throws {
+        let realm = try Realm(configuration: configuration())
+        let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let generation = UUID()
+        model.beginMetadataRefresh(rssURL: feed.rssUrl, identifier: generation)
+        let suspended = expectation(description: "Superseded request suspended")
+        let gate = FeedEditorWriteGate()
+        let metadata = Task { @MainActor in
+            await model.refreshFromOpenGraph(expectedRSSURL: feed.rssUrl, expectedGeneration: generation) { _ in
+                suspended.fulfill()
+                await gate.wait()
+                return LibraryFeedOpenGraphMetadata(
+                    url: URL(string: "https://example.com/"), title: "Obsolete", description: "Obsolete"
+                )
+            }
+        }
+        defer { metadata.cancel(); Task { await gate.release() } }
+        await fulfillment(of: [suspended], timeout: 5)
+        model.beginMetadataRefresh(rssURL: feed.rssUrl, identifier: UUID())
+        await gate.release()
+        await metadata.value
+        realm.refresh()
+        XCTAssertEqual(feed.title, "")
+        XCTAssertNil(feed.markdownDescription)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    func testMetadataFinalWriterRejectsCancellationSupersessionAndNewerEmptyInput() async throws {
+        for rejection in ["cancelled", "superseded", "newer empty input"] {
+            let realm = try Realm(configuration: configuration())
+            let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
+            let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+            let generation = UUID()
+            model.beginMetadataRefresh(rssURL: feed.rssUrl, identifier: generation)
+            let suspended = expectation(description: "Final metadata writer suspended before rejection")
+            let gate = FeedEditorWriteGate()
+            let metadata = Task { @MainActor in
+                await model.refreshFromOpenGraph(
+                    expectedRSSURL: feed.rssUrl, expectedGeneration: generation,
+                    beforeWrite: {
+                        suspended.fulfill()
+                        await gate.wait()
+                    }
+                ) { _ in
+                    LibraryFeedOpenGraphMetadata(
+                        url: URL(string: "https://example.com/"), title: "Obsolete", description: nil
+                    )
+                }
+            }
+            defer { metadata.cancel(); Task { await gate.release() } }
+            await fulfillment(of: [suspended], timeout: 5)
+            switch rejection {
+            case "cancelled": metadata.cancel()
+            case "superseded": model.beginMetadataRefresh(rssURL: feed.rssUrl, identifier: UUID())
+            default: model.feedTitle = ""
+            }
+            await gate.release()
+            await metadata.value
+            realm.refresh()
+            XCTAssertEqual(feed.title, "", rejection)
+            XCTAssertEqual(model.feedTitle, "", rejection)
+            XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty, rejection)
+        }
+    }
+
+    func testFeedPreviewEntriesResolveInOriginatingRealmAfterReplacement() throws {
+        let originalConfiguration = configuration()
+        let replacementConfiguration = configuration()
+        let original = try Realm(configuration: originalConfiguration)
+        let replacement = try Realm(configuration: replacementConfiguration)
+        let feedID = UUID()
+        let categoryID = UUID()
+        let feed = try installFeed(id: feedID, categoryID: categoryID, title: "Original", in: original)
+        _ = try installFeed(id: feedID, categoryID: categoryID, title: "Replacement", in: replacement)
+        for (realm, title) in [(original, "Original entry"), (replacement, "Replacement entry")] {
+            let entry = FeedEntry()
+            entry.feedID = feedID
+            entry.compoundKey = "shared-entry-key"
+            entry.url = URL(string: "https://example.com/entry")!
+            entry.title = title
+            try realm.write { realm.add(entry) }
+        }
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let previousLibrary = LibraryDataManager.realmConfiguration
+        let previousPreview = ReaderContentLoader.feedEntryRealmConfiguration
+        defer {
+            LibraryDataManager.realmConfiguration = previousLibrary
+            ReaderContentLoader.feedEntryRealmConfiguration = previousPreview
+        }
+        LibraryDataManager.realmConfiguration = replacementConfiguration
+        ReaderContentLoader.feedEntryRealmConfiguration = replacementConfiguration
+        let entries = try XCTUnwrap(model.previewEntries())
+        XCTAssertEqual(entries.map(\.title), ["Original entry"])
+        XCTAssertEqual(entries.first?.realm?.configuration.inMemoryIdentifier, originalConfiguration.inMemoryIdentifier)
+        XCTAssertTrue(original.objects(BigSyncPendingMutation.self).isEmpty)
+        XCTAssertTrue(replacement.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    func testMetadataAndWriterCompletionAfterFeedInvalidationDoNotAccessDeletedObject() async throws {
+        for boundary in ["metadata I/O", "icon I/O", "final writer"] {
+            let realm = try Realm(configuration: configuration())
+            let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
+            let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+            let rssURL = feed.rssUrl
+            let generation = UUID()
+            model.beginMetadataRefresh(rssURL: rssURL, identifier: generation)
+            let suspended = expectation(description: "Completion suspended before feed invalidation")
+            let gate = FeedEditorWriteGate()
+            let metadata = Task { @MainActor in
+                if boundary == "icon I/O" {
+                    await model.refreshIcon(expectedRSSURL: rssURL, expectedGeneration: generation) { _ in
+                        suspended.fulfill()
+                        await gate.wait()
+                        return URL(string: "https://example.com/suggested.png")!
+                    }
+                } else {
+                    var beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)?
+                    if boundary == "final writer" {
+                        beforeWrite = { suspended.fulfill(); await gate.wait() }
+                    }
+                    await model.refreshFromOpenGraph(
+                        expectedRSSURL: rssURL, expectedGeneration: generation, beforeWrite: beforeWrite
+                    ) { _ in
+                        if boundary == "metadata I/O" {
+                            suspended.fulfill()
+                            await gate.wait()
+                        }
+                        return LibraryFeedOpenGraphMetadata(
+                            url: URL(string: "https://example.com/"), title: "Obsolete", description: nil
+                        )
+                    }
+                }
+            }
+            defer { metadata.cancel(); Task { await gate.release() } }
+            await fulfillment(of: [suspended], timeout: 5)
+            try realm.write { realm.delete(feed) }
+            XCTAssertTrue(feed.isInvalidated)
+            await gate.release()
+            await metadata.value
+            XCTAssertNil(try model.previewEntries())
+            try await model.writeFeedAsync { _ in
+                XCTFail("An invalidated editor must not mutate a missing record")
+                return false
+            }.value
+            realm.refresh()
+            XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty, boundary)
+        }
+    }
+
     private func configuration() -> Realm.Configuration {
         var result = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         result.objectTypes = [
