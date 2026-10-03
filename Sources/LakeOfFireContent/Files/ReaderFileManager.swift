@@ -2276,7 +2276,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     expectedReaderURL: finalReaderURL,
                     realmConfiguration: realmConfiguration,
                     storageAuthorityReceipt: importWriteAuthority.receipt,
-                    defaultHistoryAuthorityReceipt: importWriteAuthority.defaultHistoryAuthorityReceipt
+                    defaultHistoryAuthorityReceipt: importWriteAuthority.defaultHistoryAuthorityReceipt,
+                    pendingImportRetirement: admittedPendingImport ? PendingFileImportRetirement(
+                        identifier: pendingIdentifier, storageScope: pendingScope,
+                        expectedDigest: installation.identity.digest
+                    ) : nil
                 )
                 try validateAuthority()
                 guard didRecordProvenance else {
@@ -2287,7 +2291,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             try Self.validateDestinationContainment(targetFilePath, in: drive.rootDirectory)
             try await installation.validateContent(at: installedURL)
             try validateAuthority()
-            if admittedPendingImport {
+            if admittedPendingImport && fromDownloadURL == nil {
                 try await retirePendingFileImport(
                     identifier: pendingIdentifier, scope: pendingScope, expectedDigest: installation.identity.digest,
                     contentPrimaryKey: finalPrimaryKey, contentCreatedAt: finalCreatedAt, readerURL: finalReaderURL,
@@ -2301,6 +2305,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             debugPrint("Error importing file:", error)
             throw error
         }
+    }
+
+    private struct PendingFileImportRetirement: Sendable {
+        let identifier: String
+        let storageScope: String
+        let expectedDigest: Data
     }
 
     private struct PendingFileImportSnapshot: Sendable {
@@ -2460,20 +2470,26 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     downloadURL, onContentFilePrimaryKey: primaryKey, expectedCreatedAt: createdAt,
                     expectedReaderURL: readerURL, realmConfiguration: realmConfiguration,
                     storageAuthorityReceipt: storageReceipt, defaultHistoryAuthorityReceipt: historyReceipt,
-                    allowsProvenanceReplacement: false
+                    allowsProvenanceReplacement: false,
+                    pendingImportRetirement: PendingFileImportRetirement(
+                        identifier: item.identifier, storageScope: scope,
+                        expectedDigest: item.installation.identity.digest
+                    )
                 )
                 try validate()
                 guard didRecord else { continue }
             }
             try await item.installation.validateContent(at: fileURL)
             try validate()
-            try await retirePendingFileImport(
-                identifier: item.identifier, scope: scope, expectedDigest: item.installation.identity.digest,
-                contentPrimaryKey: primaryKey, contentCreatedAt: createdAt, readerURL: readerURL,
-                realmConfiguration: realmConfiguration, storageReceipt: storageReceipt,
-                defaultHistoryReceipt: historyReceipt
-            )
-            try validate()
+            if item.downloadURL == nil {
+                try await retirePendingFileImport(
+                    identifier: item.identifier, scope: scope, expectedDigest: item.installation.identity.digest,
+                    contentPrimaryKey: primaryKey, contentCreatedAt: createdAt, readerURL: readerURL,
+                    realmConfiguration: realmConfiguration, storageReceipt: storageReceipt,
+                    defaultHistoryReceipt: historyReceipt
+                )
+                try validate()
+            }
         }
     }
 
@@ -2619,7 +2635,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         realmConfiguration: Realm.Configuration,
         storageAuthorityReceipt: UInt64,
         defaultHistoryAuthorityReceipt: UInt64?,
-        allowsProvenanceReplacement: Bool = true
+        allowsProvenanceReplacement: Bool = true,
+        pendingImportRetirement: PendingFileImportRetirement? = nil
     ) async throws -> Bool {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
             for: realmConfiguration
@@ -2642,6 +2659,17 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
                 guard allowsProvenanceReplacement || target.sourceDownloadURL == nil
                     || target.sourceDownloadURL == downloadURL else { return false }
+                let pendingImport: ReaderPendingFileImport?
+                if let retirement = pendingImportRetirement {
+                    guard let pending = realm.object(
+                        ofType: ReaderPendingFileImport.self, forPrimaryKey: retirement.identifier
+                    ), pending.storageScopeIdentifier == retirement.storageScope,
+                       pending.identityVersion == 1,
+                       pending.identityDigest == retirement.expectedDigest else { return false }
+                    pendingImport = pending
+                } else {
+                    pendingImport = nil
+                }
                 let timestamp = Date()
                 for contentFile in realm.objects(ContentFile.self).filter(NSPredicate(
                     format: "isDeleted == %@ AND sourceDownloadURL == %@",
@@ -2654,9 +2682,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         at: timestamp
                     )
                 }
-                guard target.sourceDownloadURL != downloadURL else { return true }
-                target.sourceDownloadURL = downloadURL
-                target.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                if target.sourceDownloadURL != downloadURL {
+                    target.sourceDownloadURL = downloadURL
+                    target.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                }
+                // Even a no-op provenance retry must retire its matching work.
+                if let pendingImport { realm.delete(pendingImport) }
                 return true
             }
         }

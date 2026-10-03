@@ -620,6 +620,43 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         return realm.objects(ReaderPendingFileImport.self).count
     }
 
+    @RealmBackgroundActor
+    private static func setImportProvenance(_ url: URL, in configuration: Realm.Configuration) async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        try await realm.asyncWrite {
+            let content = try XCTUnwrap(realm.objects(ContentFile.self).where { !$0.isDeleted }.first)
+            content.sourceDownloadURL = url
+            content.refreshChangeMetadata(explicitlyModified: true)
+        }
+    }
+
+    @MainActor
+    func testPendingImportRecoveryRetiresReceiptWhenProvenanceIsAlreadyRecorded() async throws {
+        let root = try temporaryDirectory()
+        let libraryRoot = try temporaryDirectory()
+        let source = try writeFixture(relativePath: "book.txt", under: root)
+        let configuration = makeHistoryRealmConfiguration(fileURL: root.appendingPathComponent("history.realm"))
+        let downloadURL = try XCTUnwrap(URL(string: "https://example.com/book.txt"))
+        let manager = try await collisionImportManager(libraryRootURL: libraryRoot)
+        manager.historyRealmConfigurationOverride = configuration
+        manager.importProvenanceWillWriteForTesting = { throw CancellationError() }
+        do {
+            _ = try await manager.importFile(fileURL: source, fromDownloadURL: downloadURL)
+            XCTFail("Expected interrupted import")
+        } catch is CancellationError {}
+        try await Self.setImportProvenance(downloadURL, in: configuration)
+        let before = try await Self.pendingImportCount(in: configuration)
+        XCTAssertEqual(before, 1)
+        let recreated = try await collisionImportManager(libraryRootURL: libraryRoot)
+        recreated.historyRealmConfigurationOverride = configuration
+        try await recreated.refreshAllFilesMetadata(force: true)
+        let after = try await Self.pendingImportCount(in: configuration)
+        XCTAssertEqual(after, 0)
+        let metadata = try await Self.importedMetadata(in: configuration)
+        XCTAssertEqual(metadata.count, 1)
+        XCTAssertEqual(metadata.first?.1, downloadURL)
+    }
+
     @MainActor
     func testInstalledLocalImportRecoversProvenanceAfterManagerRecreation() async throws {
         let root = try temporaryDirectory()
