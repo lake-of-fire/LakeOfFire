@@ -913,6 +913,210 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
     }
 
+    func testCategoryFinalDraftSurvivesImmediateDoneRefresh() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let owner = category("Original")
+        let library = libraryConfiguration(id: UUID(), categoryIDs: [owner.id])
+        try realm.write { realm.add(owner); realm.add(library) }
+        let model = LibraryCategoryViewModel(
+            category: owner, libraryConfiguration: library, selectedFeed: .constant(nil)
+        )
+        model.isEditing = true
+        model.categoryTitle = "Leading title"
+        model.categoryTitle = "Final title"
+        model.categoryBackgroundImageURL = "https://example.com/leading.png"
+        model.categoryBackgroundImageURL = "https://example.com/final.png"
+        // The production focus-loss handler performs these operations in order.
+        model.isEditing = false
+        model.refresh()
+        XCTAssertEqual(model.categoryTitle, "Final title")
+        XCTAssertEqual(model.categoryBackgroundImageURL, "https://example.com/final.png")
+        let persisted = await waitUntil {
+            realm.refresh()
+            return owner.title == "Final title"
+                && owner.backgroundImageUrl.absoluteString == "https://example.com/final.png"
+        }
+        XCTAssertTrue(persisted)
+        try await Task.sleep(for: .milliseconds(450))
+        realm.refresh()
+        XCTAssertEqual(owner.title, "Final title")
+        XCTAssertEqual(model.categoryTitle, "Final title")
+        XCTAssertEqual(owner.backgroundImageUrl.absoluteString, "https://example.com/final.png")
+        XCTAssertEqual(model.categoryBackgroundImageURL, "https://example.com/final.png")
+        XCTAssertNotNil(journal(for: owner, in: realm))
+    }
+
+    func testCategoryLeadingCompletionAndRefreshCannotReplaceBufferedFinalDraft() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let owner = category("Original")
+        let library = libraryConfiguration(id: UUID(), categoryIDs: [owner.id])
+        try realm.write { realm.add(owner); realm.add(library) }
+        let model = LibraryCategoryViewModel(
+            category: owner, libraryConfiguration: library, selectedFeed: .constant(nil)
+        )
+        model.isEditing = true
+        model.categoryTitle = "Leading title"
+        model.categoryTitle = "Final title"
+        model.categoryBackgroundImageURL = "https://example.com/leading.png"
+        model.categoryBackgroundImageURL = "https://example.com/final.png"
+        let leadingPersisted = await waitUntil {
+            realm.refresh()
+            return owner.title == "Leading title"
+                && owner.backgroundImageUrl.absoluteString == "https://example.com/leading.png"
+        }
+        XCTAssertTrue(leadingPersisted)
+        model.isEditing = false
+        // Also represents a queued notification from the leading transaction.
+        model.refresh()
+        XCTAssertEqual(model.categoryTitle, "Final title")
+        XCTAssertEqual(model.categoryBackgroundImageURL, "https://example.com/final.png")
+        let finalPersisted = await waitUntil {
+            realm.refresh()
+            return owner.title == "Final title"
+                && owner.backgroundImageUrl.absoluteString == "https://example.com/final.png"
+        }
+        XCTAssertTrue(finalPersisted)
+    }
+
+    func testCategoryHydrationDoesNotQueueWritesOrChangeJournalGenerations() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let owner = category("Original")
+        let library = libraryConfiguration(id: UUID(), categoryIDs: [owner.id])
+        try realm.write { realm.add(owner); realm.add(library) }
+        let model = LibraryCategoryViewModel(
+            category: owner, libraryConfiguration: library, selectedFeed: .constant(nil)
+        )
+        let before = journalGenerations(in: realm)
+        try realm.write {
+            owner.title = "First hydration"
+            owner.backgroundImageUrl = URL(string: "https://example.com/first.png")!
+        }
+        model.refresh()
+        try realm.write {
+            owner.title = "Second hydration"
+            owner.backgroundImageUrl = URL(string: "https://example.com/second.png")!
+        }
+        model.refresh()
+        try await Task.sleep(for: .milliseconds(450))
+        realm.refresh()
+        XCTAssertEqual(owner.title, "Second hydration")
+        XCTAssertEqual(model.categoryTitle, "Second hydration")
+        XCTAssertEqual(owner.backgroundImageUrl.absoluteString, "https://example.com/second.png")
+        XCTAssertEqual(model.categoryBackgroundImageURL, "https://example.com/second.png")
+        XCTAssertEqual(journalGenerations(in: realm), before)
+    }
+
+    func testCategoryUserValuesCanReturnAfterHydrationWithoutDeduplicationLoss() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let owner = category("Original")
+        let library = libraryConfiguration(id: UUID(), categoryIDs: [owner.id])
+        try realm.write { realm.add(owner); realm.add(library) }
+        let model = LibraryCategoryViewModel(
+            category: owner, libraryConfiguration: library, selectedFeed: .constant(nil)
+        )
+        model.isEditing = true
+        model.categoryTitle = "User title"
+        model.categoryBackgroundImageURL = "https://example.com/user.png"
+        let firstPersisted = await waitUntil {
+            realm.refresh()
+            return owner.title == "User title"
+                && owner.backgroundImageUrl.absoluteString == "https://example.com/user.png"
+        }
+        XCTAssertTrue(firstPersisted)
+        // Allow the latest completion to settle before explicitly hydrating.
+        try await Task.sleep(for: .milliseconds(450))
+        try realm.write {
+            owner.title = "Hydrated title"
+            owner.backgroundImageUrl = URL(string: "https://example.com/hydrated.png")!
+        }
+        model.refresh()
+        XCTAssertEqual(model.categoryTitle, "Hydrated title")
+        XCTAssertEqual(model.categoryBackgroundImageURL, "https://example.com/hydrated.png")
+        model.categoryTitle = "User title"
+        model.categoryBackgroundImageURL = "https://example.com/user.png"
+        let secondPersisted = await waitUntil {
+            realm.refresh()
+            return owner.title == "User title"
+                && owner.backgroundImageUrl.absoluteString == "https://example.com/user.png"
+        }
+        XCTAssertTrue(secondPersisted)
+    }
+
+    func testCategoryBufferedEditsRecheckEligibilityAndSettleRejectedDrafts() async throws {
+        for becomesDeleted in [false, true] {
+            let (realm, restoreConfiguration) = try makeRealm()
+            defer { restoreConfiguration() }
+            let owner = category("Original")
+            let library = libraryConfiguration(id: UUID(), categoryIDs: [owner.id])
+            try realm.write { realm.add(owner); realm.add(library) }
+            let model = LibraryCategoryViewModel(
+                category: owner, libraryConfiguration: library, selectedFeed: .constant(nil)
+            )
+            model.isEditing = true
+            model.categoryTitle = owner.title
+            model.categoryTitle = "Rejected final title"
+            model.categoryBackgroundImageURL = owner.backgroundImageUrl.absoluteString
+            model.categoryBackgroundImageURL = "https://example.com/rejected.png"
+            // Leading values are no-ops; the buffered user edits must resolve
+            // eligibility again when their transactions eventually run.
+            try realm.write {
+                if becomesDeleted {
+                    owner.isDeleted = true
+                } else {
+                    owner.opmlURL = URL(string: "https://example.com/managed.opml")
+                }
+            }
+            let before = journalGenerations(in: realm)
+            model.isEditing = false
+            model.refresh()
+            try await Task.sleep(for: .milliseconds(450))
+            realm.refresh()
+            XCTAssertEqual(owner.title, "Original")
+            XCTAssertEqual(owner.backgroundImageUrl.absoluteString, "https://example.com/category.png")
+            XCTAssertEqual(model.categoryTitle, "Original")
+            XCTAssertEqual(model.categoryBackgroundImageURL, "https://example.com/category.png")
+            XCTAssertEqual(journalGenerations(in: realm), before)
+        }
+    }
+
+    func testCategoryInvalidImageAndNoOpTitleSettleWithoutJournaling() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let owner = category("Original")
+        let library = libraryConfiguration(id: UUID(), categoryIDs: [owner.id])
+        try realm.write { realm.add(owner); realm.add(library) }
+        let model = LibraryCategoryViewModel(
+            category: owner, libraryConfiguration: library, selectedFeed: .constant(nil)
+        )
+        let before = journalGenerations(in: realm)
+        XCTAssertNil(URL(string: "http://["))
+        model.isEditing = true
+        model.categoryTitle = "Original"
+        model.categoryTitle = "Original"
+        model.categoryBackgroundImageURL = owner.backgroundImageUrl.absoluteString
+        model.categoryBackgroundImageURL = "http://["
+        model.isEditing = false
+        model.refresh()
+        try await Task.sleep(for: .milliseconds(450))
+        realm.refresh()
+        XCTAssertEqual(owner.title, "Original")
+        XCTAssertEqual(owner.backgroundImageUrl.absoluteString, "https://example.com/category.png")
+        XCTAssertEqual(model.categoryBackgroundImageURL, "https://example.com/category.png")
+        XCTAssertEqual(journalGenerations(in: realm), before)
+        // A later hydration proves neither rejected field remains pending.
+        try realm.write {
+            owner.title = "Later title"
+            owner.backgroundImageUrl = URL(string: "https://example.com/later.png")!
+        }
+        model.refresh()
+        XCTAssertEqual(model.categoryTitle, "Later title")
+        XCTAssertEqual(model.categoryBackgroundImageURL, "https://example.com/later.png")
+    }
+
     func testMountedCategoryContainerReplacesOwnerForSelectionAndRealmChanges() async throws {
         let (realm, restoreConfiguration) = try makeRealm()
         defer { restoreConfiguration() }

@@ -18,6 +18,36 @@ import Combine
 import SwiftUtilities
 import LakeKit
 
+private struct LibraryCategoryFieldCommand: Sendable {
+    let categoryID: UUID
+    let realmConfiguration: Realm.Configuration
+    let field: Int
+    let value: String
+    let sequence: UInt64
+    let writeOrdering: LibraryEditorWriteOrdering
+
+    @RealmBackgroundActor
+    func write() async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        try await realm.asyncWrite {
+            guard writeOrdering.admits(recordID: categoryID, field: field, sequence: sequence),
+                  let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                  category.isUserEditable, !category.isDeleted else { return }
+            switch field {
+            case 0:
+                guard category.title != value else { return }
+                category.title = value
+            case 1:
+                guard let url = URL(string: value.isEmpty ? "about:blank" : value),
+                      category.backgroundImageUrl != url else { return }
+                category.backgroundImageUrl = url
+            default: return
+            }
+            category.refreshChangeMetadata(explicitlyModified: true)
+        }
+    }
+}
+
 @MainActor
 class LibraryCategoryViewModel: ObservableObject {
     let category: FeedCategory
@@ -31,6 +61,9 @@ class LibraryCategoryViewModel: ObservableObject {
     
     var cancellables = Set<AnyCancellable>()
     @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
+    private var isRefreshing = false
+    private var pendingFieldCommands: [Int: LibraryCategoryFieldCommand] = [:]
+    private let writeOrdering: LibraryEditorWriteOrdering
     
     var isUserEditable: Bool {
         return category.opmlURL == nil
@@ -66,6 +99,7 @@ class LibraryCategoryViewModel: ObservableObject {
         realmConfiguration = category.realm?.configuration
             ?? libraryConfiguration.realm?.configuration
             ?? LibraryDataManager.realmConfiguration
+        writeOrdering = .shared(configuration: realmConfiguration, recordKind: "category")
         self.category = category.isFrozen ? (category.thaw() ?? category) : category
         // The StateObject survives parent snapshots; keep its menu source live.
         self.libraryConfiguration = libraryConfiguration.isFrozen
@@ -96,70 +130,49 @@ class LibraryCategoryViewModel: ObservableObject {
                 }
         }
         
-        $categoryTitle
-            .dropFirst()
-            .removeDuplicates()
-            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { [weak self] categoryTitle in
-                guard let self else { return }
-                let categoryID = category.id
-                Task { @RealmBackgroundActor [realmConfiguration] in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-                    guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
-                    guard category.isUserEditable else {
-                        await self.refresh()
-                        return
-                    }
-                    guard category.title != categoryTitle else { return }
-                    try await realm.asyncWrite {
-                        guard let category = realm.object(
-                            ofType: FeedCategory.self, forPrimaryKey: categoryID
-                        ), category.isUserEditable, !category.isDeleted,
-                           category.title != categoryTitle else { return }
-                        category.title = categoryTitle
-                        category.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
+        observe($categoryTitle, field: 0)
+        observe($categoryBackgroundImageURL, field: 1)
+    }
+
+    private func observe(_ publisher: Published<String>.Publisher, field: Int) {
+        publisher.dropFirst()
+            .compactMap { [weak self] value -> LibraryCategoryFieldCommand? in
+                guard let self, !self.isRefreshing, !self.category.isInvalidated else { return nil }
+                let sequence = self.writeOrdering.issueSequence()
+                let command = LibraryCategoryFieldCommand(
+                    categoryID: self.category.id, realmConfiguration: self.realmConfiguration,
+                    field: field, value: value, sequence: sequence, writeOrdering: self.writeOrdering
+                )
+                self.pendingFieldCommands[field] = command
+                return command
             }
-            .store(in: &cancellables)
-        $categoryBackgroundImageURL
-            .dropFirst()
-            .removeDuplicates()
             .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { [weak self] categoryBackgroundImageURL in
-                guard let self else { return }
-                let categoryID = category.id
-                Task { @RealmBackgroundActor [realmConfiguration] in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-                    guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
-                    guard category.isUserEditable else {
-                        await self.refresh()
-                        return
-                    }
-                    let newURL: URL?
-                    if categoryBackgroundImageURL.isEmpty {
-                        newURL = URL(string: "about:blank")!
-                    } else {
-                        newURL = URL(string: categoryBackgroundImageURL)
-                    }
-                    guard let newURL else {
-                        return
-                    }
-                    guard category.backgroundImageUrl != newURL else { return }
-                    try await realm.asyncWrite {
-                        guard let category = realm.object(
-                            ofType: FeedCategory.self, forPrimaryKey: categoryID
-                        ), category.isUserEditable, !category.isDeleted,
-                           category.backgroundImageUrl != newURL else { return }
-                        category.backgroundImageUrl = newURL
-                        category.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
-            }
+            .sink { [weak self] command in self?.submit(command) }
             .store(in: &cancellables)
+    }
+
+    private func submit(_ command: LibraryCategoryFieldCommand) {
+        Task { @RealmBackgroundActor [weak self] in
+            do { try await command.write() }
+            catch { print("LibraryCategoryEditor field write failed: \(error)") }
+            await self?.settleFieldEdit(field: command.field, sequence: command.sequence)
+        }
+    }
+
+    func finishEditing() {
+        isEditing = false
+        for command in pendingFieldCommands.values { submit(command) }
+        refresh()
     }
     
     deinit {
+        let commands = Array(pendingFieldCommands.values)
+        Task { @RealmBackgroundActor in
+            for command in commands {
+                do { try await command.write() }
+                catch { print("LibraryCategoryEditor retirement write failed: \(error)") }
+            }
+        }
         Task { @RealmBackgroundActor [weak objectNotificationToken] in
             objectNotificationToken?.invalidate()
         }
@@ -167,8 +180,23 @@ class LibraryCategoryViewModel: ObservableObject {
     
     @MainActor
     func refresh() {
-        categoryTitle = category.title
-        categoryBackgroundImageURL = category.backgroundImageUrl.absoluteString == "about:blank" ? "" : category.backgroundImageUrl.absoluteString
+        if !category.isFrozen { category.realm?.refresh() }
+        guard !category.isInvalidated else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        if pendingFieldCommands[0] == nil {
+            categoryTitle = category.title
+        }
+        if pendingFieldCommands[1] == nil {
+            categoryBackgroundImageURL = category.backgroundImageUrl.absoluteString == "about:blank"
+                ? "" : category.backgroundImageUrl.absoluteString
+        }
+    }
+
+    private func settleFieldEdit(field: Int, sequence: UInt64) {
+        guard pendingFieldCommands[field]?.sequence == sequence else { return }
+        pendingFieldCommands[field] = nil
+        if !isEditing { refresh() }
     }
     
     @MainActor
@@ -374,6 +402,7 @@ struct LibraryCategoryView: View {
                     Section("Category Title") {
                         TextField("Title", text: $libraryCategoryViewModel.categoryTitle, prompt: Text("Enter category title"))
                             .disabled(!libraryCategoryViewModel.isUserEditable)
+                            .accessibilityIdentifier("Library.CategoryTitle")
                             .focused($focusedField, equals: .title)
                             .onSubmit { focusedField = nil }
                     }
@@ -383,6 +412,7 @@ struct LibraryCategoryView: View {
                             libraryCategoryViewModel.categoryBackgroundImageURL == "about:blank" ? "" : libraryCategoryViewModel.categoryBackgroundImageURL
                         } set: { libraryCategoryViewModel.categoryBackgroundImageURL = $0 }, axis: .vertical)
                         .disabled(!libraryCategoryViewModel.isUserEditable)
+                        .accessibilityIdentifier("Library.CategoryImageURL")
                         .focused($focusedField, equals: .backgroundImageURL)
                         .onSubmit { focusedField = nil }
                     } header: {
@@ -461,8 +491,11 @@ struct LibraryCategoryView: View {
                 }
 #endif
                 ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") { focusedField = nil }
+                    if focusedField != nil {
+                        Spacer()
+                        Button("Done") { focusedField = nil }
+                            .accessibilityIdentifier("Library.CategoryKeyboardDone")
+                    }
                 }
             }
         }
@@ -471,11 +504,13 @@ struct LibraryCategoryView: View {
             onEditorAppear?(libraryCategoryViewModel)
         }
         .onChange(of: focusedField) { newValue in
-            libraryCategoryViewModel.isEditing = (newValue != nil)
             if newValue == nil {
-                libraryCategoryViewModel.refresh()
+                libraryCategoryViewModel.finishEditing()
+            } else {
+                libraryCategoryViewModel.isEditing = true
             }
         }
+        .onDisappear { libraryCategoryViewModel.finishEditing() }
     }
     
     @ViewBuilder private func addFeedButton(scrollProxy: ScrollViewProxy) -> some View {
