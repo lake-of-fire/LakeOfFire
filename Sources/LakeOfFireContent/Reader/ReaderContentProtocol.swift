@@ -540,8 +540,9 @@ public extension ReaderContentProtocol {
                 realmConfiguration: realmConfiguration
             )
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            if let managedBookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: bookmark.compoundKey) {
-                try realm.writeIfNeeded {
+            let bookmarkKey = bookmark.compoundKey
+            try await realm.asyncWrite {
+                if let managedBookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: bookmarkKey) {
                     if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
                         content.configureBookmark(managedBookmark)
                     } else {
@@ -560,10 +561,14 @@ public extension ReaderContentProtocol {
             }
             
             if let historyRecord = try await HistoryRecord.getOpenedRecord(forURL: url),
-               historyRecord.isDemoted != false {
-                try historyRecord.realm?.writeIfNeeded {
-                    historyRecord.isDemoted = false
-                    historyRecord.refreshChangeMetadata(explicitlyModified: true)
+               let historyRealm = historyRecord.realm {
+                let historyKey = historyRecord.compoundKey
+                try await historyRealm.asyncWrite {
+                    guard let current = historyRealm.object(
+                        ofType: HistoryRecord.self, forPrimaryKey: historyKey
+                    ), current.isDemoted != false else { return }
+                    current.isDemoted = false
+                    current.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
         }()
@@ -576,15 +581,14 @@ public extension ReaderContentProtocol {
         let html = html
         return try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted else {
-                return false
-            }
-//            await realm.asyncRefresh()
-            try realm.writeIfNeeded {
+            return try await realm.asyncWrite {
+                guard let bookmark = realm.object(
+                    ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)
+                ), !bookmark.isDeleted else { return false }
                 bookmark.isDeleted = true
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
+                return true
             }
-            return true
         }()
     }
     
