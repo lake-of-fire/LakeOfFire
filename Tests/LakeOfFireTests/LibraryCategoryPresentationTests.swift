@@ -656,8 +656,8 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         defer { LibraryDataManager.realmConfiguration = previous }
         let capturedConfiguration = makeConfiguration()
         let replacementConfiguration = makeConfiguration()
-        let capturedRealm = try Realm(configuration: capturedConfiguration)
-        let replacementRealm = try Realm(configuration: replacementConfiguration)
+        let capturedRealm = try await Realm(configuration: capturedConfiguration)
+        let replacementRealm = try await Realm(configuration: replacementConfiguration)
         let first = script("First", id: UUID())
         first.script = "first source"
         first.previewURL = URL(string: "https://first.example")
@@ -855,8 +855,8 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         defer { LibraryDataManager.realmConfiguration = previous }
         let capturedConfiguration = makeConfiguration()
         let replacementConfiguration = makeConfiguration()
-        let capturedRealm = try Realm(configuration: capturedConfiguration)
-        let replacementRealm = try Realm(configuration: replacementConfiguration)
+        let capturedRealm = try await Realm(configuration: capturedConfiguration)
+        let replacementRealm = try await Realm(configuration: replacementConfiguration)
         let domainID = UUID()
         let scriptID = UUID()
         let capturedDomain = UserScriptAllowedDomain()
@@ -920,7 +920,7 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         let second = category("Second")
         let library = libraryConfiguration(id: UUID(), categoryIDs: [first.id, second.id])
         try realm.write { realm.add([first, second]); realm.add(library) }
-        let replacementRealm = try Realm(configuration: makeConfiguration())
+        let replacementRealm = try await Realm(configuration: makeConfiguration())
         let replacementCategory = category("Replacement second", id: second.id)
         let replacementLibrary = libraryConfiguration(id: library.id, categoryIDs: [second.id])
         try replacementRealm.write { replacementRealm.add(replacementCategory); replacementRealm.add(replacementLibrary) }

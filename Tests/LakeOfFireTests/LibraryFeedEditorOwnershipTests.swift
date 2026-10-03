@@ -11,8 +11,8 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
     func testDelayedFeedFieldAndPasteStayInOriginatingRealm() async throws {
         let originalConfiguration = configuration()
         let replacementConfiguration = configuration()
-        let original = try Realm(configuration: originalConfiguration)
-        let replacement = try Realm(configuration: replacementConfiguration)
+        let original = try await Realm(configuration: originalConfiguration)
+        let replacement = try await Realm(configuration: replacementConfiguration)
         let categoryID = UUID()
         let feedID = UUID()
         let originalFeed = try installFeed(id: feedID, categoryID: categoryID, title: "Original", in: original)
@@ -42,7 +42,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
     }
 
     func testFeedWriterRechecksCurrentCategoryAndDeletionBeforeMutating() async throws {
-        let realm = try Realm(configuration: configuration())
+        let realm = try await Realm(configuration: configuration())
         let categoryID = UUID()
         let feed = try installFeed(id: UUID(), categoryID: categoryID, title: "Original", in: realm)
         let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
@@ -69,7 +69,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
     }
 
     func testFeedHydrationAndNoOpPasteLeaveJournalGenerationStable() async throws {
-        let realm = try Realm(configuration: configuration())
+        let realm = try await Realm(configuration: configuration())
         let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "Original", in: realm)
         let model = LibraryFeedFormSectionsViewModel(feed: feed)
         let initialized = await waitUntil { model.hasInitializedValues }
@@ -92,9 +92,9 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
 
     func testLibraryButtonObserversKeepTheirPublishedRealmAfterReplacement() async throws {
         let originalConfiguration = configuration()
-        let original = try Realm(configuration: originalConfiguration)
+        let original = try await Realm(configuration: originalConfiguration)
         let replacementConfiguration = configuration()
-        let replacement = try Realm(configuration: replacementConfiguration)
+        let replacement = try await Realm(configuration: replacementConfiguration)
         let categoryID = UUID()
         let feedID = UUID()
         let originalFeed = try installFeed(id: feedID, categoryID: categoryID, title: "Original", in: original)
@@ -143,7 +143,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
     }
 
     func testFeedFieldCanReturnToEarlierUserValueAfterHydration() async throws {
-        let realm = try Realm(configuration: configuration())
+        let realm = try await Realm(configuration: configuration())
         let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "Original", in: realm)
         let model = LibraryFeedFormSectionsViewModel(feed: feed)
         let initialized = await waitUntil { model.hasInitializedValues }
@@ -159,7 +159,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
     }
 
     func testFeedPasteReplacesBufferedOlderURLWithoutLaterJournalRefresh() async throws {
-        let realm = try Realm(configuration: configuration())
+        let realm = try await Realm(configuration: configuration())
         let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "Original", in: realm)
         let model = LibraryFeedFormSectionsViewModel(feed: feed)
         let initialized = await waitUntil { model.hasInitializedValues }
@@ -179,7 +179,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
     }
 
     func testNewerNoOpFeedEditRejectsOlderWriterAfterItResumes() async throws {
-        let realm = try Realm(configuration: configuration())
+        let realm = try await Realm(configuration: configuration())
         let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "Current", in: realm)
         let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
         let suspended = expectation(description: "Older writer suspended before its write turn")
@@ -207,7 +207,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
     }
 
     func testDelayedMetadataPreservesBufferedUserInputsWithoutJournaling() async throws {
-        let realm = try Realm(configuration: configuration())
+        let realm = try await Realm(configuration: configuration())
         let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
         let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
         let generation = UUID()
@@ -242,7 +242,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
     }
 
     func testDelayedMetadataPreservesCommittedUserInputsAndJournalGenerations() async throws {
-        let realm = try Realm(configuration: configuration())
+        let realm = try await Realm(configuration: configuration())
         let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
         let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
         let generation = UUID()
@@ -285,7 +285,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
     func testMetadataFinalWriteRejectsChangedPublishedAndPersistedFields() async throws {
         for committed in [false, true] {
             for field in [LibraryFeedEditorField.title, .description, .iconURL] {
-                let realm = try Realm(configuration: configuration())
+                let realm = try await Realm(configuration: configuration())
                 let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
                 let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
                 let generation = UUID()
@@ -360,7 +360,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
     }
 
     func testDelayedIconPreservesBufferedUserInputWithoutJournaling() async throws {
-        let realm = try Realm(configuration: configuration())
+        let realm = try await Realm(configuration: configuration())
         let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
         let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
         let generation = UUID()
@@ -387,7 +387,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
     }
 
     func testCurrentMetadataFillsEmptyFieldsAndRepeatedCompletionDoesNotJournal() async throws {
-        let realm = try Realm(configuration: configuration())
+        let realm = try await Realm(configuration: configuration())
         let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
         let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
         let generation = UUID()
@@ -419,7 +419,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
     }
 
     func testSupersededMetadataRequestCannotApplyLateCompletion() async throws {
-        let realm = try Realm(configuration: configuration())
+        let realm = try await Realm(configuration: configuration())
         let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
         let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
         let generation = UUID()
@@ -448,7 +448,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
 
     func testMetadataFinalWriterRejectsCancellationSupersessionAndNewerEmptyInput() async throws {
         for rejection in ["cancelled", "superseded", "newer empty input"] {
-            let realm = try Realm(configuration: configuration())
+            let realm = try await Realm(configuration: configuration())
             let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
             let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
             let generation = UUID()
@@ -519,7 +519,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
 
     func testMetadataAndWriterCompletionAfterFeedInvalidationDoNotAccessDeletedObject() async throws {
         for boundary in ["metadata I/O", "icon I/O", "final writer"] {
-            let realm = try Realm(configuration: configuration())
+            let realm = try await Realm(configuration: configuration())
             let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
             let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
             let rssURL = feed.rssUrl
@@ -572,8 +572,8 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
         for usesExplicitConfiguration in [true, false] {
             let originalConfiguration = configuration()
             let replacementConfiguration = configuration()
-            let original = try Realm(configuration: originalConfiguration)
-            let replacement = try Realm(configuration: replacementConfiguration)
+            let original = try await Realm(configuration: originalConfiguration)
+            let replacement = try await Realm(configuration: replacementConfiguration)
             let scriptID = UUID()
             let libraryID = UUID()
             for (realm, source) in [(original, "window.origin = 'captured';"), (replacement, "window.origin = 'replacement';")] {
@@ -618,7 +618,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
 
     func testViewMetadataDelayRejectsInvalidationCancellationAndSupersessionBeforeIO() async throws {
         for rejection in ["invalidated", "cancelled", "superseded"] {
-            let realm = try Realm(configuration: configuration())
+            let realm = try await Realm(configuration: configuration())
             let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
             let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
             let rssURL = feed.rssUrl
@@ -657,7 +657,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
     }
 
     func testRSSPasteCompletionPreservesOtherPublishedFieldDrafts() async throws {
-        let realm = try Realm(configuration: configuration())
+        let realm = try await Realm(configuration: configuration())
         let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "Persisted", in: realm)
         let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
         model.feedTitle = "Pending title"
