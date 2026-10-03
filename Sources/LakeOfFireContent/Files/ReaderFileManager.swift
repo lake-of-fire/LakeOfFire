@@ -2290,6 +2290,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             if admittedPendingImport {
                 try await retirePendingFileImport(
                     identifier: pendingIdentifier, scope: pendingScope, expectedDigest: installation.identity.digest,
+                    contentPrimaryKey: finalPrimaryKey, contentCreatedAt: finalCreatedAt, readerURL: finalReaderURL,
                     realmConfiguration: realmConfiguration, storageReceipt: importWriteAuthority.receipt,
                     defaultHistoryReceipt: importWriteAuthority.defaultHistoryAuthorityReceipt
                 )
@@ -2379,6 +2380,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         identifier: String,
         scope: String,
         expectedDigest: Data,
+        contentPrimaryKey: String,
+        contentCreatedAt: Date,
+        readerURL: URL,
         realmConfiguration: Realm.Configuration,
         storageReceipt: UInt64,
         defaultHistoryReceipt: UInt64?
@@ -2391,6 +2395,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 guard let pending = realm.object(ofType: ReaderPendingFileImport.self, forPrimaryKey: identifier)
                 else { return true }
                 guard pending.storageScopeIdentifier == scope, pending.identityDigest == expectedDigest else { return false }
+                guard let content = realm.object(ofType: ContentFile.self, forPrimaryKey: contentPrimaryKey),
+                      !content.isDeleted, content.createdAt == contentCreatedAt, content.url == readerURL else {
+                    return false
+                }
                 realm.delete(pending)
                 return true
             }
@@ -2461,6 +2469,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             try validate()
             try await retirePendingFileImport(
                 identifier: item.identifier, scope: scope, expectedDigest: item.installation.identity.digest,
+                contentPrimaryKey: primaryKey, contentCreatedAt: createdAt, readerURL: readerURL,
                 realmConfiguration: realmConfiguration, storageReceipt: storageReceipt,
                 defaultHistoryReceipt: historyReceipt
             )
