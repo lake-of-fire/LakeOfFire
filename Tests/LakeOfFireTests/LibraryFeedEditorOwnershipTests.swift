@@ -177,6 +177,34 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
         XCTAssertEqual(journalGenerations(in: realm), generations)
     }
 
+    func testNewerNoOpFeedEditRejectsOlderWriterAfterItResumes() async throws {
+        let realm = try Realm(configuration: configuration())
+        let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "Current", in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let suspended = expectation(description: "Older writer suspended before its write turn")
+        let gate = FeedEditorWriteGate()
+        let older = model.writeFeedAsync(field: .title, beforeWrite: {
+            suspended.fulfill()
+            await gate.wait()
+        }) { feed in
+            feed.title = "Obsolete"
+            return true
+        }
+        defer { older.cancel(); Task { await gate.release() } }
+        await fulfillment(of: [suspended], timeout: 5)
+        let before = journalGenerations(in: realm)
+        try await model.writeFeedAsync(field: .title) { feed in
+            guard feed.title != "Current" else { return false }
+            feed.title = "Current"
+            return true
+        }.value
+        await gate.release()
+        try await older.value
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Current")
+        XCTAssertEqual(journalGenerations(in: realm), before)
+    }
+
     private func configuration() -> Realm.Configuration {
         var result = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         result.objectTypes = [
@@ -213,5 +241,21 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(20))
         }
         return condition()
+    }
+}
+
+private actor FeedEditorWriteGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isReleased = false
+
+    func wait() async {
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
     }
 }

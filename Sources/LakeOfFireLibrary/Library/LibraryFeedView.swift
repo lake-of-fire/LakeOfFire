@@ -327,6 +327,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     @discardableResult
     func writeFeedAsync(
         field: LibraryFeedEditorField = .other,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil,
         _ block: @escaping @RealmBackgroundActor @Sendable (Feed) -> Bool
     ) -> Task<Void, Error> {
         let feedID = feed.id
@@ -334,7 +335,10 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         let sequence = nextWriteSequence
         return Task { @RealmBackgroundActor [realmConfiguration, writeOrdering] in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+            await beforeWrite?()
+            try Task.checkCancellation()
             try await realm.asyncWrite {
+                try Task.checkCancellation()
                 guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
                       !feed.isDeleted, feed.isUserEditable(),
                       writeOrdering.admits(recordID: feedID, field: field.rawValue, sequence: sequence),
