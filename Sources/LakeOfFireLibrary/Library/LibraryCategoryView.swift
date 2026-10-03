@@ -255,8 +255,13 @@ class LibraryCategoryViewModel: ObservableObject {
 @available(iOS 16.0, macOS 13.0, *)
 struct LibraryCategoryView: View {
     @StateObject private var libraryCategoryViewModel: LibraryCategoryViewModel
-    
-    init(category: FeedCategory, libraryConfiguration: LibraryConfiguration, selectedFeed: Binding<Feed?>) {
+    private let onEditorAppear: ((LibraryCategoryViewModel) -> Void)?
+
+    init(
+        category: FeedCategory, libraryConfiguration: LibraryConfiguration, selectedFeed: Binding<Feed?>,
+        onEditorAppear: ((LibraryCategoryViewModel) -> Void)? = nil
+    ) {
+        self.onEditorAppear = onEditorAppear
         _libraryCategoryViewModel = StateObject(
             wrappedValue: LibraryCategoryViewModel(
                 category: category,
@@ -463,6 +468,7 @@ struct LibraryCategoryView: View {
         }
         .task(id: libraryCategoryViewModel.category.id) { @MainActor in
             libraryCategoryViewModel.refresh()
+            onEditorAppear?(libraryCategoryViewModel)
         }
         .onChange(of: focusedField) { newValue in
             libraryCategoryViewModel.isEditing = (newValue != nil)

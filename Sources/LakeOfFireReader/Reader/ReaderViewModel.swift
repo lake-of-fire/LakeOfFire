@@ -167,13 +167,16 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
     }
     
-    public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
+    public init(
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration,
+        systemScripts: [WebViewUserScript]
+    ) {
         super.init()
         webViewSystemScripts = systemScripts
         
-        Task { @RealmBackgroundActor [weak self] in
+        Task { @RealmBackgroundActor [weak self, realmConfiguration] in
             guard let self = self else { return }
-            let libraryRealm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            let libraryRealm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
 
             libraryRealm.objects(LibraryConfiguration.self)
                 .collectionPublisher
@@ -182,10 +185,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 .debounceLeadingTrailing(for: .seconds(0.3), scheduler: readerViewModelQueue)
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
-                        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+                        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: realmConfiguration)
                         let ref = ThreadSafeReference(to: libraryConfiguration)
                         try await { @MainActor [weak self] in
-                            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                            let realm = try await Realm.open(configuration: realmConfiguration)
                             guard let libraryConfiguration = realm.resolve(ref) else { return }
                             let webViewSystemScripts = systemScripts + libraryConfiguration.systemScripts
                             let webViewUserScripts = libraryConfiguration.getActiveWebViewUserScripts()
@@ -209,7 +212,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 .receive(on: readerViewModelQueue)
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
-                        try await self?.updateScripts()
+                        try await self?.updateScripts(realmConfiguration: realmConfiguration)
                     }
                 })
                 .store(in: &self.cancellables)
@@ -217,11 +220,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @RealmBackgroundActor
-    private func updateScripts() async throws {
-        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+    private func updateScripts(realmConfiguration: Realm.Configuration) async throws {
+        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: realmConfiguration)
         let ref = ThreadSafeReference(to: libraryConfiguration)
         try await { @MainActor [weak self] in
-            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+            let realm = try await Realm.open(configuration: realmConfiguration)
             guard let scripts = realm.resolve(ref)?.getActiveWebViewUserScripts() else { return }
             guard let self = self else { return }
             if self.webViewUserScripts != scripts {

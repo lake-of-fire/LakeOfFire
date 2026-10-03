@@ -16,42 +16,115 @@ import OpenGraph
 import RealmSwiftGaps
 import SwiftUtilities
 
-struct UserScriptAllowedDomainCell: View {
-    let domainID: UUID
-    
-    init(domainID: UUID) {
-        self.domainID = domainID
+// SwiftUI state belongs to the originating storage and record, including when two
+// Realms contain the same UUIDs.
+@RealmBackgroundActor
+final class LibraryEditorWriteOrdering {
+    private var newestSequence: [UUID: [Int: UInt64]] = [:]
+
+    nonisolated init() { }
+
+    // Check in the final write turn. An earlier task can resume after a newer
+    // task committed, including when the newer edit was an intentional no-op.
+    func admits(recordID: UUID, field: Int, sequence: UInt64) -> Bool {
+        guard sequence >= (newestSequence[recordID]?[field] ?? 0) else { return false }
+        newestSequence[recordID, default: [:]][field] = sequence
+        return true
     }
-    
-    @State private var domainText: String = ""
-    
+}
+
+struct LibraryRecordPresentationIdentity: Hashable {
+    let recordID: UUID
+    let ownerID: UUID?
+    let storage: String
+    let fileResourceIdentifier: String?
+    let schemaVersion: UInt64
+    let readOnly: Bool
+    let encryptionKey: Data?
+    let objectTypes: [String]?
+    let maximumNumberOfActiveVersions: String?
+    let deleteRealmIfMigrationNeeded: Bool
+    let seedFilePath: URL?
+
+    init(recordID: UUID, ownerID: UUID? = nil, configuration: Realm.Configuration) {
+        self.recordID = recordID
+        self.ownerID = ownerID
+        storage = configuration.inMemoryIdentifier.map { "memory:" + $0 }
+            ?? configuration.fileURL.map { "file:" + $0.resolvingSymlinksInPath().standardizedFileURL.path }
+            ?? "default"
+        fileResourceIdentifier = configuration.inMemoryIdentifier == nil
+            ? configuration.fileURL.flatMap {
+                (try? $0.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier)
+                    .map { String(describing: $0) }
+            }
+            : nil
+        schemaVersion = configuration.schemaVersion
+        readOnly = configuration.readOnly
+        encryptionKey = configuration.encryptionKey
+        objectTypes = configuration.objectTypes?.map { String(reflecting: $0) }.sorted()
+        maximumNumberOfActiveVersions = configuration.maximumNumberOfActiveVersions.map(String.init)
+        deleteRealmIfMigrationNeeded = configuration.deleteRealmIfMigrationNeeded
+        seedFilePath = configuration.seedFilePath?.resolvingSymlinksInPath().standardizedFileURL
+    }
+}
+
+struct UserScriptAllowedDomainEditor {
+    let domainID: UUID
+    let scriptID: UUID
+    let realmConfiguration: Realm.Configuration
+
+    @RealmBackgroundActor
+    func read() async throws -> String? {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
+              !script.isDeleted, script.allowedDomainIDs.contains(domainID),
+              let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID),
+              !domain.isDeleted else { return nil }
+        return domain.domain
+    }
+
+    @RealmBackgroundActor
+    func write(_ text: String) async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        try await realm.asyncWrite {
+            guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
+                  !script.isDeleted, script.isUserEditable, script.allowedDomainIDs.contains(domainID),
+                  let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID),
+                  !domain.isDeleted, domain.domain != text else { return }
+            domain.domain = text
+            domain.refreshChangeMetadata(explicitlyModified: true)
+        }
+    }
+}
+
+struct UserScriptAllowedDomainCell: View {
+    let editor: UserScriptAllowedDomainEditor
+    @State private var domainText = ""
+    @State private var hasLoadedDomain = false
+
+    init(domainID: UUID, scriptID: UUID, realmConfiguration: Realm.Configuration) {
+        editor = UserScriptAllowedDomainEditor(
+            domainID: domainID, scriptID: scriptID, realmConfiguration: realmConfiguration
+        )
+    }
+
     var body: some View {
         TextField("Domain", text: $domainText, prompt: Text("example.com"))
 #if os(iOS)
             .textInputAutocapitalization(.never)
 #endif
-            .onChange(of: domainText, debounceTime: 0.3) { domainText in
-                let domainID = domainID
+            .onChange(of: domainText, debounceTime: 0.3) { text in
+                guard hasLoadedDomain else { return }
+                let editor = editor
                 Task { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                    guard let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID) else { return }
-                    guard domain.domain != domainText else { return }
-                    try await realm.asyncWrite {
-                        domain.domain = domainText
-                        domain.refreshChangeMetadata(explicitlyModified: true)
-                    }
+                    try await editor.write(text)
                 }
             }
-            .task(id: domainID) {
-                let domainID = domainID
-                try? await { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                    guard let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID) else { return }
-                    let domainText = domain.domain
-                    await { @MainActor in
-                        self.domainText = domainText
-                    }()
-                }()
+            .task {
+                let editor = editor
+                guard let text = try? await editor.read(), !Task.isCancelled else { return }
+                domainText = text
+                hasLoadedDomain = true
             }
     }
 }
@@ -63,6 +136,10 @@ struct LibraryScriptForm: View {
     var body: some View {
         Form {
             LibraryScriptFormSections(script: script)
+                .id(LibraryRecordPresentationIdentity(
+                    recordID: script.id,
+                    configuration: script.realm?.configuration ?? LibraryDataManager.realmConfiguration
+                ))
                 .disabled(!script.isUserEditable)
         }
         .formStyle(.grouped)
@@ -74,14 +151,22 @@ struct LibraryCategoryViewContainer: View {
     let category: FeedCategory
     let libraryConfiguration: LibraryConfiguration
     @Binding var selectedFeed: Feed?
-    
+    var onEditorAppear: ((LibraryCategoryViewModel) -> Void)? = nil
+
     var body: some View {
         LibraryCategoryView(
             category: category,
             libraryConfiguration: libraryConfiguration,
-            selectedFeed: $selectedFeed
+            selectedFeed: $selectedFeed,
+            onEditorAppear: onEditorAppear
         )
-        .task(id: selectedFeed?.categoryID) { @MainActor in
+        .id(LibraryRecordPresentationIdentity(
+            recordID: category.id, ownerID: libraryConfiguration.id,
+            configuration: category.realm?.configuration
+                ?? libraryConfiguration.realm?.configuration
+                ?? LibraryDataManager.realmConfiguration
+        ))
+        .task(id: [category.id, selectedFeed?.categoryID]) { @MainActor in
             if selectedFeed?.categoryID != category.id {
                 selectedFeed = nil
             }
@@ -299,6 +384,10 @@ public struct LibraryManagerView: View {
     private func feedDetailView(_ feed: Feed) -> some View {
         detailFormContainer {
             LibraryFeedView(feed: feed)
+                .id(LibraryRecordPresentationIdentity(
+                    recordID: feed.id,
+                    configuration: feed.realm?.configuration ?? LibraryDataManager.realmConfiguration
+                ))
             //                                .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
         }
     }
