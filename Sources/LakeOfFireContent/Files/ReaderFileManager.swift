@@ -4248,19 +4248,27 @@ struct ReaderImportSnapshot: Sendable {
     static func contentIdentity(
         at url: URL,
         requiresManifest: Bool,
-        copyingTo destinationURL: URL? = nil
+        copyingTo destinationURL: URL? = nil,
+        limits: ReaderImportPackageManifestLimits = .init()
     ) throws -> ReaderImportContentIdentity {
         try Task.checkCancellation()
+        guard limits.maximumBytes >= 0 else {
+            throw ReaderImportPackageManifestError.budgetExceeded
+        }
         guard try url.readerImportRequiresManifest() == requiresManifest else {
             throw ReaderFileManagerError.importContentChanged
         }
         if requiresManifest {
-            let digest = try url.packageManifestDigest(copyingTo: destinationURL)
+            let digest = try url.packageManifestDigest(limits: limits, copyingTo: destinationURL)
             return ReaderImportContentIdentity(digest: digest, collisionHash: stableHash(data: digest))
         }
         let before = try ReaderImportPackageEntryIdentity.read(url)
         guard before.mode & mode_t(S_IFMT) == mode_t(S_IFREG), before.size >= 0 else {
             throw ReaderFileManagerError.importContentChanged
+        }
+        // Reject before opening or creating output, including sparse oversized files.
+        guard Int64(before.size) <= limits.maximumBytes else {
+            throw ReaderImportPackageManifestError.budgetExceeded
         }
         let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }

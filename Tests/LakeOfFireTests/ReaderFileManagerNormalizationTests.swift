@@ -653,6 +653,45 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         XCTAssertThrowsError(try ReaderImportSnapshot.capture(from: root.appendingPathComponent("missing.txt")))
     }
 
+    func testRegularImportCopyRejectsOversizedSourceBeforeCreatingDestination() throws {
+        let root = try temporaryDirectory()
+        let source = root.appendingPathComponent("source.txt")
+        let destination = root.appendingPathComponent("copy.txt")
+        let bytes = Data("over budget".utf8)
+        try bytes.write(to: source)
+        let limits = ReaderImportPackageManifestLimits(maximumEntries: 10, maximumBytes: 1, maximumDepth: 10)
+        XCTAssertThrowsError(try ReaderImportSnapshot.contentIdentity(
+            at: source, requiresManifest: false, copyingTo: destination, limits: limits
+        )) { error in
+            guard let manifestError = error as? ReaderImportPackageManifestError,
+                  case .budgetExceeded = manifestError else {
+                return XCTFail("Expected regular-file budget rejection, got \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertEqual(try Data(contentsOf: source), bytes)
+    }
+
+    func testRegularImportCopyAcceptsExactByteBudgetAndEmptyFile() throws {
+        let root = try temporaryDirectory()
+        let source = root.appendingPathComponent("source.txt")
+        let bytes = Data("exact budget".utf8)
+        try bytes.write(to: source)
+        let destination = root.appendingPathComponent("copy.txt")
+        _ = try ReaderImportSnapshot.contentIdentity(
+            at: source, requiresManifest: false, copyingTo: destination,
+            limits: ReaderImportPackageManifestLimits(maximumBytes: Int64(bytes.count))
+        )
+        XCTAssertEqual(try Data(contentsOf: destination), bytes)
+        try Data().write(to: source)
+        let emptyDestination = root.appendingPathComponent("empty.txt")
+        _ = try ReaderImportSnapshot.contentIdentity(
+            at: source, requiresManifest: false, copyingTo: emptyDestination,
+            limits: ReaderImportPackageManifestLimits(maximumBytes: 0)
+        )
+        XCTAssertEqual(try Data(contentsOf: emptyDestination), Data())
+    }
+
     func testStreamingSnapshotCopyMatchesSourceAcrossChunkBoundaries() throws {
         let root = try temporaryDirectory()
         let source = root.appendingPathComponent("source.txt")
