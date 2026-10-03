@@ -2187,13 +2187,14 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         try await drive.createDirectory(at: targetDirectory)
         try validateAuthority()
 
-        let targetFilePath = try await installImportFile(
+        let installation = try await installImportFileWithReceipt(
             fileURL,
             targetDirectory: targetDirectory,
             drive: drive,
             validateAuthority: validateAuthority
         )
 
+        let targetFilePath = installation.relativePath
         do {
             try validateAuthority()
             _ = try await Self.$importWriteAuthority.withValue(importWriteAuthority) {
@@ -2229,6 +2230,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 processorSnapshot: processorSnapshot
             )
             try validateAuthority()
+            // Metadata processors may suspend or change backing bytes. Success
+            // and acquisition provenance must still refer to the captured import.
+            try Self.validateDestinationContainment(targetFilePath, in: drive.rootDirectory)
+            let installedURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
+            try await installation.validateContent(at: installedURL)
+            try validateAuthority()
             let finalRealm = try await Realm.open(configuration: realmConfiguration)
             try validateAuthority()
             guard let finalContent = finalRealm.object(ofType: ContentFile.self, forPrimaryKey: content.compoundKey),
@@ -2263,8 +2270,6 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
     }
 
-    /// Installs or reuses equal bytes without replacing an occupied candidate.
-    /// Package identity uses a bounded, path/type-aware streaming manifest.
     @MainActor
     func installImportFile(
         _ sourceURL: URL,
@@ -2272,6 +2277,23 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         drive: CloudDrive,
         validateAuthority: @MainActor () throws -> Void
     ) async throws -> RootRelativePath {
+        try await installImportFileWithReceipt(
+            sourceURL,
+            targetDirectory: targetDirectory,
+            drive: drive,
+            validateAuthority: validateAuthority
+        ).relativePath
+    }
+
+    /// Installs or reuses equal bytes without replacing an occupied candidate.
+    /// Package identity uses a bounded, path/type-aware streaming manifest.
+    @MainActor
+    private func installImportFileWithReceipt(
+        _ sourceURL: URL,
+        targetDirectory: RootRelativePath,
+        drive: CloudDrive,
+        validateAuthority: @MainActor () throws -> Void
+    ) async throws -> ReaderImportInstallationReceipt {
         let snapshotWork = Task.detached(priority: .utility) {
             try ReaderImportSnapshot.capture(from: sourceURL)
         }
@@ -2330,7 +2352,13 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 }
                 try validateAuthority()
                 if exists {
-                    if try await existingMatches(candidate, destination: destination) { return candidate }
+                    if try await existingMatches(candidate, destination: destination) {
+                        return ReaderImportInstallationReceipt(
+                            relativePath: candidate,
+                            requiresManifest: snapshot.requiresManifest,
+                            identity: snapshot.identity
+                        )
+                    }
                 } else {
                     do {
                         try validateAuthority()
@@ -2341,14 +2369,24 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             // ownership may have changed during an awaited operation.
                             throw ReaderFileManagerError.importContentChanged
                         }
-                        return candidate
+                        return ReaderImportInstallationReceipt(
+                            relativePath: candidate,
+                            requiresManifest: snapshot.requiresManifest,
+                            identity: snapshot.identity
+                        )
                     } catch {
                         // Only fail-on-existing copy races authorize candidate comparison.
                         let copyError = error as NSError
                         guard copyError.domain == NSCocoaErrorDomain,
                               copyError.code == CocoaError.fileWriteFileExists.rawValue else { throw error }
                         try validateAuthority()
-                        if try await existingMatches(candidate, destination: destination) { return candidate }
+                        if try await existingMatches(candidate, destination: destination) {
+                            return ReaderImportInstallationReceipt(
+                                relativePath: candidate,
+                                requiresManifest: snapshot.requiresManifest,
+                                identity: snapshot.identity
+                            )
+                        }
                     }
                 }
             }
@@ -4196,6 +4234,32 @@ enum ReaderImportPackageManifestError: Swift.Error {
 }
 
 /// A private, operation-owned copy. Uploads never reopen the mutable picker source.
+/// Retains the captured identity until metadata and provenance finish.
+struct ReaderImportInstallationReceipt: Sendable {
+    let relativePath: RootRelativePath
+    let requiresManifest: Bool
+    let identity: ReaderImportContentIdentity
+
+    func validateContent(at url: URL) async throws {
+        let requiresManifest = requiresManifest
+        let expectedIdentity = identity
+        let work = Task.detached(priority: .utility) {
+            let actualIdentity = try ReaderImportSnapshot.contentIdentity(
+                at: url, requiresManifest: requiresManifest
+            )
+            guard actualIdentity == expectedIdentity else {
+                throw ReaderFileManagerError.importContentChanged
+            }
+        }
+        try await withTaskCancellationHandler {
+            try await work.value
+        } onCancel: {
+            work.cancel()
+        }
+        try Task.checkCancellation()
+    }
+}
+
 struct ReaderImportContentIdentity: Sendable, Equatable {
     let digest: Data
     let collisionHash: UInt64

@@ -612,6 +612,37 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         return realm.objects(ContentFile.self).where { !$0.isDeleted }.map { ($0.title, $0.sourceDownloadURL) }
     }
 
+    func testInstallationReceiptRejectsBackingFileChangedAfterMetadataWork() async throws {
+        let root = try temporaryDirectory()
+        let file = try writeFixture(relativePath: "book.txt", under: root)
+        let identity = try ReaderImportSnapshot.contentIdentity(at: file, requiresManifest: false)
+        let receipt = ReaderImportInstallationReceipt(
+            relativePath: RootRelativePath(path: "book.txt"), requiresManifest: false, identity: identity
+        )
+        try await receipt.validateContent(at: file)
+        try Data("changed during metadata processing".utf8).write(to: file)
+        do {
+            try await receipt.validateContent(at: file)
+            XCTFail("Expected installed content change to reject completion")
+        } catch ReaderFileManagerError.importContentChanged {}
+        XCTAssertEqual(try Data(contentsOf: file), Data("changed during metadata processing".utf8))
+    }
+
+    func testInstallationReceiptRejectsPackageChangedAfterMetadataWork() async throws {
+        let root = try temporaryDirectory()
+        let child = try writeFixture(relativePath: "chapter.txt", under: root)
+        let identity = try ReaderImportSnapshot.contentIdentity(at: root, requiresManifest: true)
+        let receipt = ReaderImportInstallationReceipt(
+            relativePath: RootRelativePath(path: "book.epub"), requiresManifest: true, identity: identity
+        )
+        try await receipt.validateContent(at: root)
+        try Data("updated chapter".utf8).write(to: child)
+        do {
+            try await receipt.validateContent(at: root)
+            XCTFail("Expected installed package change to reject completion")
+        } catch ReaderFileManagerError.importContentChanged {}
+    }
+
     func testImportSnapshotRejectsRootSymlinkWithoutChangingTarget() throws {
         let root = try temporaryDirectory()
         let source = try writeFixture(relativePath: "book.txt", under: root)
