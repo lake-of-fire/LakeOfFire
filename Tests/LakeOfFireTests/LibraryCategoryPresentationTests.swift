@@ -5,6 +5,11 @@ import SwiftUI
 import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireLibrary
+#if os(macOS)
+import AppKit
+#elseif os(iOS)
+import UIKit
+#endif
 
 @MainActor
 final class LibraryCategoryPresentationTests: XCTestCase {
@@ -644,6 +649,378 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         realm.refresh()
         XCTAssertEqual(Array(library.userScriptIDs), [first.id, second.id])
         XCTAssertEqual(journalGenerations(in: realm), beforeRejectedEditabilityChange)
+    }
+
+    func testDelayedScriptFieldPublicationsKeepTheirOriginatingOwnerAfterReplacement() async throws {
+        let previous = LibraryDataManager.realmConfiguration
+        defer { LibraryDataManager.realmConfiguration = previous }
+        let capturedConfiguration = makeConfiguration()
+        let replacementConfiguration = makeConfiguration()
+        let capturedRealm = try Realm(configuration: capturedConfiguration)
+        let replacementRealm = try Realm(configuration: replacementConfiguration)
+        let first = script("First", id: UUID())
+        first.script = "first source"
+        first.previewURL = URL(string: "https://first.example")
+        let second = script("Second", id: UUID())
+        second.script = "second source"
+        second.previewURL = URL(string: "https://second.example")
+        let replacementFirst = script("Replacement first", id: first.id)
+        let replacementSecond = script("Replacement second", id: second.id)
+        try capturedRealm.write { capturedRealm.add([first, second]) }
+        try replacementRealm.write { replacementRealm.add([replacementFirst, replacementSecond]) }
+        LibraryDataManager.realmConfiguration = capturedConfiguration
+        let model = LibraryScriptFormSectionsViewModel(
+            realmConfiguration: capturedConfiguration, observesRealm: false
+        )
+        model.script = first
+        XCTAssertEqual(model.scriptTitle, "First")
+        model.scriptTitle = "Leading title"
+        model.scriptText = "leading source"
+        model.scriptPreviewURL = "https://leading.example"
+        // The second publications must traverse the real trailing debounce.
+        // Reassignment and hydration happen synchronously before that can fire.
+        model.scriptTitle = "Trailing title"
+        model.scriptText = "trailing source"
+        model.scriptPreviewURL = "https://trailing.example"
+        model.scriptEnabled = false
+        model.scriptInjectAtStart = false
+        model.scriptMainFrameOnly = false
+        model.scriptSandboxed = true
+        model.script = second
+        LibraryDataManager.realmConfiguration = replacementConfiguration
+        XCTAssertEqual(model.scriptTitle, "Second")
+        XCTAssertEqual(model.scriptText, "second source")
+        let editsCompleted = await waitUntil {
+            capturedRealm.refresh()
+            return first.title == "Trailing title" && first.script == "trailing source"
+                && first.previewURL == URL(string: "https://trailing.example")
+                && first.isArchived && !first.injectAtStart && !first.mainFrameOnly && first.sandboxed
+        }
+        XCTAssertTrue(editsCompleted)
+        capturedRealm.refresh()
+        replacementRealm.refresh()
+        XCTAssertEqual(second.title, "Second")
+        XCTAssertEqual(second.script, "second source")
+        XCTAssertEqual(second.previewURL, URL(string: "https://second.example"))
+        XCTAssertFalse(second.isArchived)
+        XCTAssertTrue(second.injectAtStart)
+        XCTAssertTrue(second.mainFrameOnly)
+        XCTAssertFalse(second.sandboxed)
+        XCTAssertNil(journal(for: second, in: capturedRealm))
+        XCTAssertNotNil(journal(for: first, in: capturedRealm))
+        XCTAssertEqual(replacementFirst.title, "Replacement first")
+        XCTAssertEqual(replacementSecond.title, "Replacement second")
+        XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    func testScriptFieldHydrationAndNoOpPublicationsDoNotJournal() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let owner = script("Hydrated title", id: UUID())
+        owner.script = "hydrated source"
+        owner.isArchived = true
+        owner.injectAtStart = false
+        owner.mainFrameOnly = false
+        owner.sandboxed = true
+        owner.previewURL = URL(string: "https://hydrated.example")
+        try realm.write { realm.add(owner) }
+        let model = LibraryScriptFormSectionsViewModel(
+            realmConfiguration: realm.configuration, observesRealm: false
+        )
+        let before = journalGenerations(in: realm)
+        model.script = owner
+        model.refresh()
+        // Let every production debounce expire: model hydration must never
+        // become a delayed user edit or manufacture a journal generation.
+        try await Task.sleep(for: .milliseconds(450))
+        realm.refresh()
+        XCTAssertEqual(journalGenerations(in: realm), before)
+        XCTAssertEqual(model.scriptTitle, "Hydrated title")
+        XCTAssertEqual(model.scriptText, "hydrated source")
+        XCTAssertFalse(model.scriptEnabled)
+        XCTAssertFalse(model.scriptInjectAtStart)
+        XCTAssertFalse(model.scriptMainFrameOnly)
+        XCTAssertTrue(model.scriptSandboxed)
+        XCTAssertEqual(model.scriptPreviewURL, "https://hydrated.example")
+        model.scriptTitle = owner.title
+        model.scriptText = owner.script
+        model.scriptEnabled = !owner.isArchived
+        model.scriptInjectAtStart = owner.injectAtStart
+        model.scriptMainFrameOnly = owner.mainFrameOnly
+        model.scriptSandboxed = owner.sandboxed
+        model.scriptPreviewURL = owner.previewURL!.absoluteString
+        try await Task.sleep(for: .milliseconds(450))
+        realm.refresh()
+        XCTAssertEqual(journalGenerations(in: realm), before)
+    }
+
+    func testDelayedScriptFieldEditRechecksManagedEligibilityBeforeWriting() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let owner = script("Original", id: UUID())
+        try realm.write { realm.add(owner) }
+        let model = LibraryScriptFormSectionsViewModel(
+            realmConfiguration: realm.configuration, observesRealm: false
+        )
+        model.script = owner
+        model.scriptTitle = "Leading edit"
+        model.scriptTitle = "Rejected trailing edit"
+        try realm.write { owner.opmlURL = URL(string: "https://example.com/managed.opml") }
+        let titleBeforeDelay = owner.title
+        let before = journalGenerations(in: realm)
+        try await Task.sleep(for: .milliseconds(450))
+        realm.refresh()
+        XCTAssertEqual(owner.title, titleBeforeDelay)
+        XCTAssertNotEqual(owner.title, "Rejected trailing edit")
+        XCTAssertEqual(journalGenerations(in: realm), before)
+    }
+
+    func testAllowedDomainDeletionCapturesDisplayedIDsAndOriginatingScript() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let first = UserScriptAllowedDomain()
+        first.domain = "first.example"
+        let second = UserScriptAllowedDomain()
+        let hiddenID = UUID()
+        let owner = script("Owner", id: UUID())
+        owner.allowedDomainIDs.append(objectsIn: [first.id, hiddenID, second.id])
+        let replacement = script("Replacement", id: UUID())
+        replacement.allowedDomainIDs.append(first.id)
+        try realm.write { realm.add([first, second]); realm.add([owner, replacement]) }
+        let model = LibraryScriptFormSectionsViewModel(
+            realmConfiguration: realm.configuration, observesRealm: false
+        )
+        model.script = owner
+        let deletion = model.onDeleteOfAllowedDomains(
+            at: IndexSet(integer: 0), displayedDomainIDs: [first.id, second.id]
+        )
+        model.script = replacement
+        try realm.write {
+            owner.allowedDomainIDs.removeAll()
+            owner.allowedDomainIDs.append(objectsIn: [second.id, hiddenID, first.id])
+        }
+        try await deletion.value
+        realm.refresh()
+        XCTAssertTrue(first.isDeleted)
+        XCTAssertFalse(second.isDeleted)
+        XCTAssertEqual(Array(owner.allowedDomainIDs), [second.id, hiddenID])
+        XCTAssertEqual(Array(replacement.allowedDomainIDs), [first.id])
+        XCTAssertNotNil(journal(for: first, in: realm))
+        XCTAssertNotNil(journal(for: owner, in: realm))
+        XCTAssertNil(journal(for: replacement, in: realm))
+        XCTAssertNil(journal(for: second, in: realm))
+
+        let before = journalGenerations(in: realm)
+        // A retained callback with invalid offsets and IDs absent from the live
+        // list is harmless, even though the list has shrunk since rendering.
+        try await model.onDeleteOfAllowedDomains(
+            at: IndexSet([0, 8]), displayedDomainIDs: [first.id, second.id], scriptID: owner.id
+        ).value
+        realm.refresh()
+        XCTAssertEqual(Array(owner.allowedDomainIDs), [second.id, hiddenID])
+        XCTAssertEqual(journalGenerations(in: realm), before)
+    }
+
+    func testAllowedDomainCommandsRecheckLivePermissionsWithoutJournaling() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let domain = UserScriptAllowedDomain()
+        let owner = script("Owner", id: UUID())
+        owner.allowedDomainIDs.append(domain.id)
+        try realm.write { realm.add(domain); realm.add(owner) }
+        let model = LibraryScriptFormSectionsViewModel(
+            realmConfiguration: realm.configuration, observesRealm: false
+        )
+        model.script = owner
+        let deletion = model.onDeleteOfAllowedDomains(
+            at: IndexSet(integer: 0), displayedDomainIDs: [domain.id]
+        )
+        try realm.write { owner.opmlURL = URL(string: "https://example.com/managed.opml") }
+        let before = journalGenerations(in: realm)
+        try await deletion.value
+        try await model.addEmptyDomain().value
+        try await UserScriptAllowedDomainEditor(
+            domainID: domain.id, scriptID: owner.id, realmConfiguration: realm.configuration
+        ).write("blocked.example")
+        realm.refresh()
+        XCTAssertEqual(Array(owner.allowedDomainIDs), [domain.id])
+        XCTAssertFalse(domain.isDeleted)
+        XCTAssertEqual(domain.domain, "")
+        XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 1)
+        XCTAssertEqual(journalGenerations(in: realm), before)
+    }
+
+    func testDomainCellEditorReadWriteAndAddStayInOriginatingRealmWithIdenticalIDs() async throws {
+        let previous = LibraryDataManager.realmConfiguration
+        defer { LibraryDataManager.realmConfiguration = previous }
+        let capturedConfiguration = makeConfiguration()
+        let replacementConfiguration = makeConfiguration()
+        let capturedRealm = try Realm(configuration: capturedConfiguration)
+        let replacementRealm = try Realm(configuration: replacementConfiguration)
+        let domainID = UUID()
+        let scriptID = UUID()
+        let capturedDomain = UserScriptAllowedDomain()
+        capturedDomain.id = domainID
+        capturedDomain.domain = "captured.example"
+        let replacementDomain = UserScriptAllowedDomain()
+        replacementDomain.id = domainID
+        replacementDomain.domain = "replacement.example"
+        let capturedScript = script("Captured", id: scriptID)
+        let replacementScript = script("Replacement", id: scriptID)
+        capturedScript.allowedDomainIDs.append(domainID)
+        replacementScript.allowedDomainIDs.append(domainID)
+        try capturedRealm.write { capturedRealm.add(capturedDomain); capturedRealm.add(capturedScript) }
+        try replacementRealm.write { replacementRealm.add(replacementDomain); replacementRealm.add(replacementScript) }
+        LibraryDataManager.realmConfiguration = capturedConfiguration
+        // Use the actual cell's immutable editor, the same value captured by
+        // both its load task and its debounced callback.
+        let cell = UserScriptAllowedDomainCell(
+            domainID: domainID, scriptID: scriptID, realmConfiguration: capturedConfiguration
+        )
+        let model = LibraryScriptFormSectionsViewModel(
+            realmConfiguration: capturedConfiguration, observesRealm: false
+        )
+        model.script = capturedScript
+        LibraryDataManager.realmConfiguration = replacementConfiguration
+        let loadedText = try await cell.editor.read()
+        XCTAssertEqual(loadedText, "captured.example")
+        try await cell.editor.write("edited.example")
+        try await model.addEmptyDomain().value
+        capturedRealm.refresh()
+        replacementRealm.refresh()
+        XCTAssertEqual(capturedDomain.domain, "edited.example")
+        XCTAssertEqual(capturedScript.allowedDomainIDs.count, 2)
+        XCTAssertEqual(replacementDomain.domain, "replacement.example")
+        XCTAssertEqual(Array(replacementScript.allowedDomainIDs), [domainID])
+        XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
+        XCTAssertNotNil(journal(for: capturedDomain, in: capturedRealm))
+        let before = journalGenerations(in: capturedRealm)
+        try await cell.editor.write("edited.example")
+        capturedRealm.refresh()
+        XCTAssertEqual(journalGenerations(in: capturedRealm), before)
+        try capturedRealm.write { capturedScript.allowedDomainIDs.removeAll() }
+        try await cell.editor.write("detached.example")
+        capturedRealm.refresh()
+        XCTAssertEqual(capturedDomain.domain, "edited.example")
+        XCTAssertEqual(journalGenerations(in: capturedRealm), before)
+        try capturedRealm.write { capturedScript.allowedDomainIDs.append(domainID) }
+        try await model.deleteAllowedDomains([domainID]).value
+        capturedRealm.refresh()
+        replacementRealm.refresh()
+        XCTAssertTrue(capturedDomain.isDeleted)
+        XCTAssertFalse(replacementDomain.isDeleted)
+        XCTAssertEqual(Array(replacementScript.allowedDomainIDs), [domainID])
+        XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    func testMountedCategoryContainerReplacesOwnerForSelectionAndRealmChanges() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let first = category("First")
+        let second = category("Second")
+        let library = libraryConfiguration(id: UUID(), categoryIDs: [first.id, second.id])
+        try realm.write { realm.add([first, second]); realm.add(library) }
+        let replacementRealm = try Realm(configuration: makeConfiguration())
+        let replacementCategory = category("Replacement second", id: second.id)
+        let replacementLibrary = libraryConfiguration(id: library.id, categoryIDs: [second.id])
+        try replacementRealm.write { replacementRealm.add(replacementCategory); replacementRealm.add(replacementLibrary) }
+        let manager = LibraryManagerViewModel()
+        var appearedModels: [LibraryCategoryViewModel] = []
+        func root(_ category: FeedCategory, _ library: LibraryConfiguration) -> some View {
+            NavigationStack {
+                LibraryCategoryViewContainer(
+                    category: category, libraryConfiguration: library, selectedFeed: .constant(nil),
+                    onEditorAppear: { appearedModels.append($0) }
+                )
+                .environmentObject(manager)
+            }
+        }
+#if os(macOS)
+        let host = NSHostingView(rootView: root(first, library))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        defer { window.contentView = nil; window.close() }
+#elseif os(iOS)
+        let host = UIHostingController(rootView: root(first, library))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 600, height: 800))
+        window.rootViewController = host
+        window.isHidden = false
+        host.view.layoutIfNeeded()
+        defer { window.rootViewController = nil; window.isHidden = true }
+#endif
+        let firstAppeared = await waitUntil { appearedModels.last?.category.id == first.id }
+        XCTAssertTrue(firstAppeared)
+        host.rootView = root(second, library)
+        let secondAppeared = await waitUntil { appearedModels.last?.category.id == second.id }
+        XCTAssertTrue(secondAppeared)
+        let secondModel = try XCTUnwrap(appearedModels.last)
+        XCTAssertEqual(secondModel.categoryTitle, "Second")
+        XCTAssertFalse(secondModel === appearedModels.first)
+        secondModel.categoryTitle = "Edited second"
+        let secondEdited = await waitUntil { realm.refresh(); return second.title == "Edited second" }
+        XCTAssertTrue(secondEdited)
+        XCTAssertEqual(first.title, "First")
+        host.rootView = root(replacementCategory, replacementLibrary)
+        let replacementAppeared = await waitUntil { appearedModels.last?.categoryTitle == "Replacement second" }
+        XCTAssertTrue(replacementAppeared)
+        let replacementModel = try XCTUnwrap(appearedModels.last)
+        XCTAssertFalse(replacementModel === secondModel)
+        replacementModel.categoryTitle = "Edited replacement"
+        let replacementEdited = await waitUntil {
+            replacementRealm.refresh(); return replacementCategory.title == "Edited replacement"
+        }
+        XCTAssertTrue(replacementEdited)
+        realm.refresh()
+        XCTAssertEqual(second.title, "Edited second")
+    }
+
+    func testScriptUserValueCanReturnAfterHydrationWithoutPublisherDeduplicationLoss() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let owner = script("Original", id: UUID())
+        try realm.write { realm.add(owner) }
+        let model = LibraryScriptFormSectionsViewModel(
+            realmConfiguration: realm.configuration, observesRealm: false
+        )
+        model.script = owner
+        model.scriptTitle = "User value"
+        let first = await waitUntil { realm.refresh(); return owner.title == "User value" }
+        XCTAssertTrue(first)
+        try realm.write { owner.title = "Hydrated value" }
+        model.refresh()
+        model.scriptTitle = "User value"
+        let second = await waitUntil { realm.refresh(); return owner.title == "User value" }
+        XCTAssertTrue(second)
+    }
+
+    func testScriptPasteReplacesBufferedPreviewURLAndKeepsItsJournalStable() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let owner = script("Original", id: UUID())
+        try realm.write { realm.add(owner) }
+        let model = LibraryScriptFormSectionsViewModel(
+            realmConfiguration: realm.configuration, observesRealm: false
+        )
+        model.script = owner
+        model.scriptPreviewURL = "https://example.com/leading"
+        model.scriptPreviewURL = "https://example.com/buffered"
+        try await model.pastePreviewURL(strings: ["https://example.com/pasted"]).value
+        realm.refresh()
+        XCTAssertEqual(owner.previewURL?.absoluteString, "https://example.com/pasted")
+        let before = journalGenerations(in: realm)
+        try await Task.sleep(for: .milliseconds(500))
+        let settled = await waitUntil {
+            realm.refresh()
+            return owner.previewURL?.absoluteString == "https://example.com/pasted"
+        }
+        XCTAssertTrue(settled)
+        XCTAssertEqual(model.scriptPreviewURL, "https://example.com/pasted")
+        XCTAssertEqual(journalGenerations(in: realm), before)
     }
 
     private func makeRealm() throws -> (Realm, () -> Void) {

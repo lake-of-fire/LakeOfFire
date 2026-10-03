@@ -42,15 +42,17 @@ private func forceCategorySelection(
 }
 
 @MainActor
-fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
+class ContentCategoryButtonsViewModel: ObservableObject {
+    private let realmConfiguration: Realm.Configuration
     @Published var libraryConfiguration: LibraryConfiguration?
 
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
     
-    init() {
+    init(realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration) {
+        self.realmConfiguration = realmConfiguration
         Task { @RealmBackgroundActor [weak self] in
-             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
@@ -59,12 +61,12 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
                 .debounceLeadingTrailing(for: .seconds(0.5), scheduler: libraryDataQueue)
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
-                        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+                        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: realmConfiguration)
                         let libraryConfigurationID = libraryConfiguration.id
                         
                         try await { @MainActor [weak self] in
                             guard let self else { return }
-                            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                            let realm = try await Realm.open(configuration: realmConfiguration)
                             self.libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID)
                         }()
                     }

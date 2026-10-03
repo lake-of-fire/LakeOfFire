@@ -178,8 +178,10 @@ public class FeedDirectory: Object, UnownedSyncableObject, ObjectKeyIdentifiable
         guard let realm else {
             return false
         }
-        guard let categoryID else { return false }
-        return realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID)?.opmlURL == nil
+        guard let categoryID,
+              let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+              !category.isDeleted else { return false }
+        return category.opmlURL == nil
     }
 
     public func getFeeds() -> [Feed]? {
@@ -308,8 +310,10 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
             print("Warning: Unexpectedly unmanaged object")
             return false
         }
-        guard let categoryID else { return false }
-        return realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID)?.opmlURL == nil
+        guard let categoryID,
+              let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+              !category.isDeleted else { return false }
+        return category.opmlURL == nil
     }
     
     public func encode(to encoder: Encoder) throws {
