@@ -2249,6 +2249,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             let finalReaderURL = finalContent.url
             if let fromDownloadURL {
                 try await importProvenanceWillWriteForTesting?()
+                try validateAuthority()
+                try Self.validateDestinationContainment(targetFilePath, in: drive.rootDirectory)
+                try await installation.validateContent(at: installedURL)
+                try validateAuthority()
                 let didRecordProvenance = try await recordDownloadProvenance(
                     fromDownloadURL,
                     onContentFilePrimaryKey: finalPrimaryKey,
@@ -2263,6 +2267,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     throw ReaderFileManagerError.incompleteFileInventory
                 }
             }
+            try validateAuthority()
+            try Self.validateDestinationContainment(targetFilePath, in: drive.rootDirectory)
+            try await installation.validateContent(at: installedURL)
             try validateAuthority()
             return finalReaderURL
         } catch {

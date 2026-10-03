@@ -1520,6 +1520,38 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     }
 
     @MainActor
+    func testBackingFileEditBeforeProvenanceWriteRejectsImportWithoutPublishingProvenance() async throws {
+        let libraryRoot = try temporaryDirectory()
+        let sourceRoot = try temporaryDirectory()
+        let source = try writeFixture(relativePath: "book.txt", under: sourceRoot)
+        let downloadURL = try XCTUnwrap(URL(string: "https://example.com/book.txt"))
+        let configuration = makeHistoryRealmConfiguration()
+        let manager = try await collisionImportManager(libraryRootURL: libraryRoot)
+        manager.historyRealmConfigurationOverride = configuration
+        let installedURL = libraryRoot.appendingPathComponent("Books/book.txt")
+        let changedBytes = Data("edited while provenance was suspended".utf8)
+        manager.importProvenanceWillWriteForTesting = {
+            await Task.yield()
+            try changedBytes.write(to: installedURL)
+        }
+        do {
+            _ = try await manager.importFile(fileURL: source, fromDownloadURL: downloadURL)
+            XCTFail("Expected changed backing bytes to reject provenance admission")
+        } catch ReaderFileManagerError.importContentChanged {}
+        let metadata = try await Self.importedMetadata(in: configuration)
+        XCTAssertEqual(metadata.count, 1)
+        XCTAssertNil(metadata.first?.1)
+        XCTAssertEqual(try Data(contentsOf: installedURL), changedBytes)
+        manager.importProvenanceWillWriteForTesting = nil
+        let retry = try await manager.importFile(fileURL: source, fromDownloadURL: downloadURL)
+        XCTAssertNotNil(retry)
+        XCTAssertNotEqual(retry?.lastPathComponent, "book.txt")
+        XCTAssertEqual(try Data(contentsOf: installedURL), changedBytes)
+        let retriedMetadata = try await Self.importedMetadata(in: configuration)
+        XCTAssertEqual(retriedMetadata.filter { $0.1 == downloadURL }.count, 1)
+    }
+
+    @MainActor
     func testConfigurationReplacementBeforeImportProvenanceWriteRetainsOldMetadata() async throws {
         let libraryRootURL = try temporaryDirectory()
         let sourceRootURL = try temporaryDirectory()
