@@ -616,6 +616,46 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
         }
     }
 
+    func testViewMetadataDelayRejectsInvalidationCancellationAndSupersessionBeforeIO() async throws {
+        for rejection in ["invalidated", "cancelled", "superseded"] {
+            let realm = try Realm(configuration: configuration())
+            let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
+            let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+            let rssURL = feed.rssUrl
+            let generation = UUID()
+            model.beginMetadataRefresh(rssURL: rssURL, identifier: generation)
+            let suspended = expectation(description: "Actual form metadata delay suspended")
+            let gate = FeedEditorWriteGate()
+            let scheduled = Task { @MainActor in
+                await model.refreshMetadataAfterDelay(
+                    expectedRSSURL: rssURL, expectedGeneration: generation,
+                    delay: {
+                        suspended.fulfill()
+                        await gate.wait()
+                    },
+                    performRefresh: {
+                        XCTFail("Rejected form delay must not start refresh I/O")
+                    }
+                )
+            }
+            defer { scheduled.cancel(); Task { await gate.release() } }
+            await fulfillment(of: [suspended], timeout: 5)
+            switch rejection {
+            case "invalidated": try realm.write { realm.delete(feed) }
+            case "cancelled": scheduled.cancel()
+            default: model.beginMetadataRefresh(rssURL: rssURL, identifier: UUID())
+            }
+            await gate.release()
+            await scheduled.value
+            XCTAssertEqual(model.feedTitle, "")
+            XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty, rejection)
+            if rejection == "invalidated" {
+                XCTAssertNil(model.currentRSSURL)
+                XCTAssertNil(try model.previewEntries())
+            }
+        }
+    }
+
     private func configuration() -> Realm.Configuration {
         var result = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         result.objectTypes = [

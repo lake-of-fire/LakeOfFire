@@ -426,6 +426,48 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         feedDisplayPublicationDate = feed.displayPublicationDate
     }
     
+    var currentRSSURL: URL? {
+        guard !feed.isInvalidated, !feed.isDeleted else { return nil }
+        return feed.rssUrl
+    }
+
+    func refreshMetadataAfterDelay(
+        expectedRSSURL: URL,
+        expectedGeneration: UUID,
+        delay: @escaping @Sendable () async throws -> Void = {
+            try await Task.sleep(for: .seconds(1.5))
+        },
+        performRefresh: (@MainActor @Sendable () async -> Void)? = nil
+    ) async {
+        do {
+            try await delay()
+            try Task.checkCancellation()
+            guard currentRSSURL == expectedRSSURL,
+                  metadataRequest?.identifier == expectedGeneration else { return }
+            if let performRefresh {
+                await performRefresh()
+                return
+            }
+            async let feedRefresh: Void = refreshFeed(expectedRSSURL: expectedRSSURL)
+            async let iconRefresh: Void = refreshIcon(
+                expectedRSSURL: expectedRSSURL, expectedGeneration: expectedGeneration
+            )
+            async let metadataRefresh: Void = refreshFromOpenGraph(
+                expectedRSSURL: expectedRSSURL, expectedGeneration: expectedGeneration
+            )
+            _ = await (feedRefresh, iconRefresh, metadataRefresh)
+        } catch is CancellationError {
+            return
+        } catch {
+            print("Failed to refresh feed metadata:", error)
+        }
+    }
+
+    private func refreshFeed(expectedRSSURL: URL) async {
+        guard currentRSSURL == expectedRSSURL else { return }
+        try? await feed.fetch()
+    }
+
     func beginMetadataRefresh(rssURL: URL, identifier: UUID) {
         metadataRequest = metadataAdmission.begin(identifier: identifier, rssURL: rssURL)
     }
@@ -503,7 +545,24 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         expectedRSSURL: URL,
         expectedGeneration: UUID,
         beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil,
-        fetch: @escaping @Sendable (URL) async throws -> URL
+        fetch: @escaping @Sendable (URL) async throws -> URL = { url in
+            try await Task.detached {
+                try await FaviconFinder(
+                    url: url,
+                    configuration: .init(
+                        preferredSource: .html,
+                        preferences: [
+                            .html: FaviconFormatType.appleTouchIcon.rawValue,
+                            .ico: "favicon.ico",
+                            .webApplicationManifestFile: FaviconFormatType.launcherIcon4x.rawValue
+                        ]
+                    )
+                )
+                .fetchFaviconURLs()
+                .largest()
+                .source
+            }.value
+        }
     ) async {
         guard let request = metadataRequest, request.identifier == expectedGeneration,
               request.rssURL == expectedRSSURL, !feed.isInvalidated, !feed.isDeleted,
@@ -679,31 +738,14 @@ struct LibraryFeedFormSections: View {
         } footer: {
             Text("Feeds use RSS or Atom syndication formats.").font(.footnote).foregroundColor(.secondary)
         }
-        .task(id: viewModel.feed.rssUrl) { @MainActor in
-            let expectedRSSURL = viewModel.feed.rssUrl
+        .task(id: viewModel.currentRSSURL) { @MainActor in
+            guard let expectedRSSURL = viewModel.currentRSSURL else { return }
             let expectedGeneration = UUID()
             metadataRefreshGeneration = expectedGeneration
             viewModel.beginMetadataRefresh(rssURL: expectedRSSURL, identifier: expectedGeneration)
-            do {
-                try await Task.sleep(for: .seconds(1.5))
-                try Task.checkCancellation()
-                guard viewModel.feed.rssUrl == expectedRSSURL,
-                      metadataRefreshGeneration == expectedGeneration else { return }
-                async let feedRefresh: Void = refreshFeed(expectedRSSURL: expectedRSSURL)
-                async let iconRefresh: Void = refreshIcon(
-                    expectedRSSURL: expectedRSSURL,
-                    expectedGeneration: expectedGeneration
-                )
-                async let openGraphRefresh: Void = refreshFromOpenGraph(
-                    expectedRSSURL: expectedRSSURL,
-                    expectedGeneration: expectedGeneration
-                )
-                _ = await (feedRefresh, iconRefresh, openGraphRefresh)
-            } catch is CancellationError {
-                return
-            } catch {
-                return
-            }
+            await viewModel.refreshMetadataAfterDelay(
+                expectedRSSURL: expectedRSSURL, expectedGeneration: expectedGeneration
+            )
         }
     }
     
@@ -870,40 +912,10 @@ struct LibraryFeedFormSections: View {
     }
     
     @MainActor
-    private func refreshFeed(expectedRSSURL: URL) async {
-        guard viewModel.feed.rssUrl == expectedRSSURL else { return }
-        try? await viewModel.feed.fetch()
-    }
-    
-    @MainActor
     private func refreshFromOpenGraph(expectedRSSURL: URL, expectedGeneration: UUID) async {
         await viewModel.refreshFromOpenGraph(
             expectedRSSURL: expectedRSSURL, expectedGeneration: expectedGeneration
         )
-    }
-
-    @MainActor
-    private func refreshIcon(expectedRSSURL: URL, expectedGeneration: UUID) async {
-        await viewModel.refreshIcon(
-            expectedRSSURL: expectedRSSURL, expectedGeneration: expectedGeneration
-        ) { url in
-            try await Task.detached {
-                try await FaviconFinder(
-                    url: url,
-                    configuration: .init(
-                        preferredSource: .html,
-                        preferences: [
-                            .html: FaviconFormatType.appleTouchIcon.rawValue,
-                            .ico: "favicon.ico",
-                            .webApplicationManifestFile: FaviconFormatType.launcherIcon4x.rawValue
-                        ]
-                    )
-                )
-                .fetchFaviconURLs()
-                .largest()
-                .source
-            }.value
-        }
     }
 
     private func refresh(entries: [FeedEntry]? = nil, forceRefresh: Bool = false) {
