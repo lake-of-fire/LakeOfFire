@@ -241,8 +241,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 guard let contentRef else { return }
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: contentRef.realmConfiguration)
                 try await realm.asyncRefresh()
-                guard let content = realm.object(ofType: HistoryRecord.self, forPrimaryKey: contentRef.contentKey) else { return }
-                try realm.writeIfNeeded {
+                try await realm.asyncWrite {
+                    guard let content = realm.object(
+                        ofType: HistoryRecord.self, forPrimaryKey: contentRef.contentKey
+                    ) else { return }
                     content.lastVisitedAt = Date()
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }

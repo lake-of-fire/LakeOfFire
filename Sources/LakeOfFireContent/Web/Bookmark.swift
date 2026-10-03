@@ -156,10 +156,9 @@ public extension Bookmark {
         realmConfiguration: Realm.Configuration
     ) async throws -> Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        let pk = Bookmark.makePrimaryKey(url: url, html: html)
-        if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
-//            await realm.asyncRefresh()
-            try realm.writeIfNeeded {
+        return try await realm.asyncWrite {
+            let pk = Bookmark.makePrimaryKey(url: url, html: html)
+            if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
                 bookmark.title = title
                 bookmark.imageUrl = imageUrl
                 bookmark.sourceIconURL = sourceIconURL
@@ -183,44 +182,41 @@ public extension Bookmark {
                 bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
                 bookmark.isDeleted = false
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
-            }
-            return bookmark
-        } else {
-            let bookmark = Bookmark()
-            if let html = html {
-                bookmark.html = html
-            } else if let content = content {
-                bookmark.content = content
-            }
-            if let url = url {
-                bookmark.url = url
-                bookmark.updateCompoundKey()
+                return bookmark
             } else {
-                bookmark.updateCompoundKey()
-                bookmark.url = ReaderContentLoader.snippetURL(key: bookmark.compoundKey) ?? bookmark.url
-            }
-            bookmark.title = title
-            bookmark.imageUrl = imageUrl
-            bookmark.sourceIconURL = sourceIconURL
-            bookmark.publicationDate = publicationDate
-            bookmark.readerContentKind = readerContentKind
-            bookmark.feedEntryCollectionKey = feedEntryCollectionKey
-            bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
-            bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
-            bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
-            bookmark.isFromClipboard = isFromClipboard
-            bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
-            bookmark.isReaderModeByDefault = isReaderModeByDefault
-            bookmark.rssContainsFullContent = rssContainsFullContent
-            bookmark.isReaderModeAvailable = isReaderModeAvailable
-            bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
-            bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
-//            await realm.asyncRefresh()
-            try realm.writeIfNeeded {
+                let bookmark = Bookmark()
+                if let html = html {
+                    bookmark.html = html
+                } else if let content = content {
+                    bookmark.content = content
+                }
+                if let url = url {
+                    bookmark.url = url
+                    bookmark.updateCompoundKey()
+                } else {
+                    bookmark.updateCompoundKey()
+                    bookmark.url = ReaderContentLoader.snippetURL(key: bookmark.compoundKey) ?? bookmark.url
+                }
+                bookmark.title = title
+                bookmark.imageUrl = imageUrl
+                bookmark.sourceIconURL = sourceIconURL
+                bookmark.publicationDate = publicationDate
+                bookmark.readerContentKind = readerContentKind
+                bookmark.feedEntryCollectionKey = feedEntryCollectionKey
+                bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
+                bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
+                bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
+                bookmark.isFromClipboard = isFromClipboard
+                bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
+                bookmark.isReaderModeByDefault = isReaderModeByDefault
+                bookmark.rssContainsFullContent = rssContainsFullContent
+                bookmark.isReaderModeAvailable = isReaderModeAvailable
+                bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
+                bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
                 realm.add(bookmark, update: .modified)
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
+                return bookmark
             }
-            return bookmark
         }
     }
     
