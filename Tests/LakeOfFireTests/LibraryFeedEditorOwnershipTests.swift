@@ -4,6 +4,7 @@ import RealmSwiftGaps
 import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireLibrary
+@testable import LakeOfFireReader
 
 @MainActor
 final class LibraryFeedEditorOwnershipTests: XCTestCase {
@@ -564,6 +565,54 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
             }.value
             realm.refresh()
             XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty, boundary)
+        }
+    }
+
+    func testReaderPreviewScriptObservationUsesCapturedConfigurationBeforeAndAfterReplacement() async throws {
+        for usesExplicitConfiguration in [true, false] {
+            let originalConfiguration = configuration()
+            let replacementConfiguration = configuration()
+            let original = try Realm(configuration: originalConfiguration)
+            let replacement = try Realm(configuration: replacementConfiguration)
+            let scriptID = UUID()
+            let libraryID = UUID()
+            for (realm, source) in [(original, "window.origin = 'captured';"), (replacement, "window.origin = 'replacement';")] {
+                let script = UserScript()
+                script.id = scriptID
+                script.script = source
+                let library = LibraryConfiguration()
+                library.id = libraryID
+                library.userScriptIDs.append(scriptID)
+                try realm.write { realm.add(script); realm.add(library) }
+            }
+            let previous = LibraryDataManager.realmConfiguration
+            defer { LibraryDataManager.realmConfiguration = previous }
+            LibraryDataManager.realmConfiguration = originalConfiguration
+            let reader = usesExplicitConfiguration
+                ? ReaderViewModel(realmConfiguration: originalConfiguration, systemScripts: [])
+                : ReaderViewModel(systemScripts: [])
+            // Replace the global before the model's asynchronous observer setup.
+            LibraryDataManager.realmConfiguration = replacementConfiguration
+            let initial = await waitUntil {
+                reader.allScripts.contains { $0.source == "window.origin = 'captured';" }
+            }
+            XCTAssertTrue(initial)
+            XCTAssertFalse(reader.allScripts.contains { $0.source == "window.origin = 'replacement';" })
+            try await Task { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: originalConfiguration)
+                try await realm.asyncWrite {
+                    let script = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: scriptID))
+                    script.script = "window.origin = 'updated captured';"
+                    script.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }.value
+            let updated = await waitUntil {
+                reader.allScripts.contains { $0.source == "window.origin = 'updated captured';" }
+            }
+            XCTAssertTrue(updated)
+            XCTAssertFalse(reader.allScripts.contains { $0.source == "window.origin = 'replacement';" })
+            replacement.refresh()
+            XCTAssertTrue(replacement.objects(BigSyncPendingMutation.self).isEmpty)
         }
     }
 
