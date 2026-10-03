@@ -4212,17 +4212,13 @@ struct ReaderImportSnapshot: Sendable {
                         throw ReaderFileManagerError.importContentChanged
                     }
                     let identity = try contentIdentity(at: coordinatedURL, requiresManifest: requiresManifest)
-                    if requiresManifest {
-                        try FileManager.default.copyItem(at: coordinatedURL, to: snapshotURL)
-                    } else {
-                        let copiedIdentity = try contentIdentity(
-                            at: coordinatedURL,
-                            requiresManifest: false,
-                            copyingTo: snapshotURL
-                        )
-                        guard copiedIdentity == identity else {
-                            throw ReaderFileManagerError.importContentChanged
-                        }
+                    let copiedIdentity = try contentIdentity(
+                        at: coordinatedURL,
+                        requiresManifest: requiresManifest,
+                        copyingTo: snapshotURL
+                    )
+                    guard copiedIdentity == identity else {
+                        throw ReaderFileManagerError.importContentChanged
                     }
                     try Task.checkCancellation()
                     guard try snapshotURL.readerImportRequiresManifest() == requiresManifest,
@@ -4259,8 +4255,7 @@ struct ReaderImportSnapshot: Sendable {
             throw ReaderFileManagerError.importContentChanged
         }
         if requiresManifest {
-            guard destinationURL == nil else { throw ReaderImportPackageManifestError.unsupportedEntry }
-            let digest = try url.packageManifestDigest()
+            let digest = try url.packageManifestDigest(copyingTo: destinationURL)
             return ReaderImportContentIdentity(digest: digest, collisionHash: stableHash(data: digest))
         }
         let before = try ReaderImportPackageEntryIdentity.read(url)
@@ -4366,12 +4361,12 @@ private struct ReaderImportPackageManifest {
         self.limits = limits
     }
 
-    mutating func digest(at root: URL) throws -> Data {
+    mutating func digest(at root: URL, copyingTo destination: URL? = nil) throws -> Data {
         guard limits.maximumEntries >= 0, limits.maximumBytes >= 0, limits.maximumDepth >= 0 else {
             throw ReaderImportPackageManifestError.budgetExceeded
         }
         appendField("reader-import-package-manifest-v1")
-        try appendDirectory(root, relativePath: "", depth: 0)
+        try appendDirectory(root, relativePath: "", depth: 0, copyingTo: destination)
         return Data(hasher.finalize())
     }
 
@@ -4387,12 +4382,23 @@ private struct ReaderImportPackageManifest {
         hasher.update(data: Data([0]))
     }
 
-    private mutating func appendDirectory(_ directory: URL, relativePath: String, depth: Int) throws {
+    private mutating func appendDirectory(
+        _ directory: URL,
+        relativePath: String,
+        depth: Int,
+        copyingTo destination: URL? = nil
+    ) throws {
         try Task.checkCancellation()
         guard depth <= limits.maximumDepth else { throw ReaderImportPackageManifestError.budgetExceeded }
         let before = try ReaderImportPackageEntryIdentity.read(directory)
         guard before.mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
             throw ReaderImportPackageManifestError.invalidRoot
+        }
+        if let destination {
+            // mkdir is exclusive: even an existing directory must not be reused.
+            guard mkdir(destination.path, mode_t(0o700)) == 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
         }
         var enumerationError: (any Swift.Error)?
         guard let enumerator = FileManager.default.enumerator(
@@ -4415,26 +4421,31 @@ private struct ReaderImportPackageManifest {
             try Task.checkCancellation()
             let path = relativePath.isEmpty ? child.lastPathComponent : relativePath + "/" + child.lastPathComponent
             let identity = try ReaderImportPackageEntryIdentity.read(child)
+            let destinationChild = destination?.appendingPathComponent(child.lastPathComponent)
             appendField("entry")
             appendField(path)
             switch identity.mode & mode_t(S_IFMT) {
             case mode_t(S_IFDIR):
                 appendField("directory")
                 appendField("0")
-                try appendDirectory(child, relativePath: path, depth: depth + 1)
+                try appendDirectory(child, relativePath: path, depth: depth + 1, copyingTo: destinationChild)
             case mode_t(S_IFLNK):
                 let target = try FileManager.default.destinationOfSymbolicLink(atPath: child.path)
                 try consumeBytes(target.utf8.count)
                 appendField("symlink")
                 appendField(String(target.utf8.count))
                 appendField(target)
+                if let destinationChild {
+                    // Preserve link text without reading or copying its target.
+                    try FileManager.default.createSymbolicLink(atPath: destinationChild.path, withDestinationPath: target)
+                }
             case mode_t(S_IFREG):
                 guard identity.size >= 0, identity.size <= limits.maximumBytes - bytes else {
                     throw ReaderImportPackageManifestError.budgetExceeded
                 }
                 appendField("file")
                 appendField(String(identity.size))
-                let descriptor = open(child.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+                let descriptor = open(child.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
                 guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
                 let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
                 defer { try? handle.close() }
@@ -4443,12 +4454,28 @@ private struct ReaderImportPackageManifest {
                       ReaderImportPackageEntryIdentity(opened) == identity else {
                     throw ReaderImportPackageManifestError.changedDuringRead
                 }
+                let output: FileHandle?
+                if let destinationChild {
+                    let outputDescriptor = open(
+                        destinationChild.path,
+                        O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                        mode_t(0o600)
+                    )
+                    guard outputDescriptor >= 0 else {
+                        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                    }
+                    output = FileHandle(fileDescriptor: outputDescriptor, closeOnDealloc: true)
+                } else {
+                    output = nil
+                }
+                defer { try? output?.close() }
                 var readBytes: Int64 = 0
                 while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
                     try Task.checkCancellation()
                     try consumeBytes(chunk.count)
                     readBytes += Int64(chunk.count)
                     guard readBytes <= identity.size else { throw ReaderImportPackageManifestError.changedDuringRead }
+                    try output?.write(contentsOf: chunk)
                     hasher.update(data: chunk)
                 }
                 guard readBytes == identity.size,
@@ -4488,9 +4515,12 @@ extension URL {
         (try? resourceValues(forKeys: [.isPackageKey]).isPackage) == true
     }
     
-    func packageManifestDigest(limits: ReaderImportPackageManifestLimits = .init()) throws -> Data {
+    func packageManifestDigest(
+        limits: ReaderImportPackageManifestLimits = .init(),
+        copyingTo destination: URL? = nil
+    ) throws -> Data {
         var manifest = ReaderImportPackageManifest(limits: limits)
-        return try manifest.digest(at: standardizedFileURL)
+        return try manifest.digest(at: standardizedFileURL, copyingTo: destination)
     }
 
 }

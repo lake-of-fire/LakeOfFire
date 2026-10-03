@@ -760,6 +760,55 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         XCTAssertThrowsError(try root.appendingPathComponent("missing").readerImportRequiresManifest())
     }
 
+    func testPackageManifestCopyPreservesFilesEmptyDirectoriesAndSymlinkText() throws {
+        let root = try temporaryDirectory()
+        let source = root.appendingPathComponent("source")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        _ = try writeFixture(relativePath: "nested/chapter.txt", under: source)
+        try FileManager.default.createDirectory(
+            at: source.appendingPathComponent("empty"),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: source.appendingPathComponent("external-link").path,
+            withDestinationPath: "../outside.txt"
+        )
+        let outside = try writeFixture(relativePath: "outside.txt", under: root)
+        let originalOutside = try Data(contentsOf: outside)
+        let destination = root.appendingPathComponent("copy")
+        let original = try source.packageManifestDigest()
+        XCTAssertEqual(try source.packageManifestDigest(copyingTo: destination), original)
+        XCTAssertEqual(try destination.packageManifestDigest(), original)
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: destination.appendingPathComponent("external-link").path),
+            "../outside.txt"
+        )
+        XCTAssertEqual(try Data(contentsOf: outside), originalOutside)
+    }
+
+    func testPackageManifestCopyRejectsOccupiedRootAndPayloadBudgetOverflow() throws {
+        let root = try temporaryDirectory()
+        let source = root.appendingPathComponent("source")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        _ = try writeFixture(relativePath: "chapter.txt", under: source)
+        let occupied = root.appendingPathComponent("occupied")
+        let originalFile = try writeFixture(relativePath: "occupied/keep.txt", under: root)
+        let originalBytes = try Data(contentsOf: originalFile)
+        XCTAssertThrowsError(try source.packageManifestDigest(copyingTo: occupied))
+        XCTAssertEqual(try Data(contentsOf: originalFile), originalBytes)
+        let destination = root.appendingPathComponent("limited-copy")
+        XCTAssertThrowsError(try source.packageManifestDigest(
+            limits: ReaderImportPackageManifestLimits(maximumEntries: 10, maximumBytes: 1, maximumDepth: 10),
+            copyingTo: destination
+        )) { error in
+            guard let manifestError = error as? ReaderImportPackageManifestError,
+                  case .budgetExceeded = manifestError else {
+                return XCTFail("Expected copy budget rejection, got \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("chapter.txt").path))
+    }
+
     func testPackageManifestDigestIsDeterministicAndDoesNotFollowEscapingSymlink() throws {
         let first = try temporaryDirectory()
         let second = try temporaryDirectory()
