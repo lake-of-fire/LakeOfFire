@@ -42,11 +42,12 @@ final class LibraryEditorWriteOrdering {
     @MainActor
     static func shared(configuration: Realm.Configuration, recordKind: String) -> LibraryEditorWriteOrdering {
         activeOrderings = activeOrderings.filter { $0.value.value != nil }
-        // Realm materializes an unspecified active-version limit as zero when
-        // returning realm.configuration. Both configurations address the same
-        // writer scope; reopening must not restart its intent sequence.
+        // Swift bridges nil as zero; Realm's Objective-C setter converts zero
+        // to the unlimited UInt.max value returned by realm.configuration.
+        // Normalize all unlimited forms without collapsing finite limits.
         var orderingConfiguration = configuration
-        orderingConfiguration.maximumNumberOfActiveVersions = configuration.maximumNumberOfActiveVersions ?? 0
+        let suppliedLimit = configuration.maximumNumberOfActiveVersions ?? 0
+        orderingConfiguration.maximumNumberOfActiveVersions = suppliedLimit == 0 ? UInt.max : suppliedLimit
         let scope = Scope(
             storage: LibraryRecordPresentationIdentity(
                 recordID: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,

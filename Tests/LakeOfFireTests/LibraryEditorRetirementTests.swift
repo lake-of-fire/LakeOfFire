@@ -237,9 +237,16 @@ final class LibraryEditorRetirementTests: XCTestCase {
         let realm = try await Realm(configuration: captured)
         let feed = try installFeed(in: realm)
         XCTAssertNil(captured.maximumNumberOfActiveVersions)
-        XCTAssertEqual(realm.configuration.maximumNumberOfActiveVersions, 0)
+        XCTAssertEqual(realm.configuration.maximumNumberOfActiveVersions, UInt.max)
         let oldOrdering = LibraryEditorWriteOrdering.shared(configuration: captured, recordKind: "feed")
         let oldSequence = oldOrdering.issueSequence()
+        var explicitZero = captured
+        explicitZero.maximumNumberOfActiveVersions = 0
+        let zeroOrdering = LibraryEditorWriteOrdering.shared(configuration: explicitZero, recordKind: "feed")
+        let zeroSequence = zeroOrdering.issueSequence()
+        var finite = captured
+        finite.maximumNumberOfActiveVersions = 128
+        XCTAssertFalse(oldOrdering === LibraryEditorWriteOrdering.shared(configuration: finite, recordKind: "feed"))
         let reopenedOrdering = LibraryEditorWriteOrdering.shared(
             configuration: realm.configuration, recordKind: "feed"
         )
@@ -257,12 +264,14 @@ final class LibraryEditorRetirementTests: XCTestCase {
                     recordID: feedID, field: LibraryFeedEditorField.title.rawValue, sequence: newSequence
                 ))
             }
-            try await writer.asyncWrite {
-                guard oldOrdering.admits(
-                    recordID: feedID, field: LibraryFeedEditorField.title.rawValue, sequence: oldSequence
-                ), let stored = writer.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
-                stored.title = "Obsolete configuration draft"
-                stored.refreshChangeMetadata(explicitlyModified: true)
+            for (ordering, sequence) in [(oldOrdering, oldSequence), (zeroOrdering, zeroSequence)] {
+                try await writer.asyncWrite {
+                    guard ordering.admits(
+                        recordID: feedID, field: LibraryFeedEditorField.title.rawValue, sequence: sequence
+                    ), let stored = writer.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
+                    stored.title = "Obsolete configuration draft"
+                    stored.refreshChangeMetadata(explicitlyModified: true)
+                }
             }
         }.value
         realm.refresh()
