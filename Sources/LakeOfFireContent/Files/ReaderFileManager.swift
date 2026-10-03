@@ -2266,7 +2266,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     /// Installs or reuses equal bytes without replacing an occupied candidate.
     /// Package identity uses a bounded, path/type-aware streaming manifest.
     @MainActor
-    private func installImportFile(
+    func installImportFile(
         _ sourceURL: URL,
         targetDirectory: RootRelativePath,
         drive: CloudDrive,
@@ -2311,35 +2311,45 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
         while true {
             try validateAuthority()
-            try Self.validateDestinationContainment(candidate, in: drive.rootDirectory)
-            let destination = try candidate.fileURL(forRoot: drive.rootDirectory)
-            let exists: Bool
-            if FileManager.default.isDirectory(atPath: destination.path) {
-                exists = true
-            } else {
-                exists = try await drive.fileExists(at: candidate)
-            }
-            try validateAuthority()
-            if exists {
-                if try await existingMatches(candidate, destination: destination) { return candidate }
-            } else {
-                do {
-                    try validateAuthority()
-                    try await drive.upload(from: snapshot.fileURL, to: candidate)
-                    try validateAuthority()
-                    guard try await existingMatches(candidate, destination: destination) else {
-                        // Preserve the copy for recovery; never remove a path whose
-                        // ownership may have changed during an awaited operation.
-                        throw ReaderFileManagerError.importContentChanged
-                    }
-                    return candidate
-                } catch {
-                    // Only fail-on-existing copy races authorize candidate comparison.
-                    let copyError = error as NSError
-                    guard copyError.domain == NSCocoaErrorDomain,
-                          copyError.code == CocoaError.fileWriteFileExists.rawValue else { throw error }
-                    try validateAuthority()
+            // Validate the parent before inspecting the lexical leaf. An occupied
+            // leaf link is a collision, never authority to traverse its target.
+            try Self.validateDestinationContainment(targetDirectory, in: drive.rootDirectory)
+            let directory = try targetDirectory.directoryURL(forRoot: drive.rootDirectory)
+            let lexicalDestination = directory.appendingPathComponent(URL(fileURLWithPath: candidate.path).lastPathComponent)
+            let isLeafSymlink = (try? FileManager.default.destinationOfSymbolicLink(
+                atPath: lexicalDestination.path
+            )) != nil
+            if !isLeafSymlink {
+                try Self.validateDestinationContainment(candidate, in: drive.rootDirectory)
+                let destination = try candidate.fileURL(forRoot: drive.rootDirectory)
+                let exists: Bool
+                if FileManager.default.isDirectory(atPath: destination.path) {
+                    exists = true
+                } else {
+                    exists = try await drive.fileExists(at: candidate)
+                }
+                try validateAuthority()
+                if exists {
                     if try await existingMatches(candidate, destination: destination) { return candidate }
+                } else {
+                    do {
+                        try validateAuthority()
+                        try await drive.upload(from: snapshot.fileURL, to: candidate)
+                        try validateAuthority()
+                        guard try await existingMatches(candidate, destination: destination) else {
+                            // Preserve the copy for recovery; never remove a path whose
+                            // ownership may have changed during an awaited operation.
+                            throw ReaderFileManagerError.importContentChanged
+                        }
+                        return candidate
+                    } catch {
+                        // Only fail-on-existing copy races authorize candidate comparison.
+                        let copyError = error as NSError
+                        guard copyError.domain == NSCocoaErrorDomain,
+                              copyError.code == CocoaError.fileWriteFileExists.rawValue else { throw error }
+                        try validateAuthority()
+                        if try await existingMatches(candidate, destination: destination) { return candidate }
+                    }
                 }
             }
             if collisionHash == nil {

@@ -951,6 +951,56 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
     }
 
     @MainActor
+    func testImportInstallationPreservesOccupiedLeafSymlinksAndAdvancesSuffix() async throws {
+        let sourceRoot = try temporaryDirectory()
+        let libraryRoot = try temporaryDirectory()
+        let source = try writeFixture(relativePath: "book.txt", under: sourceRoot)
+        let bytes = try Data(contentsOf: source)
+        let tag = String(format: "%02X", stableHash(data: bytes)).prefix(6).uppercased()
+        let books = libraryRoot.appendingPathComponent("Books", isDirectory: true)
+        try FileManager.default.createDirectory(at: books, withIntermediateDirectories: true)
+        let missingTarget = sourceRoot.appendingPathComponent("missing.txt")
+        for name in ["book.txt", "book (\(tag)).txt"] {
+            try FileManager.default.createSymbolicLink(
+                at: books.appendingPathComponent(name), withDestinationURL: missingTarget
+            )
+        }
+        let drive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRoot))
+        let manager = ReaderFileManager()
+        let installed = try await manager.installImportFile(
+            source, targetDirectory: RootRelativePath(path: "Books"), drive: drive, validateAuthority: {}
+        )
+        XCTAssertEqual(installed.path, "Books/book (\(tag)-2).txt")
+        XCTAssertEqual(try Data(contentsOf: installed.fileURL(forRoot: drive.rootDirectory)), bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missingTarget.path))
+        for name in ["book.txt", "book (\(tag)).txt"] {
+            XCTAssertEqual(
+                try FileManager.default.destinationOfSymbolicLink(atPath: books.appendingPathComponent(name).path),
+                missingTarget.path
+            )
+        }
+    }
+
+    @MainActor
+    func testImportInstallationRejectsEscapingParentWithoutWritingOutsideRoot() async throws {
+        let sourceRoot = try temporaryDirectory()
+        let libraryRoot = try temporaryDirectory()
+        let outside = try temporaryDirectory()
+        let source = try writeFixture(relativePath: "book.txt", under: sourceRoot)
+        try FileManager.default.createSymbolicLink(
+            at: libraryRoot.appendingPathComponent("Books"), withDestinationURL: outside
+        )
+        let drive = try await CloudDrive(storage: .localDirectory(rootURL: libraryRoot))
+        do {
+            _ = try await ReaderFileManager().installImportFile(
+                source, targetDirectory: RootRelativePath(path: "Books"), drive: drive, validateAuthority: {}
+            )
+            XCTFail("Expected escaping parent rejection")
+        } catch {}
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    @MainActor
     func testIdenticalImportAtDifferentURLReusesExistingDestination() async throws {
         let sourceRootURL = try temporaryDirectory()
         let libraryRootURL = try temporaryDirectory()
