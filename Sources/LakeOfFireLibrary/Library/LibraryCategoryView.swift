@@ -29,7 +29,7 @@ private struct LibraryCategoryFieldCommand: Sendable {
     @RealmBackgroundActor
     func write() async throws {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             guard writeOrdering.admits(recordID: categoryID, field: field, sequence: sequence),
                   let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
                   category.isUserEditable, !category.isDeleted else { return }
@@ -229,7 +229,7 @@ class LibraryCategoryViewModel: ObservableObject {
     private func deleteFeed(feedID: UUID) async throws {
         try await Task { @RealmBackgroundActor [realmConfiguration] in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
                       feed.isUserEditable(),
                       !feed.isDeleted else { return }

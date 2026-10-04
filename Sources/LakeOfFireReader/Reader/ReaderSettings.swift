@@ -135,7 +135,7 @@ public struct DataSettingsForm: View {
                         Task { @RealmBackgroundActor in
                              let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
 //                            await realm.asyncRefresh()
-                            try await realm.asyncWrite {
+                            try await realm.asyncWritePreservingOwnership {
                                 for record in realm.objects(HistoryRecord.self).where({ !$0.isDeleted }) {
                                     record.isDeleted = true
                                     record.refreshChangeMetadata(explicitlyModified: true)
@@ -160,7 +160,7 @@ public struct DataSettingsForm: View {
                         Task { @RealmBackgroundActor in
                             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
 //                            await realm.asyncRefresh()
-                            try await realm.asyncWrite {
+                            try await realm.asyncWritePreservingOwnership {
                                 for entry in realm.objects(FeedEntry.self).where({ !$0.isDeleted }) {
                                     entry.isDeleted = true
                                     entry.refreshChangeMetadata(explicitlyModified: true)

@@ -72,7 +72,7 @@ private struct LibraryScriptFieldCommand: Sendable {
     @RealmBackgroundActor
     func write() async throws {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
                   !script.isDeleted, script.isUserEditable,
                   writeOrdering.admits(recordID: scriptID, field: edit.fieldIdentifier, sequence: sequence),
@@ -257,7 +257,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             try await Task { @RealmBackgroundActor in
                 guard let scriptID, !selectedIDs.isEmpty else { return }
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
                           !script.isDeleted, script.isUserEditable else { return }
                     let removedIDs = Set(script.allowedDomainIDs).intersection(selectedIDs)
@@ -286,7 +286,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         return Task { @RealmBackgroundActor [realmConfiguration] in
             guard let scriptID else { return }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
                       !script.isDeleted, script.isUserEditable else { return }
                 let allowedDomain = UserScriptAllowedDomain()

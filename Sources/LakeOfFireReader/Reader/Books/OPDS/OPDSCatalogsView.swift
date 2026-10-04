@@ -95,7 +95,7 @@ class OPDSCatalogsViewModel: ObservableObject {
         do {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration)
             await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 OPDSCatalog.add(title: title, url: url, to: realm)
             }
         } catch {
@@ -113,7 +113,7 @@ class OPDSCatalogsViewModel: ObservableObject {
                     for: .defaultConfiguration
                 )
                 await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     for catalog in Array(
                         realm.objects(OPDSCatalog.self)
                             .where { $0.id.in(catalogIDsToDelete) }
@@ -246,7 +246,7 @@ struct AddCatalogView: View {
         do {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration) 
             await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 OPDSCatalog.add(title: title, url: url, to: realm)
             }
             await MainActor.run { dismiss() }

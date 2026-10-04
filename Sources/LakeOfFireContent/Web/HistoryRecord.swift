@@ -30,7 +30,7 @@ extension HistoryRecord: DeletableReaderContent {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(
                 for: contentReference.realmConfiguration
             )
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 HistoryRecord.markOpenedRecordsDeleted(
                     matching: historyURL,
                     in: realm
@@ -47,7 +47,7 @@ extension DeletableReaderContent {
         try await { @RealmBackgroundActor in
             guard let content = try await contentRef.resolveOnBackgroundActor() else { return }
 //            await content.realm?.asyncRefresh()
-            try await content.realm?.asyncWrite {
+            try await content.realm?.asyncWritePreservingOwnership {
                 //            for videoStatus in realm.objects(VideoS)
                 content.isDeleted = true
                 content.refreshChangeMetadata(explicitlyModified: true)
@@ -166,7 +166,7 @@ public extension HistoryRecord {
             return true
         }()
         if demoted != isDemoted {
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 isDemoted = demoted
                 refreshChangeMetadata(explicitlyModified: true)
             }

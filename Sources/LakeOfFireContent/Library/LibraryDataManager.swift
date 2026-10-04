@@ -249,7 +249,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         guard let primaryID = configurationIDs.first else {
             let configuration = LibraryConfiguration()
             let timestamp = Date()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 if let concurrent = realm.objects(LibraryConfiguration.self)
                     .where({ !$0.isDeleted })
                     .sorted(by: \.createdAt, ascending: true)
@@ -276,7 +276,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         let timestamp = Date()
         var resolvedPrimaryID = primaryID
 
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             guard let primary = realm.object(
                 ofType: LibraryConfiguration.self,
                 forPrimaryKey: primaryID
@@ -700,7 +700,7 @@ public class LibraryDataManager: NSObject {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         let category = FeedCategory()
 //        await realm.asyncRefresh()
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             realm.add(category, update: .modified)
             category.refreshChangeMetadata(explicitlyModified: true)
         }
@@ -710,7 +710,7 @@ public class LibraryDataManager: NSObject {
             )
             let categoryID = category.id
 //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 guard !configuration.categoryIDs.contains(where: { $0 == categoryID }) else { return }
                 configuration.categoryIDs.append(categoryID)
                 configuration.refreshChangeMetadata(explicitlyModified: true)
@@ -730,7 +730,7 @@ public class LibraryDataManager: NSObject {
         feed.categoryID = category.id
         feed.meaningfulContentMinLength = 0
 //        await realm.asyncRefresh()
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             realm.add(feed, update: .modified)
             feed.refreshChangeMetadata(explicitlyModified: true)
         }
@@ -759,7 +759,7 @@ public class LibraryDataManager: NSObject {
                 shouldUpdateTitle ||
                 shouldUpdateIcon {
 //                await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     feed.deleteOrphans = true
                     feed.isArchived = false
                     feed.meaningfulContentMinLength = 0
@@ -779,7 +779,7 @@ public class LibraryDataManager: NSObject {
             let dupeFeeds = existingAppFeeds.filter { $0.id != existing.id }
             if !dupeFeeds.isEmpty {
 //                await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     for dupeFeed in dupeFeeds {
                         dupeFeed.isDeleted = true
                         dupeFeed.refreshChangeMetadata(explicitlyModified: true)
@@ -799,7 +799,7 @@ public class LibraryDataManager: NSObject {
             feed.isReaderModeByDefault = isReaderModeByDefault
             feed.rssContainsFullContent = rssContainsFullContent
 //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 realm.add(feed, update: .modified)
                 feed.refreshChangeMetadata(explicitlyModified: true)
             }
@@ -823,7 +823,7 @@ public class LibraryDataManager: NSObject {
         value.isArchived = false
         value.categoryID = category.id
 //        await realm.asyncRefresh()
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             let duplicatedFeed = realm.create(Feed.self, value: value, update: .modified)
             duplicatedFeed.refreshChangeMetadata(explicitlyModified: true)
         }
@@ -840,7 +840,7 @@ public class LibraryDataManager: NSObject {
         script.title = ""
         if addToLibrary {
 //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 realm.add(script, update: .modified)
                 script.refreshChangeMetadata(explicitlyModified: true)
             }
@@ -848,7 +848,7 @@ public class LibraryDataManager: NSObject {
                 realmConfiguration: realmConfiguration
             )
 //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 configuration.userScriptIDs.append(script.id)
                 configuration.refreshChangeMetadata(explicitlyModified: true)
             }
@@ -934,7 +934,7 @@ public class LibraryDataManager: NSObject {
                     .filter { !$0.isDeleted && $0.opmlURL == downloadURL }
                     .map(\.id)
             )
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 let timestamp = Date()
                 for scriptID in candidateIDs where !importedIDs.contains(scriptID) {
                     guard let script = realm.object(
@@ -962,7 +962,7 @@ public class LibraryDataManager: NSObject {
                     lastNeighborIdx = userScripts.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
                 }
 //                await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     configuration.userScriptIDs.insert(script.id, at: lastNeighborIdx + 1)
                     configuration.refreshChangeMetadata(explicitlyModified: true)
                 }
@@ -978,7 +978,7 @@ public class LibraryDataManager: NSObject {
                 let desiredScript = desiredScripts.removeFirst()
                 if let fromIdx = configuration.userScriptIDs.firstIndex(where: { $0 == desiredScript.id }), fromIdx != idx {
 //                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
+                    try await realm.asyncWritePreservingOwnership {
                         configuration.userScriptIDs.move(from: fromIdx, to: idx)
                         configuration.refreshChangeMetadata(explicitlyModified: true)
                     }
@@ -990,7 +990,7 @@ public class LibraryDataManager: NSObject {
         // De-dupe scripts from library configuration (due to some bug...)
         try Task.checkCancellation()
         if Set(configuration.userScriptIDs).count != configuration.userScriptIDs.count {
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 var scriptIDsSeen = Set<UUID>()
                 var scriptsToRemove = IndexSet()
                 for (idx, scriptID) in configuration.userScriptIDs.enumerated() {
@@ -1014,7 +1014,7 @@ public class LibraryDataManager: NSObject {
                     .filter { !$0.isDeleted && $0.opmlURL == downloadURL }
                     .map(\.id)
             )
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 let timestamp = Date()
                 for categoryID in candidateIDs where !importedIDs.contains(categoryID) {
                     guard let category = realm.object(
@@ -1043,7 +1043,7 @@ public class LibraryDataManager: NSObject {
                     .filter { !$0.isDeleted && $0.getCategory()?.opmlURL == downloadURL }
                     .map(\.id)
             )
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 let timestamp = Date()
                 for feedID in candidateIDs where !importedIDs.contains(feedID) {
                     guard let feed = realm.object(
@@ -1072,7 +1072,7 @@ public class LibraryDataManager: NSObject {
                     .filter { !$0.isDeleted && $0.opmlURL == downloadURL }
                     .map(\.id)
             )
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 let timestamp = Date()
                 for directoryID in candidateIDs where !importedIDs.contains(directoryID) {
                     guard let directory = realm.object(
@@ -1101,7 +1101,7 @@ public class LibraryDataManager: NSObject {
                     lastNeighborIdx = configuration.getCategories()?.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
                 }
 //                await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     configuration.categoryIDs.insert(category.id, at: lastNeighborIdx + 1)
                     configuration.refreshChangeMetadata(explicitlyModified: true)
                 }
@@ -1117,7 +1117,7 @@ public class LibraryDataManager: NSObject {
                 let desiredCategory = desiredCategories.removeFirst()
                 if let fromIdx = configuration.categoryIDs.firstIndex(of: desiredCategory.id), fromIdx != idx {
 //                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
+                    try await realm.asyncWritePreservingOwnership {
                         configuration.categoryIDs.move(from: fromIdx, to: idx)
                         configuration.refreshChangeMetadata(explicitlyModified: true)
                     }
@@ -1129,7 +1129,7 @@ public class LibraryDataManager: NSObject {
         // De-dupe categories from library configuration (due to some bug...)
         try Task.checkCancellation()
         if Set(configuration.categoryIDs).count != configuration.categoryIDs.count {
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 var idsSeen = Set<UUID>()
                 var toRemove = IndexSet()
                 for (idx, categoryID) in configuration.categoryIDs.enumerated() {
@@ -1156,7 +1156,7 @@ public class LibraryDataManager: NSObject {
         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: realmConfiguration)
         if let realm = libraryConfiguration.realm {
 //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 libraryConfiguration.opmlLastImportedAt = Date()
                 libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
             }
@@ -1214,7 +1214,7 @@ public class LibraryDataManager: NSObject {
                         try Task.checkCancellation()
                         let categoryID = categoryID ?? feedCategory?.id
 //                        await realm.asyncRefresh()
-                        try await realm.asyncWrite {
+                        try await realm.asyncWritePreservingOwnership {
                             try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal)
                         }
                     }
@@ -1226,7 +1226,7 @@ public class LibraryDataManager: NSObject {
                     feed.id = uuid
                     try Task.checkCancellation()
 //                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
+                    try await realm.asyncWritePreservingOwnership {
                         try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal)
                         realm.add(feed, update: .modified)
                         feed.refreshChangeMetadata(explicitlyModified: true)
@@ -1240,7 +1240,7 @@ public class LibraryDataManager: NSObject {
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, script: script) {
                         try Task.checkCancellation()
 //                        await realm.asyncRefresh()
-                        try await realm.asyncWrite {
+                        try await realm.asyncWritePreservingOwnership {
                             try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
                             try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
                         }
@@ -1256,7 +1256,7 @@ public class LibraryDataManager: NSObject {
                     }
                     try Task.checkCancellation()
 //                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
+                    try await realm.asyncWritePreservingOwnership {
                         try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
                         realm.add(script, update: .modified)
                         script.refreshChangeMetadata(explicitlyModified: true)
@@ -1274,7 +1274,7 @@ public class LibraryDataManager: NSObject {
                     if hasChanges {
                         //                        if existingCategory.opmlURL == download?.url || existingCategory.isDeleted {
 //                        await realm.asyncRefresh()
-                        try await realm.asyncWrite {
+                        try await realm.asyncWritePreservingOwnership {
                             try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, category: existingCategory, downloadURL: download?.url)
                         }
                     }
@@ -1289,7 +1289,7 @@ public class LibraryDataManager: NSObject {
                         }
                         try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, category: category, downloadURL: download?.url)
 //                        await realm.asyncRefresh()
-                        try await realm.asyncWrite {
+                        try await realm.asyncWritePreservingOwnership {
                             realm.add(category, update: .modified)
                             category.refreshChangeMetadata(explicitlyModified: true)
                         }
@@ -1300,7 +1300,7 @@ public class LibraryDataManager: NSObject {
                 if let uuid, let existingDirectory = realm.object(ofType: FeedDirectory.self, forPrimaryKey: uuid) {
                     directory = existingDirectory
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, directory: existingDirectory, categoryID: categoryID, parentDirectoryID: directoryID, ordinal: ordinal) {
-                        try await realm.asyncWrite {
+                        try await realm.asyncWritePreservingOwnership {
                             try Self.applyAttributes(
                                 opml: opml,
                                 opmlEntry: opmlEntry,
@@ -1326,7 +1326,7 @@ public class LibraryDataManager: NSObject {
                             ordinal: ordinal,
                             downloadURL: download?.url
                         )
-                        try await realm.asyncWrite {
+                        try await realm.asyncWritePreservingOwnership {
                             realm.add(directory, update: .modified)
                             directory.refreshChangeMetadata(explicitlyModified: true)
                         }

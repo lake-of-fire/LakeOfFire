@@ -809,7 +809,7 @@ public class ReaderFileManager: ObservableObject {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(
                     for: realmConfiguration
                 )
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     try Task.checkCancellation()
                     let date = Date()
                     for candidate in candidates {
@@ -1061,7 +1061,7 @@ public class ReaderFileManager: ObservableObject {
                 )
 
                 let processingStartedAt = Date()
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     for (readerFileURL, _, drive) in filesToUpdate {
                         try Task.checkCancellation()
                         if let existing = realm.objects(ContentFile.self).filter(
@@ -1103,7 +1103,7 @@ public class ReaderFileManager: ObservableObject {
                     }
                 }
                 let deferredIDs = try await processUpdatedFiles(updatedFiles)
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     for file in updatedFiles where !file.isInvalidated && !file.isDeleted {
                         // Use the start, not completion time, so a payload modified
                         // during enrichment is eligible for a subsequent pass.
@@ -1279,7 +1279,7 @@ public class ReaderFileManager: ObservableObject {
                     return fileBackingURL == canonicalContentURL
                 }
         )
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             for existing in contentFiles {
                 existing.isDeleted = true
                 existing.refreshChangeMetadata(explicitlyModified: true)

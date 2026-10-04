@@ -477,7 +477,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID)
             
             if let category {
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     category.title = "My Library"
                     category.refreshChangeMetadata(explicitlyModified: true)
                 }
@@ -491,7 +491,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         ) else { return }
 //        await realm.asyncRefresh()
         guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             feed.rssUrl = rssURL
             if let title = title {
                 feed.title = title

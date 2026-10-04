@@ -758,7 +758,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                        observedObject.url.matchesReaderURL(url),
                         !observedObject.isReaderModeAvailable,
                        let observedRealm = observedObject.realm {
-                        try await observedRealm.asyncWrite {
+                        try await observedRealm.asyncWritePreservingOwnership {
                             guard !Task.isCancelled else { return }
                             observedObject.isReaderModeAvailable = true
                             if shouldPreserveFullContentOriginal && !observedObject.isReaderModeOfferHidden {

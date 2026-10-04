@@ -1250,7 +1250,7 @@ private func propagateReaderModeDefaultsOnBackgroundActor(
 
     for record in writableRecords {
         guard let realm = record.realm else { continue }
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             record.isReaderModeByDefault = true
             record.isReaderModeAvailable = false
             if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {

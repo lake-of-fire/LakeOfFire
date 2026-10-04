@@ -242,7 +242,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 guard let contentRef else { return }
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: contentRef.realmConfiguration)
                 try await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     guard let content = realm.object(
                         ofType: HistoryRecord.self, forPrimaryKey: contentRef.contentKey
                     ), !content.isDeleted else { return }
