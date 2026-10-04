@@ -488,6 +488,7 @@ public extension ReaderContentProtocol {
     
     @MainActor
     func addBookmark(realmConfiguration: Realm.Configuration) async throws {
+        let historyRealmConfiguration = ReaderContentLoader.historyRealmConfiguration
         let compoundKey = compoundKey
         let url = url
         let title = title
@@ -515,8 +516,7 @@ public extension ReaderContentProtocol {
         let resolvedRedditTranslationsURL = redditTranslationsUrl
         let resolvedRedditTranslationsTitle = redditTranslationsTitle
         let autoOpenMediaPlayer = autoOpenMediaPlayer
-        try await { @RealmBackgroundActor [weak self] in
-            guard let self = self else { return }
+        try await { @RealmBackgroundActor in
             let bookmark = try await Bookmark.add(
                 url: url,
                 title: title,
@@ -560,13 +560,18 @@ public extension ReaderContentProtocol {
                 }
             }
             
-            if let historyRecord = try await HistoryRecord.getOpenedRecord(forURL: url),
-               let historyRealm = historyRecord.realm {
+            let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
+            if let historyRecord = HistoryRecord.openedRecords(matching: url, in: historyRealm)
+                .sorted(by: [
+                    SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
+                    SortDescriptor(keyPath: "compoundKey", ascending: true),
+                ])
+                .first {
                 let historyKey = historyRecord.compoundKey
                 try await historyRealm.asyncWrite {
                     guard let current = historyRealm.object(
                         ofType: HistoryRecord.self, forPrimaryKey: historyKey
-                    ), current.isDemoted != false else { return }
+                    ), !current.isDeleted, current.isDemoted != false else { return }
                     current.isDemoted = false
                     current.refreshChangeMetadata(explicitlyModified: true)
                 }

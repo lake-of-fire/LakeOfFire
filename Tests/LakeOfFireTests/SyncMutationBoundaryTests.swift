@@ -244,6 +244,256 @@ final class SyncMutationBoundaryTests: XCTestCase {
         XCTAssertEqual(pendingMutation(for: second, in: realm)?.changedAt, deletionDate)
     }
 
+    @RealmBackgroundActor
+    func testBookmarkAddCommitsCreationAndResurrectionWithJournalInExplicitStore() async throws {
+        let configuration = makeConfiguration(objectTypes: [Bookmark.self])
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        let url = URL(string: "https://example.com/bookmark-writer")!
+        let bookmark = try await addBookmark(url: url, title: "First title", configuration: configuration)
+        XCTAssertFalse(realm.isInWriteTransaction)
+        XCTAssertEqual(bookmark.realm?.configuration.inMemoryIdentifier, configuration.inMemoryIdentifier)
+        XCTAssertEqual(bookmark.title, "First title")
+        let creationGeneration = try XCTUnwrap(pendingMutation(for: bookmark, in: realm)?.generation)
+        XCTAssertEqual(pendingMutation(for: bookmark, in: realm)?.changedAt, bookmark.explicitlyModifiedAt)
+
+        try await realm.asyncWrite {
+            bookmark.isDeleted = true
+            bookmark.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let deletionGeneration = try XCTUnwrap(pendingMutation(for: bookmark, in: realm)?.generation)
+        let resurrected = try await addBookmark(url: url, title: "Updated title", configuration: configuration)
+        XCTAssertEqual(resurrected.compoundKey, bookmark.compoundKey)
+        XCTAssertEqual(realm.objects(Bookmark.self).count, 1)
+        XCTAssertFalse(resurrected.isDeleted)
+        XCTAssertEqual(resurrected.title, "Updated title")
+        let updateGeneration = try XCTUnwrap(pendingMutation(for: resurrected, in: realm)?.generation)
+        XCTAssertNotEqual(updateGeneration, creationGeneration)
+        XCTAssertNotEqual(updateGeneration, deletionGeneration)
+        XCTAssertEqual(pendingMutation(for: resurrected, in: realm)?.changedAt, resurrected.explicitlyModifiedAt)
+    }
+
+    @RealmBackgroundActor
+    func testConcurrentBookmarkAddsCommitIndependentTransactionsForOneIdentity() async throws {
+        let configuration = makeConfiguration(objectTypes: [Bookmark.self])
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        let url = URL(string: "https://example.com/concurrent-bookmark")!
+        try await withThrowingTaskGroup(of: String.self) { group in
+            for index in 0..<8 {
+                group.addTask { @RealmBackgroundActor in
+                    let bookmark = try await self.addBookmark(
+                        url: url, title: "Title \(index)", configuration: configuration
+                    )
+                    return bookmark.compoundKey
+                }
+            }
+            for try await key in group {
+                XCTAssertEqual(key, Bookmark.makePrimaryKey(url: url, html: nil))
+            }
+        }
+        XCTAssertFalse(realm.isInWriteTransaction)
+        XCTAssertEqual(realm.objects(Bookmark.self).count, 1)
+        let bookmark = try XCTUnwrap(realm.objects(Bookmark.self).first)
+        XCTAssertNotNil(pendingMutation(for: bookmark, in: realm))
+        XCTAssertEqual(pendingMutation(for: bookmark, in: realm)?.changedAt, bookmark.explicitlyModifiedAt)
+    }
+
+    @MainActor
+    func testRemoveBookmarkCommitsTombstoneAndRepeatedRemovalDoesNotRejournal() async throws {
+        let configuration = makeConfiguration(objectTypes: [Bookmark.self])
+        let realm = try await Realm.open(configuration: configuration)
+        let bookmark = Bookmark()
+        bookmark.url = URL(string: "https://example.com/remove-bookmark")!
+        bookmark.updateCompoundKey()
+        try await realm.asyncWrite { realm.add(bookmark) }
+
+        let removed = try await bookmark.removeBookmark(realmConfiguration: configuration)
+        XCTAssertTrue(removed)
+        try await realm.asyncRefresh()
+        XCTAssertTrue(bookmark.isDeleted)
+        let generation = try XCTUnwrap(pendingMutation(for: bookmark, in: realm)?.generation)
+        let timestamp = bookmark.modifiedAt
+
+        let removedAgain = try await bookmark.removeBookmark(realmConfiguration: configuration)
+        XCTAssertFalse(removedAgain)
+        try await realm.asyncRefresh()
+        XCTAssertEqual(bookmark.modifiedAt, timestamp)
+        XCTAssertEqual(pendingMutation(for: bookmark, in: realm)?.generation, generation)
+        XCTAssertEqual(realm.objects(Bookmark.self).count, 1)
+    }
+
+    @MainActor
+    func testAddBookmarkCopiesUnmanagedMediaAndPromotesHistoryInCapturedStores() async throws {
+        let configuration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let previousHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        defer { ReaderContentLoader.historyRealmConfiguration = previousHistoryConfiguration }
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        let realm = try await Realm.open(configuration: configuration)
+        let source = HistoryRecord()
+        source.url = URL(string: "https://example.com/bookmark-media")!
+        source.title = "Article"
+        source.updateCompoundKey()
+        source.voiceAudioURL = URL(string: "https://example.com/audio.mp3")!
+        source.voiceAudioURLs.append(source.voiceAudioURL!)
+        source.audioSubtitlesURL = URL(string: "https://example.com/subtitles.vtt")!
+        let history = HistoryRecord()
+        history.url = source.url
+        history.compoundKey = "legacy-history-media"
+        history.isDemoted = true
+        try await realm.asyncWrite { realm.add(history) }
+
+        try await source.addBookmark(realmConfiguration: configuration)
+        try await realm.asyncRefresh()
+        let bookmark = try XCTUnwrap(realm.objects(Bookmark.self).first)
+        XCTAssertEqual(bookmark.voiceAudioURL, source.voiceAudioURL)
+        XCTAssertEqual(Array(bookmark.voiceAudioURLs), Array(source.voiceAudioURLs))
+        XCTAssertEqual(bookmark.audioSubtitlesURL, source.audioSubtitlesURL)
+        XCTAssertEqual(bookmark.audioSubtitlesRoleRawValue, AudioSubtitlesRole.content.rawValue)
+        XCTAssertNotNil(pendingMutation(for: bookmark, in: realm))
+        XCTAssertEqual(history.isDemoted, false)
+        let historyGeneration = try XCTUnwrap(pendingMutation(for: history, in: realm)?.generation)
+
+        try await source.addBookmark(realmConfiguration: configuration)
+        try await realm.asyncRefresh()
+        XCTAssertEqual(pendingMutation(for: history, in: realm)?.generation, historyGeneration)
+    }
+
+    @MainActor
+    func testManagedBookmarkConfigurationLinksHistoryInExplicitStoreAfterGlobalReplacement() async throws {
+        let configuration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let replacementConfiguration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let realm = try await Realm.open(configuration: configuration)
+        let replacementRealm = try await Realm.open(configuration: replacementConfiguration)
+        let source = makeHistory(url: "https://example.com/bookmark-link")
+        let replacement = makeHistory(url: source.url.absoluteString)
+        try await realm.asyncWrite { realm.add(source) }
+        try await replacementRealm.asyncWrite { replacementRealm.add(replacement) }
+        let previousBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmarkConfiguration
+            ReaderContentLoader.historyRealmConfiguration = previousHistoryConfiguration
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = replacementConfiguration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+
+        try await source.addBookmark(realmConfiguration: configuration)
+        // configureBookmark's association is an independent actor task. Await
+        // its observable result instead of assuming scheduling order.
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            try await realm.asyncRefresh()
+            if source.bookmarkID != nil { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        } while Date() < deadline
+        let bookmark = try XCTUnwrap(realm.objects(Bookmark.self).first)
+        XCTAssertEqual(source.bookmarkID, bookmark.compoundKey)
+        XCTAssertNotNil(pendingMutation(for: source, in: realm))
+        try await replacementRealm.asyncRefresh()
+        XCTAssertNil(replacement.bookmarkID)
+        XCTAssertNil(pendingMutation(for: replacement, in: replacementRealm))
+        XCTAssertTrue(replacementRealm.objects(Bookmark.self).isEmpty)
+    }
+
+    @MainActor
+    func testNavigationCommitAwaitsHistoryJournalInOwningConfiguration() async throws {
+        let configuration = makeNavigationConfiguration()
+        let replacementConfiguration = makeNavigationConfiguration()
+        let realm = try await Realm.open(configuration: configuration)
+        let replacementRealm = try await Realm.open(configuration: replacementConfiguration)
+        let history = makeHistory(url: "https://example.com/navigation-history")
+        let replacement = makeHistory(url: history.url.absoluteString)
+        try await realm.asyncWrite { realm.add(history) }
+        try await replacementRealm.asyncWrite { replacementRealm.add(replacement) }
+        let previousHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        defer { ReaderContentLoader.historyRealmConfiguration = previousHistoryConfiguration }
+        ReaderContentLoader.historyRealmConfiguration = replacementConfiguration
+        let model = ReaderViewModel(realmConfiguration: configuration, systemScripts: [])
+        let previousVisit = history.lastVisitedAt
+
+        try await model.onNavigationCommitted(content: history, newState: .empty)
+        try await realm.asyncRefresh()
+        try await replacementRealm.asyncRefresh()
+        XCTAssertGreaterThan(history.lastVisitedAt, previousVisit)
+        XCTAssertNotNil(pendingMutation(for: history, in: realm))
+        XCTAssertEqual(pendingMutation(for: history, in: realm)?.changedAt, history.explicitlyModifiedAt)
+        XCTAssertEqual(replacement.lastVisitedAt, Date(timeIntervalSinceReferenceDate: 59_000))
+        XCTAssertNil(pendingMutation(for: replacement, in: replacementRealm))
+    }
+
+    @MainActor
+    func testNavigationCommitDoesNotRewriteDeletedHistoryOrUnmanagedContent() async throws {
+        let configuration = makeNavigationConfiguration()
+        let realm = try await Realm.open(configuration: configuration)
+        let history = makeHistory(url: "https://example.com/deleted-history")
+        history.isDeleted = true
+        try await realm.asyncWrite { realm.add(history) }
+        let model = ReaderViewModel(realmConfiguration: configuration, systemScripts: [])
+
+        try await model.onNavigationCommitted(content: history, newState: .empty)
+        let unmanaged = makeHistory(url: "https://example.com/unmanaged-history")
+        try await model.onNavigationCommitted(content: unmanaged, newState: .empty)
+        try await realm.asyncRefresh()
+        XCTAssertEqual(history.lastVisitedAt, Date(timeIntervalSinceReferenceDate: 59_000))
+        XCTAssertTrue(history.isDeleted)
+        XCTAssertNil(pendingMutation(for: history, in: realm))
+        XCTAssertEqual(realm.objects(HistoryRecord.self).count, 1)
+    }
+
+    @MainActor
+    func testCancelledNavigationCommitDoesNotWriteHistory() async throws {
+        let configuration = makeNavigationConfiguration()
+        let realm = try await Realm.open(configuration: configuration)
+        let history = makeHistory(url: "https://example.com/cancelled-history")
+        try await realm.asyncWrite { realm.add(history) }
+        let model = ReaderViewModel(realmConfiguration: configuration, systemScripts: [])
+        // MainActor cannot execute this task until the current synchronous turn
+        // yields, so cancellation precedes the writer's first admission check.
+        let task = Task { @MainActor in
+            try await model.onNavigationCommitted(content: history, newState: .empty)
+        }
+        task.cancel()
+        do {
+            try await task.value
+            XCTFail("Cancelled navigation must propagate cancellation")
+        } catch is CancellationError {
+        }
+        try await realm.asyncRefresh()
+        XCTAssertEqual(history.lastVisitedAt, Date(timeIntervalSinceReferenceDate: 59_000))
+        XCTAssertNil(pendingMutation(for: history, in: realm))
+    }
+
+    private func makeNavigationConfiguration() -> Realm.Configuration {
+        makeConfiguration(objectTypes: [
+            Bookmark.self, HistoryRecord.self, LibraryConfiguration.self, UserScript.self, FeedCategory.self,
+        ])
+    }
+
+    private func makeHistory(url: String) -> HistoryRecord {
+        let history = HistoryRecord()
+        history.url = URL(string: url)!
+        history.updateCompoundKey()
+        history.lastVisitedAt = Date(timeIntervalSinceReferenceDate: 59_000)
+        return history
+    }
+
+    @RealmBackgroundActor
+    private func addBookmark(
+        url: URL,
+        title: String,
+        configuration: Realm.Configuration
+    ) async throws -> Bookmark {
+        try await Bookmark.add(
+            url: url,
+            title: title,
+            isFromClipboard: false,
+            rssContainsFullContent: false,
+            isReaderModeByDefault: false,
+            isReaderModeAvailable: false,
+            isReaderModeOfferHidden: false,
+            realmConfiguration: configuration
+        )
+    }
+
     private func makeConfiguration(
         objectTypes: [Object.Type] = [Feed.self, OPDSCatalog.self]
     ) -> Realm.Configuration {

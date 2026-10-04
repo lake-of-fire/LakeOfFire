@@ -98,8 +98,9 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     public func configureBookmark(_ bookmark: Bookmark) {
         let url = url
         let targetBookmarkID = bookmark.compoundKey
+        let realmConfiguration = bookmark.realm?.configuration ?? ReaderContentLoader.bookmarkRealmConfiguration
         Task { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration) 
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 let deletedBookmarkIDs = Set(realm.objects(Bookmark.self).where { $0.isDeleted }.map { $0.compoundKey })
@@ -234,7 +235,7 @@ public extension Bookmark {
         realmConfiguration: Realm.Configuration,
         at date: Date = Date()
     ) async throws {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) 
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         try await realm.asyncWrite {
             let activeRecords = Array(
                 realm.objects(self).filter("isDeleted == false")
