@@ -5,6 +5,12 @@ import RealmSwiftGaps
 import SwiftCloudDrive
 import BigSyncKit
 
+// Task-scoped completion observation for behavior tests of the real association
+// entry point. No observer is installed in normal use.
+enum BookmarkAssociationObservation {
+    @TaskLocal static var completed: (@Sendable (Bool) -> Void)? = nil
+}
+
 public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol {
     @Persisted(primaryKey: true) public var compoundKey = ""
     
@@ -100,9 +106,14 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
         let targetBookmarkID = bookmark.compoundKey
         let realmConfiguration = bookmark.realm?.configuration ?? ReaderContentLoader.bookmarkRealmConfiguration
         Task { @RealmBackgroundActor in
+            var completedSuccessfully = false
+            defer { BookmarkAssociationObservation.completed?(completedSuccessfully) }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
+                guard let target = realm.object(
+                    ofType: Bookmark.self, forPrimaryKey: targetBookmarkID
+                ), !target.isDeleted else { return }
                 let deletedBookmarkIDs = Set(realm.objects(Bookmark.self).where { $0.isDeleted }.map { $0.compoundKey })
                 for historyRecord in HistoryRecord.openedRecords(matching: url, in: realm)
                     .where({ $0.bookmarkID == nil || $0.bookmarkID.in(deletedBookmarkIDs) }) {
@@ -110,6 +121,7 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
                     historyRecord.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
+            completedSuccessfully = true
         }
     }
 }

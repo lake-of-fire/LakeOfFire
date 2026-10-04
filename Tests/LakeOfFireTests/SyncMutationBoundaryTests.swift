@@ -394,6 +394,128 @@ final class SyncMutationBoundaryTests: XCTestCase {
         XCTAssertTrue(replacementRealm.objects(Bookmark.self).isEmpty)
     }
 
+    @RealmBackgroundActor
+    func testScheduledBookmarkAssociationSkipsDeletedAndMissingTargets() async throws {
+        for removesTarget in [false, true] {
+            let configuration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            let history = makeHistory(url: "https://example.com/association-target")
+            let target = Bookmark()
+            target.url = history.url
+            target.updateCompoundKey()
+            try await realm.asyncWrite {
+                realm.add(history)
+                realm.add(target)
+            }
+            let previousModifiedAt = history.modifiedAt
+            let previousExplicitlyModifiedAt = history.explicitlyModifiedAt
+
+            let completed = expectation(description: "Owned bookmark association settled")
+            // Creation of the actual association task inherits this observer.
+            // Invalidate its target before releasing this owned transaction.
+            try await realm.asyncWrite {
+                BookmarkAssociationObservation.$completed.withValue({ succeeded in
+                    XCTAssertTrue(succeeded, "Association must settle without a writer error")
+                    completed.fulfill()
+                }) {
+                    history.configureBookmark(target)
+                    if removesTarget {
+                        // Physical removal models an absent target; user
+                        // deletion uses the journaled tombstone in the other case.
+                        realm.delete(target)
+                    } else {
+                        target.isDeleted = true
+                        target.refreshChangeMetadata(explicitlyModified: true)
+                    }
+                }
+            }
+            await fulfillment(of: [completed], timeout: 5)
+            XCTAssertNil(history.bookmarkID)
+            XCTAssertEqual(history.modifiedAt, previousModifiedAt)
+            XCTAssertEqual(history.explicitlyModifiedAt, previousExplicitlyModifiedAt)
+            XCTAssertNil(pendingMutation(for: history, in: realm))
+            if !removesTarget {
+                XCTAssertTrue(target.isDeleted)
+                XCTAssertNotNil(pendingMutation(for: target, in: realm))
+            }
+            await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+    }
+
+    @MainActor
+    func testAddBookmarkCapturesHistoryStoreBeforeActualSuspension() async throws {
+        let bookmarkConfiguration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let historyConfiguration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let replacementConfiguration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let bookmarkRealm = try await Realm.open(configuration: bookmarkConfiguration)
+        let historyRealm = try await Realm.open(configuration: historyConfiguration)
+        let replacementRealm = try await Realm.open(configuration: replacementConfiguration)
+        let source = makeHistory(url: "https://example.com/history-store-interleaving")
+        let history = makeHistory(url: source.url.absoluteString)
+        history.isDemoted = true
+        let replacement = makeHistory(url: source.url.absoluteString)
+        replacement.isDemoted = true
+        try await historyRealm.asyncWrite { historyRealm.add(history) }
+        try await replacementRealm.asyncWrite { replacementRealm.add(replacement) }
+        let previousBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmarkConfiguration
+            ReaderContentLoader.historyRealmConfiguration = previousHistoryConfiguration
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = bookmarkConfiguration
+        ReaderContentLoader.historyRealmConfiguration = historyConfiguration
+
+        let barrier = BookmarkWriterOwnerBarrier()
+        let owner = Task {
+            try await barrier.hold(configuration: bookmarkConfiguration)
+        }
+        addTeardownBlock {
+            barrier.release()
+            _ = await owner.result
+        }
+        await fulfillment(of: [barrier.entered], timeout: 5)
+        let entered = expectation(description: "MainActor enters actual addBookmark")
+        let completed = expectation(description: "Actual addBookmark returned")
+        var didComplete = false
+        let adding = Task { @MainActor in
+            // No suspension separates this signal and the same-actor entry.
+            // The test's next MainActor turn runs after addBookmark captures its
+            // inputs and awaits the background actor. Its writer remains held.
+            entered.fulfill()
+            defer {
+                didComplete = true
+                completed.fulfill()
+            }
+            try await source.addBookmark(realmConfiguration: bookmarkConfiguration)
+        }
+        addTeardownBlock {
+            barrier.release()
+            _ = await adding.result
+            await RealmBackgroundActor.shared.removeCachedRealm(for: bookmarkConfiguration)
+            await RealmBackgroundActor.shared.removeCachedRealm(for: historyConfiguration)
+            await RealmBackgroundActor.shared.removeCachedRealm(for: replacementConfiguration)
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        XCTAssertFalse(didComplete, "The owner must hold the actual call across global replacement")
+        ReaderContentLoader.bookmarkRealmConfiguration = replacementConfiguration
+        ReaderContentLoader.historyRealmConfiguration = replacementConfiguration
+        barrier.release()
+        try await owner.value
+        await fulfillment(of: [completed], timeout: 5)
+        try await adding.value
+
+        try await bookmarkRealm.asyncRefresh()
+        try await historyRealm.asyncRefresh()
+        try await replacementRealm.asyncRefresh()
+        XCTAssertEqual(bookmarkRealm.objects(Bookmark.self).count, 1)
+        XCTAssertFalse(history.isDemoted ?? true)
+        XCTAssertNotNil(pendingMutation(for: history, in: historyRealm))
+        XCTAssertTrue(replacement.isDemoted ?? false)
+        XCTAssertNil(pendingMutation(for: replacement, in: replacementRealm))
+        XCTAssertTrue(replacementRealm.objects(Bookmark.self).isEmpty)
+    }
+
     @MainActor
     func testNavigationCommitAwaitsHistoryJournalInOwningConfiguration() async throws {
         let configuration = makeNavigationConfiguration()
@@ -522,5 +644,36 @@ final class SyncMutationBoundaryTests: XCTestCase {
             ofType: BigSyncPendingMutation.self,
             forPrimaryKey: object.objectSchema.className + "." + objectIdentifier
         )
+    }
+}
+
+/// Holds a synchronous transaction on its own queue and Realm. Its transaction
+/// never suspends an actor or crosses a task boundary.
+private final class BookmarkWriterOwnerBarrier: @unchecked Sendable {
+    let entered = XCTestExpectation(description: "External bookmark writer owner entered")
+    private let queue = DispatchQueue(label: "LakeOfFireTests.bookmark-external-owner")
+    private let releaseSemaphore = DispatchSemaphore(value: 0)
+
+    func hold(configuration: Realm.Configuration) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Swift.Error>) in
+            queue.async {
+                autoreleasepool {
+                    do {
+                        let realm = try Realm(configuration: configuration)
+                        try realm.write {
+                            self.entered.fulfill()
+                            self.releaseSemaphore.wait()
+                        }
+                        continuation.resume()
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        }
+    }
+
+    func release() {
+        releaseSemaphore.signal()
     }
 }
