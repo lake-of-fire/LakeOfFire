@@ -11,6 +11,7 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
     // A URL identifies a resource, not a displayed Document. Preloaded or
     // detached frames can use the very same URL as the current chapter.
     let closed = false
+    let scopeAccounts = new WeakMap()
     const primaryDocument = () => {
         if (closed || reader.view !== view) return null
         const content = getPrimaryRendererContent(view.renderer)
@@ -30,8 +31,9 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
             frame.manabi_bookReadingScope = null
         }
     }
-    const clearDocumentScopes = () => {
+    const clearDocumentScopes = (isCurrent = () => true) => {
         for (const content of view.renderer?.getContents?.() ?? []) {
+            if (!isCurrent()) return
             clearDocumentScope(content?.doc ?? content?.document)
         }
     }
@@ -47,13 +49,21 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         isLocationCurrent: () => !closed && reader.view === view
             && view.renderer === observedRenderer && primaryDocument() === observedDocument,
         onInvalidate: () => {
-            clearDocumentScopes()
+            // Recovery may restore the same account/pass/location values.
+            // Retire the captured identities before invoking frame callbacks;
+            // previously queued work must not acquire the recovered display.
+            const invalidation = scopeAccounts = new WeakMap()
+            const isCurrent = () => scopeAccounts === invalidation && state.context === null
+            clearDocumentScopes(isCurrent)
+            if (!isCurrent()) return
             endcap?.setReady(false)
+            if (!isCurrent()) return
             invalidateProjection()
         },
-        onState: (projection, context, details) => {
+        onState: (projection, context, details, isCurrent) => {
             const activeDocument = primaryDocument()
             for (const content of view.renderer?.getContents?.() ?? []) {
+                if (!isCurrent()) return
                 const doc = content?.doc ?? content?.document
                 if (!doc?.defaultView) continue
                 if (doc !== activeDocument || context.isEndPage) {
@@ -66,8 +76,11 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
                 doc.defaultView.manabi_bookReadingScope = projection.scope
                 doc.defaultView.manabi_applyBookReadingPresentation?.(projection)
             }
+            if (!isCurrent()) return
             endcap?.setFinished(projection.finished)
+            if (!isCurrent()) return
             endcap?.setReady(context.isEndPage)
+            if (!isCurrent()) return
             applyProjection(projection, details)
         },
     })
@@ -85,7 +98,6 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         return state.relocate({ sectionURL: endcap?.visible ? null : documentURL(),
             isEndPage: endcap?.visible === true }, { moved, replaced })
     }
-    const scopeAccounts = new WeakMap()
     const captureScope = doc => {
         if (!isPrimaryDocument(doc) || doc !== observedDocument || view.renderer !== observedRenderer) return null
         const scope = state.captureScope(doc.location?.href ?? doc.URL)
