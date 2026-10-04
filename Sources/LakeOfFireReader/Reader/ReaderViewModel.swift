@@ -237,16 +237,20 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
         if let historyRecord = content as? HistoryRecord {
             let contentRef = ReaderContentLoader.ContentReference(content: historyRecord)
-            Task { @RealmBackgroundActor in
+            try await { @RealmBackgroundActor in
+                try Task.checkCancellation()
                 guard let contentRef else { return }
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: contentRef.realmConfiguration)
                 try await realm.asyncRefresh()
-                guard let content = realm.object(ofType: HistoryRecord.self, forPrimaryKey: contentRef.contentKey) else { return }
-                try realm.writeIfNeeded {
+                try await realm.asyncWrite {
+                    guard let content = realm.object(
+                        ofType: HistoryRecord.self, forPrimaryKey: contentRef.contentKey
+                    ), !content.isDeleted else { return }
+                    try Task.checkCancellation()
                     content.lastVisitedAt = Date()
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }
-            }
+            }()
         }
     }
     
