@@ -53,7 +53,7 @@ function fixture() {
         });
     };
     runtime.updateLocation();
-    return {runtime,reader,view,renderer,a,b,moves,requests,publish};
+    return {runtime,reader,view,renderer,a,b,moves,requests,publish,projections};
 }
 
 test('ordinary publication does not transiently invalidate the active frame',()=>{
@@ -221,3 +221,112 @@ test('account change during awaited restart navigation cannot acknowledge succes
     assert.deepEqual(await f.runtime.navigate(target),{status:'superseded'})
     assert.equal(calls,0);f.runtime.close()
 })
+
+// A failed read-only refresh retires event ownership without changing native
+// pass IDs. Recovery can restore equal values but may not resurrect the event.
+const failCurrentRefresh = f => {
+    f.runtime.state.refresh();
+    assert.equal(f.runtime.state.apply(f.requests.at(-1).requestID, {
+        ok: false, accountPresentation: f.runtime.state.accountPresentation,
+    }), false);
+};
+
+test('same-scope recovery never revives an event captured before invalidation', t => {
+    const f = fixture(); t.after(() => f.runtime.close());
+    assert.equal(f.publish(1), true);
+    const event = f.runtime.captureEvent(f.a);
+    const scope = f.runtime.captureScope(f.a);
+    const locationRevision = f.runtime.state.locationRevision;
+    failCurrentRefresh(f);
+    assert.equal(f.runtime.isEventCurrent(event), false);
+    f.runtime.state.refresh();
+    assert.equal(f.publish(2), true);
+    assert.equal(f.runtime.state.locationRevision, locationRevision);
+    assert.equal(f.runtime.isEventCurrent(event), false);
+    assert.equal(f.runtime.isScopeCurrent(scope, f.a), false);
+    assert.equal(f.runtime.isEventCurrent(f.runtime.captureEvent(f.a)), true);
+});
+
+test('same-scope successful refresh preserves a captured event without invalidation', t => {
+    const f = fixture(); t.after(() => f.runtime.close());
+    assert.equal(f.publish(1), true);
+    const event = f.runtime.captureEvent(f.a);
+    f.runtime.state.refresh();
+    assert.equal(f.publish(2), true);
+    assert.equal(f.runtime.isEventCurrent(event), true);
+});
+
+test('each failed refresh permanently retires only its earlier scope receipts', t => {
+    const f = fixture(); t.after(() => f.runtime.close());
+    assert.equal(f.publish(1), true);
+    const retired = [];
+    for (let revision = 2; revision <= 5; ++revision) {
+        retired.push(f.runtime.captureEvent(f.a));
+        failCurrentRefresh(f);
+        f.runtime.state.refresh();
+        assert.equal(f.publish(revision), true);
+        for (const event of retired) assert.equal(f.runtime.isEventCurrent(event), false);
+        assert.equal(f.runtime.isEventCurrent(f.runtime.captureEvent(f.a)), true);
+    }
+});
+
+test('scope receipts are retired before a frame invalidation callback reenters recovery', t => {
+    const f = fixture(); t.after(() => f.runtime.close());
+    assert.equal(f.publish(1), true);
+    const old = f.runtime.captureEvent(f.a);
+    const clear = f.a.defaultView.manabi_invalidateBookReadingScope;
+    let afterRecovery;
+    f.a.defaultView.manabi_invalidateBookReadingScope = () => {
+        clear();
+        f.a.defaultView.manabi_invalidateBookReadingScope = clear;
+        f.runtime.state.refresh();
+        assert.equal(f.publish(2), true);
+        afterRecovery = f.runtime.isEventCurrent(old);
+    };
+    failCurrentRefresh(f);
+    assert.equal(afterRecovery, false);
+    assert.equal(f.runtime.isEventCurrent(f.runtime.captureEvent(f.a)), true);
+});
+
+test('reentrant frame publication cannot paint the old finished state over its successor', t => {
+    const f = fixture(); t.after(() => f.runtime.close());
+    const apply = f.a.defaultView.manabi_applyBookReadingPresentation;
+    f.a.defaultView.manabi_applyBookReadingPresentation = projection => {
+        apply(projection);
+        f.a.defaultView.manabi_applyBookReadingPresentation = apply;
+        const state = { ...f.runtime.state.state, revision: 2, finished: true };
+        const context = { ...f.runtime.state.context, contextID: 'successor' };
+        f.runtime.state.refresh();
+        assert.equal(f.runtime.state.apply(f.requests.at(-1).requestID, {
+            ok: true, accountPresentation: '0:1', state, context,
+        }), true);
+    };
+    assert.equal(f.publish(1), false);
+    assert.equal(f.runtime.endcap.finished, true);
+    assert.deepEqual(f.projections.map(value => value.revision), [2]);
+});
+
+test('closing during frame publication prevents later shell projection effects', () => {
+    const f = fixture();
+    f.a.defaultView.manabi_applyBookReadingPresentation = () => f.runtime.close();
+    assert.equal(f.publish(1), false);
+    assert.deepEqual(f.projections, []);
+    assert.equal(f.runtime.state.ready, false);
+});
+
+test('an old invalidation cannot disable a reentrantly recovered end page', t => {
+    const f = fixture(); t.after(() => f.runtime.close());
+    f.runtime.endcap.enter();
+    assert.equal(f.publish(1), true);
+    assert.equal(f.runtime.endcap.button.disabled, false);
+    const clear = f.a.defaultView.manabi_invalidateBookReadingScope;
+    f.a.defaultView.manabi_invalidateBookReadingScope = () => {
+        clear();
+        f.a.defaultView.manabi_invalidateBookReadingScope = clear;
+        f.runtime.state.refresh();
+        assert.equal(f.publish(2), true);
+    };
+    failCurrentRefresh(f);
+    assert.equal(f.runtime.state.ready, true);
+    assert.equal(f.runtime.endcap.button.disabled, false);
+});
