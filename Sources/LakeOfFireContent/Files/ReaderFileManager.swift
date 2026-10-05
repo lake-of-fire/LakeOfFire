@@ -619,15 +619,47 @@ public class ReaderFileManager: ObservableObject {
         return try await drive.directoryExists(at: relativePath)
     }
     
+    @MainActor
     public func read(fileURL: URL) async throws -> Data? {
-        let readerBackingURL = canonicalReaderBackingURL(for: fileURL) ?? fileURL
-        let readableURL = try await resolveReadableLocalURL(forReaderBackingURL: readerBackingURL)
-        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: readerBackingURL)
-        if readableURL.isFileURL, FileManager.default.fileExists(atPath: readableURL.path) {
+        try await read(fileURL: fileURL, resolveReadableURL: { [self] url in
+            try await resolveReadableLocalURL(forReaderBackingURL: url)
+        }, readLocalFile: { url in
             let coordinatedFileManager = CoordinatedFileManager()
-            return try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: readableURL)
+            return try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: url)
+        })
+    }
+
+    /// The normal path and native regression controls share storage admission.
+    /// Collaborators provide only asynchronous availability and coordinated I/O.
+    @MainActor
+    func read(
+        fileURL: URL,
+        resolveReadableURL: @MainActor (URL) async throws -> URL,
+        readLocalFile: @MainActor (URL) async throws -> Data?
+    ) async throws -> Data? {
+        try Task.checkCancellation()
+        let readerBackingURL = canonicalReaderBackingURL(for: fileURL) ?? fileURL
+        let context = try readerBackingPathContext(for: readerBackingURL)
+        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: readerBackingURL)
+        let initializationIdentifier = initializationID
+        let validateSelection = {
+            try Task.checkCancellation()
+            guard self.initializationID == initializationIdentifier,
+                  self.deletionDriveIsCurrent(context, drive: drive) else {
+                throw CancellationError()
+            }
         }
-        return try await drive.readFile(at: relativePath)
+        let readableURL = try await resolveReadableURL(readerBackingURL)
+        try validateSelection()
+        let data: Data?
+        if readableURL.isFileURL, FileManager.default.fileExists(atPath: readableURL.path) {
+            data = try await readLocalFile(readableURL)
+        } else {
+            // An old availability result cannot acquire a replacement drive.
+            data = try await drive.readFile(at: relativePath)
+        }
+        try validateSelection()
+        return data
     }
     
     @MainActor
@@ -639,44 +671,50 @@ public class ReaderFileManager: ObservableObject {
 
     @MainActor
     public func ensureImported(downloadable: Downloadable) async throws -> URL? {
-        let realmConfiguration = resolvedHistoryRealmConfiguration
-        let existsLocally = await downloadable.existsLocally()
-        guard existsLocally else {
-            return nil
-        }
-        if let existingReaderURL = try await readerFileURL(for: downloadable) {
-            try await refreshMetadataForExistingLibraryFile(
-                downloadable.localDestination,
-                realmConfiguration: realmConfiguration
-            )
+        try await ensureImported(downloadable: downloadable, existsLocally: {
+            await $0.existsLocally()
+        })
+    }
+
+    @MainActor
+    func ensureImported(
+        downloadable: Downloadable,
+        existsLocally: @MainActor (Downloadable) async -> Bool
+    ) async throws -> URL? {
+        let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
+        let exists = await existsLocally(downloadable)
+        try validateMetadataRefreshSelection(selection)
+        guard exists else { return nil }
+        let existingReaderURL = try await readerFileURL(for: downloadable)
+        try validateMetadataRefreshSelection(selection)
+        if let existingReaderURL {
+            try await refreshMetadataForExistingLibraryFile(downloadable.localDestination, selection: selection)
+            try validateMetadataRefreshSelection(selection)
             return existingReaderURL
         }
-        return try await importFile(
-            fileURL: downloadable.localDestination,
-            fromDownloadURL: downloadable.url,
-            realmConfiguration: realmConfiguration
-        )
+        return try await importFile(fileURL: downloadable.localDestination,
+            fromDownloadURL: downloadable.url, selection: selection)
     }
 
     @MainActor
     private func refreshMetadataForExistingLibraryFile(
         _ fileURL: URL,
-        realmConfiguration: Realm.Configuration
+        selection: MetadataRefreshSelection
     ) async throws {
-        let drives: [CloudDrive] = [cloudDrive, localDrive].filter({ $0?.isConnected ?? false }).compactMap({ $0 })
+        try validateMetadataRefreshSelection(selection)
+        let drives = [selection.cloudDrive, selection.localDrive].compactMap { $0 }.filter { $0.isConnected }
         for drive in drives {
             guard let relativePathStr = Self.relativePath(for: fileURL, relativeTo: drive.rootDirectory) else {
                 continue
             }
             let parentPath = URL(fileURLWithPath: relativePathStr).deletingLastPathComponent().relativePath
             let relativeParentPath = parentPath == "." ? "" : parentPath
-            let metadataRefs = try await refreshFilesMetadata(
-                drive: drive,
-                relativePath: RootRelativePath(path: relativeParentPath),
-                realmConfiguration: realmConfiguration
-            )
-            try await publishDiscoveredFiles(metadataRefs ?? [], realmConfiguration: realmConfiguration)
-            try await refreshAllFilesMetadata(force: true, realmConfiguration: realmConfiguration)
+            let metadataRefs = try await refreshFilesMetadata(drive: drive,
+                relativePath: RootRelativePath(path: relativeParentPath), selection: selection)
+            try validateMetadataRefreshSelection(selection)
+            try await publishDiscoveredFiles(metadataRefs ?? [], selection: selection)
+            try await refreshAllFilesMetadata(force: true, selection: selection)
+            try validateMetadataRefreshSelection(selection)
             return
         }
     }
@@ -684,23 +722,48 @@ public class ReaderFileManager: ObservableObject {
     @MainActor
     func publishDiscoveredFiles(
         _ discoveredFileRefs: [ThreadSafeReference<ContentFile>],
-        realmConfiguration: Realm.Configuration = ReaderContentLoader.historyRealmConfiguration
-    ) async throws {
-        guard !discoveredFileRefs.isEmpty else {
-            return
+        realmConfiguration: Realm.Configuration = ReaderContentLoader.historyRealmConfiguration,
+        openRealm: @MainActor (Realm.Configuration) async throws -> Realm = {
+            try await Realm.open(configuration: $0)
         }
-        let realm = try await Realm.open(configuration: realmConfiguration)
-        var mergedFiles = files ?? []
+    ) async throws {
+        let selection = try metadataRefreshSelection(realmConfiguration: realmConfiguration)
+        try await publishDiscoveredFiles(discoveredFileRefs, selection: selection, openRealm: openRealm)
+    }
+
+    @MainActor
+    private func publishDiscoveredFiles(
+        _ discoveredFileRefs: [ThreadSafeReference<ContentFile>],
+        selection: MetadataRefreshSelection,
+        openRealm: @MainActor (Realm.Configuration) async throws -> Realm = {
+            try await Realm.open(configuration: $0)
+        }
+    ) async throws {
+        try validateMetadataRefreshSelection(selection)
+        guard !discoveredFileRefs.isEmpty else { return }
+        let realm = try await openRealm(selection.realmConfiguration)
+        try validateMetadataRefreshSelection(selection)
+        guard Self.sameHistoryRealm(realm.configuration, selection.realmConfiguration) else {
+            throw CancellationError()
+        }
+        // Partial publication cannot carry invalidated or foreign-Realm rows
+        // from an older list forward. This changes no persisted reading facts.
+        var mergedFiles = (files ?? []).filter { file in
+            guard !file.isInvalidated, let sourceRealm = file.realm else { return false }
+            return Self.sameHistoryRealm(sourceRealm.configuration, selection.realmConfiguration)
+                && !file.isDeleted
+        }
         for discoveredFileRef in discoveredFileRefs {
             guard let discoveredFile = realm.resolve(discoveredFileRef),
-                  !discoveredFile.isDeleted else { continue }
+                  !discoveredFile.isInvalidated, !discoveredFile.isDeleted else { continue }
             if let existingIndex = mergedFiles.firstIndex(where: { $0.url == discoveredFile.url }) {
                 mergedFiles[existingIndex] = discoveredFile
             } else {
                 mergedFiles.append(discoveredFile)
             }
         }
-        files = mergedFiles.filter { !$0.isDeleted }
+        try validateMetadataRefreshSelection(selection)
+        files = mergedFiles
     }
     
     @MainActor
