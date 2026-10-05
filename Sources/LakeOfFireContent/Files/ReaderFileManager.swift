@@ -1477,7 +1477,7 @@ public class ReaderFileManager: ObservableObject {
             try validateDeletionSelection(pathContext, drive: drive)
             // Missing at the earlier status read is not proof of continued
             // absence. A reimport at the same path must keep its live metadata.
-            if let path = pathContext.activeRootURL, Self.fileSystemEntryExists(at: path) {
+            if let path = pathContext.activeRootURL, try Self.fileSystemEntryExists(at: path) {
                 throw ReaderFileDeleteError.removeFailed(
                     underlyingDescription: "A file now exists at the selected path. Refresh the library before retrying."
                 )
@@ -1632,8 +1632,10 @@ public class ReaderFileManager: ObservableObject {
             throw ReaderFileManagerError.invalidFileURL
         }
 
-        let localRootURL = try relativePath.fileURL(forRoot: localDrive?.rootDirectory ?? Self.getDocumentsDirectory())
-        let cloudRootURL = try cloudDrive.map { try relativePath.fileURL(forRoot: $0.rootDirectory) }
+        let localRootURL: URL? = storageLocation == .local
+            ? try relativePath.fileURL(forRoot: localDrive?.rootDirectory ?? Self.getDocumentsDirectory()) : nil
+        let cloudRootURL: URL? = storageLocation == .icloud
+            ? try cloudDrive.map { try relativePath.fileURL(forRoot: $0.rootDirectory) } : nil
         let activeRootURL: URL?
         switch storageLocation {
         case .local:
@@ -1664,8 +1666,8 @@ public class ReaderFileManager: ObservableObject {
             localRootURL: localRootURL,
             cloudRootURL: cloudRootURL,
             activeRootURL: activeRootURL,
-            localRootExists: Self.fileSystemEntryExists(at: localRootURL),
-            cloudRootExists: cloudRootURL.map(Self.fileSystemEntryExists(at:)) ?? false
+            localRootExists: try localRootURL.map { try Self.fileSystemEntryExists(at: $0) } ?? false,
+            cloudRootExists: try cloudRootURL.map { try Self.fileSystemEntryExists(at: $0) } ?? false
         )
     }
 
@@ -1761,7 +1763,7 @@ public class ReaderFileManager: ObservableObject {
 
     private static func payloadState(at url: URL) throws -> PayloadState {
         try Task.checkCancellation()
-        guard fileSystemEntryExists(at: url) else {
+        guard try fileSystemEntryExists(at: url) else {
             return .notLocal
         }
         try Task.checkCancellation()
@@ -1857,8 +1859,16 @@ public class ReaderFileManager: ObservableObject {
         }
     }
 
-    private static func fileSystemEntryExists(at url: URL) -> Bool {
-        FileManager.default.fileExists(atPath: url.path)
+    private static func fileSystemEntryExists(at url: URL) throws -> Bool {
+        // fileExists also returns false when inspection is denied. Only an
+        // explicit missing-item error is absence evidence for a tombstone.
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: url.path)
+            return true
+        } catch {
+            if isMissingFileError(error) { return false }
+            throw error
+        }
     }
 
     private static func postReaderBackingStatusRefresh(for readerBackingURL: URL) {
@@ -1974,9 +1984,12 @@ public extension ReaderFileManager {
     
     @MainActor
     func downloadable(url: URL, name: String) async throws -> Downloadable? {
-        guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
-        
+        let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
+        guard let drive = ((selection.cloudDrive?.isConnected ?? false)
+            ? selection.cloudDrive : nil) ?? selection.localDrive else { return nil }
+
         let targetDirectory = try await Self.rootRelativePath(forImportedURL: url, drive: drive)
+        try validateMetadataRefreshSelection(selection)
         // A basename is not proof that a file came from this catalog resource.
         // Keep legacy files untouched rather than adopting an ambiguous match.
         let identity = ReaderFileStoragePaths.downloadIdentity(for: url)
