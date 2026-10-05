@@ -577,3 +577,222 @@ extension ReaderFileLibraryBoundaryTests {
 
 
 }
+
+// MARK: Storage delivery follow-up (2026-10-05)
+// These methods extend the existing native owner file and require the actual
+// Apple/Realm/SwiftCloudDrive graph. They are authored, not native-qualified.
+@MainActor
+private final class StorageDeliveryCounter {
+    private(set) var value = 0
+    func increment() { value += 1 }
+}
+
+@MainActor
+private final class StorageDeliveryReplacement {
+    private let manager: ReaderFileManager
+    private let drive: CloudDrive
+    init(manager: ReaderFileManager, drive: CloudDrive) {
+        self.manager = manager
+        self.drive = drive
+    }
+    func install() { manager.localDrive = drive }
+}
+
+@MainActor
+extension ReaderFileLibraryBoundaryTests {
+    func testReadCannotSelectReplacementDriveAfterAvailabilityReturnsMissingPath() async throws {
+        try await withFixture { f in
+            let source = f.library.appendingPathComponent("read.txt")
+            try self.write("original", to: source)
+            let replacementRoot = f.root.appendingPathComponent("replacement", isDirectory: true)
+            let replacement = try await CloudDrive(storage: .localDirectory(rootURL: replacementRoot))
+            try self.write("replacement", to: replacementRoot.appendingPathComponent("read.txt"))
+            let backing = try XCTUnwrap(URL(string: "reader-file://file/load/local/read.txt"))
+            var localReads = 0
+            do {
+                _ = try await f.manager.read(fileURL: backing, resolveReadableURL: { url in
+                    _ = try await f.manager.resolveReadableLocalURL(forReaderBackingURL: url)
+                    f.manager.localDrive = replacement
+                    return f.root.appendingPathComponent("missing-readable-result")
+                }, readLocalFile: { _ in localReads += 1; return nil })
+                XCTFail("Old availability must not select replacement bytes")
+            } catch is CancellationError { }
+            XCTAssertEqual(localReads, 0)
+            XCTAssertEqual(try Data(contentsOf: source), Data("original".utf8))
+            XCTAssertEqual(try Data(contentsOf: replacementRoot.appendingPathComponent("read.txt")), Data("replacement".utf8))
+        }
+    }
+
+    func testReadRejectsReplacementDuringCoordinatedPayloadDelivery() async throws {
+        try await withFixture { f in
+            let source = f.library.appendingPathComponent("read.txt")
+            try self.write("original", to: source)
+            let replacement = try await CloudDrive(storage: .localDirectory(
+                rootURL: f.root.appendingPathComponent("replacement", isDirectory: true)))
+            let backing = try XCTUnwrap(URL(string: "reader-file://file/load/local/read.txt"))
+            do {
+                _ = try await f.manager.read(fileURL: backing, resolveReadableURL: { _ in source },
+                    readLocalFile: { url in
+                        let bytes = try Data(contentsOf: url)
+                        f.manager.localDrive = replacement
+                        return bytes
+                    })
+                XCTFail("Read delivery must retain its original installed drive")
+            } catch is CancellationError { }
+        }
+    }
+
+    func testReadCancellationBeforeEntryDoesNotInvokeAvailability() async throws {
+        try await withFixture { f in
+            let backing = try XCTUnwrap(URL(string: "reader-file://file/load/local/read.txt"))
+            var calls = 0
+            let task = Task { @MainActor in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return try await f.manager.read(fileURL: backing, resolveReadableURL: { _ in
+                    calls += 1
+                    return f.library.appendingPathComponent("read.txt")
+                }, readLocalFile: { _ in XCTFail("Cancelled read cannot perform I/O"); return nil })
+            }
+            do { _ = try await task.value; XCTFail("Expected cancellation") }
+            catch is CancellationError { }
+            XCTAssertEqual(calls, 0)
+        }
+    }
+
+    func testReadCancellationAfterAvailabilityDoesNotReadFile() async throws {
+        try await withFixture { f in
+            let source = f.library.appendingPathComponent("read.txt")
+            try self.write("original", to: source)
+            let backing = try XCTUnwrap(URL(string: "reader-file://file/load/local/read.txt"))
+            var calls = 0
+            let task = Task { @MainActor in
+                try await f.manager.read(fileURL: backing, resolveReadableURL: { _ in
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    return source
+                }, readLocalFile: { _ in calls += 1; return Data() })
+            }
+            do { _ = try await task.value; XCTFail("Expected cancellation") }
+            catch is CancellationError { }
+            XCTAssertEqual(calls, 0)
+        }
+    }
+
+    func testReadRejectsNewInitializationEvenWhenInstalledDriveIsUnchanged() async throws {
+        let manager = ReaderFileManager(payloadStateProvider: { _ in .current },
+            directoryContentsProvider: { _ in [] },
+            cloudDriveFactory: { _ in throw ReaderFileManagerError.driveMissing },
+            localDriveFactory: { throw ReaderFileManagerError.driveMissing })
+        try await withFixture(manager: manager) { f in
+            let source = f.library.appendingPathComponent("read.txt")
+            try self.write("original", to: source)
+            let installed = manager.localDrive
+            let backing = try XCTUnwrap(URL(string: "reader-file://file/load/local/read.txt"))
+            do {
+                _ = try await manager.read(fileURL: backing, resolveReadableURL: { _ in
+                    do { try await manager.initialize(ubiquityContainerIdentifier: "replacement-fails") }
+                    catch ReaderFileManagerError.driveMissing { }
+                    return source
+                }, readLocalFile: { _ in XCTFail("Old read cannot acquire a new initialization"); return nil })
+                XCTFail("Expected original initialization to expire")
+            } catch is CancellationError { }
+            XCTAssertTrue(manager.localDrive === installed)
+        }
+    }
+
+    func testCurrentReadFallbackUsesTheOriginalDriveAndPreservesPayload() async throws {
+        try await withFixture { f in
+            let source = f.library.appendingPathComponent("read.txt")
+            try self.write("original", to: source)
+            let backing = try XCTUnwrap(URL(string: "reader-file://file/load/local/read.txt"))
+            let bytes = try await f.manager.read(fileURL: backing, resolveReadableURL: { _ in
+                f.root.appendingPathComponent("missing-readable-result")
+            }, readLocalFile: { _ in XCTFail("Expected captured-drive fallback"); return nil })
+            XCTAssertEqual(bytes, Data("original".utf8))
+            let normal = try await f.manager.read(fileURL: backing)
+            XCTAssertEqual(normal, bytes)
+        }
+    }
+
+    func testDiscoveredPublicationRejectsDriveReplacementDuringActualRealmOpen() async throws {
+        try await withFixture { f in
+            let incoming = try await self.seedRefreshRecord("incoming", in: f.realm)
+            let keep = try await self.seedRefreshRecord("keep", in: f.realm)
+            f.manager.files = [keep]
+            let before = self.refreshStorageSnapshot(f.realm)
+            let reference = ThreadSafeReference(to: incoming)
+            let replacement = try await CloudDrive(storage: .localDirectory(
+                rootURL: f.root.appendingPathComponent("replacement", isDirectory: true)))
+            do {
+                try await f.manager.publishDiscoveredFiles([reference], realmConfiguration: f.configuration,
+                    openRealm: { configuration in
+                        let realm = try await Realm.open(configuration: configuration)
+                        f.manager.localDrive = replacement
+                        return realm
+                    })
+                XCTFail("Old publication cannot replace current list")
+            } catch is CancellationError { }
+            XCTAssertEqual(f.manager.files?.map(\.compoundKey), [keep.compoundKey])
+            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before)
+        }
+    }
+
+    func testDiscoveredPublicationRejectsCancelledRealmOpenWithoutJournalChanges() async throws {
+        try await withFixture { f in
+            let row = try await self.seedRefreshRecord("incoming", in: f.realm)
+            let reference = ThreadSafeReference(to: row)
+            let before = self.refreshStorageSnapshot(f.realm)
+            let task = Task { @MainActor in
+                try await f.manager.publishDiscoveredFiles([reference], realmConfiguration: f.configuration,
+                    openRealm: { configuration in
+                        let realm = try await Realm.open(configuration: configuration)
+                        withUnsafeCurrentTask { $0?.cancel() }
+                        return realm
+                    })
+            }
+            do { try await task.value; XCTFail("Expected cancellation") }
+            catch is CancellationError { }
+            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before)
+            XCTAssertNil(f.manager.files)
+        }
+    }
+
+    func testDiscoveredPublicationRejectsWrongOpenedRealmBeforeReferenceResolution() async throws {
+        try await withFixture { f in
+            let row = try await self.seedRefreshRecord("incoming", in: f.realm)
+            let reference = ThreadSafeReference(to: row)
+            var configuration = f.configuration
+            configuration.inMemoryIdentifier = UUID().uuidString
+            let wrong = try await Realm(configuration: configuration, actor: MainActor.shared)
+            do {
+                try await f.manager.publishDiscoveredFiles([reference], realmConfiguration: f.configuration,
+                    openRealm: { _ in wrong })
+                XCTFail("A different Realm cannot consume the retained reference")
+            } catch is CancellationError { }
+            XCTAssertTrue(wrong.objects(ContentFile.self).isEmpty)
+            XCTAssertNil(f.manager.files)
+        }
+    }
+
+    func testDiscoveredPublicationDropsInvalidatedAndForeignRetainedRows() async throws {
+        try await withFixture { f in
+            let incoming = try await self.seedRefreshRecord("incoming", in: f.realm)
+            let dead = try await self.seedRefreshRecord("dead", in: f.realm)
+            var configuration = f.configuration
+            configuration.inMemoryIdentifier = UUID().uuidString
+            BigSyncMutationTracking.install(configurations: [configuration], excludedClassNames: [])
+            let foreignRealm = try await Realm(configuration: configuration, actor: MainActor.shared)
+            let foreign = try await self.seedRefreshRecord("foreign", in: foreignRealm)
+            f.manager.files = [dead, foreign]
+            // This fixture deliberately invalidates an accessor; production
+            // deletion remains a separately journaled soft mutation.
+            try f.realm.write { f.realm.delete(dead) }
+            XCTAssertTrue(dead.isInvalidated)
+            let before = self.refreshStorageSnapshot(f.realm)
+            let foreignBefore = self.refreshStorageSnapshot(foreignRealm)
+            try await f.manager.publishDiscoveredFiles([ThreadSafeReference(to: incoming)],
+                realmConfiguration: f.configuration)
+            XCTAssertEqual(f.manager.files?.map(\.compoundKey), [incoming.compoundKey])
+            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before)
+            XCTAssertEqual(self.refreshStorageSnapshot(foreignRealm), foreignBefore)
+        }
+    }
