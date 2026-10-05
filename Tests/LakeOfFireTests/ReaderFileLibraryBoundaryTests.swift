@@ -796,3 +796,159 @@ extension ReaderFileLibraryBoundaryTests {
             XCTAssertEqual(self.refreshStorageSnapshot(foreignRealm), foreignBefore)
         }
     }
+
+    func testCurrentDiscoveredPublicationPreservesOtherRowsAndDeduplicatesURL() async throws {
+        try await withFixture { f in
+            let row = try await self.seedRefreshRecord("incoming", in: f.realm)
+            let keep = try await self.seedRefreshRecord("keep", in: f.realm)
+            f.manager.files = [row, keep]
+            let before = self.refreshStorageSnapshot(f.realm)
+            try await f.manager.publishDiscoveredFiles([ThreadSafeReference(to: row)], realmConfiguration: f.configuration)
+            XCTAssertEqual(f.manager.files?.map(\.compoundKey), [row.compoundKey, keep.compoundKey])
+            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before)
+        }
+    }
+
+    func testCancelledEmptyDiscoveredPublicationDoesNotInvokeRealmOpener() async throws {
+        try await withFixture { f in
+            var calls = 0
+            let task = Task { @MainActor in
+                withUnsafeCurrentTask { $0?.cancel() }
+                try await f.manager.publishDiscoveredFiles([], realmConfiguration: f.configuration,
+                    openRealm: { _ in calls += 1; return f.realm })
+            }
+            do { try await task.value; XCTFail("Empty cancelled work is not successful publication") }
+            catch is CancellationError { }
+            XCTAssertEqual(calls, 0)
+        }
+    }
+
+    func testEnsureImportedCannotAdoptNewDriveAfterDownloadExistenceRead() async throws {
+        try await withFixture { f in
+            let downloadable = try await self.download("https://example.test/book.txt", manager: f.manager)
+            try self.write("original download", to: downloadable.localDestination)
+            let replacementRoot = f.root.appendingPathComponent("replacement", isDirectory: true)
+            let replacement = try await CloudDrive(storage: .localDirectory(rootURL: replacementRoot))
+            let before = self.refreshStorageSnapshot(f.realm)
+            do {
+                _ = try await f.manager.ensureImported(downloadable: downloadable, existsLocally: { item in
+                    let exists = await item.existsLocally()
+                    XCTAssertTrue(exists)
+                    f.manager.localDrive = replacement
+                    return exists
+                })
+                XCTFail("A previous download cannot be adopted by new storage")
+            } catch is CancellationError { }
+            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before)
+            XCTAssertEqual(try Data(contentsOf: downloadable.localDestination), Data("original download".utf8))
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: replacementRoot.path).isEmpty)
+        }
+    }
+
+    func testImportRevokedDuringDestinationSelectionDoesNotCreateOrCopy() async throws {
+        try await withFixture { f in
+            let source = f.root.appendingPathComponent("outside.txt")
+            try self.write("retained", to: source)
+            let replacement = try await CloudDrive(storage: .localDirectory(
+                rootURL: f.root.appendingPathComponent("replacement", isDirectory: true)))
+            let action = StorageDeliveryReplacement(manager: f.manager, drive: replacement)
+            ReaderFileManager.fileDestinationProcessors = [{ @Sendable _ in
+                await action.install()
+                return RootRelativePath(path: "should-not-exist")
+            }]
+            let before = self.refreshStorageSnapshot(f.realm)
+            do {
+                _ = try await f.manager.importFile(fileURL: source, fromDownloadURL: nil)
+                XCTFail("Destination lookup cannot renew the import's owner")
+            } catch is CancellationError { }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: f.library.appendingPathComponent("should-not-exist").path))
+            XCTAssertEqual(try Data(contentsOf: source), Data("retained".utf8))
+            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before)
+        }
+    }
+
+    func testCancelledImportDoesNotInvokeDestinationProcessorsOrCreateFiles() async throws {
+        try await withFixture { f in
+            let source = f.root.appendingPathComponent("outside.txt")
+            try self.write("retained", to: source)
+            let calls = StorageDeliveryCounter()
+            ReaderFileManager.fileDestinationProcessors = [{ @Sendable _ in
+                await calls.increment()
+                return RootRelativePath(path: "should-not-exist")
+            }]
+            let task = Task { @MainActor in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return try await f.manager.importFile(fileURL: source, fromDownloadURL: nil)
+            }
+            do { _ = try await task.value; XCTFail("Expected cancellation") }
+            catch is CancellationError { }
+            XCTAssertEqual(calls.value, 0)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: f.library.appendingPathComponent("should-not-exist").path))
+            XCTAssertEqual(try Data(contentsOf: source), Data("retained".utf8))
+        }
+    }
+
+    func testDownloadDescriptorCannotOutliveItsDestinationSelection() async throws {
+        try await withFixture { f in
+            let replacement = try await CloudDrive(storage: .localDirectory(
+                rootURL: f.root.appendingPathComponent("replacement", isDirectory: true)))
+            let action = StorageDeliveryReplacement(manager: f.manager, drive: replacement)
+            ReaderFileManager.fileDestinationProcessors = [{ @Sendable _ in
+                await action.install()
+                return .root
+            }]
+            do {
+                _ = try await f.manager.downloadable(url: URL(string: "https://example.test/book.txt")!, name: "Book")
+                XCTFail("Descriptor must retain the original destination owner")
+            } catch is CancellationError { }
+        }
+    }
+
+    func testDeniedFileInspectionCannotAuthorizeMissingFileTombstone() async throws {
+        try await withFixture { f in
+            let parent = f.library.appendingPathComponent("locked", isDirectory: true)
+            let payload = parent.appendingPathComponent("book.txt")
+            try self.write("must survive", to: payload)
+            let row = ContentFile()
+            row.url = URL(string: "reader-file://file/load/local/locked/book.txt")!
+            row.updateCompoundKey()
+            try await f.realm.asyncWritePreservingOwnership {
+                f.realm.add(row)
+                row.refreshChangeMetadata(explicitlyModified: true)
+            }
+            f.manager.files = [row]
+            let before = self.refreshStorageSnapshot(f.realm)
+            try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: parent.path)
+            defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path) }
+            let inspectionDenied: Bool
+            do { _ = try FileManager.default.attributesOfItem(atPath: payload.path); inspectionDenied = false }
+            catch { inspectionDenied = true }
+            guard inspectionDenied else {
+                throw XCTSkip("This permission history requires a non-root test process with enforced mode000 access.")
+            }
+            do {
+                try await f.manager.delete(readerFileURL: row.url)
+                XCTFail("Uninspectable is not missing")
+            } catch {
+                XCTAssertFalse(error is CancellationError, "The fixture must reach filesystem admission, not task cancellation")
+            }
+            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before)
+            XCTAssertFalse(row.isDeleted)
+            XCTAssertEqual(f.manager.files?.map(\.compoundKey), [row.compoundKey])
+        }
+    }
+
+    func testLocalReadDoesNotInspectUnselectedInaccessibleCloudRoot() async throws {
+        try await withFixture { f in
+            let payload = f.library.appendingPathComponent("book.txt")
+            try self.write("local", to: payload)
+            let cloudRoot = f.root.appendingPathComponent("unselected", isDirectory: true)
+            let cloud = try await CloudDrive(storage: .localDirectory(rootURL: cloudRoot))
+            f.manager.cloudDrive = cloud
+            try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: cloudRoot.path)
+            defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cloudRoot.path) }
+            let value = try await f.manager.read(fileURL: URL(string: "reader-file://file/load/local/book.txt")!)
+            XCTAssertEqual(value, Data("local".utf8))
+        }
+    }
+}
