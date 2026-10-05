@@ -132,7 +132,7 @@ extension ReaderFileInitializationTests {
         await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
     }
 
-    private func requireCancellation(_ task: Task<Void, Error>) async {
+    private func requireCancellation(_ task: Task<Void, Swift.Error>) async {
         do {
             try await task.value
             XCTFail("An obsolete preparation must not report successful initialization")

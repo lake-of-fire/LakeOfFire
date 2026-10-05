@@ -472,7 +472,7 @@ extension ReaderFileLibraryBoundaryTests {
         return file
     }
 
-    private func requireStaleRefreshCancellation(_ task: Task<Void, Error>) async throws {
+    private func requireStaleRefreshCancellation(_ task: Task<Void, Swift.Error>) async throws {
         do {
             try await task.value
             XCTFail("The stale inventory producer must fail instead of publishing replacement storage")
