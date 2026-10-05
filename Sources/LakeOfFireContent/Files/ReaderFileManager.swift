@@ -796,7 +796,7 @@ public class ReaderFileManager: ObservableObject {
     ) throws -> MetadataRefreshSelection {
         let selection = MetadataRefreshSelection(localDrive: localDrive, cloudDrive: cloudDrive,
             initializationIdentifier: initializationID, realmConfiguration: realmConfiguration)
-        try validateMetadataRefreshSelection(selection)
+        try self.validateMetadataRefreshSelection(selection)
         return selection
     }
 
@@ -830,7 +830,7 @@ public class ReaderFileManager: ObservableObject {
             force: force
         ) { @MainActor [weak self] in
             guard let self else { return }
-            try validateMetadataRefreshSelection(selection)
+            try self.validateMetadataRefreshSelection(selection)
             guard selection.localDrive != nil || selection.cloudDrive != nil else { return }
 
             // Capture candidates before scanning. New imports and edits that
@@ -863,7 +863,7 @@ public class ReaderFileManager: ObservableObject {
                 ("local", selection.localDrive),
                 ("icloud", selection.cloudDrive),
             ] {
-                try validateMetadataRefreshSelection(selection)
+                try self.validateMetadataRefreshSelection(selection)
                 guard let drive, drive.isConnected else { continue }
                 do {
                     let scan = try await coalescedFilesMetadataRefresh(
@@ -872,7 +872,7 @@ public class ReaderFileManager: ObservableObject {
                         realmConfiguration: realmConfiguration,
                         selection: selection
                     )
-                    try validateMetadataRefreshSelection(selection)
+                    try self.validateMetadataRefreshSelection(selection)
                     discoveredIDs.formUnion(scan.contentFileIDs)
                     if scan.isComplete {
                         completeLocations.insert(location)
@@ -888,7 +888,7 @@ public class ReaderFileManager: ObservableObject {
                 }
             }
 
-            try validateMetadataRefreshSelection(selection)
+            try self.validateMetadataRefreshSelection(selection)
             let completed = completeLocations
             let discovered = discoveredIDs
             let activeIDs: [String] = try await {
@@ -897,7 +897,7 @@ public class ReaderFileManager: ObservableObject {
                     for: realmConfiguration
                 )
                 try await realm.asyncWritePreservingOwnership {
-                    try validateMetadataRefreshSelection(selection)
+                    try self.validateMetadataRefreshSelection(selection)
                     let date = Date()
                     for candidate in candidates {
                         guard !discovered.contains(candidate.id),
@@ -923,7 +923,7 @@ public class ReaderFileManager: ObservableObject {
                             at: date
                         )
                     }
-                    try validateMetadataRefreshSelection(selection)
+                    try self.validateMetadataRefreshSelection(selection)
                 }
 
                 let results = realm.objects(ContentFile.self).where {
@@ -940,7 +940,7 @@ public class ReaderFileManager: ObservableObject {
             try Task.checkCancellation()
             let realm = try await Realm.open(configuration: realmConfiguration)
             try Task.checkCancellation()
-            try validateMetadataRefreshSelection(selection)
+            try self.validateMetadataRefreshSelection(selection)
             // Retain unknown-root records in the published inventory too.
             self.files = activeIDs.compactMap {
                 realm.object(
@@ -974,12 +974,12 @@ public class ReaderFileManager: ObservableObject {
             realmConfiguration: realmConfiguration,
             selection: selection
         )
-        try validateMetadataRefreshSelection(selection)
+        try self.validateMetadataRefreshSelection(selection)
         let references = try await makeContentFileReferences(
             for: scan.contentFileIDs,
             realmConfiguration: realmConfiguration
         )
-        try validateMetadataRefreshSelection(selection)
+        try self.validateMetadataRefreshSelection(selection)
         return references
     }
 
@@ -990,7 +990,7 @@ public class ReaderFileManager: ObservableObject {
         realmConfiguration: Realm.Configuration,
         selection: MetadataRefreshSelection
     ) async throws -> MetadataScanResult {
-        try validateMetadataRefreshSelection(selection)
+        try self.validateMetadataRefreshSelection(selection)
         let key = MetadataRefreshKey(
             driveIdentifier: ObjectIdentifier(drive),
             selectionScope: selection.queueScope,
@@ -1035,7 +1035,7 @@ public class ReaderFileManager: ObservableObject {
         realmConfiguration: Realm.Configuration,
         selection: MetadataRefreshSelection
     ) async throws -> MetadataScanResult {
-        try validateMetadataRefreshSelection(selection)
+        try self.validateMetadataRefreshSelection(selection)
         var scan = MetadataScanResult()
         var filesToUpdate: [
             (readerFileURL: URL, relativePath: RootRelativePath, drive: CloudDrive)
@@ -1052,9 +1052,9 @@ public class ReaderFileManager: ObservableObject {
                     options: [.skipsHiddenFiles, .producesRelativePathURLs]
                 )
             }
-            try validateMetadataRefreshSelection(selection)
+            try self.validateMetadataRefreshSelection(selection)
             for url in urls {
-                try validateMetadataRefreshSelection(selection)
+                try self.validateMetadataRefreshSelection(selection)
                 var tryRelativePath = RootRelativePath(path: url.relativePath)
                 if let relativePath, !relativePath.path.isEmpty {
                     tryRelativePath.path = relativePath.path + "/" + tryRelativePath.path
@@ -1168,9 +1168,9 @@ public class ReaderFileManager: ObservableObject {
 
                 let processingStartedAt = Date()
                 try await realm.asyncWritePreservingOwnership {
-                    try validateMetadataRefreshSelection(selection)
+                    try self.validateMetadataRefreshSelection(selection)
                     for (readerFileURL, _, drive) in filesToUpdate {
-                        try validateMetadataRefreshSelection(selection)
+                        try self.validateMetadataRefreshSelection(selection)
                         if let existing = realm.objects(ContentFile.self).filter(
                             NSPredicate(
                                 format: "url == %@",
@@ -1208,12 +1208,12 @@ public class ReaderFileManager: ObservableObject {
                             }
                         }
                     }
-                    try validateMetadataRefreshSelection(selection)
+                    try self.validateMetadataRefreshSelection(selection)
                 }
-                try validateMetadataRefreshSelection(selection)
+                try self.validateMetadataRefreshSelection(selection)
                 let deferredIDs = try await processUpdatedFiles(updatedFiles, selection: selection)
                 try await realm.asyncWritePreservingOwnership {
-                    try validateMetadataRefreshSelection(selection)
+                    try self.validateMetadataRefreshSelection(selection)
                     for file in updatedFiles where !file.isInvalidated && !file.isDeleted {
                         // Use the start, not completion time, so a payload modified
                         // during enrichment is eligible for a subsequent pass.
@@ -1223,7 +1223,7 @@ public class ReaderFileManager: ObservableObject {
                         file.fileMetadataRefreshedAt = refreshedAt
                         file.refreshChangeMetadata(explicitlyModified: true)
                     }
-                    try validateMetadataRefreshSelection(selection)
+                    try self.validateMetadataRefreshSelection(selection)
                 }
                 return allContentFileIDs
             }()
@@ -1256,7 +1256,7 @@ public class ReaderFileManager: ObservableObject {
     private func processUpdatedFiles(
         _ updatedFiles: [ContentFile], selection: MetadataRefreshSelection?
     ) async throws -> Set<String> {
-        if let selection { try validateMetadataRefreshSelection(selection) }
+        if let selection { try self.validateMetadataRefreshSelection(selection) }
         var readyFiles = [ContentFile]()
         var deferredIDs = Set<String>()
         for file in updatedFiles where !file.isInvalidated && !file.isDeleted {
@@ -1268,16 +1268,16 @@ public class ReaderFileManager: ObservableObject {
         }
         for fileProcessor in Self.fileProcessors {
             try Task.checkCancellation()
-            if let selection { try validateMetadataRefreshSelection(selection) }
+            if let selection { try self.validateMetadataRefreshSelection(selection) }
             try await fileProcessor(readyFiles)
-            if let selection { try validateMetadataRefreshSelection(selection) }
+            if let selection { try self.validateMetadataRefreshSelection(selection) }
         }
         for key in Self.fileEnrichmentProcessors.keys.sorted() {
             try Task.checkCancellation()
             guard let processor = Self.fileEnrichmentProcessors[key] else { continue }
-            if let selection { try validateMetadataRefreshSelection(selection) }
+            if let selection { try self.validateMetadataRefreshSelection(selection) }
             deferredIDs.formUnion(try await processor(readyFiles))
-            if let selection { try validateMetadataRefreshSelection(selection) }
+            if let selection { try self.validateMetadataRefreshSelection(selection) }
         }
         return deferredIDs
     }
