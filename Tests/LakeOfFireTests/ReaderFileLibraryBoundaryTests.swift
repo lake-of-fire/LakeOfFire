@@ -432,4 +432,148 @@ extension ReaderFileLibraryBoundaryTests {
             XCTAssertEqual(try self.journalGeneration(f, record: record), committed)
         }
     }
+
+    private struct RefreshRecordSnapshot: Equatable {
+        let url: URL
+        let title: String
+        let isDeleted: Bool
+        let modifiedAt: Date
+        let fileMetadataRefreshedAt: Date?
+    }
+
+    private struct RefreshStorageSnapshot: Equatable {
+        let records: [String: RefreshRecordSnapshot]
+        let journals: [String: String]
+    }
+
+    private func refreshStorageSnapshot(_ realm: Realm) -> RefreshStorageSnapshot {
+        realm.refresh()
+        return RefreshStorageSnapshot(
+            records: Dictionary(uniqueKeysWithValues: realm.objects(ContentFile.self).map {
+                ($0.compoundKey, RefreshRecordSnapshot(url: $0.url, title: $0.title,
+                    isDeleted: $0.isDeleted, modifiedAt: $0.modifiedAt,
+                    fileMetadataRefreshedAt: $0.fileMetadataRefreshedAt))
+            }),
+            journals: Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self).map {
+                ($0.recordName, $0.generation)
+            })
+        )
+    }
+
+    private func seedRefreshRecord(_ name: String, in realm: Realm) async throws -> ContentFile {
+        let file = ContentFile()
+        file.url = try XCTUnwrap(URL(string: "reader-file://file/load/local/\(name).txt"))
+        file.title = name
+        file.updateCompoundKey()
+        try await realm.asyncWritePreservingOwnership {
+            realm.add(file)
+            file.refreshChangeMetadata(explicitlyModified: true)
+        }
+        return file
+    }
+
+    private func requireStaleRefreshCancellation(_ task: Task<Void, Error>) async throws {
+        do {
+            try await task.value
+            XCTFail("The stale inventory producer must fail instead of publishing replacement storage")
+        } catch is CancellationError {
+        }
+    }
+
+    func testSuspendedInventoryScanCannotMutateOrPublishAfterDriveReplacement() async throws {
+        let enumeration = LibraryBoundaryEnumeration()
+        let manager = ReaderFileManager(payloadStateProvider: { _ in .current },
+            directoryContentsProvider: { try await enumeration.read($0) })
+        try await withFixture(manager: manager) { f in
+            try self.write("stale discovered bytes", to: f.library.appendingPathComponent("discovered.txt"))
+            let orphan = try await self.seedRefreshRecord("old-orphan", in: f.realm)
+            let replacement = try await self.seedRefreshRecord("replacement", in: f.realm)
+            f.manager.files = [replacement]
+            let before = self.refreshStorageSnapshot(f.realm)
+            let old = Task { @MainActor in try await f.manager.refreshAllFilesMetadata(force: true) }
+            await enumeration.entered.wait()
+            let replacementRoot = f.root.appendingPathComponent("replacement-library", isDirectory: true)
+            do {
+                f.manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: replacementRoot))
+            } catch {
+                await enumeration.release.open()
+                _ = try? await old.value
+                throw error
+            }
+            await enumeration.release.open()
+            try await self.requireStaleRefreshCancellation(old)
+            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before,
+                           "Neither discovered metadata nor old orphan tombstones may commit")
+            XCTAssertFalse(orphan.isDeleted)
+            XCTAssertEqual(f.manager.files?.map(\.compoundKey), [replacement.compoundKey])
+        }
+    }
+
+    func testSuspendedInventoryScanCannotMutateEitherRealmAfterConfigurationReplacement() async throws {
+        let enumeration = LibraryBoundaryEnumeration()
+        let manager = ReaderFileManager(payloadStateProvider: { _ in .current },
+            directoryContentsProvider: { try await enumeration.read($0) })
+        try await withFixture(manager: manager) { f in
+            try self.write("stale discovered bytes", to: f.library.appendingPathComponent("discovered.txt"))
+            _ = try await self.seedRefreshRecord("old-orphan", in: f.realm)
+            var configuration = f.configuration
+            configuration.inMemoryIdentifier = "replacement-" + UUID().uuidString
+            BigSyncMutationTracking.install(configurations: [configuration], excludedClassNames: [])
+            let replacementRealm = try await Realm(configuration: configuration, actor: MainActor.shared)
+            let replacement = try await self.seedRefreshRecord("replacement", in: replacementRealm)
+            let oldBefore = self.refreshStorageSnapshot(f.realm)
+            let replacementBefore = self.refreshStorageSnapshot(replacementRealm)
+            let old = Task { @MainActor in try await f.manager.refreshAllFilesMetadata(force: true) }
+            await enumeration.entered.wait()
+            f.manager.historyRealmConfigurationOverride = configuration
+            f.manager.files = [replacement]
+            await enumeration.release.open()
+            do {
+                try await self.requireStaleRefreshCancellation(old)
+                XCTAssertEqual(self.refreshStorageSnapshot(f.realm), oldBefore)
+                XCTAssertEqual(self.refreshStorageSnapshot(replacementRealm), replacementBefore)
+                XCTAssertEqual(f.manager.files?.map(\.compoundKey), [replacement.compoundKey])
+            } catch {
+                await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+                throw error
+            }
+            await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+    }
+
+    func testNewInitializationRevokesSuspendedScanEvenWhenPreparationFails() async throws {
+        let enumeration = LibraryBoundaryEnumeration()
+        let manager = ReaderFileManager(payloadStateProvider: { _ in .current },
+            directoryContentsProvider: { try await enumeration.read($0) },
+            cloudDriveFactory: { _ in throw ReaderFileManagerError.driveMissing },
+            localDriveFactory: { throw ReaderFileManagerError.driveMissing })
+        try await withFixture(manager: manager) { f in
+            let installedDrive = f.manager.localDrive
+            try self.write("stale discovered bytes", to: f.library.appendingPathComponent("discovered.txt"))
+            let replacement = try await self.seedRefreshRecord("replacement", in: f.realm)
+            f.manager.files = [replacement]
+            let before = self.refreshStorageSnapshot(f.realm)
+            let old = Task { @MainActor in try await f.manager.refreshAllFilesMetadata(force: true) }
+            await enumeration.entered.wait()
+            do {
+                try await f.manager.initialize(ubiquityContainerIdentifier: "new-failed")
+                XCTFail("Expected factory failure after the newer initializer acquired its identity")
+            } catch ReaderFileManagerError.driveMissing {
+            } catch {
+                await enumeration.release.open()
+                _ = try? await old.value
+                throw error
+            }
+            await enumeration.release.open()
+            try await self.requireStaleRefreshCancellation(old)
+            XCTAssertTrue(f.manager.localDrive === installedDrive)
+            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before)
+            XCTAssertEqual(f.manager.files?.map(\.compoundKey), [replacement.compoundKey])
+            try await f.manager.refreshAllFilesMetadata(force: true)
+            XCTAssertTrue(f.manager.files?.contains { $0.url.lastPathComponent == "discovered.txt" } == true,
+                          "A fresh request under the current identity remains usable")
+        }
+    }
+
+
 }
