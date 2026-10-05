@@ -1,0 +1,103 @@
+name: Native Reader file storage qualification
+on:
+  push:
+    branches: [qualify/reader-file-storage-20261005]
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: stack/LakeOfFire
+          persist-credentials: false
+      - name: Prepare actual Reader-selected public sibling packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/file-storage-evidence"
+          export EVIDENCE="$RUNNER_TEMP/file-storage-evidence"
+          echo "EVIDENCE=$EVIDENCE" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess, json, re, hashlib, os
+          pins = {
+            'BigSyncKit': '0b19ed598a7503235efcde5d674b9620e1d0f978',
+            'RealmSwiftGaps': '4fe06fe83ee9c9732b2f0c8355f81f61e5136159',
+            'swiftui-webview': 'ae5123ffac745a2bd4e8d903cf24e58a40f119d2',
+            'SwiftUIDownloads': 'f4d741ec9612d90f26350224792b7780e2dd8445',
+            'JapaneseLanguageTools': '1a3dbf42eda7b127bce2cd3fdb549213053000ab',
+            'SwiftUtilities': 'f437c7d06fc631cd7a67731279411c417cdf8077',
+            'LakeImage': '3270761611fa85b4b6129227b4adf2bbda4be5a0',
+            'LakeKit': '9497ea1cad04e8940a7cd7ed62b1d1187282a468',
+            'FaviconFinder': '9fdaeba2c01bd9692d79029b5179205eac7276bc',
+            'swift-readability': '438724ab13e428a01ba4bb10ff6fbc8fa6c7330b',
+            'SwiftSoup': '913459c5b97b6d4a63fec4ca676328be7a593e18',
+            'Cache': '0e60e5f2261a6011182c8ce699067970b99aa206',
+            'Portal': '424c0dc1b7bb327491b573d74f1ca8253df834e8',
+          }
+          evidence = Path(os.environ['EVIDENCE'])
+          (evidence/'selected-siblings.json').write_text(json.dumps(pins, indent=2))
+          for name, sha in pins.items():
+            path = Path('stack')/name
+            subprocess.run(['git', 'init', '-q', str(path)], check=True)
+            subprocess.run(['git','-C',str(path),'fetch','--depth=1',f'https://github.com/lake-of-fire/{name}.git',sha],check=True)
+            subprocess.run(['git','-C',str(path),'checkout','--detach','FETCH_HEAD'],check=True)
+            assert subprocess.check_output(['git','-C',str(path),'rev-parse','HEAD'],text=True).strip()==sha
+          # Standalone qualification mirrors the application's local package
+          # selections. No production Sources or tests are rewritten.
+          changed=[]
+          for manifest in Path('stack').glob('*/Package.swift'):
+            before=manifest.read_text()
+            def local(match):
+              url=match.group(1)
+              name=url.rstrip('/').split('/')[-1].removesuffix('.git')
+              selected=next((key for key in pins if key.lower()==name.lower()),None)
+              return f'.package(path: "../{selected}")' if selected else match.group(0)
+            after=re.sub(r'\.package\(url:\s*"([^"]+)"\s*,[^\n]*?\)',local,before)
+            if before!=after:
+              (evidence/(manifest.parent.name+'-Package.before.swift')).write_text(before)
+              (evidence/(manifest.parent.name+'-Package.qualification.swift')).write_text(after)
+              manifest.write_text(after)
+              changed.append(str(manifest))
+          (evidence/'qualification-manifest-overrides.json').write_text(json.dumps(changed,indent=2))
+          for name in ['Sources/LakeOfFireContent/Files/ReaderFileManager.swift','Tests/LakeOfFireTests/ReaderFileInitializationTests.swift','Tests/LakeOfFireTests/ReaderFileLibraryBoundaryTests.swift']:
+            path=Path('stack/LakeOfFire')/name
+            print(name, hashlib.sha256(path.read_bytes()).hexdigest())
+          PY
+          xcodebuild -version > "$EVIDENCE/toolchain.txt"
+          swift --version >> "$EVIDENCE/toolchain.txt"
+          brew install xcsift > "$EVIDENCE/xcsift-install.log" 2>&1
+      - name: Compile and execute only actual manager owner classes
+        shell: bash
+        run: |
+          set -uo pipefail
+          flags=()
+          if swift test --help | grep -q -- '--disable-experimental-prebuilts'; then
+            flags+=(--disable-experimental-prebuilts)
+          fi
+          swift test --package-path stack/LakeOfFire --scratch-path "$RUNNER_TEMP/storage-native-build" --configuration debug --jobs 3 "${flags[@]}" --filter 'ReaderFile(Initialization|LibraryBoundary)Tests' 2>&1 | tee "$EVIDENCE/native.log" | xcsift > "$EVIDENCE/native.json"
+          statuses=("${PIPESTATUS[@]}")
+          printf '%s\n' "${statuses[*]}" > "$EVIDENCE/native-status.txt"
+          cp stack/LakeOfFire/Package.resolved "$EVIDENCE/Package.resolved" 2>/dev/null || true
+          for status in "${statuses[@]}"; do
+            if [ "$status" -ne 0 ]; then exit "$status"; fi
+          done
+          python3 - <<'PY'
+          import os,re,json
+          from pathlib import Path
+          p=Path(os.environ['EVIDENCE'])
+          log=(p/'native.log').read_text()
+          passed=re.findall(r"Test Case '((?:ReaderFileInitializationTests|ReaderFileLibraryBoundaryTests)\.[^']+)' passed",log)
+          failed=re.findall(r"Test Case '((?:ReaderFileInitializationTests|ReaderFileLibraryBoundaryTests)\.[^']+)' failed",log)
+          (p/'named-methods.json').write_text(json.dumps({'passed':passed,'failed':failed},indent=2))
+          assert len(set(passed)) >= 23 and not failed, 'No zero-method or incomplete run may qualify this change'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-file-storage-evidence
+          path: ${{ runner.temp }}/file-storage-evidence/
+          if-no-files-found: error
