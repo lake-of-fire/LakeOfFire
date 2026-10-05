@@ -287,3 +287,149 @@ final class ReaderFileLibraryBoundaryTests: XCTestCase {
         }
     }
 }
+
+
+@MainActor
+extension ReaderFileLibraryBoundaryTests {
+    private func indexedDeletionRecord(_ f: Fixture, name: String = "delete.txt") throws -> ContentFile {
+        let record = ContentFile()
+        record.url = try XCTUnwrap(URL(string: "reader-file://file/load/local/" + name))
+        record.updateCompoundKey()
+        try f.realm.write {
+            f.realm.add(record)
+            record.refreshChangeMetadata(explicitlyModified: true)
+        }
+        f.manager.files = [record]
+        return record
+    }
+
+    private func journalGeneration(_ f: Fixture, record: ContentFile) throws -> String {
+        try XCTUnwrap(f.realm.object(ofType: BigSyncPendingMutation.self,
+            forPrimaryKey: ContentFile.className() + "." + record.compoundKey)).generation
+    }
+
+    func testDeleteCannotRetargetAReplacementDriveAfterAvailability() async throws {
+        try await withFixture { f in
+            let originalURL = f.library.appendingPathComponent("delete.txt")
+            try self.write("original bytes", to: originalURL)
+            let replacementRoot = f.root.appendingPathComponent("replacement", isDirectory: true)
+            let replacement = try await CloudDrive(storage: .localDirectory(rootURL: replacementRoot))
+            let replacementURL = replacementRoot.appendingPathComponent("delete.txt")
+            try self.write("replacement bytes", to: replacementURL)
+            let record = try self.indexedDeletionRecord(f)
+            let generation = try self.journalGeneration(f, record: record)
+            do {
+                try await f.manager.delete(readerFileURL: record.url, statusLoader: { url in
+                    let status = try await f.manager.cloudDriveSyncStatus(forReaderBackingURL: url)
+                    f.manager.localDrive = replacement
+                    return status
+                })
+                XCTFail("A stale deletion must not follow the replacement drive")
+            } catch ReaderFileDeleteError.removeFailed { }
+            f.realm.refresh()
+            XCTAssertEqual(try String(contentsOf: originalURL, encoding: .utf8), "original bytes")
+            XCTAssertEqual(try String(contentsOf: replacementURL, encoding: .utf8), "replacement bytes")
+            XCTAssertFalse(record.isDeleted)
+            XCTAssertEqual(try self.journalGeneration(f, record: record), generation)
+            XCTAssertEqual(f.manager.files?.map(\.compoundKey), [record.compoundKey])
+        }
+    }
+
+    func testMissingFileOutcomeCannotDeleteReplacementDriveIndex() async throws {
+        try await withFixture { f in
+            let replacementRoot = f.root.appendingPathComponent("replacement", isDirectory: true)
+            let replacement = try await CloudDrive(storage: .localDirectory(rootURL: replacementRoot))
+            let replacementURL = replacementRoot.appendingPathComponent("delete.txt")
+            try self.write("replacement bytes", to: replacementURL)
+            let record = try self.indexedDeletionRecord(f)
+            let generation = try self.journalGeneration(f, record: record)
+            do {
+                try await f.manager.delete(readerFileURL: record.url, statusLoader: { url in
+                    let status = try await f.manager.cloudDriveSyncStatus(forReaderBackingURL: url)
+                    XCTAssertEqual(status, .fileMissing)
+                    f.manager.localDrive = replacement
+                    return status
+                })
+                XCTFail("Old-root absence cannot authorize a new-root tombstone")
+            } catch ReaderFileDeleteError.removeFailed { }
+            f.realm.refresh()
+            XCTAssertFalse(record.isDeleted)
+            XCTAssertEqual(try self.journalGeneration(f, record: record), generation)
+            XCTAssertEqual(try String(contentsOf: replacementURL, encoding: .utf8), "replacement bytes")
+        }
+    }
+
+    func testMissingFileOutcomeCannotTombstoneAReappearedPayload() async throws {
+        try await withFixture { f in
+            let url = f.library.appendingPathComponent("delete.txt")
+            let record = try self.indexedDeletionRecord(f)
+            let generation = try self.journalGeneration(f, record: record)
+            do {
+                try await f.manager.delete(readerFileURL: record.url, statusLoader: { backing in
+                    let status = try await f.manager.cloudDriveSyncStatus(forReaderBackingURL: backing)
+                    XCTAssertEqual(status, .fileMissing)
+                    try self.write("newly imported bytes", to: url)
+                    return status
+                })
+                XCTFail("Absence must still hold when the index write is admitted")
+            } catch ReaderFileDeleteError.removeFailed { }
+            f.realm.refresh()
+            XCTAssertFalse(record.isDeleted)
+            XCTAssertEqual(try self.journalGeneration(f, record: record), generation)
+            XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "newly imported bytes")
+        }
+    }
+
+    func testCancelledAvailabilityCannotDeleteOrJournalAFile() async throws {
+        try await withFixture { f in
+            let url = f.library.appendingPathComponent("delete.txt")
+            try self.write("original bytes", to: url)
+            let record = try self.indexedDeletionRecord(f)
+            let generation = try self.journalGeneration(f, record: record)
+            let deletion = Task { @MainActor in
+                try await f.manager.delete(readerFileURL: record.url, statusLoader: { backing in
+                    let status = try await f.manager.cloudDriveSyncStatus(forReaderBackingURL: backing)
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    return status
+                })
+            }
+            do { try await deletion.value; XCTFail("Expected cancellation") }
+            catch is CancellationError { }
+            f.realm.refresh()
+            XCTAssertFalse(record.isDeleted)
+            XCTAssertEqual(try self.journalGeneration(f, record: record), generation)
+            XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "original bytes")
+        }
+    }
+
+    func testCurrentFileDeletionAndRepeatedMissingDeleteKeepTruthfulJournals() async throws {
+        try await withFixture { f in
+            let url = f.library.appendingPathComponent("delete.txt")
+            try self.write("original bytes", to: url)
+            let record = try self.indexedDeletionRecord(f)
+            let backing = record.url
+            let initial = try self.journalGeneration(f, record: record)
+            let package = ContentPackageFile()
+            package.url = try XCTUnwrap(URL(string: "reader-file://file/load/local/delete.txt?entry=1"))
+            package.packageContentFileID = record.compoundKey
+            package.updateCompoundKey()
+            try f.realm.write {
+                f.realm.add(package)
+                package.refreshChangeMetadata(explicitlyModified: true)
+            }
+            try await f.manager.delete(readerFileURL: backing)
+            await f.manager.inventoryRefreshQueue?.waitForIdle()
+            f.realm.refresh()
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+            XCTAssertTrue(record.isDeleted)
+            XCTAssertTrue(package.isDeleted)
+            XCTAssertEqual(record.modifiedAt, package.modifiedAt)
+            let committed = try self.journalGeneration(f, record: record)
+            XCTAssertNotEqual(committed, initial)
+            try await f.manager.delete(readerFileURL: backing)
+            await f.manager.inventoryRefreshQueue?.waitForIdle()
+            f.realm.refresh()
+            XCTAssertEqual(try self.journalGeneration(f, record: record), committed)
+        }
+    }
+}
