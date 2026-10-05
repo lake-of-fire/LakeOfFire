@@ -797,45 +797,42 @@ public class ReaderFileManager: ObservableObject {
     
     @MainActor
     public func importFile(fileURL: URL, fromDownloadURL downloadURL: URL?) async throws -> URL? {
-        try await importFile(
-            fileURL: fileURL,
-            fromDownloadURL: downloadURL,
-            realmConfiguration: resolvedHistoryRealmConfiguration
-        )
+        let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
+        return try await importFile(fileURL: fileURL, fromDownloadURL: downloadURL, selection: selection)
     }
 
     @MainActor
     private func importFile(
         fileURL: URL,
         fromDownloadURL downloadURL: URL?,
-        realmConfiguration: Realm.Configuration
+        selection: MetadataRefreshSelection
     ) async throws -> URL? {
-        guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else {
-            return nil
-        }
-        
+        try validateMetadataRefreshSelection(selection)
+        guard let drive = ((selection.cloudDrive?.isConnected ?? false)
+            ? selection.cloudDrive : nil) ?? selection.localDrive else { return nil }
+        let realmConfiguration = selection.realmConfiguration
         let targetDirectory = try await Self.rootRelativePath(forImportedURL: downloadURL ?? fileURL, drive: drive)
+        try validateMetadataRefreshSelection(selection)
         let shouldStopAccessingFile = fileURL.startAccessingSecurityScopedResource()
         defer {
-            if shouldStopAccessingFile {
-                fileURL.stopAccessingSecurityScopedResource()
-            }
+            if shouldStopAccessingFile { fileURL.stopAccessingSecurityScopedResource() }
         }
-        
         try await drive.createDirectory(at: targetDirectory)
-        
+        try validateMetadataRefreshSelection(selection)
         let targetFilePath = try await ReaderFileImportStorage.install(
-            fileURL: fileURL, targetDirectory: targetDirectory, drive: drive
-        )
+            fileURL: fileURL, targetDirectory: targetDirectory, drive: drive)
+        // Keep a completed copy in its original root when later work expires;
+        // neither a stale result nor error authorizes removing copied bytes.
         do {
-            let metadataRefs = try await refreshFilesMetadata(
-                drive: drive,
-                relativePath: targetDirectory,
-                realmConfiguration: realmConfiguration
-            )
+            try validateMetadataRefreshSelection(selection)
+            _ = try await refreshFilesMetadata(drive: drive, relativePath: targetDirectory, selection: selection)
+            try validateMetadataRefreshSelection(selection)
             let realm = try await Realm.open(configuration: realmConfiguration)
+            try validateMetadataRefreshSelection(selection)
             let importedFileURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
-            guard let importedReaderFileURL = try await readerFileURL(for: importedFileURL, drive: drive) else {
+            let importedReaderFileURL = try await readerFileURL(for: importedFileURL, drive: drive)
+            try validateMetadataRefreshSelection(selection)
+            guard let importedReaderFileURL else {
                 debugPrint("Warning: Unable to resolve reader file URL for imported file", importedFileURL)
                 return nil
             }
@@ -845,8 +842,11 @@ public class ReaderFileManager: ObservableObject {
                 debugPrint("Warning: No matching content metadata returned for imported file", importedReaderFileURL)
                 return nil
             }
-            try await refreshAllFilesMetadata(force: true, realmConfiguration: realmConfiguration)
-            return content.url
+            // A live accessor can be invalidated while the final scan awaits.
+            let resultURL = content.url
+            try await refreshAllFilesMetadata(force: true, selection: selection)
+            try validateMetadataRefreshSelection(selection)
+            return resultURL
         } catch {
             debugPrint("Error importing file:", error)
             throw error
@@ -874,10 +874,8 @@ public class ReaderFileManager: ObservableObject {
 
     @MainActor
     public func refreshAllFilesMetadata(force: Bool = false) async throws {
-        try await refreshAllFilesMetadata(
-            force: force,
-            realmConfiguration: resolvedHistoryRealmConfiguration
-        )
+        let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
+        try await refreshAllFilesMetadata(force: force, selection: selection)
     }
 
     @MainActor
@@ -885,8 +883,14 @@ public class ReaderFileManager: ObservableObject {
         force: Bool,
         realmConfiguration: Realm.Configuration
     ) async throws {
-        try Task.checkCancellation()
         let selection = try metadataRefreshSelection(realmConfiguration: realmConfiguration)
+        try await refreshAllFilesMetadata(force: force, selection: selection)
+    }
+
+    @MainActor
+    private func refreshAllFilesMetadata(force: Bool, selection: MetadataRefreshSelection) async throws {
+        try validateMetadataRefreshSelection(selection)
+        let realmConfiguration = selection.realmConfiguration
         let queue = resolvedInventoryRefreshQueue()
         let completion = queue.enqueue(
             scope: selection.queueScope,
@@ -1014,6 +1018,7 @@ public class ReaderFileManager: ObservableObject {
         }
 
         try await completion.wait().get()
+        try validateMetadataRefreshSelection(selection)
     }
     
     static let additionalFilePackageSuffixesToAvoidDescendingInto = [
@@ -1028,6 +1033,17 @@ public class ReaderFileManager: ObservableObject {
     ) async throws -> [ThreadSafeReference<ContentFile>]? {
         let realmConfiguration = realmConfiguration ?? resolvedHistoryRealmConfiguration
         let selection = try metadataRefreshSelection(realmConfiguration: realmConfiguration)
+        return try await refreshFilesMetadata(drive: drive, relativePath: relativePath, selection: selection)
+    }
+
+    @MainActor
+    private func refreshFilesMetadata(
+        drive: CloudDrive,
+        relativePath: RootRelativePath?,
+        selection: MetadataRefreshSelection
+    ) async throws -> [ThreadSafeReference<ContentFile>]? {
+        try validateMetadataRefreshSelection(selection)
+        let realmConfiguration = selection.realmConfiguration
         guard drive === selection.localDrive || drive === selection.cloudDrive else {
             throw CancellationError()
         }
