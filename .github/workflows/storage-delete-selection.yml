@@ -1,0 +1,50 @@
+name: Reader deletion selection controls
+
+on:
+  pull_request:
+    paths:
+      - 'Sources/LakeOfFireContent/Files/ReaderFileManager.swift'
+      - 'Tests/LakeOfFireTests/ReaderFileLibraryBoundaryTests.swift'
+      - 'Tests/Portable/run_delete_selection_controls.py'
+      - '.github/workflows/storage-delete-selection.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  deletion-selection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Capture exact inputs and syntax-check the full native files
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence=$(mktemp -d "$RUNNER_TEMP/delete-selection.XXXXXX")
+          echo "DELETE_EVIDENCE=$evidence" >> "$GITHUB_ENV"
+          git rev-parse HEAD > "$evidence/head.txt"
+          swiftc --version > "$evidence/compiler.txt"
+          git fetch --depth=1 origin 62fe80ebb16c46e4177b5fcb9a8d179be257c58b
+          git show 62fe80ebb16c46e4177b5fcb9a8d179be257c58b:Sources/LakeOfFireContent/Files/ReaderFileManager.swift > "$evidence/original.swift"
+          test "$(git hash-object "$evidence/original.swift")" = 1bc5217c7130b083bcea76ccf96f1475362890ac
+          cp Sources/LakeOfFireContent/Files/ReaderFileManager.swift "$evidence/current.swift"
+          cp Tests/LakeOfFireTests/ReaderFileLibraryBoundaryTests.swift "$evidence/native-tests.swift"
+          cp Tests/Portable/run_delete_selection_controls.py "$evidence/runner.py"
+          swiftc -frontend -parse Sources/LakeOfFireContent/Files/ReaderFileManager.swift
+          swiftc -frontend -parse Tests/LakeOfFireTests/ReaderFileLibraryBoundaryTests.swift
+      - name: Execute original and revised declaration controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/Portable/run_delete_selection_controls.py "$DELETE_EVIDENCE/original.swift" "$DELETE_EVIDENCE/original" --original
+          python3 Tests/Portable/run_delete_selection_controls.py "$DELETE_EVIDENCE/current.swift" "$DELETE_EVIDENCE/debug"
+          python3 Tests/Portable/run_delete_selection_controls.py "$DELETE_EVIDENCE/current.swift" "$DELETE_EVIDENCE/optimized" --optimized
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delete-selection-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.DELETE_EVIDENCE }}
+          if-no-files-found: error
