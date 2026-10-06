@@ -52,8 +52,15 @@ def apply(source, tests, additions):
         Task { @MainActor [weak self] in
             guard let self,
                   self.deletionSelectionIsCurrent(pathContext, drive: drive, selection: selection) else { return }
-            // Optional refresh cannot acquire a new selection for this command.
-            try await self.refreshAllFilesMetadata(force: true, selection: selection)
+            // Optional refresh cannot acquire a new selection or change an
+            // already-committed deletion into a reported failure.
+            do {
+                try await self.refreshAllFilesMetadata(force: true, selection: selection)
+            } catch is CancellationError {
+                // A superseded optional publication has no effects to retry.
+            } catch {
+                Logger.shared.logger.error("File inventory refresh after deletion failed: \\(error)")
+            }
         }''')
     source = replace_once(source, '''    private func validateDeletionSelection(_ context: ReaderBackingPathContext, drive: CloudDrive?) throws {
         try Task.checkCancellation()
@@ -101,7 +108,27 @@ if __name__ == '__main__':
     source, tests = apply(source, tests, additions)
     SOURCE.write_text(source)
     TEST.write_text(tests)
+    # Preserve the original executor in the negative control. Recent compilers
+    # warn on its ignored throwing Task; only the original uses permissive
+    # warnings. Revised code handles optional errors and remains strict.
+    runner_path = Path('Tests/Portable/run_delete_selection_controls.py')
+    runner = runner_path.read_text()
+    runner = replace_once(runner,
+        'final class ReaderFileManager: @unchecked Sendable {',
+        '''struct DiagnosticLog: Sendable { func error(_ message: String) {} }
+struct Logger: Sendable {
+    static let shared = Logger()
+    let logger = DiagnosticLog()
+}
+final class ReaderFileManager: @unchecked Sendable {''')
+    runner = replace_once(runner,
+        "command = ['swiftc', '-swift-version', '6', '-strict-concurrency=complete', '-warnings-as-errors',\n               '-parse-as-library', '-O' if optimized else '-Onone', str(program), '-o', str(binary)]",
+        "command = ['swiftc', '-swift-version', '6', '-strict-concurrency=complete',\n               '-parse-as-library', '-O' if optimized else '-Onone', str(program), '-o', str(binary)]\n    # Keep predecessor code unchanged despite its ignored-Task warning.\n    if repaired: command.append('-warnings-as-errors')")
+    runner = replace_once(runner,
+        "'repaired': repaired, 'optimized': optimized, 'build_status': build.returncode}",
+        "'repaired': repaired, 'optimized': optimized, 'warnings_as_errors': repaired,\n               'build_status': build.returncode}")
+    runner_path.write_text(runner)
     for path in (SOURCE, TEST):
         subprocess.run(['swiftc', '-frontend', '-parse', str(path)], check=True)
     subprocess.run(['git', 'diff', '--check'], check=True)
-    print(json.dumps({str(p): blob(p.read_bytes()) for p in (SOURCE, TEST)}, indent=2))
+    print(json.dumps({str(p): blob(p.read_bytes()) for p in (SOURCE, TEST, runner_path)}, indent=2))

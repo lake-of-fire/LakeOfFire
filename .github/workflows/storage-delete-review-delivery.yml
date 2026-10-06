@@ -40,7 +40,7 @@ jobs:
           cp Sources/LakeOfFireContent/Files/ReaderFileManager.swift "$evidence/ReaderFileManager.after.swift"
           cp Tests/LakeOfFireTests/ReaderFileLibraryBoundaryTests.swift "$evidence/ReaderFileLibraryBoundaryTests.after.swift"
           cp Tests/Portable/run_delete_selection_controls.py "$evidence/runner.py"
-          git diff -- Sources/LakeOfFireContent/Files/ReaderFileManager.swift Tests/LakeOfFireTests/ReaderFileLibraryBoundaryTests.swift > "$evidence/changes.patch"
+          git diff -- Sources/LakeOfFireContent/Files/ReaderFileManager.swift Tests/LakeOfFireTests/ReaderFileLibraryBoundaryTests.swift Tests/Portable/run_delete_selection_controls.py > "$evidence/changes.patch"
       - name: Exact original executor negative control
         shell: bash
         run: |
@@ -52,17 +52,16 @@ jobs:
           set -euo pipefail
           python3 Tests/Portable/run_delete_selection_controls.py Sources/LakeOfFireContent/Files/ReaderFileManager.swift "$REVIEW_EVIDENCE/debug" | tee "$REVIEW_EVIDENCE/debug-output.log"
           python3 Tests/Portable/run_delete_selection_controls.py Sources/LakeOfFireContent/Files/ReaderFileManager.swift "$REVIEW_EVIDENCE/optimized" --optimized | tee "$REVIEW_EVIDENCE/optimized-output.log"
-      - name: Publish only the reviewed source and native owner additions
+      - name: Publish only the reviewed source and test changes
         shell: bash
         run: |
           set -euo pipefail
           git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Sources/LakeOfFireContent/Files/ReaderFileManager.swift Tests/LakeOfFireTests/ReaderFileLibraryBoundaryTests.swift
+          git add Sources/LakeOfFireContent/Files/ReaderFileManager.swift Tests/LakeOfFireTests/ReaderFileLibraryBoundaryTests.swift Tests/Portable/run_delete_selection_controls.py
           git commit -m 'fix: retain original deletion admission through I/O and journal phases'
-          # A concurrent branch advance rejects this fast-forward push. No force,
-          # merge, protected target, production file or account access is involved.
+          # Concurrent advances reject this fast-forward push. Never force.
           git push origin HEAD:refs/heads/codex/storage-selection-closeout-20261005
           git rev-parse HEAD > "$REVIEW_EVIDENCE/published-head.txt"
       - name: Retain exact sources, controls and all failed diagnostics
