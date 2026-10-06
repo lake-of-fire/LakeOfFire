@@ -45,7 +45,7 @@ let package = Package(
         .package(url: "https://github.com/scinfu/SwiftSoup.git", branch: "master"),
         .package(url: "https://github.com/lake-of-fire/FilePicker.git", branch: "main"),
         .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
-        .package(url: "https://github.com/lake-of-fire/SwiftCloudDrive.git", branch: "main"),
+        .package(url: "https://github.com/lake-of-fire/SwiftCloudDrive.git", revision: "5f0d30e0e39fe9fd09e71b6ff1c01b444d8bdb9a"),
         .package(url: "https://github.com/dagronf/DSFStepperView.git", branch: "main"),
         .package(path: "../swift-readability"),
         .package(url: "https://github.com/facebook/zstd.git", from: "1.5.7"),

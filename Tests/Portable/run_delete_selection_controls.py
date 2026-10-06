@@ -52,6 +52,7 @@ enum ReaderFileDeleteError: Error {
 final class CloudDrive: @unchecked Sendable {
     let root: URL
     var beforeDirectory: (@Sendable () async -> Void)?
+    var beforeRemoval: (() -> Void)?
     var removes = 0
     init(root: URL) { self.root = root }
     func directoryExists(at path: RootRelativePath) async throws -> Bool {
@@ -62,6 +63,13 @@ final class CloudDrive: @unchecked Sendable {
     }
     func removeDirectory(at path: RootRelativePath) async throws { try remove(path) }
     func removeFile(at path: RootRelativePath) async throws { try remove(path) }
+    func removeItemSynchronously(at path: RootRelativePath, isDirectory: Bool,
+                                 validateAdmission: () throws -> Void) throws {
+        beforeRemoval?()
+        try validateAdmission()
+        try Task.checkCancellation()
+        try remove(path)
+    }
     private func remove(_ path: RootRelativePath) throws {
         removes += 1
         try FileManager.default.removeItem(at: root.appendingPathComponent(path.path))
@@ -128,6 +136,12 @@ struct CheckFailure: Error, CustomStringConvertible {
             }
         }
         if stage == "directory" { drive.beforeDirectory = changeOwner }
+        if stage == "removal" {
+            drive.beforeRemoval = {
+                if change == "realm" { manager.configuration.inMemoryIdentifier = "successor" }
+                if change == "initialization" { manager.initializationID = UUID() }
+            }
+        }
         if stage == "index" { manager.beforeIndex = changeOwner }
         if stage == "afterCommit" { manager.afterIndex = changeOwner }
         let shouldReject = ["realm", "initialization", "drive"].contains(change) && stage != "afterCommit"
@@ -141,7 +155,7 @@ struct CheckFailure: Error, CustomStringConvertible {
             rejected = true
         }
         try require(rejected == shouldReject, "rejection differs from original selection ownership")
-        let physicallyRemoved = !missing && !(shouldReject && ["status", "directory"].contains(stage))
+        let physicallyRemoved = !missing && !(shouldReject && ["status", "directory", "removal"].contains(stage))
         try require(drive.removes == (physicallyRemoved ? 1 : 0), "physical removal happened at the wrong phase")
         try require(manager.indexWrites == (shouldReject ? 0 : 1), "obsolete index phase was accepted or committed truth was lost")
         if !missing && !physicallyRemoved {
@@ -175,7 +189,7 @@ struct CheckFailure: Error, CustomStringConvertible {
     @MainActor static func main() async {
         var records: [[String: Any]] = []
         for missing in [false, true] {
-            for stage in missing ? ["status", "index", "afterCommit"] : ["status", "directory", "index", "afterCommit"] {
+            for stage in missing ? ["status", "index", "afterCommit"] : ["status", "directory", "removal", "index", "afterCommit"] {
                 for change in ["realm", "initialization"] {
                     let name = "\(missing ? "missing" : "file")/\(stage)/\(change)"
                     do {
@@ -271,8 +285,8 @@ def run(source_path, output, repaired, optimized):
         (output / 'run.json').write_text(result.stdout)
         (output / 'stderr.log').write_text(result.stderr)
         cases = json.loads(result.stdout)
-        assert len(cases) == 19 and len({c['name'] for c in cases}) == 19
-        receipt.update(run_status=result.returncode, cases=19,
+        assert len(cases) == 21 and len({c['name'] for c in cases}) == 21
+        receipt.update(run_status=result.returncode, cases=21,
                        passed=sum(c['passed'] for c in cases), failed=sum(not c['passed'] for c in cases))
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps(receipt), flush=True)
