@@ -12,6 +12,8 @@ jobs:
   test:
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,25 +85,25 @@ jobs:
           ref: 9df24a7809f5b681c8480ba7ef681335977f0fc5
           path: SwiftUtilities
           persist-credentials: false
-      - uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: '6.2.1'
-      - name: Record exact tuple
+      - name: Verify Apple toolchain and record exact tuple
         shell: bash
         run: |
           set -euo pipefail
+          test -d "$DEVELOPER_DIR"
+          sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+          test "${sdk_version%%.*}" -ge 26
           mkdir -p evidence
+          xcrun swift --version | tee evidence/toolchain.txt
           for path in LakeOfFire swiftui-webview swift-brave RealmSwiftGaps BigSyncKit SwiftUIDownloads JapaneseLanguageTools FaviconFinder SwiftSoup swift-readability LakeKit; do
             printf '%s %s\n' "$path" "$(git -C "$path" rev-parse HEAD)"
           done | tee evidence/tuple.txt
           git -C SwiftUtilities rev-parse HEAD >> evidence/tuple.txt
           find SwiftUtilities/Sources -type f -print0 | sort -z | xargs -0 shasum -a 256 > evidence/swiftutilities.sha256
-          swift --version > evidence/toolchain.txt
       - name: Run actual Lake reader epoch tests
         shell: bash
         run: |
           set -o pipefail
-          swift test --package-path LakeOfFire --filter ArticleReadingProgressEpochPortTests 2>&1 | tee evidence/test.log
+          xcrun swift test --package-path LakeOfFire --filter ArticleReadingProgressEpochPortTests 2>&1 | tee evidence/test.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
