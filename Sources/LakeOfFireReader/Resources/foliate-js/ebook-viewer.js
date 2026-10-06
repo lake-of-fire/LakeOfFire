@@ -18,6 +18,10 @@ import {
 } from './ebook-render-readiness.js'
 import { createNativeEpubLoader } from './ebook-native-loader.js'
 import { applyEbookViewerWritingDirection } from './ebook-viewer-writing-direction.js'
+import {
+    boundedRenderabilityAnchorSegment,
+    visibleSegmentProbeAcceptsIdentity,
+} from './ebook-renderability-segment-probe.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import { ebookProcessTextResponseIsAuthoritative } from './ebook-process-text-response.js'
 import { createNativeMarkReadRequestCoordinator } from './native-mark-read-request.js'
@@ -46,6 +50,7 @@ import { OwnedAsyncResource, OwnedPromiseSlot, OwnedScheduledTask } from './owne
 import { createOwnedAsyncCache } from './owned-async-cache.js'
 import { OwnedEventBindings, OwnedEventBindingScopes } from './owned-event-bindings.js'
 import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
+import { navButtonRefreshIsCurrent } from './nav-button-refresh-ownership.js'
 import { OwnedObjectURL } from './owned-object-url.js'
 import {
     activeRendererContentsForLookup,
@@ -2445,7 +2450,10 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
         const segmentIdentifier = includeSegmentMetadata
             ? segmentIdentifierForNode(segmentNode)
             : runtimeSegmentIdentifier;
-        if (!segmentIdentifier) {
+        if (!visibleSegmentProbeAcceptsIdentity({
+            includeSegmentMetadata,
+            segmentIdentifier,
+        })) {
             missingIdentifierCount += 1;
             continue;
         }
@@ -2622,9 +2630,28 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
     const expandedRangeResult = useVisibleRange
         ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds, { includeSegmentMetadata })
         : null;
-    const viewportSampleSegmentNodes = isEbookDoc && !expandedRangeResult
+    let viewportSampleSegmentNodes = isEbookDoc && !expandedRangeResult
         ? collectViewportSampleSegmentNodes(doc, visibleBounds, { sampleDensity: viewportSampleDensity })
         : null;
+    let viewportSampleSource = viewportSampleSegmentNodes
+        ? `viewport-sample-${viewportSampleDensity}`
+        : null;
+    if (
+        isEbookDoc
+        && !expandedRangeResult
+        && viewportSampleDensity === 'minimal'
+        && includeSegmentMetadata === false
+        && (viewportSampleSegmentNodes?.length ?? 0) === 0
+    ) {
+        // Nine fixed sample points can all miss a short line of visible text.
+        // Probe one bounded DOM anchor; normal range/geometry checks below still
+        // decide whether it is actually visible. This does not load sidecars.
+        const anchorSegment = boundedRenderabilityAnchorSegment(doc, visibleRange);
+        if (anchorSegment) {
+            viewportSampleSegmentNodes = [anchorSegment];
+            viewportSampleSource = 'minimal-anchor-probe';
+        }
+    }
     const boundedSegmentNodes = expandedRangeResult?.segmentNodes ?? viewportSampleSegmentNodes ?? null;
     const segmentSearchRoot = useVisibleRange && !expandedRangeResult && !isBroadEbookRange
         && rangeCommonAncestorElement?.querySelectorAll
@@ -2639,7 +2666,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         ? allSegmentNodes.length
         : null;
     const segmentCandidateSource = expandedRangeResult?.segmentCandidateSource
-        || (viewportSampleSegmentNodes ? `viewport-sample-${viewportSampleDensity}` : null)
+        || viewportSampleSource
         || (isBroadEbookRange ? 'ebook-broad-range-empty' : null)
         || (isEbookDoc && segmentSearchRoot === doc ? 'ebook-bounded-empty' : null)
         || (segmentSearchRoot === doc ? 'document' : 'range-ancestor');
@@ -2663,7 +2690,10 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         const segmentIdentifier = includeSegmentMetadata
             ? segmentIdentifierForNode(segmentNode)
             : runtimeSegmentIdentifier;
-        if (!segmentIdentifier) {
+        if (!visibleSegmentProbeAcceptsIdentity({
+            includeSegmentMetadata,
+            segmentIdentifier,
+        })) {
             missingIdentifierCount += 1;
             continue;
         }
@@ -3842,6 +3872,7 @@ class Reader {
     #ownedEventBindings = new OwnedEventBindings()
     #documentEventBindings = new OwnedEventBindingScopes()
     #navButtonOperations = new Set()
+    #navButtonOperationSequence = 0
     #sidebarCloseHandle = null
     #sidebarCoverURL = new OwnedObjectURL()
     #sidebarCoverLoadPromise = null
@@ -6581,8 +6612,25 @@ class Reader {
     }
 
     async updateNavButtons() {
+        const r = this.view?.renderer ?? null;
+        const operationSequence = this.#navButtonOperationSequence;
+        const viewGeneration = this.visiblePageCollectionGeneration;
+        const isCurrentUpdate = () => navButtonRefreshIsCurrent({
+            closed: this.#closed,
+            capturedRenderer: r,
+            currentRenderer: this.view?.renderer ?? null,
+            capturedOperationSequence: operationSequence,
+            currentOperationSequence: this.#navButtonOperationSequence,
+            capturedViewGeneration: viewGeneration,
+            currentViewGeneration: this.visiblePageCollectionGeneration,
+            activeOperationCount: this.#navButtonOperations.size,
+        });
+        if (!r || !isCurrentUpdate()) return false;
+
         const navVisibilityBefore = captureNavVisibilityState();
-        // Remove any nav-spinner left over from chapter navigation click
+        // Remove only spinners owned before this refresh starts. If a chapter
+        // operation begins while a renderer await is suspended, the ownership
+        // checks below prevent this older refresh from publishing over it.
         document.querySelectorAll('.ispinner.nav-spinner').forEach(spinner => {
             const btn = spinner.closest('button');
             if (btn && btn._originalIcon) {
@@ -6592,14 +6640,17 @@ class Reader {
             const label = btn.querySelector('.button-label');
             if (label) label.style.visibility = '';
         });
-        if (!this.view?.renderer) return;
-        const r = this.view.renderer;
-        // Use new section start/end helpers if available
+
+        // Use new section start/end helpers if available.
         const atSectionStart = typeof r.isAtSectionStart === "function" ? await r.isAtSectionStart() : false;
+        if (!isCurrentUpdate()) return false;
         const atSectionEnd = typeof r.isAtSectionEnd === "function" ? await r.isAtSectionEnd() : false;
-        // Use public helpers to detect prev/next section
+        if (!isCurrentUpdate()) return false;
+        // Use public helpers to detect prev/next section.
         const hasPrevSection = typeof r.getHasPrevSection === "function" ? await r.getHasPrevSection() : true;
+        if (!isCurrentUpdate()) return false;
         const hasNextSection = typeof r.getHasNextSection === "function" ? await r.getHasNextSection() : true;
+        if (!isCurrentUpdate()) return false;
         const sectionIndex = typeof this.navHUD?.lastRelocateDetail?.sectionIndex === 'number'
             ? this.navHUD.lastRelocateDetail.sectionIndex
             : (typeof this.navHUD?.lastRelocateDetail?.index === 'number'
@@ -6699,6 +6750,7 @@ class Reader {
             });
         }
         this.#schedulePageTrackingSync('nav-buttons', null, 1, 96);
+        return true;
     }
     async #handleKeydown(event) {
         const k = event.key;
@@ -7996,6 +8048,10 @@ class Reader {
             }
             if (label) label.style.visibility = previousLabelVisibility;
         });
+        // Remember that this operation happened even after it finishes. An
+        // older refresh suspended in renderer metrics must never regain control
+        // merely because the newer operation already left the active set.
+        this.#navButtonOperationSequence += 1
         this.#navButtonOperations.add(operation)
         fallbackTimer = setTimeout(refreshAfterFinish, navSpinnerMaximumMs);
 
