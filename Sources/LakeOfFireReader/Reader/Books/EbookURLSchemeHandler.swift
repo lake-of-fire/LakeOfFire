@@ -581,14 +581,53 @@ fileprivate actor EBookLoadingActor {
             false
 #endif
         }()
+        let shouldEnableProgressAdmissionDiagnostic: Bool = {
+#if DEBUG
+            ProcessInfo.processInfo.environment["MANABI_EBOOK_PROGRESS_ADMISSION_DIAGNOSTIC"] == "1"
+#else
+            false
+#endif
+        }()
         let data: Data
-        if shouldEnablePageTurnInteractionDiagnostic {
+        if shouldEnablePageTurnInteractionDiagnostic || shouldEnableProgressAdmissionDiagnostic {
             var html = try String(contentsOfFile: viewerHtmlPath, encoding: .utf8)
             let diagnosticPayload = """
             <script>
             (function() {
                 try {
-                    globalThis.manabiPageTurnInteractionDiagnostic = true;
+                    globalThis.manabiPageTurnInteractionDiagnostic = \(shouldEnablePageTurnInteractionDiagnostic);
+                    if (\(shouldEnableProgressAdmissionDiagnostic)) {
+                        const stages = new Set([
+                            'ebook.confirmedProgress.rejected',
+                            'ebook.updateReadingProgress.rejected',
+                            'ebook.updateReadingProgress.dispatch',
+                            'ebook.relocate.progressAdmission',
+                            'ebook.positionSave.userInput'
+                        ]);
+                        const fields = new Set([
+                            'stage', 'reason', 'source', 'closed', 'hasLoadedLastPosition',
+                            'restoreInProgress', 'suppressNextSave', 'requiresUserInput',
+                            'hasProducerOwner', 'hasBookScope', 'locationRevision',
+                            'capturedRevision', 'currentRevision', 'sectionIndex',
+                            'documentMismatch', 'sectionMismatch', 'locationCFIMismatch',
+                            'locationFractionMismatch'
+                        ]);
+                        globalThis.__manabiRestoreDebugLog = (stage, payload = {}) => {
+                            if (!stages.has(stage)) return;
+                            const safe = {};
+                            for (const [key, value] of Object.entries(payload)) {
+                                if (!fields.has(key)) continue;
+                                if (typeof value === 'boolean' || Number.isFinite(value)) safe[key] = value;
+                                else if (['stage', 'reason', 'source'].includes(key) && typeof value === 'string') {
+                                    safe[key] = value.slice(0, 80);
+                                }
+                            }
+                            window.webkit?.messageHandlers?.readerConsoleLog?.postMessage({
+                                severity: 'debug',
+                                arguments: '# READER ebook-progress-boundary stage=' + stage + ' ' + JSON.stringify(safe)
+                            });
+                        };
+                    }
                 } catch (err) {
                     console.error('Failed to enable page-turn interaction diagnostic flag', err);
                 }
