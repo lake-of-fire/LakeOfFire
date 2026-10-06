@@ -23,11 +23,11 @@ enum ReaderFileImportStorage {
         let baseName = fileURL.deletingPathExtension().lastPathComponent
         let ext = pathExtension.isEmpty ? "" : "." + pathExtension
 
-        // Resolve the parent before inspecting an occupied leaf. A leaf symlink
-        // is only a name collision; a symlinked/escaped parent must still fail
-        // the drive's root-relative validation.
-        let validatedTargetDirectory = try targetDirectory.directoryURL(
-            forRoot: drive.rootDirectory
+        // SwiftCloudDrive's pinned resolver appends paths without validating
+        // their components. Own parent admission here; occupied leaf symlinks
+        // remain collisions and must never be followed for comparison.
+        let validatedTargetDirectory = try validatedImportDirectory(
+            targetDirectory, root: drive.rootDirectory
         )
 
         func packageIdentity(at url: URL) async throws -> Data {
@@ -63,6 +63,12 @@ enum ReaderFileImportStorage {
             },
             inspect: { name in
                 let path = targetDirectory.appending(name)
+                // Reject any parent replacement observed after an asynchronous
+                // comparison/retry before using this candidate.
+                guard try validatedImportDirectory(targetDirectory, root: drive.rootDirectory)
+                    == validatedTargetDirectory else {
+                    throw CocoaError(.fileWriteInvalidFileName)
+                }
                 let lexicalDestination = validatedTargetDirectory
                     .appendingPathComponent(name)
 
@@ -90,9 +96,43 @@ enum ReaderFileImportStorage {
                 return existing == source ? .identical : .different
             },
             copyExclusively: { name in
+                guard try validatedImportDirectory(targetDirectory, root: drive.rootDirectory)
+                    == validatedTargetDirectory else {
+                    throw CocoaError(.fileWriteInvalidFileName)
+                }
                 try await drive.upload(from: fileURL, to: targetDirectory.appending(name))
             }
         )
         return targetDirectory.appending(installedName)
     }
+
+    private static func validatedImportDirectory(
+        _ directory: RootRelativePath, root: URL
+    ) throws -> URL {
+        guard root.isFileURL, root.hasDirectoryPath,
+              !directory.path.hasPrefix("/") else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        var components = directory.path.split(separator: "/", omittingEmptySubsequences: false)
+        if components.last == "" { components.removeLast() }
+        guard components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        // Resolve the selected root itself (e.g. macOS /var -> /private/var),
+        // then reject links in every relative parent component.
+        var current = root.resolvingSymlinksInPath().standardizedFileURL
+        guard try FileManager.default.attributesOfItem(atPath: current.path)[.type]
+            as? FileAttributeType == .typeDirectory else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        for component in components {
+            current.appendPathComponent(String(component), isDirectory: true)
+            guard try FileManager.default.attributesOfItem(atPath: current.path)[.type]
+                as? FileAttributeType == .typeDirectory else {
+                throw CocoaError(.fileWriteInvalidFileName)
+            }
+        }
+        return current
+    }
+
 }

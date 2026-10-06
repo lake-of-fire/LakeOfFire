@@ -192,6 +192,43 @@ final class ReaderFileImportStorageNativeTests: XCTestCase {
         )
     }
 
+    func testParentTraversalCannotWriteOutsideTheLibrary() async throws {
+        let f = try Fixture()
+        try f.put(f.source, "new")
+        let drive = try await f.drive()
+        do {
+            _ = try await ReaderFileImportStorage.install(
+                fileURL: f.source,
+                targetDirectory: RootRelativePath(path: "../escaped-imports"),
+                drive: drive,
+                pathExtension: "epub",
+                collisionTag: { _ in "ABCDEF" }
+            )
+            XCTFail("Expected parent traversal rejection")
+        } catch {
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: f.root.appendingPathComponent("escaped-imports").path
+            ))
+        }
+    }
+
+    func testNestedOrdinaryTargetDirectoryRemainsUsable() async throws {
+        let f = try Fixture()
+        try f.put(f.source, "new")
+        let drive = try await f.drive()
+        let directory = RootRelativePath(path: "imports/nested")
+        try await drive.createDirectory(at: directory)
+        let installed = try await ReaderFileImportStorage.install(
+            fileURL: f.source, targetDirectory: directory, drive: drive,
+            pathExtension: "epub", collisionTag: { _ in "ABCDEF" }
+        )
+        XCTAssertEqual(installed.path, "imports/nested/book.epub")
+        XCTAssertEqual(
+            try Data(contentsOf: f.library.appendingPathComponent(installed.path)),
+            Data("new".utf8)
+        )
+    }
+
     func testSourceSymlinkIsRejectedWithoutInstallation() async throws {
         let f = try Fixture(); let target = f.root.appendingPathComponent("outside")
         try f.put(target, "private")
