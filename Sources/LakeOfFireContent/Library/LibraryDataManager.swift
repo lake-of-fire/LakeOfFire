@@ -219,35 +219,35 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     public override init() {
         super.init()
 
-        guard Self.observesDownloadController else { return }
-        
-        // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
-        Task { @MainActor in
-            Self.downloadController.$finishedDownloads
-                .debounceLeadingTrailing(for: .seconds(0.25), scheduler: RunLoop.main)
-                .sink(receiveValue: { [weak self] feedDownloads in
-                    guard let self = self else { return }
-                    importOPMLTask?.cancel()
-                    importOPMLTask = Task { @RealmBackgroundActor [weak self] in
-                        let opmlDownloads = feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") })
-                        //                    let libraryConfiguration = try await LibraryConfiguration.get()
-                        for download in opmlDownloads {
-                            try Task.checkCancellation()
-                            //                        if (download.finishedDownloadingDuringCurrentLaunchAt == nil && (download.lastDownloaded ?? Date.distantPast) > libraryConfiguration?.opmlLastImportedAt ?? Date.distantPast) || ((download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)) {
-                            // ^ Re-enable reloading on every launch:
-                            if download.finishedLoadingDuringCurrentLaunchAt == nil || (download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast) {
-                                do {
-                                    try await self?.importOPML(download: download)
-                                } catch {
-                                    if error as? CancellationError == nil {
+        if Self.observesDownloadController {
+            // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
+            Task { @MainActor in
+                Self.downloadController.$finishedDownloads
+                    .debounceLeadingTrailing(for: .seconds(0.25), scheduler: RunLoop.main)
+                    .sink(receiveValue: { [weak self] feedDownloads in
+                        guard let self = self else { return }
+                        importOPMLTask?.cancel()
+                        importOPMLTask = Task { @RealmBackgroundActor [weak self] in
+                            let opmlDownloads = feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") })
+                            //                    let libraryConfiguration = try await LibraryConfiguration.get()
+                            for download in opmlDownloads {
+                                try Task.checkCancellation()
+                                //                        if (download.finishedDownloadingDuringCurrentLaunchAt == nil && (download.lastDownloaded ?? Date.distantPast) > libraryConfiguration?.opmlLastImportedAt ?? Date.distantPast) || ((download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)) {
+                                // ^ Re-enable reloading on every launch:
+                                if download.finishedLoadingDuringCurrentLaunchAt == nil || (download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast) {
+                                    do {
+                                        try await self?.importOPML(download: download)
+                                    } catch {
+                                        if error as? CancellationError == nil {
+                                        }
                                     }
+                                } else {
                                 }
-                            } else {
                             }
                         }
-                    }
-                })
-                .store(in: &cancellables)
+                    })
+                    .store(in: &cancellables)
+            }
         }
         
         //        DownloadController.shared.finishedDownloads.publisher

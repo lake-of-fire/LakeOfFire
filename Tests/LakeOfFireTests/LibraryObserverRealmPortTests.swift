@@ -4,14 +4,13 @@ import XCTest
 @testable import LakeOfFireContent
 
 final class LibraryObserverRealmPortTests: XCTestCase {
-    override func tearDown() {
-        LibraryDataManager.observesDownloadController = true
-        super.tearDown()
-    }
-
     func testScriptObserverStaysBoundToRealmCapturedAtSubscription() async throws {
         let original = LibraryDataManager.realmConfiguration
-        defer { LibraryDataManager.realmConfiguration = original }
+        let originallyObservedDownloads = LibraryDataManager.observesDownloadController
+        defer {
+            LibraryDataManager.realmConfiguration = original
+            LibraryDataManager.observesDownloadController = originallyObservedDownloads
+        }
         LibraryDataManager.observesDownloadController = false
 
         let observed = makeConfiguration()
@@ -32,11 +31,16 @@ final class LibraryObserverRealmPortTests: XCTestCase {
         }.value
 
         let manager = LibraryDataManager()
-        defer {
-            Task { @RealmBackgroundActor in
+        addTeardownBlock {
+            await Task { @RealmBackgroundActor in
                 manager.realmCancellables.forEach { $0.cancel() }
-            }
+                manager.realmCancellables.removeAll()
+            }.value
         }
+        let observersInstalled = try await eventually { @RealmBackgroundActor in
+            manager.realmCancellables.count == 2
+        }
+        XCTAssertTrue(observersInstalled, "The real Realm observers must be installed")
 
         let initialReconciled = try await eventually { @RealmBackgroundActor in
             let realm = try await Realm(
@@ -106,17 +110,26 @@ final class LibraryObserverRealmPortTests: XCTestCase {
 
     func testInitialEmptyObserverDoesNotCreateLibraryConfiguration() async throws {
         let original = LibraryDataManager.realmConfiguration
-        defer { LibraryDataManager.realmConfiguration = original }
+        let originallyObservedDownloads = LibraryDataManager.observesDownloadController
+        defer {
+            LibraryDataManager.realmConfiguration = original
+            LibraryDataManager.observesDownloadController = originallyObservedDownloads
+        }
         LibraryDataManager.observesDownloadController = false
 
         let configuration = makeConfiguration()
         LibraryDataManager.realmConfiguration = configuration
         let manager = LibraryDataManager()
-        defer {
-            Task { @RealmBackgroundActor in
+        addTeardownBlock {
+            await Task { @RealmBackgroundActor in
                 manager.realmCancellables.forEach { $0.cancel() }
-            }
+                manager.realmCancellables.removeAll()
+            }.value
         }
+        let observersInstalled = try await eventually { @RealmBackgroundActor in
+            manager.realmCancellables.count == 2
+        }
+        XCTAssertTrue(observersInstalled, "The real Realm observers must be installed")
 
         try await Task.sleep(nanoseconds: 700_000_000)
 
