@@ -67,6 +67,11 @@ final class CloudDrive: @unchecked Sendable {
         try FileManager.default.removeItem(at: root.appendingPathComponent(path.path))
     }
 }
+struct DiagnosticLog: Sendable { func error(_ message: String) {} }
+struct Logger: Sendable {
+    static let shared = Logger()
+    let logger = DiagnosticLog()
+}
 final class ReaderFileManager: @unchecked Sendable {
     var localDrive: CloudDrive?
     var cloudDrive: CloudDrive?
@@ -251,13 +256,16 @@ def run(source_path, output, repaired, optimized):
     program = output / 'Controls.swift'
     program.write_text(fixture(source, repaired))
     binary = output / 'controls'
-    command = ['swiftc', '-swift-version', '6', '-strict-concurrency=complete', '-warnings-as-errors',
+    command = ['swiftc', '-swift-version', '6', '-strict-concurrency=complete',
                '-parse-as-library', '-O' if optimized else '-Onone', str(program), '-o', str(binary)]
+    # Keep predecessor code unchanged despite its ignored-Task warning.
+    if repaired: command.append('-warnings-as-errors')
     build = subprocess.run(command, text=True, capture_output=True, timeout=120)
     (output / 'build.log').write_text(build.stdout + build.stderr)
     receipt = {'source_sha256': hashlib.sha256(source_path.read_bytes()).hexdigest(),
                'fixture_sha256': hashlib.sha256(program.read_bytes()).hexdigest(),
-               'repaired': repaired, 'optimized': optimized, 'build_status': build.returncode}
+               'repaired': repaired, 'optimized': optimized, 'warnings_as_errors': repaired,
+               'build_status': build.returncode}
     if build.returncode == 0:
         result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
         (output / 'run.json').write_text(result.stdout)

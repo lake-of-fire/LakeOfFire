@@ -486,12 +486,21 @@ public class ReaderFileManager: ObservableObject {
     @RealmBackgroundActor
     func delete(readerFileURL contentURL: URL, statusLoader: DeleteStatusLoader) async throws {
         try Task.checkCancellation()
-        let realmConfiguration = resolvedHistoryRealmConfiguration
+        // Capture before the first availability/actor handoff. Keeping only
+        // the drive permits a replaced Realm or a newer failed initialization
+        // to authorize physical removal before the later index phase rejects.
+        let selection = MetadataRefreshSelection(
+            localDrive: localDrive, cloudDrive: cloudDrive,
+            initializationIdentifier: initializationID,
+            realmConfiguration: resolvedHistoryRealmConfiguration
+        )
         guard let readerBackingURL = canonicalReaderBackingURL(for: contentURL) else {
             throw ReaderFileDeleteError.removeFailed()
         }
         let pathContext = try readerBackingPathContext(for: readerBackingURL)
-        let drive = pathContext.storageLocation == .local ? localDrive : cloudDrive
+        let drive = pathContext.storageLocation == .local
+            ? selection.localDrive : selection.cloudDrive
+        try validateDeletionSelection(pathContext, drive: drive, selection: selection)
         let status: CloudDriveSyncStatus
         do {
             status = try await statusLoader(readerBackingURL)
@@ -500,7 +509,7 @@ public class ReaderFileManager: ObservableObject {
         } catch {
             throw ReaderFileDeleteError.blockedLoadingStatus
         }
-        try validateDeletionSelection(pathContext, drive: drive)
+        try validateDeletionSelection(pathContext, drive: drive, selection: selection)
         switch status {
         case .cloudOnly: throw ReaderFileDeleteError.blockedCloudOnly
         case .loadingStatus: throw ReaderFileDeleteError.blockedLoadingStatus
@@ -513,7 +522,7 @@ public class ReaderFileManager: ObservableObject {
             guard let drive else { throw ReaderFileManagerError.driveMissing }
             do {
                 let isDirectory = try await drive.directoryExists(at: pathContext.relativePath)
-                try validateDeletionSelection(pathContext, drive: drive)
+                try validateDeletionSelection(pathContext, drive: drive, selection: selection)
                 if isDirectory {
                     try await drive.removeDirectory(at: pathContext.relativePath)
                 } else {
@@ -530,14 +539,22 @@ public class ReaderFileManager: ObservableObject {
 
         // The physical removal, if any, is already committed. This next phase
         // can fail independently; it must never mutate a replacement's index.
-        try await markDeleted(contentURL: contentURL, realmConfiguration: realmConfiguration,
-                              pathContext: pathContext, drive: drive)
+        try await markDeleted(contentURL: contentURL, pathContext: pathContext,
+                              drive: drive, selection: selection)
         await removeDeletedFileFromPublishedFiles(matching: readerBackingURL,
-            realmConfiguration: realmConfiguration, pathContext: pathContext, drive: drive)
+            pathContext: pathContext, drive: drive, selection: selection)
         Task { @MainActor [weak self] in
-            guard let self, self.deletionDriveIsCurrent(pathContext, drive: drive),
-                  Self.sameHistoryRealm(self.resolvedHistoryRealmConfiguration, realmConfiguration) else { return }
-            try await self.refreshAllFilesMetadata(force: true, realmConfiguration: realmConfiguration)
+            guard let self,
+                  self.deletionSelectionIsCurrent(pathContext, drive: drive, selection: selection) else { return }
+            // Optional refresh cannot acquire a new selection or change an
+            // already-committed deletion into a reported failure.
+            do {
+                try await self.refreshAllFilesMetadata(force: true, selection: selection)
+            } catch is CancellationError {
+                // A superseded optional publication has no effects to retry.
+            } catch {
+                Logger.shared.logger.error("File inventory refresh after deletion failed: \(error)")
+            }
         }
     }
 
@@ -546,9 +563,23 @@ public class ReaderFileManager: ObservableObject {
         return current === drive
     }
 
-    private func validateDeletionSelection(_ context: ReaderBackingPathContext, drive: CloudDrive?) throws {
+    private func deletionSelectionIsCurrent(
+        _ context: ReaderBackingPathContext, drive: CloudDrive?,
+        selection: MetadataRefreshSelection
+    ) -> Bool {
+        // Only the selected drive participates in deletion. An unrelated
+        // drive replacement does not revoke a current local/cloud command.
+        deletionDriveIsCurrent(context, drive: drive)
+            && initializationID == selection.initializationIdentifier
+            && Self.sameHistoryRealm(resolvedHistoryRealmConfiguration, selection.realmConfiguration)
+    }
+
+    private func validateDeletionSelection(
+        _ context: ReaderBackingPathContext, drive: CloudDrive?,
+        selection: MetadataRefreshSelection
+    ) throws {
         try Task.checkCancellation()
-        guard deletionDriveIsCurrent(context, drive: drive) else {
+        guard deletionSelectionIsCurrent(context, drive: drive, selection: selection) else {
             throw ReaderFileDeleteError.removeFailed(
                 underlyingDescription: "The selected storage changed. Retry from the current library."
             )
@@ -1444,11 +1475,12 @@ public class ReaderFileManager: ObservableObject {
 
     @MainActor
     private func removeDeletedFileFromPublishedFiles(
-        matching readerBackingURL: URL, realmConfiguration: Realm.Configuration,
-        pathContext: ReaderBackingPathContext, drive: CloudDrive?
+        matching readerBackingURL: URL, pathContext: ReaderBackingPathContext,
+        drive: CloudDrive?, selection: MetadataRefreshSelection
     ) {
-        guard deletionDriveIsCurrent(pathContext, drive: drive),
-              Self.sameHistoryRealm(resolvedHistoryRealmConfiguration, realmConfiguration) else { return }
+        // Display can be obsolete after durable success; skip it without
+        // changing the command's already-committed physical/index outcome.
+        guard deletionSelectionIsCurrent(pathContext, drive: drive, selection: selection) else { return }
         guard let canonicalDeletedURL = canonicalReaderBackingURL(for: readerBackingURL),
               let files else {
             return
@@ -1468,13 +1500,14 @@ public class ReaderFileManager: ObservableObject {
 
     @RealmBackgroundActor
     private func markDeleted(
-        contentURL: URL, realmConfiguration: Realm.Configuration,
-        pathContext: ReaderBackingPathContext, drive: CloudDrive?
+        contentURL: URL, pathContext: ReaderBackingPathContext,
+        drive: CloudDrive?, selection: MetadataRefreshSelection
     ) async throws {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        try validateDeletionSelection(pathContext, drive: drive, selection: selection)
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: selection.realmConfiguration)
         let canonicalContentURL = pathContext.canonicalURL
         try await realm.asyncWritePreservingOwnership {
-            try validateDeletionSelection(pathContext, drive: drive)
+            try validateDeletionSelection(pathContext, drive: drive, selection: selection)
             // Missing at the earlier status read is not proof of continued
             // absence. A reimport at the same path must keep its live metadata.
             if let path = pathContext.activeRootURL, try Self.fileSystemEntryExists(at: path) {
@@ -1502,7 +1535,7 @@ public class ReaderFileManager: ObservableObject {
                     packageContentFile.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 }
             }
-            try validateDeletionSelection(pathContext, drive: drive)
+            try validateDeletionSelection(pathContext, drive: drive, selection: selection)
         }
     }
     
