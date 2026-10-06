@@ -38,7 +38,7 @@ final class LibraryObserverRealmPortTests: XCTestCase {
             }
         }
 
-        XCTAssertTrue(try await eventually { @RealmBackgroundActor in
+        let initialReconciled = try await eventually { @RealmBackgroundActor in
             let realm = try await Realm(
                 configuration: observed,
                 actor: RealmBackgroundActor.shared
@@ -47,7 +47,8 @@ final class LibraryObserverRealmPortTests: XCTestCase {
                 ofType: LibraryConfiguration.self,
                 forPrimaryKey: ids.0
             )?.userScriptIDs.contains(ids.1) == true
-        })
+        }
+        XCTAssertTrue(initialReconciled)
 
         let replacementIDs = try await Task { @RealmBackgroundActor in
             let realm = try await Realm(
@@ -76,7 +77,7 @@ final class LibraryObserverRealmPortTests: XCTestCase {
             return script.id
         }.value
 
-        XCTAssertTrue(try await eventually { @RealmBackgroundActor in
+        let nextReconciled = try await eventually { @RealmBackgroundActor in
             let realm = try await Realm(
                 configuration: observed,
                 actor: RealmBackgroundActor.shared
@@ -85,7 +86,8 @@ final class LibraryObserverRealmPortTests: XCTestCase {
                 ofType: LibraryConfiguration.self,
                 forPrimaryKey: ids.0
             )?.userScriptIDs.contains(nextID) == true
-        })
+        }
+        XCTAssertTrue(nextReconciled)
 
         let replacementIDsAfter = try await Task { @RealmBackgroundActor in
             let realm = try await Realm(
