@@ -50,6 +50,7 @@ class Handler(SimpleHTTPRequestHandler):
 BRIDGE = '''(() => {
     window.manabi_compactSegmentSidecarSchemaVersion = 12;
     window.nativeMessages = []; window.bookActionRequests = [];
+    window.accountPresentation = '1:1';
     window.persistedProgress = {readSegmentIdentifiers:['previously-read-segment'],sentenceIdentifiersRead:['previously-read-sentence'],articleMarkedAsFinished:false};
     window.historicalReadIDs = ['previously-read-segment'];
     window.bookEpoch = 'initial'; window.chapterEpochs = {}; window.stateSequence = 0;
@@ -78,7 +79,7 @@ BRIDGE = '''(() => {
             bookReadPresence:persistedProgress.readSegmentIdentifiers.length?'present':'empty',chapterReadPresence:request.isEndPage?'empty':persistedProgress.readSegmentIdentifiers.length?'present':'empty',
             readSegmentIdentifiers:request.isEndPage?[]:persistedProgress.readSegmentIdentifiers,sentenceIdentifiersRead:request.isEndPage?[]:persistedProgress.sentenceIdentifiersRead};
         const context = {contextID:bookEpoch+'-'+(scope?.chapterEpochID??'0')+'-'+(request.isEndPage?'end':sectionLocation),articleProgressID:'book',articleEpochID:bookEpoch,scope,sectionLocation:request.isEndPage?null:sectionLocation,isEndPage:request.isEndPage};
-        window.manabi_bookReadingStateDidUpdate(request.requestID,{ok:true,state,context,nativeRefresh,location:{sectionURL:request.sectionURL,isEndPage:request.isEndPage,locationRevision:request.locationRevision}});
+        window.manabi_bookReadingStateDidUpdate(request.requestID,{ok:true,accountPresentation,state,context,nativeRefresh,location:{sectionURL:request.sectionURL,isEndPage:request.isEndPage,locationRevision:request.locationRevision}});
     };
     handlers.ebookBookReadingState = {postMessage(payload) { queueMicrotask(()=>publishState(payload)); }};
     handlers.ebookBookAction = {postMessage(payload) { bookActionRequests.push(payload); }};
@@ -94,10 +95,10 @@ BRIDGE = '''(() => {
             }
             publishState(lastLocation,true);
             if(request.action!=='finishBook') navigation=await reader.navigateBookReadingAction({
-                action:request.action,articleProgressID:'book',articleEpochID:bookEpoch,chapterEpochID:request.action==='startChapterOver'?request.requestID:null,
+                action:request.action,accountPresentation,articleProgressID:'book',articleEpochID:bookEpoch,chapterEpochID:request.action==='startChapterOver'?request.requestID:null,
                 sectionLocation:request.context.sectionLocation,locationRevision:request.context.locationRevision});
         }
-        window.manabi_bookActionDidComplete(request.deliveryID,{requestID:request.requestID,ok,committed:ok,
+        window.manabi_bookActionDidComplete(request.deliveryID,{requestID:request.requestID,accountPresentation,ok,committed:ok,
             finished:persistedProgress.articleMarkedAsFinished,navigation,...(ok?{}:{error:'Simulated native write failure'})});
     };
 })();'''
