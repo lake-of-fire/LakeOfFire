@@ -79,16 +79,10 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          repository: aehlke/manabi-reader
-          ref: d03c2f177285a9ca27b21e8ff0c302b2a7848808
-          path: ReaderTuple
+          repository: lake-of-fire/SwiftUtilities
+          ref: 9df24a7809f5b681c8480ba7ef681335977f0fc5
+          path: SwiftUtilities
           persist-credentials: false
-      - name: Materialize root-vendored SwiftUtilities
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp -R ReaderTuple/Vendor/SwiftUtilities SwiftUtilities
-          test -f SwiftUtilities/Package.swift
       - uses: swift-actions/setup-swift@v2
         with:
           swift-version: '6.2.1'
@@ -100,8 +94,8 @@ jobs:
           for path in LakeOfFire swiftui-webview swift-brave RealmSwiftGaps BigSyncKit SwiftUIDownloads JapaneseLanguageTools FaviconFinder SwiftSoup swift-readability LakeKit; do
             printf '%s %s\n' "$path" "$(git -C "$path" rev-parse HEAD)"
           done | tee evidence/tuple.txt
-          git -C ReaderTuple rev-parse HEAD >> evidence/tuple.txt
-          find SwiftUtilities -type f -print0 | sort -z | xargs -0 shasum -a 256 > evidence/swiftutilities.sha256
+          git -C SwiftUtilities rev-parse HEAD >> evidence/tuple.txt
+          find SwiftUtilities/Sources -type f -print0 | sort -z | xargs -0 shasum -a 256 > evidence/swiftutilities.sha256
           swift --version > evidence/toolchain.txt
       - name: Run actual Lake reader epoch tests
         shell: bash
