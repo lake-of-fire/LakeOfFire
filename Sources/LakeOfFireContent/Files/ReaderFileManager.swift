@@ -482,9 +482,12 @@ public class ReaderFileManager: ObservableObject {
     }
 
     /// The public command and native boundary tests share the same executor.
-    /// Only its asynchronous availability collaborator can be supplied by tests.
+    /// Tests can supply availability and observe final synchronous admission;
+    /// neither seam replaces native coordination or the production selection check.
     @RealmBackgroundActor
-    func delete(readerFileURL contentURL: URL, statusLoader: DeleteStatusLoader) async throws {
+    func delete(readerFileURL contentURL: URL, statusLoader: DeleteStatusLoader,
+                beforeRemovalAdmission: (() throws -> Void)? = nil
+    ) async throws {
         try Task.checkCancellation()
         // Capture before the first availability/actor handoff. Keeping only
         // the drive permits a replaced Realm or a newer failed initialization
@@ -523,10 +526,14 @@ public class ReaderFileManager: ObservableObject {
             do {
                 let isDirectory = try await drive.directoryExists(at: pathContext.relativePath)
                 try validateDeletionSelection(pathContext, drive: drive, selection: selection)
-                if isDirectory {
-                    try await drive.removeDirectory(at: pathContext.relativePath)
-                } else {
-                    try await drive.removeFile(at: pathContext.relativePath)
+                // Native coordination can wait after the earlier inspection.
+                // Keep the final check and removal synchronous on this caller,
+                // rather than sending live selection state to another actor.
+                try drive.removeItemSynchronously(
+                    at: pathContext.relativePath, isDirectory: isDirectory
+                ) {
+                    try beforeRemovalAdmission?()
+                    try validateDeletionSelection(pathContext, drive: drive, selection: selection)
                 }
             } catch is CancellationError {
                 throw CancellationError()

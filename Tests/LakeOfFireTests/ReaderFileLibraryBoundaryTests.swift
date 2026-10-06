@@ -1106,3 +1106,81 @@ extension ReaderFileLibraryBoundaryTests {
         }
     }
 }
+
+// MARK: Native coordinated removal admission
+@MainActor
+extension ReaderFileLibraryBoundaryTests {
+    private func checkRealmReplacementAtRemovalAccessor(isDirectory: Bool) async throws {
+        try await withFixture { f in
+            let target = f.library.appendingPathComponent("delete.txt", isDirectory: isDirectory)
+            let payload = isDirectory ? target.appendingPathComponent("book.txt") : target
+            try self.write("original bytes", to: payload)
+            let record = try self.indexedDeletionRecord(f)
+            let backing = record.url
+            let before = self.refreshStorageSnapshot(f.realm)
+            var configuration = f.configuration
+            configuration.inMemoryIdentifier = "accessor-successor-" + UUID().uuidString
+            BigSyncMutationTracking.install(configurations: [configuration], excludedClassNames: [])
+            let successorRealm = try await Realm(configuration: configuration, actor: MainActor.shared)
+            let successorBefore = self.refreshStorageSnapshot(successorRealm)
+            let replacementConfiguration = configuration
+            do {
+                try await f.manager.delete(
+                    readerFileURL: backing,
+                    statusLoader: { url in
+                        try await f.manager.cloudDriveSyncStatus(forReaderBackingURL: url)
+                    },
+                    beforeRemovalAdmission: {
+                        // This runs inside the real native deletion accessor,
+                        // after all earlier async inspection has completed.
+                        f.manager.historyRealmConfigurationOverride = replacementConfiguration
+                    }
+                )
+                XCTFail("Replacement at final native admission must preserve the selected payload")
+            } catch ReaderFileDeleteError.removeFailed { }
+            XCTAssertEqual(
+                f.manager.historyRealmConfigurationOverride?.inMemoryIdentifier,
+                replacementConfiguration.inMemoryIdentifier
+            )
+            XCTAssertEqual(try Data(contentsOf: payload), Data("original bytes".utf8))
+            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before)
+            XCTAssertEqual(self.refreshStorageSnapshot(successorRealm), successorBefore)
+            XCTAssertFalse(record.isDeleted)
+            XCTAssertEqual(f.manager.files?.map(\.compoundKey), [record.compoundKey])
+        }
+    }
+
+    func testFileDeleteRejectsRealmReplacementInsideNativeRemovalAccessor() async throws {
+        try await checkRealmReplacementAtRemovalAccessor(isDirectory: false)
+    }
+
+    func testDirectoryDeleteRejectsRealmReplacementInsideNativeRemovalAccessor() async throws {
+        try await checkRealmReplacementAtRemovalAccessor(isDirectory: true)
+    }
+
+    func testDeleteCancellationInsideNativeRemovalAccessorPreservesPayloadAndJournal() async throws {
+        try await withFixture { f in
+            let payload = f.library.appendingPathComponent("delete.txt")
+            try self.write("keep", to: payload)
+            let record = try self.indexedDeletionRecord(f)
+            let backing = record.url
+            let before = self.refreshStorageSnapshot(f.realm)
+            let task = Task {
+                try await f.manager.delete(
+                    readerFileURL: backing,
+                    statusLoader: { url in
+                        try await f.manager.cloudDriveSyncStatus(forReaderBackingURL: url)
+                    },
+                    beforeRemovalAdmission: {
+                        withUnsafeCurrentTask { $0?.cancel() }
+                    }
+                )
+            }
+            do { try await task.value; XCTFail("Expected final-accessor cancellation") }
+            catch is CancellationError { }
+            XCTAssertEqual(try Data(contentsOf: payload), Data("keep".utf8))
+            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before)
+            XCTAssertFalse(record.isDeleted)
+        }
+    }
+}
