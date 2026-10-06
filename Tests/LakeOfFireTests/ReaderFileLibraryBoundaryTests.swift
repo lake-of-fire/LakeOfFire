@@ -176,6 +176,35 @@ final class ReaderFileLibraryBoundaryTests: XCTestCase {
         }
     }
 
+    func testDownloadAdmissionRejectsEncodedSeparatorsBeforeCreatingAResourceSlot() async throws {
+        try await withFixture { f in
+            for component in ["a%2Fb.epub", "a%2fb.epub", "a%5Cb.epub", "a%00b.epub", "%2e%2e"] {
+                do {
+                    _ = try await self.download("https://example.com/" + component, manager: f.manager)
+                    XCTFail("Malformed basename must not be admitted: " + component)
+                } catch let error as CocoaError {
+                    XCTAssertEqual(error.code, .fileWriteInvalidFileName)
+                }
+            }
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: f.library.path).isEmpty)
+            XCTAssertTrue(f.realm.objects(ContentFile.self).isEmpty)
+            XCTAssertTrue(f.realm.objects(BigSyncPendingMutation.self).isEmpty)
+        }
+    }
+
+    func testDownloadAdmissionPreservesUnicodeAndLiteralPercentNames() async throws {
+        try await withFixture { f in
+            for (component, expected) in [("吾輩は猫である.epub", "吾輩は猫である.epub"),
+                                          ("a%252Fb.epub", "a%2Fb.epub"),
+                                          ("100%25.epub", "100%.epub")] {
+                let downloadable = try await self.download("https://example.com/books/" + component, manager: f.manager)
+                XCTAssertEqual(downloadable.localDestination.lastPathComponent, expected)
+                XCTAssertEqual(downloadable.localDestination.deletingLastPathComponent().deletingLastPathComponent(),
+                               f.library.appendingPathComponent(ReaderFileStoragePaths.downloadsDirectory, isDirectory: true))
+            }
+        }
+    }
+
     func testDownloadNamespaceCannotEscapeThroughExistingSymlink() async throws {
         try await withFixture { f in
             let outside = f.root.appendingPathComponent("outside", isDirectory: true)

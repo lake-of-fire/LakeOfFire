@@ -261,12 +261,16 @@ public class ReaderFileManager: ObservableObject {
 
     private let payloadStateProvider: @Sendable (URL) throws -> PayloadState
     private let directoryContentsProvider: (@Sendable (URL) async throws -> [URL])?
+    // Instance-scoped scheduling observation for deterministic coalescing tests.
+    // It neither supplies scan results nor changes captured-selection validation.
+    private let metadataRefreshDidCoalesce: (@Sendable () -> Void)?
     private let cloudDriveFactory: CloudDriveFactory
     private let localDriveFactory: LocalDriveFactory
 
     public init() {
         payloadStateProvider = { try Self.payloadState(at: $0) }
         directoryContentsProvider = nil
+        metadataRefreshDidCoalesce = nil
         cloudDriveFactory = { identifier in
             try await CloudDrive(
                 ubiquityContainerIdentifier: identifier,
@@ -287,6 +291,7 @@ public class ReaderFileManager: ObservableObject {
     init(
         payloadStateProvider: @escaping @Sendable (URL) throws -> PayloadState,
         directoryContentsProvider: (@Sendable (URL) async throws -> [URL])? = nil,
+        metadataRefreshDidCoalesce: (@Sendable () -> Void)? = nil,
         cloudDriveFactory: @escaping CloudDriveFactory = { identifier in
             try await CloudDrive(
                 ubiquityContainerIdentifier: identifier,
@@ -303,6 +308,7 @@ public class ReaderFileManager: ObservableObject {
     ) {
         self.payloadStateProvider = payloadStateProvider
         self.directoryContentsProvider = directoryContentsProvider
+        self.metadataRefreshDidCoalesce = metadataRefreshDidCoalesce
         self.cloudDriveFactory = cloudDriveFactory
         self.localDriveFactory = localDriveFactory
     }
@@ -1118,6 +1124,7 @@ public class ReaderFileManager: ObservableObject {
             realmInMemoryIdentifier: realmConfiguration.inMemoryIdentifier
         )
         if let existing = metadataRefreshEntries[key] {
+            metadataRefreshDidCoalesce?()
             return try await existing.task.value
         }
 

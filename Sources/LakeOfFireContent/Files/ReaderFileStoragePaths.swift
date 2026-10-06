@@ -15,7 +15,15 @@ enum ReaderFileStoragePaths {
     }
 
     static func downloadFilename(for url: URL) throws -> String {
-        let name = url.lastPathComponent
+        // Split the encoded path first instead of relying on lastPathComponent's
+        // platform-specific handling of escaped separators during validation.
+        // Decode only this component, once, so literal "%2F" (encoded "%252F")
+        // remains a safe filename rather than becoming a path separator.
+        guard let encodedPath = URLComponents(url: url, resolvingAgainstBaseURL: true)?.percentEncodedPath,
+              let encodedName = encodedPath.split(separator: "/", omittingEmptySubsequences: false).last,
+              let name = String(encodedName).removingPercentEncoding else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
         guard !name.isEmpty, name != ".", name != "..",
               !name.contains("/"), !name.contains("\\"),
               !name.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }),
