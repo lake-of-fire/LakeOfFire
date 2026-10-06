@@ -113,6 +113,56 @@ final class ReaderFileImportStorageNativeTests: XCTestCase {
         catch { XCTAssertEqual((error as NSError).code, CocoaError.fileReadUnsupportedScheme.rawValue) }
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: f.library.path).isEmpty)
     }
+    func testExistingDestinationSymlinkToMatchingBytesIsNotReused() async throws {
+        let f = try Fixture()
+        try f.put(f.source, "same bytes")
+        let external = f.root.appendingPathComponent("outside")
+        try f.put(external, "same bytes")
+        let occupied = f.library.appendingPathComponent("book.epub")
+        try FileManager.default.createSymbolicLink(
+            at: occupied,
+            withDestinationURL: external
+        )
+        let drive = try await f.drive()
+
+        let result = try await f.install(using: drive)
+
+        XCTAssertEqual(result.path, "book (ABCDEF).epub")
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: occupied.path),
+            external.path
+        )
+        XCTAssertEqual(try String(contentsOf: external, encoding: .utf8), "same bytes")
+        XCTAssertEqual(
+            try String(
+                contentsOf: f.library.appendingPathComponent(result.path),
+                encoding: .utf8
+            ),
+            "same bytes"
+        )
+    }
+
+    func testDirectorySourceDoesNotReuseOccupiedRegularFile() async throws {
+        let f = try Fixture()
+        try f.put(f.source.appendingPathComponent("OPS/chapter.xhtml"), "directory")
+        let occupied = f.library.appendingPathComponent("book.epub")
+        try f.put(occupied, "regular file")
+        let drive = try await f.drive()
+
+        let result = try await f.install(using: drive)
+
+        XCTAssertEqual(result.path, "book (ABCDEF).epub")
+        XCTAssertEqual(try String(contentsOf: occupied, encoding: .utf8), "regular file")
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: f.library.appendingPathComponent(result.path).path,
+                isDirectory: &isDirectory
+            )
+        )
+        XCTAssertTrue(isDirectory.boolValue)
+    }
+
 }
 
 final class ReaderFileImportPackageManifestTests: XCTestCase {
