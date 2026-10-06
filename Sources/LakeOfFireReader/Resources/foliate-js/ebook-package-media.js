@@ -1,10 +1,12 @@
-const packageEntryPathPrefix = '/entry-source/';
+const packageEntryPathPrefixes = ['/entry-source/', '/entry-session/'];
 const mediaSourceSelector = 'audio[src], video[src], audio source[src], video source[src]';
 
 export const isPackageMediaURL = value => {
     try {
         const url = new URL(value);
-        return url.protocol === 'ebook:' && url.pathname.startsWith(packageEntryPathPrefix);
+        return url.protocol === 'ebook:' && url.hostname === 'ebook'
+            && url.username === '' && url.password === '' && url.port === ''
+            && packageEntryPathPrefixes.some(prefix => url.pathname.startsWith(prefix));
     } catch {
         return false;
     }
@@ -22,7 +24,9 @@ export const hydratePackageMedia = async ({
 
     const objectURLPromises = new Map();
     const ownedObjectURLs = new Set();
+    let closed = false;
     addPageHideListener?.(() => {
+        closed = true;
         for (const objectURL of ownedObjectURLs) revokeObjectURL(objectURL);
         ownedObjectURLs.clear();
     });
@@ -41,13 +45,19 @@ export const hydratePackageMedia = async ({
                     return response.blob();
                 })
                 .then(blob => {
+                    if (closed) return null;
                     const objectURL = createObjectURL(blob);
                     ownedObjectURLs.add(objectURL);
+                    if (closed) {
+                        ownedObjectURLs.delete(objectURL);
+                        revokeObjectURL(objectURL);
+                        return null;
+                    }
                     return objectURL;
                 });
             objectURLPromises.set(resourceURL, promise);
         }
-        return promise.then(objectURL => `${objectURL}${fragment}`);
+        return promise.then(objectURL => objectURL === null ? null : `${objectURL}${fragment}`);
     };
 
     const mediaElements = new Set();
@@ -57,12 +67,17 @@ export const hydratePackageMedia = async ({
         const owningMedia = element.matches?.('audio, video')
             ? element
             : element.closest?.('audio, video');
+        const objectURL = await objectURLFor(sourceURL);
+        // A closed/replaced document or explicitly changed media source does
+        // not inherit a late response from its former package capability.
+        if (closed || objectURL === null || element.isConnected === false
+            || element.src !== sourceURL) return false;
+        element.src = objectURL;
         if (owningMedia) mediaElements.add(owningMedia);
-        element.src = await objectURLFor(sourceURL);
         return true;
     }));
 
-    for (const media of mediaElements) media.load?.();
+    if (!closed) for (const media of mediaElements) media.load?.();
     return results;
 };
 

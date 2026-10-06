@@ -1,0 +1,52 @@
+name: Port reader content messages
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Sources/LakeOfFireReader/Reader/Reader*Message*.swift'
+      - 'Tests/LakeOfFireTests/ReaderContentPayload*Tests.swift'
+      - 'Tests/LakeOfFireTests/ReaderPositionPayloadPortTests.swift'
+      - 'Tests/LakeOfFireTests/ReaderContentEbookInitialRestoreResultTests.swift'
+      - 'Tools/ContentMessageTests/**'
+      - 'Tools/test-content-message-payloads.sh'
+      - '.github/workflows/port-content-messages.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: content-message-port-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  payloads:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+        configuration: [debug, release]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.2.1'
+      - name: Test content and retained position payloads
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/tested-commit.txt
+          git ls-tree -r HEAD > evidence/source-manifest.txt
+          swift --version > evidence/toolchain.txt
+          swiftc -frontend -parse Sources/LakeOfFireReader/Reader/ReaderJavascriptMessages.swift
+          export CONTENT_MESSAGE_EVIDENCE_DIRECTORY="$PWD/evidence"
+          bash Tools/test-content-message-payloads.sh -c ${{ matrix.configuration }} 2>&1 | tee evidence/test.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: content-messages-${{ matrix.os }}-${{ matrix.configuration }}-${{ github.run_attempt }}
+          path: evidence
+          retention-days: 7
+          if-no-files-found: error

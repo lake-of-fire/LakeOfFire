@@ -34,16 +34,20 @@ export const parseSyntheticRestoreLocator = value => {
 export const restoreLocatorKind = ({ cfi, fractionalCompletion }) => {
     if (parseSyntheticRestoreLocator(cfi)) return 'synthetic'
     if (typeof cfi === 'string' && cfi.length > 0) return 'cfi'
-    return Number.isFinite(fractionalCompletion) && fractionalCompletion > 0 ? 'fraction' : 'none'
+    return Number.isFinite(fractionalCompletion) && fractionalCompletion >= 0
+        && fractionalCompletion <= 1 ? 'fraction' : 'none'
 }
 
 export const normalizeInitialRestoreRequest = value => {
-    if (!value || typeof value !== 'object') return null
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+    if (value.cfi != null && typeof value.cfi !== 'string') return null
+    if (value.fractionalCompletion != null && !(Number.isFinite(value.fractionalCompletion)
+        && value.fractionalCompletion >= 0 && value.fractionalCompletion <= 1)) return null
 
     const requestID = typeof value.requestID === 'string' ? value.requestID.trim() : ''
     const cfi = typeof value.cfi === 'string' ? value.cfi : ''
     const fractionalCompletion = Number.isFinite(value.fractionalCompletion)
-        && value.fractionalCompletion > 0
+        && value.fractionalCompletion >= 0
         && value.fractionalCompletion <= 1
         ? value.fractionalCompletion
         : null
@@ -58,28 +62,58 @@ export const normalizeInitialRestoreRequest = value => {
     }
 }
 
+// Adapted from Core v3-hotfix EBookInitialRestoreCoordinator. Preserve the
+// request-correlated main protocol instead of adding a second restore owner.
+export const restoreFractionValidationTolerance = 0.003
+
+const validFraction = value => Number.isFinite(value) && value >= 0 && value <= 1
+
+const restoredPositionMatches = (request, snapshot) => {
+    if (!request) return false
+    // Positive fractions follow the hotfix contract. An explicit fraction-zero
+    // request also validates zero, for callers using the newer zero-locator API.
+    const hasSavedFraction = validFraction(request.fractionalCompletion)
+        && (request.fractionalCompletion > 0 || request.requestedLocator === 'fraction')
+    if (hasSavedFraction) {
+        return [snapshot.handledFractionalCompletion, snapshot.currentFractionalCompletion]
+            .every(value => validFraction(value)
+                && Math.abs(value - request.fractionalCompletion) <= restoreFractionValidationTolerance)
+    }
+    return typeof request.cfi === 'string' && request.cfi.length > 0
+        && snapshot.handledCFI === request.cfi
+}
+
 export const makeInitialRestoreTerminalResult = ({ request, snapshot, error = null }) => {
     const navigationOk = error == null
-    const currentFractionalCompletion = Number.isFinite(snapshot?.currentFractionalCompletion)
+    const currentFractionalCompletion = validFraction(snapshot?.currentFractionalCompletion)
         ? snapshot.currentFractionalCompletion
         : null
-    const handledFractionalCompletion = Number.isFinite(snapshot?.handledFractionalCompletion)
+    const handledFractionalCompletion = validFraction(snapshot?.handledFractionalCompletion)
         ? snapshot.handledFractionalCompletion
         : null
     const handledCFI = typeof snapshot?.handledCFI === 'string' && snapshot.handledCFI.length > 0
         ? snapshot.handledCFI
         : null
 
-    return {
-        requestID: request?.requestID ?? null,
-        requestedLocator: request?.requestedLocator ?? 'none',
-        terminalState: request ? (navigationOk ? 'satisfied' : 'failed') : 'noTarget',
-        navigationOk,
-        restoreSatisfied: request != null && navigationOk,
+    const restoreSatisfied = navigationOk && restoredPositionMatches(request, {
         handledFractionalCompletion,
         currentFractionalCompletion,
         handledCFI,
-        error: error == null ? null : String(error?.message ?? error),
+    })
+    const validationError = request && navigationOk && !restoreSatisfied
+        ? 'Saved restore position was not reached'
+        : null
+
+    return {
+        requestID: request?.requestID ?? null,
+        requestedLocator: request?.requestedLocator ?? 'none',
+        terminalState: request ? (restoreSatisfied ? 'satisfied' : 'failed') : 'noTarget',
+        navigationOk,
+        restoreSatisfied,
+        handledFractionalCompletion,
+        currentFractionalCompletion,
+        handledCFI,
+        error: error == null ? validationError : String(error?.message ?? error),
     }
 }
 
@@ -92,9 +126,16 @@ export const shouldSkipScheduledReaderFractionGoTo = ({
 
 export const runRequiredRestoreNavigation = async operation => {
     try {
+        const value = await operation()
+        // View.goTo returns null when resolution failed or its renderer/command
+        // was superseded. A fulfilled Promise alone is not a restore receipt.
+        // Keep void success valid for existing renderer implementations.
+        if (value === null || value === false || value?.ignored === true) {
+            throw new Error('Required restore navigation was not applied')
+        }
         return {
             ok: true,
-            value: await operation(),
+            value,
             error: null,
         }
     } catch (error) {

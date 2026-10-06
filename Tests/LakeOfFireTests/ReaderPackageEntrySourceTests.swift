@@ -78,6 +78,26 @@ final class ReaderPackageEntrySourceTests: XCTestCase {
         }
     }
 
+    func testCommonRasterImageMIMETypesAreCanonical() throws {
+        try withPackageSource { source in
+            let expectations: [String: String] = [
+                "cover.jpg": "image/jpeg",
+                "cover.jpeg": "image/jpeg",
+                "cover.png": "image/png",
+                "cover.webp": "image/webp",
+            ]
+
+            for (subpath, expectedMIMEType) in expectations {
+                let metadata = try source.mimeType(
+                    subpath: subpath,
+                    data: Data([0])
+                )
+                XCTAssertEqual(metadata.mimeType, expectedMIMEType, subpath)
+                XCTAssertNil(metadata.textEncodingName, subpath)
+            }
+        }
+    }
+
     func testUnknownBinaryExtensionDoesNotClaimTextEncoding() throws {
         try withPackageSource { source in
             let metadata = try source.mimeType(subpath: "assets/payload.manabi-binary")
