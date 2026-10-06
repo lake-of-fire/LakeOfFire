@@ -276,7 +276,7 @@ public extension ReaderContentProtocol {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config)
             guard let content = realm.object(ofType: cls, forPrimaryKey: compoundKey) else { return }
 //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 block(realm, content)
             }
         }()
@@ -541,7 +541,7 @@ public extension ReaderContentProtocol {
             )
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             let bookmarkKey = bookmark.compoundKey
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 if let managedBookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: bookmarkKey) {
                     if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
                         content.configureBookmark(managedBookmark)
@@ -568,7 +568,7 @@ public extension ReaderContentProtocol {
                 ])
                 .first {
                 let historyKey = historyRecord.compoundKey
-                try await historyRealm.asyncWrite {
+                try await historyRealm.asyncWritePreservingOwnership {
                     guard let current = historyRealm.object(
                         ofType: HistoryRecord.self, forPrimaryKey: historyKey
                     ), !current.isDeleted, current.isDemoted != false else { return }
@@ -586,7 +586,7 @@ public extension ReaderContentProtocol {
         let html = html
         return try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            return try await realm.asyncWrite {
+            return try await realm.asyncWritePreservingOwnership {
                 guard let bookmark = realm.object(
                     ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)
                 ), !bookmark.isDeleted else { return false }
@@ -679,7 +679,7 @@ public extension ReaderContentProtocol {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         var resolvedRecord: HistoryRecord?
         var createdRecord = false
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             let matchingRecords = HistoryRecord.records(
                 matching: historyURL,
                 in: realm

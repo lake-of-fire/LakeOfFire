@@ -129,7 +129,7 @@ struct UserScriptAllowedDomainEditor {
     @RealmBackgroundActor
     func write(_ text: String) async throws {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
                   !script.isDeleted, script.isUserEditable, script.allowedDomainIDs.contains(domainID),
                   let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID),

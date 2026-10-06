@@ -99,7 +99,7 @@ public class CloudDriveSyncStatusModel: ObservableObject {
     }
 }
 
-public enum CloudDriveSyncStatus {
+public enum CloudDriveSyncStatus: Sendable {
     case fileMissing
     case localOnly
     case cloudOnly
@@ -138,7 +138,26 @@ public class ReaderFileManager: ObservableObject {
         let requestedDownload: Bool
     }
 
+    /// A queued producer retains the installed tuple which admitted it. The
+    /// synchronous predicate is also checked inside each owned Realm write.
+    private struct MetadataRefreshSelection {
+        let localDrive: CloudDrive?
+        let cloudDrive: CloudDrive?
+        let initializationIdentifier: UUID?
+        let realmConfiguration: Realm.Configuration
+
+        var queueScope: String {
+            let realm = realmConfiguration.inMemoryIdentifier.map { "memory:\($0)" }
+                ?? "file:\(realmConfiguration.fileURL?.standardizedFileURL.absoluteString ?? "")"
+            return "\(realm)|\(localDrive.map { String(describing: ObjectIdentifier($0)) } ?? "nil")"
+                + "|\(cloudDrive.map { String(describing: ObjectIdentifier($0)) } ?? "nil")"
+                + "|\(initializationIdentifier?.uuidString ?? "nil")"
+        }
+    }
+
     private struct MetadataRefreshKey: Hashable {
+        let driveIdentifier: ObjectIdentifier
+        let selectionScope: String
         let driveRootPath: String
         let driveContainerIdentifier: String?
         let relativePath: String
@@ -197,6 +216,9 @@ public class ReaderFileManager: ObservableObject {
     }
     
     private var hasInitializedUbiquityContainerIdentifier = false
+    // Like the installed drives/configuration, this selection identity must
+    // be visible to synchronous owned-write admission on RealmBackgroundActor.
+    private var initializationID: UUID?
     
     /*@MainActor*/ public var cloudDrive: CloudDrive?
     //    /*@MainActor*/ @Published public var legacyCloudDrive: CloudDrive?
@@ -239,12 +261,16 @@ public class ReaderFileManager: ObservableObject {
 
     private let payloadStateProvider: @Sendable (URL) throws -> PayloadState
     private let directoryContentsProvider: (@Sendable (URL) async throws -> [URL])?
+    // Instance-scoped scheduling observation for deterministic coalescing tests.
+    // It neither supplies scan results nor changes captured-selection validation.
+    private let metadataRefreshDidCoalesce: (@Sendable () -> Void)?
     private let cloudDriveFactory: CloudDriveFactory
     private let localDriveFactory: LocalDriveFactory
 
     public init() {
         payloadStateProvider = { try Self.payloadState(at: $0) }
         directoryContentsProvider = nil
+        metadataRefreshDidCoalesce = nil
         cloudDriveFactory = { identifier in
             try await CloudDrive(
                 ubiquityContainerIdentifier: identifier,
@@ -265,6 +291,7 @@ public class ReaderFileManager: ObservableObject {
     init(
         payloadStateProvider: @escaping @Sendable (URL) throws -> PayloadState,
         directoryContentsProvider: (@Sendable (URL) async throws -> [URL])? = nil,
+        metadataRefreshDidCoalesce: (@Sendable () -> Void)? = nil,
         cloudDriveFactory: @escaping CloudDriveFactory = { identifier in
             try await CloudDrive(
                 ubiquityContainerIdentifier: identifier,
@@ -281,6 +308,7 @@ public class ReaderFileManager: ObservableObject {
     ) {
         self.payloadStateProvider = payloadStateProvider
         self.directoryContentsProvider = directoryContentsProvider
+        self.metadataRefreshDidCoalesce = metadataRefreshDidCoalesce
         self.cloudDriveFactory = cloudDriveFactory
         self.localDriveFactory = localDriveFactory
     }
@@ -291,6 +319,11 @@ public class ReaderFileManager: ObservableObject {
     
     @MainActor
     public func initialize(ubiquityContainerIdentifier: String) async throws {
+        // A cancelled entrant cannot revoke a healthy initialization or invoke
+        // a factory whose preparation may itself create directories/presenters.
+        try Task.checkCancellation()
+        let identifier = UUID()
+        initializationID = identifier
         // Prepare replacement drives without mutating the currently usable
         // manager. A SwiftUI .task(id:) cancellation must not commit a partial
         // identity or launch detached indexing work.
@@ -307,9 +340,9 @@ public class ReaderFileManager: ObservableObject {
             nextCloudDrive = nil
         }
 
-        try Task.checkCancellation()
+        try validateInitialization(identifier)
         let nextLocalDrive = try await localDriveFactory()
-        try Task.checkCancellation()
+        try validateInitialization(identifier)
 
         nextCloudDrive?.observer = self
         nextLocalDrive.observer = self
@@ -326,7 +359,15 @@ public class ReaderFileManager: ObservableObject {
             name: Self.driveAvailabilityDidChangeNotification,
             object: self
         )
+        try validateInitialization(identifier)
         try await refreshAllFilesMetadata()
+        try validateInitialization(identifier)
+    }
+
+    @MainActor
+    private func validateInitialization(_ identifier: UUID) throws {
+        try Task.checkCancellation()
+        guard initializationID == identifier else { throw CancellationError() }
     }
     
     @MainActor
@@ -437,62 +478,130 @@ public class ReaderFileManager: ObservableObject {
         }
     }
     
+    typealias DeleteStatusLoader = @MainActor (URL) async throws -> CloudDriveSyncStatus
+
     @RealmBackgroundActor
     public func delete(readerFileURL contentURL: URL) async throws {
-        let realmConfiguration = resolvedHistoryRealmConfiguration
+        try await delete(readerFileURL: contentURL, statusLoader: { [self] url in
+            try await cloudDriveSyncStatus(forReaderBackingURL: url)
+        })
+    }
+
+    /// The public command and native boundary tests share the same executor.
+    /// Tests can supply availability and observe final synchronous admission;
+    /// neither seam replaces native coordination or the production selection check.
+    @RealmBackgroundActor
+    func delete(readerFileURL contentURL: URL, statusLoader: DeleteStatusLoader,
+                beforeRemovalAdmission: (() throws -> Void)? = nil
+    ) async throws {
+        try Task.checkCancellation()
+        // Capture before the first availability/actor handoff. Keeping only
+        // the drive permits a replaced Realm or a newer failed initialization
+        // to authorize physical removal before the later index phase rejects.
+        let selection = MetadataRefreshSelection(
+            localDrive: localDrive, cloudDrive: cloudDrive,
+            initializationIdentifier: initializationID,
+            realmConfiguration: resolvedHistoryRealmConfiguration
+        )
         guard let readerBackingURL = canonicalReaderBackingURL(for: contentURL) else {
             throw ReaderFileDeleteError.removeFailed()
         }
         let pathContext = try readerBackingPathContext(for: readerBackingURL)
-        let eligibility = await deleteEligibility(forReaderBackingURL: readerBackingURL)
-        switch eligibility {
-        case .blockedCloudOnly:
-            throw ReaderFileDeleteError.blockedCloudOnly
-        case .blockedLoadingStatus:
-            throw ReaderFileDeleteError.blockedLoadingStatus
-        case .allowed:
-            break
-        }
-
-        let status = try await cloudDriveSyncStatus(forReaderBackingURL: readerBackingURL)
-        if status == .fileMissing {
-            try await markDeleted(
-                contentURL: contentURL,
-                realmConfiguration: realmConfiguration
-            )
-            await removeDeletedFileFromPublishedFiles(matching: readerBackingURL)
-            Task { @MainActor [weak self] in
-                try await self?.refreshAllFilesMetadata(
-                    force: true,
-                    realmConfiguration: realmConfiguration
-                )
-            }
-            return
-        }
-
-        // Availability never grants authority over a same-named item in another root.
-        let drive = try extractCloudDrivePath(fromReaderFileURL: pathContext.canonicalURL).0
-        let relativePath = pathContext.relativePath
+        let drive = pathContext.storageLocation == .local
+            ? selection.localDrive : selection.cloudDrive
+        try validateDeletionSelection(pathContext, drive: drive, selection: selection)
+        let status: CloudDriveSyncStatus
         do {
-            if try await drive.directoryExists(at: relativePath) {
-                try await drive.removeDirectory(at: relativePath)
-            } else {
-                try await drive.removeFile(at: relativePath)
-            }
+            status = try await statusLoader(readerBackingURL)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            throw ReaderFileDeleteError.removeFailed(underlyingDescription: error.localizedDescription)
+            throw ReaderFileDeleteError.blockedLoadingStatus
         }
-        try await markDeleted(
-            contentURL: contentURL,
-            realmConfiguration: realmConfiguration
-        )
-        await removeDeletedFileFromPublishedFiles(matching: readerBackingURL)
+        try validateDeletionSelection(pathContext, drive: drive, selection: selection)
+        switch status {
+        case .cloudOnly: throw ReaderFileDeleteError.blockedCloudOnly
+        case .loadingStatus: throw ReaderFileDeleteError.blockedLoadingStatus
+        default: break
+        }
+
+        if status != .fileMissing {
+            // Resolve once, before availability can suspend. A replacement
+            // drive may contain an unrelated file with the same logical URL.
+            guard let drive else { throw ReaderFileManagerError.driveMissing }
+            do {
+                let isDirectory = try await drive.directoryExists(at: pathContext.relativePath)
+                try validateDeletionSelection(pathContext, drive: drive, selection: selection)
+                // Native coordination can wait after the earlier inspection.
+                // Keep the final check and removal synchronous on this caller,
+                // rather than sending live selection state to another actor.
+                try drive.removeItemSynchronously(
+                    at: pathContext.relativePath, isDirectory: isDirectory
+                ) {
+                    try beforeRemovalAdmission?()
+                    try validateDeletionSelection(pathContext, drive: drive, selection: selection)
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as ReaderFileDeleteError {
+                throw error
+            } catch {
+                throw ReaderFileDeleteError.removeFailed(underlyingDescription: error.localizedDescription)
+            }
+        }
+
+        // The physical removal, if any, is already committed. This next phase
+        // can fail independently; it must never mutate a replacement's index.
+        try await markDeleted(contentURL: contentURL, pathContext: pathContext,
+                              drive: drive, selection: selection)
+        await removeDeletedFileFromPublishedFiles(matching: readerBackingURL,
+            pathContext: pathContext, drive: drive, selection: selection)
         Task { @MainActor [weak self] in
-            try await self?.refreshAllFilesMetadata(
-                force: true,
-                realmConfiguration: realmConfiguration
+            guard let self,
+                  self.deletionSelectionIsCurrent(pathContext, drive: drive, selection: selection) else { return }
+            // Optional refresh cannot acquire a new selection or change an
+            // already-committed deletion into a reported failure.
+            do {
+                try await self.refreshAllFilesMetadata(force: true, selection: selection)
+            } catch is CancellationError {
+                // A superseded optional publication has no effects to retry.
+            } catch {
+                Logger.shared.logger.error("File inventory refresh after deletion failed: \(error)")
+            }
+        }
+    }
+
+    private func deletionDriveIsCurrent(_ context: ReaderBackingPathContext, drive: CloudDrive?) -> Bool {
+        let current = context.storageLocation == .local ? localDrive : cloudDrive
+        return current === drive
+    }
+
+    private func deletionSelectionIsCurrent(
+        _ context: ReaderBackingPathContext, drive: CloudDrive?,
+        selection: MetadataRefreshSelection
+    ) -> Bool {
+        // Only the selected drive participates in deletion. An unrelated
+        // drive replacement does not revoke a current local/cloud command.
+        deletionDriveIsCurrent(context, drive: drive)
+            && initializationID == selection.initializationIdentifier
+            && Self.sameHistoryRealm(resolvedHistoryRealmConfiguration, selection.realmConfiguration)
+    }
+
+    private func validateDeletionSelection(
+        _ context: ReaderBackingPathContext, drive: CloudDrive?,
+        selection: MetadataRefreshSelection
+    ) throws {
+        try Task.checkCancellation()
+        guard deletionSelectionIsCurrent(context, drive: drive, selection: selection) else {
+            throw ReaderFileDeleteError.removeFailed(
+                underlyingDescription: "The selected storage changed. Retry from the current library."
             )
         }
+    }
+
+    private static func sameHistoryRealm(_ lhs: Realm.Configuration, _ rhs: Realm.Configuration) -> Bool {
+        lhs.inMemoryIdentifier == rhs.inMemoryIdentifier
+            && lhs.fileURL?.standardizedFileURL == rhs.fileURL?.standardizedFileURL
     }
     
     @MainActor
@@ -554,15 +663,47 @@ public class ReaderFileManager: ObservableObject {
         return try await drive.directoryExists(at: relativePath)
     }
     
+    @MainActor
     public func read(fileURL: URL) async throws -> Data? {
-        let readerBackingURL = canonicalReaderBackingURL(for: fileURL) ?? fileURL
-        let readableURL = try await resolveReadableLocalURL(forReaderBackingURL: readerBackingURL)
-        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: readerBackingURL)
-        if readableURL.isFileURL, FileManager.default.fileExists(atPath: readableURL.path) {
+        try await read(fileURL: fileURL, resolveReadableURL: { [self] url in
+            try await resolveReadableLocalURL(forReaderBackingURL: url)
+        }, readLocalFile: { url in
             let coordinatedFileManager = CoordinatedFileManager()
-            return try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: readableURL)
+            return try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: url)
+        })
+    }
+
+    /// The normal path and native regression controls share storage admission.
+    /// Collaborators provide only asynchronous availability and coordinated I/O.
+    @MainActor
+    func read(
+        fileURL: URL,
+        resolveReadableURL: @MainActor (URL) async throws -> URL,
+        readLocalFile: @MainActor (URL) async throws -> Data?
+    ) async throws -> Data? {
+        try Task.checkCancellation()
+        let readerBackingURL = canonicalReaderBackingURL(for: fileURL) ?? fileURL
+        let context = try readerBackingPathContext(for: readerBackingURL)
+        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: readerBackingURL)
+        let initializationIdentifier = initializationID
+        let validateSelection = {
+            try Task.checkCancellation()
+            guard self.initializationID == initializationIdentifier,
+                  self.deletionDriveIsCurrent(context, drive: drive) else {
+                throw CancellationError()
+            }
         }
-        return try await drive.readFile(at: relativePath)
+        let readableURL = try await resolveReadableURL(readerBackingURL)
+        try validateSelection()
+        let data: Data?
+        if readableURL.isFileURL, FileManager.default.fileExists(atPath: readableURL.path) {
+            data = try await readLocalFile(readableURL)
+        } else {
+            // An old availability result cannot acquire a replacement drive.
+            data = try await drive.readFile(at: relativePath)
+        }
+        try validateSelection()
+        return data
     }
     
     @MainActor
@@ -574,44 +715,50 @@ public class ReaderFileManager: ObservableObject {
 
     @MainActor
     public func ensureImported(downloadable: Downloadable) async throws -> URL? {
-        let realmConfiguration = resolvedHistoryRealmConfiguration
-        let existsLocally = await downloadable.existsLocally()
-        guard existsLocally else {
-            return nil
-        }
-        if let existingReaderURL = try await readerFileURL(for: downloadable) {
-            try await refreshMetadataForExistingLibraryFile(
-                downloadable.localDestination,
-                realmConfiguration: realmConfiguration
-            )
+        try await ensureImported(downloadable: downloadable, existsLocally: {
+            await $0.existsLocally()
+        })
+    }
+
+    @MainActor
+    func ensureImported(
+        downloadable: Downloadable,
+        existsLocally: @MainActor (Downloadable) async -> Bool
+    ) async throws -> URL? {
+        let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
+        let exists = await existsLocally(downloadable)
+        try validateMetadataRefreshSelection(selection)
+        guard exists else { return nil }
+        let existingReaderURL = try await readerFileURL(for: downloadable)
+        try validateMetadataRefreshSelection(selection)
+        if let existingReaderURL {
+            try await refreshMetadataForExistingLibraryFile(downloadable.localDestination, selection: selection)
+            try validateMetadataRefreshSelection(selection)
             return existingReaderURL
         }
-        return try await importFile(
-            fileURL: downloadable.localDestination,
-            fromDownloadURL: downloadable.url,
-            realmConfiguration: realmConfiguration
-        )
+        return try await importFile(fileURL: downloadable.localDestination,
+            fromDownloadURL: downloadable.url, selection: selection)
     }
 
     @MainActor
     private func refreshMetadataForExistingLibraryFile(
         _ fileURL: URL,
-        realmConfiguration: Realm.Configuration
+        selection: MetadataRefreshSelection
     ) async throws {
-        let drives: [CloudDrive] = [cloudDrive, localDrive].filter({ $0?.isConnected ?? false }).compactMap({ $0 })
+        try validateMetadataRefreshSelection(selection)
+        let drives = [selection.cloudDrive, selection.localDrive].compactMap { $0 }.filter { $0.isConnected }
         for drive in drives {
             guard let relativePathStr = Self.relativePath(for: fileURL, relativeTo: drive.rootDirectory) else {
                 continue
             }
             let parentPath = URL(fileURLWithPath: relativePathStr).deletingLastPathComponent().relativePath
             let relativeParentPath = parentPath == "." ? "" : parentPath
-            let metadataRefs = try await refreshFilesMetadata(
-                drive: drive,
-                relativePath: RootRelativePath(path: relativeParentPath),
-                realmConfiguration: realmConfiguration
-            )
-            try await publishDiscoveredFiles(metadataRefs ?? [], realmConfiguration: realmConfiguration)
-            try await refreshAllFilesMetadata(force: true, realmConfiguration: realmConfiguration)
+            let metadataRefs = try await refreshFilesMetadata(drive: drive,
+                relativePath: RootRelativePath(path: relativeParentPath), selection: selection)
+            try validateMetadataRefreshSelection(selection)
+            try await publishDiscoveredFiles(metadataRefs ?? [], selection: selection)
+            try await refreshAllFilesMetadata(force: true, selection: selection)
+            try validateMetadataRefreshSelection(selection)
             return
         }
     }
@@ -619,23 +766,48 @@ public class ReaderFileManager: ObservableObject {
     @MainActor
     func publishDiscoveredFiles(
         _ discoveredFileRefs: [ThreadSafeReference<ContentFile>],
-        realmConfiguration: Realm.Configuration = ReaderContentLoader.historyRealmConfiguration
-    ) async throws {
-        guard !discoveredFileRefs.isEmpty else {
-            return
+        realmConfiguration: Realm.Configuration = ReaderContentLoader.historyRealmConfiguration,
+        openRealm: @MainActor (Realm.Configuration) async throws -> Realm = {
+            try await Realm.open(configuration: $0)
         }
-        let realm = try await Realm.open(configuration: realmConfiguration)
-        var mergedFiles = files ?? []
+    ) async throws {
+        let selection = try metadataRefreshSelection(realmConfiguration: realmConfiguration)
+        try await publishDiscoveredFiles(discoveredFileRefs, selection: selection, openRealm: openRealm)
+    }
+
+    @MainActor
+    private func publishDiscoveredFiles(
+        _ discoveredFileRefs: [ThreadSafeReference<ContentFile>],
+        selection: MetadataRefreshSelection,
+        openRealm: @MainActor (Realm.Configuration) async throws -> Realm = {
+            try await Realm.open(configuration: $0)
+        }
+    ) async throws {
+        try validateMetadataRefreshSelection(selection)
+        guard !discoveredFileRefs.isEmpty else { return }
+        let realm = try await openRealm(selection.realmConfiguration)
+        try validateMetadataRefreshSelection(selection)
+        guard Self.sameHistoryRealm(realm.configuration, selection.realmConfiguration) else {
+            throw CancellationError()
+        }
+        // Partial publication cannot carry invalidated or foreign-Realm rows
+        // from an older list forward. This changes no persisted reading facts.
+        var mergedFiles = (files ?? []).filter { file in
+            guard !file.isInvalidated, let sourceRealm = file.realm else { return false }
+            return Self.sameHistoryRealm(sourceRealm.configuration, selection.realmConfiguration)
+                && !file.isDeleted
+        }
         for discoveredFileRef in discoveredFileRefs {
             guard let discoveredFile = realm.resolve(discoveredFileRef),
-                  !discoveredFile.isDeleted else { continue }
+                  !discoveredFile.isInvalidated, !discoveredFile.isDeleted else { continue }
             if let existingIndex = mergedFiles.firstIndex(where: { $0.url == discoveredFile.url }) {
                 mergedFiles[existingIndex] = discoveredFile
             } else {
                 mergedFiles.append(discoveredFile)
             }
         }
-        files = mergedFiles.filter { !$0.isDeleted }
+        try validateMetadataRefreshSelection(selection)
+        files = mergedFiles
     }
     
     @MainActor
@@ -669,45 +841,42 @@ public class ReaderFileManager: ObservableObject {
     
     @MainActor
     public func importFile(fileURL: URL, fromDownloadURL downloadURL: URL?) async throws -> URL? {
-        try await importFile(
-            fileURL: fileURL,
-            fromDownloadURL: downloadURL,
-            realmConfiguration: resolvedHistoryRealmConfiguration
-        )
+        let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
+        return try await importFile(fileURL: fileURL, fromDownloadURL: downloadURL, selection: selection)
     }
 
     @MainActor
     private func importFile(
         fileURL: URL,
         fromDownloadURL downloadURL: URL?,
-        realmConfiguration: Realm.Configuration
+        selection: MetadataRefreshSelection
     ) async throws -> URL? {
-        guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else {
-            return nil
-        }
-        
+        try validateMetadataRefreshSelection(selection)
+        guard let drive = ((selection.cloudDrive?.isConnected ?? false)
+            ? selection.cloudDrive : nil) ?? selection.localDrive else { return nil }
+        let realmConfiguration = selection.realmConfiguration
         let targetDirectory = try await Self.rootRelativePath(forImportedURL: downloadURL ?? fileURL, drive: drive)
+        try validateMetadataRefreshSelection(selection)
         let shouldStopAccessingFile = fileURL.startAccessingSecurityScopedResource()
         defer {
-            if shouldStopAccessingFile {
-                fileURL.stopAccessingSecurityScopedResource()
-            }
+            if shouldStopAccessingFile { fileURL.stopAccessingSecurityScopedResource() }
         }
-        
         try await drive.createDirectory(at: targetDirectory)
-        
+        try validateMetadataRefreshSelection(selection)
         let targetFilePath = try await ReaderFileImportStorage.install(
-            fileURL: fileURL, targetDirectory: targetDirectory, drive: drive
-        )
+            fileURL: fileURL, targetDirectory: targetDirectory, drive: drive)
+        // Keep a completed copy in its original root when later work expires;
+        // neither a stale result nor error authorizes removing copied bytes.
         do {
-            let metadataRefs = try await refreshFilesMetadata(
-                drive: drive,
-                relativePath: targetDirectory,
-                realmConfiguration: realmConfiguration
-            )
+            try validateMetadataRefreshSelection(selection)
+            _ = try await refreshFilesMetadata(drive: drive, relativePath: targetDirectory, selection: selection)
+            try validateMetadataRefreshSelection(selection)
             let realm = try await Realm.open(configuration: realmConfiguration)
+            try validateMetadataRefreshSelection(selection)
             let importedFileURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
-            guard let importedReaderFileURL = try await readerFileURL(for: importedFileURL, drive: drive) else {
+            let importedReaderFileURL = try await readerFileURL(for: importedFileURL, drive: drive)
+            try validateMetadataRefreshSelection(selection)
+            guard let importedReaderFileURL else {
                 debugPrint("Warning: Unable to resolve reader file URL for imported file", importedFileURL)
                 return nil
             }
@@ -717,8 +886,11 @@ public class ReaderFileManager: ObservableObject {
                 debugPrint("Warning: No matching content metadata returned for imported file", importedReaderFileURL)
                 return nil
             }
-            try await refreshAllFilesMetadata(force: true, realmConfiguration: realmConfiguration)
-            return content.url
+            // A live accessor can be invalidated while the final scan awaits.
+            let resultURL = content.url
+            try await refreshAllFilesMetadata(force: true, selection: selection)
+            try validateMetadataRefreshSelection(selection)
+            return resultURL
         } catch {
             debugPrint("Error importing file:", error)
             throw error
@@ -726,11 +898,28 @@ public class ReaderFileManager: ObservableObject {
     }
     
     @MainActor
+    private func metadataRefreshSelection(
+        realmConfiguration: Realm.Configuration
+    ) throws -> MetadataRefreshSelection {
+        let selection = MetadataRefreshSelection(localDrive: localDrive, cloudDrive: cloudDrive,
+            initializationIdentifier: initializationID, realmConfiguration: realmConfiguration)
+        try self.validateMetadataRefreshSelection(selection)
+        return selection
+    }
+
+    private func validateMetadataRefreshSelection(_ selection: MetadataRefreshSelection) throws {
+        try Task.checkCancellation()
+        guard localDrive === selection.localDrive, cloudDrive === selection.cloudDrive,
+              initializationID == selection.initializationIdentifier,
+              Self.sameHistoryRealm(resolvedHistoryRealmConfiguration, selection.realmConfiguration) else {
+            throw CancellationError()
+        }
+    }
+
+    @MainActor
     public func refreshAllFilesMetadata(force: Bool = false) async throws {
-        try await refreshAllFilesMetadata(
-            force: force,
-            realmConfiguration: resolvedHistoryRealmConfiguration
-        )
+        let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
+        try await refreshAllFilesMetadata(force: force, selection: selection)
     }
 
     @MainActor
@@ -738,16 +927,22 @@ public class ReaderFileManager: ObservableObject {
         force: Bool,
         realmConfiguration: Realm.Configuration
     ) async throws {
-        try Task.checkCancellation()
-        let scope = realmConfiguration.inMemoryIdentifier.map { "memory:\($0)" }
-            ?? "file:\(realmConfiguration.fileURL?.standardizedFileURL.absoluteString ?? "")"
+        let selection = try metadataRefreshSelection(realmConfiguration: realmConfiguration)
+        try await refreshAllFilesMetadata(force: force, selection: selection)
+    }
+
+    @MainActor
+    private func refreshAllFilesMetadata(force: Bool, selection: MetadataRefreshSelection) async throws {
+        try validateMetadataRefreshSelection(selection)
+        let realmConfiguration = selection.realmConfiguration
         let queue = resolvedInventoryRefreshQueue()
         let completion = queue.enqueue(
-            scope: scope,
+            scope: selection.queueScope,
             force: force
         ) { @MainActor [weak self] in
             guard let self else { return }
-            guard localDrive != nil || cloudDrive != nil else { return }
+            try self.validateMetadataRefreshSelection(selection)
+            guard selection.localDrive != nil || selection.cloudDrive != nil else { return }
 
             // Capture candidates before scanning. New imports and edits that
             // occur while enumeration suspends are not orphan candidates.
@@ -776,17 +971,19 @@ public class ReaderFileManager: ObservableObject {
             var discoveredIDs = Set<String>()
             var completeLocations = Set<String>()
             for (location, drive) in [
-                ("local", localDrive),
-                ("icloud", cloudDrive),
+                ("local", selection.localDrive),
+                ("icloud", selection.cloudDrive),
             ] {
-                try Task.checkCancellation()
+                try self.validateMetadataRefreshSelection(selection)
                 guard let drive, drive.isConnected else { continue }
                 do {
                     let scan = try await coalescedFilesMetadataRefresh(
                         drive: drive,
                         relativePath: nil,
-                        realmConfiguration: realmConfiguration
+                        realmConfiguration: realmConfiguration,
+                        selection: selection
                     )
+                    try self.validateMetadataRefreshSelection(selection)
                     discoveredIDs.formUnion(scan.contentFileIDs)
                     if scan.isComplete {
                         completeLocations.insert(location)
@@ -802,6 +999,7 @@ public class ReaderFileManager: ObservableObject {
                 }
             }
 
+            try self.validateMetadataRefreshSelection(selection)
             let completed = completeLocations
             let discovered = discoveredIDs
             let activeIDs: [String] = try await {
@@ -809,8 +1007,8 @@ public class ReaderFileManager: ObservableObject {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(
                     for: realmConfiguration
                 )
-                try await realm.asyncWrite {
-                    try Task.checkCancellation()
+                try await realm.asyncWritePreservingOwnership {
+                    try self.validateMetadataRefreshSelection(selection)
                     let date = Date()
                     for candidate in candidates {
                         guard !discovered.contains(candidate.id),
@@ -836,6 +1034,7 @@ public class ReaderFileManager: ObservableObject {
                             at: date
                         )
                     }
+                    try self.validateMetadataRefreshSelection(selection)
                 }
 
                 let results = realm.objects(ContentFile.self).where {
@@ -852,6 +1051,7 @@ public class ReaderFileManager: ObservableObject {
             try Task.checkCancellation()
             let realm = try await Realm.open(configuration: realmConfiguration)
             try Task.checkCancellation()
+            try self.validateMetadataRefreshSelection(selection)
             // Retain unknown-root records in the published inventory too.
             self.files = activeIDs.compactMap {
                 realm.object(
@@ -862,6 +1062,7 @@ public class ReaderFileManager: ObservableObject {
         }
 
         try await completion.wait().get()
+        try validateMetadataRefreshSelection(selection)
     }
     
     static let additionalFilePackageSuffixesToAvoidDescendingInto = [
@@ -875,24 +1076,47 @@ public class ReaderFileManager: ObservableObject {
         realmConfiguration: Realm.Configuration? = nil
     ) async throws -> [ThreadSafeReference<ContentFile>]? {
         let realmConfiguration = realmConfiguration ?? resolvedHistoryRealmConfiguration
+        let selection = try metadataRefreshSelection(realmConfiguration: realmConfiguration)
+        return try await refreshFilesMetadata(drive: drive, relativePath: relativePath, selection: selection)
+    }
+
+    @MainActor
+    private func refreshFilesMetadata(
+        drive: CloudDrive,
+        relativePath: RootRelativePath?,
+        selection: MetadataRefreshSelection
+    ) async throws -> [ThreadSafeReference<ContentFile>]? {
+        try validateMetadataRefreshSelection(selection)
+        let realmConfiguration = selection.realmConfiguration
+        guard drive === selection.localDrive || drive === selection.cloudDrive else {
+            throw CancellationError()
+        }
         let scan = try await coalescedFilesMetadataRefresh(
             drive: drive,
             relativePath: relativePath,
-            realmConfiguration: realmConfiguration
+            realmConfiguration: realmConfiguration,
+            selection: selection
         )
-        return try await makeContentFileReferences(
+        try self.validateMetadataRefreshSelection(selection)
+        let references = try await makeContentFileReferences(
             for: scan.contentFileIDs,
             realmConfiguration: realmConfiguration
         )
+        try self.validateMetadataRefreshSelection(selection)
+        return references
     }
 
     @ReaderFileManagerActor
     private func coalescedFilesMetadataRefresh(
         drive: CloudDrive,
         relativePath: RootRelativePath?,
-        realmConfiguration: Realm.Configuration
+        realmConfiguration: Realm.Configuration,
+        selection: MetadataRefreshSelection
     ) async throws -> MetadataScanResult {
+        try self.validateMetadataRefreshSelection(selection)
         let key = MetadataRefreshKey(
+            driveIdentifier: ObjectIdentifier(drive),
+            selectionScope: selection.queueScope,
             driveRootPath: drive.rootDirectory.standardizedFileURL.path,
             driveContainerIdentifier: drive.ubiquityContainerIdentifier,
             relativePath: relativePath?.path ?? "",
@@ -900,6 +1124,7 @@ public class ReaderFileManager: ObservableObject {
             realmInMemoryIdentifier: realmConfiguration.inMemoryIdentifier
         )
         if let existing = metadataRefreshEntries[key] {
+            metadataRefreshDidCoalesce?()
             return try await existing.task.value
         }
 
@@ -908,7 +1133,8 @@ public class ReaderFileManager: ObservableObject {
             try await scanFilesMetadata(
                 drive: drive,
                 relativePath: relativePath,
-                realmConfiguration: realmConfiguration
+                realmConfiguration: realmConfiguration,
+                selection: selection
             )
         }
         metadataRefreshEntries[key] = MetadataRefreshEntry(id: id, task: task)
@@ -930,8 +1156,10 @@ public class ReaderFileManager: ObservableObject {
     private func scanFilesMetadata(
         drive: CloudDrive,
         relativePath: RootRelativePath?,
-        realmConfiguration: Realm.Configuration
+        realmConfiguration: Realm.Configuration,
+        selection: MetadataRefreshSelection
     ) async throws -> MetadataScanResult {
+        try self.validateMetadataRefreshSelection(selection)
         var scan = MetadataScanResult()
         var filesToUpdate: [
             (readerFileURL: URL, relativePath: RootRelativePath, drive: CloudDrive)
@@ -948,8 +1176,9 @@ public class ReaderFileManager: ObservableObject {
                     options: [.skipsHiddenFiles, .producesRelativePathURLs]
                 )
             }
+            try self.validateMetadataRefreshSelection(selection)
             for url in urls {
-                try Task.checkCancellation()
+                try self.validateMetadataRefreshSelection(selection)
                 var tryRelativePath = RootRelativePath(path: url.relativePath)
                 if let relativePath, !relativePath.path.isEmpty {
                     tryRelativePath.path = relativePath.path + "/" + tryRelativePath.path
@@ -995,7 +1224,8 @@ public class ReaderFileManager: ObservableObject {
                     let discoveredFiles = try await coalescedFilesMetadataRefresh(
                         drive: drive,
                         relativePath: tryRelativePath,
-                        realmConfiguration: realmConfiguration
+                        realmConfiguration: realmConfiguration,
+                        selection: selection
                     )
                     scan.contentFileIDs.append(contentsOf: discoveredFiles.contentFileIDs)
                     scan.isComplete = scan.isComplete && discoveredFiles.isComplete
@@ -1061,9 +1291,10 @@ public class ReaderFileManager: ObservableObject {
                 )
 
                 let processingStartedAt = Date()
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
+                    try self.validateMetadataRefreshSelection(selection)
                     for (readerFileURL, _, drive) in filesToUpdate {
-                        try Task.checkCancellation()
+                        try self.validateMetadataRefreshSelection(selection)
                         if let existing = realm.objects(ContentFile.self).filter(
                             NSPredicate(
                                 format: "url == %@",
@@ -1101,9 +1332,12 @@ public class ReaderFileManager: ObservableObject {
                             }
                         }
                     }
+                    try self.validateMetadataRefreshSelection(selection)
                 }
-                let deferredIDs = try await processUpdatedFiles(updatedFiles)
-                try await realm.asyncWrite {
+                try self.validateMetadataRefreshSelection(selection)
+                let deferredIDs = try await processUpdatedFiles(updatedFiles, selection: selection)
+                try await realm.asyncWritePreservingOwnership {
+                    try self.validateMetadataRefreshSelection(selection)
                     for file in updatedFiles where !file.isInvalidated && !file.isDeleted {
                         // Use the start, not completion time, so a payload modified
                         // during enrichment is eligible for a subsequent pass.
@@ -1113,6 +1347,7 @@ public class ReaderFileManager: ObservableObject {
                         file.fileMetadataRefreshedAt = refreshedAt
                         file.refreshChangeMetadata(explicitlyModified: true)
                     }
+                    try self.validateMetadataRefreshSelection(selection)
                 }
                 return allContentFileIDs
             }()
@@ -1138,6 +1373,14 @@ public class ReaderFileManager: ObservableObject {
     @RealmBackgroundActor
     @discardableResult
     func processUpdatedFiles(_ updatedFiles: [ContentFile]) async throws -> Set<String> {
+        try await processUpdatedFiles(updatedFiles, selection: nil)
+    }
+
+    @RealmBackgroundActor
+    private func processUpdatedFiles(
+        _ updatedFiles: [ContentFile], selection: MetadataRefreshSelection?
+    ) async throws -> Set<String> {
+        if let selection { try self.validateMetadataRefreshSelection(selection) }
         var readyFiles = [ContentFile]()
         var deferredIDs = Set<String>()
         for file in updatedFiles where !file.isInvalidated && !file.isDeleted {
@@ -1149,12 +1392,16 @@ public class ReaderFileManager: ObservableObject {
         }
         for fileProcessor in Self.fileProcessors {
             try Task.checkCancellation()
+            if let selection { try self.validateMetadataRefreshSelection(selection) }
             try await fileProcessor(readyFiles)
+            if let selection { try self.validateMetadataRefreshSelection(selection) }
         }
         for key in Self.fileEnrichmentProcessors.keys.sorted() {
             try Task.checkCancellation()
             guard let processor = Self.fileEnrichmentProcessors[key] else { continue }
+            if let selection { try self.validateMetadataRefreshSelection(selection) }
             deferredIDs.formUnion(try await processor(readyFiles))
+            if let selection { try self.validateMetadataRefreshSelection(selection) }
         }
         return deferredIDs
     }
@@ -1241,12 +1488,19 @@ public class ReaderFileManager: ObservableObject {
     }
 
     @MainActor
-    private func removeDeletedFileFromPublishedFiles(matching readerBackingURL: URL) {
+    private func removeDeletedFileFromPublishedFiles(
+        matching readerBackingURL: URL, pathContext: ReaderBackingPathContext,
+        drive: CloudDrive?, selection: MetadataRefreshSelection
+    ) {
+        // Display can be obsolete after durable success; skip it without
+        // changing the command's already-committed physical/index outcome.
+        guard deletionSelectionIsCurrent(pathContext, drive: drive, selection: selection) else { return }
         guard let canonicalDeletedURL = canonicalReaderBackingURL(for: readerBackingURL),
               let files else {
             return
         }
         let remainingFiles = files.filter { contentFile in
+            guard !contentFile.isInvalidated else { return false }
             guard let fileBackingURL = canonicalReaderBackingURL(for: contentFile.url) else {
                 return true
             }
@@ -1260,36 +1514,42 @@ public class ReaderFileManager: ObservableObject {
 
     @RealmBackgroundActor
     private func markDeleted(
-        contentURL: URL,
-        realmConfiguration: Realm.Configuration
+        contentURL: URL, pathContext: ReaderBackingPathContext,
+        drive: CloudDrive?, selection: MetadataRefreshSelection
     ) async throws {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        let canonicalContentURL = canonicalReaderBackingURL(for: contentURL)
-        let contentFiles = Array(
-            realm.objects(ContentFile.self)
+        try validateDeletionSelection(pathContext, drive: drive, selection: selection)
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: selection.realmConfiguration)
+        let canonicalContentURL = pathContext.canonicalURL
+        try await realm.asyncWritePreservingOwnership {
+            try validateDeletionSelection(pathContext, drive: drive, selection: selection)
+            // Missing at the earlier status read is not proof of continued
+            // absence. A reimport at the same path must keep its live metadata.
+            if let path = pathContext.activeRootURL, try Self.fileSystemEntryExists(at: path) {
+                throw ReaderFileDeleteError.removeFailed(
+                    underlyingDescription: "A file now exists at the selected path. Refresh the library before retrying."
+                )
+            }
+            // Query only after this independent write is admitted. Managed
+            // objects captured before an await can be deleted or replaced by
+            // the owner whose transaction this writer is waiting to acquire.
+            let contentFiles = Array(realm.objects(ContentFile.self)
                 .where { !$0.isDeleted }
-                .filter { contentFile in
-                    if contentFile.url == contentURL {
-                        return true
-                    }
-                    guard let canonicalContentURL,
-                          let fileBackingURL = self.canonicalReaderBackingURL(for: contentFile.url) else {
-                        return false
-                    }
-                    return fileBackingURL == canonicalContentURL
-                }
-        )
-        try await realm.asyncWrite {
+                .filter { file in
+                    file.url == contentURL
+                        || self.canonicalReaderBackingURL(for: file.url) == canonicalContentURL
+                })
+            let timestamp = Date()
             for existing in contentFiles {
                 existing.isDeleted = true
-                existing.refreshChangeMetadata(explicitlyModified: true)
+                existing.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 let packageContentFiles = realm.objects(ContentPackageFile.self)
                     .where { $0.packageContentFileID == existing.compoundKey && !$0.isDeleted }
                 for packageContentFile in packageContentFiles {
                     packageContentFile.isDeleted = true
-                    packageContentFile.refreshChangeMetadata(explicitlyModified: true)
+                    packageContentFile.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 }
             }
+            try validateDeletionSelection(pathContext, drive: drive, selection: selection)
         }
     }
     
@@ -1419,8 +1679,10 @@ public class ReaderFileManager: ObservableObject {
             throw ReaderFileManagerError.invalidFileURL
         }
 
-        let localRootURL = try relativePath.fileURL(forRoot: localDrive?.rootDirectory ?? Self.getDocumentsDirectory())
-        let cloudRootURL = try cloudDrive.map { try relativePath.fileURL(forRoot: $0.rootDirectory) }
+        let localRootURL: URL? = storageLocation == .local
+            ? try relativePath.fileURL(forRoot: localDrive?.rootDirectory ?? Self.getDocumentsDirectory()) : nil
+        let cloudRootURL: URL? = storageLocation == .icloud
+            ? try cloudDrive.map { try relativePath.fileURL(forRoot: $0.rootDirectory) } : nil
         let activeRootURL: URL?
         switch storageLocation {
         case .local:
@@ -1451,8 +1713,8 @@ public class ReaderFileManager: ObservableObject {
             localRootURL: localRootURL,
             cloudRootURL: cloudRootURL,
             activeRootURL: activeRootURL,
-            localRootExists: Self.fileSystemEntryExists(at: localRootURL),
-            cloudRootExists: cloudRootURL.map(Self.fileSystemEntryExists(at:)) ?? false
+            localRootExists: try localRootURL.map { try Self.fileSystemEntryExists(at: $0) } ?? false,
+            cloudRootExists: try cloudRootURL.map { try Self.fileSystemEntryExists(at: $0) } ?? false
         )
     }
 
@@ -1548,7 +1810,7 @@ public class ReaderFileManager: ObservableObject {
 
     private static func payloadState(at url: URL) throws -> PayloadState {
         try Task.checkCancellation()
-        guard fileSystemEntryExists(at: url) else {
+        guard try fileSystemEntryExists(at: url) else {
             return .notLocal
         }
         try Task.checkCancellation()
@@ -1644,8 +1906,16 @@ public class ReaderFileManager: ObservableObject {
         }
     }
 
-    private static func fileSystemEntryExists(at url: URL) -> Bool {
-        FileManager.default.fileExists(atPath: url.path)
+    private static func fileSystemEntryExists(at url: URL) throws -> Bool {
+        // fileExists also returns false when inspection is denied. Only an
+        // explicit missing-item error is absence evidence for a tombstone.
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: url.path)
+            return true
+        } catch {
+            if isMissingFileError(error) { return false }
+            throw error
+        }
     }
 
     private static func postReaderBackingStatusRefresh(for readerBackingURL: URL) {
@@ -1761,9 +2031,12 @@ public extension ReaderFileManager {
     
     @MainActor
     func downloadable(url: URL, name: String) async throws -> Downloadable? {
-        guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
-        
+        let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
+        guard let drive = ((selection.cloudDrive?.isConnected ?? false)
+            ? selection.cloudDrive : nil) ?? selection.localDrive else { return nil }
+
         let targetDirectory = try await Self.rootRelativePath(forImportedURL: url, drive: drive)
+        try validateMetadataRefreshSelection(selection)
         // A basename is not proof that a file came from this catalog resource.
         // Keep legacy files untouched rather than adopting an ambiguous match.
         let identity = ReaderFileStoragePaths.downloadIdentity(for: url)

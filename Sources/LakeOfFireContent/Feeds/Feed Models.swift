@@ -1022,7 +1022,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
                         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
                         guard let entry = realm.object(ofType: FeedEntry.self, forPrimaryKey: ref) else { return }
                         //await realm.asyncRefresh()
-                        try await realm.asyncWrite {
+                        try await realm.asyncWritePreservingOwnership {
                             entry.imageUrl = url
                             entry.refreshChangeMetadata(explicitlyModified: true)
                         }
@@ -1523,7 +1523,7 @@ public extension Feed {
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
                       feed.rssUrl == expectedRSSURL,
                       FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return }
@@ -1625,7 +1625,7 @@ public extension Feed {
             var didCommit = false
             if deleteOrphans || !entriesToPersist.isEmpty {
                 await realm.asyncRefresh()
-                didCommit = try await realm.asyncWrite {
+                didCommit = try await realm.asyncWritePreservingOwnership {
                     guard realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.rssUrl == expectedRSSURL else {
                         return false
                     }
@@ -1818,7 +1818,7 @@ public extension Feed {
             var didCommit = false
             if !entriesToPersist.isEmpty || !collectionObjects.isEmpty || deleteOrphans {
                 await realm.asyncRefresh()
-                didCommit = try await realm.asyncWrite {
+                didCommit = try await realm.asyncWritePreservingOwnership {
                     guard realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.rssUrl == expectedRSSURL else {
                         return false
                     }
@@ -2281,7 +2281,7 @@ fileprivate func syncRelatedReaderContent(with payload: FeedEntryPayload) async 
     let timestamp = Date()
     for case let object as (Object & ReaderContentProtocol) in mirrors {
         guard let realm = object.realm else { continue }
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             if applyPayload(payload, to: object) {
                 object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
             }

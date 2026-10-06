@@ -110,7 +110,7 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
             defer { BookmarkAssociationObservation.completed?(completedSuccessfully) }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
 //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 guard let target = realm.object(
                     ofType: Bookmark.self, forPrimaryKey: targetBookmarkID
                 ), !target.isDeleted else { return }
@@ -169,7 +169,7 @@ public extension Bookmark {
         realmConfiguration: Realm.Configuration
     ) async throws -> Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        return try await realm.asyncWrite {
+        return try await realm.asyncWritePreservingOwnership {
             let pk = Bookmark.makePrimaryKey(url: url, html: html)
             if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
                 bookmark.title = title
@@ -248,7 +248,7 @@ public extension Bookmark {
         at date: Date = Date()
     ) async throws {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             let activeRecords = Array(
                 realm.objects(self).filter("isDeleted == false")
             )

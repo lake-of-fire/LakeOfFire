@@ -173,7 +173,7 @@ private struct LibraryFeedFieldCommand: Sendable {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         await beforeWrite?()
         try Task.checkCancellation()
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
                   !feed.isDeleted, feed.isUserEditable(),

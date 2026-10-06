@@ -46,7 +46,7 @@ public class MediaStatus: Object, UnownedSyncableObject, ChangeMetadataRecordabl
             if mediaStatus.isDeleted {
 //                await realm.asyncRefresh()
                 var didCommit = false
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     guard !Task.isCancelled else { return }
                     mediaStatus.isDeleted = false
                     mediaStatus.refreshChangeMetadata(explicitlyModified: true)
@@ -62,7 +62,7 @@ public class MediaStatus: Object, UnownedSyncableObject, ChangeMetadataRecordabl
         mediaStatus.updateCompoundKey()
 //        await realm.asyncRefresh()
         var didCommit = false
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             guard !Task.isCancelled else { return }
             realm.add(mediaStatus, update: .modified)
             mediaStatus.refreshChangeMetadata(explicitlyModified: true)
