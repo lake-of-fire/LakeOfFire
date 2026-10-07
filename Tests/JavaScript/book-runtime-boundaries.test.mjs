@@ -439,3 +439,83 @@ test('a non-callable installed projector remains an error, not a successful publ
     assert.throws(() => f.publish(2), TypeError)
     assert.deepEqual(f.projections, [1])
 })
+
+
+// Additive close ownership checks; all donor assertions remain above.
+test('close never enumerates a renderer installed by an earlier cleanup phase', t => {
+    const f = fixture(t)
+    f.publish()
+    const successor = { successor: true }
+    const close = f.runtime.bridge.close
+    f.runtime.bridge.close = () => {
+        close.call(f.runtime.bridge)
+        f.c.defaultView.manabi_bookReadingScope = successor
+        f.view.renderer = { displayedIndex: 0, getContents: () => [{ index: 0, doc: f.c }] }
+    }
+    f.runtime.close()
+    assert.equal(f.c.defaultView.manabi_bookReadingScope, successor)
+    assert.equal(f.c.defaultView.cleared, 0)
+    assert.equal(f.a.defaultView.manabi_bookReadingScope, null)
+})
+
+test('close preserves a successor scope installed in a captured frame during teardown', t => {
+    const f = fixture(t)
+    f.publish()
+    const successor = { successor: true }, close = f.runtime.bridge.close
+    f.runtime.bridge.close = () => {
+        close.call(f.runtime.bridge)
+        f.a.defaultView.manabi_bookReadingScope = successor
+    }
+    const cleared = f.a.defaultView.cleared
+    f.runtime.close()
+    assert.equal(f.a.defaultView.manabi_bookReadingScope, successor)
+    assert.equal(f.a.defaultView.cleared, cleared)
+})
+
+test('close invalidates each retiring document once even when observation repeats it', t => {
+    const f = fixture(t)
+    f.publish()
+    const a = f.a.defaultView.cleared, b = f.b.defaultView.cleared
+    f.runtime.close()
+    assert.equal(f.a.defaultView.cleared, a + 1)
+    assert.equal(f.b.defaultView.cleared, b + 1)
+})
+
+test('frame token replacement in callback lookup does not borrow an unchanged publication guard', t => {
+    const f = fixture(t)
+    f.publish()
+    const frame = f.b.defaultView, successor = { successor: true }
+    const clear = frame.manabi_invalidateBookReadingScope
+    Object.defineProperty(frame, 'manabi_invalidateBookReadingScope', { configurable: true, get() {
+        Object.defineProperty(frame, 'manabi_invalidateBookReadingScope', { value: clear, writable: true, configurable: true })
+        frame.manabi_bookReadingScope = successor
+        return clear
+    } })
+    f.runtime.state.refresh()
+    assert.equal(f.publish(2), true)
+    assert.equal(frame.manabi_bookReadingScope, successor)
+})
+
+
+test('close uses the captured retiring frame when document frame lookup is replaced', t => {
+    const f = fixture(t)
+    assert.equal(f.publish(), true)
+    const outgoing = f.a.defaultView, cleared = outgoing.cleared
+    const successor = { successor: true }
+    const replacement = { manabi_bookReadingScope: successor, cleared: 0 }
+    replacement.manabi_invalidateBookReadingScope = () => {
+        replacement.cleared++
+        replacement.manabi_bookReadingScope = null
+    }
+    const close = f.runtime.bridge.close
+    f.runtime.bridge.close = () => {
+        close.call(f.runtime.bridge)
+        Object.defineProperty(f.a, 'defaultView', { configurable: true, get: () => replacement })
+    }
+    f.runtime.close()
+    assert.equal(replacement.manabi_bookReadingScope, successor,
+        'old close cannot borrow the replacement frame from a later document lookup')
+    assert.equal(replacement.cleared, 0)
+    assert.equal(outgoing.cleared, cleared + 1, 'the captured outgoing frame still receives cleanup')
+    assert.equal(outgoing.manabi_bookReadingScope, null)
+})
