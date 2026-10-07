@@ -13,28 +13,16 @@ private struct ParseURLResultSummary: Sendable {
     let hasError: Bool
 }
 
+@MainActor
 final class opds_parser_url_test: XCTestCase {
-    override func setUp() {
-        super.setUp()
-        URLProtocol.registerClass(MockOPDSURLProtocol.self)
-    }
-
-    override func tearDown() {
-        URLProtocol.unregisterClass(MockOPDSURLProtocol.self)
-        MockOPDSURLProtocol.requestHandler = nil
-        super.tearDown()
-    }
-
     func testParseURLParsesOPDS2Feed() async throws {
-        let sampleURL = try XCTUnwrap(Bundle.module.url(forResource: "Samples/opds_2_0", withExtension: "json"))
-        let data = try Data(contentsOf: sampleURL)
-        MockOPDSURLProtocol.requestHandler = { request in
-            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/opds+json"])!
-            return (response, data)
-        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockOPDSURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
 
         let result = await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/feed.json")!) { parseData, error in
+            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/feed.json")!, session: session) { parseData, error in
                 continuation.resume(
                     returning: ParseURLResultSummary(
                         versionIsOPDS2: parseData?.version == .OPDS2,
@@ -52,13 +40,13 @@ final class opds_parser_url_test: XCTestCase {
     }
 
     func testParseURLRejectsMalformedXML() async {
-        MockOPDSURLProtocol.requestHandler = { request in
-            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/atom+xml"])!
-            return (response, Data("<feed><entry></feed>".utf8))
-        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockOPDSURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
 
         let result = await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/bad.xml")!) { parseData, error in
+            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/bad.xml")!, session: session) { parseData, error in
                 continuation.resume(
                     returning: ParseURLResultSummary(
                         versionIsOPDS2: parseData?.version == .OPDS2,
@@ -75,13 +63,13 @@ final class opds_parser_url_test: XCTestCase {
     }
 
     func testParseURLRejectsMalformedJSON() async {
-        MockOPDSURLProtocol.requestHandler = { request in
-            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/opds+json"])!
-            return (response, Data("{\"metadata\":".utf8))
-        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockOPDSURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
 
         let result = await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/bad.json")!) { parseData, error in
+            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/bad.json")!, session: session) { parseData, error in
                 continuation.resume(
                     returning: ParseURLResultSummary(
                         versionIsOPDS2: parseData?.version == .OPDS2,
@@ -99,7 +87,6 @@ final class opds_parser_url_test: XCTestCase {
 }
 
 private final class MockOPDSURLProtocol: URLProtocol {
-    nonisolated(unsafe) static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
 
     override class func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "catalog.example.com"
@@ -110,18 +97,32 @@ private final class MockOPDSURLProtocol: URLProtocol {
     }
 
     override func startLoading() {
-        guard let handler = Self.requestHandler else {
-            XCTFail("Missing request handler")
-            return
-        }
-
         do {
-            let (response, data) = try handler(request)
+            let (response, data) = try response(for: request)
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
             client?.urlProtocolDidFinishLoading(self)
         } catch {
             client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+
+    private func response(for request: URLRequest) throws -> (HTTPURLResponse, Data) {
+        switch request.url?.lastPathComponent {
+        case "feed.json":
+            let sampleURL = try XCTUnwrap(Bundle.module.url(forResource: "Samples/opds_2_0", withExtension: "json"))
+            let data = try Data(contentsOf: sampleURL)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/opds+json"])!
+            return (response, data)
+        case "bad.xml":
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/atom+xml"])!
+            return (response, Data("<feed><entry></feed>".utf8))
+        case "bad.json":
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/opds+json"])!
+            return (response, Data("{\"metadata\":".utf8))
+        default:
+            throw URLError(.unsupportedURL)
         }
     }
 
