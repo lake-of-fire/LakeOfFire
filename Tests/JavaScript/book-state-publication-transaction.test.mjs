@@ -276,3 +276,102 @@ for (const boundary of ['post lookup', 'post error']) {
         assert.equal(f.apply(response(21)), true)
     })
 }
+
+for (const successor of ['closed', 'publication', 'relocation', 'account']) {
+    test(`context argument getter cannot lend a ${successor} successor to its caller`, () => {
+        const f = fixture()
+        assert.equal(f.apply(response()), true)
+        const expected = {}
+        oneShot(expected, 'contextID', () => {
+            if (successor === 'closed') f.controller.close()
+            if (successor === 'publication') assert.equal(f.native(response(2)), true)
+            if (successor === 'relocation') f.controller.relocate({ sectionURL: 'next.xhtml' })
+            if (successor === 'account') f.controller.setAccountPresentation('2:1')
+        }, successor === 'publication' ? 'context-2' : 'context-1')
+        assert.throws(() => f.controller.captureContext(expected), /chapter changed/)
+        if (successor === 'publication') assert.equal(f.controller.context.contextID, 'context-2')
+        else assert.equal(f.controller.context, null)
+    })
+}
+for (const action of ['startBookOver', 'startChapterOver']) {
+    for (const field of ['locationRevision', 'articleProgressID', 'articleEpochID', 'action',
+        ...(action === 'startChapterOver' ? ['sectionLocation', 'chapterEpochID'] : [])]) {
+        test(`${action} rejects navigation when ${field} getter closes the admitted projection`, () => {
+            const f = fixture()
+            assert.equal(f.apply(response()), true)
+            const target = { locationRevision: f.controller.locationRevision,
+                articleProgressID: 'book', articleEpochID: 'pass', action,
+                sectionLocation: 'chapter.xhtml', chapterEpochID: null }
+            oneShot(target, field, () => f.controller.close(), target[field])
+            assert.equal(f.controller.admitsNavigation(target), false)
+        })
+    }
+}
+test('same-location publication during navigation argument lookup rejects the old caller', () => {
+    const f = fixture()
+    assert.equal(f.apply(response()), true)
+    const target = { locationRevision: f.controller.locationRevision,
+        articleProgressID: 'book', articleEpochID: 'pass' }
+    oneShot(target, 'action', () => assert.equal(f.native(response(2)), true), 'startBookOver')
+    assert.equal(f.controller.admitsNavigation(target), false)
+    assert.equal(f.controller.state.revision, 2)
+})
+test('context, scope and navigation retain ordinary current projection behavior', () => {
+    const f = fixture()
+    assert.equal(f.apply(response()), true)
+    const captured = f.controller.captureContext({ contextID: 'context-1' })
+    assert.equal(captured.contextID, 'context-1')
+    assert.equal(captured.locationRevision, f.controller.locationRevision)
+    const scope = f.controller.captureScope('chapter.xhtml')
+    assert.equal(scope.articleEpochID, 'pass')
+    scope.articleEpochID = 'detached'
+    assert.equal(f.controller.context.scope.articleEpochID, 'pass')
+    for (const action of ['startBookOver', 'startChapterOver']) {
+        assert.equal(f.controller.admitsNavigation({ ...captured, action, chapterEpochID: null }), true)
+    }
+})
+test('account transition method getter cannot consume a nested replacement request', () => {
+    const f = fixture(), transition = f.controller.setAccountPresentation
+    oneShot(f.controller, 'setAccountPresentation', () => f.controller.refresh(), transition)
+    assert.equal(f.apply(response(1, '1:1')), false)
+    assert.equal(f.controller.accountPresentation, null)
+    assert.equal(f.apply(response(2)), true)
+    assert.equal(f.controller.state.revision, 2)
+})
+test('rapid refresh keeps accepted display and only admits the last queued reply', () => {
+    const f = fixture()
+    assert.equal(f.apply(response()), true)
+    const staleIDs = []
+    for (let i = 0; i < 20; i++) {
+        assert.equal(f.controller.refresh(), true)
+        staleIDs.push(f.posts.at(-1).requestID)
+        assert.equal(f.controller.ready, true)
+    }
+    const currentID = staleIDs.pop()
+    for (const id of staleIDs) assert.equal(f.controller.apply(id, response(100)), false)
+    assert.equal(f.controller.apply(currentID, response(2)), true)
+    assert.equal(f.controller.state.revision, 2)
+    assert.equal(f.paints.length, 2)
+})
+
+for (const field of ['state', 'context']) {
+    for (const initialAccount of [true, false]) {
+        test(`${field} copy failure during ${initialAccount ? 'initial' : 'new'} account adoption retains its correlated read`, () => {
+            const f = fixture()
+            if (!initialAccount) assert.equal(f.apply(response(100, '1:1')), true)
+            f.controller.refresh()
+            const requestID = f.posts.at(-1).requestID
+            const broken = response(99, '2:1')
+            broken[field].toJSON = () => { throw new Error('copy failed after account adoption') }
+            assert.equal(f.controller.apply(requestID, broken), false)
+            assert.equal(f.controller.accountPresentation, '2:1')
+            assert.equal(f.controller.context, null, 'an older account display must stay withdrawn')
+            assert.equal(f.controller.ready, false)
+            assert.equal(f.controller.apply(requestID, response(2, '1:1')), false,
+                'retaining the correlated read cannot revive an older account')
+            assert.equal(f.controller.apply(requestID, response(2, '2:1')), true,
+                'failed copying must not consume this read or poison its new-account watermark')
+            assert.equal(f.controller.state.revision, 2)
+        })
+    }
+}

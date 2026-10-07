@@ -136,9 +136,11 @@ export class BookReadingStateController {
         let admissionIsCurrent = this.#captureAdmission()
         if (!this.#location || !result || !this.#locationIsCurrent(admissionIsCurrent)) return false
         const location = this.#location, revision = this.#revision
-        if (result.nativeRefresh === true) {
+        const nativeRefresh = result.nativeRefresh === true
+        const responsePending = this.#pending
+        if (nativeRefresh) {
             if (!sameLocation(result.location, location) || result.location.locationRevision !== revision) return false
-        } else if (!this.#pending || requestID !== this.#pending.requestID) return false
+        } else if (!responsePending || requestID !== responsePending.requestID) return false
         const stamp = result.accountPresentation
         const needsAccount = stamp !== undefined || this.requiresAccountPresentation || this.#accountPresentation !== null
         if (!this.#locationIsCurrent(admissionIsCurrent)) return false
@@ -146,7 +148,15 @@ export class BookReadingStateController {
             const order = compareBookAccountPresentation(stamp, this.#accountPresentation)
             if (order === null || order < 0) return false
             if (order > 0) {
-                if (!this.setAccountPresentation(stamp)) return false
+                const setAccountPresentation = this.setAccountPresentation
+                if (!admissionIsCurrent() || typeof setAccountPresentation !== 'function') return false
+                if (!Reflect.apply(setAccountPresentation, this, [stamp])) return false
+                // The account transition withdraws the old display, but this
+                // already-correlated reply still owns its preparation slot.
+                // Preserve it until copying commits so a failed copy is retryable.
+                // A callback-selected request/publication makes the transition
+                // return false above and cannot be replaced by this old slot.
+                if (!nativeRefresh) this.#pending = responsePending
                 admissionIsCurrent = this.#captureAdmission()
             }
             if (this.#accountPresentation !== stamp) return false
@@ -197,13 +207,26 @@ export class BookReadingStateController {
         return publicationIsCurrent()
     }
     captureContext(expected = null) {
-        if (!this.ready || this.#closed) throw new Error('The current chapter is still loading its book actions.')
-        if (expected && expected.contextID !== this.#context.contextID) throw new Error('The chapter changed. Reopen Book Actions.')
-        return { ...this.context, locationRevision: this.#revision }
+        const isCurrent = this.#captureProjection()
+        if (!this.#context || !this.#locationIsCurrent(isCurrent)) {
+            throw new Error('The current chapter is still loading its book actions.')
+        }
+        // Caller data may run a getter that closes or publishes a successor.
+        // Return only the projection that admitted this call, never that successor.
+        const expectedID = expected ? expected.contextID : null
+        if (!isCurrent() || (expected && expectedID !== this.#context.contextID)) {
+            throw new Error('The chapter changed. Reopen Book Actions.')
+        }
+        const context = clone(this.#context)
+        if (!this.#locationIsCurrent(isCurrent)) throw new Error('The chapter changed. Reopen Book Actions.')
+        return { ...context, locationRevision: this.#revision }
     }
     captureScope(sectionURL) {
-        if (this.#closed || !this.ready || this.#location?.isEndPage || sectionURL !== this.#location?.sectionURL) return null
-        return clone(this.#context.scope)
+        const isCurrent = this.#captureProjection()
+        if (!this.#context || !this.#locationIsCurrent(isCurrent) || this.#location?.isEndPage
+            || sectionURL !== this.#location?.sectionURL) return null
+        const scope = clone(this.#context.scope)
+        return this.#locationIsCurrent(isCurrent) ? scope : null
     }
     noteManualReadSnapshot(sequence) {
         if (this.#closed || !Number.isSafeInteger(sequence) || sequence <= 0 || sequence < this.#lastSnapshotSequence) return false
@@ -211,11 +234,19 @@ export class BookReadingStateController {
         return true
     }
     admitsNavigation(target) {
-        if (!this.ready || target.locationRevision !== this.#revision
-            || target.articleProgressID !== this.#context.articleProgressID || target.articleEpochID !== this.#context.articleEpochID) return false
-        if (target.action === 'startBookOver') return true
-        return target.action === 'startChapterOver' && !this.#context.isEndPage
-            && target.sectionLocation === this.#context.sectionLocation && target.chapterEpochID === this.#context.scope?.chapterEpochID
+        const isCurrent = this.#captureProjection(), context = this.#context
+        if (!context || !target || !this.#locationIsCurrent(isCurrent)) return false
+        const revision = this.#revision
+        const locationRevision = target.locationRevision
+        const articleProgressID = target.articleProgressID, articleEpochID = target.articleEpochID
+        const action = target.action
+        if (!isCurrent() || locationRevision !== revision
+            || articleProgressID !== context.articleProgressID || articleEpochID !== context.articleEpochID) return false
+        if (action === 'startBookOver') return this.#locationIsCurrent(isCurrent)
+        if (action !== 'startChapterOver' || context.isEndPage) return false
+        const sectionLocation = target.sectionLocation, chapterEpochID = target.chapterEpochID
+        return sectionLocation === context.sectionLocation && chapterEpochID === context.scope?.chapterEpochID
+            && this.#locationIsCurrent(isCurrent)
     }
     close() {
         if (this.#closed) return
