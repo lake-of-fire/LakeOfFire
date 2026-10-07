@@ -29,7 +29,9 @@ public class ReaderContent: ObservableObject {
     
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
     private var loadingResolvedContentURL: URL?
-    private var loadingID: UUID?
+    // The last admitted selection outlives its loading task: a completed task
+    // may still have readers queued to receive its result.
+    private var selectionID: UUID?
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
     private var preloadedContent: (any ReaderContentProtocol)?
@@ -166,12 +168,20 @@ public class ReaderContent: ObservableObject {
             return
         }
 
+        // Reopening the already displayed content is not a new selection.
+        // Keep completed readers valid, but still retire any unrelated task.
+        if loadingTask == nil, let existingContent = content,
+           matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL),
+           matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
+            return
+        }
+
         // Every new selection retires the preceding load, including cached and
         // preloaded fast paths. Withdraw its identity before cancellation can
         // invoke callbacks; an old completion may never republish its content.
         let retiredTask = loadingTask
         let loadID = UUID()
-        loadingID = loadID
+        selectionID = loadID
         loadingTask = nil
         loadingResolvedContentURL = nil
         defer { finishLoading(ifOwnedBy: loadID) }
@@ -179,8 +189,9 @@ public class ReaderContent: ObservableObject {
 
         if let existingContent = content,
            matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL) {
-            let pageAlreadyMatchesDisplay = pageURL.absoluteString == displayURL.absoluteString
-                || pageURL.matchesReaderURL(displayURL)
+            let pageAlreadyMatchesDisplay = matchesResolvedContentURL(
+                pageURL, resolvedContentURL: displayURL
+            )
             if pageAlreadyMatchesDisplay {
                 return
             }
@@ -212,7 +223,7 @@ public class ReaderContent: ObservableObject {
                 debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
                 return nil
             }
-            guard let self, self.loadingID == loadID else {
+            guard let self, self.selectionID == loadID else {
                 return nil
             }
             self.content = content
@@ -224,8 +235,7 @@ public class ReaderContent: ObservableObject {
 
     private func finishLoading(ifOwnedBy loadID: UUID) {
         // Old completion is independent of a new selection's loading slot.
-        guard loadingID == loadID else { return }
-        loadingID = nil
+        guard selectionID == loadID else { return }
         loadingResolvedContentURL = nil
         loadingTask = nil
     }
@@ -240,8 +250,15 @@ public class ReaderContent: ObservableObject {
         if let content {
             return content
         }
-        let content = try await loadingTask?.value
-        return content
+        let selectionID = self.selectionID
+        let resolvedContent = try await loadingTask?.value
+        // Completing a task makes its value available, not permanently current.
+        // Navigation or a publication subscriber may replace the selection
+        // before this waiter resumes. Never return the displaced value or
+        // substitute the newly displayed content for the original read.
+        guard self.selectionID == selectionID,
+              let resolvedContent, content === resolvedContent else { return nil }
+        return resolvedContent
     }
 
     @MainActor

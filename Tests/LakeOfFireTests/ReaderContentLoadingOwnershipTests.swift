@@ -468,5 +468,178 @@ final class ReaderContentLoadingOwnershipTests: XCTestCase, @unchecked Sendable 
         try await load(reader, b.url) { _ in XCTFail("Current content reloaded"); return nil }
         XCTAssertEqual(reader.currentSectionIndex, 3)
     }
+    func testWaitingReadersNeverReturnOldContentAfterSuccessorPublication() async throws {
+        let reader = ReaderContent(), a = record("a"), b = record("b"), gate = Gate()
+        defer { gate.open() }
+        var next: Task<Void, Error>?
+        reader.preloadResolvedContent(b, for: b.url)
+        let observation = reader.contentTitleSubject.sink { title in
+            guard title == "a" else { return }
+            next = Task(priority: .high) { @MainActor in
+                try await self.load(reader, b.url) { _ in XCTFail("Lost preload"); return nil }
+            }
+        }
+        defer { observation.cancel() }
+        let producer = Task { @MainActor in
+            try await self.load(reader, a.url) { _ in await gate.wait(); return a }
+        }
+        await gate.waitForEntry()
+        let entered = (0..<32).map { XCTestExpectation(description: "accessor-\($0)") }
+        let readers = entered.map { entry in
+            Task(priority: .low) { @MainActor in
+                entry.fulfill()
+                let content = try await reader.getContent()
+                return (content?.url, reader.pageURL)
+            }
+        }
+        await fulfillment(of: entered, timeout: 5)
+        gate.open()
+        try await producer.value
+        try await next?.value
+        var stale = 0
+        for task in readers {
+            let (resolved, displayed) = try await task.value
+            if let resolved, resolved != displayed { stale += 1 }
+        }
+        XCTAssertEqual(stale, 0, "Completed task values cannot escape to readers after navigation")
+        XCTAssertTrue(reader.content === b)
+    }
+
+    func testReentrantTitleReplacementDoesNotReturnDisplacedContent() async throws {
+        for sameURL in [false, true] {
+            let reader = ReaderContent(), a = record("a"), b = record("b"), gate = Gate()
+            defer { gate.open() }
+            if sameURL { b.url = a.url; b.updateCompoundKey() }
+            let observation = reader.contentTitleSubject.sink { title in
+                guard title == "a" else { return }
+                reader.content = b
+                reader.pageURL = b.url
+            }
+            defer { observation.cancel() }
+            let producer = Task { @MainActor in
+                try await self.load(reader, a.url) { _ in await gate.wait(); return a }
+            }
+            await gate.waitForEntry()
+            let entered = XCTestExpectation(description: "accessor")
+            let accessor = Task { @MainActor in
+                entered.fulfill()
+                return try await reader.getContent()
+            }
+            await fulfillment(of: [entered], timeout: 5)
+            gate.open(); try await producer.value
+            let result = try await accessor.value
+            XCTAssertNil(result, "The accessor must neither return displaced A nor adopt B")
+            XCTAssertTrue(reader.content === b)
+            XCTAssertEqual(reader.pageURL, b.url)
+        }
+    }
+
+    // Exercise completed-value delivery separately from the loader's earlier
+    // commit check. Priority only widens the late-waiter schedule; assertions
+    // accept a read that actually returned before navigation occurred.
+    private func samplePendingReaders(
+        afterPublication transition: @escaping @MainActor (ReaderContent, HistoryRecord) async throws -> Void
+    ) async throws -> [(returned: (any ReaderContentProtocol)?, transitioned: Bool)] {
+        let reader = ReaderContent(), original = record("publication"), gate = Gate()
+        defer { gate.open() }
+        var transitionTask: Task<Void, Error>?
+        var scheduled = false
+        var transitioned = false
+        let observation = reader.contentTitleSubject.sink { title in
+            guard title == "publication", !scheduled else { return }
+            scheduled = true
+            transitionTask = Task(priority: .high) { @MainActor in
+                try await transition(reader, original)
+                transitioned = true
+            }
+        }
+        defer { observation.cancel() }
+        let producer = Task { @MainActor in
+            try await self.load(reader, original.url) { _ in await gate.wait(); return original }
+        }
+        await gate.waitForEntry()
+        let entered = (0..<32).map { XCTestExpectation(description: "completed-reader-\($0)") }
+        let readers = entered.map { entry in
+            Task(priority: .low) { @MainActor in
+                entry.fulfill()
+                let value = try await reader.getContent()
+                return (returned: value, transitioned: transitioned)
+            }
+        }
+        await fulfillment(of: entered, timeout: 5)
+        gate.open()
+        try await producer.value
+        try await transitionTask?.value
+        var samples: [(returned: (any ReaderContentProtocol)?, transitioned: Bool)] = []
+        for reader in readers { samples.append(try await reader.value) }
+        return samples
+    }
+
+    func testCompletedReadersSurviveAnUnchangedContentReuse() async throws {
+        let samples = try await samplePendingReaders { reader, original in
+            try await self.load(reader, original.url) { _ in
+                XCTFail("A no-op reused display should not resolve again"); return nil
+            }
+        }
+        for sample in samples {
+            XCTAssertNotNil(sample.returned, "Reusing the already displayed content must not retire readers")
+        }
+    }
+
+    func testCompletedReadersRejectReturnToTheSameObjectAfterNavigation() async throws {
+        let samples = try await samplePendingReaders { reader, original in
+            let other = self.record("other")
+            reader.preloadResolvedContent(other, for: other.url)
+            try await self.load(reader, other.url) { _ in XCTFail("Lost other preload"); return nil }
+            reader.preloadResolvedContent(original, for: original.url)
+            try await self.load(reader, original.url) { _ in XCTFail("Lost original preload"); return nil }
+            XCTAssertTrue(reader.content === original)
+        }
+        for sample in samples where sample.transitioned {
+            XCTAssertNil(sample.returned, "Matching URL and object cannot reopen a retired selection")
+        }
+    }
+
+    func testPendingReaderReturnsNormalPublicationAfterProducerCleanup() async throws {
+        let reader = ReaderContent(), original = record("normal"), gate = Gate()
+        defer { gate.open() }
+        let producer = Task { @MainActor in
+            try await self.load(reader, original.url) { _ in await gate.wait(); return original }
+        }
+        await gate.waitForEntry()
+        let entered = XCTestExpectation(description: "normal reader entered")
+        let readerTask = Task { @MainActor in
+            entered.fulfill()
+            return try await reader.getContent()
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        gate.open()
+        try await producer.value
+        let value = try await readerTask.value
+        XCTAssertTrue(value === original)
+        let cached = try await reader.getContent()
+        XCTAssertTrue(cached === original)
+    }
+
+    func testPendingAccessorPreservesOriginalFailureAfterReplacement() async throws {
+        let reader = ReaderContent(), a = record("a"), b = record("b"), gate = Gate()
+        defer { gate.open() }
+        let producer = Task { @MainActor in
+            try await self.load(reader, a.url) { _ in await gate.wait(); throw Failure.expected }
+        }
+        await gate.waitForEntry()
+        let entered = XCTestExpectation(description: "failing accessor entered")
+        let accessor = Task { @MainActor in
+            entered.fulfill()
+            _ = try await reader.getContent()
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        reader.preloadResolvedContent(b, for: b.url)
+        try await load(reader, b.url) { _ in XCTFail("Lost preload"); return nil }
+        gate.open()
+        await expectFailure(producer)
+        await expectFailure(accessor)
+        XCTAssertTrue(reader.content === b)
+    }
 
 }
