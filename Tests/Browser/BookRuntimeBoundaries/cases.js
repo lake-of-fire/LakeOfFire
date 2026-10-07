@@ -291,3 +291,65 @@ add('scope comparison does not trust equal keys after a wrapped receipt retires 
         expect(f.runtime.isEventCurrent(f.runtime.captureEvent(f.doc)), 'A newly observed event was rejected')
     } finally { cleanup(f) }
 })
+
+
+add('close does not enumerate a successor renderer installed during teardown', async () => {
+    const f = await make(), successor = await makeChapter('successor')
+    try {
+        const token = { successor: true }, close = f.runtime.bridge.close
+        f.runtime.bridge.close = () => {
+            close.call(f.runtime.bridge)
+            successor.defaultView.manabi_bookReadingScope = token
+            successor.getElementById('state').textContent = 'Successor display'
+            f.view.renderer = { currentIndex: 0, getContents: () => [{ index: 0, doc: successor }] }
+        }
+        f.close()
+        expect(successor.defaultView.manabi_bookReadingScope === token, 'Old close removed the successor token')
+        expect(successor.getElementById('state').textContent === 'Successor display', 'Old close cleared the successor DOM')
+        expect(f.doc.defaultView.manabi_bookReadingScope === null, 'Retiring document retained its token')
+    } finally { cleanup(f) }
+})
+
+add('close preserves a reused iframe scope replaced by an earlier teardown callback', async () => {
+    const f = await make()
+    try {
+        const token = { successor: true }, close = f.runtime.bridge.close
+        f.runtime.bridge.close = () => {
+            close.call(f.runtime.bridge)
+            f.doc.defaultView.manabi_bookReadingScope = token
+            f.doc.getElementById('state').textContent = 'Successor display'
+        }
+        f.close()
+        expect(f.doc.defaultView.manabi_bookReadingScope === token, 'Old close cleared a replaced token')
+        expect(f.visible() === 'Successor display', 'Old close repainted a successor iframe')
+    } finally { cleanup(f) }
+})
+
+
+add('close retains its captured frame when page code redirects document frame lookup', async () => {
+    const f = await make(), replacement = await makeChapter('replacement-frame')
+    const outgoing = f.doc.defaultView, successor = replacement.defaultView
+    const token = { successor: true }
+    let outgoingClears = 0
+    outgoing.manabi_invalidateBookReadingScope = () => {
+        outgoingClears++
+        outgoing.manabi_bookReadingScope = null
+    }
+    try {
+        const close = f.runtime.bridge.close
+        f.runtime.bridge.close = () => {
+            close.call(f.runtime.bridge)
+            successor.manabi_bookReadingScope = token
+            replacement.getElementById('state').textContent = 'Successor display'
+            Object.defineProperty(f.doc, 'defaultView', { configurable: true, get: () => successor })
+        }
+        f.close()
+        expect(successor.manabi_bookReadingScope === token, 'Old close borrowed and cleared the replacement frame')
+        expect(replacement.getElementById('state').textContent === 'Successor display', 'Old close repainted replacement iframe')
+        expect(outgoingClears === 1, 'Captured retiring frame did not receive exactly one cleanup')
+        expect(outgoing.manabi_bookReadingScope === null, 'Captured retiring frame retained its scope')
+    } finally {
+        delete f.doc.defaultView
+        cleanup(f)
+    }
+})

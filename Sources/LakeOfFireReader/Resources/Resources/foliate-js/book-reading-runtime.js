@@ -21,25 +21,28 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         } catch (_) { return null }
     }
     const isPrimaryDocument = doc => !!doc && doc === primaryDocument()
-    const clearDocumentScope = (doc, isCurrent = () => true) => {
+    const clearDocumentScope = (doc, isCurrent = () => true, capturedFrame = null) => {
         let frame, scope, captured = false
+        const ownsScope = () => captured && !!frame && isCurrent()
+            && frame.manabi_bookReadingScope === scope && isCurrent()
         try {
             if (!isCurrent()) return
-            frame = doc?.defaultView
+            // Teardown supplies its captured frame; page code must not redirect
+            // a later document lookup into a successor's cleanup.
+            frame = capturedFrame ?? doc?.defaultView
             if (!frame || !isCurrent()) return
             scope = frame.manabi_bookReadingScope
             captured = true
             const invalidate = frame.manabi_invalidateBookReadingScope
             // A frame's callback lookup can already publish a successor.
-            if (!isCurrent()) return
+            if (!ownsScope()) return
             if (typeof invalidate === 'function') Reflect.apply(invalidate, frame, [])
             else frame.manabi_bookReadingScope = null
         } catch (_) {
             // A broken outgoing frame must not prevent sibling/host cleanup.
             // Withdraw only the unchanged exposed scope, never recovered state.
             try {
-                if (captured && isCurrent() && frame.manabi_bookReadingScope === scope
-                    && isCurrent()) frame.manabi_bookReadingScope = null
+                if (ownsScope()) frame.manabi_bookReadingScope = null
             } catch (_) {}
         }
     }
@@ -78,6 +81,8 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
             // Retire the captured identities before invoking frame callbacks;
             // previously queued work must not acquire the recovered display.
             const invalidation = scopeReceipts = new WeakMap()
+            // close owns a captured roster and must not enumerate a replacement.
+            if (closed) return
             const isCurrent = () => scopeReceipts === invalidation && state.context === null
             clearDocumentScopes(isCurrent)
             if (!isCurrent()) return
@@ -246,10 +251,25 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         close() {
             if (closed) return
             closed = true
-            // Private retirement precedes callbacks; cleanup phases remain
-            // independent so one failed observer cannot leave the book inert.
+            scopeReceipts = new WeakMap()
+            // Retain outgoing frame/token identities before teardown callbacks.
+            // The observation remains a fallback after renderer discard.
+            const renderer = observed.renderer, docs = new Set([observed.document])
+            for (const content of rendererContents(renderer)) {
+                try { docs.add(content?.doc ?? content?.document) } catch (_) {}
+            }
+            const frames = []
+            for (const doc of docs) {
+                try {
+                    const frame = doc?.defaultView, scope = frame?.manabi_bookReadingScope
+                    if (frame) frames.push({ doc, frame, scope })
+                } catch (_) {}
+            }
+            // One failure cannot stop sibling cleanup; a replacement renderer
+            // or a newer scope in a reused frame never belongs to this close.
             for (const cleanup of [() => bridge.close(), () => state.close(), () => endcap.destroy(),
-                () => clearDocumentScopes(), () => clearDocumentScope(observed.document)]) {
+                ...frames.map(({ doc, frame, scope }) => () => clearDocumentScope(doc,
+                    () => frame.manabi_bookReadingScope === scope, frame))]) {
                 try { cleanup() } catch (_) {}
             }
         },
