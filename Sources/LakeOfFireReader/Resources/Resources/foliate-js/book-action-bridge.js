@@ -26,6 +26,7 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
     timeoutMilliseconds = 15_000, setTimer = globalThis.setTimeout, clearTimer = globalThis.clearTimeout,
     captureProducerOwner = captureReaderArticleProducerOwner,
     carryProducerOwner = carryReaderArticleProducerOwner,
+    onAccountChange = () => {},
 }) => {
     let closed = false, preparing = false, current = null, accountPresentation = null
     const deliveries = new Map(), completed = new Map()
@@ -133,6 +134,10 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
             // failed or replay it under the successor account's producer.
             const old = Array.from(deliveries.values())
             deliveries.clear(); completed.clear(); current = null
+            // Withdraw caller UI ownership before optional timer cleanup can
+            // reenter under the already-selected new account. Observer failure
+            // cannot prevent the original deliveries from settling.
+            try { onAccountChange(stamp) } catch (_) {}
             for (const delivery of old) {
                 const error = new BookActionUnacknowledgedError(
                     'The account changed. The previous account action is no longer displayed.', delivery.request)
