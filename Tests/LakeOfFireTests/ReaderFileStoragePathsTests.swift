@@ -34,6 +34,44 @@ final class ReaderFileStoragePathsTests: XCTestCase {
         }
     }
 
+    func testDownloadFilenameDecodesOnlyTheFinalEncodedComponentOnce() throws {
+        let cases = [
+            ("https://example.com/books/a%23b.epub?ignored=a%2Fb#chapter", "a#b.epub"),
+            ("https://example.com/books/a%20b.epub", "a b.epub"),
+            ("https://example.com/books/100%25.epub", "100%.epub"),
+            ("https://example.com/books/a%252Fb.epub", "a%2Fb.epub"),
+            ("https://example.com/books/a%255Cb.epub", "a%5Cb.epub"),
+            ("https://example.com/books/a%2500b.epub", "a%00b.epub"),
+            ("https://example.com/books/%252e%252e", "%2e%2e"),
+            ("https://example.com/books/吾輩は猫である.epub", "吾輩は猫である.epub"),
+        ]
+        for (raw, expected) in cases {
+            let url = try XCTUnwrap(URL(string: raw))
+            XCTAssertEqual(try ReaderFileStoragePaths.downloadFilename(for: url), expected, raw)
+        }
+    }
+
+    func testDownloadFilenameRejectsEncodedSeparatorsControlsAndTraversal() throws {
+        for component in ["a%2fb.epub", "a%2Fb.epub", "a%5cb.epub", "a%5Cb.epub",
+                          "a%00b.epub", "a%1fb.epub", "a%7fb.epub", ".", "..", "%2e", "%2E%2e"] {
+            let url = try XCTUnwrap(URL(string: "https://example.com/books/" + component))
+            XCTAssertThrowsError(try ReaderFileStoragePaths.downloadFilename(for: url), component)
+        }
+        let directoryURL = try XCTUnwrap(URL(string: "https://example.com/books/"))
+        XCTAssertThrowsError(try ReaderFileStoragePaths.downloadFilename(for: directoryURL))
+    }
+
+    func testDownloadFilenameLengthLimitUsesDecodedUTF8Bytes() throws {
+        for name in [String(repeating: "a", count: 255), String(repeating: "猫", count: 85)] {
+            let url = try XCTUnwrap(URL(string: "https://example.com/books/" + name))
+            XCTAssertEqual(try ReaderFileStoragePaths.downloadFilename(for: url), name)
+        }
+        for name in [String(repeating: "a", count: 256), String(repeating: "猫", count: 86)] {
+            let url = try XCTUnwrap(URL(string: "https://example.com/books/" + name))
+            XCTAssertThrowsError(try ReaderFileStoragePaths.downloadFilename(for: url), name)
+        }
+    }
+
     func testTransferStagingArtifactsAreNotBooks() {
         let id = "01234567-89AB-CDEF-0123-456789ABCDEF"
         for name in ["book.downloading.\(id).epub", "book.downloading.\(id).epub.br", "book.downloading.\(id)", "book.v2.downloading.\(id.lowercased()).txt", "book.epub.decompressing.\(id)", "book.epub.sha1verified.json"] {

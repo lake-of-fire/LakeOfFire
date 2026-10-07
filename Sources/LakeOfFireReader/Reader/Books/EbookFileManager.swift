@@ -162,7 +162,7 @@ public struct EbookFileManager {
         var deferredIDs = Set<String>()
         for group in groups {
             try Task.checkCancellation()
-            try await group.realm.asyncWrite {
+            try await group.realm.asyncWritePreservingOwnership {
                 // asyncWrite may acquire its transaction after cancellation or
                 // an intervening Realm notification. Check inside the closure.
                 try Task.checkCancellation()

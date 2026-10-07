@@ -11156,7 +11156,14 @@ class Reader {
         this.#publishConfirmedPageTurnProgress({ bookEvent, producerOwner });
     }
     #publishConfirmedPageTurnProgress = debounce(({ bookEvent, producerOwner }) => {
-        if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) return;
+        if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) {
+            globalThis.__manabiRestoreDebugLog?.('ebook.confirmedProgress.rejected', {
+                reason: 'book-event', hasBookScope: !!bookEvent?.scope,
+                capturedRevision: bookEvent?.locationRevision ?? null,
+                currentRevision: this.bookReadingRuntime.state.locationRevision,
+            });
+            return;
+        }
         const location = this.view?.lastLocation ?? null;
         const sectionIndex = typeof location?.sectionIndex === 'number'
             ? location.sectionIndex
@@ -11192,7 +11199,15 @@ class Reader {
             priorObservation: this.lastCFIPersistenceObservation,
             cfiAlreadyUnstable: this.unstableCFIs.has(location?.cfi),
         });
-        if (!decision.shouldPost) return;
+        if (!decision.shouldPost) {
+            globalThis.__manabiRestoreDebugLog?.('ebook.confirmedProgress.rejected', {
+                reason: decision.reason,
+                hasProducerOwner: !!producerOwner,
+                hasBookScope: !!bookEvent?.scope,
+                locationRevision: bookEvent?.locationRevision ?? null,
+            });
+            return;
+        }
         this.#postUpdateReadingProgressMessage({
             bookEvent,
             producerOwner,
@@ -11238,6 +11253,14 @@ class Reader {
             || globalThis.__manabiSuppressNextRestoreRelocateSave === true
             || globalThis.__manabiRequireUserInputBeforePositionSave === true
         ) {
+            globalThis.__manabiRestoreDebugLog?.('ebook.updateReadingProgress.rejected', {
+                stage: 'restore-save-admission',
+                closed: this.#closed,
+                hasLoadedLastPosition: this.hasLoadedLastPosition === true,
+                restoreInProgress: globalThis.__manabiRestoreInProgress === true,
+                suppressNextSave: globalThis.__manabiSuppressNextRestoreRelocateSave === true,
+                requiresUserInput: globalThis.__manabiRequireUserInputBeforePositionSave === true,
+            });
             return;
         }
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
@@ -11266,6 +11289,10 @@ class Reader {
             || locationCFIMismatch
             || locationFractionMismatch
         ) {
+            globalThis.__manabiRestoreDebugLog?.('ebook.updateReadingProgress.rejected', {
+                stage: 'location', documentMismatch, sectionMismatch,
+                locationCFIMismatch, locationFractionMismatch,
+            });
             return;
         }
         const visibleRange = isDocumentLike(doc) ? this.#visibleRangeForDocument(doc) : null;
@@ -11301,8 +11328,18 @@ class Reader {
             currentDocumentURL,
             currentSectionIndex,
         });
-        if (this.bookEndcap?.visible) return;
-        if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) return;
+        if (this.bookEndcap?.visible) {
+            globalThis.__manabiRestoreDebugLog?.('ebook.updateReadingProgress.rejected', { stage: 'endcap' });
+            return;
+        }
+        if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) {
+            globalThis.__manabiRestoreDebugLog?.('ebook.updateReadingProgress.rejected', {
+                stage: 'book-event', hasBookScope: !!bookEvent?.scope,
+                capturedRevision: bookEvent?.locationRevision ?? null,
+                currentRevision: this.bookReadingRuntime.state.locationRevision,
+            });
+            return;
+        }
         const progressMessage = carryReaderArticleProducerOwner({
             bookReadingScope: bookEvent?.scope ?? null,
             pageURL: currentDocumentURL,
@@ -11319,7 +11356,16 @@ class Reader {
             visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
             observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
         }, producerOwner);
-        if (!progressMessage) return;
+        if (!progressMessage) {
+            globalThis.__manabiRestoreDebugLog?.('ebook.updateReadingProgress.rejected', {
+                stage: 'producer-owner', hasProducerOwner: !!producerOwner,
+            });
+            return;
+        }
+        globalThis.__manabiRestoreDebugLog?.('ebook.updateReadingProgress.dispatch', {
+            hasProducerOwner: !!producerOwner, hasBookScope: !!bookEvent?.scope,
+            locationRevision: bookEvent?.locationRevision ?? null, sectionIndex,
+        });
         window.webkit.messageHandlers.updateReadingProgress.postMessage(progressMessage)
     }, 400)
 
@@ -11334,6 +11380,15 @@ class Reader {
         if (this.bookReadingRuntime && !bookEvent && !this.bookEndcap?.visible) {
             this.#bookPositionRefreshNeeded = true;
         }
+        globalThis.__manabiRestoreDebugLog?.('ebook.relocate.progressAdmission', {
+            reason: detail?.reason ?? null,
+            hasProducerOwner: !!producerOwner, hasBookScope: !!bookEvent?.scope,
+            locationRevision: this.bookReadingRuntime?.state.locationRevision ?? null,
+            hasLoadedLastPosition: this.hasLoadedLastPosition === true,
+            restoreInProgress: globalThis.__manabiRestoreInProgress === true,
+            suppressNextSave: globalThis.__manabiSuppressNextRestoreRelocateSave === true,
+            requiresUserInput: globalThis.__manabiRequireUserInputBeforePositionSave === true,
+        });
         const relocateSequence = ++this.#relocateSequence;
         const lifecycleGeneration = this.#lifecycleGeneration;
         const isCurrentRelocate = () => this.#isLifecycleCurrent(lifecycleGeneration)
@@ -12453,6 +12508,7 @@ const markRestorePositionSaveUserInput = (_source = 'unknown') => {
     }
     globalThis.__manabiRequireUserInputBeforePositionSave = false;
     globalThis.__manabiSuppressNextRestoreRelocateSave = false;
+    globalThis.__manabiRestoreDebugLog?.('ebook.positionSave.userInput', { source: _source });
 };
 
 const markRestorePositionSavePageTurnInput = (source = 'page-turn') => {

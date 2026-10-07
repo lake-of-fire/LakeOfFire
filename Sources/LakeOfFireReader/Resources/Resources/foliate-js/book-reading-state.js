@@ -107,8 +107,19 @@ export class BookReadingStateController {
         const previousScope = bookScopeKey(this.#state?.scope), previousArticle = this.#state?.articleEpochID
         this.#pendingID = null; this.#lastSnapshotSequence = state.revision
         this.#state = clone(state); this.#context = clone(context)
-        this.onState(this.state, this.context, { passChanged: previousScope !== bookScopeKey(state.scope) || previousArticle !== state.articleEpochID })
-        return true
+        const publishedState = this.#state, publishedContext = this.#context
+        const publishedAccount = this.#accountPresentation
+        // Projection callbacks may synchronously close, relocate or publish a
+        // successor. Every effect and the native acknowledgement belong to this
+        // exact publication. A queued refresh alone does not withdraw it.
+        const publicationIsCurrent = () => this.isLocationCurrent() && !this.#closed
+            && this.#location === location && this.#revision === revision
+            && this.#accountPresentation === publishedAccount
+            && this.#state === publishedState && this.#context === publishedContext
+        this.onState(this.state, this.context, {
+            passChanged: previousScope !== bookScopeKey(state.scope) || previousArticle !== state.articleEpochID,
+        }, publicationIsCurrent)
+        return publicationIsCurrent()
     }
     captureContext(expected = null) {
         if (!this.ready || this.#closed) throw new Error('The current chapter is still loading its book actions.')

@@ -144,7 +144,7 @@ class LibraryScriptsListViewModel: ObservableObject {
         return Task { @MainActor in
             try await Task { @RealmBackgroundActor [realmConfiguration] in
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     guard let libraryConfiguration = realm.object(
                         ofType: LibraryConfiguration.self,
                         forPrimaryKey: configurationID
@@ -200,7 +200,7 @@ class LibraryScriptsListViewModel: ObservableObject {
     ) async throws {
         try await Task { @RealmBackgroundActor [realmConfiguration] in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 guard let libraryConfiguration = realm.object(
                     ofType: LibraryConfiguration.self,
                     forPrimaryKey: configurationID

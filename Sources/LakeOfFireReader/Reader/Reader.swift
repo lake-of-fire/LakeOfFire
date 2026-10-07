@@ -741,7 +741,7 @@ fileprivate struct PageMetadataModifier: ViewModifier {
                 Task { @RealmBackgroundActor in
                     let contents = try await ReaderContentLoader.loadAll(url: contentURL)
                     for content in contents where content.imageUrl == nil {
-                        try await content.realm?.asyncWrite {
+                        try await content.realm?.asyncWritePreservingOwnership {
                             content.imageUrl = imageURL
                             content.refreshChangeMetadata(explicitlyModified: true)
                         }

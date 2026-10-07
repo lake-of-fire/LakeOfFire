@@ -5,6 +5,12 @@ import RealmSwiftGaps
 import SwiftCloudDrive
 import BigSyncKit
 
+// Task-scoped completion observation for behavior tests of the real association
+// entry point. No observer is installed in normal use.
+enum BookmarkAssociationObservation {
+    @TaskLocal static var completed: (@Sendable (Bool) -> Void)? = nil
+}
+
 public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol {
     @Persisted(primaryKey: true) public var compoundKey = ""
     
@@ -98,10 +104,16 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     public func configureBookmark(_ bookmark: Bookmark) {
         let url = url
         let targetBookmarkID = bookmark.compoundKey
+        let realmConfiguration = bookmark.realm?.configuration ?? ReaderContentLoader.bookmarkRealmConfiguration
         Task { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration) 
+            var completedSuccessfully = false
+            defer { BookmarkAssociationObservation.completed?(completedSuccessfully) }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
 //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
+                guard let target = realm.object(
+                    ofType: Bookmark.self, forPrimaryKey: targetBookmarkID
+                ), !target.isDeleted else { return }
                 let deletedBookmarkIDs = Set(realm.objects(Bookmark.self).where { $0.isDeleted }.map { $0.compoundKey })
                 for historyRecord in HistoryRecord.openedRecords(matching: url, in: realm)
                     .where({ $0.bookmarkID == nil || $0.bookmarkID.in(deletedBookmarkIDs) }) {
@@ -109,6 +121,7 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
                     historyRecord.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
+            completedSuccessfully = true
         }
     }
 }
@@ -156,10 +169,9 @@ public extension Bookmark {
         realmConfiguration: Realm.Configuration
     ) async throws -> Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        let pk = Bookmark.makePrimaryKey(url: url, html: html)
-        if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
-//            await realm.asyncRefresh()
-            try realm.writeIfNeeded {
+        return try await realm.asyncWritePreservingOwnership {
+            let pk = Bookmark.makePrimaryKey(url: url, html: html)
+            if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
                 bookmark.title = title
                 bookmark.imageUrl = imageUrl
                 bookmark.sourceIconURL = sourceIconURL
@@ -183,44 +195,41 @@ public extension Bookmark {
                 bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
                 bookmark.isDeleted = false
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
-            }
-            return bookmark
-        } else {
-            let bookmark = Bookmark()
-            if let html = html {
-                bookmark.html = html
-            } else if let content = content {
-                bookmark.content = content
-            }
-            if let url = url {
-                bookmark.url = url
-                bookmark.updateCompoundKey()
+                return bookmark
             } else {
-                bookmark.updateCompoundKey()
-                bookmark.url = ReaderContentLoader.snippetURL(key: bookmark.compoundKey) ?? bookmark.url
-            }
-            bookmark.title = title
-            bookmark.imageUrl = imageUrl
-            bookmark.sourceIconURL = sourceIconURL
-            bookmark.publicationDate = publicationDate
-            bookmark.readerContentKind = readerContentKind
-            bookmark.feedEntryCollectionKey = feedEntryCollectionKey
-            bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
-            bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
-            bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
-            bookmark.isFromClipboard = isFromClipboard
-            bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
-            bookmark.isReaderModeByDefault = isReaderModeByDefault
-            bookmark.rssContainsFullContent = rssContainsFullContent
-            bookmark.isReaderModeAvailable = isReaderModeAvailable
-            bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
-            bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
-//            await realm.asyncRefresh()
-            try realm.writeIfNeeded {
+                let bookmark = Bookmark()
+                if let html = html {
+                    bookmark.html = html
+                } else if let content = content {
+                    bookmark.content = content
+                }
+                if let url = url {
+                    bookmark.url = url
+                    bookmark.updateCompoundKey()
+                } else {
+                    bookmark.updateCompoundKey()
+                    bookmark.url = ReaderContentLoader.snippetURL(key: bookmark.compoundKey) ?? bookmark.url
+                }
+                bookmark.title = title
+                bookmark.imageUrl = imageUrl
+                bookmark.sourceIconURL = sourceIconURL
+                bookmark.publicationDate = publicationDate
+                bookmark.readerContentKind = readerContentKind
+                bookmark.feedEntryCollectionKey = feedEntryCollectionKey
+                bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
+                bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
+                bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
+                bookmark.isFromClipboard = isFromClipboard
+                bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
+                bookmark.isReaderModeByDefault = isReaderModeByDefault
+                bookmark.rssContainsFullContent = rssContainsFullContent
+                bookmark.isReaderModeAvailable = isReaderModeAvailable
+                bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
+                bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
                 realm.add(bookmark, update: .modified)
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
+                return bookmark
             }
-            return bookmark
         }
     }
     
@@ -238,8 +247,8 @@ public extension Bookmark {
         realmConfiguration: Realm.Configuration,
         at date: Date = Date()
     ) async throws {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) 
-        try await realm.asyncWrite {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        try await realm.asyncWritePreservingOwnership {
             let activeRecords = Array(
                 realm.objects(self).filter("isDeleted == false")
             )

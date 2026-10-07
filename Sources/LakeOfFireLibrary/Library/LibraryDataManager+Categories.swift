@@ -30,7 +30,7 @@ public extension LibraryDataManager {
 
         await realm.asyncRefresh()
         let configurationID = libraryConfiguration.id
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
                   category.isUserEditable, !category.isDeleted,
                   let libraryConfiguration = realm.object(
@@ -71,7 +71,7 @@ public extension LibraryDataManager {
 
         await realm.asyncRefresh()
         let configurationID = libraryConfiguration.id
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
                   category.isUserEditable,
                   let libraryConfiguration = realm.object(

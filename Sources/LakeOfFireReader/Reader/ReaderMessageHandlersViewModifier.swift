@@ -299,6 +299,12 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 }
                 
                 let renderedMessage = result.message ?? result.arguments?.map { "\($0 ?? "nil")" }.joined(separator: " ") ?? "(no message)"
+#if DEBUG
+                if ProcessInfo.processInfo.environment["MANABI_EBOOK_PROGRESS_ADMISSION_DIAGNOSTIC"] == "1",
+                   renderedMessage.hasPrefix("# READER ebook-progress-boundary ") {
+                    print(String(renderedMessage.prefix(1200)))
+                }
+#endif
                 Logger.shared.logger.log(
                     level: .init(rawValue: result.severity.lowercased()) ?? .info,
                     "[JS] \(result.severity.capitalized) [\(mainDocumentURL?.lastPathComponent ?? "(unknown URL)")]: \(renderedMessage)"
@@ -759,7 +765,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                        observedObject.url.matchesReaderURL(url),
                         !observedObject.isReaderModeAvailable,
                        let observedRealm = observedObject.realm {
-                        try await observedRealm.asyncWrite {
+                        try await observedRealm.asyncWritePreservingOwnership {
                             guard !Task.isCancelled else { return }
                             observedObject.isReaderModeAvailable = true
                             if shouldPreserveFullContentOriginal && !observedObject.isReaderModeOfferHidden {
@@ -1298,4 +1304,3 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
         }
     }
 }
-

@@ -357,7 +357,7 @@ public struct ReaderContentLoader {
             for case let object as (Object & ReaderContentProtocol) in objects {
                 guard !Task.isCancelled else { cancelledBeforeCommit = true; break }
                 guard let realm = object.realm, !object.isInvalidated else { continue }
-                let change: Bool? = try await realm.asyncWrite {
+                let change: Bool? = try await realm.asyncWritePreservingOwnership {
                     // Fence admission at the existing Realm write lane. Once a
                     // transaction returns, cancellation cannot revoke its result.
                     guard !Task.isCancelled, !object.isInvalidated else { return nil }
@@ -416,7 +416,7 @@ public struct ReaderContentLoader {
                       countsAsHistoryVisit,
                       persist,
                       let historyRealm = historyMatch.realm {
-                try await historyRealm.asyncWrite {
+                try await historyRealm.asyncWritePreservingOwnership {
                     historyMatch.lastVisitedAt = Date()
                     historyMatch.isDeleted = false
                     historyMatch.refreshChangeMetadata(explicitlyModified: true)
@@ -430,7 +430,7 @@ public struct ReaderContentLoader {
                     let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
                     // Another load/capture may have committed while this query
                     // was suspended. Never replace that row with new defaults.
-                    match = try await historyRealm.asyncWrite {
+                    match = try await historyRealm.asyncWritePreservingOwnership {
                         let timestamp = Date()
                         if let existing = historyRealm.object(ofType: HistoryRecord.self, forPrimaryKey: historyRecord.compoundKey) {
                             if countsAsHistoryVisit || existing.isDeleted {
@@ -452,13 +452,13 @@ public struct ReaderContentLoader {
             try Task.checkCancellation()
             if persist, let match = match, url.isReaderFileURL, url.contains(.plainText), let realm = match.realm {
 //                await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     match.isReaderModeByDefault = true
                     match.refreshChangeMetadata(explicitlyModified: true)
                 }
             } else if persist, let match = match, url.isEBookURL, !match.isReaderModeByDefault, let realm = match.realm {
 //                await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     match.isReaderModeByDefault = true
                     match.refreshChangeMetadata(explicitlyModified: true)
                 }
@@ -541,7 +541,7 @@ public struct ReaderContentLoader {
             // The cached actor-bound Realm may still be committing an earlier
             // async write when another startup load enters this actor. Queue
             // this transaction instead of synchronously beginning a second one.
-            try await historyRealm.asyncWrite {
+            try await historyRealm.asyncWritePreservingOwnership {
                 historyRealm.add(historyRecord, update: .modified)
                 historyRecord.refreshChangeMetadata(explicitlyModified: true)
             }
@@ -704,7 +704,7 @@ public struct ReaderContentLoader {
                     if let pk = pk, let content = realm.object(ofType: type, forPrimaryKey: pk), let content = content as? (any ReaderContentProtocol) {
                         let url = snippetURL(key: content.compoundKey) ?? content.url
 //                        await realm.asyncRefresh()
-                        try await realm.asyncWrite {
+                        try await realm.asyncWritePreservingOwnership {
                             content.isFromClipboard = true
                             content.rssContainsFullContent = true
                             content.isReaderModeByDefault = true
@@ -1244,7 +1244,7 @@ This snippet loads when the pasteboard is empty in a debug build.
             : [(bookmarkRealm, true, false), (historyRealm, false, true)]
         var didChange = false
         for group in groups {
-            let groupDidChange = try await group.realm.asyncWrite { () throws -> Bool in
+            let groupDidChange = try await group.realm.asyncWritePreservingOwnership { () throws -> Bool in
                 guard !Task.isCancelled, permitsCommit() else { throw CancellationError() }
                 // Query live records only after acquiring the write. No
                 // managed object selected before an await can be revived or
@@ -1470,7 +1470,7 @@ public extension ReaderContentLoader {
             let normalizedHTML = normalizeSnippetSourceHTML(html)
             let data = normalizedHTML.readerContentData
             let title = generatedSnippetTitle(fromSourceHTML: normalizedHTML) ?? ""
-            return try await historyRealm.asyncWrite { () throws -> ContentReference? in
+            return try await historyRealm.asyncWritePreservingOwnership { () throws -> ContentReference? in
                 guard !Task.isCancelled, permitsCommit(), !Task.isCancelled else { throw CancellationError() }
                 let timestamp = Date()
                 let record = HistoryRecord()
@@ -1500,7 +1500,7 @@ public extension ReaderContentLoader {
             }
             let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: storage.bookmarks)
             let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: storage.feeds)
-            return try await historyRealm.asyncWrite { () throws -> ContentReference? in
+            return try await historyRealm.asyncWritePreservingOwnership { () throws -> ContentReference? in
                 guard !Task.isCancelled, permitsCommit(), !Task.isCancelled else { throw CancellationError() }
                 // These are read-only source stores. All import writes, including
                 // bookmark links and demotion metadata, stay in captured History.

@@ -20,9 +20,52 @@ import SwiftUtilities
 // Realms contain the same UUIDs.
 @RealmBackgroundActor
 final class LibraryEditorWriteOrdering {
+    private struct Scope: Hashable {
+        let storage: LibraryRecordPresentationIdentity
+        let recordKind: String
+    }
+
+    private final class WeakOrdering {
+        weak var value: LibraryEditorWriteOrdering?
+        init(_ value: LibraryEditorWriteOrdering) { self.value = value }
+    }
+
+    @MainActor private static var activeOrderings: [Scope: WeakOrdering] = [:]
+    @MainActor private var nextIssuedSequence: UInt64 = 0
     private var newestSequence: [UUID: [Int: UInt64]] = [:]
 
     nonisolated init() { }
+
+    // A retired editor's command still owns this ordering. Reopening the same
+    // storage must share it, so an older suspended write cannot beat a new edit.
+    // Weak entries keep completed fixture/storage lifetimes out of the registry.
+    @MainActor
+    static func shared(configuration: Realm.Configuration, recordKind: String) -> LibraryEditorWriteOrdering {
+        activeOrderings = activeOrderings.filter { $0.value.value != nil }
+        // Swift bridges nil as zero; Realm's Objective-C setter converts zero
+        // to the unlimited UInt.max value returned by realm.configuration.
+        // Normalize all unlimited forms without collapsing finite limits.
+        var orderingConfiguration = configuration
+        let suppliedLimit = configuration.maximumNumberOfActiveVersions ?? 0
+        orderingConfiguration.maximumNumberOfActiveVersions = suppliedLimit == 0 ? UInt.max : suppliedLimit
+        let scope = Scope(
+            storage: LibraryRecordPresentationIdentity(
+                recordID: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
+                configuration: orderingConfiguration
+            ),
+            recordKind: recordKind
+        )
+        if let ordering = activeOrderings[scope]?.value { return ordering }
+        let ordering = LibraryEditorWriteOrdering()
+        activeOrderings[scope] = WeakOrdering(ordering)
+        return ordering
+    }
+
+    @MainActor
+    func issueSequence() -> UInt64 {
+        nextIssuedSequence &+= 1
+        return nextIssuedSequence
+    }
 
     // Check in the final write turn. An earlier task can resume after a newer
     // task committed, including when the newer edit was an intentional no-op.
@@ -86,7 +129,7 @@ struct UserScriptAllowedDomainEditor {
     @RealmBackgroundActor
     func write(_ text: String) async throws {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
                   !script.isDeleted, script.isUserEditable, script.allowedDomainIDs.contains(domainID),
                   let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID),
