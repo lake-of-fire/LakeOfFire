@@ -124,6 +124,23 @@ public class ReaderContent: ObservableObject {
 
     @MainActor
     public func load(url: URL) async throws {
+        try await load(url: url) { url in
+            try await ReaderContentLoader.getContent(
+                forURL: url,
+                countsAsHistoryVisit: true,
+                source: "ReaderContent.load"
+            )
+        }
+    }
+
+    /// The resolver supplies content only; this owner retains coalescing,
+    /// cancellation and display publication for both production and tests.
+    @MainActor
+    func load(
+        url: URL,
+        resolveContent: @escaping @MainActor (URL) async throws -> (any ReaderContentProtocol)?
+    ) async throws {
+        try Task.checkCancellation()
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
         let displayURL = resolvedContentURL
 
@@ -145,10 +162,20 @@ public class ReaderContent: ObservableObject {
         if let loadingTask,
            let loadingResolvedContentURL,
            matchesResolvedContentURL(loadingResolvedContentURL, resolvedContentURL: resolvedContentURL) {
-            let startedAt = CFAbsoluteTimeGetCurrent()
             _ = try await loadingTask.value
             return
         }
+
+        // Every new selection retires the preceding load, including cached and
+        // preloaded fast paths. Withdraw its identity before cancellation can
+        // invoke callbacks; an old completion may never republish its content.
+        let retiredTask = loadingTask
+        let loadID = UUID()
+        loadingID = loadID
+        loadingTask = nil
+        loadingResolvedContentURL = nil
+        defer { finishLoading(ifOwnedBy: loadID) }
+        retiredTask?.cancel()
 
         if let existingContent = content,
            matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL) {
@@ -174,17 +201,13 @@ public class ReaderContent: ObservableObject {
         currentSectionIndex = nil
         pageURL = displayURL
         
-        loadingTask?.cancel()
-        let loadID = UUID()
-        loadingID = loadID
         loadingResolvedContentURL = resolvedContentURL
-        loadingTask = Task { @MainActor [weak self, loadID] in
+        let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor [weak self, loadID] in
+            // Finish before any coalesced waiter receives success/error. Its
+            // immediate retry must not rejoin this already-completed task.
+            defer { self?.finishLoading(ifOwnedBy: loadID) }
             try Task.checkCancellation()
-            let content = try await ReaderContentLoader.getContent(
-                forURL: url,
-                countsAsHistoryVisit: true,
-                source: "ReaderContent.load"
-            ) ?? ReaderContentLoader.unsavedHome
+            let content = try await resolveContent(url) ?? ReaderContentLoader.unsavedHome
             guard content.url.matchesReaderURL(resolvedContentURL) else {
                 debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
                 return nil
@@ -195,13 +218,16 @@ public class ReaderContent: ObservableObject {
             self.content = content
             return content
         }
-        let loadedContent = try await loadingTask?.value
-        if loadingID == loadID {
-            loadingTask = nil
-            loadingResolvedContentURL = nil
-            loadingID = nil
-        }
-        let finalContentURL = loadedContent.flatMap { $0 }?.url.absoluteString ?? content?.url.absoluteString ?? "nil"
+        loadingTask = task
+        _ = try await task.value
+    }
+
+    private func finishLoading(ifOwnedBy loadID: UUID) {
+        // Old completion is independent of a new selection's loading slot.
+        guard loadingID == loadID else { return }
+        loadingID = nil
+        loadingResolvedContentURL = nil
+        loadingTask = nil
     }
 
     @MainActor
@@ -211,12 +237,10 @@ public class ReaderContent: ObservableObject {
     
     @MainActor
     public func getContent() async throws -> (any ReaderContentProtocol)? {
-        let startedAt = CFAbsoluteTimeGetCurrent()
         if let content {
             return content
         }
         let content = try await loadingTask?.value
-        let contentURL = content?.url.absoluteString ?? "nil"
         return content
     }
 
