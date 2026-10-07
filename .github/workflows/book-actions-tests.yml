@@ -50,9 +50,19 @@ jobs:
         run: |
           set -o pipefail
           python3 Tests/Browser/test_book_article_producer.py 2>&1 | tee book-actions-composition-results.txt
+      - name: Book action integrity runtime journeys
+        run: |
+          set -o pipefail
+          integrity_bin=$(mktemp -d "$RUNNER_TEMP/book-action-integrity-bin.XXXXXX")
+          chromium_path=$(python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          test -x "$chromium_path"
+          ln -s "$chromium_path" "$integrity_bin/chromium"
+          PATH="$integrity_bin:$PATH" python3 Tests/Browser/BookActionIntegrity/run.py --output book-actions-integrity-results.json 2>&1 | tee book-actions-integrity-results.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: book-actions-test-results
-          path: book-actions-*-results.txt
+          path: |
+            book-actions-*-results.txt
+            book-actions-integrity-results.json
           retention-days: 14
