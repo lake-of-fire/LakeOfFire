@@ -269,18 +269,25 @@ public extension ReaderContentProtocol {
     
     @MainActor
     func asyncWrite(_ block: @escaping ((Realm, any ReaderContentProtocol) -> Void)) async throws {
-        let config = realm?.configuration ?? .defaultConfiguration
+        guard !isInvalidated, !isDeleted else { return }
+        let owningRealm = realm
+        let config = owningRealm?.configuration ?? .defaultConfiguration
         let compoundKey = compoundKey
-        let cls = type(of: self)// objectSchema.objectClass
+        let admission = RealmBackgroundActor.shared.captureStorageAdmission(for: config)
+        let cls = type(of: self)
         try await { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config)
-            guard let content = realm.object(ofType: cls, forPrimaryKey: compoundKey) else { return }
-//            await realm.asyncRefresh()
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config, storageAdmission: admission)
             try await realm.asyncWritePreservingOwnership {
+                try Task.checkCancellation()
+                guard admission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: config) }) else {
+                    throw RealmBackgroundActorError.realmFileChangedDuringOpen
+                }
+                guard let content = realm.object(ofType: cls, forPrimaryKey: compoundKey),
+                      !content.isDeleted else { return }
                 block(realm, content)
             }
         }()
-        await realm?.asyncRefresh()
+        await owningRealm?.asyncRefresh()
     }
 }
 
@@ -609,127 +616,221 @@ public extension ReaderContentProtocol {
     }
     
     @RealmBackgroundActor
-    func addHistoryRecord(realmConfiguration: Realm.Configuration, pageURL: URL) async throws -> HistoryRecord {
+    func addHistoryRecord(
+        realmConfiguration: Realm.Configuration,
+        pageURL: URL,
+        bookmarkRealmConfiguration: Realm.Configuration? = nil,
+        historyStorageAdmission: RealmStorageAdmission? = nil,
+        bookmarkStorageAdmission: RealmStorageAdmission? = nil
+    ) async throws -> HistoryRecord {
+        guard !isInvalidated, !isDeleted else { throw CancellationError() }
+        let bookmarkRealmConfiguration = bookmarkRealmConfiguration ?? ReaderContentLoader.bookmarkRealmConfiguration
+        let sourceReference = ReaderContentLoader.ContentReference(content: self)
+        let snapshot = ReaderHistorySourceSnapshot(source: self)
         let historyURL = HistoryRecord.canonicalHistoryURL(for: pageURL)
-        var imageURL: URL?
-        let readerContentKind = readerContentKind
-        let feedEntryCollectionKey = feedEntryCollectionKey
-        let feedEntryCollectionScheme = feedEntryCollectionScheme
-        let feedEntryCollectionTerm = feedEntryCollectionTerm
-        let feedEntryCollectionTitle = feedEntryCollectionTitle
-        if let config = realm?.configuration {
-            let ref = ThreadSafeReference(to: self)
-            imageURL = try await { @MainActor in
-                let realm = try await Realm(configuration: config, actor: MainActor.shared)
-                let content = realm.resolve(ref)
-                return try await content?.imageURLToDisplay()
-            }()
+        let historyAdmission = historyStorageAdmission ?? RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
+        let bookmarkAdmission = bookmarkStorageAdmission ?? (RealmBackgroundActor.shared.realmCacheKey(for: bookmarkRealmConfiguration) == RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+            ? historyAdmission : RealmBackgroundActor.shared.captureStorageAdmission(for: bookmarkRealmConfiguration))
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration, storageAdmission: historyAdmission)
+        let sourceRealm: Realm?
+        if let sourceReference {
+            sourceRealm = try await RealmBackgroundActor.shared.cachedRealm(for: sourceReference.realmConfiguration, storageAdmission: sourceReference.storageAdmission)
+        } else {
+            sourceRealm = nil
         }
-        let resolvedVoiceAudioURLList = resolvedVoiceAudioURLs
-        func configureHistoryRecord(
-            _ record: HistoryRecord,
-            isNew: Bool
-        ) {
-            record.title = title
-            record.isTitlePrefixOfContent = isTitlePrefixOfContent
-            record.imageUrl = imageURL
-            record.sourceIconURL = sourceIconURL
-            record.isFromClipboard = isFromClipboard
-            record.rssContainsFullContent = rssContainsFullContent
-            if rssContainsFullContent {
-                record.content = content
+        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration, storageAdmission: bookmarkAdmission)
+        await ReaderContentLoader.contentWriteGateForTesting?(.historyCreation)
+        let recordKey = try await realm.asyncWritePreservingOwnership { () throws -> String in
+            try Task.checkCancellation()
+            guard historyAdmission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration) }),
+                  bookmarkAdmission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: bookmarkRealmConfiguration) }) else {
+                throw RealmBackgroundActorError.realmFileChangedDuringOpen
             }
-            record.voiceFrameUrl = voiceFrameUrl
-            record.voiceAudioURL = resolvedVoiceAudioURLList.first
-            record.voiceAudioURLs.removeAll()
-            record.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
-            record.audioSubtitlesURL = audioSubtitlesURL
-            record.audioSubtitlesRoleRawValue =
-                audioSubtitlesRoleRawValue
-                ?? (audioSubtitlesURL != nil
-                    ? AudioSubtitlesRole.content.rawValue
-                    : nil)
-            record.autoOpenMediaPlayer = autoOpenMediaPlayer
-            record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
-            record.publicationDate = publicationDate
-            record.readerContentKind = readerContentKind
-            record.feedEntryCollectionKey = feedEntryCollectionKey
-            record.feedEntryCollectionScheme = feedEntryCollectionScheme
-            record.feedEntryCollectionTerm = feedEntryCollectionTerm
-            record.feedEntryCollectionTitle = feedEntryCollectionTitle
-            record.isReaderModeByDefault = isReaderModeByDefault
-            record.isReaderModeAvailable = isReaderModeAvailable
-            record.isReaderModeOfferHidden = isReaderModeOfferHidden
-            record.displayPublicationDate = displayPublicationDate
-            record.lastVisitedAt = Date()
+            try sourceReference?.validateStorage()
+            // A visit may revive its history row, but deleting the discovered
+            // source while admission suspends cancels this copy operation.
+            if let sourceReference, let sourceRealm {
+                if sourceRealm != realm { sourceRealm.refresh() }
+                guard let source = sourceRealm.object(ofType: sourceReference.contentType,
+                    forPrimaryKey: sourceReference.contentKey) as? any ReaderContentProtocol,
+                    !source.isDeleted else { throw CancellationError() }
+            }
+            if bookmarkRealm != realm && bookmarkRealm != sourceRealm { bookmarkRealm.refresh() }
+            let timestamp = Date()
+            let matchingRecords = HistoryRecord.records(matching: historyURL, in: realm)
+            let canonical = HistoryRecord.makePrimaryKey(url: historyURL, html: snapshot.html)
+                .flatMap { realm.object(ofType: HistoryRecord.self, forPrimaryKey: $0) }
+            let sort = [SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
+                        SortDescriptor(keyPath: "compoundKey", ascending: true)]
+            let record = matchingRecords.where({ !$0.isDeleted }).sorted(by: sort).first
+                ?? canonical ?? matchingRecords.where({ $0.isDeleted }).sorted(by: sort).first
+                ?? HistoryRecord()
+            let isNew = record.realm == nil
+            if isNew { record.url = historyURL }
+            snapshot.apply(to: record, isNew: isNew)
+            record.lastVisitedAt = timestamp
+            // addHistoryRecord is an explicit visit, so an existing tombstone
+            // with this content identity can intentionally become live again.
             record.isDeleted = false
-
-            let shouldConfigureBookmark = isNew
-                ? objectSchema.objectClass == FeedEntry.self
-                    || objectSchema.objectClass == Bookmark.self
-                : objectSchema.objectClass == Bookmark.self
-            if shouldConfigureBookmark, let bookmark = self as? Bookmark {
-                record.configureBookmark(bookmark)
-            }
-            if !isNew {
-                record.refreshChangeMetadata(explicitlyModified: true)
-            }
-        }
-
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        var resolvedRecord: HistoryRecord?
-        var createdRecord = false
-        try await realm.asyncWritePreservingOwnership {
-            let matchingRecords = HistoryRecord.records(
-                matching: historyURL,
-                in: realm
-            )
-            let canonicalPrimaryKey = HistoryRecord.makePrimaryKey(
-                url: historyURL,
-                html: html
-            )
-            let canonicalRecord = canonicalPrimaryKey.flatMap {
-                realm.object(ofType: HistoryRecord.self, forPrimaryKey: $0)
-            }
-            let newestLiveRecord = matchingRecords
-                .where { !$0.isDeleted }
-                .sorted(by: [
-                    SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
-                    SortDescriptor(keyPath: "compoundKey", ascending: true),
-                ])
-                .first
-            let newestDeletedRecord = matchingRecords
-                .where { $0.isDeleted }
-                .sorted(by: [
-                    SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
-                    SortDescriptor(keyPath: "compoundKey", ascending: true),
-                ])
-                .first
-
-            if let record = newestLiveRecord
-                ?? canonicalRecord
-                ?? newestDeletedRecord {
-                configureHistoryRecord(record, isNew: false)
-                resolvedRecord = record
-            } else {
-                let record = HistoryRecord()
-                record.url = historyURL
-                configureHistoryRecord(record, isNew: true)
+            if isNew {
                 record.updateCompoundKey()
                 realm.add(record, update: .modified)
-                record.refreshChangeMetadata(explicitlyModified: true)
-                resolvedRecord = record
-                createdRecord = true
             }
+            if let bookmarkID = snapshot.bookmarkID,
+               let targetBookmark = bookmarkRealm.object(ofType: Bookmark.self, forPrimaryKey: bookmarkID),
+               !targetBookmark.isDeleted {
+                let deletedIDs = Set(bookmarkRealm.objects(Bookmark.self).where { $0.isDeleted }.map(\.compoundKey))
+                for linked in HistoryRecord.openedRecords(matching: snapshot.url, in: realm)
+                    .where({ $0.bookmarkID == nil || $0.bookmarkID.in(deletedIDs) }) {
+                    linked.bookmarkID = bookmarkID
+                    if linked !== record { linked.refreshChangeMetadata(explicitlyModified: true, at: timestamp) }
+                }
+            }
+            if isNew {
+                let bookmarked = bookmarkRealm.objects(Bookmark.self)
+                    .filter(NSPredicate(format: "isDeleted == false AND url == %@", record.url.absoluteString)).first != nil
+                record.isDemoted = !(record.isReaderModeByDefault || record.isReaderModeAvailable
+                    || record.rssContainsFullContent || record.isFromClipboard || record.isPhysicalMedia || bookmarked)
+            }
+            record.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+            return record.compoundKey
         }
+        guard let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: recordKey), !record.isDeleted else {
+            throw CancellationError()
+        }
+        return record
+    }
+}
 
-        guard let resolvedRecord else {
-            preconditionFailure("History write completed without resolving a record")
+/// Detached values captured before a visit waits for its destination writer.
+/// Source identity is validated again there; no managed source survives an await.
+@RealmBackgroundActor
+private struct ReaderHistorySourceSnapshot {
+    let url: URL
+    let html: String?
+    let title: String
+    let isTitlePrefixOfContent: Bool
+    let imageUrl: URL?
+    let sourceIconURL: URL?
+    let isFromClipboard: Bool
+    let rssContainsFullContent: Bool
+    let content: Data?
+    let voiceFrameUrl: URL?
+    let audioSubtitlesURL: URL?
+    let audioSubtitlesRoleRawValue: String?
+    let autoOpenMediaPlayer: Bool
+    let injectEntryImageIntoHeader: Bool
+    let publicationDate: Date?
+    let readerContentKind: ReaderContentKind
+    let feedEntryCollectionKey: String?
+    let feedEntryCollectionScheme: String?
+    let feedEntryCollectionTerm: String?
+    let feedEntryCollectionTitle: String?
+    let isReaderModeByDefault: Bool
+    let isReaderModeAvailable: Bool
+    let isReaderModeOfferHidden: Bool
+    let displayPublicationDate: Bool
+    let audioURLs: [URL]
+    let bookmarkID: String?
+    let rssURLs: [URL]
+    let rssTitles: [String]
+    let meaningfulContentMinLength: Int?
+    let feedContainsFullContent: Bool
+    let feedInjectEntryImageIntoHeader: Bool?
+    let feedDisplayPublicationDate: Bool?
+    let isFeedEntry: Bool
+    let redditTranslationsUrl: URL?
+    let redditTranslationsTitle: String?
+
+    init(source: any ReaderContentProtocol) {
+        url = source.url
+        html = source.html
+        title = source.title
+        isTitlePrefixOfContent = source.isTitlePrefixOfContent
+        imageUrl = source.imageUrl ?? (source as? FeedEntry)?.importImageURLWithoutCaching()
+        sourceIconURL = source.sourceIconURL
+        isFromClipboard = source.isFromClipboard
+        rssContainsFullContent = source.rssContainsFullContent
+        content = source.content
+        voiceFrameUrl = source.voiceFrameUrl
+        audioSubtitlesURL = source.audioSubtitlesURL
+        audioSubtitlesRoleRawValue = source.audioSubtitlesRoleRawValue ?? (source.audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+        autoOpenMediaPlayer = source.autoOpenMediaPlayer
+        injectEntryImageIntoHeader = source.injectEntryImageIntoHeader
+        publicationDate = source.publicationDate
+        readerContentKind = source.readerContentKind
+        feedEntryCollectionKey = source.feedEntryCollectionKey
+        feedEntryCollectionScheme = source.feedEntryCollectionScheme
+        feedEntryCollectionTerm = source.feedEntryCollectionTerm
+        feedEntryCollectionTitle = source.feedEntryCollectionTitle
+        isReaderModeByDefault = source.isReaderModeByDefault
+        isReaderModeAvailable = source.isReaderModeAvailable
+        isReaderModeOfferHidden = source.isReaderModeOfferHidden
+        displayPublicationDate = source.displayPublicationDate
+        audioURLs = source.resolvedVoiceAudioURLs
+        isFeedEntry = source is FeedEntry
+        redditTranslationsUrl = source.redditTranslationsUrl
+        redditTranslationsTitle = source.redditTranslationsTitle
+        bookmarkID = source.objectSchema.objectClass == Bookmark.self ? source.compoundKey : nil
+        if let feed = (source as? FeedEntry)?.getFeed() {
+            rssURLs = [feed.rssUrl]
+            rssTitles = [feed.title]
+            meaningfulContentMinLength = feed.meaningfulContentMinLength
+            feedContainsFullContent = feed.rssContainsFullContent
+            feedInjectEntryImageIntoHeader = feed.injectEntryImageIntoHeader
+            feedDisplayPublicationDate = feed.displayPublicationDate
+        } else {
+            rssURLs = []
+            rssTitles = []
+            meaningfulContentMinLength = nil
+            feedContainsFullContent = false
+            feedInjectEntryImageIntoHeader = nil
+            feedDisplayPublicationDate = nil
         }
-        if createdRecord {
-            try await resolvedRecord.refreshDemotedStatus()
+    }
+
+    func apply(to record: HistoryRecord, isNew: Bool) {
+        record.title = title
+        record.isTitlePrefixOfContent = isTitlePrefixOfContent
+        record.imageUrl = imageUrl
+        record.sourceIconURL = sourceIconURL
+        record.isFromClipboard = isFromClipboard
+        record.rssContainsFullContent = rssContainsFullContent
+        record.voiceFrameUrl = voiceFrameUrl
+        record.audioSubtitlesURL = audioSubtitlesURL
+        record.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue
+        record.autoOpenMediaPlayer = autoOpenMediaPlayer
+        record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
+        record.publicationDate = publicationDate
+        record.readerContentKind = readerContentKind
+        record.feedEntryCollectionKey = feedEntryCollectionKey
+        record.feedEntryCollectionScheme = feedEntryCollectionScheme
+        record.feedEntryCollectionTerm = feedEntryCollectionTerm
+        record.feedEntryCollectionTitle = feedEntryCollectionTitle
+        record.isReaderModeByDefault = isReaderModeByDefault
+        record.isReaderModeAvailable = isReaderModeAvailable
+        record.isReaderModeOfferHidden = isReaderModeOfferHidden
+        record.displayPublicationDate = displayPublicationDate
+        if rssContainsFullContent { record.content = content }
+        record.voiceAudioURL = audioURLs.first
+        record.voiceAudioURLs.removeAll()
+        record.voiceAudioURLs.append(objectsIn: audioURLs)
+        if isNew && isFeedEntry {
+            applyFeedBody(content, containsFullContent: feedContainsFullContent, to: record)
+            if let meaningfulContentMinLength { record.meaningfulContentMinLength = meaningfulContentMinLength }
+            if let feedInjectEntryImageIntoHeader { record.injectEntryImageIntoHeader = feedInjectEntryImageIntoHeader }
+            if let feedDisplayPublicationDate { record.displayPublicationDate = feedDisplayPublicationDate }
+            record.redditTranslationsUrl = redditTranslationsUrl
+            record.redditTranslationsTitle = redditTranslationsTitle
+            // Feed configureBookmark used the content subtitle role even when
+            // no subtitle URL existed; preserve that import default.
+            record.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? AudioSubtitlesRole.content.rawValue
+            record.rssURLs.removeAll()
+            record.rssURLs.append(objectsIn: rssURLs)
+            record.rssTitles.removeAll()
+            record.rssTitles.append(objectsIn: rssTitles)
+            record.isRSSAvailable = !rssURLs.isEmpty
         }
-        return resolvedRecord
     }
 }
 

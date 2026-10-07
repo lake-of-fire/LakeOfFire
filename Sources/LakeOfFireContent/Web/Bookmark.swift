@@ -139,7 +139,12 @@ public extension Bookmark {
     @RealmBackgroundActor
     static func get(forURL url: URL) async throws -> Self? {
         let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration)
-        return bookmarkRealm.objects(Self.self)
+        return get(forURL: url, realm: bookmarkRealm)
+    }
+
+    @RealmBackgroundActor
+    static func get(forURL url: URL, realm: Realm) -> Self? {
+        realm.objects(Self.self)
             .filter(NSPredicate(format: "isDeleted == false AND url == %@", url.absoluteString as CVarArg))
             .sorted(byKeyPath: "createdAt", ascending: false)
             .first
