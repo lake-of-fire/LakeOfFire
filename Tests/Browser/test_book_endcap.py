@@ -13,10 +13,16 @@ ROOT = Path(__file__).resolve().parents[2]
 class QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, *args): pass
 
+class ViewerAssetServer(ThreadingHTTPServer):
+    # Parallel ES module imports need an accept backlog larger than the default
+    # five connections; a reset here prevents the renderer from initializing.
+    request_queue_size = 128
+
+
 class BookEndcapBrowserTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = ThreadingHTTPServer(('127.0.0.1', 0), partial(QuietHandler, directory=str(ROOT)))
+        cls.server = ViewerAssetServer(('127.0.0.1', 0), partial(QuietHandler, directory=str(ROOT)))
         Thread(target=cls.server.serve_forever, daemon=True).start()
         cls.playwright = sync_playwright().start()
         cls.browser = cls.playwright.chromium.launch(executable_path=os.environ.get('CHROMIUM_PATH'),headless=True,args=['--no-sandbox'])
