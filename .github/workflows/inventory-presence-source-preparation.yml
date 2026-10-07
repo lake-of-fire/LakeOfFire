@@ -1,0 +1,40 @@
+name: Inventory presence source preparation
+on:
+  pull_request:
+    paths:
+      - 'Tools/Review20261006/prepare_inventory_presence.py'
+      - '.github/workflows/inventory-presence-source-preparation.yml'
+      - 'Tests/LakeOfFireTests/ReaderFileInventoryAdmissionTests.swift'
+permissions:
+  contents: write
+jobs:
+  prepare-source:
+    if: >-
+      github.repository == 'lake-of-fire/LakeOfFire' &&
+      github.event.pull_request.head.repo.full_name == 'lake-of-fire/LakeOfFire' &&
+      github.event.pull_request.head.ref == 'codex/inventory-write-presence-20261006'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Validate exact reviewed source and store immutable blob
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export REVIEW_EVIDENCE=$(mktemp -d "$RUNNER_TEMP/inventory-presence.XXXXXX")
+          echo "REVIEW_EVIDENCE=$REVIEW_EVIDENCE" >> "$GITHUB_ENV"
+          git rev-parse HEAD > "$REVIEW_EVIDENCE/head.txt"
+          swiftc --version > "$REVIEW_EVIDENCE/compiler.txt"
+          python3 Tools/Review20261006/prepare_inventory_presence.py | tee "$REVIEW_EVIDENCE/output.log"
+          git diff -- Sources/LakeOfFireContent/Files/ReaderFileManager.swift > "$REVIEW_EVIDENCE/source.patch"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: inventory-presence-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.REVIEW_EVIDENCE }}
+          if-no-files-found: error
