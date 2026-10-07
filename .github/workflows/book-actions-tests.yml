@@ -58,6 +58,14 @@ jobs:
           test -x "$chromium_path"
           ln -s "$chromium_path" "$integrity_bin/chromium"
           PATH="$integrity_bin:$PATH" python3 Tests/Browser/BookActionIntegrity/run.py --output book-actions-integrity-results.json 2>&1 | tee book-actions-integrity-results.txt
+      - name: Book endcap lifecycle runtime journeys
+        run: |
+          set -o pipefail
+          lifecycle_bin=$(mktemp -d "$RUNNER_TEMP/book-endcap-lifecycle-bin.XXXXXX")
+          chromium_path=$(python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          test -x "$chromium_path"
+          ln -s "$chromium_path" "$lifecycle_bin/chromium"
+          PATH="$lifecycle_bin:$PATH" python3 Tests/Browser/BookEndcapLifecycle/run.py --output book-actions-lifecycle-results.json 2>&1 | tee book-actions-lifecycle-results.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -65,4 +73,5 @@ jobs:
           path: |
             book-actions-*-results.txt
             book-actions-integrity-results.json
+            book-actions-lifecycle-results.json
           retention-days: 14

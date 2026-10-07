@@ -342,3 +342,54 @@ test('an explicit rejection remains terminal even when its message cannot be rea
     assert.equal(f.cap.button.textContent, 'Start Book Over')
     assert.equal(f.cap.error.hidden, false)
 })
+
+for (const field of ['readiness', 'finished']) {
+    for (const seam of ['busy-paint', 'action-lookup']) {
+        test(`${field} away-and-back during ${seam} retires the original command`, async t => {
+            const f = fixture(t)
+            const replace = () => {
+                if (field === 'readiness') { f.cap.setReady(false); f.cap.setReady(true) }
+                else { f.cap.setFinished(true); f.cap.setFinished(false) }
+            }
+            if (seam === 'busy-paint') onceWrite(f.cap.button, 'disabled', replace)
+            else {
+                const perform = f.cap.performAction
+                Object.defineProperty(f.cap, 'performAction', { configurable: true, get() {
+                    Object.defineProperty(f.cap, 'performAction', { configurable: true, writable: true, value: perform })
+                    replace()
+                    return perform
+                } })
+            }
+            assert.equal(await f.cap.activate(), false)
+            assert.deepEqual(f.calls, [])
+            assert.equal(f.cap.busy, false)
+            assert.equal(await f.cap.activate(), true)
+            assert.deepEqual(f.calls, ['finishBook'])
+        })
+    }
+}
+for (const seam of ['hidden', 'inert', 'aria']) {
+    test(`reentry during ${seam} restoration inherits the original accessibility baseline`, t => {
+        const f = fixture(t), focus = f.document.activeElement
+        if (seam === 'hidden') onceWrite(f.cap.element, 'hidden', () => f.cap.enter())
+        if (seam === 'inert') onceWrite(f.publication, 'inert', () => f.cap.enter())
+        if (seam === 'aria') {
+            const remove = f.publication.removeAttribute
+            f.publication.removeAttribute = function(key) {
+                this.removeAttribute = remove
+                remove.call(this, key)
+                f.cap.enter()
+            }
+        }
+        assert.equal(f.cap.leave(), false)
+        assert.equal(f.cap.visible, true)
+        assert.equal(f.cap.leave(), true)
+        assert.equal(f.publication.inert, false)
+        assert.equal(f.publication.getAttribute('aria-hidden'), null)
+        assert.equal(f.publication.classes.has('manabi-endcap-publication-hidden'), false)
+        let focused = false
+        focus.onFocus = () => { focused = true }
+        f.cap.enter(); f.cap.leave()
+        assert.equal(focused, true)
+    })
+}
