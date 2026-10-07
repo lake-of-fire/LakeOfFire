@@ -331,7 +331,13 @@ public final class ReaderWebMediaPlaybackRouter {
     }
     if (play) {
       try { await media.play(); }
-      catch (_) { if (media.__manabiReaderTranscriptSegment) media.__manabiReaderTranscriptSegment.cleanup(); return false; }
+      catch (_) {
+        // A rejected older play promise cannot remove a successor's segment.
+        if (media.__manabiReaderTranscriptCommand === commandID) {
+          media.__manabiReaderTranscriptSegment?.cleanup();
+        }
+        return false;
+      }
     }
     return isCurrent();
     """#
