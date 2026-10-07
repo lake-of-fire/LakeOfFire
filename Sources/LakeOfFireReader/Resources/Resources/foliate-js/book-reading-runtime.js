@@ -19,13 +19,15 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         return content?.doc ?? content?.document ?? null
     }
     const isPrimaryDocument = doc => !!doc && doc === primaryDocument()
-    const clearDocumentScope = (doc, isCurrent = () => true) => {
+    const clearDocumentScope = (doc, isCurrent = () => true, capturedFrame = null) => {
         let frame, scope
         const ownsScope = () => !!frame && isCurrent()
             && frame.manabi_bookReadingScope === scope && isCurrent()
         try {
             if (!isCurrent()) return
-            frame = doc?.defaultView
+            // Close already captured the outgoing frame before teardown.
+            // Page code can redirect a later Document.defaultView lookup.
+            frame = capturedFrame ?? doc?.defaultView
             scope = frame?.manabi_bookReadingScope
             const invalidate = frame?.manabi_invalidateBookReadingScope
             // A frame's callback lookup can already publish a successor.
@@ -236,7 +238,7 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
             // nor a newer token in a reused frame belongs to this closure.
             for (const cleanup of [() => bridge.close(), () => state.close(), () => endcap.destroy(),
                 ...frames.map(({ doc, frame, scope }) => () => clearDocumentScope(doc,
-                    () => frame.manabi_bookReadingScope === scope))]) {
+                    () => frame.manabi_bookReadingScope === scope, frame))]) {
                 try { cleanup() } catch (_) {}
             }
         },

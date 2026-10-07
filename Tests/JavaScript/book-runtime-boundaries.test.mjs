@@ -494,3 +494,27 @@ test('frame token replacement in callback lookup does not borrow an unchanged pu
     assert.equal(f.publish(2), true)
     assert.equal(frame.manabi_bookReadingScope, successor)
 })
+
+
+test('close uses the captured retiring frame when document frame lookup is replaced', t => {
+    const f = fixture(t)
+    assert.equal(f.publish(), true)
+    const outgoing = f.a.defaultView, cleared = outgoing.cleared
+    const successor = { successor: true }
+    const replacement = { manabi_bookReadingScope: successor, cleared: 0 }
+    replacement.manabi_invalidateBookReadingScope = () => {
+        replacement.cleared++
+        replacement.manabi_bookReadingScope = null
+    }
+    const close = f.runtime.bridge.close
+    f.runtime.bridge.close = () => {
+        close.call(f.runtime.bridge)
+        Object.defineProperty(f.a, 'defaultView', { configurable: true, get: () => replacement })
+    }
+    f.runtime.close()
+    assert.equal(replacement.manabi_bookReadingScope, successor,
+        'old close cannot borrow the replacement frame from a later document lookup')
+    assert.equal(replacement.cleared, 0)
+    assert.equal(outgoing.cleared, cleared + 1, 'the captured outgoing frame still receives cleanup')
+    assert.equal(outgoing.manabi_bookReadingScope, null)
+})

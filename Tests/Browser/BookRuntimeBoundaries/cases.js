@@ -324,3 +324,32 @@ add('close preserves a reused iframe scope replaced by an earlier teardown callb
         expect(f.visible() === 'Successor display', 'Old close repainted a successor iframe')
     } finally { cleanup(f) }
 })
+
+
+add('close retains its captured frame when page code redirects document frame lookup', async () => {
+    const f = await make(), replacement = await makeChapter('replacement-frame')
+    const outgoing = f.doc.defaultView, successor = replacement.defaultView
+    const token = { successor: true }
+    let outgoingClears = 0
+    outgoing.manabi_invalidateBookReadingScope = () => {
+        outgoingClears++
+        outgoing.manabi_bookReadingScope = null
+    }
+    try {
+        const close = f.runtime.bridge.close
+        f.runtime.bridge.close = () => {
+            close.call(f.runtime.bridge)
+            successor.manabi_bookReadingScope = token
+            replacement.getElementById('state').textContent = 'Successor display'
+            Object.defineProperty(f.doc, 'defaultView', { configurable: true, get: () => successor })
+        }
+        f.close()
+        expect(successor.manabi_bookReadingScope === token, 'Old close borrowed and cleared the replacement frame')
+        expect(replacement.getElementById('state').textContent === 'Successor display', 'Old close repainted replacement iframe')
+        expect(outgoingClears === 1, 'Captured retiring frame did not receive exactly one cleanup')
+        expect(outgoing.manabi_bookReadingScope === null, 'Captured retiring frame retained its scope')
+    } finally {
+        delete f.doc.defaultView
+        cleanup(f)
+    }
+})
