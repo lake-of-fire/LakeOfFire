@@ -1,0 +1,34 @@
+name: Port annotation stream qualification
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Sources/LakeOfFireContentUI/Reader Content/ReaderContentCell*.swift'
+      - 'Tests/LakeOfFireTests/ReaderContentCellAnnotationObservationTests.swift'
+      - 'Tools/test-annotation-observation-port.py'
+      - '.github/workflows/port-annotation-stream.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.2.1'
+      - name: Run observation contract
+        run: python3 Tools/test-annotation-observation-port.py
+      - name: Parse actual SwiftUI integration
+        if: runner.os == 'macOS'
+        run: |
+          swiftc -frontend -parse 'Sources/LakeOfFireContentUI/Reader Content/ReaderContentCellAnnotationUpdates.swift'
+          swiftc -frontend -parse 'Sources/LakeOfFireContentUI/Reader Content/ReaderContentCell.swift'
