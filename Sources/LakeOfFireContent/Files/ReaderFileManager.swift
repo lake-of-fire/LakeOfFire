@@ -1283,9 +1283,9 @@ public class ReaderFileManager: ObservableObject {
         }
 
         if !filesToUpdate.isEmpty {
-            let updatedContentFileIDs = try await { @RealmBackgroundActor in
+            let metadataScan = try await { @RealmBackgroundActor in
                 var updatedFiles = [ContentFile]()
-                var allContentFileIDs = [String]()
+                var metadataScan = MetadataScanResult()
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(
                     for: realmConfiguration
                 )
@@ -1293,8 +1293,17 @@ public class ReaderFileManager: ObservableObject {
                 let processingStartedAt = Date()
                 try await realm.asyncWritePreservingOwnership {
                     try self.validateMetadataRefreshSelection(selection)
-                    for (readerFileURL, _, drive) in filesToUpdate {
+                    for (readerFileURL, relativePath, drive) in filesToUpdate {
                         try self.validateMetadataRefreshSelection(selection)
+                        // Enumeration and URL mapping can suspend before this
+                        // independent write. An old path is not evidence that
+                        // a deleted payload still exists: do not create/revive
+                        // its index or replace its deletion journal generation.
+                        let payloadURL = try relativePath.fileURL(forRoot: drive.rootDirectory)
+                        guard try Self.fileSystemEntryExists(at: payloadURL) else {
+                            metadataScan.isComplete = false
+                            continue
+                        }
                         if let existing = realm.objects(ContentFile.self).filter(
                             NSPredicate(
                                 format: "url == %@",
@@ -1309,7 +1318,7 @@ public class ReaderFileManager: ObservableObject {
                             ) || (existing.url.isEBookURL && !existing.isPhysicalMedia) {
                                 updatedFiles.append(existing)
                             }
-                            allContentFileIDs.append(existing.compoundKey)
+                            metadataScan.contentFileIDs.append(existing.compoundKey)
                         } else {
                             let contentFile = ContentFile()
                             contentFile.url = readerFileURL
@@ -1328,7 +1337,7 @@ public class ReaderFileManager: ObservableObject {
                                 realm.add(contentFile, update: .modified)
                                 contentFile.refreshChangeMetadata(explicitlyModified: true)
                                 updatedFiles.append(contentFile)
-                                allContentFileIDs.append(contentFile.compoundKey)
+                                metadataScan.contentFileIDs.append(contentFile.compoundKey)
                             }
                         }
                     }
@@ -1349,9 +1358,10 @@ public class ReaderFileManager: ObservableObject {
                     }
                     try self.validateMetadataRefreshSelection(selection)
                 }
-                return allContentFileIDs
+                return metadataScan
             }()
-            scan.contentFileIDs.append(contentsOf: updatedContentFileIDs)
+            scan.contentFileIDs.append(contentsOf: metadataScan.contentFileIDs)
+            scan.isComplete = scan.isComplete && metadataScan.isComplete
         }
         return scan
     }
