@@ -60,7 +60,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     public var allScripts: [WebViewUserScript] {
-        Self.builtInReaderScripts + (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
+        Self.builtInReaderScripts + ReaderWebMediaBridge.userScripts + (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
     }
 
     @MainActor
@@ -427,3 +427,4 @@ private extension Optional where Wrapped == String {
         return value.debugTitleFragment
     }
 }
+
