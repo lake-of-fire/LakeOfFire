@@ -12,38 +12,55 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
     // A URL identifies a resource, not a displayed Document. Preloaded or
     // detached frames can use the very same URL as the current chapter.
     let closed = false
-    let scopeAccounts = new WeakMap()
+    let scopeReceipts = new WeakMap()
     const primaryDocument = (renderer = view.renderer) => {
         if (closed || reader.view !== view || view.renderer !== renderer) return null
-        const content = getPrimaryRendererContent(renderer)
-        return content?.doc ?? content?.document ?? null
+        try {
+            const content = getPrimaryRendererContent(renderer)
+            return content?.doc ?? content?.document ?? null
+        } catch (_) { return null }
     }
     const isPrimaryDocument = doc => !!doc && doc === primaryDocument()
     const clearDocumentScope = (doc, isCurrent = () => true, capturedFrame = null) => {
-        let frame, scope
-        const ownsScope = () => !!frame && isCurrent()
+        let frame, scope, captured = false
+        const ownsScope = () => captured && !!frame && isCurrent()
             && frame.manabi_bookReadingScope === scope && isCurrent()
         try {
             if (!isCurrent()) return
-            // Close already captured the outgoing frame before teardown.
-            // Page code can redirect a later Document.defaultView lookup.
+            // Teardown supplies its captured frame; page code must not redirect
+            // a later document lookup into a successor's cleanup.
             frame = capturedFrame ?? doc?.defaultView
-            scope = frame?.manabi_bookReadingScope
-            const invalidate = frame?.manabi_invalidateBookReadingScope
+            if (!frame || !isCurrent()) return
+            scope = frame.manabi_bookReadingScope
+            captured = true
+            const invalidate = frame.manabi_invalidateBookReadingScope
             // A frame's callback lookup can already publish a successor.
-            if (!frame || !ownsScope()) return
+            if (!ownsScope()) return
             if (typeof invalidate === 'function') Reflect.apply(invalidate, frame, [])
             else frame.manabi_bookReadingScope = null
         } catch (_) {
             // A broken outgoing frame must not prevent sibling/host cleanup.
-            // Withdraw only the still-owned token, never a recovered scope.
-            try { if (ownsScope()) frame.manabi_bookReadingScope = null } catch (_) {}
+            // Withdraw only the unchanged exposed scope, never recovered state.
+            try {
+                if (ownsScope()) frame.manabi_bookReadingScope = null
+            } catch (_) {}
         }
     }
     const clearDocumentScopes = (isCurrent = () => true) => {
+        const cleared = new Set()
         for (const content of rendererContents(view.renderer)) {
             if (!isCurrent()) return
-            try { clearDocumentScope(content?.doc ?? content?.document, isCurrent) } catch (_) {}
+            try {
+                const doc = content?.doc ?? content?.document
+                if (cleared.has(doc)) continue
+                cleared.add(doc)
+                clearDocumentScope(doc, isCurrent)
+            } catch (_) {}
+        }
+        // A renderer may discard its old frame before cleanup. Preserve the
+        // original observation as a cleanup target without touching successors.
+        if (isCurrent() && !cleared.has(observed.document)) {
+            clearDocumentScope(observed.document, isCurrent)
         }
     }
     // One observation identifies the displayed document and its renderer.
@@ -55,7 +72,6 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         requiresAccountPresentation: true,
         onAccountChange: stamp => {
             bridge?.setAccountPresentation(stamp)
-            endcap?.accountDidChange()
         },
         isLocationCurrent: () => !closed && reader.view === view
             && view.renderer === observed.renderer && primaryDocument() === observed.document
@@ -64,14 +80,13 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
             // Recovery may restore the same account/pass/location values.
             // Retire the captured identities before invoking frame callbacks;
             // previously queued work must not acquire the recovered display.
-            const invalidation = scopeAccounts = new WeakMap()
-            // close owns a captured cleanup roster; this callback must not
-            // enumerate a renderer installed during an earlier close phase.
+            const invalidation = scopeReceipts = new WeakMap()
+            // close owns a captured roster and must not enumerate a replacement.
             if (closed) return
-            const isCurrent = () => scopeAccounts === invalidation && state.context === null
+            const isCurrent = () => scopeReceipts === invalidation && state.context === null
             clearDocumentScopes(isCurrent)
             if (!isCurrent()) return
-            endcap?.setReady(false)
+            try { endcap?.setReady(false) } catch (_) {}
             if (!isCurrent()) return
             invalidateProjection()
         },
@@ -89,11 +104,16 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
                 // Do not transiently invalidate the visible document on an
                 // ordinary same-pass refresh. Hidden/terminal frames lose
                 // both their token and the cached presentation behind it.
-                frame.manabi_bookReadingScope = projection.scope
-                if (!isCurrent()) return
                 const project = frame.manabi_applyBookReadingPresentation
+                // Frame adapters may retain or edit their input. Keep their
+                // projection and scope independent from shell/native state.
+                const frameProjection = { ...projection, scope: projection.scope ? { ...projection.scope } : null,
+                    readSegmentIdentifiers: [...projection.readSegmentIdentifiers],
+                    sentenceIdentifiersRead: [...projection.sentenceIdentifiersRead] }
                 if (!isCurrent()) return
-                if (project != null) Reflect.apply(project, frame, [projection])
+                frame.manabi_bookReadingScope = projection.scope ? { ...projection.scope } : null
+                if (!isCurrent()) return
+                if (project != null) Reflect.apply(project, frame, [frameProjection])
             }
             if (!isCurrent()) return
             endcap?.setFinished(projection.finished)
@@ -107,6 +127,9 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         postMessage: payload => handlers.ebookBookAction.postMessage(payload),
         documentStartedAtMs, topWindowURL: window.location.href,
         captureContext: expected => state.captureContext(expected),
+        // Both owners change before timer cleanup may synchronously publish a
+        // fresh account sample. It must not be disabled by an older reset.
+        onAccountChange: () => endcap?.accountDidChange(),
     })
     const updateLocation = (moved = false) => {
         if (closed) return false
@@ -128,9 +151,9 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         return state.relocate({ sectionURL, isEndPage }, { moved, replaced })
     }
     const captureScope = doc => {
-        const accounts = scopeAccounts, location = observed
+        const accounts = scopeReceipts, location = observed
         const account = state.accountPresentation, revision = state.locationRevision
-        const isCurrent = () => !closed && scopeAccounts === accounts && observed === location
+        const isCurrent = () => !closed && scopeReceipts === accounts && observed === location
             && state.accountPresentation === account && state.locationRevision === revision
         if (doc !== location.document || view.renderer !== location.renderer
             || !isPrimaryDocument(doc) || !isCurrent()) return null
@@ -138,22 +161,31 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         // Renderer/URL lookups may synchronously recover equal pass IDs. Such
         // a capture needs a fresh originating event, not its predecessor's call.
         if (!scope || !isCurrent()) return null
-        accounts.set(scope, account)
+        accounts.set(scope, { account, key: bookScopeKey(scope) })
         return scope
     }
     const isScopeCurrent = (scope, doc) => {
-        const accounts = scopeAccounts, revision = state.locationRevision
-        const ownsReceipt = () => !!scope && scopeAccounts === accounts && accounts.has(scope)
-            && accounts.get(scope) === state.accountPresentation && state.locationRevision === revision
+        const accounts = scopeReceipts, revision = state.locationRevision
+        const receipt = accounts.get(scope)
+        const ownsReceipt = () => !!scope && scopeReceipts === accounts && accounts.get(scope) === receipt
+            && receipt?.account === state.accountPresentation && state.locationRevision === revision
         if (!ownsReceipt()) return false
-        const matches = bookScopeKey(scope) === bookScopeKey(captureScope(doc))
+        let key, selectedKey
+        try {
+            key = bookScopeKey(scope)
+            selectedKey = bookScopeKey(captureScope(doc))
+        } catch (_) { return false }
         // Recheck AFTER renderer callbacks; equal recovered values cannot revive
-        // a receipt whose map was retired during the comparison.
-        return ownsReceipt() && matches
+        // a retired receipt, and mutating its defensive copy cannot retarget it.
+        return ownsReceipt() && receipt.key === key && key === selectedKey
     }
     endcap = new BookEndcap({ document, host: document.getElementById('reader-stage'), publication: view,
         performAction: action => bridge.perform(action), recoverAction: recovery => bridge.recover(recovery),
-        onChange: visible => { if (!closed) { updateLocation(); onVisibility(visible) } },
+        onChange: visible => {
+            if (closed) return
+            updateLocation()
+            if (!closed && reader.view === view && endcap.visible === visible) onVisibility(visible)
+        },
     })
     view.renderer.bookEndcap = endcap
     return {
@@ -169,11 +201,11 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         // Capture before a timer, promise or layout wait. A later same-URL
         // document, renderer, position or pass cannot adopt this event.
         captureEvent(doc) {
-            const accounts = scopeAccounts, account = state.accountPresentation
+            const accounts = scopeReceipts, account = state.accountPresentation
             const revision = state.locationRevision, renderer = view.renderer
             const scope = captureScope(doc)
             return scope && renderer === view.renderer && revision === state.locationRevision
-                && accounts === scopeAccounts && account === state.accountPresentation
+                && accounts === scopeReceipts && account === state.accountPresentation
                 ? Object.freeze({ document: doc, renderer,
                     locationRevision: revision, scope: Object.freeze(scope) }) : null
         },
@@ -219,10 +251,9 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         close() {
             if (closed) return
             closed = true
-            scopeAccounts = new WeakMap()
-            // Capture the retiring renderer's frames and exact tokens before any
-            // teardown observer can install a successor. The observed document
-            // remains a fallback when renderer enumeration is unavailable.
+            scopeReceipts = new WeakMap()
+            // Retain outgoing frame/token identities before teardown callbacks.
+            // The observation remains a fallback after renderer discard.
             const renderer = observed.renderer, docs = new Set([observed.document])
             for (const content of rendererContents(renderer)) {
                 try { docs.add(content?.doc ?? content?.document) } catch (_) {}
@@ -234,8 +265,8 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
                     if (frame) frames.push({ doc, frame, scope })
                 } catch (_) {}
             }
-            // Cleanup phases remain independent. Neither a replacement renderer
-            // nor a newer token in a reused frame belongs to this closure.
+            // One failure cannot stop sibling cleanup; a replacement renderer
+            // or a newer scope in a reused frame never belongs to this close.
             for (const cleanup of [() => bridge.close(), () => state.close(), () => endcap.destroy(),
                 ...frames.map(({ doc, frame, scope }) => () => clearDocumentScope(doc,
                     () => frame.manabi_bookReadingScope === scope, frame))]) {

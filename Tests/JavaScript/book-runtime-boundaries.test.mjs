@@ -440,6 +440,7 @@ test('a non-callable installed projector remains an error, not a successful publ
     assert.deepEqual(f.projections, [1])
 })
 
+
 // Additive close ownership checks; all donor assertions remain above.
 test('close never enumerates a renderer installed by an earlier cleanup phase', t => {
     const f = fixture(t)
