@@ -11,6 +11,23 @@ import UIKit
 import RealmSwiftGaps
 import UniformTypeIdentifiers
 
+public struct ReaderContentMutationOutcome: Sendable {
+    public let matchedObjectCount: Int
+    /// Successfully committed or already-applied object representations.
+    public let committedObjectCount: Int
+    public let mutatedObjectCount: Int
+    public let cancelledBeforeCommit: Bool
+    public let errorMessage: String?
+
+    public init(matchedObjectCount: Int, committedObjectCount: Int, mutatedObjectCount: Int = 0, cancelledBeforeCommit: Bool, errorMessage: String?) {
+        self.matchedObjectCount = matchedObjectCount
+        self.committedObjectCount = committedObjectCount
+        self.mutatedObjectCount = mutatedObjectCount
+        self.cancelledBeforeCommit = cancelledBeforeCommit
+        self.errorMessage = errorMessage
+    }
+}
+
 
 
 fileprivate extension URL {
@@ -306,22 +323,61 @@ public struct ReaderContentLoader {
         skipFeedEntries: Bool = false,
         mutate: (Object & ReaderContentProtocol) -> Bool
     ) async throws {
-        let objects = try await loadAll(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
-        let timestamp = Date()
-        for case let object as (Object & ReaderContentProtocol) in objects {
-            guard let realm = object.realm else { continue }
-            try await realm.asyncWritePreservingOwnership {
-                // Realm's async transaction can begin after its caller was
-                // cancelled (for example by a superseding WebView document).
-                // Fence the actual commit, not only the preceding lookup.
-                guard !Task.isCancelled else { return }
-                if mutate(object) {
-                    object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+        let result = await performContentMutation(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries, mutate: mutate)
+        if let error = result.error { throw error }
+    }
+
+    /// Reports durable outcomes even if cancellation or a later Realm failure
+    /// prevents updating every representation of this content.
+    @RealmBackgroundActor
+    public static func updateContentWithOutcome(
+        url: URL,
+        skipContentFiles: Bool = false,
+        skipFeedEntries: Bool = false,
+        mutate: (Object & ReaderContentProtocol) -> Bool
+    ) async -> ReaderContentMutationOutcome {
+        await performContentMutation(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries, mutate: mutate).outcome
+    }
+
+    @RealmBackgroundActor
+    private static func performContentMutation(
+        url: URL,
+        skipContentFiles: Bool,
+        skipFeedEntries: Bool,
+        mutate: (Object & ReaderContentProtocol) -> Bool
+    ) async -> (outcome: ReaderContentMutationOutcome, error: Error?) {
+        var matched = 0
+        var committed = 0
+        var mutated = 0
+        var cancelledBeforeCommit = false
+        do {
+            let objects = try await loadAll(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
+            matched = objects.count
+            let timestamp = Date()
+            for case let object as (Object & ReaderContentProtocol) in objects {
+                guard !Task.isCancelled else { cancelledBeforeCommit = true; break }
+                guard let realm = object.realm, !object.isInvalidated else { continue }
+                let change: Bool? = try await realm.asyncWritePreservingOwnership {
+                    // Fence admission at the existing Realm write lane. Once a
+                    // transaction returns, cancellation cannot revoke its result.
+                    guard !Task.isCancelled, !object.isInvalidated else { return nil }
+                    let changed = mutate(object)
+                    if changed { object.refreshChangeMetadata(explicitlyModified: true, at: timestamp) }
+                    return changed
                 }
+                guard let change else { cancelledBeforeCommit = Task.isCancelled; continue }
+                // Includes already-applied no-op selections, without refreshing
+                // metadata or creating another upload generation for them.
+                committed += 1
+                if change { mutated += 1 }
             }
+            return (ReaderContentMutationOutcome(matchedObjectCount: matched, committedObjectCount: committed, mutatedObjectCount: mutated, cancelledBeforeCommit: cancelledBeforeCommit, errorMessage: nil), nil)
+        } catch {
+            cancelledBeforeCommit = cancelledBeforeCommit || error is CancellationError || Task.isCancelled
+            return (ReaderContentMutationOutcome(matchedObjectCount: matched, committedObjectCount: committed, mutatedObjectCount: mutated, cancelledBeforeCommit: cancelledBeforeCommit, errorMessage: error.localizedDescription), error)
         }
     }
-    
+
     @MainActor
     public static func load(
         url: URL,
@@ -329,6 +385,11 @@ public struct ReaderContentLoader {
         countsAsHistoryVisit: Bool = false,
         source: String = "ReaderContentLoader.load"
     ) async throws -> (any ReaderContentProtocol)? {
+        if url.isTranscriptPageURL {
+            // These are registered, source-bound derived pages. A missing asset
+            // must not create a persisted empty history record for its local URL.
+            return await TranscriptPageRegistry.shared.makeReaderContent(for: url)
+        }
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
             
@@ -1584,3 +1645,4 @@ private extension ReaderContentLoader {
         record.displayPublicationDate = source.displayPublicationDate
     }
 }
+

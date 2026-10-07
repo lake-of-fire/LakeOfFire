@@ -17,6 +17,7 @@ public enum MediaTranscriptCompression: String, Sendable {
 
 public enum MediaTranscriptCodecError: Error {
     case invalidFrame
+    case immutableIdentity
     case unknownFrameSize
     case decompressionFailed(String)
     case compressionFailed(String)
@@ -34,7 +35,7 @@ private extension URL {
 }
 
 public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadataRecordable {
-    public static let currentGeneratorVersion = 1
+    public static let currentGeneratorVersion = 2
     public static let zstdCompressionLevel: Int32 = 6
 
     @Persisted(primaryKey: true) public var compoundKey = ""
@@ -70,11 +71,11 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
     }
 
     public static func canonicalContentURL(from url: URL) -> URL {
-        (ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url).removingFragmentForTranscriptIdentity()
+        ReaderMediaResourceIdentity.canonicalURL(url.transcriptContentURL ?? ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url)
     }
 
     public static func stableMediaIdentity(url: URL) -> String {
-        "url:\(url.removingFragmentForTranscriptIdentity().absoluteString)"
+        ReaderMediaResourceIdentity.direct(url)
     }
 
     public static func stableMediaIdentity(offlineMediaID: String) -> String {
@@ -89,7 +90,7 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
         let identity = [
             canonicalContentURL(from: contentURL).absoluteString,
             stableMediaIdentity,
-            languageCode.lowercased()
+            ReaderTranscriptLanguage.normalizedIdentifier(languageCode)
         ].joined(separator: "\u{1F}")
         return SHA256.hash(data: Data(identity.utf8))
             .map { String(format: "%02x", $0) }
@@ -97,11 +98,9 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
     }
 
     public func updateCompoundKey() {
-        compoundKey = Self.makeCompoundKey(
-            contentURL: contentURL,
-            stableMediaIdentity: stableMediaIdentity,
-            languageCode: languageCode
-        )
+        let key = Self.makeCompoundKey(contentURL: contentURL, stableMediaIdentity: stableMediaIdentity, languageCode: languageCode)
+        guard key != compoundKey, realm == nil else { return }
+        compoundKey = key
     }
 
     public func matchesReuse(
@@ -114,11 +113,12 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
     ) -> Bool {
         guard !isDeleted else { return false }
         guard self.stableMediaIdentity == stableMediaIdentity else { return false }
-        guard self.languageCode.lowercased() == languageCode.lowercased() else { return false }
-        guard self.generatorVersion == generatorVersion else { return false }
-        guard self.transcriptLocale.lowercased() == transcriptLocale.lowercased() else { return false }
+        guard ReaderTranscriptLanguage.normalizedIdentifier(self.languageCode) == ReaderTranscriptLanguage.normalizedIdentifier(languageCode) else { return false }
+        guard !isGenerated || self.generatorVersion == generatorVersion else { return false }
+        guard ReaderTranscriptLanguage.normalizedIdentifier(self.transcriptLocale) == ReaderTranscriptLanguage.normalizedIdentifier(transcriptLocale) else { return false }
 
-        if let sourceDuration, let existingSourceDuration = self.sourceDuration {
+        if isGenerated, let sourceDuration, sourceDuration.isFinite, sourceDuration > 0,
+           let existingSourceDuration = self.sourceDuration {
             guard abs(existingSourceDuration - sourceDuration) <= 1 else {
                 return false
             }
@@ -139,12 +139,17 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
         mediaFingerprint: String? = nil,
         generatorVersion: Int = MediaTranscript.currentGeneratorVersion
     ) throws {
-        content = try Self.encodeWebVTT(webVTT)
+        let admitted = try ReaderTranscriptDocument(webVTT: webVTT)
+        let normalizedLanguage = ReaderTranscriptLanguage.normalizedIdentifier(languageCode)
+        let expectedKey = Self.makeCompoundKey(contentURL: contentURL, stableMediaIdentity: stableMediaIdentity, languageCode: normalizedLanguage)
+        guard realm == nil || compoundKey == expectedKey else { throw MediaTranscriptCodecError.immutableIdentity }
+        content = try Self.encodeWebVTT(admitted.webVTT)
         format = .webvtt
         compression = .zstd
         self.isGenerated = isGenerated
-        self.transcriptLocale = transcriptLocale
-        self.sourceDuration = sourceDuration
+        self.languageCode = ReaderTranscriptLanguage.normalizedIdentifier(languageCode)
+        self.transcriptLocale = ReaderTranscriptLanguage.normalizedIdentifier(transcriptLocale)
+        self.sourceDuration = sourceDuration.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         self.mediaFingerprint = mediaFingerprint
         self.generatorVersion = generatorVersion
         updateCompoundKey()
@@ -152,7 +157,7 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
 
     public func webVTTString() throws -> String? {
         guard let content else { return nil }
-        return try Self.decodeWebVTT(content)
+        return try ReaderTranscriptDocument(webVTT: Self.decodeWebVTT(content)).webVTT
     }
 
     public static func encodeWebVTT(_ value: String) throws -> Data {
@@ -161,10 +166,12 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
 
     public static func decodeWebVTT(_ value: Data) throws -> String {
         let data = try decodeWebVTTData(value)
-        return String(decoding: data, as: UTF8.self)
+        guard let string = String(data: data, encoding: .utf8) else { throw MediaTranscriptCodecError.invalidFrame }
+        return string
     }
 
     public static func encodeWebVTTData(_ data: Data) throws -> Data {
+        guard data.count <= ReaderTranscriptDocument.maximumBytes else { throw MediaTranscriptCodecError.contentTooLarge }
         let maxCompressedSize = ZSTD_compressBound(data.count)
         guard maxCompressedSize > 0 else {
             throw MediaTranscriptCodecError.contentTooLarge
@@ -206,7 +213,7 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
             throw MediaTranscriptCodecError.unknownFrameSize
         }
 
-        guard frameContentSize <= UInt64(Int.max) else {
+        guard frameContentSize <= UInt64(ReaderTranscriptDocument.maximumBytes) else {
             throw MediaTranscriptCodecError.contentTooLarge
         }
 

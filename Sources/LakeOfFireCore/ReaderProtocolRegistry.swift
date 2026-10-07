@@ -15,6 +15,7 @@ public class ReaderProtocolRegistry {
     public static let shared = ReaderProtocolRegistry(readerProtocols: [
         EbookReaderProtocol.self,
         InternalReaderProtocol.self,
+        TranscriptReaderProtocol.self,
     ])
     
     public init(readerProtocols: [ReaderProtocol.Type]) {
@@ -34,3 +35,4 @@ public class ReaderProtocolRegistry {
         return readerProtocols.first { $0.urlScheme == scheme }
     }
 }
+
