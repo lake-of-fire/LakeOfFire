@@ -9,6 +9,9 @@ import { compareBookAccountPresentation } from './book-reading-state.js'
 
 const actions = new Set(['finishBook', 'startChapterOver', 'startBookOver'])
 const copy = value => JSON.parse(JSON.stringify(value))
+// Compare already-copied JSON data without depending on object key order.
+const fingerprint = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object'
+    && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item)
 export class BookActionUnacknowledgedError extends Error {
     constructor(message, request) {
         super(message)
@@ -24,35 +27,61 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
     captureProducerOwner = captureReaderArticleProducerOwner,
     carryProducerOwner = carryReaderArticleProducerOwner,
 }) => {
-    let closed = false, current = null, accountPresentation = null
+    let closed = false, preparing = false, current = null, accountPresentation = null
     const deliveries = new Map(), completed = new Map()
+    const clearDeliveryTimer = timer => {
+        if (timer != null) {
+            try { clearTimer(timer) } catch (_) {} // Optional cleanup cannot change outcome truth.
+        }
+    }
     const settle = (delivery, result, error) => {
         if (delivery.settled) return
         delivery.settled = true
-        clearTimer(delivery.timer)
+        const timer = delivery.timer
+        delivery.timer = null
+        clearDeliveryTimer(timer)
         if (error) delivery.reject(error)
         else delivery.resolve(result)
     }
+    const ownsRequest = request => !closed && request.accountPresentation === accountPresentation
+        && (current === request || completed.get(request.requestID) === request)
+    const unknown = (request, error = null) => {
+        let message = 'The action was not acknowledged. Check its status before trying again.'
+        try {
+            const detail = error?.message
+            if (typeof detail === 'string' && detail) message = detail
+        } catch (_) {}
+        return new BookActionUnacknowledgedError(message, request)
+    }
+    const requestProducerReadiness = () => {
+        try { globalThis.manabiArticleProducer?.ready?.().catch?.(() => {}) } catch (_) {}
+    }
     const deliver = (request, kind) => {
         if (closed) return Promise.reject(new Error('Reader closed'))
-        if (request.accountPresentation !== accountPresentation) return Promise.reject(new BookActionUnacknowledgedError(
-            'The account changed. Reopen Book Actions for the current account.', request))
+        if (!ownsRequest(request)) return Promise.reject(unknown(request))
         if (request.active && !request.active.settled) return request.active.promise
         if (kind === 'status' && request.result) return Promise.resolve(copy(request.result))
-        // The semantic command keeps the producer captured with its Book scope.
-        // Status/navigation recovery is a new, non-mutating delivery and may
-        // use the current producer, but never replays the command.
-        const producerOwner = kind === 'command'
-            ? request.producerOwner
-            : captureProducerOwner?.()
-        if (!producerOwner) {
-            globalThis.manabiArticleProducer?.ready?.().catch?.(() => {})
-            return Promise.reject(new BookActionUnacknowledgedError(
-                'The reader changed before this delivery obtained native ownership.', request))
+        const previousDelivery = request.active, previousResult = request.result
+        let producerOwner
+        try {
+            // Recovery is a new non-mutating delivery; commands keep the
+            // original producer captured with their immutable Book context.
+            producerOwner = kind === 'command' ? request.producerOwner : captureProducerOwner?.()
+        } catch (error) { return Promise.reject(unknown(request, error)) }
+        if (!ownsRequest(request)) return Promise.reject(unknown(request))
+        // Producer capture can synchronously start or complete another delivery.
+        // Join its promise rather than replacing it or navigating stale state.
+        if (request.active !== previousDelivery || request.result !== previousResult) {
+            if (request.active && !request.active.settled) return request.active.promise
+            if (kind === 'status' && request.result) return Promise.resolve(copy(request.result))
+            return Promise.reject(unknown(request))
         }
-        // Once navigation recovery starts, its previous failure is no longer
-        // the current result. A timeout must query native status, not replay
-        // that cached failure and offer another navigation attempt.
+        if (!producerOwner) {
+            requestProducerReadiness()
+            return Promise.reject(unknown(request))
+        }
+        // Once navigation recovery starts, status must query native rather
+        // than replay the cached failure from before that navigation attempt.
         if (kind === 'navigate') request.result = null
         for (const [id, previous] of deliveries) {
             if (previous.request === request && previous.settled && previous.kind !== 'command') deliveries.delete(id)
@@ -63,18 +92,36 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
         const delivery = { request, kind, deliveryID, promise, resolve, reject, settled: false, timer: null }
         request.active = delivery
         deliveries.set(deliveryID, delivery)
-        delivery.timer = setTimer(() => settle(delivery, null, new BookActionUnacknowledgedError(
-            'The action has not been acknowledged. Check its status before starting another reading pass.', request)), timeoutMilliseconds)
+        const mayPost = () => ownsRequest(request) && !delivery.settled
+            && request.active === delivery && deliveries.get(deliveryID) === delivery
         try {
-            const payload = carryProducerOwner({
+            const timer = setTimer(() => settle(delivery, null, new BookActionUnacknowledgedError(
+                'The action has not been acknowledged. Check its status before starting another reading pass.', request)), timeoutMilliseconds)
+            // Installation can synchronously acknowledge, time out or retire
+            // the delivery. Its late returned handle must not become an orphan.
+            if (!mayPost()) { clearDeliveryTimer(timer); return promise }
+            delivery.timer = timer
+            const body = {
                 protocolVersion: 2, kind, action: request.action,
                 requestID: request.requestID, deliveryID,
                 context: copy(request.context), topWindowURL, documentStartedAtMs,
-            }, producerOwner)
+            }
+            const fields = Object.keys(body), expected = fingerprint(body)
+            const payload = carryProducerOwner(body, producerOwner)
+            if (!mayPost()) return promise
             if (!payload) throw new Error('Native producer ownership is unavailable.')
-            postMessage(payload)
+            // The adapter may add producer evidence, not change the operation.
+            // Snapshot keys before it can attach evidence in place, then copy
+            // the wire data before the final ownership/semantic check.
+            const prepared = copy(payload)
+            const semantic = prepared && Object.fromEntries(fields.map(key => [key, prepared[key]]))
+            if (!mayPost()) return promise
+            if (!semantic || fingerprint(semantic) !== expected) throw new Error('The book action changed before dispatch.')
+            postMessage(prepared)
         } catch (error) {
-            settle(delivery, null, new BookActionUnacknowledgedError(error?.message || 'The action was not acknowledged.', request))
+            // Preserve a terminal reply received synchronously before a wrapper
+            // throws. Otherwise retain the original status-only recovery path.
+            settle(delivery, null, unknown(request, error))
         }
         return promise
     }
@@ -100,26 +147,55 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
             if (closed) return Promise.reject(new Error('Reader closed'))
             if (!actions.has(action)) return Promise.reject(new Error('Unsupported book action'))
             if (current) return Promise.reject(new BookActionUnacknowledgedError('Resolve the previous book action first.', current))
-            let context
+            // Preparation is synchronous, but injected capture/serialization
+            // callbacks can reenter. Reserve this preparation without inventing
+            // an unacknowledged native command for a rejected nested activation.
+            if (preparing) return Promise.reject(new Error('Another book action is being prepared.'))
+            const account = accountPresentation
+            const preparationIsCurrent = () => !closed && accountPresentation === account && current === null
+            let request
+            preparing = true
             try {
-                context = captureContext?.(expectedContext)
-                if (!context) throw new Error('The current chapter is still loading its book actions.')
+                const context = captureContext?.(expectedContext)
+                if (!context || !preparationIsCurrent()) throw new Error('The current chapter changed. Reopen Book Actions.')
+                const producerOwner = captureProducerOwner?.()
+                if (!preparationIsCurrent()) throw new Error('The reader changed before the action was prepared.')
+                if (!producerOwner) {
+                    requestProducerReadiness()
+                    throw new Error('The reader is still obtaining native ownership.')
+                }
+                const requestID = makeRequestID()
+                if (!preparationIsCurrent() || typeof requestID !== 'string'
+                    || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(requestID)
+                    || completed.has(requestID)) {
+                    throw new Error('Invalid or superseded action identifier')
+                }
+                const preparedContext = copy(context)
+                if (!preparedContext || typeof preparedContext !== 'object' || Array.isArray(preparedContext)) {
+                    throw new Error('The current chapter has no valid Book Actions context.')
+                }
+                if (!preparationIsCurrent()) throw new Error('The reader changed before the action was prepared.')
+                request = { requestID, action, context: preparedContext, producerOwner, accountPresentation: account,
+                    sequence: 0, active: null, result: null }
             } catch (error) { return Promise.reject(error) }
-            const producerOwner = captureProducerOwner?.()
-            if (!producerOwner) {
-                globalThis.manabiArticleProducer?.ready?.().catch?.(() => {})
-                return Promise.reject(new Error('The reader is still obtaining native ownership.'))
-            }
-            const requestID = makeRequestID()
-            if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(requestID)) return Promise.reject(new Error('Invalid action identifier'))
-            current = { requestID, action, context: copy(context), producerOwner, accountPresentation,
-                sequence: 0, active: null, result: null }
-            return deliver(current, 'command')
+            finally { preparing = false }
+            current = request
+            return deliver(request, 'command')
         },
         recover(recovery) {
             if (closed) return Promise.reject(new Error('Reader closed'))
-            const { requestID, action, kind = 'status' } = recovery ?? this.recoveryInfo ?? {}
-            const request = current?.requestID === requestID ? current : completed.get(requestID)
+            // Descriptor accessors must not acquire a request created during
+            // their lookup. The existing cache is bounded to 32; retain only
+            // this synchronous selection, then recheck actual membership.
+            const account = accountPresentation, originalCurrent = current
+            const originalCompleted = new Map(completed)
+            let requestID, action, kind
+            try { ({ requestID, action, kind = 'status' } = recovery ?? this.recoveryInfo ?? {}) }
+            catch (error) { return Promise.reject(error) }
+            const request = originalCurrent?.requestID === requestID ? originalCurrent : originalCompleted.get(requestID)
+            if (closed || accountPresentation !== account || (request && !ownsRequest(request))) {
+                return Promise.reject(unknown(request))
+            }
             if (!request || request.action !== action) return Promise.reject(new BookActionUnacknowledgedError(
                 'The original action is unavailable. Reopen the book to see its current reading pass.', current))
             if (!['status', 'navigate'].includes(kind)) return Promise.reject(new Error('Unsupported recovery'))
@@ -129,38 +205,54 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
         },
         acknowledge(deliveryID, result) {
             const delivery = deliveries.get(deliveryID)
-            if (closed || !delivery || !result || result.requestID !== delivery.request.requestID) return false
-            const replyAccount = result.accountPresentation ?? null
-            if (replyAccount !== delivery.request.accountPresentation || replyAccount !== accountPresentation) return false
-            if (result.ok === true && result.committed !== true) return false
-            if (result.pending !== true && result.outcomeUnknown !== true && typeof result.ok !== 'boolean') return false
-            deliveries.delete(deliveryID)
+            if (!delivery || !result) return false
             const request = delivery.request
-            const payload = { ...copy(result), action: request.action }
-            // A reset has two outcomes: the mutation and its navigation. A
-            // committed but unfinished navigation is never terminal success.
-            if (payload.ok === true && request.action !== 'finishBook'
-                && !['completed', 'failed', 'superseded'].includes(payload.navigation?.status)) {
-                payload.pending = true
-            }
-            if (payload.pending === true || payload.outcomeUnknown === true) request.result = null
-            if (payload.pending !== true && payload.outcomeUnknown !== true) {
-                request.result = payload
-                for (const [id, other] of deliveries) {
-                    if (other.request === request) { settle(other, copy(payload)); deliveries.delete(id) }
+            const mayAccept = () => ownsRequest(request) && deliveries.get(deliveryID) === delivery
+            if (!mayAccept()) return false
+            let payload, terminal, settlements
+            try {
+                // Copy and validate before consuming the reply. A failed copy
+                // remains retryable; serializers cannot change its correlation
+                // or command truth after validation of the original object.
+                payload = copy(result)
+                if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+                    || payload.requestID !== request.requestID
+                    || (payload.accountPresentation ?? null) !== request.accountPresentation
+                    || (payload.ok === true && payload.committed !== true)
+                    || (payload.pending !== true && payload.outcomeUnknown !== true
+                        && typeof payload.ok !== 'boolean')) return false
+                payload.action = request.action
+                if (payload.ok === true && request.action !== 'finishBook'
+                    && !['completed', 'failed', 'superseded'].includes(payload.navigation?.status)) {
+                    payload.pending = true
                 }
+                terminal = payload.pending !== true && payload.outcomeUnknown !== true
+                const recipients = terminal
+                    ? [...deliveries.values()].filter(other => other.request === request) : [delivery]
+                // The retained cache and each delivery own separate data. A
+                // consumer mutating its result cannot rewrite future recovery.
+                settlements = recipients.map(other => ({ delivery: other, result: copy(payload) }))
+                if (!mayAccept() || settlements.some(item =>
+                    deliveries.get(item.delivery.deliveryID) !== item.delivery)) return false
+            } catch (_) { return false }
+            // Commit all private result/index changes before optional timer
+            // cleanup can close, switch account or admit the next command.
+            request.result = terminal ? payload : null
+            for (const item of settlements) deliveries.delete(item.delivery.deliveryID)
+            if (terminal) {
                 completed.set(request.requestID, request)
                 while (completed.size > 32) completed.delete(completed.keys().next().value)
                 if (current === request && (payload.ok !== true || payload.navigation?.status !== 'failed')) current = null
             }
-            settle(delivery, payload)
+            for (const item of settlements) settle(item.delivery, item.result)
             return true
         },
         close() {
             if (closed) return
             closed = true
-            for (const delivery of deliveries.values()) settle(delivery, null, new BookActionUnacknowledgedError('Reader closed', delivery.request))
+            const old = [...deliveries.values()]
             deliveries.clear(); completed.clear(); current = null
+            for (const delivery of old) settle(delivery, null, new BookActionUnacknowledgedError('Reader closed', delivery.request))
         },
     }
 }
