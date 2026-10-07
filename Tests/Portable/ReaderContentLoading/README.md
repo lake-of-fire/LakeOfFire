@@ -1,3 +1,129 @@
+# Completed Reader content delivery — October 7, 2026
+
+## Current finding
+
+The prior load-ownership repair protects the producer before it publishes, but
+`getContent()` still returns the value of its captured task without revalidating
+it after the await. A completed task can have consumers queued to resume after a
+new selection has already won. That is a separate boundary from the producer's
+successful assignment to `content`.
+
+Three failing histories reproduce against the complete PR #114 class:
+
+- A publishes, an observer schedules the real public preload/load path for B,
+  and queued readers then receive A although B is displayed.
+- A title subscriber replaces the displayed content before waiting readers
+  resume. This includes a different object with the same URL.
+- A publishes, navigation goes A -> B -> A using the exact original A object,
+  and an old reader receives A from the retired first selection.
+
+These are schedules of one completed-result ownership defect, not three new
+persistence bugs. Core's current manual-read resolver captures the original
+page before calling this accessor and uses that page for a cache-miss fallback.
+The repair must return nil for a displaced result, never adopt today's content.
+It neither changes that fallback nor replaces downstream mutation admission.
+
+## Repair and reassessment
+
+The existing `loadingID` becomes `selectionID` and remains the last admitted
+selection after its loading slot is cleared. This retains the already-existing
+UUID instead of adding another token or counter. `getContent()` captures it
+before waiting and checks both its identity and the exact displayed object after
+receiving the result. Completion cleanup still releases task/URL state before
+coalesced waiters wake and cannot erase a successor's task.
+
+A no-op load of the already displayed content with no pending task does not
+rotate selection identity. This distinction was verified during iteration:
+the first fix suppressed a valid pending read on harmless content reuse; the
+final version preserves that positive case. An unrelated active loader is still
+retired, including through the existing-content fast path.
+
+One production file changes, 26 additions and 9 deletions. No new runtime field,
+class, lock, queue, timer, retry mechanism, writer, journal or schema is added.
+Existing loader arguments, alias policy, error propagation, individual waiter
+cancellation and public method signatures remain. This is not a claim that all
+arbitrary external edits to published properties form an atomic transaction.
+
+## Exact source and integration boundary
+
+Target repository: `lake-of-fire/LakeOfFire`, PR #114, branch
+`codex/reader-content-load-ownership-20261006`.
+The checked live head remained `43db952704bacc9945eb6e5001e3ad9cef5d7ba1`.
+Baseline `ReaderContent.swift` blob: `f8d42476af0356207a66d18d3c2cafe93e0969b9`.
+Repaired blob: `e7d50ac057a69561cc62d6fc810b2238c5f7097e`.
+
+Reader root `ee3138a48fd34b9186d9a52574becef030308eb1` selects that exact
+Lake baseline, so the previous repair is now in the selected composition.
+Core's captured-page resolver was rechecked at
+`a7a09cf34e3856e4a4e629a09f35dde0247a23ed`, unchanged owning-file blob
+`53b23c641b2305f9c650793cfcd4e1370f129af8`.
+
+This increment is local/unpublished. The current GitHub action set exposes reads,
+not commit/ref/comment writes, and terminal Git's remote query fails with
+`Could not resolve host: github.com`. No branch, PR comment, root pin, inventory,
+qualification flag, workflow or deployment was changed. The local Git directory
+used for generating a diff is a component fixture, not an upstream checkout;
+its synthetic commit is not a publishable parent.
+
+## Executed final-source verification
+
+Swift 6.2.1/Linux, Swift 5 package language mode, complete concurrency checking,
+warnings as errors. All 25 prior tests are unchanged; six methods were added to
+the same test class. The same final 31-method file executes in these runs:
+
+| Execution | Passed | Failed |
+| --- | ---: | ---: |
+| Original complete class, optimized | 28 | 3 |
+| Repaired public entry, Debug | 31 | 0 |
+| Repaired public entry, optimized | 31 | 0 |
+| Repaired internal resolver entry, optimized | 31 | 0 |
+| Repaired public entry, ThreadSanitizer | 31 | 0 |
+| Remove selection identity check | 30 | 1 |
+| Remove displayed-object identity check | 30 | 1 |
+| Remove harmless-reuse early return | 30 | 1 |
+
+ThreadSanitizer emits no race diagnostic. Ten further executions of each verified
+optimized binary reproduce the same result: original 28/3, repaired 31/0 on every
+run. These are repeated schedules, not 310 distinct tests. The multi-waiter cases
+use 32 waiting tasks and priorities to widen the late-consumer window; they do
+not assert portable FIFO scheduling. Assertions allow reads returned before the
+transition, and reject a displaced result afterward. Synchronous title-observer
+replacement supplies the independent reentrant case, including equal URLs.
+
+Nine unchanged runner contract tests also pass. Raw method outcomes, exact
+compiled inputs and driver statuses are retained. A combined verification tool
+call was interrupted after the Debug XCTest process printed success but before
+its driver wrote a receipt. It is excluded from accepted evidence; a new,
+independent final Debug execution completed with status 0. An unsupported
+streaming-session attempt started no command. Neither is counted as a pass.
+
+## Native scope and reproduction
+
+The complete production class and its actual Tasks, preloads, coalescing,
+publication and result-delivery implementation execute. Linux supplies explicit
+model, Combine/SwiftUI, loader and URL-alias leaves. This does not qualify actual
+Combine, managed Realm objects/history, production URL aliases, providers,
+WKWebView, the native menu/handler or an assembled Reader application. The
+native-intended branch uses unmanaged HistoryRecord fixtures and the existing
+per-call resolver, but Apple compilation/execution remains unperformed here.
+
+Use the existing `Tests/Portable/ReaderContentLoading/run.py` with a fresh output
+directory, adding `--optimized`, `--direct-resolver`, or `--thread-sanitizer` for
+the corresponding lane. `--source` accepts the complete baseline or a mutated
+source. The runner and platform collaborators are unchanged by this increment.
+
+At publication, apply the four-file patch to a verified descendant of #114,
+preserve concurrent work, use a normal guarded fast-forward and `[skip ci]`, and
+retain draft status. Reader integration should keep the existing native test file
+registered and add the six names in `new-native-methods.json` to both inventories
+when selecting the resulting Lake revision. No source can be pinned to an
+unpublished or fabricated commit. Historical first-Mark/startup, saved-position,
+archive-crash and full JavaScript/application qualification remain separate.
+
+---
+
+## Earlier load-lifetime repair (historical evidence at 43db9527)
+
 # Reader content load ownership and retry — October 6, 2026
 
 ## Confirmed failures

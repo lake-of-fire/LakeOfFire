@@ -23,5 +23,11 @@
   "testAlreadyCancelledUncachedNavigationPreservesActiveLoad",
   "testCancelledCoalescedWaiterDoesNotCancelSharedLoad",
   "testCoalescedErrorWaitersCanRetryBeforeInitiatorResumes",
-  "testPreloadedSelectionClearsSectionButExistingSelectionPreservesIt"
+  "testPreloadedSelectionClearsSectionButExistingSelectionPreservesIt",
+  "testWaitingReadersNeverReturnOldContentAfterSuccessorPublication",
+  "testReentrantTitleReplacementDoesNotReturnDisplacedContent",
+  "testCompletedReadersSurviveAnUnchangedContentReuse",
+  "testCompletedReadersRejectReturnToTheSameObjectAfterNavigation",
+  "testPendingReaderReturnsNormalPublicationAfterProducerCleanup",
+  "testPendingAccessorPreservesOriginalFailureAfterReplacement"
 ]
