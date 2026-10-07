@@ -9,6 +9,9 @@ import { compareBookAccountPresentation } from './book-reading-state.js'
 
 const actions = new Set(['finishBook', 'startChapterOver', 'startBookOver'])
 const copy = value => JSON.parse(JSON.stringify(value))
+// Compare already-copied JSON data without depending on object key order.
+const fingerprint = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object'
+    && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item)
 export class BookActionUnacknowledgedError extends Error {
     constructor(message, request) {
         super(message)
@@ -44,7 +47,10 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
         && (current === request || completed.get(request.requestID) === request)
     const unknown = (request, error = null) => {
         let message = 'The action was not acknowledged. Check its status before trying again.'
-        try { if (typeof error?.message === 'string' && error.message) message = error.message } catch (_) {}
+        try {
+            const detail = error?.message
+            if (typeof detail === 'string' && detail) message = detail
+        } catch (_) {}
         return new BookActionUnacknowledgedError(message, request)
     }
     const requestProducerReadiness = () => {
@@ -95,14 +101,23 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
             // the delivery. Its late returned handle must not become an orphan.
             if (!mayPost()) { clearDeliveryTimer(timer); return promise }
             delivery.timer = timer
-            const payload = carryProducerOwner({
+            const body = {
                 protocolVersion: 2, kind, action: request.action,
                 requestID: request.requestID, deliveryID,
                 context: copy(request.context), topWindowURL, documentStartedAtMs,
-            }, producerOwner)
+            }
+            const fields = Object.keys(body), expected = fingerprint(body)
+            const payload = carryProducerOwner(body, producerOwner)
             if (!mayPost()) return promise
             if (!payload) throw new Error('Native producer ownership is unavailable.')
-            postMessage(payload)
+            // The adapter may add producer evidence, not change the operation.
+            // Snapshot keys before it can attach evidence in place, then copy
+            // the wire data before the final ownership/semantic check.
+            const prepared = copy(payload)
+            const semantic = prepared && Object.fromEntries(fields.map(key => [key, prepared[key]]))
+            if (!mayPost()) return promise
+            if (!semantic || fingerprint(semantic) !== expected) throw new Error('The book action changed before dispatch.')
+            postMessage(prepared)
         } catch (error) {
             // Preserve a terminal reply received synchronously before a wrapper
             // throws. Otherwise retain the original status-only recovery path.
@@ -151,7 +166,8 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
                 }
                 const requestID = makeRequestID()
                 if (!preparationIsCurrent() || typeof requestID !== 'string'
-                    || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(requestID)) {
+                    || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(requestID)
+                    || completed.has(requestID)) {
                     throw new Error('Invalid or superseded action identifier')
                 }
                 const preparedContext = copy(context)
@@ -168,8 +184,18 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
         },
         recover(recovery) {
             if (closed) return Promise.reject(new Error('Reader closed'))
-            const { requestID, action, kind = 'status' } = recovery ?? this.recoveryInfo ?? {}
-            const request = current?.requestID === requestID ? current : completed.get(requestID)
+            // Descriptor accessors must not acquire a request created during
+            // their lookup. The existing cache is bounded to 32; retain only
+            // this synchronous selection, then recheck actual membership.
+            const account = accountPresentation, originalCurrent = current
+            const originalCompleted = new Map(completed)
+            let requestID, action, kind
+            try { ({ requestID, action, kind = 'status' } = recovery ?? this.recoveryInfo ?? {}) }
+            catch (error) { return Promise.reject(error) }
+            const request = originalCurrent?.requestID === requestID ? originalCurrent : originalCompleted.get(requestID)
+            if (closed || accountPresentation !== account || (request && !ownsRequest(request))) {
+                return Promise.reject(unknown(request))
+            }
             if (!request || request.action !== action) return Promise.reject(new BookActionUnacknowledgedError(
                 'The original action is unavailable. Reopen the book to see its current reading pass.', current))
             if (!['status', 'navigate'].includes(kind)) return Promise.reject(new Error('Unsupported recovery'))
