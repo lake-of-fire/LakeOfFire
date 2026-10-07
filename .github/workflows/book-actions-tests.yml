@@ -66,6 +66,30 @@ jobs:
           test -x "$chromium_path"
           ln -s "$chromium_path" "$lifecycle_bin/chromium"
           PATH="$lifecycle_bin:$PATH" python3 Tests/Browser/BookEndcapLifecycle/run.py --output book-actions-lifecycle-results.json 2>&1 | tee book-actions-lifecycle-results.txt
+      - name: Book state transaction runtime journeys
+        run: |
+          set -o pipefail
+          transaction_bin=$(mktemp -d "$RUNNER_TEMP/book-transaction-bin.XXXXXX")
+          chromium_path=$(python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          test -x "$chromium_path"
+          ln -s "$chromium_path" "$transaction_bin/chromium"
+          PATH="$transaction_bin:$PATH" python3 Tests/Browser/BookStateTransaction/run.py --output book-actions-transaction-results.json 2>&1 | tee book-actions-transaction-results.txt
+      - name: Book runtime boundary journeys
+        run: |
+          set -o pipefail
+          boundaries_bin=$(mktemp -d "$RUNNER_TEMP/book-boundaries-bin.XXXXXX")
+          chromium_path=$(python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          test -x "$chromium_path"
+          ln -s "$chromium_path" "$boundaries_bin/chromium"
+          PATH="$boundaries_bin:$PATH" python3 Tests/Browser/BookRuntimeBoundaries/run.py --output book-actions-boundaries-results.json 2>&1 | tee book-actions-boundaries-results.txt
+      - name: Book action settlement runtime journeys
+        run: |
+          set -o pipefail
+          settlement_bin=$(mktemp -d "$RUNNER_TEMP/book-settlement-bin.XXXXXX")
+          chromium_path=$(python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          test -x "$chromium_path"
+          ln -s "$chromium_path" "$settlement_bin/chromium"
+          PATH="$settlement_bin:$PATH" python3 Tests/Browser/BookActionSettlement/run.py --output book-actions-settlement-results.json 2>&1 | tee book-actions-settlement-results.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -74,4 +98,7 @@ jobs:
             book-actions-*-results.txt
             book-actions-integrity-results.json
             book-actions-lifecycle-results.json
+            book-actions-transaction-results.json
+            book-actions-boundaries-results.json
+            book-actions-settlement-results.json
           retention-days: 14

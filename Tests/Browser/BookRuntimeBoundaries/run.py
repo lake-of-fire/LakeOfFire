@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline Chromium execution of the complete Book state/runtime/endcap modules.
+"""Book runtime handoff and teardown checks in the complete Book action/runtime composition.
 
 Import specifiers are redirected to data URLs only for this no-network fixture.
 Native endpoints, Core frame projection and paginator inputs are controlled.
@@ -18,12 +18,12 @@ from playwright.sync_api import sync_playwright
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 SOURCES = ROOT / 'Sources/LakeOfFireReader/Resources/Resources/foliate-js'
-NAMES = ['book-reading-state.js', 'page-turn-coordination.js', 'reader-producer-evidence.js', 'renderer-content.js',
+NAMES = ['page-turn-coordination.js', 'book-reading-state.js', 'reader-producer-evidence.js', 'renderer-content.js',
          'book-action-bridge.js', 'book-endcap.js', 'book-reading-runtime.js']
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--state-source', type=Path, default=SOURCES / NAMES[0])
+    parser.add_argument('--runtime-source', type=Path, default=SOURCES / 'book-reading-runtime.js')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
@@ -31,7 +31,7 @@ def main() -> int:
     executable = shutil.which('chromium') or shutil.which('google-chrome')
     if not executable:
         parser.error('An installed Chromium executable is required')
-    paths = {name: args.state_source if name == NAMES[0] else SOURCES / name for name in NAMES}
+    paths = {name: args.runtime_source if name == 'book-reading-runtime.js' else SOURCES / name for name in NAMES}
     originals = {name: path.read_text() for name, path in paths.items()}
     modules = {}
     for name in NAMES:
@@ -42,7 +42,7 @@ def main() -> int:
             parser.error('Unresolved fixture module dependency in ' + name)
         modules[name] = 'data:text/javascript;base64,' + base64.b64encode(source.encode()).decode()
     report = {'scope': __doc__, 'inputs': {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
-                for path in [*paths.values(), HERE/'cases.js', HERE/'fixture.js', Path(__file__)]},
+                for path in [*paths.values(), HERE/'cases.js', HERE.parent/'BookStateTransaction/fixture.js', Path(__file__)]},
               'cases': [], 'page_errors': [], 'harness_errors': []}
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=executable, headless=True,
@@ -52,7 +52,7 @@ def main() -> int:
         try:
             catalog = browser.new_page()
             catalog.add_script_tag(content=(HERE/'cases.js').read_text())
-            names = catalog.evaluate('bookStateTransactionCases.map(x => x.name)')
+            names = catalog.evaluate('bookRuntimeBoundaryCases.map(x => x.name)')
             catalog.close()
             if len(set(names)) != len(names) or not names:
                 raise ValueError('Scenario roster is empty or contains duplicate names')
@@ -65,11 +65,11 @@ def main() -> int:
                 try:
                     page.set_content('<!doctype html><html><body></body></html>')
                     page.evaluate('async url => { window.BookStateTestModules = await import(url) }', modules[NAMES[-1]])
-                    page.add_script_tag(content=(HERE/'fixture.js').read_text())
+                    page.add_script_tag(content=(HERE.parent/'BookStateTransaction/fixture.js').read_text())
                     page.add_script_tag(content=(HERE/'cases.js').read_text())
                     result = page.evaluate('''async name => {
                         try {
-                            await bookStateTransactionCases.find(x => x.name === name).run()
+                            await bookRuntimeBoundaryCases.find(x => x.name === name).run()
                             return {name, passed: true}
                         } catch (error) { return {name, passed: false, error: String(error), stack: error.stack} }
                     }''', name)

@@ -18,7 +18,7 @@ from playwright.sync_api import sync_playwright
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 SOURCES = ROOT / 'Sources/LakeOfFireReader/Resources/Resources/foliate-js'
-NAMES = ['book-reading-state.js', 'reader-producer-evidence.js', 'renderer-content.js',
+NAMES = ['page-turn-coordination.js', 'book-reading-state.js', 'reader-producer-evidence.js', 'renderer-content.js',
          'book-action-bridge.js', 'book-endcap.js', 'book-reading-runtime.js']
 
 def main() -> int:
