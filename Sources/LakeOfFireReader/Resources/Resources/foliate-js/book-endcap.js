@@ -12,6 +12,7 @@ const bookActionMessage = (source, property, fallback) => {
 export class BookEndcap {
     #destroyed = false
     #generation = 0
+    #admissionRevision = 0
     #busy = false
     #finished = false
     // One visit owns both visibility and the accessibility state it restores.
@@ -64,9 +65,12 @@ export class BookEndcap {
         const previous = this.#visibility
         let visit
         try {
-            visit = { visible: true, focus: this.document.activeElement,
-                inert: this.publication.inert === true,
-                ariaHidden: this.publication.getAttribute('aria-hidden') }
+            // A departure still restoring the publication owns its baseline.
+            // A successor must not snapshot the partially restored DOM.
+            const baseline = previous.restoration
+            visit = { visible: true, focus: baseline ? baseline.focus : this.document.activeElement,
+                inert: baseline ? baseline.inert : this.publication.inert === true,
+                ariaHidden: baseline ? baseline.ariaHidden : this.publication.getAttribute('aria-hidden') }
         } catch (_) { return false }
         if (this.#destroyed || this.#visibility !== previous) return false
         this.#visibility = visit
@@ -93,10 +97,10 @@ export class BookEndcap {
     leave({ restoreFocus = true } = {}) {
         const visit = this.#visibility
         if (!visit.visible) return false
-        const departure = this.#visibility = { visible: false }
+        const departure = this.#visibility = { visible: false, restoration: visit }
         const isCurrent = () => this.#visibility === departure
-        // Detach the original restoration record before callbacks can enter
-        // again. The successor's focus receipt belongs to its own visit.
+        // Retire visibility, retaining the baseline only during restoration.
+        // Reentry inherits it in a distinct visit; old effects then stop.
         for (const restore of [
             () => { this.element.hidden = true },
             () => { this.publication.inert = visit.inert },
@@ -109,6 +113,7 @@ export class BookEndcap {
             try { restore() } catch (_) {} // One optional effect cannot strand the publication.
         }
         if (!isCurrent()) return false
+        departure.restoration = null
         // Leaving is navigation, not cancellation of an already committed write.
         try { this.onChange(false) } catch (_) {}
         return isCurrent()
@@ -124,13 +129,17 @@ export class BookEndcap {
 
     setReady(ready) {
         if (this.#destroyed) return
-        this.#ready = ready === true
+        const next = ready === true
+        if (next !== this.#ready) this.#admissionRevision += 1
+        this.#ready = next
         this.#render()
     }
 
     setFinished(finished) {
         if (this.#destroyed) return
-        this.#finished = finished === true
+        const next = finished === true
+        if (next !== this.#finished) this.#admissionRevision += 1
+        this.#finished = next
         this.#render()
     }
 
@@ -138,11 +147,12 @@ export class BookEndcap {
         if (this.#destroyed || !this.#visibility.visible || this.#busy || (!this.#ready && !this.#recovery)) return false
         const generation = this.#generation, finished = this.#finished
         const recovery = this.#recovery, visit = this.#visibility
+        const admissionRevision = this.#admissionRevision
         const action = recovery?.action || (finished ? 'startBookOver' : 'finishBook')
         const isCurrent = () => !this.#destroyed && generation === this.#generation
         const mayDispatch = () => isCurrent() && this.#busy && this.#visibility === visit
             && this.#recovery === recovery && (recovery !== null
-                || (this.#ready && this.#finished === finished))
+                || (this.#admissionRevision === admissionRevision && this.#ready && this.#finished === finished))
         this.#busy = true
         this.#message = null
         try {

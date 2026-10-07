@@ -13,10 +13,16 @@ ROOT = Path(__file__).resolve().parents[2]
 class QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, *args): pass
 
+class ViewerAssetServer(ThreadingHTTPServer):
+    # Parallel ES module imports need an accept backlog larger than the default
+    # five connections; a reset here prevents the renderer from initializing.
+    request_queue_size = 128
+
+
 class BookEndcapBrowserTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = ThreadingHTTPServer(('127.0.0.1', 0), partial(QuietHandler, directory=str(ROOT)))
+        cls.server = ViewerAssetServer(('127.0.0.1', 0), partial(QuietHandler, directory=str(ROOT)))
         Thread(target=cls.server.serve_forever, daemon=True).start()
         cls.playwright = sync_playwright().start()
         cls.browser = cls.playwright.chromium.launch(executable_path=os.environ.get('CHROMIUM_PATH'),headless=True,args=['--no-sandbox'])
@@ -27,12 +33,33 @@ class BookEndcapBrowserTests(unittest.TestCase):
         page = self.browser.new_page(viewport={'width':size[0], 'height':size[1]})
         self.addCleanup(page.close)
         errors=[]
+        failed_requests=[]
+        console_errors=[]
         page.on('pageerror',lambda e:errors.append(str(e)))
+        page.on('requestfailed',lambda r:failed_requests.append({'url':r.url,'failure':r.failure}))
+        page.on('console',lambda message:console_errors.append(message.text) if message.type == 'error' else None)
         page.goto(f'http://127.0.0.1:{self.server.server_port}/Tests/Browser/book-endcap.html?dir={dir}&vertical={str(vertical).lower()}&fixed={str(fixed).lower()}&long={str(long).lower()}')
         try:
             page.wait_for_function('window.ready === true', timeout=12000)
-        except Exception:
-            self.fail('Renderer did not become ready: ' + repr(errors))
+        except Exception as error:
+            state = page.evaluate('''() => ({
+                stages: window.bootStages ?? [],
+                documentReadyState: document.readyState,
+                visibility: document.visibilityState,
+                rendererConnected: window.view?.renderer?.isConnected ?? null,
+                navigationInFlight: window.view?.renderer?.navigationInFlight ?? null,
+                chapterIndex: window.currentChapterIndex?.() ?? null,
+                documents: (window.view?.renderer?.getContents?.() ?? []).map(item => ({
+                    index: item.index,
+                    readyState: item.doc?.readyState ?? null,
+                    href: item.doc?.location?.href ?? null,
+                    hasBody: !!item.doc?.body,
+                })),
+            })''')
+            self.fail('Renderer did not become ready: ' + repr({
+                'error':str(error), 'pageErrors':errors, 'failedRequests':failed_requests,
+                'consoleErrors':console_errors, 'state':state,
+            }))
         self.assertFalse(page.evaluate('cap.visible'))
         self.assertEqual(page.evaluate('book.sections.length'),3)
         self.assertEqual(page.evaluate('book.toc.length'),2)

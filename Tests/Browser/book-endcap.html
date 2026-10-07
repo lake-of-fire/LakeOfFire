@@ -30,6 +30,7 @@ const urls = [0,1,2].map(i => URL.createObjectURL(new Blob([
 const sections = urls.map((url,index)=>({id:`chapter-${index}.xhtml`,linear:index===2?'no':'yes',size:2000,load:async()=>url,unload(){}}))
 const book = {sections,dir,metadata:{language:'ja'},rendition:fixed?{layout:'pre-paginated',spread:'none',viewport:{width:800,height:1000}}:{},toc:[{label:'First',href:sections[0].id},{label:'Last',href:sections[1].id}]}
 const view = document.querySelector('foliate-view')
+window.bootStages = ['module-loaded']
 window.view = view
 window.currentChapterIndex = () => getPrimaryRendererContentIndex(view.renderer)
 window.book = book
@@ -39,7 +40,10 @@ window.readIDs = ['chapter-0:read', 'chapter-1:read']
 window.historicalReadIDs = [...window.readIDs]
 window.failNext = false
 view.addEventListener('relocate',e=>window.relocations.push(e.detail))
+view.addEventListener('load', () => window.bootStages.push('document-loaded'))
+window.bootStages.push('opening-publication')
 await view.open(book)
+window.bootStages.push('publication-opened')
 const cap = new BookEndcap({document,host:document.querySelector('#reader-stage'),publication:view,
     performAction:async(action)=>{
         window.actions.push(action)
@@ -59,6 +63,8 @@ const prev=()=>view.renderer.prev()
 const next=()=>view.renderer.next()
 document.querySelector('#prev').onclick=dir==='rtl'?next:prev
 document.querySelector('#next').onclick=dir==='rtl'?prev:next
+window.bootStages.push('opening-first-section')
 await view.renderer.goTo({index:0})
+window.bootStages.push('first-section-opened')
 window.ready = true
 </script>

@@ -217,3 +217,38 @@ add('normal native Finish and restart selection still follows ordered publicatio
         expect(!cap.busy && cap.button.textContent === 'Finish Book', 'Normal restart did not finish')
     } finally { f.close() }
 })
+
+add('readiness replacement back to equal values cannot adopt an old clicked Finish', async () => {
+    const f = await make(), cap = f.runtime.endcap
+    try {
+        onceDisabled(cap.button, () => {
+            f.runtime.state.refresh()
+            f.runtime.state.apply(f.requests.at(-1).requestID, { ok: false, accountPresentation: '1:1' })
+            f.publish()
+        })
+        f.click(); await f.tick()
+        expect(f.commands.length === 0, 'Old click acquired the recovered end-page context')
+        expect(!cap.busy, 'Retired click left busy set')
+        f.click()
+        expect(f.commands.length === 1, 'New explicit click did not dispatch')
+        f.ack(); await f.tick()
+    } finally { f.close() }
+})
+add('partial real DOM restoration reentry preserves the original inert and aria baseline', async () => {
+    const f = await make(), cap = f.runtime.endcap
+    try {
+        const hidden = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'hidden')
+        Object.defineProperty(cap.element, 'hidden', { configurable: true,
+            get() { return hidden.get.call(this) },
+            set(value) {
+                hidden.set.call(this, value)
+                delete this.hidden
+                cap.enter()
+            },
+        })
+        expect(cap.leave() === false && cap.visible, 'Restoration did not admit successor visit')
+        cap.leave()
+        expect(!f.view.inert && f.view.getAttribute('aria-hidden') === null, 'Successor restored temporary hidden values')
+        expect(!f.view.classList.contains('manabi-endcap-publication-hidden'), 'Publication remained hidden')
+    } finally { delete cap.element.hidden; f.close() }
+})

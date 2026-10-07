@@ -28,9 +28,11 @@ extension HistoryRecord: DeletableReaderContent {
         }
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                for: contentReference.realmConfiguration
+                for: contentReference.realmConfiguration, storageAdmission: contentReference.storageAdmission
             )
             try await realm.asyncWritePreservingOwnership {
+                try Task.checkCancellation()
+                try contentReference.validateStorage()
                 HistoryRecord.markOpenedRecordsDeleted(
                     matching: historyURL,
                     in: realm
@@ -45,10 +47,13 @@ extension DeletableReaderContent {
     public func delete() async throws {
         guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
         try await { @RealmBackgroundActor in
-            guard let content = try await contentRef.resolveOnBackgroundActor() else { return }
-//            await content.realm?.asyncRefresh()
-            try await content.realm?.asyncWritePreservingOwnership {
-                //            for videoStatus in realm.objects(VideoS)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: contentRef.realmConfiguration, storageAdmission: contentRef.storageAdmission)
+            try await realm.asyncWritePreservingOwnership {
+                try Task.checkCancellation()
+                try contentRef.validateStorage()
+                guard let content = realm.object(ofType: contentRef.contentType,
+                    forPrimaryKey: contentRef.contentKey) as? any ReaderContentProtocol else { return }
+                guard !content.isDeleted else { return }
                 content.isDeleted = true
                 content.refreshChangeMetadata(explicitlyModified: true)
             }
@@ -121,7 +126,12 @@ public extension HistoryRecord {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
             for: ReaderContentLoader.historyRealmConfiguration
         )
-        return openedRecords(matching: url, in: realm)
+        return getOpenedRecord(forURL: url, in: realm)
+    }
+
+    @RealmBackgroundActor
+    static func getOpenedRecord(forURL url: URL, in realm: Realm) -> HistoryRecord? {
+        openedRecords(matching: url, in: realm)
             .sorted(by: [
                 SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
                 SortDescriptor(keyPath: "compoundKey", ascending: true),
@@ -140,36 +150,37 @@ public extension HistoryRecord {
     }
 
     @RealmBackgroundActor
-    func refreshDemotedStatus(skipPreviouslyDemoted: Bool = true) async throws {
-        guard isDemoted != false || !skipPreviouslyDemoted else {
-            return
-        }
-        guard let realm else {
-            print("Cannot refresh demoted status: no realm")
-            return
-        }
-        let demoted = try await { @RealmBackgroundActor in
-            if isReaderModeByDefault || isReaderModeAvailable {
-                return false
+    func refreshDemotedStatus(
+        bookmarkRealmConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
+        bookmarkStorageAdmission: RealmStorageAdmission? = nil,
+        skipPreviouslyDemoted: Bool = true
+    ) async throws {
+        guard !isInvalidated, !isDeleted,
+              isDemoted != false || !skipPreviouslyDemoted,
+              let reference = ReaderContentLoader.ContentReference(content: self) else { return }
+        let bookmarkAdmission = bookmarkStorageAdmission ?? (RealmBackgroundActor.shared.realmCacheKey(for: bookmarkRealmConfiguration) == RealmBackgroundActor.shared.realmCacheKey(for: reference.realmConfiguration)
+            ? reference.storageAdmission : RealmBackgroundActor.shared.captureStorageAdmission(for: bookmarkRealmConfiguration))
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
+        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration, storageAdmission: bookmarkAdmission)
+        await ReaderContentLoader.contentWriteGateForTesting?(.demotion)
+        try await realm.asyncWritePreservingOwnership {
+            try Task.checkCancellation()
+            try reference.validateStorage()
+            guard bookmarkAdmission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: bookmarkRealmConfiguration) }) else {
+                throw RealmBackgroundActorError.realmFileChangedDuringOpen
             }
-            if rssContainsFullContent {
-                return false
-            }
-            if isFromClipboard || isPhysicalMedia {
-                return false
-            }
-            
-            if let bookmark = try await Bookmark.get(forURL: url), !bookmark.isDeleted {
-                return false
-            }
-            
-            return true
-        }()
-        if demoted != isDemoted {
-            try await realm.asyncWritePreservingOwnership {
-                isDemoted = demoted
-                refreshChangeMetadata(explicitlyModified: true)
-            }
+            guard let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey),
+                  !record.isDeleted, record.isDemoted != false || !skipPreviouslyDemoted else { return }
+            if bookmarkRealm != realm { bookmarkRealm.refresh() }
+            // Compute from the live row in the final writer, including metadata
+            // or bookmark edits committed while Realm acquisition suspended.
+            let bookmarked = bookmarkRealm.objects(Bookmark.self)
+                .filter(NSPredicate(format: "isDeleted == false AND url == %@", record.url.absoluteString)).first != nil
+            let demoted = !(record.isReaderModeByDefault || record.isReaderModeAvailable
+                || record.rssContainsFullContent || record.isFromClipboard || record.isPhysicalMedia || bookmarked)
+            guard demoted != record.isDemoted else { return }
+            record.isDemoted = demoted
+            record.refreshChangeMetadata(explicitlyModified: true)
         }
     }
 }
