@@ -41,11 +41,10 @@ public class HistoryRecord: Bookmark {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(
                 for: contentReference.realmConfiguration
             )
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 HistoryRecord.markOpenedRecordsDeleted(matching: historyURL, in: realm)
             }
             ReaderContentLoader.invalidateCachedContent(for: historyURL)
-            try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(contentURL: historyURL)
         }()
     }
 }
@@ -122,39 +121,30 @@ public extension HistoryRecord {
     }
 
     @RealmBackgroundActor
-    func refreshDemotedStatus(skipPreviouslyDemoted: Bool = true) async throws {
-        guard isDemoted != false || !skipPreviouslyDemoted else {
-            return
-        }
-        guard let realm else {
-            print("Cannot refresh demoted status: no realm")
-            return
-        }
-        let demoted = try await { @RealmBackgroundActor in
-            if isGoogleSearchURL(url) {
-                return true
-            }
-            if isReaderModeByDefault || isReaderModeAvailable {
-                return false
-            }
-            if rssContainsFullContent {
-                return false
-            }
-            if isFromClipboard || isPhysicalMedia {
-                return false
-            }
-            
-            if let bookmark = Bookmark.get(forURL: url, realm: realm), !bookmark.isDeleted {
-                return false
-            }
-            
-            return true
-        }()
-        if demoted != isDemoted {
-            try await realm.asyncWrite {
-                isDemoted = demoted
-                refreshChangeMetadata(explicitlyModified: true)
-            }
+    func refreshDemotedStatus(
+        bookmarkRealmConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
+        skipPreviouslyDemoted: Bool = true
+    ) async throws {
+        guard !isInvalidated, !isDeleted,
+              isDemoted != false || !skipPreviouslyDemoted,
+              let reference = ReaderContentLoader.ContentReference(content: self) else { return }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: reference.realmConfiguration)
+        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
+        await ReaderContentLoader.contentWriteGateForTesting?(.demotion)
+        try await realm.asyncWritePreservingOwnership {
+            try Task.checkCancellation()
+            guard let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey),
+                  !record.isDeleted, record.isDemoted != false || !skipPreviouslyDemoted else { return }
+            if bookmarkRealm != realm { bookmarkRealm.refresh() }
+            // Compute from the live row in the final writer, including metadata
+            // or bookmark edits committed while Realm acquisition suspended.
+            let bookmarked = bookmarkRealm.objects(Bookmark.self)
+                .filter(NSPredicate(format: "isDeleted == false AND url == %@", record.url.absoluteString)).first != nil
+            let demoted = isGoogleSearchURL(record.url) || !(record.isReaderModeByDefault || record.isReaderModeAvailable
+                || record.rssContainsFullContent || record.isFromClipboard || record.isPhysicalMedia || bookmarked)
+            guard demoted != record.isDemoted else { return }
+            record.isDemoted = demoted
+            record.refreshChangeMetadata(explicitlyModified: true)
         }
     }
 }

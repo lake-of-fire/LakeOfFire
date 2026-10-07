@@ -340,7 +340,7 @@ public enum ReaderWebMediaBridge {
     static func postCandidateUpdate(_ info: ReaderWebMediaInfo, requestHeaders: [String: String] = [:]) {
         guard let pageURL = URL(string: info.pageSrc) else { return }
 
-        let canonicalContentURL = MediaTranscript.canonicalContentURL(from: pageURL)
+        let canonicalContentURL = canonicalWebMediaContentURL(from: pageURL)
         let update = ReaderWebMediaCandidateUpdate(
             canonicalContentURL: canonicalContentURL,
             pageURL: pageURL,
@@ -364,7 +364,7 @@ public enum ReaderWebMediaBridge {
     static func postPlaybackUpdate(_ event: ReaderWebPlaybackEvent, requestHeaders: [String: String] = [:]) {
         guard let pageURL = URL(string: event.snapshot.pageSrc) else { return }
 
-        let canonicalContentURL = MediaTranscript.canonicalContentURL(from: pageURL)
+        let canonicalContentURL = canonicalWebMediaContentURL(from: pageURL)
         let update = ReaderWebMediaPlaybackUpdate(
             canonicalContentURL: canonicalContentURL,
             pageURL: pageURL,
@@ -409,7 +409,7 @@ public enum ReaderWebMediaBridge {
 
         postExternalSubtitlesUpdate(
             ReaderExternalMediaSubtitlesUpdate(
-                canonicalContentURL: MediaTranscript.canonicalContentURL(from: pageURL),
+                canonicalContentURL: canonicalWebMediaContentURL(from: pageURL),
                 pageURL: pageURL,
                 providerVideoID: status.providerVideoID,
                 subtitleURL: caption.baseURL,
@@ -852,4 +852,13 @@ private struct ReaderYoutubeCaptionsUserScript {
       sendCaptions();
     })();
     """#
+}
+
+/// Playback/subtitle messages use the underlying page identity, excluding its
+/// transient fragment. This URL normalization does not require a storage model.
+func canonicalWebMediaContentURL(from url: URL) -> URL {
+    let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+    guard var components = URLComponents(url: contentURL, resolvingAgainstBaseURL: true) else { return contentURL }
+    components.fragment = nil
+    return components.url ?? contentURL
 }

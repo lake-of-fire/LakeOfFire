@@ -169,17 +169,18 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
 
     @MainActor
     open func delete() async throws {
-        let url = url
         guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
         try await { @RealmBackgroundActor in
-            guard let content = try await contentRef.resolveOnBackgroundActor() else { return }
-            //            await content.realm?.asyncRefresh()
-            try await content.realm?.asyncWrite {
-                //            for videoStatus in realm.objects(VideoS)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: contentRef.realmConfiguration)
+            let deletedURL = try await realm.asyncWritePreservingOwnership { () -> URL? in
+                guard let content = realm.object(ofType: contentRef.contentType,
+                    forPrimaryKey: contentRef.contentKey) as? any ReaderContentProtocol,
+                    !content.isDeleted else { return nil }
                 content.isDeleted = true
                 content.refreshChangeMetadata(explicitlyModified: true)
+                return content.url
             }
-            try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(contentURL: url)
+            if let deletedURL { ReaderContentLoader.invalidateCachedContent(for: deletedURL) }
         }()
     }
 

@@ -8,6 +8,8 @@ import RealmSwiftGaps
 private final class ExternalBookContent: Bookmark {
     @Persisted var externalHTML: String?
 
+    override class func shouldIncludeInDefaultSchema() -> Bool { false }
+
     override var locationBarTitle: String? {
         title
     }
@@ -23,6 +25,21 @@ private final class ExternalBookContent: Bookmark {
     var bookmarkInlineHTML: String? { nil }
     var bookmarkInlineContent: Data? { nil }
     var historyInlineContent: Data? { nil }
+}
+
+private actor AdditionalProviderDiscoveryGate {
+    private var released = false
+    private var waiters = [CheckedContinuation<Void, Never>]()
+    func pause() async {
+        guard !released else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func releaseAll() {
+        released = true
+        let waiting = waiters
+        waiters.removeAll()
+        waiting.forEach { $0.resume() }
+    }
 }
 
 final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
@@ -54,7 +71,6 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
             ContentFile.self,
             HistoryRecord.self,
             FeedEntry.self,
-            MediaTranscript.self,
             ExternalBookContent.self,
         ]
         configureLakeOfFireMutationTrackingForTesting(&configuration)
@@ -254,6 +270,68 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         XCTAssertEqual(events.map(\.imageURL), [imageURL, imageURL])
         XCTAssertEqual(events.map(\.title), ["Inline Analysis", "Inline Analysis"])
         XCTAssertTrue(events.allSatisfy { $0.html == html })
+    }
+
+    @MainActor
+    func testProviderReplacementKeepsCapturedRegistryAndSeparateDiscoveryCache() async throws {
+        let (configuration, restore) = try makeConfiguration()
+        defer { restore() }
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        let url = try XCTUnwrap(URL(string: "ttsu:///book/provider-replacement"))
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        try await realm.asyncWritePreservingOwnership {
+            for (key, title) in [("first-provider-copy", "First Provider"), ("second-provider-copy", "Second Provider")] {
+                let book = ExternalBookContent()
+                book.compoundKey = key
+                book.url = url
+                book.title = title
+                realm.add(book)
+            }
+        }
+        func provider(for key: String) -> ReaderContentAdditionalProvider {
+            .init(id: "same-provider-id") { requestedURL in
+                guard requestedURL == url else { return [] }
+                return try await MainActor.run {
+                    let realm = try Realm(configuration: configuration)
+                    guard let book = realm.object(ofType: ExternalBookContent.self, forPrimaryKey: key),
+                          let reference = ReaderContentLoader.ContentReference(content: book) else { return [] }
+                    return [reference]
+                }
+            }
+        }
+        ReaderContentLoader.registerAdditionalContentProvider(provider(for: "first-provider-copy"))
+        let gate = AdditionalProviderDiscoveryGate()
+        let firstEntered = expectation(description: "first captured provider discovery")
+        await { @RealmBackgroundActor in
+            ReaderContentLoader.loadAllDiscoveryGateForTesting = {
+                firstEntered.fulfill()
+                await gate.pause()
+            }
+        }()
+        let first = Task { @MainActor in try await ReaderContentLoader.lookupStoredContent(url: url) }
+        await fulfillment(of: [firstEntered], timeout: 2)
+        ReaderContentLoader.registerAdditionalContentProvider(provider(for: "second-provider-copy"))
+        let secondEntered = expectation(description: "replacement has an independent discovery")
+        await { @RealmBackgroundActor in
+            ReaderContentLoader.loadAllDiscoveryGateForTesting = {
+                secondEntered.fulfill()
+                await gate.pause()
+            }
+        }()
+        let second = Task { @MainActor in try await ReaderContentLoader.lookupStoredContent(url: url) }
+        addTeardownBlock {
+            await gate.releaseAll()
+            _ = await first.result
+            _ = await second.result
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        await fulfillment(of: [secondEntered], timeout: 2)
+        await gate.releaseAll()
+        let firstContent = try await first.value
+        let secondContent = try await second.value
+        XCTAssertEqual(firstContent?.title, "First Provider")
+        XCTAssertEqual(secondContent?.title, "Second Provider")
     }
 
     @RealmBackgroundActor

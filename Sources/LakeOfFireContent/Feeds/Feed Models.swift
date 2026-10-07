@@ -977,6 +977,15 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         return realm.object(ofType: Feed.self, forPrimaryKey: feedID)
     }
     
+    /// Read the display image for a detached history snapshot without enqueueing
+    /// a later feed-cache write that can outlive the admitted source.
+    @RealmBackgroundActor
+    func importImageURLWithoutCaching() -> URL? {
+        if let imageUrl { return imageUrl }
+        guard extractImageFromContent, let html else { return nil }
+        return Self.imageURLExtractedFromContent(htmlContent: html)
+    }
+
     @MainActor
     public func imageURLToDisplay() async throws -> URL? {
         if let imageUrl {
