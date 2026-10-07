@@ -1,17 +1,26 @@
 // A terminal reader location, NOT an EPUB section. The publication's spine,
 // CFI, page counts, TOC, and text geometry remain completely unchanged.
+// Error wording is optional presentation, not the command's outcome. Read it
+// once without letting a failing formatter discard an admitted recovery.
+const bookActionMessage = (source, property, fallback) => {
+    try {
+        const message = source?.[property]
+        return typeof message === 'string' && message ? message : fallback
+    } catch (_) { return fallback }
+}
+
 export class BookEndcap {
     #destroyed = false
     #generation = 0
     #busy = false
     #finished = false
-    #visible = false
-    #previousFocus = null
-    #previousInert = false
-    #previousAriaHidden = null
+    // One visit owns both visibility and the accessibility state it restores.
+    // Reentering with equal values still creates a different visit.
+    #visibility = { visible: false }
     #listeners = []
     #ready = false
     #recovery = null
+    #message = null
 
     constructor({ document, host, publication, performAction, recoverAction = null, onChange = () => {} }) {
         this.document = document
@@ -41,57 +50,80 @@ export class BookEndcap {
             event.stopPropagation()
             void this.activate()
         }
-        this.button.addEventListener('click', click)
-        this.#listeners.push(() => this.button.removeEventListener('click', click))
+        const button = this.button
+        button.addEventListener('click', click)
+        this.#listeners.push(() => button.removeEventListener('click', click))
     }
 
-    get visible() { return this.#visible }
+    get visible() { return this.#visibility.visible }
     get busy() { return this.#busy }
     get finished() { return this.#finished }
 
     enter() {
-        if (this.#destroyed || this.#visible) return false
-        this.#visible = true
-        this.#previousFocus = this.document.activeElement
-        this.#previousInert = this.publication.inert === true
-        this.#previousAriaHidden = this.publication.getAttribute('aria-hidden')
-        this.publication.inert = true
-        this.publication.setAttribute('aria-hidden', 'true')
-        // Visibility (not display:none) preserves the underlying paginator's size.
-        this.publication.classList.add('manabi-endcap-publication-hidden')
-        this.element.hidden = false
-        this.#render()
-        this.heading.focus({ preventScroll: true })
-        this.onChange(true)
-        return true
+        if (this.#destroyed || this.#visibility.visible) return false
+        const previous = this.#visibility
+        let visit
+        try {
+            visit = { visible: true, focus: this.document.activeElement,
+                inert: this.publication.inert === true,
+                ariaHidden: this.publication.getAttribute('aria-hidden') }
+        } catch (_) { return false }
+        if (this.#destroyed || this.#visibility !== previous) return false
+        this.#visibility = visit
+        const isCurrent = () => !this.#destroyed && this.#visibility === visit
+        for (const show of [
+            () => { this.publication.inert = true },
+            () => this.publication.setAttribute('aria-hidden', 'true'),
+            // Preserve the underlying paginator's size; do not use display:none.
+            () => this.publication.classList.add('manabi-endcap-publication-hidden'),
+            () => { this.element.hidden = false },
+            () => this.#render(),
+            () => this.heading.focus({ preventScroll: true }),
+        ]) {
+            if (!isCurrent()) return false
+            try { show() } catch (_) {}
+        }
+        // Focus dispatches synchronous page events. Only this exact visit may
+        // emit its notification, even after leave-and-return to equal values.
+        if (!isCurrent()) return false
+        try { this.onChange(true) } catch (_) {}
+        return isCurrent()
     }
 
     leave({ restoreFocus = true } = {}) {
-        if (!this.#visible) return false
-        this.#visible = false
-        this.element.hidden = true
-        this.publication.inert = this.#previousInert
-        if (this.#previousAriaHidden === null) this.publication.removeAttribute('aria-hidden')
-        else this.publication.setAttribute('aria-hidden', this.#previousAriaHidden)
-        this.publication.classList.remove('manabi-endcap-publication-hidden')
-        if (restoreFocus && this.#previousFocus?.isConnected) {
-            this.#previousFocus.focus?.({ preventScroll: true })
+        const visit = this.#visibility
+        if (!visit.visible) return false
+        const departure = this.#visibility = { visible: false }
+        const isCurrent = () => this.#visibility === departure
+        // Detach the original restoration record before callbacks can enter
+        // again. The successor's focus receipt belongs to its own visit.
+        for (const restore of [
+            () => { this.element.hidden = true },
+            () => { this.publication.inert = visit.inert },
+            () => visit.ariaHidden === null ? this.publication.removeAttribute('aria-hidden')
+                : this.publication.setAttribute('aria-hidden', visit.ariaHidden),
+            () => this.publication.classList.remove('manabi-endcap-publication-hidden'),
+            () => { if (restoreFocus && visit.focus?.isConnected) visit.focus.focus?.({ preventScroll: true }) },
+        ]) {
+            if (!isCurrent()) return false
+            try { restore() } catch (_) {} // One optional effect cannot strand the publication.
         }
-        this.#previousFocus = null
+        if (!isCurrent()) return false
         // Leaving is navigation, not cancellation of an already committed write.
-        this.onChange(false)
-        return true
+        try { this.onChange(false) } catch (_) {}
+        return isCurrent()
     }
 
     accountDidChange() {
         if (this.#destroyed) return
         this.#generation += 1
         this.#busy = false; this.#ready = false; this.#finished = false; this.#recovery = null
-        this.error.hidden = true
+        this.#message = null
         this.#render()
     }
 
     setReady(ready) {
+        if (this.#destroyed) return
         this.#ready = ready === true
         this.#render()
     }
@@ -103,42 +135,77 @@ export class BookEndcap {
     }
 
     async activate() {
-        if (this.#destroyed || !this.#visible || this.#busy || (!this.#ready && !this.#recovery)) return false
-        const generation = this.#generation
-        const action = this.#finished ? 'startBookOver' : 'finishBook'
+        if (this.#destroyed || !this.#visibility.visible || this.#busy || (!this.#ready && !this.#recovery)) return false
+        const generation = this.#generation, finished = this.#finished
+        const recovery = this.#recovery, visit = this.#visibility
+        const action = recovery?.action || (finished ? 'startBookOver' : 'finishBook')
+        const isCurrent = () => !this.#destroyed && generation === this.#generation
+        const mayDispatch = () => isCurrent() && this.#busy && this.#visibility === visit
+            && this.#recovery === recovery && (recovery !== null
+                || (this.#ready && this.#finished === finished))
         this.#busy = true
-        this.error.hidden = true
-        this.#render()
+        this.#message = null
         try {
-            const result = this.#recovery
-                ? await this.recoverAction(this.#recovery) : await this.performAction(action)
-            if (this.#destroyed || generation !== this.#generation) return false
+            this.#render()
+            // Busy rendering and replaceable callback lookup can retire the
+            // activation. Never capture a new account's command from that click.
+            if (!mayDispatch()) return false
+            const perform = recovery ? this.recoverAction : this.performAction
+            if (!mayDispatch()) return false
+            if (typeof perform !== 'function') throw new Error('Book Actions are unavailable. Reopen the book and try again.')
+            const result = await Reflect.apply(perform, this, [recovery ? { ...recovery } : action])
+            if (!isCurrent()) return false
             if (result?.pending || result?.outcomeUnknown) {
-                const error = new Error(result.error || 'Check the original action status.')
-                error.outcomeUnknown = true
-                error.requestID = result.requestID
-                error.action = result.action || action
-                throw error
+                const requestID = recovery?.requestID || result.requestID
+                const nextRecovery = requestID
+                    ? { requestID, action: recovery?.action || result.action || action, kind: 'status' } : null
+                const message = bookActionMessage(result, 'error', 'Check the original action status.')
+                if (!isCurrent()) return false
+                this.#recovery = nextRecovery
+                this.#message = message
+                return false
             }
-            if (result?.ok !== true) throw new Error(result?.error || 'The book action could not be completed. Try again.')
+            const ok = result?.ok
+            if (ok !== true) {
+                const message = bookActionMessage(result, 'error', 'The book action could not be completed. Try again.')
+                if (!isCurrent()) return false
+                // Only an explicit negative outcome ends known recovery. A
+                // missing/failed wrapper response cannot authorize a new reset.
+                this.#recovery = ok === false || !recovery ? null : { ...recovery, kind: 'status' }
+                this.#message = message
+                return false
+            }
+            // Prepare recovery before publishing any of it. Result accessors
+            // may switch accounts just like the original asynchronous action.
+            const navigation = result.navigation
+            const nextRecovery = navigation?.status === 'failed'
+                ? { requestID: result.requestID, action: result.action || action, kind: 'navigate' } : null
+            const message = nextRecovery ? bookActionMessage(navigation, 'message',
+                'The new pass was saved. Go to its beginning without restarting again.') : null
+            if (!isCurrent()) return false
             // Only ordered native publications change Finished. Command replies
             // acknowledge a historical operation; they cannot select current state.
-            if (result.navigation?.status === 'failed') {
-                this.#recovery = { requestID: result.requestID, action: result.action || action, kind: 'navigate' }
-                this.error.textContent = result.navigation.message || 'The new pass was saved. Go to its beginning without restarting again.'
-                this.error.hidden = false
-            } else { this.#recovery = null }
+            this.#recovery = nextRecovery
+            this.#message = message
             return true
         } catch (error) {
-            if (this.#destroyed || generation !== this.#generation) return false
-            if (error?.outcomeUnknown && error.requestID) {
-                this.#recovery = { requestID: error.requestID, action: error.action || action, kind: 'status' }
-            } else { this.#recovery = null }
-            this.error.textContent = error?.message || 'The book action could not be completed. Try again.'
-            this.error.hidden = false
+            if (!isCurrent()) return false
+            // A recovery transport exception is not evidence that its original
+            // reset failed. Keep that request and check status; never reissue it.
+            let nextRecovery = recovery ? { ...recovery, kind: 'status' } : null
+            try {
+                const requestID = error?.requestID
+                if (!recovery && error?.outcomeUnknown && requestID) {
+                    nextRecovery = { requestID, action: error.action || action, kind: 'status' }
+                }
+            } catch (_) {} // Unreadable error metadata cannot replace known recovery.
+            const message = bookActionMessage(error, 'message', 'The book action could not be completed. Try again.')
+            if (!isCurrent()) return false
+            this.#recovery = nextRecovery
+            this.#message = message
             return false
         } finally {
-            if (!this.#destroyed && generation === this.#generation) {
+            if (isCurrent()) {
                 this.#busy = false
                 this.#render()
             }
@@ -146,23 +213,40 @@ export class BookEndcap {
     }
 
     #render() {
-        this.heading.textContent = this.#finished ? 'Finished' : 'End of Book'
-        this.description.hidden = this.#finished
-        this.button.textContent = this.#recovery
-            ? (this.#recovery.kind === 'navigate' ? 'Go to Beginning' : 'Check Status')
-            : this.#finished ? 'Start Book Over' : 'Finish Book'
-        this.button.disabled = this.#busy || (!this.#ready && !this.#recovery)
-        this.element.setAttribute('aria-busy', String(this.#busy))
+        const generation = this.#generation
+        // Each effect reads the current private view state. Account replacement
+        // retires the pass; a same-account update supplies the latest values.
+        // Optional paint never escapes activate() or prevents promise settlement.
+        for (const update of [
+            () => { this.heading.textContent = this.#finished ? 'Finished' : 'End of Book' },
+            () => { this.description.hidden = this.#finished },
+            () => { this.button.textContent = this.#recovery
+                ? (this.#recovery.kind === 'navigate' ? 'Go to Beginning' : 'Check Status')
+                : this.#finished ? 'Start Book Over' : 'Finish Book' },
+            () => { this.button.disabled = this.#busy || (!this.#ready && !this.#recovery) },
+            () => this.element.setAttribute('aria-busy', String(this.#busy)),
+            () => { this.error.hidden = this.#message === null },
+            () => { if (this.#message !== null) this.error.textContent = this.#message },
+        ]) {
+            if (this.#destroyed || generation !== this.#generation) return
+            try { update() } catch (_) {}
+        }
     }
 
     destroy() {
         if (this.#destroyed) return
-        this.leave({ restoreFocus: false })
+        // Retire before leave/focus/observer callbacks can reenter. Teardown
+        // restores the publication but cannot authorize another activation.
         this.#destroyed = true
         this.#generation += 1
-        this.#listeners.forEach(remove => remove())
+        this.#busy = false
+        const listeners = this.#listeners
         this.#listeners = []
-        this.element.remove()
+        this.leave({ restoreFocus: false })
+        for (const remove of listeners) {
+            try { remove() } catch (_) {}
+        }
+        try { this.element.remove() } catch (_) {}
     }
 }
 
