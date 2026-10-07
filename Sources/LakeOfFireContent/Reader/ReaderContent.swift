@@ -29,7 +29,9 @@ public class ReaderContent: ObservableObject {
     
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
     private var loadingResolvedContentURL: URL?
-    private var loadingID: UUID?
+    // The last admitted selection outlives its loading task: a completed task
+    // may still have readers queued to receive its result.
+    private var selectionID: UUID?
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
     private var preloadedContent: (any ReaderContentProtocol)?
@@ -124,6 +126,23 @@ public class ReaderContent: ObservableObject {
 
     @MainActor
     public func load(url: URL) async throws {
+        try await load(url: url) { url in
+            try await ReaderContentLoader.getContent(
+                forURL: url,
+                countsAsHistoryVisit: true,
+                source: "ReaderContent.load"
+            )
+        }
+    }
+
+    /// The resolver supplies content only; this owner retains coalescing,
+    /// cancellation and display publication for both production and tests.
+    @MainActor
+    func load(
+        url: URL,
+        resolveContent: @escaping @MainActor (URL) async throws -> (any ReaderContentProtocol)?
+    ) async throws {
+        try Task.checkCancellation()
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
         let displayURL = resolvedContentURL
 
@@ -145,15 +164,34 @@ public class ReaderContent: ObservableObject {
         if let loadingTask,
            let loadingResolvedContentURL,
            matchesResolvedContentURL(loadingResolvedContentURL, resolvedContentURL: resolvedContentURL) {
-            let startedAt = CFAbsoluteTimeGetCurrent()
             _ = try await loadingTask.value
             return
         }
 
+        // Reopening the already displayed content is not a new selection.
+        // Keep completed readers valid, but still retire any unrelated task.
+        if loadingTask == nil, let existingContent = content,
+           matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL),
+           matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
+            return
+        }
+
+        // Every new selection retires the preceding load, including cached and
+        // preloaded fast paths. Withdraw its identity before cancellation can
+        // invoke callbacks; an old completion may never republish its content.
+        let retiredTask = loadingTask
+        let loadID = UUID()
+        selectionID = loadID
+        loadingTask = nil
+        loadingResolvedContentURL = nil
+        defer { finishLoading(ifOwnedBy: loadID) }
+        retiredTask?.cancel()
+
         if let existingContent = content,
            matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL) {
-            let pageAlreadyMatchesDisplay = pageURL.absoluteString == displayURL.absoluteString
-                || pageURL.matchesReaderURL(displayURL)
+            let pageAlreadyMatchesDisplay = matchesResolvedContentURL(
+                pageURL, resolvedContentURL: displayURL
+            )
             if pageAlreadyMatchesDisplay {
                 return
             }
@@ -174,34 +212,32 @@ public class ReaderContent: ObservableObject {
         currentSectionIndex = nil
         pageURL = displayURL
         
-        loadingTask?.cancel()
-        let loadID = UUID()
-        loadingID = loadID
         loadingResolvedContentURL = resolvedContentURL
-        loadingTask = Task { @MainActor [weak self, loadID] in
+        let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor [weak self, loadID] in
+            // Finish before any coalesced waiter receives success/error. Its
+            // immediate retry must not rejoin this already-completed task.
+            defer { self?.finishLoading(ifOwnedBy: loadID) }
             try Task.checkCancellation()
-            let content = try await ReaderContentLoader.getContent(
-                forURL: url,
-                countsAsHistoryVisit: true,
-                source: "ReaderContent.load"
-            ) ?? ReaderContentLoader.unsavedHome
+            let content = try await resolveContent(url) ?? ReaderContentLoader.unsavedHome
             guard content.url.matchesReaderURL(resolvedContentURL) else {
                 debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
                 return nil
             }
-            guard let self, self.loadingID == loadID else {
+            guard let self, self.selectionID == loadID else {
                 return nil
             }
             self.content = content
             return content
         }
-        let loadedContent = try await loadingTask?.value
-        if loadingID == loadID {
-            loadingTask = nil
-            loadingResolvedContentURL = nil
-            loadingID = nil
-        }
-        let finalContentURL = loadedContent.flatMap { $0 }?.url.absoluteString ?? content?.url.absoluteString ?? "nil"
+        loadingTask = task
+        _ = try await task.value
+    }
+
+    private func finishLoading(ifOwnedBy loadID: UUID) {
+        // Old completion is independent of a new selection's loading slot.
+        guard selectionID == loadID else { return }
+        loadingResolvedContentURL = nil
+        loadingTask = nil
     }
 
     @MainActor
@@ -211,13 +247,18 @@ public class ReaderContent: ObservableObject {
     
     @MainActor
     public func getContent() async throws -> (any ReaderContentProtocol)? {
-        let startedAt = CFAbsoluteTimeGetCurrent()
         if let content {
             return content
         }
-        let content = try await loadingTask?.value
-        let contentURL = content?.url.absoluteString ?? "nil"
-        return content
+        let selectionID = self.selectionID
+        let resolvedContent = try await loadingTask?.value
+        // Completing a task makes its value available, not permanently current.
+        // Navigation or a publication subscriber may replace the selection
+        // before this waiter resumes. Never return the displaced value or
+        // substitute the newly displayed content for the original read.
+        guard self.selectionID == selectionID,
+              let resolvedContent, content === resolvedContent else { return nil }
+        return resolvedContent
     }
 
     @MainActor
