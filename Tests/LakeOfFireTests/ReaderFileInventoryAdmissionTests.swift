@@ -8,6 +8,11 @@ import XCTest
 
 private actor InventoryAdmissionGate {
     private var released = false
+    private var mappingClaims = 0
+    func isFirstMapping() -> Bool {
+        mappingClaims += 1
+        return mappingClaims == 1
+    }
     private var waiters = [CheckedContinuation<Void, Never>]()
     func wait() async {
         guard !released else { return }
@@ -36,17 +41,27 @@ final class ReaderFileInventoryAdmissionTests: XCTestCase {
         let drive: CloudDrive
     }
 
-    private func withFixture(_ body: (Fixture) async throws -> Void) async throws {
+    private func withFixture(
+        libraryName: String = "library",
+        directoryContentsProvider: (@Sendable (URL) async throws -> [URL])? = nil,
+        _ body: (Fixture) async throws -> Void
+    ) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "InventoryAdmission-" + UUID().uuidString, isDirectory: true)
-        let library = root.appendingPathComponent("library", isDirectory: true)
+        let library = root.appendingPathComponent(libraryName, isDirectory: true)
         try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         configuration.objectTypes = [ContentFile.self, ContentPackageFile.self, BigSyncPendingMutation.self]
         BigSyncMutationTracking.install(configurations: [configuration], excludedClassNames: [])
         let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
-        let manager = ReaderFileManager()
+        let manager: ReaderFileManager
+        if let directoryContentsProvider {
+            manager = ReaderFileManager(payloadStateProvider: { _ in .current },
+                                        directoryContentsProvider: directoryContentsProvider)
+        } else {
+            manager = ReaderFileManager()
+        }
         manager.historyRealmConfigurationOverride = configuration
         manager.inventoryRefreshQueue = ReaderFileRefreshQueue(interval: 0)
         let drive = try await CloudDrive(storage: .localDirectory(rootURL: library))
@@ -142,6 +157,193 @@ final class ReaderFileInventoryAdmissionTests: XCTestCase {
         try await scan.value
         await f.manager.inventoryRefreshQueue?.waitForIdle()
         f.realm.refresh()
+    }
+
+    func testMigratedCloudDocumentsRequireAnInstalledMatchingDrive() async throws {
+        try await withFixture(libraryName: "Documents") { f in
+            try self.write("preserved", named: "book", in: f)
+            do {
+                try await f.manager.refreshMigratedCloudDocumentsMetadata(containerURL: f.root)
+                XCTFail("A local-only manager cannot certify a captured cloud container")
+            } catch { XCTAssertTrue(error is ReaderFileManagerError) }
+            f.manager.cloudDrive = f.drive
+            do {
+                try await f.manager.refreshMigratedCloudDocumentsMetadata(
+                    containerURL: f.root.appendingPathComponent("other-account"))
+                XCTFail("A different container cannot certify this drive")
+            } catch { XCTAssertTrue(error is ReaderFileManagerError) }
+            XCTAssertTrue(f.realm.objects(ContentFile.self).isEmpty)
+            XCTAssertTrue(self.journals(f).isEmpty)
+            XCTAssertEqual(try String(contentsOf: f.library.appendingPathComponent("book.txt"),
+                                      encoding: .utf8), "preserved")
+        }
+    }
+
+    func testMigratedCloudDocumentsCompleteScanIndexesAndPublishesFiles() async throws {
+        try await withFixture(libraryName: "Documents") { f in
+            f.manager.cloudDrive = f.drive
+            f.manager.localDrive = nil
+            try self.write("migrated", named: "book", in: f)
+            try await f.manager.refreshMigratedCloudDocumentsMetadata(containerURL: f.root)
+            f.realm.refresh()
+            XCTAssertEqual(f.realm.objects(ContentFile.self).map { $0.url.lastPathComponent }, ["book.txt"])
+            XCTAssertEqual(f.manager.files?.map { $0.url.lastPathComponent }, ["book.txt"])
+            XCTAssertFalse(self.journals(f).isEmpty)
+        }
+    }
+
+    func testMigratedCloudDocumentsDoNotJoinAnOlderCompleteRootScan() async throws {
+        try await assertMigrationStartsFreshScan(nested: false)
+    }
+
+    func testMigratedCloudDocumentsDoNotJoinAnOlderCompleteChildScan() async throws {
+        try await assertMigrationStartsFreshScan(nested: true)
+    }
+
+    private func assertMigrationStartsFreshScan(nested: Bool) async throws {
+        try await withFixture(libraryName: "Documents") { f in
+            f.manager.cloudDrive = f.drive
+            f.manager.localDrive = nil
+            let folder = nested ? f.library.appendingPathComponent("Books", isDirectory: true) : f.library
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data("predecessor inventory".utf8).write(to: folder.appendingPathComponent("existing.txt"))
+            let predecessorMapped = self.expectation(description: "Predecessor has enumerated its old inventory")
+            let freshMapped = self.expectation(description: "Migration independently enumerates after relocation")
+            let gate = InventoryAdmissionGate()
+            ReaderFileManager.readerFileURLProcessors = [{ fileURL, _ in
+                if fileURL.lastPathComponent == "existing.txt" {
+                    if await gate.isFirstMapping() {
+                        predecessorMapped.fulfill()
+                        await gate.wait()
+                    } else {
+                        freshMapped.fulfill()
+                    }
+                }
+                return nil
+            }]
+            let predecessor = Task { @MainActor in
+                _ = try await f.manager.refreshFilesMetadata(
+                    drive: f.drive,
+                    relativePath: nested ? RootRelativePath(path: "Books") : nil,
+                    realmConfiguration: f.configuration
+                )
+            }
+            let initialWait = await XCTWaiter.fulfillment(of: [predecessorMapped], timeout: 5)
+            guard initialWait == .completed else {
+                predecessor.cancel()
+                await gate.open()
+                _ = try? await predecessor.value
+                throw InventoryAdmissionFixtureError.mappingDidNotStart
+            }
+            // A real storage relocation happens after the old scan's inventory
+            // was captured, while that scan remains suspended in URL mapping.
+            let source = f.root.appendingPathComponent("legacy-book.txt")
+            let relocated = folder.appendingPathComponent("book.txt")
+            do {
+                try Data("newly relocated".utf8).write(to: source)
+                try FileManager.default.moveItem(at: source, to: relocated)
+            } catch {
+                predecessor.cancel()
+                await gate.open()
+                _ = try? await predecessor.value
+                throw error
+            }
+            let migrationScan = Task { @MainActor in
+                try await f.manager.refreshMigratedCloudDocumentsMetadata(containerURL: f.root)
+            }
+            do {
+                let freshWait = await XCTWaiter.fulfillment(of: [freshMapped], timeout: 5)
+                guard freshWait == .completed else {
+                    throw InventoryAdmissionFixtureError.mappingDidNotStart
+                }
+                // The migration scan must finish without releasing or borrowing
+                // its predecessor, and index the item absent from that inventory.
+                try await migrationScan.value
+                f.realm.refresh()
+                XCTAssertEqual(Set(f.realm.objects(ContentFile.self).map { $0.url.lastPathComponent }),
+                               Set(["existing.txt", "book.txt"]))
+                XCTAssertEqual(Set(f.manager.files?.map { $0.url.lastPathComponent } ?? []),
+                               Set(["existing.txt", "book.txt"]))
+                XCTAssertEqual(try String(contentsOf: relocated, encoding: .utf8), "newly relocated")
+                XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+            } catch {
+                predecessor.cancel()
+                migrationScan.cancel()
+                await gate.open()
+                _ = try? await predecessor.value
+                _ = try? await migrationScan.value
+                throw error
+            }
+            await gate.open()
+            try await predecessor.value
+            await f.manager.inventoryRefreshQueue?.waitForIdle()
+        }
+    }
+
+    func testMigratedCloudDocumentsPropagateEnumerationFailure() async throws {
+        try await withFixture(libraryName: "Documents", directoryContentsProvider: { _ in
+            throw InventoryAdmissionFixtureError.mappingDidNotStart
+        }) { f in
+            f.manager.cloudDrive = f.drive
+            f.manager.localDrive = nil
+            try self.write("preserved", named: "book", in: f)
+            do {
+                try await f.manager.refreshMigratedCloudDocumentsMetadata(containerURL: f.root)
+                XCTFail("Migration completion must propagate the captured-root scan failure")
+            } catch { XCTAssertTrue(error is InventoryAdmissionFixtureError) }
+            XCTAssertTrue(f.realm.objects(ContentFile.self).isEmpty)
+            XCTAssertTrue(self.journals(f).isEmpty)
+            XCTAssertNil(f.manager.files)
+        }
+    }
+
+    func testMigratedCloudDocumentsRejectIncompleteScanWithoutPublishing() async throws {
+        try await withFixture(libraryName: "Documents") { f in
+            f.manager.cloudDrive = f.drive
+            f.manager.localDrive = nil
+            try self.write("disappears during mapping", named: "gone", in: f)
+            let entered = self.expectation(description: "Migration scan reached URL mapping")
+            entered.assertForOverFulfill = false
+            let gate = InventoryAdmissionGate()
+            ReaderFileManager.readerFileURLProcessors = [{ _, _ in
+                entered.fulfill()
+                await gate.wait()
+                return nil
+            }]
+            let scan = Task { @MainActor in
+                try await f.manager.refreshMigratedCloudDocumentsMetadata(containerURL: f.root)
+            }
+            let wait = await XCTWaiter.fulfillment(of: [entered], timeout: 5)
+            guard wait == .completed else {
+                scan.cancel()
+                await gate.open()
+                _ = try? await scan.value
+                throw InventoryAdmissionFixtureError.mappingDidNotStart
+            }
+            do {
+                try FileManager.default.removeItem(at: f.library.appendingPathComponent("gone.txt"))
+            } catch {
+                scan.cancel()
+                await gate.open()
+                _ = try? await scan.value
+                throw error
+            }
+            await gate.open()
+            do {
+                try await scan.value
+                XCTFail("A missing admitted payload makes the migration scan incomplete")
+            } catch {
+                guard let migrationError = error as? ReaderFileManagerError,
+                      case .incompleteMetadataScan = migrationError else {
+                    XCTFail("Expected incomplete scan, received \(error)")
+                    return
+                }
+            }
+            f.realm.refresh()
+            XCTAssertTrue(f.realm.objects(ContentFile.self).isEmpty)
+            XCTAssertTrue(self.journals(f).isEmpty)
+            XCTAssertNil(f.manager.files)
+        }
     }
 
     func testMappedFileDeletedBeforeMetadataAdmissionKeepsTombstoneAndJournal() async throws {

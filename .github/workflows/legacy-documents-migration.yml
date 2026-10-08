@@ -1,0 +1,53 @@
+name: Legacy document migration
+on:
+  pull_request:
+    paths:
+      - Sources/LakeOfFireContent/Files/ReaderLegacyDocumentsMigration.swift
+      - Tests/LakeOfFireTests/ReaderLegacyDocumentsMigrationTests.swift
+      - Tools/LegacyDocumentsTests/**
+      - Tools/test-legacy-documents-migration.sh
+      - .github/workflows/legacy-documents-migration.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: legacy-documents-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.2.1'
+      - name: Record and test actual filesystem implementation
+        shell: bash
+        run: |
+          export LEGACY_DOCUMENTS_EVIDENCE_DIRECTORY="$PWD/evidence"
+          bash Tools/test-legacy-documents-migration.sh -c ${{ matrix.configuration }}
+      - name: Typecheck production helper at iOS 15 simulator minimum
+        shell: bash
+        run: |
+          set +e
+          xcrun swiftc -typecheck -swift-version 6 -warnings-as-errors \
+            -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -target arm64-apple-ios15.0-simulator \
+            Sources/LakeOfFireContent/Files/ReaderLegacyDocumentsMigration.swift 2>&1 | tee evidence/ios-typecheck.log
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          printf '%s\n' "${statuses[*]}" > evidence/ios-pipeline-statuses.txt
+          test "${statuses[0]}" = 0 && test "${statuses[1]}" = 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: legacy-documents-${{ matrix.configuration }}-${{ github.run_attempt }}
+          path: evidence
+          retention-days: 14
+          if-no-files-found: error
