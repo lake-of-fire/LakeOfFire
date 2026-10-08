@@ -79,7 +79,7 @@ public actor ReaderLegacyDocumentsMigration {
         try requireAdmission()
         try Task.checkCancellation()
         guard containerURL.isFileURL else { throw Failure.invalidContainer }
-        let root = containerURL.standardizedFileURL.resolvingSymlinksInPath()
+        let root = Self.canonicalLogicalURL(containerURL)
         guard root.path != "/" else { throw Failure.invalidContainer }
         let rootDescriptor = root.path.withCString { open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW) }
         guard rootDescriptor >= 0 else { throw Self.posixError() }
@@ -223,7 +223,7 @@ public actor ReaderLegacyDocumentsMigration {
     }
 
     static func logicalChildren(_ urls: [URL], root: URL) throws -> [URL] {
-        let canonicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let canonicalRoot = canonicalLogicalURL(root)
         let prefix = canonicalRoot.path + "/"
         var children = Set<URL>()
         for url in urls {
@@ -247,7 +247,14 @@ public actor ReaderLegacyDocumentsMigration {
             missingComponents.append(ancestor.lastPathComponent)
             ancestor.deleteLastPathComponent()
         }
-        return missingComponents.reversed().reduce(ancestor.resolvingSymlinksInPath()) {
+        let resolvedAncestor: URL
+        if let canonicalPath = ancestor.path.withCString({ realpath($0, nil) }) {
+            defer { free(canonicalPath) }
+            resolvedAncestor = URL(fileURLWithPath: String(cString: canonicalPath))
+        } else {
+            resolvedAncestor = ancestor.resolvingSymlinksInPath()
+        }
+        return missingComponents.reversed().reduce(resolvedAncestor) {
             $0.appendingPathComponent($1)
         }
     }
@@ -386,7 +393,7 @@ public actor ReaderLegacyDocumentsMigration {
         var result: Result<Void, Error>?
         coordinator.coordinate(writingItemAt: url, options: options, error: &coordinationError) { actualURL in
             result = Result {
-                guard actualURL.standardizedFileURL == url.standardizedFileURL else { throw Failure.sourceChanged }
+                guard canonicalLogicalURL(actualURL) == canonicalLogicalURL(url) else { throw Failure.sourceChanged }
                 try Task.checkCancellation()
                 try action()
             }
@@ -404,8 +411,8 @@ public actor ReaderLegacyDocumentsMigration {
         coordinator.coordinate(writingItemAt: source, options: .forMoving,
                                writingItemAt: destination, options: [], error: &coordinationError) { from, to in
             result = Result {
-                guard from.standardizedFileURL == source.standardizedFileURL,
-                      to.standardizedFileURL == destination.standardizedFileURL else { throw Failure.sourceChanged }
+                guard canonicalLogicalURL(from) == canonicalLogicalURL(source),
+                      canonicalLogicalURL(to) == canonicalLogicalURL(destination) else { throw Failure.sourceChanged }
                 try Task.checkCancellation()
                 return try action(coordinator)
             }

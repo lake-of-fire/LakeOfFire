@@ -682,7 +682,11 @@ final class ReaderLegacyDocumentsMigrationTests: XCTestCase {
         init() throws {
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("legacy-documents-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            root = directory.standardizedFileURL.resolvingSymlinksInPath()
+            guard let canonicalPath = directory.path.withCString({ realpath($0, nil) }) else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            defer { free(canonicalPath) }
+            root = URL(fileURLWithPath: String(cString: canonicalPath), isDirectory: true)
         }
         func url(_ path: String) -> URL { root.appendingPathComponent(path) }
         func exists(_ path: String) -> Bool { FileManager.default.fileExists(atPath: url(path).path) }
