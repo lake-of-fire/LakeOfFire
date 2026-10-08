@@ -178,7 +178,12 @@ public extension HistoryRecord {
             // not suppress this request. Keep the cheap committed no-op path,
             // but carry no frozen object across write admission.
             let committed = realm.freeze()
-            guard let record = committed.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey) else { return false }
+            guard let record = committed.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey) else {
+                // The supplied managed row may belong to an uncommitted
+                // creation. Absence is not a no-op receipt: let write admission
+                // settle its owner, then resolve the row without recreating it.
+                return true
+            }
             return !record.isDeleted && (record.isDemoted != false || !skipPreviouslyDemoted)
         }()
         try validateAdmission()

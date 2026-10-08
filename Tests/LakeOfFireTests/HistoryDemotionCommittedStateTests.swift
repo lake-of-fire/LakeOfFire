@@ -23,7 +23,7 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
         var gateError: Error?
 
         init(shared: Bool = false, hasBookmark: Bool = true,
-             demoted: Bool? = nil) async throws {
+             demoted: Bool? = nil, insertHistory: Bool = true) async throws {
             previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
             previousGate = ReaderContentLoader.contentWriteGateForTesting
             configurations = (0..<(shared ? 1 : 2)).map { _ in
@@ -48,7 +48,7 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
             bookmark.updateCompoundKey()
             bookmark.createdAt = originalDate
             bookmark.modifiedAt = originalDate
-            try historyRealm.write { historyRealm.add(history) }
+            if insertHistory { try historyRealm.write { historyRealm.add(history) } }
             if hasBookmark { try bookmarkRealm.write { bookmarkRealm.add(bookmark) } }
             ReaderContentLoader.bookmarkRealmConfiguration = bookmarkRealm.configuration
             ReaderContentLoader.contentWriteGateForTesting = nil
@@ -76,6 +76,15 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
             gateWasReached = true
             XCTAssertTrue(historyRealm.isInWriteTransaction)
             if historyRealm.isInWriteTransaction { historyRealm.cancelWrite() }
+        }
+        func commitHistoryAtGate() {
+            gateWasReached = true
+            XCTAssertTrue(historyRealm.isInWriteTransaction)
+            do { try historyRealm.commitWrite() }
+            catch {
+                gateError = error
+                if historyRealm.isInWriteTransaction { historyRealm.cancelWrite() }
+            }
         }
         func commitEligibilityAtGate() {
             gateWasReached = true
@@ -254,5 +263,40 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
         XCTAssertNil(f.history.isDemoted)
         XCTAssertNil(f.mutation())
         XCTAssertEqual(f.history.modifiedAt, f.originalDate)
+    }
+
+    @RealmBackgroundActor
+    func testPendingHistoryCreationIsRefreshedAfterItsOwnerCommits() async throws {
+        let f = try await Fixture(hasBookmark: false, insertHistory: false)
+        addTeardownBlock { await f.close() }
+        f.historyRealm.beginWrite()
+        f.historyRealm.add(f.history)
+        ReaderContentLoader.contentWriteGateForTesting = { operation in
+            guard operation == .demotion else { return }
+            await f.commitHistoryAtGate()
+        }
+        try await f.apply()
+        XCTAssertTrue(f.gateWasReached)
+        XCTAssertNil(f.gateError)
+        try f.assertJournaled(true)
+    }
+
+    @RealmBackgroundActor
+    func testRolledBackHistoryCreationIsNotRecreatedOrJournaled() async throws {
+        let f = try await Fixture(hasBookmark: false, insertHistory: false)
+        addTeardownBlock { await f.close() }
+        f.historyRealm.beginWrite()
+        f.historyRealm.add(f.history)
+        ReaderContentLoader.contentWriteGateForTesting = { operation in
+            guard operation == .demotion else { return }
+            await f.rollbackHistoryAtGate()
+        }
+        try await f.apply()
+        XCTAssertTrue(f.gateWasReached)
+        // A rolled-back insertion may invalidate its managed wrapper. Inspect
+        // the owning Realm, not fields on that now-retired object.
+        XCTAssertTrue(f.historyRealm.objects(HistoryRecord.self).isEmpty)
+        XCTAssertTrue(f.historyRealm.objects(BigSyncPendingMutation.self).isEmpty)
+        XCTAssertFalse(f.historyRealm.isInWriteTransaction)
     }
 }
