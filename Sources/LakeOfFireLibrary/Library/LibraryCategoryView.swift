@@ -491,11 +491,11 @@ struct LibraryCategoryView: View {
                 }
 #endif
                 ToolbarItemGroup(placement: .keyboard) {
-                    if focusedField != nil {
-                        Spacer()
-                        Button("Done") { focusedField = nil }
-                            .accessibilityIdentifier("Library.CategoryKeyboardDone")
-                    }
+                    // Keep the accessory's layout stable while keyboard dismissal
+                    // clears focus; the keyboard controls its visibility.
+                    Spacer()
+                    Button("Done") { focusedField = nil }
+                        .accessibilityIdentifier("Library.CategoryKeyboardDone")
                 }
             }
         }
