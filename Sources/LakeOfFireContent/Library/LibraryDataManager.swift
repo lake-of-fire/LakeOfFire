@@ -14,6 +14,7 @@ public let libraryDataQueue = DispatchQueue(label: "LibraryDataQueue")
 
 enum LibraryConfigurationConsolidationError: Error {
     case missingPrimaryAfterConsolidation
+    case configurationChangedDuringImport
 }
 
 private struct LibraryAdmissionKey: Comparable, Sendable {
@@ -187,6 +188,30 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         return userScriptIDs.compactMap { realm.object(ofType: UserScript.self, forPrimaryKey: $0) } .filter { !$0.isDeleted }
     }
 
+    /// Reconciles current script membership while the caller owns this Realm's
+    /// writer. Replacing the value list avoids index invalidation when synced
+    /// duplicate references all point at one deleted script.
+    func reconcileUserScriptIDs() {
+        guard let realm, !isDeleted else { return }
+        precondition(realm.isInWriteTransaction)
+        let currentIDs = Array(userScriptIDs)
+        let scripts = Array(realm.objects(UserScript.self))
+        let deletedIDs = Set(scripts.filter(\.isDeleted).map(\.id))
+        var finalIDs = orderedUniqueIdentifiers(currentIDs).filter {
+            !deletedIDs.contains($0)
+        }
+        var present = Set(finalIDs)
+        for script in scripts where !script.isDeleted {
+            if present.insert(script.id).inserted {
+                finalIDs.append(script.id)
+            }
+        }
+        guard finalIDs != currentIDs else { return }
+        userScriptIDs.removeAll()
+        userScriptIDs.append(objectsIn: finalIDs)
+        refreshChangeMetadata(explicitlyModified: true)
+    }
+
 //    @available(macOS 13.0, iOS 16.1, *)
 //    public func pendingBackgroundAssetDownloads() -> Set<BADownload> {
 //        let downloadables = downloadables
@@ -237,53 +262,30 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
             for: realmConfiguration
         )
-        let configurationIDs = Array(
-            realm.objects(LibraryConfiguration.self).where { !$0.isDeleted }
-        ).sorted { lhs, rhs in
-            if lhs.createdAt != rhs.createdAt {
-                return lhs.createdAt < rhs.createdAt
-            }
-            return lhs.id.uuidString < rhs.id.uuidString
-        }.map(\.id)
-
-        guard let primaryID = configurationIDs.first else {
-            let configuration = LibraryConfiguration()
-            let timestamp = Date()
-            try await realm.asyncWritePreservingOwnership {
-                if let concurrent = realm.objects(LibraryConfiguration.self)
-                    .where({ !$0.isDeleted })
-                    .sorted(by: \.createdAt, ascending: true)
-                    .first {
-                    return
+        let resolvedPrimaryID = try await realm.asyncWritePreservingOwnership {
+            // Selection and consolidation share the same owned transaction.
+            // A queued caller must not choose a provisional primary, miss a
+            // predecessor's committed configuration, or return an unmanaged
+            // fallback after a foreign transaction rolls back.
+            let configurations = Array(
+                realm.objects(LibraryConfiguration.self).where { !$0.isDeleted }
+            ).sorted { lhs, rhs in
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt < rhs.createdAt
                 }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            let timestamp = Date()
+            guard let primary = configurations.first else {
+                let configuration = LibraryConfiguration()
                 realm.add(configuration)
                 configuration.refreshChangeMetadata(
                     explicitlyModified: true,
                     at: timestamp
                 )
+                return configuration.id
             }
-            return Array(realm.objects(LibraryConfiguration.self).where {
-                !$0.isDeleted
-            }).sorted { lhs, rhs in
-                if lhs.createdAt != rhs.createdAt {
-                    return lhs.createdAt < rhs.createdAt
-                }
-                return lhs.id.uuidString < rhs.id.uuidString
-            }.first ?? configuration
-        }
-
-        let duplicateIDs = Array(configurationIDs.dropFirst())
-        let timestamp = Date()
-        var resolvedPrimaryID = primaryID
-
-        try await realm.asyncWritePreservingOwnership {
-            guard let primary = realm.object(
-                ofType: LibraryConfiguration.self,
-                forPrimaryKey: primaryID
-            ), !primary.isDeleted else {
-                return
-            }
-            resolvedPrimaryID = primary.id
+            let duplicateIDs = configurations.dropFirst().map(\.id)
 
             func normalizedExistingCategories() -> [UUID] {
                 orderedUniqueIdentifiers(Array(primary.categoryIDs)).filter { id in
@@ -484,6 +486,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                     at: timestamp
                 )
             }
+            return primary.id
         }
 
         if let primary = realm.object(
@@ -654,7 +657,7 @@ public class LibraryDataManager: NSObject {
     }
     
     @RealmBackgroundActor
-    private func refreshScripts(realmConfiguration: Realm.Configuration) async throws {
+    func refreshScripts(realmConfiguration: Realm.Configuration) async throws {
         // Realm collection publishers emit an initial empty snapshot. Do not
         // create a library configuration merely because an observer was
         // attached to a freshly opened, explicitly scoped Realm. A later
@@ -664,9 +667,13 @@ public class LibraryDataManager: NSObject {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
             for: realmConfiguration
         )
-        guard !realm.objects(LibraryConfiguration.self).where({ !$0.isDeleted }).isEmpty
-            || !realm.objects(UserScript.self).where({ !$0.isDeleted }).isEmpty
-        else {
+        let hasCommittedLibraryData = {
+            if !realm.isInWriteTransaction { realm.refresh() }
+            let snapshot = realm.freeze()
+            return !snapshot.objects(LibraryConfiguration.self).where({ !$0.isDeleted }).isEmpty
+                || !snapshot.objects(UserScript.self).where({ !$0.isDeleted }).isEmpty
+        }()
+        guard hasCommittedLibraryData else {
             return
         }
         try await Realm.asyncWrite(
@@ -674,21 +681,8 @@ public class LibraryDataManager: NSObject {
                 realmConfiguration: realmConfiguration
             )),
             configuration: realmConfiguration
-        ) { realm, configuration in
-            let scripts = Array(realm.objects(UserScript.self))
-            for script in scripts {
-                if script.isDeleted {
-                    for (idx, candidateID) in Array(configuration.userScriptIDs).enumerated() {
-                        if candidateID == script.id {
-                            configuration.userScriptIDs.remove(at: idx)
-                            configuration.refreshChangeMetadata(explicitlyModified: true)
-                        }
-                    }
-                } else if !configuration.userScriptIDs.contains(script.id) {
-                    configuration.userScriptIDs.append(script.id)
-                    configuration.refreshChangeMetadata(explicitlyModified: true)
-                }
-            }
+        ) { _, configuration in
+            configuration.reconcileUserScriptIDs()
         }
     }
     
@@ -847,10 +841,23 @@ public class LibraryDataManager: NSObject {
             let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(
                 realmConfiguration: realmConfiguration
             )
+            let configurationID = configuration.id
+            let scriptID = script.id
 //            await realm.asyncRefresh()
             try await realm.asyncWritePreservingOwnership {
-                configuration.userScriptIDs.append(script.id)
-                configuration.refreshChangeMetadata(explicitlyModified: true)
+                guard let currentConfiguration = realm.object(
+                    ofType: LibraryConfiguration.self,
+                    forPrimaryKey: configurationID
+                ), !currentConfiguration.isDeleted,
+                   let currentScript = realm.object(
+                    ofType: UserScript.self,
+                    forPrimaryKey: scriptID
+                ), !currentScript.isDeleted,
+                   !currentConfiguration.userScriptIDs.contains(scriptID) else {
+                    return
+                }
+                currentConfiguration.userScriptIDs.append(scriptID)
+                currentConfiguration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
         return script.id
@@ -909,6 +916,7 @@ public class LibraryDataManager: NSObject {
         var allImportedScripts = OrderedSet<UserScript>()
         let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: realmConfiguration)
         guard let realm = configuration.realm else { return }
+        let configurationID = configuration.id
         
         for entry in opml.entries {
             try Task.checkCancellation()
@@ -920,7 +928,6 @@ public class LibraryDataManager: NSObject {
         }
         
         let allImportedCategoryIDs = allImportedCategories.map { $0.id }
-        let importedCategoryIDSet = Set(allImportedCategoryIDs)
         let allImportedDirectoryIDs = allImportedDirectories.map { $0.id }
         let allImportedFeedIDs = allImportedFeeds.map { $0.id }
         let allImportedScriptIDs = allImportedScripts.map { $0.id }
@@ -949,58 +956,6 @@ public class LibraryDataManager: NSObject {
                         explicitlyModified: true,
                         at: timestamp
                     )
-                }
-            }
-        }
-        
-        // Add new scripts
-        try Task.checkCancellation()
-        for script in allImportedScripts {
-            if !configuration.userScriptIDs.contains(script.id) {
-                var lastNeighborIdx = configuration.userScriptIDs.count - 1
-                if let downloadURL = download?.url, let userScripts = configuration.getUserScripts() {
-                    lastNeighborIdx = userScripts.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
-                }
-//                await realm.asyncRefresh()
-                try await realm.asyncWritePreservingOwnership {
-                    configuration.userScriptIDs.insert(script.id, at: lastNeighborIdx + 1)
-                    configuration.refreshChangeMetadata(explicitlyModified: true)
-                }
-            }
-            try Task.checkCancellation()
-        }
-        
-        // Move scripts
-        try Task.checkCancellation()
-        var desiredScripts = allImportedScripts
-        for (idx, script) in (configuration.getUserScripts() ?? []).enumerated() {
-            if let downloadURL = download?.url, script.opmlURL == downloadURL, !desiredScripts.isEmpty {
-                let desiredScript = desiredScripts.removeFirst()
-                if let fromIdx = configuration.userScriptIDs.firstIndex(where: { $0 == desiredScript.id }), fromIdx != idx {
-//                    await realm.asyncRefresh()
-                    try await realm.asyncWritePreservingOwnership {
-                        configuration.userScriptIDs.move(from: fromIdx, to: idx)
-                        configuration.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
-            }
-            try Task.checkCancellation()
-        }
-        
-        // De-dupe scripts from library configuration (due to some bug...)
-        try Task.checkCancellation()
-        if Set(configuration.userScriptIDs).count != configuration.userScriptIDs.count {
-            try await realm.asyncWritePreservingOwnership {
-                var scriptIDsSeen = Set<UUID>()
-                var scriptsToRemove = IndexSet()
-                for (idx, scriptID) in configuration.userScriptIDs.enumerated() {
-                    if !scriptIDsSeen.insert(scriptID).inserted {
-                        scriptsToRemove.insert(idx)
-                    }
-                }
-                if !scriptsToRemove.isEmpty {
-                    configuration.userScriptIDs.remove(atOffsets: scriptsToRemove)
-                    configuration.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
         }
@@ -1092,59 +1047,111 @@ public class LibraryDataManager: NSObject {
             try Task.checkCancellation()
         }
        
-        // Add new categories
-        try Task.checkCancellation()
-        for category in allImportedCategories {
-            if !configuration.categoryIDs.contains(category.id) {
-                var lastNeighborIdx = configuration.categoryIDs.count - 1
-                if let downloadURL = download?.url {
-                    lastNeighborIdx = configuration.getCategories()?.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
-                }
-//                await realm.asyncRefresh()
-                try await realm.asyncWritePreservingOwnership {
-                    configuration.categoryIDs.insert(category.id, at: lastNeighborIdx + 1)
-                    configuration.refreshChangeMetadata(explicitlyModified: true)
-                }
+        try await Self.reconcileImportedLibraryRelationships(
+            configurationID: configurationID,
+            categoryIDs: allImportedCategoryIDs,
+            scriptIDs: allImportedScriptIDs,
+            downloadURL: download?.url,
+            in: realm
+        )
+    }
+
+    /// Imported objects are durable before this final publication. Carry their
+    /// identities into one writer turn, then derive every list position from its
+    /// current state. A suspended caller never retains a Realm list index.
+    @RealmBackgroundActor
+    static func reconcileImportedLibraryRelationships(
+        configurationID: UUID,
+        categoryIDs: [UUID],
+        scriptIDs: [UUID],
+        downloadURL: URL?,
+        in realm: Realm
+    ) async throws {
+        try await realm.asyncWritePreservingOwnership {
+            guard let configuration = realm.object(
+                ofType: LibraryConfiguration.self,
+                forPrimaryKey: configurationID
+            ), !configuration.isDeleted else {
+                throw LibraryConfigurationConsolidationError
+                    .configurationChangedDuringImport
             }
-            try Task.checkCancellation()
-        }
-        
-        // Move categories
-        try Task.checkCancellation()
-        var desiredCategories = allImportedCategories
-        for (idx, categoryID) in Array(configuration.categoryIDs).enumerated() {
-            if importedCategoryIDSet.contains(categoryID), !desiredCategories.isEmpty {
-                let desiredCategory = desiredCategories.removeFirst()
-                if let fromIdx = configuration.categoryIDs.firstIndex(of: desiredCategory.id), fromIdx != idx {
-//                    await realm.asyncRefresh()
-                    try await realm.asyncWritePreservingOwnership {
-                        configuration.categoryIDs.move(from: fromIdx, to: idx)
-                        configuration.refreshChangeMetadata(explicitlyModified: true)
+
+            func reconciledIdentifiers(
+                current: [UUID],
+                imported: [UUID],
+                sourceNeighborIDs: Set<UUID>,
+                reorderImported: Bool
+            ) -> [UUID] {
+                var result = orderedUniqueIdentifiers(current)
+                let desired = orderedUniqueIdentifiers(imported)
+                let present = Set(result)
+                let additions = desired.filter { !present.contains($0) }
+                let insertion = result.lastIndex(where: {
+                    sourceNeighborIDs.contains($0)
+                }).map { $0 + 1 } ?? result.count
+                result.insert(contentsOf: additions, at: insertion)
+                if reorderImported {
+                    let desiredSet = Set(desired)
+                    let positions = result.indices.filter {
+                        desiredSet.contains(result[$0])
+                    }
+                    for (position, identifier) in zip(positions, desired) {
+                        result[position] = identifier
                     }
                 }
+                return result
             }
-            try Task.checkCancellation()
-        }
-        
-        // De-dupe categories from library configuration (due to some bug...)
-        try Task.checkCancellation()
-        if Set(configuration.categoryIDs).count != configuration.categoryIDs.count {
-            try await realm.asyncWritePreservingOwnership {
-                var idsSeen = Set<UUID>()
-                var toRemove = IndexSet()
-                for (idx, categoryID) in configuration.categoryIDs.enumerated() {
-                    if !idsSeen.insert(categoryID).inserted {
-                        toRemove.insert(idx)
-                    }
-                }
-                if !toRemove.isEmpty {
-                    configuration.categoryIDs.remove(atOffsets: toRemove)
-                    configuration.refreshChangeMetadata(explicitlyModified: true)
-                }
+
+            let currentCategoryIDs = Array(configuration.categoryIDs)
+            let currentScriptIDs = Array(configuration.userScriptIDs)
+            let importedCategoryIDs = categoryIDs.filter {
+                realm.object(ofType: FeedCategory.self, forPrimaryKey: $0)
+                    .map { !$0.isDeleted } ?? false
             }
+            let importedScriptIDs = scriptIDs.filter {
+                realm.object(ofType: UserScript.self, forPrimaryKey: $0)
+                    .map { !$0.isDeleted } ?? false
+            }
+            let categoryNeighbors = Set(currentCategoryIDs.filter {
+                guard let downloadURL,
+                      let category = realm.object(
+                        ofType: FeedCategory.self, forPrimaryKey: $0
+                      ) else { return false }
+                return !category.isDeleted && category.opmlURL == downloadURL
+            })
+            let scriptNeighbors = Set(currentScriptIDs.filter {
+                guard let downloadURL,
+                      let script = realm.object(
+                        ofType: UserScript.self, forPrimaryKey: $0
+                      ) else { return false }
+                return !script.isDeleted && script.opmlURL == downloadURL
+            })
+            let finalCategoryIDs = reconciledIdentifiers(
+                current: currentCategoryIDs,
+                imported: importedCategoryIDs,
+                sourceNeighborIDs: categoryNeighbors,
+                reorderImported: true
+            )
+            let finalScriptIDs = reconciledIdentifiers(
+                current: currentScriptIDs,
+                imported: importedScriptIDs,
+                sourceNeighborIDs: scriptNeighbors,
+                reorderImported: downloadURL != nil
+            )
+            guard finalCategoryIDs != currentCategoryIDs
+                    || finalScriptIDs != currentScriptIDs else { return }
+            if finalCategoryIDs != currentCategoryIDs {
+                configuration.categoryIDs.removeAll()
+                configuration.categoryIDs.append(objectsIn: finalCategoryIDs)
+            }
+            if finalScriptIDs != currentScriptIDs {
+                configuration.userScriptIDs.removeAll()
+                configuration.userScriptIDs.append(objectsIn: finalScriptIDs)
+            }
+            configuration.refreshChangeMetadata(explicitlyModified: true)
         }
     }
-    
+
     @RealmBackgroundActor
     public func importOPML(download: Downloadable) async throws {
         let realmConfiguration = LibraryDataManager.realmConfiguration

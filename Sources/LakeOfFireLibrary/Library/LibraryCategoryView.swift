@@ -346,7 +346,7 @@ struct LibraryCategoryView: View {
                             try await libraryManagerViewModel.duplicate(feed: ThreadSafeReference(to: feed), inCategory: ThreadSafeReference(to: category), overwriteExisting: false)
                         }
                     } label: {
-                        Text(libraryCategoryViewModel.category.title)
+                        Text(category.title)
                     }
                 }
             }
