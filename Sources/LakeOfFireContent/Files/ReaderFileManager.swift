@@ -20,6 +20,7 @@ private actor ReaderFileManagerActor {
 public enum ReaderFileManagerError: Swift.Error {
     case invalidFileURL
     case driveMissing
+    case incompleteMetadataScan
 }
 
 //public extension RootRelativePath {
@@ -916,6 +917,38 @@ public class ReaderFileManager: ObservableObject {
         }
     }
 
+    /// Migration completion requires a complete scan of its captured container.
+    /// Ordinary inventory refresh remains best-effort across independent roots.
+    @MainActor
+    public func refreshMigratedCloudDocumentsMetadata(containerURL: URL) async throws {
+        let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
+        let expectedRoot = containerURL.appendingPathComponent("Documents", isDirectory: true)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        guard containerURL.isFileURL,
+              let drive = selection.cloudDrive,
+              drive.isConnected,
+              drive.rootDirectory.standardizedFileURL.resolvingSymlinksInPath() == expectedRoot else {
+            throw ReaderFileManagerError.driveMissing
+        }
+        // Migration must enumerate after relocation. An ordinary root or
+        // descendant scan already in flight may predate those committed moves.
+        let scan = try await scanFilesMetadata(
+            drive: drive, relativePath: nil,
+            realmConfiguration: selection.realmConfiguration, selection: selection,
+            coalesceChildScans: false
+        )
+        try validateMetadataRefreshSelection(selection)
+        guard drive.isConnected else { throw ReaderFileManagerError.driveMissing }
+        guard scan.isComplete else { throw ReaderFileManagerError.incompleteMetadataScan }
+        let references = try await makeContentFileReferences(
+            for: scan.contentFileIDs, realmConfiguration: selection.realmConfiguration
+        )
+        try validateMetadataRefreshSelection(selection)
+        try await publishDiscoveredFiles(references, selection: selection)
+        try validateMetadataRefreshSelection(selection)
+        guard drive.isConnected else { throw ReaderFileManagerError.driveMissing }
+    }
+
     @MainActor
     public func refreshAllFilesMetadata(force: Bool = false) async throws {
         let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
@@ -1157,7 +1190,8 @@ public class ReaderFileManager: ObservableObject {
         drive: CloudDrive,
         relativePath: RootRelativePath?,
         realmConfiguration: Realm.Configuration,
-        selection: MetadataRefreshSelection
+        selection: MetadataRefreshSelection,
+        coalesceChildScans: Bool = true
     ) async throws -> MetadataScanResult {
         try self.validateMetadataRefreshSelection(selection)
         var scan = MetadataScanResult()
@@ -1221,12 +1255,23 @@ public class ReaderFileManager: ObservableObject {
                     where: { lastPathComponent.hasSuffix($0) }
                    ),
                    isDirectory {
-                    let discoveredFiles = try await coalescedFilesMetadataRefresh(
-                        drive: drive,
-                        relativePath: tryRelativePath,
-                        realmConfiguration: realmConfiguration,
-                        selection: selection
-                    )
+                    let discoveredFiles: MetadataScanResult
+                    if coalesceChildScans {
+                        discoveredFiles = try await coalescedFilesMetadataRefresh(
+                            drive: drive,
+                            relativePath: tryRelativePath,
+                            realmConfiguration: realmConfiguration,
+                            selection: selection
+                        )
+                    } else {
+                        discoveredFiles = try await scanFilesMetadata(
+                            drive: drive,
+                            relativePath: tryRelativePath,
+                            realmConfiguration: realmConfiguration,
+                            selection: selection,
+                            coalesceChildScans: false
+                        )
+                    }
                     scan.contentFileIDs.append(contentsOf: discoveredFiles.contentFileIDs)
                     scan.isComplete = scan.isComplete && discoveredFiles.isComplete
                 } else {
