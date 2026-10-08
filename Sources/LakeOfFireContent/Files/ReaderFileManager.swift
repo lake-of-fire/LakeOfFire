@@ -940,9 +940,9 @@ public class ReaderFileManager: ObservableObject {
         try validateMetadataRefreshSelection(selection)
         guard drive.isConnected else { throw ReaderFileManagerError.driveMissing }
         guard scan.isComplete else { throw ReaderFileManagerError.incompleteMetadataScan }
-        let references = try await makeContentFileReferences(
+        guard let references = try await makeContentFileReferences(
             for: scan.contentFileIDs, realmConfiguration: selection.realmConfiguration
-        )
+        ) else { throw ReaderFileManagerError.incompleteMetadataScan }
         try validateMetadataRefreshSelection(selection)
         try await publishDiscoveredFiles(references, selection: selection)
         try validateMetadataRefreshSelection(selection)
