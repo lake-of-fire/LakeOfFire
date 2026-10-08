@@ -3,6 +3,30 @@ import Foundation
 import XCTest
 @testable import LakeOfFireContent
 
+private final class SelectionFenceCancellationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fence: (@Sendable () -> Bool)?
+    private var result: Bool?
+
+    func arm(_ fence: @escaping @Sendable () -> Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.fence = fence
+    }
+
+    func cancellationArrived() {
+        lock.lock()
+        defer { lock.unlock() }
+        result = fence?()
+    }
+
+    var observedPermission: Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return result
+    }
+}
+
 /// Only the asynchronous content resolver is controlled. The owning content
 /// model, preload/coalescing paths, Tasks and publication are production code.
 /// Fixtures are unmanaged HistoryRecords; no user Realm or history is opened.
@@ -58,6 +82,124 @@ final class ReaderContentLoadingOwnershipTests: XCTestCase, @unchecked Sendable 
                                line: UInt = #line) async {
         do { try await task.value; XCTFail("Expected original failure", file: file, line: line) }
         catch Failure.expected {} catch { XCTFail("Unexpected failure: \(error)", file: file, line: line) }
+    }
+
+    func testSelectionFenceMatchesOnlyTheCapturedInitialAndLoadedSelection() async throws {
+        let reader = ReaderContent(), a = record("selection-initial")
+        XCTAssertNil(reader.currentSelectionID)
+        let initial = reader.makeSelectionCommitFence(requiring: nil)
+        let mismatch = reader.makeSelectionCommitFence(requiring: UUID())
+        XCTAssertTrue(initial())
+        XCTAssertFalse(mismatch())
+        try await load(reader, a.url) { _ in a }
+        let selectedID = try XCTUnwrap(reader.currentSelectionID)
+        XCTAssertFalse(initial())
+        XCTAssertFalse(mismatch(), "A closed mismatch must never borrow a later selection")
+        XCTAssertTrue(reader.makeSelectionCommitFence(requiring: selectedID)())
+        XCTAssertFalse(reader.makeSelectionCommitFence(requiring: nil)())
+    }
+
+    func testSelectionFenceSurvivesSameURLCoalescingAndCompletedContentReuse() async throws {
+        let reader = ReaderContent(), a = record("selection-coalesced"), gate = Gate()
+        defer { gate.open() }
+        let first = Task { @MainActor in
+            try await self.load(reader, a.url) { _ in await gate.wait(); return a }
+        }
+        await gate.waitForEntry()
+        let selection = try XCTUnwrap(reader.currentSelectionID)
+        let fence = reader.makeSelectionCommitFence(requiring: selection)
+        let entered = XCTestExpectation(description: "selection coalesced waiter")
+        let second = Task { @MainActor in
+            entered.fulfill()
+            try await self.load(reader, a.url) { _ in XCTFail("Duplicate resolver"); return nil }
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        XCTAssertEqual(reader.currentSelectionID, selection)
+        XCTAssertTrue(fence())
+        gate.open()
+        try await first.value
+        try await second.value
+        try await load(reader, a.url) { _ in XCTFail("Completed content reloaded"); return nil }
+        XCTAssertEqual(reader.currentSelectionID, selection)
+        XCTAssertTrue(fence())
+    }
+
+    func testReturningToSameURLCreatesNewSelectionAndNeverReopensOldFences() async throws {
+        let reader = ReaderContent(), a = record("selection-a"), b = record("selection-b")
+        try await load(reader, a.url) { _ in a }
+        let firstID = try XCTUnwrap(reader.currentSelectionID)
+        let first = reader.makeSelectionCommitFence(requiring: firstID)
+        reader.preloadResolvedContent(b, for: b.url)
+        try await load(reader, b.url) { _ in XCTFail("Lost B preload"); return nil }
+        let secondID = try XCTUnwrap(reader.currentSelectionID)
+        let second = reader.makeSelectionCommitFence(requiring: secondID)
+        XCTAssertNotEqual(firstID, secondID)
+        XCTAssertFalse(first())
+        XCTAssertTrue(second())
+        reader.preloadResolvedContent(a, for: a.url)
+        try await load(reader, a.url) { _ in XCTFail("Lost A preload"); return nil }
+        let returnedID = try XCTUnwrap(reader.currentSelectionID)
+        XCTAssertNotEqual(returnedID, firstID)
+        XCTAssertNotEqual(returnedID, secondID)
+        XCTAssertFalse(first())
+        XCTAssertFalse(second())
+        XCTAssertTrue(reader.makeSelectionCommitFence(requiring: returnedID)())
+        XCTAssertTrue(reader.content === a)
+    }
+
+    func testCachedAndPreloadedSelectionWithdrawBeforeCancellationAndPublication() async throws {
+        for preloaded in [false, true] {
+            let reader = ReaderContent(), a = record("selection-held"), b = record("selection-fast")
+            let gate = Gate(), cancellation = SelectionFenceCancellationProbe()
+            defer { gate.open() }
+            let held = Task { @MainActor in
+                try await self.load(reader, a.url) { _ in
+                    await withTaskCancellationHandler {
+                        await gate.wait()
+                    } onCancel: {
+                        cancellation.cancellationArrived()
+                    }
+                    return a
+                }
+            }
+            await gate.waitForEntry()
+            let originalID = try XCTUnwrap(reader.currentSelectionID)
+            let original = reader.makeSelectionCommitFence(requiring: originalID)
+            cancellation.arm(original)
+            if preloaded {
+                reader.preloadResolvedContent(b, for: b.url)
+            } else {
+                // The production existing-content fast path shares the same
+                // selection retirement as preload and resolver publication.
+                reader.content = b
+            }
+            var publications = 0
+            let observation = reader.contentTitleSubject.sink { title in
+                guard title == b.title else { return }
+                publications += 1
+                XCTAssertFalse(original(), "Publication must follow withdrawal")
+                XCTAssertNotEqual(reader.currentSelectionID, originalID)
+            }
+            defer { observation.cancel() }
+            try await load(reader, b.url) { _ in XCTFail("Fast path resolved again"); return nil }
+            XCTAssertEqual(cancellation.observedPermission, false,
+                           "Cancellation callbacks must already see withdrawn ownership")
+            if preloaded { XCTAssertGreaterThan(publications, 0) }
+            XCTAssertFalse(original())
+            gate.open()
+            try await held.value
+            XCTAssertTrue(reader.content === b)
+        }
+    }
+
+    func testSelectionFenceDoesNotRetainItsContentOwner() {
+        var reader: ReaderContent? = ReaderContent()
+        weak var observed = reader
+        let fence = reader!.makeSelectionCommitFence(requiring: nil)
+        XCTAssertTrue(fence())
+        reader = nil
+        XCTAssertNil(observed)
+        XCTAssertFalse(fence(), "A retired owner cannot leave a live selection grant")
     }
 
     func testPreloadedNavigationRejectsLateOldContent() async throws {
