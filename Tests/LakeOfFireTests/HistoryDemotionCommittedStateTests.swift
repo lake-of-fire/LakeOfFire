@@ -95,7 +95,8 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
             XCTAssertEqual(history.isDemoted, demoted, file: file, line: line)
             let row = try XCTUnwrap(mutation(), file: file, line: line)
             XCTAssertEqual(row.changedAt, history.explicitlyModifiedAt, file: file, line: line)
-            XCTAssertFalse(row.isDeletion, file: file, line: line)
+            // The journal tracks a record generation; deletion state belongs to the domain object.
+            XCTAssertFalse(history.isDeleted, file: file, line: line)
             XCTAssertFalse(historyRealm.isInWriteTransaction, file: file, line: line)
         }
     }
