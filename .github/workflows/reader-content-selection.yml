@@ -107,7 +107,7 @@ jobs:
           cat > "$root/Sources/LakeOfFireContent/PortableSupport.swift" <<'SWIFT'
           import Foundation
 
-          public protocol ReaderContentProtocol: AnyObject {
+          public protocol ReaderContentProtocol: AnyObject, Sendable {
               var url: URL { get set }
               var title: String { get set }
               var locationBarTitle: String? { get }
@@ -116,7 +116,7 @@ jobs:
               var isTitlePrefixOfContent: Bool { get }
           }
 
-          public final class HistoryRecord: ReaderContentProtocol {
+          public final class HistoryRecord: ReaderContentProtocol, @unchecked Sendable {
               public var url = URL(string: "about:blank")!
               public var title = ""
               public var createdAt: Date?
