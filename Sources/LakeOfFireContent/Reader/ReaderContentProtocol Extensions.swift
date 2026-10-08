@@ -1,8 +1,15 @@
 import Foundation
+import LakeOfFireCore
 import RealmSwift
 import RealmSwiftGaps
 
 public extension ReaderContentProtocol {
+#if DEBUG
+    var hasTranscriptTracerVideoSource: Bool {
+        contentSubtitleURL != nil && !resolvedVoiceAudioURLs.isEmpty
+    }
+#endif
+
     @MainActor
     public var locationShortName: String? {
         if url.absoluteString == "about:blank" {
@@ -21,7 +28,7 @@ public extension ReaderContentProtocol {
     }
 
     @MainActor
-    func writeAllRelatedAsync(_ block: @escaping @RealmBackgroundActor (Realm, any ReaderContentProtocol) -> Void) async throws {
+    func writeAllRelatedAsync(_ block: @escaping (Realm, any ReaderContentProtocol) -> Void) async throws {
         let targetURL = url
 
         try await { @RealmBackgroundActor in

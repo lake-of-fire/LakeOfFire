@@ -1,22 +1,41 @@
+import LakeOfFireWeb
 import SwiftUI
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireReader
+import LakeOfFireContent
+import LakeOfFireCore
 import RealmSwift
 import RealmSwiftGaps
-import LakeOfFireCore
-import LakeOfFireAdblock
-import LakeOfFireContent
 
 public extension LibraryDataManager {
     @RealmBackgroundActor
     func deleteCategory(_ category: FeedCategory) async throws {
-        if !category.isUserEditable || (category.isArchived && category.opmlURL != nil) {
-            return
-        }
-        
-        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+        let realmConfiguration = category.realm?.configuration ?? LibraryDataManager.realmConfiguration
+        try await deleteCategory(categoryID: category.id, realmConfiguration: realmConfiguration)
+    }
+
+    @RealmBackgroundActor
+    func deleteCategory(
+        categoryID: UUID,
+        realmConfiguration: Realm.Configuration
+    ) async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+              category.isUserEditable,
+              !category.isDeleted else { return }
+        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: realmConfiguration
+        )
 
         await realm.asyncRefresh()
-        try await realm.asyncWrite {
+        let configurationID = libraryConfiguration.id
+        try await realm.asyncWritePreservingOwnership {
+            guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                  category.isUserEditable, !category.isDeleted,
+                  let libraryConfiguration = realm.object(
+                    ofType: LibraryConfiguration.self, forPrimaryKey: configurationID
+                  ), !libraryConfiguration.isDeleted else { return }
             if let idx = libraryConfiguration.categoryIDs.firstIndex(of: category.id) {
                 libraryConfiguration.categoryIDs.remove(at: idx)
                 libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
@@ -34,12 +53,35 @@ public extension LibraryDataManager {
     
     @RealmBackgroundActor
     func restoreCategory(_ category: FeedCategory) async throws {
-        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+        let realmConfiguration = category.realm?.configuration ?? LibraryDataManager.realmConfiguration
+        try await restoreCategory(categoryID: category.id, realmConfiguration: realmConfiguration)
+    }
+
+    @RealmBackgroundActor
+    func restoreCategory(
+        categoryID: UUID,
+        realmConfiguration: Realm.Configuration
+    ) async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+              category.isUserEditable else { return }
+        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: realmConfiguration
+        )
 
         await realm.asyncRefresh()
-        try await realm.asyncWrite {
-            category.isArchived = false
+        let configurationID = libraryConfiguration.id
+        try await realm.asyncWritePreservingOwnership {
+            guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                  category.isUserEditable,
+                  let libraryConfiguration = realm.object(
+                    ofType: LibraryConfiguration.self, forPrimaryKey: configurationID
+                  ), !libraryConfiguration.isDeleted else { return }
+            if category.isArchived || category.isDeleted {
+                category.isArchived = false
+                category.isDeleted = false
+                category.refreshChangeMetadata(explicitlyModified: true)
+            }
             if !libraryConfiguration.categoryIDs.contains(category.id) {
                 libraryConfiguration.categoryIDs.append(category.id)
                 libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)

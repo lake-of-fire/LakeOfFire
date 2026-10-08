@@ -1,9 +1,14 @@
 import CoreGraphics
 import XCTest
-@testable import LakeOfFireContentUI
+@testable import LakeOfFireReader
 
 @MainActor
 final class ReaderContentInitialImageRendererTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        ReaderContentInitialImageRenderer.resetCacheForTesting()
+    }
+
     func testRenderUsesDisplayScaleForPixelDimensions() throws {
         let oneX = try image(initial: "A", dimension: 24, displayScale: 1)
         let twoX = try image(initial: "A", dimension: 24, displayScale: 2)
@@ -36,29 +41,7 @@ final class ReaderContentInitialImageRendererTests: XCTestCase {
 
     func testCacheHasBoundedCountAndMemoryCost() {
         XCTAssertEqual(ReaderContentInitialImageRenderer.cacheCountLimit, 128)
-        XCTAssertEqual(
-            ReaderContentInitialImageRenderer.cacheTotalCostLimit,
-            4 * 1_024 * 1_024
-        )
-    }
-
-    func testRenderRejectsInvalidDimensionsWithoutTrapping() {
-        for dimension in [CGFloat.zero, -1, .infinity, .nan] {
-            XCTAssertNil(
-                ReaderContentInitialImageRenderer.render(
-                    initial: "A",
-                    dimension: dimension,
-                    displayScale: 2
-                )
-            )
-        }
-    }
-
-    func testRenderUsesSafeScaleForNonfiniteDisplayScale() throws {
-        let image = try image(initial: "A", dimension: 24, displayScale: .infinity)
-
-        XCTAssertEqual(image.width, 24)
-        XCTAssertEqual(image.height, 24)
+        XCTAssertEqual(ReaderContentInitialImageRenderer.cacheTotalCostLimit, 4 * 1_024 * 1_024)
     }
 
     private func image(

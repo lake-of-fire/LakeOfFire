@@ -1,4 +1,5 @@
 import Foundation
+import LakeOfFireCore
 
 public enum ReaderFileAccessError: LocalizedError {
     case downloadInProgress
@@ -13,7 +14,7 @@ public enum ReaderFileAccessError: LocalizedError {
         case .downloadInProgress:
             return "Downloading from iCloud. Try opening again when the download finishes."
         case .notAvailableOffline:
-            return "This book is in iCloud and isn't available offline yet."
+            return "This book is in iCloud and isn’t available offline yet."
         }
     }
 }

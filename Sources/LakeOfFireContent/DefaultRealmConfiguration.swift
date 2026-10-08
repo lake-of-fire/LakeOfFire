@@ -2,7 +2,7 @@ import Foundation
 import RealmSwift
 
 public enum DefaultRealmConfiguration {
-    public static let schemaVersion: UInt64 = 74
+    public static let schemaVersion: UInt64 = 72
     
     public static var configuration: Realm.Configuration {
         var config = Realm.Configuration.defaultConfiguration
@@ -24,6 +24,7 @@ public enum DefaultRealmConfiguration {
             FeedEntryCollection.self,
             FeedEntry.self,
             LibraryConfiguration.self,
+            MediaTranscript.self,
             UserScript.self,
             UserScriptAllowedDomain.self,
         ]
@@ -52,6 +53,10 @@ public enum DefaultRealmConfiguration {
                 }
             }
             migration.deleteData(forType: "MediaStatus")
+        }
+
+        if oldSchemaVersion < 54 {
+            migrateMediaTranscript_schemaVersionLessThan54(migration: migration)
         }
 
         if oldSchemaVersion < 55 {
@@ -112,9 +117,61 @@ public enum DefaultRealmConfiguration {
                 newObject?["ordinal"] = oldObject?["opmlOrder"]
             }
         }
-        if oldSchemaVersion < 74 {
-            // Retire the unfinished transcript cache without a production model.
-            migration.deleteData(forType: "MediaTranscript")
+        if oldSchemaVersion < 72 {
+            // MediaTranscript had never shipped with user-created data. Its
+            // previous compound key was not a valid CloudKit record name, so
+            // discard those cache rows and recreate them with hashed keys.
+            migration.deleteData(forType: MediaTranscript.className())
         }
+    }
+
+    private static func migrateMediaTranscript_schemaVersionLessThan54(migration: Migration) {
+        migration.enumerateObjects(ofType: MediaTranscript.className()) { oldObject, newObject in
+            guard let newObject else { return }
+
+            let contentURL = migrationURL(oldObject, key: "contentURL")
+            let stableMediaIdentity = migrationString(oldObject, key: "stableMediaIdentity")
+            let languageCode = migrationString(oldObject, key: "languageCode")?.lowercased() ?? "und"
+
+            guard let contentURL, let stableMediaIdentity, !stableMediaIdentity.isEmpty else {
+                newObject["isDeleted"] = true
+                return
+            }
+
+            let canonicalContentURL = MediaTranscript.canonicalContentURL(from: contentURL)
+            newObject["contentURL"] = canonicalContentURL
+            newObject["stableMediaIdentity"] = stableMediaIdentity
+            newObject["languageCode"] = languageCode
+            newObject["compoundKey"] = MediaTranscript.makeCompoundKey(
+                contentURL: canonicalContentURL,
+                stableMediaIdentity: stableMediaIdentity,
+                languageCode: languageCode
+            )
+            if migrationString(oldObject, key: "transcriptLocale")?.isEmpty != false {
+                newObject["transcriptLocale"] = languageCode
+            }
+        }
+    }
+
+    private static func migrationURL(_ object: MigrationObject?, key: String) -> URL? {
+        guard let object else { return nil }
+        if object.objectSchema.properties.contains(where: { $0.name == key }) == false {
+            return nil
+        }
+        if let url = object[key] as? URL {
+            return url
+        }
+        if let value = object[key] as? String {
+            return URL(string: value)
+        }
+        return nil
+    }
+
+    private static func migrationString(_ object: MigrationObject?, key: String) -> String? {
+        guard let object else { return nil }
+        if object.objectSchema.properties.contains(where: { $0.name == key }) == false {
+            return nil
+        }
+        return object[key] as? String
     }
 }

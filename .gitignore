@@ -47,6 +47,7 @@ playground.xcworkspace
 # .swiftpm
 
 .build/
+/Derived/
 
 # CocoaPods
 #
@@ -91,4 +92,3 @@ iOSInjectionProject/
 
 .DS_Store
 .swiftpm/
-/Derived/

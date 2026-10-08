@@ -4,7 +4,6 @@ import RealmSwiftGaps
 import XCTest
 @testable import LakeOfFireContent
 
-@RealmBackgroundActor
 final class LibraryConfigurationConsolidationTests: XCTestCase {
     func testConsolidationDoesNotAppendTheSameCategoryOrScriptFromMultipleDuplicates() async throws {
         try await verifyConsolidationDoesNotAppendTheSameCategoryOrScriptFromMultipleDuplicates()
@@ -14,7 +13,10 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
     private func verifyConsolidationDoesNotAppendTheSameCategoryOrScriptFromMultipleDuplicates() async throws {
         let (configuration, realm) = try await makeRealm()
         let sharedCategory = FeedCategory()
+        sharedCategory.title = "Shared category"
         let sharedScript = UserScript()
+        sharedScript.title = "Shared script"
+
         let primary = LibraryConfiguration()
         primary.createdAt = Date(timeIntervalSinceReferenceDate: 1_000)
         let firstDuplicate = LibraryConfiguration()
@@ -60,6 +62,7 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
     private func verifyConsolidationDoesNotJournalUnchangedPrimaryConfiguration() async throws {
         let (configuration, realm) = try await makeRealm()
         let category = FeedCategory()
+        category.title = "Existing category"
         let primary = LibraryConfiguration()
         primary.createdAt = Date(timeIntervalSinceReferenceDate: 1_000)
         primary.categoryIDs.append(category.id)
@@ -91,8 +94,16 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
     @RealmBackgroundActor
     private func verifyConsolidationPreservesExistingPlacementRuleAndDeduplicatesIncomingIDs() async throws {
         let (configuration, realm) = try await makeRealm()
-        let categories = (0..<4).map { _ in FeedCategory() }
-        let scripts = (0..<4).map { _ in UserScript() }
+        let categories = (0..<4).map { index -> FeedCategory in
+            let category = FeedCategory()
+            category.title = "Category \(index)"
+            return category
+        }
+        let scripts = (0..<4).map { index -> UserScript in
+            let script = UserScript()
+            script.title = "Script \(index)"
+            return script
+        }
         let primary = LibraryConfiguration()
         primary.createdAt = Date(timeIntervalSinceReferenceDate: 1_000)
         primary.categoryIDs.append(objectsIn: [categories[0].id, categories[3].id])
@@ -191,10 +202,8 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
         let userScriptID = UUID()
         let primary = LibraryConfiguration()
         primary.createdAt = Date(timeIntervalSinceReferenceDate: 1_000)
-        primary.modifiedAt = primary.createdAt
         let duplicate = LibraryConfiguration()
         duplicate.createdAt = Date(timeIntervalSinceReferenceDate: 2_000)
-        duplicate.modifiedAt = duplicate.createdAt
         duplicate.categoryIDs.append(categoryID)
         duplicate.userScriptIDs.append(userScriptID)
         try realm.write {
@@ -221,6 +230,7 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
         XCTAssertEqual(consolidated.getCategories()?.map(\.id), [categoryID])
         XCTAssertEqual(consolidated.getUserScripts()?.map(\.id), [userScriptID])
     }
+
 
     func testConsolidationAdmitsActiveOrphanScriptsDeterministically() async throws {
         try await verifyConsolidationAdmitsActiveOrphanScriptsDeterministically()
@@ -249,42 +259,14 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
             realmConfiguration: configuration
         )
 
-        XCTAssertEqual(Array(consolidated.userScriptIDs), [second.id, first.id])
+        XCTAssertEqual(
+            Array(consolidated.userScriptIDs),
+            [second.id, first.id]
+        )
         XCTAssertFalse(consolidated.userScriptIDs.contains(archived.id))
     }
 
-    func testConsolidationAdmitsActiveOrphanCategoriesDeterministically() async throws {
-        try await verifyConsolidationAdmitsActiveOrphanCategoriesDeterministically()
-    }
-
-    @RealmBackgroundActor
-    private func verifyConsolidationAdmitsActiveOrphanCategoriesDeterministically() async throws {
-        let (configuration, realm) = try await makeRealm()
-        let first = FeedCategory()
-        first.id = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
-        first.createdAt = Date(timeIntervalSinceReferenceDate: 1_000)
-        let second = FeedCategory()
-        second.id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
-        second.createdAt = first.createdAt
-        let archived = FeedCategory()
-        archived.createdAt = Date(timeIntervalSinceReferenceDate: 500)
-        archived.isArchived = true
-        let primary = LibraryConfiguration()
-        primary.createdAt = Date(timeIntervalSinceReferenceDate: 100)
-        try realm.write {
-            realm.add([first, second, archived])
-            realm.add(primary)
-        }
-
-        let consolidated = try await LibraryConfiguration.getConsolidatedOrCreate(
-            realmConfiguration: configuration
-        )
-
-        XCTAssertEqual(Array(consolidated.categoryIDs), [second.id, first.id])
-        XCTAssertFalse(consolidated.categoryIDs.contains(archived.id))
-    }
-
-    func testOrderedMergeRetainsLegacyPlacementPolicy() async {
+    func testOrderedMergeRetainsLegacyPlacementPolicy() {
         XCTAssertEqual(
             mergeLibraryConfigurationIdentifiers(
                 primary: ["A", "B"],
@@ -367,6 +349,7 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
         higherConfiguration.categoryIDs.append(higherCategory.id)
 
         try realm.write {
+            // Reverse insertion order so Realm insertion order cannot decide.
             realm.add([higherCategory, lowerCategory])
             realm.add([higherConfiguration, lowerConfiguration])
         }

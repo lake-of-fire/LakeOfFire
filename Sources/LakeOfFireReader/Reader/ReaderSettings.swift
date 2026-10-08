@@ -1,22 +1,26 @@
 import SwiftUI
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireContent
+import LakeOfFireCore
 import RealmSwift
 import SwiftUIDownloads
 import SwiftUtilities
 import SwiftUIBackports
 import RealmSwiftGaps
 import SwiftUIWebView
-import LakeOfFireContent
 
 public enum LightModeTheme: String, CaseIterable, Identifiable {
     case white
     case beige
-
+    
     public var id: String { self.rawValue }
 }
 public enum DarkModeTheme: String, CaseIterable, Identifiable {
     case gray
     case black
-
+    
     public var id: String { self.rawValue }
 }
 
@@ -24,6 +28,13 @@ private let readerAdaptiveWidthStartFontSize: Double = 24
 private let readerAdaptiveWidthFullWidthFontSize: Double = 34
 private let readerAdaptiveWidthStandardMaxWidthEm: Double = 40
 private let readerAdaptiveWidthExpandedMaxWidthEm: Double = 56
+
+private extension Optional where Wrapped == Double {
+    subscript(default defaultValue: Double) -> Double {
+        get { self ?? defaultValue }
+        set { self = newValue }
+    }
+}
 
 public func readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: Double?) -> String {
     guard let readerFontSize else {
@@ -66,12 +77,16 @@ struct ReaderSettingsForm: View {
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
-    @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
-
+    @AppStorage("appTint") private var appTint = Color.accentColor
+    
     var body: some View {
         Form {
             Section("Display") {
-                Stepper("Font Size: \(Int(round(readerFontSize ?? defaultFontSize))) px", value: Binding(get: { CGFloat(readerFontSize ?? defaultFontSize) }, set: { readerFontSize = Double($0) }), in: 5...160)
+                Stepper(
+                    "Font Size: \(Int(round(readerFontSize ?? Double(defaultFontSize)))) px",
+                    value: $readerFontSize[default: Double(defaultFontSize)],
+                    in: 5...160
+                )
                 Picker("Light Mode Theme", selection: $lightModeTheme) {
                     ForEach(LightModeTheme.allCases) { theme in
                         Text(theme.rawValue.capitalized).tag(theme)
@@ -91,9 +106,9 @@ struct ReaderSettingsForm: View {
 public struct DataSettingsForm: View {
     @State private var isPresentingUnsavedRSSFeedEntryDeletionAlert: Bool = false
     @State private var isPresentingUnsavedReadingHistoryDeletionAlert: Bool = false
-
+    
     @AppStorage("developerToolsEnabled") private var developerToolsEnabled = false
-
+    
     public var body: some View {
         Form {
             Section("Local & iCloud Data") {
@@ -120,7 +135,7 @@ public struct DataSettingsForm: View {
                         Task { @RealmBackgroundActor in
                              let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
 //                            await realm.asyncRefresh()
-                            try await realm.asyncWrite {
+                            try await realm.asyncWritePreservingOwnership {
                                 for record in realm.objects(HistoryRecord.self).where({ !$0.isDeleted }) {
                                     record.isDeleted = true
                                     record.refreshChangeMetadata(explicitlyModified: true)
@@ -136,16 +151,16 @@ public struct DataSettingsForm: View {
                 } message: {
                     Text("This will delete your reading and web history, excluding pages you saved as bookmarks. This data is persisted on your device and in your personal iCloud account and is not otherwise shared online without any explicit share action.")
                 }
-
+                
                 Button("Clear Unsaved RSS Feed Entries") {
                     isPresentingUnsavedRSSFeedEntryDeletionAlert = true
                 }
                 .confirmationDialog("Clear Unsaved RSS Feed Entries?", isPresented: $isPresentingUnsavedRSSFeedEntryDeletionAlert) {
                     Button("Clear Unsaved RSS Feed Entries", role: .destructive) {
                         Task { @RealmBackgroundActor in
-                            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+                            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
 //                            await realm.asyncRefresh()
-                            try await realm.asyncWrite {
+                            try await realm.asyncWritePreservingOwnership {
                                 for entry in realm.objects(FeedEntry.self).where({ !$0.isDeleted }) {
                                     entry.isDeleted = true
                                     entry.refreshChangeMetadata(explicitlyModified: true)
@@ -161,7 +176,7 @@ public struct DataSettingsForm: View {
                 } message: {
                     Text("This will delete RSS feed entries that have not been saved. This data is persisted on your device and in your personal iCloud account and is not shared online without any explicit share action.")
                 }
-
+                
                 /*
                 if #available(iOS 16, macOS 13, *) {
                     Divider()
@@ -172,15 +187,15 @@ public struct DataSettingsForm: View {
         }
         .groupedFormStyleIfAvailable()
     }
-
+    
     public init() { }
 }
 
 struct ReaderSettings: View {
     @Binding var isPresented: Bool
-
+    
     @SceneStorage("settingsTabSelection") private var settingsTabSelection = 0
-
+    
     var body: some View {
         HStack {
             Picker("", selection: $settingsTabSelection) {
@@ -189,7 +204,7 @@ struct ReaderSettings: View {
                 //            Text("Debug").tag(1)
             }
             .pickerStyle(SegmentedPickerStyle())
-
+            
 #if os(iOS)
             Button {
                 isPresented = false
@@ -226,7 +241,7 @@ struct ReaderSettings: View {
 
 struct ReaderSettingsPopoverConditionalModifier: ViewModifier {
     @Binding var isPresented: Bool
-
+    
     func body(content: Content) -> some View {
         if #available(iOS 16, macOS 13, *) {
             content.modifier(ReaderSettingsPopoverModifier(isPresented: $isPresented))
@@ -245,10 +260,10 @@ public extension View {
 @available(iOS 16.0, macOS 13.0, *)
 struct ReaderSettingsPopoverModifier: ViewModifier {
     @Binding var isPresented: Bool
-
+    
     @State private var detentSelection = PresentationDetent.medium
     @ScaledMetric(relativeTo: .body) private var bodyFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body)
-
+    
     func body(content: Content) -> some View {
         content
             .popover(isPresented: $isPresented) {
@@ -265,9 +280,9 @@ struct ReaderSettingsPopoverModifier: ViewModifier {
 
 struct LegacyReaderSettingsPopoverModifier: ViewModifier {
     @Binding var isPresented: Bool
-
+    
     @ScaledMetric(relativeTo: .body) private var bodyFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body)
-
+    
     func body(content: Content) -> some View {
         content
             .popover(isPresented: $isPresented) {

@@ -3,7 +3,7 @@ import SwiftUtilities
 
 public enum ReaderShareUtilities {
     public static func snippetURL(forKey key: String) -> URL? {
-        URL(string: "internal://local/snippet?key=\(key)")
+        URL(string: "about:snippet?key=\(key)")
     }
 
     public static func textToHTML(_ text: String, forceRaw: Bool = false) -> String {
@@ -18,8 +18,7 @@ public enum ReaderShareUtilities {
             return nil
         }
         var key = ""
-        if let url,
-           !(url.absoluteString.hasPrefix("about:") || url.absoluteString.hasPrefix("internal://local")) || html == nil {
+        if let url {
             key.append(String(format: "%02X", stableHash(url.absoluteString)))
         } else if let html {
             key.append(String(format: "%02X", stableHash(html)))

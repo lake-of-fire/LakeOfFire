@@ -4,35 +4,15 @@ import test from 'node:test'
 import {
     compactEbookSegmentMetadataPayloadIsCurrent,
     compactEbookSegmentSidecarVersion,
-    compactEbookSegmentRuntimeIDsAreUnique,
-    ebookSentenceIdentifier,
+    expandCompactEbookSegmentResolution,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
-    expandCompactEbookSegmentIDToken,
-    indexUniqueEbookSegmentAlias,
-} from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-segment-identity.js'
+    stableEbookSegmentIdentityVersion,
+} from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-segment-identity.js'
 
-test('expands only explicit compact segment ID encodings', () => {
-    assert.equal(expandCompactEbookSegmentIDToken('Ab09'), 'mnb-sAb09')
-    assert.equal(expandCompactEbookSegmentIDToken('!source-segment'), 'source-segment')
-    assert.equal(expandCompactEbookSegmentIDToken('~123'), '_m123')
-    assert.equal(expandCompactEbookSegmentIDToken('legacy-token'), null)
-    assert.equal(expandCompactEbookSegmentIDToken(''), null)
-    assert.equal(expandCompactEbookSegmentIDToken('!'), null)
-    assert.equal(expandCompactEbookSegmentIDToken('~'), null)
-})
-
-test('rejects compact token aliases that expand to the same runtime ID', () => {
-    const tuple = token => [token, 0, null, null, null, null, null, null, null, 0, 0]
-
-    assert.equal(compactEbookSegmentRuntimeIDsAreUnique([tuple('Ab09'), tuple('Cd10')]), true)
-    assert.equal(compactEbookSegmentRuntimeIDsAreUnique([tuple('Ab09'), tuple('Ab09')]), false)
-    assert.equal(compactEbookSegmentRuntimeIDsAreUnique([tuple('Ab09'), tuple('!mnb-sAb09')]), false)
-})
-
-test('validates every current compact tuple reference without numeric coercion', () => {
+test('accepts only exact current-schema segment tuples', () => {
     const payload = {
-        v: 10,
+        v: 12,
         t: {
             h: ['hash'],
             j: [[1001]],
@@ -43,52 +23,55 @@ test('validates every current compact tuple reference without numeric coercion',
             x: ['読む'],
             sid: ['sentence'],
             pid: ['paragraph'],
+            res: [{ se: { namespace: 'jmdict', entryID: 1001 }, s: '読む' }],
         },
-        s: [['Ab09', 0, 0, null, 0, null, 0, null, 0, 0, 0]],
+        s: [['Ab09', 0, 0, null, 0, null, 0, null, 0, 0, 0, 0]],
     }
 
-    assert.equal(compactEbookSegmentSidecarVersion, 10)
+    assert.equal(compactEbookSegmentSidecarVersion, 12)
+    assert.equal(stableEbookSegmentIdentityVersion, 1)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent(payload), true)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({ ...payload, v: 9 }), false)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
         ...payload,
-        s: [['Ab09', 0, 0.5, null, 0, null, 0, null, 0, 0, 0]],
+        s: [[...payload.s[0], false]],
     }), false)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
         ...payload,
-        s: [['Ab09', 0, true, null, 0, null, 0, null, 0, 0, 0]],
+        s: [['Ab09', 0, true, null, 0, null, 0, null, 0, 0, 0, 0]],
     }), false)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
         ...payload,
-        s: [['Ab09', 0, 0, null, 3, null, 0, null, 0, 0, 0]],
+        s: [payload.s[0], ['!mnb-sAb09', 0, 0, null, 0, null, 0, null, 0, 0, 0, 0]],
     }), false)
-    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
-        ...payload,
-        t: { ...payload.t, j: [[0]] },
-    }), false)
-    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
-        ...payload,
-        s: [['Ab09', 0, 0, null, 0, null, 0, 0, 0, 0, 0]],
-    }), false)
-    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
-        ...payload,
-        s: [['Ab09', 0, 0, null, 0, null, 0, 6, 0, 0, 0]],
-    }), false)
-    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
-        ...payload,
-        s: [['Ab09', 0, 0, null, 0, null, 0, 5, 0, 0, 0]],
-    }), true)
-})
 
-test('uses only explicit sentence identity and never promotes a hash', () => {
-    const attributes = { sid: 'sentence-id', h: 'sentence-hash' }
-    const sentenceNode = {
-        getAttribute: name => attributes[name] ?? null,
-    }
-
-    assert.equal(ebookSentenceIdentifier(sentenceNode), 'sentence-id')
-    delete attributes.sid
-    assert.equal(ebookSentenceIdentifier(sentenceNode), null)
+    assert.deepEqual(
+        expandCompactEbookSegmentResolution(payload.t.res[0], [1001], []),
+        {
+            selectedLexicon: 'jmdict',
+            selectedEntryID: 1001,
+            canonicalSearchString: '読む',
+        }
+    )
+    assert.deepEqual(
+        expandCompactEbookSegmentResolution(
+            { se: { namespace: 'jmnedict', entryID: 2001 }, s: '愛' },
+            [1001],
+            [2001]
+        ),
+        {
+            selectedLexicon: 'jmnedict',
+            selectedEntryID: 2001,
+            canonicalSearchString: '愛',
+        }
+    )
+    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
+        ...payload,
+        t: {
+            ...payload.t,
+            res: [{ se: { namespace: 'jmnedict', entryID: 2001 }, s: '愛' }],
+        },
+    }), false)
 })
 
 const segmentNode = id => ({
@@ -96,27 +79,20 @@ const segmentNode = id => ({
     getAttribute: name => name === 'id' ? id : null,
 })
 
-test('uses only the explicit sidecar stable ID as the segment identifier', () => {
-    const identity = ebookSegmentIdentity(segmentNode('runtime-id'), {
+test('uses only sidecar sid as durable segment identity', () => {
+    const metadata = {
         i: 'metadata-element-id',
         sid: 'stable-id',
         h: 'segment-hash',
-    })
+    }
+    const identity = ebookSegmentIdentity(segmentNode('runtime-id'), metadata)
 
-    assert.deepEqual(identity, {
-        elementID: 'runtime-id',
-        metadataElementID: 'metadata-element-id',
-        stableID: 'stable-id',
-        segmentIdentifier: 'stable-id',
-        hasSidecarStableID: true,
-    })
-    assert.deepEqual(
-        ebookSegmentIdentifierAliases(segmentNode('runtime-id'), { sid: 'stable-id' }),
-        ['stable-id'],
-    )
+    assert.equal(identity.segmentIdentifier, 'stable-id')
+    assert.equal(identity.hasSidecarStableID, true)
+    assert.deepEqual(ebookSegmentIdentifierAliases(segmentNode('runtime-id'), metadata), ['stable-id'])
 })
 
-test('does not promote a segment hash or element ID when sidecar identity is missing', () => {
+test('does not promote runtime, metadata, or hash IDs when sid is absent', () => {
     const identity = ebookSegmentIdentity(segmentNode('runtime-id'), {
         i: 'metadata-element-id',
         h: 'segment-hash',
@@ -125,36 +101,5 @@ test('does not promote a segment hash or element ID when sidecar identity is mis
     assert.equal(identity.segmentIdentifier, null)
     assert.equal(identity.stableID, null)
     assert.equal(identity.hasSidecarStableID, false)
-    assert.deepEqual(
-        ebookSegmentIdentifierAliases(segmentNode('runtime-id'), {
-            i: 'metadata-element-id',
-            h: 'segment-hash',
-        }),
-        [],
-    )
-})
-
-test('preserves runtime and metadata IDs only as explicit mapping fields', () => {
-    const identity = ebookSegmentIdentity(
-        { getAttribute: name => name === 'id' ? 'attribute-id' : null },
-        { i: 'metadata-element-id', sid: 'stable-id' },
-    )
-
-    assert.equal(identity.elementID, 'attribute-id')
-    assert.equal(identity.metadataElementID, 'metadata-element-id')
-    assert.equal(identity.segmentIdentifier, 'stable-id')
-})
-
-test('rejects an alias shared by distinct runtime segments', () => {
-    const aliases = new Map()
-    const ambiguous = new Set()
-    const first = { node: segmentNode('runtime-a') }
-    const second = { node: segmentNode('runtime-b') }
-
-    assert.equal(indexUniqueEbookSegmentAlias(aliases, ambiguous, 'stable-id', first), true)
-    assert.equal(indexUniqueEbookSegmentAlias(aliases, ambiguous, 'stable-id', first), true)
-    assert.equal(indexUniqueEbookSegmentAlias(aliases, ambiguous, 'stable-id', second), false)
-    assert.equal(aliases.has('stable-id'), false)
-    assert.equal(ambiguous.has('stable-id'), true)
-    assert.equal(indexUniqueEbookSegmentAlias(aliases, ambiguous, 'stable-id', first), false)
+    assert.deepEqual(ebookSegmentIdentifierAliases(segmentNode('runtime-id'), identity), [])
 })

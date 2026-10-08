@@ -3,7 +3,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'mv "$work" "$HOME/.Trash/$(basename "$work")"' EXIT
 mkdir -p "$work/Sources/LakeOfFireContent" "$work/Tests/ZIPTests"
 cat > "$work/Package.swift" <<'SWIFT'
 // swift-tools-version: 5.10

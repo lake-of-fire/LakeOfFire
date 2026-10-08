@@ -22,8 +22,8 @@ enum OPDS2ParserError: Error {
 }
 
 enum OPDS2Parser {
-    static func parseURL(url: URL, completion: @escaping (ParseData?, Error?) -> Void) {
-        URLSession.shared.dataTask(with: url) { data, response, error in
+    static func parseURL(url: URL, session: URLSession = .shared, completion: @escaping (ParseData?, Error?) -> Void) {
+        OPDSParser.loadDocument(url: url, session: session) { data, response, error in
             guard let data, let response else {
                 completion(nil, error ?? OPDSParserError.documentNotFound)
                 return
@@ -34,11 +34,12 @@ enum OPDS2Parser {
             } catch {
                 completion(nil, error)
             }
-        }.resume()
+        }
     }
 
     static func parse(jsonData: Data, url: URL, response: URLResponse) throws -> ParseData {
         var parseData = ParseData(url: url, response: response, version: .OPDS2)
+        let baseURL = response.url ?? url
 
         guard let root = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
             throw OPDS2ParserError.invalidJSON
@@ -49,9 +50,9 @@ enum OPDS2Parser {
            root["publications"] == nil,
            root["facets"] == nil
         {
-            parseData.publication = try Publication(json: root)
+            parseData.publication = try Publication(json: root, normalizeHREF: hrefNormalizer(baseURL))
         } else {
-            parseData.feed = try parse(jsonDict: root, baseURL: url)
+            parseData.feed = try parse(jsonDict: root, baseURL: baseURL)
         }
 
         return parseData

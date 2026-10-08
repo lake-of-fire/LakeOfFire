@@ -9,23 +9,61 @@ import XCTest
 
 final class AsahiFeedReadabilityPipelineTests: XCTestCase {
     @MainActor
-    func testCanonicalReadabilityHTMLLabelsPublicationDateWithoutChangingVisibleText() throws {
-        let publishedTime = "May 11, 2026 <evening> & later"
-        let html = buildCanonicalReadabilityHTML(
-            title: "Title",
-            byline: "",
-            publishedTime: publishedTime,
-            content: "<p>Body</p>",
-            contentURL: URL(string: "https://example.com/article")!
-        )
-
-        let document = try SwiftSoup.parse(html)
-        let publicationDate = try XCTUnwrap(document.getElementById("reader-publication-date"))
-        XCTAssertEqual(try publicationDate.text(), publishedTime)
-        XCTAssertEqual(
-            try publicationDate.attr("aria-label"),
-            "Reader metadata date: \(publishedTime)"
-        )
+    func testRefreshFallsBackFromUnsupportedHEADAndHonorsChangedETag() async throws {
+        let configuration = makeRealmConfiguration()
+        let originalLibrary = LibraryDataManager.realmConfiguration
+        let originalBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalSession = makeFeedSessionOverrideForTesting
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmark
+            ReaderContentLoader.historyRealmConfiguration = originalHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = originalEntry
+            makeFeedSessionOverrideForTesting = originalSession
+            FeedURLProtocol.requestHandler = nil
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = URL(string: "https://example.com/regression.rss")!
+        try realm.write { realm.add(feed) }
+        makeFeedSessionOverrideForTesting = {
+            let config = URLSessionConfiguration.ephemeral
+            config.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: config)
+        }
+        for (revision, headStatus) in [200, 405, 501, 200].enumerated() {
+            let title = "Revision \(revision)"
+            let data = Data("<rss version='2.0'><channel><title>Feed</title><item><guid>https://example.com/article</guid><link>https://example.com/article</link><title>\(title)</title><description>Body</description></item></channel></rss>".utf8)
+            FeedURLProtocol.requestHandler = { request in
+                let status = request.httpMethod == "HEAD" ? headStatus : 200
+                return (status, ["ETag": "\"v\(revision)\"", "Last-Modified": "Mon, 07 Sep 2026 10:00:00 GMT", "Content-Type": "application/rss+xml"], data)
+            }
+            try await feed.freeze().fetch(realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            XCTAssertEqual(realm.objects(FeedEntry.self).first?.title, title)
+            XCTAssertEqual(feed.lastFetchedETag, "\"v\(revision)\"")
+        }
+        for headStatus in [405, 501] {
+            FeedURLProtocol.requestHandler = { request in
+                XCTAssertNotEqual(request.value(forHTTPHeaderField: "If-None-Match"), "error-page-tag")
+                if request.httpMethod == "HEAD" {
+                    return (headStatus, ["ETag": "error-page-tag", "Last-Modified": "Mon, 07 Sep 2026 10:00:00 GMT"], Data())
+                }
+                let data = Data("<rss version='2.0'><channel><title>Feed</title><item><guid>https://example.com/article</guid><link>https://example.com/article</link><title>No validators</title><description>Body</description></item></channel></rss>".utf8)
+                return (200, ["Content-Type": "application/rss+xml"], data)
+            }
+            try await feed.freeze().fetch(realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            XCTAssertEqual(realm.objects(FeedEntry.self).first?.title, "No validators")
+            XCTAssertNotEqual(feed.lastFetchedETag, "error-page-tag")
+        }
     }
 
     private final class FeedURLProtocol: URLProtocol {
@@ -58,13 +96,17 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
                 responsePayload = (
                     200,
                     [
-                        "Content-Type": "application/rdf+xml; charset=utf-8",
+                        "Content-Type":
+                            "application/rdf+xml; charset=utf-8",
                         "Content-Length": String(data.count),
                     ],
                     data
                 )
             } else {
-                client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+                client?.urlProtocol(
+                    self,
+                    didFailWithError: URLError(.unsupportedURL)
+                )
                 return
             }
             let response = HTTPURLResponse(
@@ -87,14 +129,6 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         let realmURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("realm")
-        addTeardownBlock {
-            let sidecarExtensions = ["realm", "realm.lock", "realm.management", "realm.note"]
-            for ext in sidecarExtensions {
-                try? FileManager.default.removeItem(
-                    at: realmURL.deletingPathExtension().appendingPathExtension(ext)
-                )
-            }
-        }
         var configuration = DefaultRealmConfiguration.configuration
         configuration.inMemoryIdentifier = nil
         configuration.fileURL = realmURL
@@ -105,6 +139,16 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             HistoryRecord.self,
         ]
         configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let fixtureConfiguration = configuration
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
+            let sidecarExtensions = ["realm", "realm.lock", "realm.management", "realm.note"]
+            for ext in sidecarExtensions {
+                try? FileManager.default.removeItem(
+                    at: realmURL.deletingPathExtension().appendingPathExtension(ext)
+                )
+            }
+        }
         return configuration
     }
 
@@ -117,7 +161,9 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         let candidates = [
             bundle.url(forResource: fileName, withExtension: nil),
             bundle.url(forResource: fileName, withExtension: nil, subdirectory: "Asahi"),
+            bundle.url(forResource: fileName, withExtension: nil, subdirectory: "BEPAL"),
             bundle.url(forResource: fileName, withExtension: nil, subdirectory: "Fixtures/Asahi"),
+            bundle.url(forResource: fileName, withExtension: nil, subdirectory: "Fixtures/BEPAL"),
         ]
         return try XCTUnwrap(candidates.compactMap { $0 }.first)
     }
@@ -145,16 +191,24 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             """.utf8
         )
         let configuration = makeRealmConfiguration()
-        let originalLibraryConfiguration = LibraryDataManager.realmConfiguration
-        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
-        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
-        let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalLibraryConfiguration =
+            LibraryDataManager.realmConfiguration
+        let originalBookmarkConfiguration =
+            ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistoryConfiguration =
+            ReaderContentLoader.historyRealmConfiguration
+        let originalFeedEntryConfiguration =
+            ReaderContentLoader.feedEntryRealmConfiguration
         let originalFeedSessionOverride = makeFeedSessionOverrideForTesting
         defer {
-            LibraryDataManager.realmConfiguration = originalLibraryConfiguration
-            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
-            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
-            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            LibraryDataManager.realmConfiguration =
+                originalLibraryConfiguration
+            ReaderContentLoader.bookmarkRealmConfiguration =
+                originalBookmarkConfiguration
+            ReaderContentLoader.historyRealmConfiguration =
+                originalHistoryConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration =
+                originalFeedEntryConfiguration
             makeFeedSessionOverrideForTesting = originalFeedSessionOverride
             FeedURLProtocol.requestHandler = nil
         }
@@ -164,13 +218,17 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         ReaderContentLoader.feedEntryRealmConfiguration = configuration
         await ReaderContentLoader.resetTransientCachesForTesting()
 
-        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: MainActor.shared
+        )
         let feed = Feed()
         feed.rssUrl = rssURL
         feed.lastFetchedETag = "\"stale-validator\""
-        try await realm.asyncWrite {
+        try realm.write {
             realm.add(feed)
         }
+        let frozenFeed = feed.freeze()
 
         var requests = [(method: String, validator: String?)]()
         FeedURLProtocol.requestHandler = { request in
@@ -195,21 +253,158 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         }
         makeFeedSessionOverrideForTesting = {
             let sessionConfiguration = URLSessionConfiguration.ephemeral
-            sessionConfiguration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            sessionConfiguration.requestCachePolicy =
+                .reloadIgnoringLocalAndRemoteCacheData
             sessionConfiguration.protocolClasses = [FeedURLProtocol.self]
             return URLSession(configuration: sessionConfiguration)
         }
 
-        try await feed.fetch(realmConfiguration: configuration)
-        await realm.asyncRefresh()
+        try await frozenFeed.fetch(realmConfiguration: configuration)
 
-        XCTAssertEqual(realm.objects(FeedEntry.self).where { !$0.isDeleted }.count, 1)
+        let refreshedRealm = try await Realm(
+            configuration: configuration,
+            actor: MainActor.shared
+        )
         XCTAssertEqual(
-            realm.object(ofType: Feed.self, forPrimaryKey: feed.id)?.lastFetchedETag,
+            refreshedRealm.objects(FeedEntry.self)
+                .where { !$0.isDeleted }
+                .count,
+            1
+        )
+        XCTAssertEqual(
+            refreshedRealm.object(
+                ofType: Feed.self,
+                forPrimaryKey: feed.id
+            )?.lastFetchedETag,
             "\"fresh-validator\""
         )
-        XCTAssertEqual(requests.map(\.method), ["HEAD", "HEAD", "GET"])
-        XCTAssertEqual(requests.map(\.validator), ["\"stale-validator\"", nil, nil])
+        XCTAssertEqual(
+            requests.map(\.method),
+            ["HEAD", "HEAD", "GET"]
+        )
+        XCTAssertEqual(
+            requests.map(\.validator),
+            ["\"stale-validator\"", nil, nil]
+        )
+    }
+
+    @MainActor
+    func testFeedResponseDoesNotPublishAfterURLChanges() async throws {
+        let oldRSSURL = try XCTUnwrap(URL(string: "https://old.example/feed.xml"))
+        let newRSSURL = try XCTUnwrap(URL(string: "https://new.example/feed.xml"))
+        let rssData = Data(
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <rss version="2.0"><channel>
+              <title>Old Feed</title>
+              <link>https://old.example/</link>
+              <description>Old response</description>
+              <item><guid>old-entry</guid><title>Old Entry</title>
+                <link>https://old.example/article</link>
+              </item>
+            </channel></rss>
+            """.utf8
+        )
+        let configuration = makeRealmConfiguration()
+        let originalLibraryConfiguration = LibraryDataManager.realmConfiguration
+        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalFeedSessionOverride = makeFeedSessionOverrideForTesting
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibraryConfiguration
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            makeFeedSessionOverrideForTesting = originalFeedSessionOverride
+            FeedURLProtocol.requestHandler = nil
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = oldRSSURL
+        try realm.write { realm.add(feed) }
+        let feedID = feed.id
+        let frozenFeed = feed.freeze()
+
+        FeedURLProtocol.requestHandler = { request in
+            if request.httpMethod == "GET" {
+                let backgroundRealm = try! Realm(configuration: configuration)
+                try! backgroundRealm.write {
+                    backgroundRealm.object(ofType: Feed.self, forPrimaryKey: feedID)?.rssUrl = newRSSURL
+                }
+            }
+            return (
+                200,
+                [
+                    "Content-Type": "application/rss+xml; charset=utf-8",
+                    "Content-Length": String(rssData.count),
+                    "ETag": "\"old-response\"",
+                ],
+                request.httpMethod == "HEAD" ? Data() : rssData
+            )
+        }
+        makeFeedSessionOverrideForTesting = {
+            let sessionConfiguration = URLSessionConfiguration.ephemeral
+            sessionConfiguration.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: sessionConfiguration)
+        }
+
+        do {
+            try await frozenFeed.fetch(realmConfiguration: configuration)
+        } catch is CancellationError {
+            // URL replacement deliberately cancels publication of the old response.
+        }
+
+        await realm.asyncRefresh()
+        XCTAssertEqual(realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.rssUrl, newRSSURL)
+        XCTAssertNil(realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.lastFetchedETag)
+        XCTAssertTrue(realm.objects(FeedEntry.self).where { !$0.isDeleted }.isEmpty)
+    }
+
+    func testLaterFeedRefreshLeaseSupersedesEarlierLeaseForSameFeed() {
+        let registry = FeedRefreshRegistry()
+        let feedID = UUID()
+        let earlier = registry.begin(feedID: feedID)
+        let later = registry.begin(feedID: feedID)
+
+        XCTAssertFalse(registry.isCurrent(earlier))
+        XCTAssertTrue(registry.isCurrent(later))
+        registry.end(earlier)
+        XCTAssertTrue(registry.isCurrent(later))
+        registry.end(later)
+        XCTAssertFalse(registry.isCurrent(later))
+    }
+
+    func testCanonicalReadabilityHTMLEscapesTextAndAttributes() throws {
+        let contentURL = try XCTUnwrap(URL(string: "https://example.com/article?one=1&two=2"))
+        let title = "A & <B> \"quoted\""
+        let byline = "Author & <Editor> \"quoted\""
+        let readerHTML = buildCanonicalReadabilityHTML(
+            title: title,
+            byline: byline,
+            publishedTime: "2026 & later",
+            content: "<p>Body</p>",
+            contentURL: contentURL
+        )
+
+        let document = try SwiftSoup.parse(readerHTML)
+        XCTAssertEqual(try document.getElementById("reader-title")?.text(), title)
+        XCTAssertEqual(try document.getElementById("reader-byline")?.text(), byline)
+        XCTAssertEqual(try document.getElementById("reader-publication-date")?.text(), "2026 & later")
+        XCTAssertEqual(
+            try document.select("a.reader-view-original").first()?.attr("href"),
+            contentURL.absoluteString
+        )
+        XCTAssertEqual(
+            try document.body()?.attr("data-mnb-reader-mode-available-for"),
+            contentURL.absoluteString
+        )
     }
 
     @MainActor
@@ -229,16 +424,13 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
         let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
         let originalFeedSessionOverride = makeFeedSessionOverrideForTesting
-        let originalObservesDownloadController = LibraryDataManager.observesDownloadController
         defer {
             LibraryDataManager.realmConfiguration = originalLibraryConfiguration
             ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
             ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
             ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
             makeFeedSessionOverrideForTesting = originalFeedSessionOverride
-            LibraryDataManager.observesDownloadController = originalObservesDownloadController
         }
-        LibraryDataManager.observesDownloadController = false
         LibraryDataManager.realmConfiguration = configuration
         ReaderContentLoader.bookmarkRealmConfiguration = configuration
         ReaderContentLoader.historyRealmConfiguration = configuration
@@ -318,5 +510,131 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         XCTAssertTrue(
             readerContentText.contains("盗んだ高級車をバラバラにしてコンテナに入れ、中古車と偽って海外に密輸する手口が横行している")
         )
+    }
+
+    @MainActor
+    func testBEPALFeedArticleReadabilityKeepsFullArticleBody() async throws {
+        let opmlURL = try fixtureURL("bepal-defaults.opml")
+        let rssURL = URL(string: "https://www.bepal.net/feed/")!
+        let rssData = try Data(
+            contentsOf: try fixtureURL("bepal-feed-674158.xml")
+        )
+        let articleHTML = try String(
+            contentsOf: try fixtureURL("bepal-674158-article.html"),
+            encoding: .utf8
+        )
+        let articleURL = URL(string: "https://www.bepal.net/archives/674158")!
+        let configuration = makeRealmConfiguration()
+        let originalLibraryConfiguration = LibraryDataManager.realmConfiguration
+        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalFeedSessionOverride = makeFeedSessionOverrideForTesting
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibraryConfiguration
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            makeFeedSessionOverrideForTesting = originalFeedSessionOverride
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        FeedURLProtocol.responses = [rssURL: rssData]
+        makeFeedSessionOverrideForTesting = {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            configuration.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: configuration)
+        }
+        defer {
+            FeedURLProtocol.responses.removeAll()
+        }
+
+        let manager = LibraryDataManager()
+        try await manager.importOPML(fileURL: opmlURL, realmConfiguration: configuration)
+
+        let feed: Feed = try {
+            let realm = try Realm(configuration: configuration)
+            return try XCTUnwrap(
+                realm.objects(Feed.self).first { $0.rssUrl == rssURL }
+            ).freeze()
+        }()
+
+        XCTAssertTrue(feed.isReaderModeByDefault)
+        XCTAssertFalse(feed.rssContainsFullContent)
+        XCTAssertTrue(feed.extractImageFromContent)
+        XCTAssertFalse(feed.injectEntryImageIntoHeader)
+        XCTAssertEqual(feed.meaningfulContentMinLength, 0)
+
+        try await feed.fetch(realmConfiguration: configuration)
+
+        let entrySnapshot = try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await realm.asyncRefresh()
+            let entries = Array(realm.objects(FeedEntry.self))
+            let entry = try XCTUnwrap(
+                entries.first { $0.url == articleURL },
+                "Persisted feed entries: \(entries.count); urls: \(entries.map { $0.url.absoluteString }.joined(separator: ", "))"
+            )
+            return (
+                title: entry.title,
+                html: entry.html,
+                isReaderModeByDefault: entry.isReaderModeByDefault,
+                rssContainsFullContent: entry.rssContainsFullContent
+            )
+        }()
+
+        XCTAssertEqual(entrySnapshot.title, "「親友は努力です」。山岳カメラマンだった友と自らの半生を＂ありのまま＂に描いたノンフィクション作家・小林元喜さんにインタビュー")
+        XCTAssertTrue(entrySnapshot.isReaderModeByDefault)
+        XCTAssertFalse(entrySnapshot.rssContainsFullContent)
+
+        let storedFeedHTML = try XCTUnwrap(entrySnapshot.html)
+        XCTAssertTrue(storedFeedHTML.contains("平賀淳さんのホームページ"))
+
+        let contentCandidates = try await ReaderContentLoader.loadAll(url: articleURL)
+        _ = try XCTUnwrap(
+            contentCandidates.compactMap { $0 as? FeedEntry }.first
+        )
+        let loadedEntryRSSContainsFullContent = try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await realm.asyncRefresh()
+            let entry = try XCTUnwrap(
+                realm.objects(FeedEntry.self).first { $0.url == articleURL }
+            )
+            return entry.rssContainsFullContent
+        }()
+        XCTAssertFalse(loadedEntryRSSContainsFullContent)
+
+        let parser = SwiftReadability.Readability(
+            html: articleHTML,
+            url: articleURL,
+            options: SwiftReadability.ReadabilityOptions(charThreshold: max(feed.meaningfulContentMinLength, 1))
+        )
+        let parsedArticle = try XCTUnwrap(parser.parse())
+        let readerHTML = buildCanonicalReadabilityHTML(
+            title: parsedArticle.title ?? "",
+            byline: parsedArticle.byline ?? "",
+            publishedTime: parsedArticle.publishedTime,
+            content: parsedArticle.content,
+            contentURL: articleURL
+        )
+        let doc = try SwiftSoup.parse(readerHTML)
+        let readerTitle = try doc.getElementById("reader-title")?.text()
+        let readerByline = try doc.getElementById("reader-byline")?.text()
+        let readerContentText = try XCTUnwrap(doc.getElementById("reader-content")?.text())
+        let readerContentHTML = try XCTUnwrap(doc.getElementById("reader-content")?.html())
+
+        XCTAssertEqual(readerTitle?.hasPrefix(entrySnapshot.title), true)
+        XCTAssertEqual(readerByline, "BE-PAL編集部")
+        XCTAssertTrue(readerContentText.contains("2022年5月、映像カメラマンの平賀淳さんがアラスカで亡くなった"))
+        XCTAssertTrue(readerContentText.contains("何者かになれない焦りについても書いています"))
+        XCTAssertTrue(readerContentText.contains("もし親友がいるなら、自分の思いを明確に言葉にして目を見て伝えたほうがいいと思います"))
+        XCTAssertTrue(readerContentText.contains("平賀淳さんのホームページでは、彼の想いや作品を見ることができる"))
+        XCTAssertTrue(readerContentHTML.contains("59795348069fd503888a600_98254281.png"))
+        XCTAssertTrue(readerContentHTML.contains("18443890069fd50388a5de0_79655026.png"))
     }
 }

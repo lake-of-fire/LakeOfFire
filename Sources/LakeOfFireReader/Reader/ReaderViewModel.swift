@@ -1,78 +1,19 @@
 import SwiftUI
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireContent
+import LakeOfFireCore
 import SwiftUIWebView
 import SwiftSoup
 import RealmSwift
 import Combine
 import RealmSwiftGaps
 import WebKit
-import LakeOfFireContent
-import LakeOfFireFiles
 
 let readerViewModelQueue = DispatchQueue(label: "ReaderViewModelQueue")
 
-private func logReaderLoad(_ message: String) {
-#if DEBUG
-    debugPrint("# READERLOAD \(message)")
-#endif
-}
 
-private func logTitleTrace(_ message: String) {
-}
-
-public struct ReaderRequestedLocationState: Equatable, Sendable {
-    public enum Source: String, Sendable {
-        case defaultRestore
-        case savedRestore
-    }
-
-    public var source: Source
-    public var kind: String
-    public var value: String
-    public var surroundingContext: String?
-    public var isRequestedPageChange: Bool
-    public var fractionalCompletion: Float?
-    public var mainDocumentURL: URL?
-
-    public init(
-        source: Source,
-        kind: String,
-        value: String,
-        surroundingContext: String? = nil,
-        isRequestedPageChange: Bool,
-        fractionalCompletion: Float? = nil,
-        mainDocumentURL: URL? = nil
-    ) {
-        self.source = source
-        self.kind = kind
-        self.value = value
-        self.surroundingContext = surroundingContext
-        self.isRequestedPageChange = isRequestedPageChange
-        self.fractionalCompletion = fractionalCompletion
-        self.mainDocumentURL = mainDocumentURL
-    }
-}
-
-public struct ReaderReadingProgressState: Equatable, Sendable {
-    public var cfi: String?
-    public var fractionalCompletion: Float?
-    public var reason: String
-    public var sectionIndex: Int?
-    public var mainDocumentURL: URL?
-
-    public init(
-        cfi: String?,
-        fractionalCompletion: Float?,
-        reason: String,
-        sectionIndex: Int?,
-        mainDocumentURL: URL?
-    ) {
-        self.cfi = cfi
-        self.fractionalCompletion = fractionalCompletion
-        self.reason = reason
-        self.sectionIndex = sectionIndex
-        self.mainDocumentURL = mainDocumentURL
-    }
-}
 
 @MainActor
 public class ReaderViewModel: NSObject, ObservableObject {
@@ -98,18 +39,16 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published public private(set) var ebookNativeMarkReadIsBusy: Bool = false
     @Published public private(set) var ebookNativeMarkReadStateVersion: UInt64 = 0
     @Published public private(set) var ebookNativeMarkReadStateReason: String = ""
-    @Published public private(set) var requestedLocationState: ReaderRequestedLocationState?
-    @Published public private(set) var readingProgressState: ReaderReadingProgressState?
-
+    @Published public private(set) var ebookNativeMarkReadRequestOutcome: String = "none"
+    @Published public private(set) var ebookNativeMarkReadRequestErrorCode: String = ""
     public var scriptCaller = WebViewScriptCaller()
     @Published var webViewUserScripts: [WebViewUserScript]? = nil
     @Published var webViewSystemScripts: [WebViewUserScript]? = nil
-    private let baseSystemScripts: [WebViewUserScript]
-
+    
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     @AppStorage("readerFontSize") private var readerFontSize: Double?
-
+    
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
 
@@ -118,7 +57,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         ReaderDocStateUserScript().userScript,
         ReaderUnhandledTapUserScript().userScript,
     ]
-
+    
     @MainActor
     public var allScripts: [WebViewUserScript] {
         Self.builtInReaderScripts + (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
@@ -144,9 +83,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         pagesLeftLabel: String,
         source: String,
         relocateBackEnabled: Bool,
-        relocateForwardEnabled: Bool,
-        currentPageNumber: Int? = nil,
-        totalPages: Int? = nil
+        relocateForwardEnabled: Bool
     ) {
         if ebookNativeOverlayPercentLabel != percentLabel {
             ebookNativeOverlayPercentLabel = percentLabel
@@ -175,6 +112,13 @@ public class ReaderViewModel: NSObject, ObservableObject {
         if ebookNativeOverlayRelocateForwardEnabled != relocateForwardEnabled {
             ebookNativeOverlayRelocateForwardEnabled = relocateForwardEnabled
         }
+    }
+
+    @MainActor
+    public func setEbookNativeOverlayPageState(
+        currentPageNumber: Int?,
+        totalPages: Int?
+    ) {
         if ebookNativeOverlayCurrentPageNumber != currentPageNumber {
             ebookNativeOverlayCurrentPageNumber = currentPageNumber
         }
@@ -196,6 +140,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
             relocateBackEnabled: false,
             relocateForwardEnabled: false
         )
+        setEbookNativeOverlayPageState(currentPageNumber: nil, totalPages: nil)
     }
 
     @MainActor
@@ -203,10 +148,14 @@ public class ReaderViewModel: NSObject, ObservableObject {
         available: Bool,
         isRead: Bool,
         isBusy: Bool,
-        reason: String
+        reason: String,
+        requestOutcome: String = "none",
+        requestErrorCode: String = ""
     ) {
         ebookNativeMarkReadStateVersion &+= 1
         ebookNativeMarkReadStateReason = reason
+        ebookNativeMarkReadRequestOutcome = requestOutcome
+        ebookNativeMarkReadRequestErrorCode = requestErrorCode
         if ebookNativeMarkReadAvailable != available {
             ebookNativeMarkReadAvailable = available
         }
@@ -217,45 +166,45 @@ public class ReaderViewModel: NSObject, ObservableObject {
             ebookNativeMarkReadIsBusy = isBusy
         }
     }
-
-    @MainActor
-    public func setRequestedLocationState(_ state: ReaderRequestedLocationState?) {
-        requestedLocationState = state
-    }
-
-    @MainActor
-    public func setReadingProgressState(_ state: ReaderReadingProgressState?) {
-        readingProgressState = state
-    }
-
-    public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
-        self.baseSystemScripts = systemScripts
+    
+    public init(
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration,
+        systemScripts: [WebViewUserScript]
+    ) {
         super.init()
-        ReaderContent.contentResolver = { pageURL, countsAsHistoryVisit, source in
-            try await ReaderViewModel.getContent(
-                forURL: pageURL,
-                countsAsHistoryVisit: countsAsHistoryVisit,
-                source: source
-            )
-        }
-
-        Task { @RealmBackgroundActor [weak self] in
+        webViewSystemScripts = systemScripts
+        
+        Task { @RealmBackgroundActor [weak self, realmConfiguration] in
             guard let self = self else { return }
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+            let libraryRealm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
 
-            realm.objects(LibraryConfiguration.self)
+            libraryRealm.objects(LibraryConfiguration.self)
                 .collectionPublisher
                 .subscribe(on: readerViewModelQueue)
                 .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.3), scheduler: readerViewModelQueue)
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        try await self?.updateScripts()
+                    Task { @RealmBackgroundActor [weak self] in
+                        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: realmConfiguration)
+                        let ref = ThreadSafeReference(to: libraryConfiguration)
+                        try await { @MainActor [weak self] in
+                            let realm = try await Realm.open(configuration: realmConfiguration)
+                            guard let libraryConfiguration = realm.resolve(ref) else { return }
+                            let webViewSystemScripts = systemScripts + libraryConfiguration.systemScripts
+                            let webViewUserScripts = libraryConfiguration.getActiveWebViewUserScripts()
+                            guard let self else { return }
+                            if self.webViewSystemScripts != webViewSystemScripts {
+                                self.webViewSystemScripts = webViewSystemScripts
+                            }
+                            if self.webViewUserScripts != webViewUserScripts {
+                                self.webViewUserScripts = webViewUserScripts
+                            }
+                        }()
                     }
                 })
                 .store(in: &cancellables)
 
-            realm.objects(UserScript.self)
+            libraryRealm.objects(UserScript.self)
                 .collectionPublisher
                 .subscribe(on: readerViewModelQueue)
                 .map { @Sendable _ in }
@@ -263,57 +212,58 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 .receive(on: readerViewModelQueue)
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
-                        try await self?.updateScripts()
+                        try await self?.updateScripts(realmConfiguration: realmConfiguration)
                     }
                 })
                 .store(in: &self.cancellables)
         }
     }
-
+    
     @RealmBackgroundActor
-    private func updateScripts() async throws {
-        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+    private func updateScripts(realmConfiguration: Realm.Configuration) async throws {
+        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: realmConfiguration)
         let ref = ThreadSafeReference(to: libraryConfiguration)
         try await { @MainActor [weak self] in
-            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-            guard let libraryConfiguration = realm.resolve(ref) else { return }
-            guard let scripts = libraryConfiguration.getActiveWebViewUserScripts() else { return }
+            let realm = try await Realm.open(configuration: realmConfiguration)
+            guard let scripts = realm.resolve(ref)?.getActiveWebViewUserScripts() else { return }
             guard let self = self else { return }
-            let webViewSystemScripts = self.baseSystemScripts + libraryConfiguration.systemScripts
-            if self.webViewSystemScripts != webViewSystemScripts {
-                self.webViewSystemScripts = webViewSystemScripts
-            }
             if self.webViewUserScripts != scripts {
                 self.webViewUserScripts = scripts
             }
         }()
     }
-
+    
     @MainActor
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
         if let historyRecord = content as? HistoryRecord {
             let contentRef = ReaderContentLoader.ContentReference(content: historyRecord)
-            Task { @RealmBackgroundActor in
-                guard let content = try await contentRef?.resolveOnBackgroundActor() as? HistoryRecord else { return }
-//                await content.realm?.asyncRefresh()
-                try await content.realm?.asyncWrite {
+            try await { @RealmBackgroundActor in
+                try Task.checkCancellation()
+                guard let contentRef else { return }
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: contentRef.realmConfiguration)
+                try await realm.asyncRefresh()
+                try await realm.asyncWritePreservingOwnership {
+                    guard let content = realm.object(
+                        ofType: HistoryRecord.self, forPrimaryKey: contentRef.contentKey
+                    ), !content.isDeleted else { return }
+                    try Task.checkCancellation()
                     content.lastVisitedAt = Date()
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }
-            }
+            }()
         }
     }
-
+    
     public func onNavigationFinished(content: any ReaderContentProtocol, newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             try Task.checkCancellation()
-            refreshSettingsInWebView(content: content, newState: newState)
-
+            refreshSettingsInWebView(content: content, newState: newState, reason: "navigation-finished")
+            
             completion?(newState)
         }
     }
-
+    
     // TODO: Move to Loader probably
     @MainActor
     public static func getContent(
@@ -327,13 +277,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
             source: source
         )
     }
-
+    
     @MainActor
     private func refreshTitleInWebView(content: (any ReaderContentProtocol), newState: WebViewState? = nil) async throws {
         let state = newState ?? self.state
-        logTitleTrace(
-            "stage=readerViewModel.refreshTitleInWebView pageURL=\(state.pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) contentTitle=\(content.title.debugTitleFragment) rssContainsFullContent=\(content.rssContainsFullContent) isLoading=\(state.isLoading) isProvisionallyNavigating=\(state.isProvisionallyNavigating)"
-        )
         if !content.url.isEBookURL && !content.isFromClipboard && content.rssContainsFullContent && !content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
                 try await scriptCaller.evaluateJavaScript(
@@ -352,67 +299,116 @@ public class ReaderViewModel: NSObject, ObservableObject {
             }
         }
     }
-
+    
     @MainActor
-    public func pageMetadataUpdated(title: String?, author: String? = nil) async throws {
+    public func pageMetadataUpdated(
+        title: String?,
+        author: String? = nil,
+        expectedDocumentURL: URL? = nil
+    ) async throws {
         let sanitizedIncomingTitle = title?
             .replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: "")
-        logTitleTrace(
-            "stage=readerViewModel.pageMetadataUpdated.received pageURL=\(state.pageURL.absoluteString) incomingTitle=\(title.debugTitleFragment) sanitizedTitle=\(sanitizedIncomingTitle.debugTitleFragment) author=\(author.debugTitleFragment) isNativeReaderView=\(state.pageURL.isNativeReaderView)"
-        )
-        guard !state.pageURL.isNativeReaderView, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty else { return }
+        if ReaderHTTPErrorRecoveryPolicy.isHTTPErrorStatus(state.mainFrameHTTPStatusCode) {
+            return
+        }
+        if let expectedDocumentURL,
+           !urlsMatchWithoutHash(expectedDocumentURL, state.pageURL) {
+            return
+        }
+        let targetURL = expectedDocumentURL ?? state.pageURL
+        guard !targetURL.isNativeReaderView, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty else { return }
         let newTitle: String
-        if state.pageURL.isEBookURL {
+        if targetURL.isEBookURL {
             newTitle = title
         } else {
-            newTitle = fixAnnoyingTitlesWithPipes(title: title, url: state.pageURL)
+            newTitle = fixAnnoyingTitlesWithPipes(title: title, url: targetURL)
         }
-        logTitleTrace(
-            "stage=readerViewModel.pageMetadataUpdated.normalized pageURL=\(state.pageURL.absoluteString) newTitle=\(newTitle.debugTitleFragment)"
-        )
         let contentRefs = try await { @RealmBackgroundActor in
-            let contents = try await ReaderContentLoader.loadAll(url: state.pageURL)
+            let contents = try await ReaderContentLoader.loadAll(url: targetURL)
             return contents.compactMap { ReaderContentLoader.ContentReference(content: $0) }
         }()
         for contentRef in contentRefs {
+            if let expectedDocumentURL,
+               !urlsMatchWithoutHash(expectedDocumentURL, state.pageURL) {
+                return
+            }
             guard let content = try await contentRef.resolveOnMainActor() else { continue }
             let shouldStripClipboardIndicator = content.isFromClipboard || content.url.isSnippetURL
             let finalTitle = newTitle.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
             let existingTitle = content.title
                 .replacingOccurrences(of: String("\u{fffc}"), with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            logTitleTrace(
-                "stage=readerViewModel.pageMetadataUpdated.inspect contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey) existingTitle=\(existingTitle.debugTitleFragment) finalTitle=\(finalTitle.debugTitleFragment) existingAuthor=\(content.author.debugTitleFragment) newAuthor=\((author ?? "").debugTitleFragment)"
-            )
             if !finalTitle.isEmpty, existingTitle != finalTitle || content.author != author ?? "" {
+                if let expectedDocumentURL,
+                   !urlsMatchWithoutHash(expectedDocumentURL, state.pageURL) {
+                    return
+                }
                 try await content.asyncWrite { _, content in
+                    guard !Task.isCancelled else { return }
                     content.title = finalTitle
                     content.author = author ?? ""
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }
-                logTitleTrace(
-                    "stage=readerViewModel.pageMetadataUpdated.persisted contentURL=\(content.url.absoluteString) key=\(content.compoundKey) persistedTitle=\(finalTitle.debugTitleFragment) persistedAuthor=\((author ?? "").debugTitleFragment)"
-                )
                 try await refreshTitleInWebView(content: content)
-            } else if state.pageURL.isEBookURL {
+            } else if targetURL.isEBookURL {
                 try await refreshTitleInWebView(content: content)
             }
         }
     }
-
+    
     @MainActor
     public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil) {
+        refreshSettingsInWebView(content: content, newState: newState, reason: "unspecified")
+    }
+
+    @MainActor
+    public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil, reason: String) {
         Task { @MainActor [weak self] in
             guard let self else { return }
             let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
+            let reasonJSON = (try? JSONEncoder().encode(reason))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "\"unspecified\""
             try await self.scriptCaller.evaluateJavaScript("""
-                if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
-                    document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme)');
-                }
-                if (document.body?.getAttribute('data-mnb-dark-theme') !== '\(darkModeTheme)') {
-                    document.body?.setAttribute('data-mnb-dark-theme', '\(darkModeTheme)');
-                }
-                document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');
+                (() => {
+                    const settingsTraceReason = \(reasonJSON);
+                    const traceAll = globalThis.__manabiTimelineTraceAll === true;
+                    const mark = (event, payload = '', force = false) => {
+                        if (!traceAll && !force) { return; }
+                        const label = `MANABI swiftSettings.refreshSettingsInWebView.${event}${payload ? ' ' + payload : ''}`;
+                        try { performance.mark(label); } catch (_) {}
+                    };
+                    const signature = [
+                        'light=\(lightModeTheme)',
+                        'dark=\(darkModeTheme)',
+                        'maxWidth=\(maxWidthOverride)'
+                    ].join('|');
+                    if (document.body?.dataset?.mnbReaderViewModelSettingsSignature === signature) {
+                        mark('skipSameSignature', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride)`);
+                        return;
+                    }
+                    mark('start', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride)`);
+                    let changedCount = 0;
+                    if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
+                        document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme)');
+                        changedCount += 1;
+                    }
+                    if (document.body?.getAttribute('data-mnb-dark-theme') !== '\(darkModeTheme)') {
+                        document.body?.setAttribute('data-mnb-dark-theme', '\(darkModeTheme)');
+                        changedCount += 1;
+                    }
+                    if (document.body?.style?.getPropertyValue('--mnb-reader-max-width-override') !== '\(maxWidthOverride)') {
+                        document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');
+                        changedCount += 1;
+                    }
+                    if (document.body?.dataset) {
+                        document.body.dataset.mnbReaderViewModelSettingsSignature = signature;
+                    }
+                    if (changedCount > 0 || traceAll) {
+                        mark('finish', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride) changedCount=${changedCount}`, changedCount > 0);
+                    }
+                })();
+                //# sourceURL=lake-reader-view-model-settings-sync.js
+
                 """, duplicateInMultiTargetFrames: true)
             try await self.refreshTitleInWebView(content: content, newState: newState)
         }

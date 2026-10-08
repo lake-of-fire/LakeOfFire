@@ -1,116 +1,8 @@
 import XCTest
-import RealmSwift
-import SwiftCloudDrive
 @testable import LakeOfFireContent
 
-@MainActor
-private final class CountingReaderFileManager: ReaderFileManager, @unchecked Sendable {
-    private(set) var metadataScanCount = 0
-    var scanError: (any Swift.Error)?
-
-    override func refreshFilesMetadata(
-        drive: CloudDrive,
-        relativePath: RootRelativePath? = nil,
-        realmConfiguration: Realm.Configuration? = nil
-    ) async throws -> [ThreadSafeReference<ContentFile>]? {
-        metadataScanCount += 1
-        if let scanError {
-            throw scanError
-        }
-        try await Task.sleep(nanoseconds: 100_000_000)
-        return []
-    }
-}
-
 final class ReaderFileManagerNormalizationTests: XCTestCase {
-    private enum MetadataScanError: Swift.Error {
-        case failed
-    }
-
-    private final class SequencedRootProvider: @unchecked Sendable {
-        private let lock = NSLock()
-        private let roots: [URL]
-        private(set) var invocationCount = 0
-
-        init(roots: [URL]) {
-            self.roots = roots
-        }
-
-        func next() -> URL {
-            lock.withLock {
-                let root = roots[min(invocationCount, roots.count - 1)]
-                invocationCount += 1
-                return root
-            }
-        }
-    }
-
-    private func temporaryDirectory() throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ReaderFileManagerTests.\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        addTeardownBlock {
-            try? FileManager.default.removeItem(at: url)
-        }
-        return url
-    }
-
-    private func makeHistoryRealmConfiguration() -> Realm.Configuration {
-        var configuration = Realm.Configuration(
-            inMemoryIdentifier: "ReaderFileManagerNormalization.\(UUID().uuidString)"
-        )
-        configuration.objectTypes = [
-            Bookmark.self,
-            ContentFile.self,
-            ContentPackageFile.self,
-            HistoryRecord.self,
-            FeedEntry.self,
-        ]
-        configureLakeOfFireMutationTrackingForTesting(&configuration)
-        return configuration
-    }
-
-    private func writeFixture(relativePath: String, under rootURL: URL) throws -> URL {
-        let fileURL = rootURL.appendingPathComponent(relativePath)
-        try FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try Data("ebook fixture".utf8).write(to: fileURL)
-        return fileURL
-    }
-
-    @MainActor
-    func testConcurrentMetadataRefreshesShareOneScan() async throws {
-        let rootURL = try temporaryDirectory()
-        let manager = CountingReaderFileManager()
-        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
-        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
-
-        async let first: Void = manager.refreshAllFilesMetadata()
-        async let second: Void = manager.refreshAllFilesMetadata()
-        _ = try await (first, second)
-
-        XCTAssertEqual(manager.metadataScanCount, 1)
-    }
-
-    @MainActor
-    func testMetadataRefreshPropagatesScanFailure() async throws {
-        let rootURL = try temporaryDirectory()
-        let manager = CountingReaderFileManager()
-        manager.scanError = MetadataScanError.failed
-        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
-        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
-
-        do {
-            try await manager.refreshAllFilesMetadata()
-            XCTFail("Expected the metadata scan failure to propagate.")
-        } catch MetadataScanError.failed {
-            XCTAssertEqual(manager.metadataScanCount, 1)
-        }
-    }
-
-    func testCanonicalReaderBackingURLStripsQueryAndFragmentFromReaderFileURL() {
+    func testCanonicalReaderBackingURL_stripsQueryAndFragmentFromReaderFileURL() {
         let manager = ReaderFileManager()
         let url = URL(string: "reader-file://file/load/icloud/Books/test.cbz?subpath=cover.jpg#fragment")!
 
@@ -119,7 +11,7 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         XCTAssertEqual(result?.absoluteString, "reader-file://file/load/icloud/Books/test.cbz")
     }
 
-    func testCanonicalReaderBackingURLMapsEbookURLToReaderBackingURL() {
+    func testCanonicalReaderBackingURL_mapsEbookURLToReaderBackingURL() {
         let manager = ReaderFileManager()
         let url = URL(string: "ebook://ebook/load/icloud/Books/test.epub?subpath=OPS/chapter1.xhtml")!
 
@@ -128,7 +20,7 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         XCTAssertEqual(result?.absoluteString, "reader-file://file/load/icloud/Books/test.epub")
     }
 
-    func testCanonicalReaderBackingURLMapsMokuroURLToReaderBackingURL() {
+    func testCanonicalReaderBackingURL_mapsMokuroURLToReaderBackingURL() {
         let manager = ReaderFileManager()
         let url = URL(string: "mokuro://mokuro/load/local/Manga/series.mokuro?subpath=page-1.json")!
 
@@ -137,132 +29,164 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         XCTAssertEqual(result?.absoluteString, "reader-file://file/load/local/Manga/series.mokuro")
     }
 
-    func testCanonicalReaderBackingURLReturnsNilForNonReaderBackedURL() {
+    func testCanonicalReaderBackingURL_returnsNilForNonReaderBackedURL() {
         let manager = ReaderFileManager()
 
         XCTAssertNil(manager.canonicalReaderBackingURL(for: URL(string: "https://example.com/book")!))
     }
 
-    @MainActor
-    func testConfiguredLocalDriveRootOwnsEbookStatusAndResolution() async throws {
-        let configuredRoot = try temporaryDirectory()
-        let fallbackRoot = try temporaryDirectory()
-        let expectedURL = try writeFixture(relativePath: "Books/configured.epub", under: configuredRoot)
-        _ = try writeFixture(relativePath: "Books/configured.epub", under: fallbackRoot)
-        let manager = ReaderFileManager(defaultLocalRootURLProvider: { fallbackRoot })
-        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: configuredRoot))
-        let readerURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/configured.epub"))
-
-        let status = try await manager.cloudDriveSyncStatus(readerFileURL: readerURL)
-        let resolvedURL = try await manager.resolveReadableLocalURL(forReaderBackingURL: readerURL)
-
-        XCTAssertEqual(status, .localOnly)
-        XCTAssertEqual(resolvedURL.standardizedFileURL, expectedURL.standardizedFileURL)
-    }
-
-    @MainActor
-    func testConfiguredLocalDriveDoesNotProbeFallbackRoot() async throws {
-        let configuredRoot = try temporaryDirectory()
-        let fallbackRoot = try temporaryDirectory()
-        _ = try writeFixture(relativePath: "Books/fallback-only.epub", under: fallbackRoot)
-        let manager = ReaderFileManager(defaultLocalRootURLProvider: { fallbackRoot })
-        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: configuredRoot))
-        let readerURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/fallback-only.epub"))
-
-        let status = try await manager.cloudDriveSyncStatus(readerFileURL: readerURL)
-
-        XCTAssertEqual(status, .fileMissing)
-    }
-
-    @MainActor
-    func testLocalResolutionUsesInjectedRootBeforeDriveInitialization() async throws {
-        let fallbackRoot = try temporaryDirectory()
-        let expectedURL = try writeFixture(relativePath: "Books/cold-start.epub", under: fallbackRoot)
-        let manager = ReaderFileManager(defaultLocalRootURLProvider: { fallbackRoot })
-        let readerURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/cold-start.epub"))
-
-        let resolvedURL = try await manager.resolveReadableLocalURL(forReaderBackingURL: readerURL)
-
-        XCTAssertEqual(resolvedURL.standardizedFileURL, expectedURL.standardizedFileURL)
-    }
-
-    @MainActor
-    func testLocalResolutionSnapshotsColdStartRootOnce() async throws {
-        let firstRoot = try temporaryDirectory()
-        let laterRoot = try temporaryDirectory()
-        let expectedURL = try writeFixture(relativePath: "Books/snapshot.epub", under: firstRoot)
-        let provider = SequencedRootProvider(roots: [firstRoot, laterRoot])
-        let manager = ReaderFileManager(defaultLocalRootURLProvider: provider.next)
-        let readerURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/snapshot.epub"))
-
-        let resolvedURL = try await manager.resolveReadableLocalURL(forReaderBackingURL: readerURL)
-
-        XCTAssertEqual(resolvedURL.standardizedFileURL, expectedURL.standardizedFileURL)
-        XCTAssertEqual(provider.invocationCount, 1)
-    }
-
-    @MainActor
-    func testMissingLocalBackingFileReportsFileMissing() async throws {
-        let fallbackRoot = try temporaryDirectory()
-        let manager = ReaderFileManager(defaultLocalRootURLProvider: { fallbackRoot })
-        let readerURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/missing.epub"))
-
-        let status = try await manager.cloudDriveSyncStatus(readerFileURL: readerURL)
-        XCTAssertEqual(status, .fileMissing)
-    }
-
-    @MainActor
-    func testLocalBackingPathCannotEscapeConfiguredRoot() async throws {
-        let configuredRoot = try temporaryDirectory()
-        let manager = ReaderFileManager(defaultLocalRootURLProvider: { configuredRoot })
-        let traversalURLs = [
-            "ebook://ebook/load/local/Books/../outside.epub",
-            "ebook://ebook/load/local/Books/%2E%2E/outside.epub",
-            "ebook://ebook/load/local/Books/%2Foutside.epub",
+    func testCanonicalReaderBackingURL_rejectsTraversalAndEncodedSeparators() {
+        let manager = ReaderFileManager()
+        let invalidURLs = [
+            "ebook://ebook/load/local/../../Library/Application%20Support",
+            "ebook://ebook/load/local/Books/../other.epub",
+            "ebook://ebook/load/local/Books/%2e%2e/other.epub",
+            "ebook://ebook/load/local/Books%2fother.epub",
+            "ebook://ebook/load/local/Books%5cother.epub",
+            "ebook://ebook/load/local//other.epub",
+            "ebook://ebook/load/other.epub",
         ]
 
-        for rawURL in traversalURLs {
-            let readerURL = try XCTUnwrap(URL(string: rawURL))
-            do {
-                _ = try await manager.resolveReadableLocalURL(forReaderBackingURL: readerURL)
-                XCTFail("Expected invalid reader backing path for \(rawURL)")
-            } catch ReaderFileManagerError.invalidFileURL {
-                // Expected.
-            } catch {
-                XCTFail("Unexpected error for \(rawURL): \(error)")
-            }
+        for rawURL in invalidURLs {
+            XCTAssertNil(
+                manager.canonicalReaderBackingURL(for: URL(string: rawURL)!),
+                "Unsafe backing path must be rejected: \(rawURL)"
+            )
         }
+    }
+
+    func testCanonicalReaderBackingURL_acceptsSafeEncodedPackagePath() {
+        let manager = ReaderFileManager()
+        let url = URL(string: "ebook://ebook/load/local/Books/My%20Book.epub")!
+
+        XCTAssertEqual(
+            manager.canonicalReaderBackingURL(for: url)?.absoluteString,
+            "reader-file://file/load/local/Books/My%20Book.epub"
+        )
+    }
+
+    func testCanonicalReaderBackingURL_acceptsLiteralPercentInFilename() {
+        let manager = ReaderFileManager()
+        let url = URL(string: "ebook://ebook/load/local/Books/100%25.epub")!
+
+        XCTAssertEqual(
+            manager.canonicalReaderBackingURL(for: url)?.absoluteString,
+            "reader-file://file/load/local/Books/100%25.epub"
+        )
+    }
+
+    func testRelativePathRequiresAComponentBoundary() throws {
+        let root = URL(fileURLWithPath: "/tmp/manabi/Documents", isDirectory: true)
+        let siblingPrefix = URL(fileURLWithPath: "/tmp/manabi/Documents2/book.epub")
+
+        XCTAssertNil(ReaderFileManager.relativePath(for: siblingPrefix, relativeTo: root))
+        XCTAssertEqual(
+            ReaderFileManager.relativePath(
+                for: root.appendingPathComponent("Books/book.epub"),
+                relativeTo: root
+            ),
+            "Books/book.epub"
+        )
+    }
+
+    func testRelativePathStandardizesDotSegmentsBeforeContainmentCheck() {
+        let root = URL(fileURLWithPath: "/tmp/manabi/Documents", isDirectory: true)
+        let escaped = root.appendingPathComponent("../outside/book.epub")
+
+        XCTAssertNil(ReaderFileManager.relativePath(for: escaped, relativeTo: root))
+    }
+
+    func testPackageManifestDigestIsDeterministicAndDoesNotFollowEscapingSymlink() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let first = temporaryRoot.appendingPathComponent("first", isDirectory: true)
+        let second = temporaryRoot.appendingPathComponent("second", isDirectory: true)
+        let outside = temporaryRoot.appendingPathComponent("outside.txt")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        try Data("same".utf8).write(to: outside)
+        for root in [first, second] {
+            try Data("two".utf8).write(to: root.appendingPathComponent("b.txt"))
+            try Data("one".utf8).write(to: root.appendingPathComponent("a.txt"))
+        }
+        try FileManager.default.createSymbolicLink(
+            at: first.appendingPathComponent("outside-link.txt"),
+            withDestinationURL: outside
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let firstDigest = try first.packageManifestDigest()
+        XCTAssertEqual(firstDigest, try first.packageManifestDigest())
+        // The link is represented as a link record, rather than causing the
+        // digest to read bytes from outside the package.
+        XCTAssertNotEqual(firstDigest, try second.packageManifestDigest())
     }
 }
 
 final class ReaderFileOperationMessageMapperTests: XCTestCase {
-    func testOpenMessageMapsDownloadInProgress() {
+    func testOpenMessage_mapsDownloadInProgress() {
         XCTAssertEqual(
             ReaderFileOperationMessageMapper.openMessage(for: ReaderFileAccessError.downloadInProgress),
             "Downloading from iCloud. Try opening again when the download finishes."
         )
     }
 
-    func testOpenMessageMapsNotAvailableOffline() {
+    func testOpenMessage_mapsNotAvailableOffline() {
         XCTAssertEqual(
             ReaderFileOperationMessageMapper.openMessage(for: ReaderFileAccessError.notAvailableOffline),
-            "This book is in iCloud and isn't available offline yet."
+            "This book is in iCloud and isn’t available offline yet."
         )
     }
 
-    func testDeleteAlertMapsBlockedCloudOnly() {
+    func testDeleteAlert_mapsBlockedCloudOnly() {
         let alert = ReaderFileOperationMessageMapper.deleteAlert(for: ReaderFileDeleteError.blockedCloudOnly)
 
         XCTAssertEqual(alert?.title, "Delete Failed")
         XCTAssertEqual(alert?.message, "Download this iCloud file first, then delete it.")
     }
 
-    func testDeleteAlertMapsRemoveFailedDescription() {
+    func testDeleteAlert_mapsRemoveFailedDescription() {
         let alert = ReaderFileOperationMessageMapper.deleteAlert(
-            for: ReaderFileDeleteError.removeFailed(underlyingDescription: "The file couldn't be coordinated.")
+            for: ReaderFileDeleteError.removeFailed(underlyingDescription: "The file couldn’t be coordinated.")
         )
 
         XCTAssertEqual(alert?.title, "Delete Failed")
-        XCTAssertEqual(alert?.message, "Couldn't delete the iCloud file. The file couldn't be coordinated.")
+        XCTAssertEqual(alert?.message, "Couldn't delete the iCloud file. The file couldn’t be coordinated.")
+    }
+}
+
+
+final class ReaderPackageEntryResponseMetadataTests: XCTestCase {
+    private func source() throws -> (ReaderPackageEntrySource, URL) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reader-package-mime-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return (try ReaderPackageEntrySource(localURL: root), root)
+    }
+
+    func testCommonImageTypesUseCanonicalMIMETypes() throws {
+        let (source, _) = try source()
+
+        XCTAssertEqual(try source.mimeType(subpath: "cover.jpg").mimeType, "image/jpeg")
+        XCTAssertEqual(try source.mimeType(subpath: "cover.jpeg").mimeType, "image/jpeg")
+        XCTAssertEqual(try source.mimeType(subpath: "cover.png").mimeType, "image/png")
+        XCTAssertEqual(try source.mimeType(subpath: "cover.webp").mimeType, "image/webp")
+    }
+
+    func testSVGUsesXMLMIMEAndUTF8Encoding() throws {
+        let (source, _) = try source()
+        let metadata = try source.mimeType(subpath: "images/cover.svg")
+
+        XCTAssertEqual(metadata.mimeType, "image/svg+xml")
+        XCTAssertEqual(metadata.textEncodingName, "utf-8")
+    }
+
+    func testUnknownExtensionFallsBackToBinaryInsteadOfInventingImageType() throws {
+        let (source, _) = try source()
+        let metadata = try source.mimeType(subpath: "images/cover.unknown-manabi-format")
+
+        XCTAssertEqual(metadata.mimeType, "application/octet-stream")
+        XCTAssertNil(metadata.textEncodingName)
     }
 }

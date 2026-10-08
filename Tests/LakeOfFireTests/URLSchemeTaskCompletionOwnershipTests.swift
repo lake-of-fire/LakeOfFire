@@ -1,14 +1,18 @@
 import XCTest
 @preconcurrency import WebKit
+import SwiftCloudDrive
+import ZIPFoundation
+@testable import LakeOfFireContent
 @testable import LakeOfFireFiles
 @testable import LakeOfFireReader
 
 private final class TestURLSchemeTask: NSObject, WKURLSchemeTask {
     let request: URLRequest
     private(set) var responses = [URLResponse]()
-    private(set) var receivedData = [Data]()
+    private(set) var data = [Data]()
     private(set) var finishCount = 0
-    private(set) var failures = [Error]()
+    private(set) var failures = [any Swift.Error]()
+    var onTerminal: (() -> Void)?
 
     init(request: URLRequest) {
         self.request = request
@@ -19,15 +23,17 @@ private final class TestURLSchemeTask: NSObject, WKURLSchemeTask {
     }
 
     func didReceive(_ data: Data) {
-        receivedData.append(data)
+        self.data.append(data)
     }
 
     func didFinish() {
         finishCount += 1
+        onTerminal?()
     }
 
-    func didFailWithError(_ error: Error) {
+    func didFailWithError(_ error: any Swift.Error) {
         failures.append(error)
+        onTerminal?()
     }
 }
 
@@ -151,6 +157,56 @@ final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
         XCTAssertEqual(task.failures.count, 1)
         XCTAssertEqual(task.finishCount, 0)
         XCTAssertTrue(task.responses.isEmpty)
+    }
+
+    @MainActor
+    func testReaderFileHandlerRespondsWithPackageEntryMIMEAndEncoding() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reader-package-response-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let drive = try await CloudDrive(storage: .localDirectory(rootURL: root))
+        let archiveURL = drive.rootDirectory.appendingPathComponent("book.epub")
+        guard let archive = Archive(url: archiveURL, accessMode: .create) else {
+            XCTFail("Expected package archive to be created")
+            return
+        }
+        let entries: [(String, Data, String, String?)] = [
+            ("cover.jpg", Data([0xFF, 0xD8, 0xFF]), "image/jpeg", nil),
+            ("diagram.svg", Data("<svg/>".utf8), "image/svg+xml", "utf-8"),
+            ("opaque.unknown-manabi-format", Data([0x01, 0x02]), "application/octet-stream", nil),
+        ]
+        for (path, data, _, _) in entries {
+            try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count)) { position, size in
+                data.subdata(in: Int(position)..<Int(position) + size)
+            }
+        }
+
+        let manager = ReaderFileManager()
+        manager.localDrive = drive
+        let handler = ReaderFileURLSchemeHandler()
+        await { @ReaderFileURLSchemeActor in
+            handler.readerFileManager = manager
+        }()
+        let webView = WKWebView()
+
+        for (path, data, expectedMIME, expectedEncoding) in entries {
+            var components = URLComponents(string: "reader-file://file/load/local/book.epub")!
+            components.queryItems = [URLQueryItem(name: "subpath", value: path)]
+            let task = TestURLSchemeTask(request: URLRequest(url: try XCTUnwrap(components.url)))
+            let terminal = expectation(description: "Package response for \(path)")
+            task.onTerminal = { terminal.fulfill() }
+
+            handler.webView(webView, start: task)
+            await fulfillment(of: [terminal], timeout: 5)
+
+            XCTAssertTrue(task.failures.isEmpty, path)
+            XCTAssertEqual(task.finishCount, 1, path)
+            XCTAssertEqual(task.responses.first?.mimeType, expectedMIME, path)
+            XCTAssertEqual(task.responses.first?.textEncodingName, expectedEncoding, path)
+            XCTAssertEqual(task.data.first, data, path)
+        }
     }
 
     @MainActor

@@ -6,21 +6,19 @@ import FoundationNetworking
 
 @testable import LakeOfFireOPDS
 
-private struct ParseURLResultSummary: Sendable {
-    let versionIsOPDS2: Bool
-    let feedTitle: String?
-    let hasParseData: Bool
-    let hasError: Bool
-}
-
 final class opds_parser_url_test: XCTestCase {
+    private var session: URLSession!
+
     override func setUp() {
         super.setUp()
-        URLProtocol.registerClass(MockOPDSURLProtocol.self)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockOPDSURLProtocol.self]
+        session = URLSession(configuration: configuration)
     }
 
     override func tearDown() {
-        URLProtocol.unregisterClass(MockOPDSURLProtocol.self)
+        session.invalidateAndCancel()
+        session = nil
         MockOPDSURLProtocol.requestHandler = nil
         super.tearDown()
     }
@@ -34,21 +32,14 @@ final class opds_parser_url_test: XCTestCase {
         }
 
         let result = await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/feed.json")!) { parseData, error in
-                continuation.resume(
-                    returning: ParseURLResultSummary(
-                        versionIsOPDS2: parseData?.version == .OPDS2,
-                        feedTitle: parseData?.feed?.metadata.title,
-                        hasParseData: parseData != nil,
-                        hasError: error != nil
-                    )
-                )
+            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/feed.json")!, session: session) { parseData, error in
+                continuation.resume(returning: (parseData, error))
             }
         }
 
-        XCTAssertFalse(result.hasError)
-        XCTAssertTrue(result.versionIsOPDS2)
-        XCTAssertEqual(result.feedTitle, "Readium 2 OPDS 2.0 Feed")
+        XCTAssertNil(result.1)
+        XCTAssertEqual(result.0?.version, .OPDS2)
+        XCTAssertEqual(result.0?.feed?.metadata.title, "Readium 2 OPDS 2.0 Feed")
     }
 
     func testParseURLRejectsMalformedXML() async {
@@ -58,20 +49,13 @@ final class opds_parser_url_test: XCTestCase {
         }
 
         let result = await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/bad.xml")!) { parseData, error in
-                continuation.resume(
-                    returning: ParseURLResultSummary(
-                        versionIsOPDS2: parseData?.version == .OPDS2,
-                        feedTitle: parseData?.feed?.metadata.title,
-                        hasParseData: parseData != nil,
-                        hasError: error != nil
-                    )
-                )
+            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/bad.xml")!, session: session) { parseData, error in
+                continuation.resume(returning: (parseData, error))
             }
         }
 
-        XCTAssertFalse(result.hasParseData)
-        XCTAssertTrue(result.hasError)
+        XCTAssertNil(result.0)
+        XCTAssertNotNil(result.1)
     }
 
     func testParseURLRejectsMalformedJSON() async {
@@ -81,25 +65,18 @@ final class opds_parser_url_test: XCTestCase {
         }
 
         let result = await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/bad.json")!) { parseData, error in
-                continuation.resume(
-                    returning: ParseURLResultSummary(
-                        versionIsOPDS2: parseData?.version == .OPDS2,
-                        feedTitle: parseData?.feed?.metadata.title,
-                        hasParseData: parseData != nil,
-                        hasError: error != nil
-                    )
-                )
+            OPDSParser.parseURL(url: URL(string: "https://catalog.example.com/bad.json")!, session: session) { parseData, error in
+                continuation.resume(returning: (parseData, error))
             }
         }
 
-        XCTAssertFalse(result.hasParseData)
-        XCTAssertTrue(result.hasError)
+        XCTAssertNil(result.0)
+        XCTAssertNotNil(result.1)
     }
 }
 
 private final class MockOPDSURLProtocol: URLProtocol {
-    nonisolated(unsafe) static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+    static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
 
     override class func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "catalog.example.com"

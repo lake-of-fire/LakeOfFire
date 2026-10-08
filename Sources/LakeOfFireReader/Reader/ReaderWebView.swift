@@ -1,4 +1,9 @@
 import SwiftUI
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireContent
+import LakeOfFireCore
 import RealmSwift
 import LakeKit
 import SwiftUIWebView
@@ -6,32 +11,30 @@ import WebKit
 import SwiftSoup
 import Combine
 import RealmSwiftGaps
-import LakeOfFireContent
-import LakeOfFireFiles
 #if os(iOS)
 import UIKit
 #endif
+
+fileprivate let blockedHosts = Set([
+    "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
+    "adclick.g.doublecklick.net", "media-match.com", "www.omaze.com", "omaze.com", "pubads.g.doubleclick.net", "googlehosted.l.googleusercontent.com",
+    "pagead46.l.doubleclick.net", "pagead.l.doubleclick.net", "video-ad-stats.googlesyndication.com", "pagead-googlehosted.l.google.com",
+    "partnerad.l.doubleclick.net", "adserver.adtechus.com", "na.gmtdmp.com", "anycast.pixel.adsafeprotected.com", "d361oi6ppvq2ym.cloudfront.net",
+    "track.gawker.com", "domains.googlesyndication.com", "partner.googleadservices.com", "ads2.opensubtitles.org", "stats.wordpress.com", "botd.wordpress.com",
+    "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
+])
 
 struct ReaderWebViewObscuredInsetResolver {
     static func resolve(
         obscuredInsets: EdgeInsets?,
         additionalInsets: EdgeInsets,
         usesEBookChromeInsets: Bool,
-        preservesLeadingSafeAreaInset: Bool,
-        ignoresSampledTopObscuredInset: Bool = false,
-        fallbackTopInset: CGFloat = 0
+        preservesLeadingSafeAreaInset: Bool
     ) -> EdgeInsets {
 #if os(iOS)
-        let rawSampledTop = obscuredInsets?.top ?? 0
-        let sampledTop: CGFloat
-        if additionalInsets.top > 0 || usesEBookChromeInsets {
-            sampledTop = 0
-        } else if ignoresSampledTopObscuredInset {
-            let clampedSampledInset = rawSampledTop > 0 ? min(rawSampledTop, 88) : 0
-            sampledTop = max(0, fallbackTopInset, clampedSampledInset)
-        } else {
-            sampledTop = rawSampledTop
-        }
+        let sampledTop = additionalInsets.top > 0 || usesEBookChromeInsets
+            ? 0
+            : (obscuredInsets?.top ?? 0)
         let sampledBottom = obscuredInsets?.bottom ?? 0
         let sampledLeading = additionalInsets.leading > 0
             ? 0
@@ -49,7 +52,7 @@ struct ReaderWebViewObscuredInsetResolver {
             trailing: max(0, (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
         )
 #else
-        return EdgeInsets(
+        EdgeInsets(
             top: max(0, additionalInsets.top),
             leading: preservesLeadingSafeAreaInset ? max(0, additionalInsets.leading) : 0,
             bottom: max(0, additionalInsets.bottom),
@@ -59,59 +62,41 @@ struct ReaderWebViewObscuredInsetResolver {
     }
 }
 
-fileprivate let blockedHosts = Set([
-    "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
-    "adclick.g.doublecklick.net", "media-match.com", "www.omaze.com", "omaze.com", "pubads.g.doubleclick.net", "googlehosted.l.googleusercontent.com",
-    "pagead46.l.doubleclick.net", "pagead.l.doubleclick.net", "video-ad-stats.googlesyndication.com", "pagead-googlehosted.l.google.com",
-    "partnerad.l.doubleclick.net", "adserver.adtechus.com", "na.gmtdmp.com", "anycast.pixel.adsafeprotected.com", "d361oi6ppvq2ym.cloudfront.net",
-    "track.gawker.com", "domains.googlesyndication.com", "partner.googleadservices.com", "ads2.opensubtitles.org", "stats.wordpress.com", "botd.wordpress.com",
-    "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
-])
 
-#if os(iOS)
-@MainActor
-private func currentWindowTopSafeAreaInset() -> CGFloat {
-    UIApplication.shared.connectedScenes
-        .compactMap { $0 as? UIWindowScene }
-        .flatMap { $0.windows }
-        .first { $0.isKeyWindow }?
-        .safeAreaInsets.top ?? 0
-}
-#endif
 
-// To avoid redraws...
+
+// Lightweight callback adapter. ReaderWebView supplies one stable task manager
+// so SwiftUI value-view rebuilds cannot create independent navigation owners.
 @MainActor
-fileprivate class ReaderWebViewHandler {
+final class ReaderWebViewHandler {
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
     var onNavigationFailed: ((WebViewState) -> Void)?
     var onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     var onURLChanged: ((WebViewState) async throws -> Void)?
-
+    
     var readerContent: ReaderContent
     var readerViewModel: ReaderViewModel
     var readerModeViewModel: ReaderModeViewModel
     var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     var scriptCaller: WebViewScriptCaller
-
+    let navigator: WebViewNavigator
+    
     private let navigationTaskManager: NavigationTaskManager
-    private var activeMainFrameNavigationTokens: [String: UUID] = [:]
-
+    
     init(
         navigationTaskManager: NavigationTaskManager,
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
-        onDocumentContextInvalidated: (@MainActor (
-            WebViewState,
-            WebViewDocumentContextInvalidationReason
-        ) -> Void)? = nil,
+        onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         readerContent: ReaderContent,
         readerViewModel: ReaderViewModel,
         readerModeViewModel: ReaderModeViewModel,
         readerMediaPlayerViewModel: ReaderMediaPlayerViewModel,
-        scriptCaller: WebViewScriptCaller
+        scriptCaller: WebViewScriptCaller,
+        navigator: WebViewNavigator
     ) {
         self.navigationTaskManager = navigationTaskManager
         self.onNavigationCommitted = onNavigationCommitted
@@ -124,32 +109,68 @@ fileprivate class ReaderWebViewHandler {
         self.readerModeViewModel = readerModeViewModel
         self.readerMediaPlayerViewModel = readerMediaPlayerViewModel
         self.scriptCaller = scriptCaller
+        self.navigator = navigator
     }
-
+    
     func handleNavigationCommitted(state: WebViewState) async throws {
 //        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
 
         try Task.checkCancellation()
-        try await readerContent.load(url: state.pageURL)
-        try Task.checkCancellation()
-        guard let content = readerContent.content else {
-            return
+        if !readerModeViewModel.expectsSyntheticReaderLoaderCommit(
+            for: state.pageURL
+        ) {
+            // A different committed document no longer owns an older render
+            // overlay. The expected processed-HTML commit keeps it until its
+            // render-ready message arrives.
+            readerContent.isRenderingReaderHTML = false
         }
-        // TODO: Add onURLChanged or rename these view model methods to be more generic...
-        try await readerViewModel.onNavigationCommitted(content: content, newState: state)
-        try Task.checkCancellation()
-        try await readerModeViewModel.onNavigationCommitted(
-            readerContent: readerContent,
-            newState: state,
-            scriptCaller: scriptCaller
-        )
-        try Task.checkCancellation()
-        guard let content = readerContent.content,
-              content.url.matchesReaderURL(state.pageURL) else {
+        do {
+            try Task.checkCancellation()
+            try await readerContent.load(url: state.pageURL)
+            try Task.checkCancellation()
+            guard let content = readerContent.content else {
+                readerModeViewModel.cancelReaderModeLoad(
+                    for: state.pageURL,
+                    readerContent: readerContent
+                )
+                return
+            }
+            try await readerViewModel.onNavigationCommitted(
+                content: content,
+                newState: state
+            )
+            try Task.checkCancellation()
+            try await readerModeViewModel.onNavigationCommitted(
+                readerContent: readerContent,
+                newState: state,
+                scriptCaller: scriptCaller,
+                navigator: navigator
+            )
+            try Task.checkCancellation()
+            guard let content = readerContent.content,
+                  content.url.matchesReaderURL(state.pageURL) else {
+                throw CancellationError()
+            }
+            try await readerMediaPlayerViewModel.onNavigationCommitted(
+                content: content,
+                newState: state
+            )
+            try Task.checkCancellation()
+        } catch is CancellationError {
             throw CancellationError()
+        } catch {
+            // Replacement commits cancel the previous task. If an unrelated
+            // operation failed at the same time, its cleanup must not release a
+            // newer same-URL reader render.
+            guard !Task.isCancelled else {
+                throw CancellationError()
+            }
+            readerModeViewModel.cancelReaderModeLoad(
+                for: state.pageURL,
+                readerContent: readerContent
+            )
+            throw error
         }
-        try await readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
-        try Task.checkCancellation()
     }
 
     func handleNavigationFinished(state: WebViewState) async {
@@ -160,10 +181,13 @@ fileprivate class ReaderWebViewHandler {
         )
         guard !Task.isCancelled,
               let content = readerContent.content,
-              content.url.matchesReaderURL(state.pageURL) else { return }
-        readerViewModel.onNavigationFinished(content: content, newState: state) { _ in
-            // no external callback here
+              content.url.matchesReaderURL(state.pageURL) else {
+            return
         }
+        readerViewModel.onNavigationFinished(
+            content: content,
+            newState: state
+        )
     }
 
     func handleURLChanged(state: WebViewState) async throws {
@@ -173,53 +197,25 @@ fileprivate class ReaderWebViewHandler {
         try Task.checkCancellation()
     }
 
-    private func endAllMainFrameNavigationTasks() {
-        let tokens = Array(activeMainFrameNavigationTokens.values)
-        activeMainFrameNavigationTokens.removeAll()
-        for token in tokens {
-            readerContent.endMainFrameNavigationTask(token)
-        }
-    }
-
     func onNavigationCommitted(state: WebViewState) {
-        endAllMainFrameNavigationTasks()
-        let navigationKey = state.pageURL.absoluteString
-        let navigationToken = readerContent.beginMainFrameNavigationTask(to: state.pageURL)
-        activeMainFrameNavigationTokens[navigationKey] = navigationToken
         navigationTaskManager.startOnNavigationCommitted {
-            do {
-                try await self.handleNavigationCommitted(state: state)
-                try Task.checkCancellation()
-            } catch {
-                if self.activeMainFrameNavigationTokens[navigationKey] == navigationToken {
-                    self.activeMainFrameNavigationTokens.removeValue(forKey: navigationKey)
-                    self.readerContent.endMainFrameNavigationTask(navigationToken)
-                }
-                throw error
-            }
+            try await self.handleNavigationCommitted(state: state)
+            try Task.checkCancellation()
             do {
                 try await self.onNavigationCommitted?(state)
             } catch is CancellationError {
-                if self.activeMainFrameNavigationTokens[navigationKey] == navigationToken {
-                    self.activeMainFrameNavigationTokens.removeValue(forKey: navigationKey)
-                    self.readerContent.endMainFrameNavigationTask(navigationToken)
-                }
                 throw CancellationError()
             } catch {
+                // Public observers are not part of the internal document commit.
                 print("Error during public onNavigationCommitted: \(error)")
             }
         }
     }
 
     func onNavigationFinished(state: WebViewState) {
-        let navigationKey = state.pageURL.absoluteString
-        let navigationToken = activeMainFrameNavigationTokens.removeValue(forKey: navigationKey)
         navigationTaskManager.startOnNavigationFinished { @MainActor [weak self] in
             guard let self else { return }
             await self.handleNavigationFinished(state: state)
-            if let navigationToken {
-                self.readerContent.endMainFrameNavigationTask(navigationToken)
-            }
             guard !Task.isCancelled else { return }
             self.onNavigationFinished?(state)
         }
@@ -229,16 +225,14 @@ fileprivate class ReaderWebViewHandler {
         state: WebViewState,
         disposition: WebViewNavigationFailureDisposition
     ) {
-        let navigationKey = state.pageURL.absoluteString
-        let navigationToken = activeMainFrameNavigationTokens.removeValue(forKey: navigationKey)
         let preservesCommittedDocument = disposition == .preservedCommittedDocument
         navigationTaskManager.startOnNavigationFailed(
             preservingCommittedDocument: preservesCommittedDocument
         ) { @MainActor in
-            if let navigationToken {
-                self.readerContent.endMainFrameNavigationTask(navigationToken)
-            }
             if !preservesCommittedDocument {
+                if self.readerContent.pageURL.matchesReaderURL(state.pageURL) {
+                    self.readerContent.isRenderingReaderHTML = false
+                }
                 self.readerModeViewModel.onNavigationFailed(newState: state)
             }
             self.onNavigationFailed?(state)
@@ -249,9 +243,13 @@ fileprivate class ReaderWebViewHandler {
         state: WebViewState,
         reason: WebViewDocumentContextInvalidationReason
     ) {
+        // A committed replacement, process loss, or host detach invalidates all
+        // asynchronous work that still belongs to the previous document.
         navigationTaskManager.cancelNavigationWork()
-        endAllMainFrameNavigationTasks()
         if reason == .webContentProcessTerminated {
+            if readerContent.pageURL.matchesReaderURL(state.pageURL) {
+                readerContent.isRenderingReaderHTML = false
+            }
             readerModeViewModel.onNavigationFailed(newState: state)
             onNavigationFailed?(state)
         }
@@ -266,17 +264,27 @@ fileprivate class ReaderWebViewHandler {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                // Public observers must not retroactively invalidate an internally
+                // completed same-document mutation.
                 print("Error during public onURLChanged: \(error)")
             }
         }
     }
+
+}
+
+// WebView owns its callback closures for longer than a single SwiftUI body
+// evaluation. Keep the callback target stable while replacing the handler it
+// forwards to whenever ReaderWebView receives newer environment objects.
+@MainActor
+fileprivate final class ReaderWebViewCallbackRelay: ObservableObject {
+    var handler: ReaderWebViewHandler?
 }
 
 public struct ReaderWebView: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
     var usesEBookChromeInsets = false
-    var ignoresSampledTopObscuredInset = false
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat?
     var additionalLeadingSafeAreaInset: CGFloat?
@@ -288,18 +296,23 @@ public struct ReaderWebView: View {
     let onNavigationFailed: ((WebViewState) -> Void)?
     let onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     let onURLChanged: ((WebViewState) async throws -> Void)?
+    let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
     let lightModeTheme: LightModeTheme
     let darkModeTheme: DarkModeTheme
-
+    
     @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
     @State private var defaultEBookPackageSessions = ReaderEBookServingSessionStore()
     @Environment(\.readerEBookPackageSessions) private var readerEBookPackageSessions
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
+    // SwiftUI can rebuild this value-type view while a navigation callback is
+    // suspended. Keep one task owner across those rebuilds so a newer callback,
+    // failure, process termination, or disappearance can cancel older work.
     @State private var navigationTaskManager = NavigationTaskManager()
-
+    @StateObject private var callbackRelay = ReaderWebViewCallbackRelay()
+    
     @EnvironmentObject internal var readerContent: ReaderContent
     @EnvironmentObject internal var scriptCaller: WebViewScriptCaller
     @EnvironmentObject internal var readerViewModel: ReaderViewModel
@@ -307,10 +320,29 @@ public struct ReaderWebView: View {
     @EnvironmentObject internal var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
 
+    @MainActor
+    private func makeHandler() -> ReaderWebViewHandler {
+        ReaderWebViewHandler(
+            navigationTaskManager: navigationTaskManager,
+            onNavigationCommitted: onNavigationCommitted,
+            onNavigationFinished: onNavigationFinished,
+            onNavigationFailed: onNavigationFailed,
+            onDocumentContextInvalidated: onDocumentContextInvalidated,
+            onURLChanged: onURLChanged,
+            readerContent: readerContent,
+            readerViewModel: readerViewModel,
+            readerModeViewModel: readerModeViewModel,
+            readerMediaPlayerViewModel: readerMediaPlayerViewModel,
+            scriptCaller: scriptCaller,
+            navigator: navigator
+        )
+    }
+
     private var ebookSchemeBindingState: String {
         [
-            readerModeViewModel.ebookProcessedTextCacheReader != nil ? "processedTextRead=1" : "processedTextRead=0",
-            readerModeViewModel.ebookProcessedTextCacheWriter != nil ? "processedTextWrite=1" : "processedTextWrite=0",
+            "dependencyRevision=\(readerModeViewModel.processingDependencyRevision)",
+            readerModeViewModel.ebookProcessedTextCacheReader != nil ? "cacheReader=1" : "cacheReader=0",
+            readerModeViewModel.ebookProcessedTextCacheWriter != nil ? "cacheWriter=1" : "cacheWriter=0",
             readerModeViewModel.ebookProcessingVariantProvider != nil ? "processingVariant=1" : "processingVariant=0",
             readerModeViewModel.ebookSectionPresentationProvider != nil ? "presentation=1" : "presentation=0",
             readerModeViewModel.processReadabilityContent != nil ? "readability=1" : "readability=0",
@@ -323,12 +355,11 @@ public struct ReaderWebView: View {
         ]
         .joined(separator: " ")
     }
-
+    
     public init(
         persistentWebViewID: String? = nil,
         obscuredInsets: EdgeInsets?,
         usesEBookChromeInsets: Bool = false,
-        ignoresSampledTopObscuredInset: Bool = false,
         bounces: Bool = true,
         additionalTopSafeAreaInset: CGFloat? = nil,
         additionalLeadingSafeAreaInset: CGFloat? = nil,
@@ -338,11 +369,9 @@ public struct ReaderWebView: View {
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
-        onDocumentContextInvalidated: (@MainActor (
-            WebViewState,
-            WebViewDocumentContextInvalidationReason
-        ) -> Void)? = nil,
+        onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
+        onScrollBottomStateChanged: (@MainActor (Bool) -> Void)? = nil,
         hideNavigationDueToScroll: Binding<Bool> = .constant(false),
         textSelection: Binding<String?>? = nil,
         buildMenu: BuildMenuType? = nil,
@@ -352,7 +381,6 @@ public struct ReaderWebView: View {
         self.persistentWebViewID = persistentWebViewID
         self.obscuredInsets = obscuredInsets
         self.usesEBookChromeInsets = usesEBookChromeInsets
-        self.ignoresSampledTopObscuredInset = ignoresSampledTopObscuredInset
         self.bounces = bounces
         self.additionalTopSafeAreaInset = additionalTopSafeAreaInset
         self.additionalLeadingSafeAreaInset = additionalLeadingSafeAreaInset
@@ -364,6 +392,7 @@ public struct ReaderWebView: View {
         self.onNavigationFailed = onNavigationFailed
         self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
+        self.onScrollBottomStateChanged = onScrollBottomStateChanged
         _hideNavigationDueToScroll = hideNavigationDueToScroll
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
@@ -377,27 +406,15 @@ public struct ReaderWebView: View {
         return handler
     }
 
+    
     public var body: some View {
-        let handler = ReaderWebViewHandler(
-            navigationTaskManager: navigationTaskManager,
-            onNavigationCommitted: onNavigationCommitted,
-            onNavigationFinished: onNavigationFinished,
-            onNavigationFailed: onNavigationFailed,
-            onDocumentContextInvalidated: onDocumentContextInvalidated,
-            onURLChanged: onURLChanged,
-            readerContent: readerContent,
-            readerViewModel: readerViewModel,
-            readerModeViewModel: readerModeViewModel,
-            readerMediaPlayerViewModel: readerMediaPlayerViewModel,
-            scriptCaller: scriptCaller
-        )
+        let handler = makeHandler()
+        let _ = callbackRelay.handler = handler
         let ebookURLSchemeHandler = configuredEBookURLSchemeHandler()
-        let readerFileURLSchemeHandler = self.readerFileURLSchemeHandler
         ReaderWebViewInternal(
             persistentWebViewID: persistentWebViewID,
             obscuredInsets: obscuredInsets,
             usesEBookChromeInsets: usesEBookChromeInsets,
-            ignoresSampledTopObscuredInset: ignoresSampledTopObscuredInset,
             bounces: bounces,
             additionalTopSafeAreaInset: additionalTopSafeAreaInset,
             additionalLeadingSafeAreaInset: additionalLeadingSafeAreaInset,
@@ -406,24 +423,27 @@ public struct ReaderWebView: View {
             schemeHandlers: schemeHandlers,
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
+            onScrollBottomStateChanged: onScrollBottomStateChanged,
             buildMenu: buildMenu,
             lightModeTheme: lightModeTheme,
             darkModeTheme: darkModeTheme,
             scriptCaller: scriptCaller,
             userScripts: readerViewModel.allScripts,
             state: $readerViewModel.state,
+            readerContentPageURLString: readerContent.pageURL.absoluteString,
             ebookURLSchemeHandler: ebookURLSchemeHandler,
             readerFileURLSchemeHandler: readerFileURLSchemeHandler,
             sharedReaderFontAsset: readerModeViewModel.sharedReaderFontAsset,
-            handler: handler
+            callbackRelay: callbackRelay
         )
         .task(id: ebookSchemeBindingState) { @MainActor in
             navigator.shouldLoadFallbackOnAttach = false
+            navigator.attachFallbackDelayNanoseconds = 700_000_000
             ebookURLSchemeHandler.ebookProcessedTextCacheReader = readerModeViewModel.ebookProcessedTextCacheReader
             ebookURLSchemeHandler.ebookProcessedTextCacheWriter = readerModeViewModel.ebookProcessedTextCacheWriter
-            ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             ebookURLSchemeHandler.ebookProcessingVariantProvider = readerModeViewModel.ebookProcessingVariantProvider
             ebookURLSchemeHandler.ebookSectionPresentationProvider = readerModeViewModel.ebookSectionPresentationProvider
+            ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent
             ebookURLSchemeHandler.processHTMLDocument = readerModeViewModel.processHTMLDocument
             ebookURLSchemeHandler.processHTMLBytes = readerModeViewModel.processHTMLBytes
@@ -432,7 +452,6 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.sharedFontCSSBase64Provider = readerModeViewModel.sharedFontCSSBase64Provider
             ebookURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
             readerFileURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
-            print("# EPUB", "readerWebView.schemeHandlerBindings", ebookSchemeBindingState)
         }
         .readerFileManagerSetup { readerFileManager in
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
@@ -448,7 +467,6 @@ fileprivate struct ReaderWebViewInternal: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
     var usesEBookChromeInsets = false
-    var ignoresSampledTopObscuredInset = false
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat?
     var additionalLeadingSafeAreaInset: CGFloat?
@@ -457,16 +475,18 @@ fileprivate struct ReaderWebViewInternal: View {
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
+    let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
     var buildMenu: BuildMenuType?
     let lightModeTheme: LightModeTheme
     let darkModeTheme: DarkModeTheme
     var scriptCaller: WebViewScriptCaller
     var userScripts: [WebViewUserScript]
     @Binding var state: WebViewState
+    let readerContentPageURLString: String
     var ebookURLSchemeHandler: EbookURLSchemeHandler
     var readerFileURLSchemeHandler: ReaderFileURLSchemeHandler
     let sharedReaderFontAsset: SharedReaderFontAsset?
-    let handler: ReaderWebViewHandler
+    let callbackRelay: ReaderWebViewCallbackRelay
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
 #if os(iOS)
@@ -476,14 +496,8 @@ fileprivate struct ReaderWebViewInternal: View {
         defaultResetURL: URL(string: "about:blank")
     )
 #endif
-
-    @Environment(\.readerWebViewConfigurationTransform) private var readerWebViewConfigurationTransform
-    @Environment(\.readerWebViewMessageHandlersTransform) private var readerWebViewMessageHandlersTransform
-    @Environment(\.webViewMessageHandlers) private var webViewMessageHandlers
+    
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
-    @Environment(\.readerNavigationActionHandler) private var readerNavigationActionHandler
-    @Environment(\.readerNavigationActionContextHandler) private var readerNavigationActionContextHandler
-    @Environment(\.readerWebViewDataStore) private var readerWebViewDataStore
     @Environment(\.colorScheme) private var colorScheme
 
     private var readerThemeBackgroundColor: Color {
@@ -504,25 +518,22 @@ fileprivate struct ReaderWebViewInternal: View {
             }
         }
     }
-
+    
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
+        let preservesLeadingSafeAreaInset: Bool
 #if os(iOS)
-        let preservesLeadingSafeAreaInset = UIDevice.current.userInterfaceIdiom == .phone
-        let fallbackTopInset = max(0, currentWindowTopSafeAreaInset())
+        preservesLeadingSafeAreaInset = UIDevice.current.userInterfaceIdiom == .phone
 #else
-        let preservesLeadingSafeAreaInset = true
-        let fallbackTopInset: CGFloat = 0
+        preservesLeadingSafeAreaInset = true
 #endif
         return ReaderWebViewObscuredInsetResolver.resolve(
             obscuredInsets: obscuredInsets,
             additionalInsets: additionalInsets,
             usesEBookChromeInsets: usesEBookChromeInsets,
-            preservesLeadingSafeAreaInset: preservesLeadingSafeAreaInset,
-            ignoresSampledTopObscuredInset: ignoresSampledTopObscuredInset,
-            fallbackTopInset: fallbackTopInset
+            preservesLeadingSafeAreaInset: preservesLeadingSafeAreaInset
         )
     }
-
+    
     public var body: some View {
 #if os(iOS)
         let webViewPrewarmer: WebViewPrewarmer? = self.webViewPrewarmer
@@ -539,21 +550,16 @@ fileprivate struct ReaderWebViewInternal: View {
                 trailing: 0
             )
         )
-        let resolvedWebsiteDataStore = readerWebViewDataStore ?? WKWebsiteDataStore.default()
-
-        let webViewConfig = WebViewConfig(
-            dataDetectorsEnabled: false,
-            backgroundColor: readerThemeBackgroundColor,
-            usesSampledPageTopColorForUnderPageBackground: true,
-            usesConfiguredBackgroundForReaderDocuments: true,
-            adjustsScrollViewContentInsetsForSafeArea: false,
-            hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
-            nativeLookupHitTestingEnabled: state.pageURL.isEBookURL,
-            userScripts: userScripts
-        )
-
         WebView(
-            config: readerWebViewConfigurationTransform(webViewConfig),
+            config: WebViewConfig(
+                dataDetectorsEnabled: false,
+                backgroundColor: readerThemeBackgroundColor,
+                usesSampledPageTopColorForUnderPageBackground: true,
+                usesConfiguredBackgroundForReaderDocuments: true,
+                adjustsScrollViewContentInsetsForSafeArea: false,
+                hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
+                nativeLookupHitTestingEnabled: state.pageURL.isEBookURL,
+                userScripts: userScripts),
             navigator: navigator,
             state: $state,
             scriptCaller: scriptCaller,
@@ -566,41 +572,38 @@ fileprivate struct ReaderWebViewInternal: View {
                 (ebookURLSchemeHandler, "ebook"),
             ] + schemeHandlers,
             onNavigationCommitted: { state in
-                handler.onNavigationCommitted(state: state)
+                callbackRelay.handler?.onNavigationCommitted(state: state)
             },
             onNavigationFinished: { state in
-                handler.onNavigationFinished(state: state)
+                callbackRelay.handler?.onNavigationFinished(state: state)
             },
             onNavigationFailedWithDisposition: { state, disposition in
-                handler.onNavigationFailed(state: state, disposition: disposition)
+                callbackRelay.handler?.onNavigationFailed(
+                    state: state,
+                    disposition: disposition
+                )
             },
             onDocumentContextInvalidated: { state, reason in
-                handler.onDocumentContextInvalidated(state: state, reason: reason)
+                callbackRelay.handler?.onDocumentContextInvalidated(
+                    state: state,
+                    reason: reason
+                )
             },
             onURLChanged: { state in
-                handler.onURLChanged(state: state)
+                callbackRelay.handler?.onURLChanged(state: state)
             },
-            onNavigationAction: { action in
-                if let readerNavigationActionContextHandler,
-                   let policy = await readerNavigationActionContextHandler(
-                       ReaderNavigationActionContext(
-                           action: action,
-                           websiteDataStore: resolvedWebsiteDataStore
-                       )
-                   ) {
-                    return policy
-                }
-                return await readerNavigationActionHandler?(action)
-            },
+            onScrollBottomStateChanged: onScrollBottomStateChanged,
             buildMenu: { builder in
                 buildMenu?(builder)
             },
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
-            websiteDataStore: resolvedWebsiteDataStore,
             webViewPrewarmer: webViewPrewarmer
         )
-        .environment(\.webViewMessageHandlers, readerWebViewMessageHandlersTransform(webViewMessageHandlers, scriptCaller))
+        .onAppear {
+        }
+        .onDisappear {
+        }
         .task(id: sharedReaderFontAsset?.localFileURL.path ?? "") { @MainActor in
             internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
         }

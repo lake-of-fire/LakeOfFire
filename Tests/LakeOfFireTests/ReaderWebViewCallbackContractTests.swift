@@ -1,19 +1,26 @@
-import SwiftUI
 import XCTest
+import SwiftUI
+@testable import SwiftUIWebView
+@testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
 private actor ReaderCallbackGate {
-    private var continuation: CheckedContinuation<Void, Never>?
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
 
     func wait() async {
+        guard !isOpen else { return }
         await withCheckedContinuation { continuation in
-            self.continuation = continuation
+            waiters.append(continuation)
         }
     }
 
     func release() {
-        continuation?.resume()
-        continuation = nil
+        guard !isOpen else { return }
+        isOpen = true
+        let waiters = waiters
+        self.waiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 }
 
@@ -22,13 +29,113 @@ private enum ReaderCallbackTestError: Error {
 }
 
 @MainActor
+private func makeReaderWebViewHandlerFixture() -> (
+    handler: ReaderWebViewHandler,
+    taskManager: NavigationTaskManager,
+    readerContent: ReaderContent,
+    readerModeViewModel: ReaderModeViewModel
+) {
+    let taskManager = NavigationTaskManager()
+    let readerContent = ReaderContent()
+    let readerModeViewModel = ReaderModeViewModel()
+    let handler = ReaderWebViewHandler(
+        navigationTaskManager: taskManager,
+        readerContent: readerContent,
+        readerViewModel: ReaderViewModel(systemScripts: []),
+        readerModeViewModel: readerModeViewModel,
+        readerMediaPlayerViewModel: ReaderMediaPlayerViewModel(),
+        scriptCaller: WebViewScriptCaller(),
+        navigator: WebViewNavigator()
+    )
+    return (handler, taskManager, readerContent, readerModeViewModel)
+}
+
+@MainActor
 final class ReaderWebViewCallbackContractTests: XCTestCase {
-    func testOnlyPhoneReaderExpandsIntoEverySafeArea() {
-        XCTAssertTrue(ReaderWebViewSafeAreaPolicy.expandsIntoAllSafeAreas(isPhone: true))
-        XCTAssertFalse(ReaderWebViewSafeAreaPolicy.expandsIntoAllSafeAreas(isPhone: false))
+    func testCancelledCommitCannotReleaseNewerReaderRender() async {
+        let fixture = makeReaderWebViewHandlerFixture()
+        fixture.readerContent.isRenderingReaderHTML = true
+        let task = Task { @MainActor in
+            try await fixture.handler.handleNavigationCommitted(state: .empty)
+        }
+
+        task.cancel()
+
+        do {
+            try await task.value
+            XCTFail("A canceled commit must stop before mutating reader state")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertTrue(
+            fixture.readerContent.isRenderingReaderHTML,
+            "An obsolete commit must not release the current render overlay"
+        )
     }
 
-    func testIPadReaderModeDoesNotApplySplitViewLeadingInsetInsideWebKit() {
+    func testTerminalNavigationFailureReleasesOwnedReaderRender() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let url = URL(string: "https://example.com/failed")!
+        fixture.readerContent.pageURL = url
+        fixture.readerContent.isRenderingReaderHTML = true
+        fixture.readerModeViewModel.beginReaderModeLoad(for: url)
+        var state = WebViewState.empty
+        state.pageURL = url
+
+        fixture.handler.onNavigationFailed(
+            state: state,
+            disposition: .terminal
+        )
+        try await fixture.taskManager.onNavigationFailedTask?.value
+
+        XCTAssertFalse(fixture.readerContent.isRenderingReaderHTML)
+        XCTAssertFalse(fixture.readerModeViewModel.isReaderModeLoading)
+        XCTAssertFalse(fixture.readerModeViewModel.isReaderModeLoadPending(for: url))
+    }
+
+    func testProvisionalNavigationFailurePreservesCommittedReaderRender()
+    async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let url = URL(string: "https://example.com/committed")!
+        fixture.readerContent.pageURL = url
+        fixture.readerContent.isRenderingReaderHTML = true
+        fixture.readerModeViewModel.beginReaderModeLoad(for: url)
+        var state = WebViewState.empty
+        state.pageURL = url
+
+        fixture.handler.onNavigationFailed(
+            state: state,
+            disposition: .preservedCommittedDocument
+        )
+        try await fixture.taskManager.onNavigationFailedTask?.value
+
+        XCTAssertTrue(fixture.readerContent.isRenderingReaderHTML)
+        XCTAssertTrue(fixture.readerModeViewModel.isReaderModeLoading)
+        XCTAssertTrue(fixture.readerModeViewModel.isReaderModeLoadPending(for: url))
+    }
+
+    func testWebContentProcessTerminationReleasesOwnedReaderRender() {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let url = URL(string: "https://example.com/terminated")!
+        fixture.readerContent.pageURL = url
+        fixture.readerContent.isRenderingReaderHTML = true
+        fixture.readerModeViewModel.beginReaderModeLoad(for: url)
+        var state = WebViewState.empty
+        state.pageURL = url
+
+        fixture.handler.onDocumentContextInvalidated(
+            state: state,
+            reason: .webContentProcessTerminated
+        )
+
+        XCTAssertFalse(fixture.readerContent.isRenderingReaderHTML)
+        XCTAssertFalse(fixture.readerModeViewModel.isReaderModeLoading)
+        XCTAssertFalse(fixture.readerModeViewModel.isReaderModeLoadPending(for: url))
+    }
+
+    func testIPadReaderModeDoesNotUseSplitViewLeadingSafeAreaAsWebKitInset() {
         let resolved = ReaderWebViewObscuredInsetResolver.resolve(
             obscuredInsets: EdgeInsets(top: 0, leading: 450, bottom: 0, trailing: 0),
             additionalInsets: EdgeInsets(top: 0, leading: 450, bottom: 0, trailing: 0),
@@ -50,7 +157,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertEqual(resolved.leading, 44)
     }
 
-    func testIPadEBookDoesNotApplySplitViewLeadingInsetInsideWebKit() {
+    func testIPadEBookDoesNotUseSplitViewLeadingSafeAreaAsWebKitInset() {
         let resolved = ReaderWebViewObscuredInsetResolver.resolve(
             obscuredInsets: EdgeInsets(top: 0, leading: 450, bottom: 0, trailing: 0),
             additionalInsets: EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0),
@@ -61,27 +168,20 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertEqual(resolved.leading, 0)
     }
 
-    func testIgnoredSampledTopRetainsFallbackAndClampPolicy() {
-        let resolved = ReaderWebViewObscuredInsetResolver.resolve(
-            obscuredInsets: EdgeInsets(top: 160, leading: 0, bottom: 0, trailing: 0),
-            additionalInsets: EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0),
-            usesEBookChromeInsets: false,
-            preservesLeadingSafeAreaInset: false,
-            ignoresSampledTopObscuredInset: true,
-            fallbackTopInset: 47
-        )
-
-        XCTAssertEqual(resolved.top, 88)
-    }
-
     func testCommitFailureSuppressesFinishAndPendingURLChange() async {
         let manager = NavigationTaskManager()
         var finishCount = 0
         var urlCount = 0
 
-        manager.startOnNavigationCommitted { throw ReaderCallbackTestError.commitFailed }
-        manager.startOnURLChanged { urlCount += 1 }
-        manager.startOnNavigationFinished { finishCount += 1 }
+        manager.startOnNavigationCommitted {
+            throw ReaderCallbackTestError.commitFailed
+        }
+        manager.startOnURLChanged {
+            urlCount += 1
+        }
+        manager.startOnNavigationFinished {
+            finishCount += 1
+        }
 
         do {
             try await manager.onNavigationFinishedTask?.value
@@ -96,72 +196,101 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertNil(manager.onURLChangedTask)
     }
 
-    func testFinishWaitsForCommitAndRunsOnce() async throws {
+    func testFinishWaitsForCommitAndRunsExactlyOnce() async throws {
         let manager = NavigationTaskManager()
-        let gate = ReaderCallbackGate()
-        let commitStarted = expectation(description: "commit started")
+        let commitGate = ReaderCallbackGate()
         var finishCount = 0
 
         manager.startOnNavigationCommitted {
-            commitStarted.fulfill()
-            await gate.wait()
+            await commitGate.wait()
         }
-        manager.startOnNavigationFinished { finishCount += 1 }
-        manager.startOnNavigationFinished { finishCount += 100 }
+        manager.startOnNavigationFinished {
+            finishCount += 1
+        }
+        manager.startOnNavigationFinished {
+            finishCount += 100
+        }
 
-        await fulfillment(of: [commitStarted], timeout: 1)
+        await Task.yield()
         XCTAssertEqual(finishCount, 0)
-        await gate.release()
+        await commitGate.release()
         try await manager.onNavigationFinishedTask?.value
+        XCTAssertEqual(finishCount, 1)
+
+        manager.startOnNavigationFinished {
+            finishCount += 1000
+        }
+        await Task.yield()
         XCTAssertEqual(finishCount, 1)
     }
 
     func testURLChangeBeforeDidFinishQueuesBehindDocumentFinish() async throws {
         let manager = NavigationTaskManager()
-        var order = [String]()
+        var order: [String] = []
 
-        manager.startOnNavigationCommitted { order.append("commit") }
+        manager.startOnNavigationCommitted {
+            order.append("commit")
+        }
         try await manager.onNavigationCommittedTask?.value
-        manager.startOnURLChanged { order.append("url") }
+        manager.startOnURLChanged {
+            order.append("url")
+        }
 
         await Task.yield()
         XCTAssertEqual(order, ["commit"])
         XCTAssertNil(manager.onURLChangedTask)
 
-        manager.startOnNavigationFinished { order.append("finish") }
+        manager.startOnNavigationFinished {
+            order.append("finish")
+        }
         try await manager.onNavigationFinishedTask?.value
         try await manager.onURLChangedTask?.value
         XCTAssertEqual(order, ["commit", "finish", "url"])
     }
 
-    func testURLChangeDuringFinishKeepsOnlyLatestMutation() async throws {
+    func testURLChangeDuringSemanticFinishKeepsOnlyLatestMutation() async throws {
         let manager = NavigationTaskManager()
-        let gate = ReaderCallbackGate()
-        let finishStarted = expectation(description: "finish started")
-        var order = [String]()
+        let finishGate = ReaderCallbackGate()
+        let finishStarted = expectation(description: "semantic finish started")
+        var order: [String] = []
 
-        manager.startOnNavigationCommitted { order.append("commit") }
+        manager.startOnNavigationCommitted {
+            order.append("commit")
+        }
+        try await manager.onNavigationCommittedTask?.value
         manager.startOnNavigationFinished {
             order.append("finish-start")
             finishStarted.fulfill()
-            await gate.wait()
+            await finishGate.wait()
             order.append("finish-end")
         }
-        await fulfillment(of: [finishStarted], timeout: 1)
-        manager.startOnURLChanged { order.append("stale-url") }
-        manager.startOnURLChanged { order.append("latest-url") }
 
-        await gate.release()
+        await fulfillment(of: [finishStarted], timeout: 1)
+        manager.startOnURLChanged {
+            order.append("stale-url")
+        }
+        manager.startOnURLChanged {
+            order.append("latest-url")
+        }
+        await Task.yield()
+        XCTAssertEqual(order, ["commit", "finish-start"])
+
+        await finishGate.release()
         try await manager.onNavigationFinishedTask?.value
         try await manager.onURLChangedTask?.value
-        XCTAssertEqual(order, ["commit", "finish-start", "finish-end", "latest-url"])
+        XCTAssertEqual(
+            order,
+            ["commit", "finish-start", "finish-end", "latest-url"]
+        )
     }
 
     func testURLChangeBeforeFirstCommitIsIgnored() async {
         let manager = NavigationTaskManager()
         var urlCount = 0
 
-        manager.startOnURLChanged { urlCount += 1 }
+        manager.startOnURLChanged {
+            urlCount += 1
+        }
         await Task.yield()
 
         XCTAssertEqual(urlCount, 0)
@@ -170,13 +299,19 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
 
     func testSettledDocumentURLChangeRunsWithoutAnotherDidFinish() async throws {
         let manager = NavigationTaskManager()
-        var order = [String]()
+        var order: [String] = []
 
-        manager.startOnNavigationCommitted { order.append("commit") }
-        manager.startOnNavigationFinished { order.append("finish") }
+        manager.startOnNavigationCommitted {
+            order.append("commit")
+        }
+        manager.startOnNavigationFinished {
+            order.append("finish")
+        }
         try await manager.onNavigationFinishedTask?.value
 
-        manager.startOnURLChanged { order.append("url") }
+        manager.startOnURLChanged {
+            order.append("url")
+        }
         try await manager.onURLChangedTask?.value
         XCTAssertEqual(order, ["commit", "finish", "url"])
     }
@@ -192,7 +327,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         manager.startOnNavigationCommitted {
             firstCommitStarted.fulfill()
             do {
-                try await Task.sleep(for: .seconds(30))
+                try await Task.sleep(nanoseconds: 30_000_000_000)
             } catch is CancellationError {
                 firstCommitCancelled.fulfill()
                 throw CancellationError()
@@ -206,7 +341,10 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         manager.startOnNavigationCommitted {
             replacementCommitCalled.fulfill()
         }
-        await fulfillment(of: [firstCommitCancelled, replacementCommitCalled], timeout: 1)
+        await fulfillment(
+            of: [firstCommitCancelled, replacementCommitCalled],
+            timeout: 1
+        )
         await fulfillment(of: [staleFinishCalled], timeout: 0.05)
     }
 
@@ -218,10 +356,11 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         manager.startOnNavigationCommitted {}
         manager.startOnNavigationFinished {}
         try await manager.onNavigationFinishedTask?.value
+
         manager.startOnURLChanged {
             urlStarted.fulfill()
             do {
-                try await Task.sleep(for: .seconds(30))
+                try await Task.sleep(nanoseconds: 30_000_000_000)
             } catch is CancellationError {
                 urlCancelled.fulfill()
                 throw CancellationError()
@@ -238,49 +377,28 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertNil(manager.onURLChangedTask)
 
         var lateURLCount = 0
-        manager.startOnURLChanged { lateURLCount += 1 }
+        manager.startOnURLChanged {
+            lateURLCount += 1
+        }
         await Task.yield()
         XCTAssertEqual(lateURLCount, 0)
         XCTAssertNil(manager.onURLChangedTask)
     }
 
-    func testTerminalFailureCancelsDocumentWork() async {
-        let manager = NavigationTaskManager()
-        let commitStarted = expectation(description: "commit started")
-        let commitCancelled = expectation(description: "commit cancelled")
-        let failureCalled = expectation(description: "failure called")
-
-        manager.startOnNavigationCommitted {
-            commitStarted.fulfill()
-            do {
-                try await Task.sleep(for: .seconds(30))
-            } catch is CancellationError {
-                commitCancelled.fulfill()
-                throw CancellationError()
-            }
-        }
-        await fulfillment(of: [commitStarted], timeout: 1)
-        manager.startOnNavigationFailed {
-            failureCalled.fulfill()
-        }
-
-        await fulfillment(of: [commitCancelled, failureCalled], timeout: 1)
-    }
-
     func testNavigationFailureCancelsPendingDocumentWorkBeforeFailureCallback() async {
         let manager = NavigationTaskManager()
-        let commitStarted = expectation(description: "commit started")
-        let commitCancelled = expectation(description: "commit cancelled")
+        let committedStarted = expectation(description: "committed callback started")
+        let committedCancelled = expectation(description: "committed callback cancelled")
         let pendingURLCalled = expectation(description: "pending URL callback must not run")
         pendingURLCalled.isInverted = true
         let failureCalled = expectation(description: "failure callback called")
 
         manager.startOnNavigationCommitted {
-            commitStarted.fulfill()
+            committedStarted.fulfill()
             do {
-                try await Task.sleep(for: .seconds(30))
+                try await Task.sleep(nanoseconds: 30_000_000_000)
             } catch is CancellationError {
-                commitCancelled.fulfill()
+                committedCancelled.fulfill()
                 throw CancellationError()
             }
         }
@@ -288,26 +406,161 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             pendingURLCalled.fulfill()
         }
 
-        await fulfillment(of: [commitStarted], timeout: 1)
+        await fulfillment(of: [committedStarted], timeout: 1)
         manager.startOnNavigationFailed {
             failureCalled.fulfill()
         }
-        await fulfillment(of: [commitCancelled, failureCalled], timeout: 1)
+        await fulfillment(
+            of: [committedCancelled, failureCalled],
+            timeout: 1
+        )
         await fulfillment(of: [pendingURLCalled], timeout: 0.05)
     }
 
-    func testPreservedDocumentFailureKeepsSettledURLLifecycle() async throws {
-        let manager = NavigationTaskManager()
-        var order = [String]()
+    func testSharedFontInjectionRejectsMountedCallerWithoutDocumentIdentity() async throws {
+        let viewModel = ReaderModeViewModel()
+        let caller = WebViewScriptCaller()
+        let owner = UUID()
+        var evaluations = 0
+        caller.installBinding(
+            ownedBy: owner,
+            asyncCaller: { _, _, _, _ in
+                evaluations += 1
+                return .init(nil)
+            },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil },
+            documentGenerationProvider: { nil }
+        )
+        defer { _ = caller.clearBinding(ownedBy: owner) }
+        XCTAssertTrue(caller.canEvaluateJavaScript)
+        XCTAssertNil(caller.currentJavaScriptBindingToken)
 
-        manager.startOnNavigationCommitted { order.append("commit") }
-        manager.startOnNavigationFinished { order.append("finish") }
+        await viewModel.injectSharedFontIfNeeded(
+            scriptCaller: caller,
+            pageURL: URL(string: "ebook:///missing-document-identity.epub")!
+        )
+        XCTAssertEqual(evaluations, 0)
+    }
+
+    func testSharedFontInjectionCannotAdoptReplacementBinding() async throws {
+        let viewModel = ReaderModeViewModel()
+        let caller = WebViewScriptCaller()
+        let firstOwner = UUID()
+        caller.installBinding(
+            ownedBy: firstOwner,
+            asyncCaller: { _, _, _, _ in
+                XCTFail("Retired binding must not execute")
+                return .init(nil)
+            },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+        let retiredBinding = try XCTUnwrap(
+            caller.currentJavaScriptBindingToken
+        )
+        _ = caller.clearBinding(ownedBy: firstOwner)
+
+        let replacementOwner = UUID()
+        let replacementEvaluation = expectation(
+            description: "retired injection must not run on replacement binding"
+        )
+        replacementEvaluation.isInverted = true
+        caller.installBinding(
+            ownedBy: replacementOwner,
+            asyncCaller: { _, _, _, _ in
+                replacementEvaluation.fulfill()
+                return .init(nil)
+            },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+        defer { _ = caller.clearBinding(ownedBy: replacementOwner) }
+
+        await viewModel.injectSharedFontIfNeeded(
+            scriptCaller: caller,
+            pageURL: URL(string: "ebook:///binding-fence.epub")!,
+            requiring: retiredBinding
+        )
+
+        await fulfillment(of: [replacementEvaluation], timeout: 0.05)
+    }
+
+    func testNavigationFinishedCannotSettleReplacementBindingAfterFontWait()
+    async throws {
+        let viewModel = ReaderModeViewModel()
+        let caller = WebViewScriptCaller()
+        let firstOwner = UUID()
+        let fontEvaluationStarted = expectation(
+            description: "original document font injection started"
+        )
+        let gate = ReaderCallbackGate()
+        caller.installBinding(
+            ownedBy: firstOwner,
+            asyncCaller: { _, _, _, _ in
+                fontEvaluationStarted.fulfill()
+                await gate.wait()
+                return .init(nil)
+            },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+
+        let url = URL(string: "ebook:///same-url-replacement.epub")!
+        viewModel.beginReaderModeLoad(for: url)
+        var state = WebViewState.empty
+        state.pageURL = url
+
+        let finish = Task { @MainActor in
+            await viewModel.onNavigationFinished(
+                newState: state,
+                scriptCaller: caller
+            )
+        }
+        await fulfillment(of: [fontEvaluationStarted], timeout: 1)
+
+        _ = caller.clearBinding(ownedBy: firstOwner)
+        let replacementOwner = UUID()
+        caller.installBinding(
+            ownedBy: replacementOwner,
+            asyncCaller: { _, _, _, _ in .init(nil) },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+        defer { _ = caller.clearBinding(ownedBy: replacementOwner) }
+
+        await gate.release()
+        await finish.value
+
+        XCTAssertTrue(viewModel.isReaderModeLoading)
+        XCTAssertTrue(viewModel.isReaderModeLoadPending(for: url))
+    }
+
+    func testPreservedDocumentFailureKeepsSettledURLLifecycleAvailable() async throws {
+        let manager = NavigationTaskManager()
+        var order: [String] = []
+
+        manager.startOnNavigationCommitted {
+            order.append("commit")
+        }
+        manager.startOnNavigationFinished {
+            order.append("finish")
+        }
         try await manager.onNavigationFinishedTask?.value
+
         manager.startOnNavigationFailed(preservingCommittedDocument: true) {
             order.append("recoverable-failure")
         }
         try await manager.onNavigationFailedTask?.value
-        manager.startOnURLChanged { order.append("url") }
+
+        manager.startOnURLChanged {
+            order.append("url")
+        }
         try await manager.onURLChangedTask?.value
 
         XCTAssertEqual(order, ["commit", "finish", "recoverable-failure", "url"])

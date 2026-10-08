@@ -1,15 +1,18 @@
 import Foundation
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireContent
+import LakeOfFireCore
 import SwiftSoup
 
-private let ebookTextProcessorDetailedLoggingEnabled: Bool = {
+private let ebookTextProcessorReplaceTextDetailedLoggingEnabled: Bool = {
 #if DEBUG
     ProcessInfo.processInfo.environment["MANABI_REPLACETEXT_DETAILED_LOGS"] == "1"
 #else
     false
 #endif
 }()
-private let ebookTextProcessorSegmentOpenTagBytes = Array("<m-m".utf8)
-private let ebookTextProcessorSentenceOpenTagBytes = Array("<m-s".utf8)
 
 @inline(__always)
 private func bodyStartsWithReaderSentinel(_ body: Element) -> Bool {
@@ -44,7 +47,7 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
     // reader tags are injected, so sentinels never split text before MeCab sees it.
     guard let body = doc.body() else { return doc }
     if bodyStartsWithReaderSentinel(body) {
-        try? body.getElementsByTag("reader-sentinel").remove()
+        _ = try? body.getElementsByTag("reader-sentinel").remove()
     }
     do {
         let startSentinel = Element(Tag("reader-sentinel"), "")
@@ -56,9 +59,6 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
         _ = try? body.appendChild(endSentinel)
         return doc
     } catch {
-        if ebookTextProcessorDetailedLoggingEnabled {
-            print("# VISIBLERANGE sentinelPreprocess.minimal.error \(error)")
-        }
         return doc
     }
 }
@@ -69,24 +69,15 @@ public enum EbookHTMLProcessingContext {
 
 public struct EbookProcessingVariant: Hashable, Sendable {
     public let availableDictionaryIDs: [String]
-    public let yomitanResolvedDictionaryID: Int64?
-    public let yomitanJMDictGenerationKey: String?
-    public let yomitanJMnedictGenerationKey: String?
     public let includeJLPTClasses: Bool
     public let romajiModeEnabled: Bool
 
     public init(
         availableDictionaryIDs: [String],
-        yomitanResolvedDictionaryID: Int64? = nil,
-        yomitanJMDictGenerationKey: String? = nil,
-        yomitanJMnedictGenerationKey: String? = nil,
         includeJLPTClasses: Bool,
         romajiModeEnabled: Bool
     ) {
         self.availableDictionaryIDs = Array(Set(availableDictionaryIDs)).sorted()
-        self.yomitanResolvedDictionaryID = yomitanResolvedDictionaryID
-        self.yomitanJMDictGenerationKey = yomitanJMDictGenerationKey
-        self.yomitanJMnedictGenerationKey = yomitanJMnedictGenerationKey
         self.includeJLPTClasses = includeJLPTClasses
         self.romajiModeEnabled = romajiModeEnabled
     }
@@ -104,31 +95,16 @@ public enum EbookProcessingVariantContext {
 
 public typealias EbookProcessingVariantProvider = @Sendable () async -> EbookProcessingVariant
 
-public func withEbookProcessingVariant<Result>(
-    _ variant: EbookProcessingVariant?,
-    isolation: isolated (any Actor)? = #isolation,
-    operation: () async throws -> Result
-) async rethrows -> Result {
-    _ = isolation
-    guard let variant else {
-        return try await operation()
-    }
-    return try await EbookProcessingVariantContext.$current.withValue(
-        variant,
-        operation: operation
-    )
-}
-
 public func ebookTextProcessor(
     contentURL: URL,
     sectionLocation: String,
     content: String,
-    contentFingerprint: String? = nil,
+    contentFingerprint: String?,
     isCacheWarmer: Bool,
-    processReadabilityContent: EbookReadabilityContentProcessor?,
+    processReadabilityContent: ((String, URL, URL?, Bool, Bool, String?, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
     processHTMLDocument: EbookHTMLDocumentProcessor?,
-    processHTMLBytes: EbookHTMLBytesProcessor?,
-    processHTML: EbookHTMLProcessor?
+    processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?,
+    processHTML: ((String, Bool) async -> String)?
 ) async throws -> EbookProcessedSectionPayload {
     var sectionLocationComponents = URLComponents(url: contentURL, resolvingAgainstBaseURL: false)
     var sectionLocationQueryItems = sectionLocationComponents?.queryItems ?? []
@@ -136,11 +112,11 @@ public func ebookTextProcessor(
     sectionLocationQueryItems.append(URLQueryItem(name: "subpath", value: sectionLocation))
     sectionLocationComponents?.queryItems = sectionLocationQueryItems
     let sectionLocationURL = sectionLocationComponents?.url ?? contentURL
-
+    
     do {
         try Task.checkCancellation()
         var doc: SwiftSoup.Document?
-
+        
         if let processReadabilityContent {
             doc = try await processReadabilityContent(
                 content,
@@ -153,7 +129,7 @@ public func ebookTextProcessor(
             )
             try Task.checkCancellation()
         }
-
+        
         if doc == nil {
             // TODO: Consolidate our parsing boilerplate
             let isXML = content.hasPrefix("<?xml") || content.hasPrefix("<?XML") // TODO: Case insensitive
@@ -165,16 +141,15 @@ public func ebookTextProcessor(
                 doc?.outputSettings().escapeMode(.xhtml)
             }
         }
-
+        
         guard var doc else {
             print("Error: Unexpectedly failed to receive doc")
             return EbookProcessedSectionPayload(
                 documentHTML: Data(content.utf8),
-                segmentSidecar: Data(),
-                isAuthoritativelyProcessed: false
+                segmentSidecar: Data()
             )
         }
-
+        
         try processForReaderMode(
             doc: doc,
             url: sectionLocationURL, //nil,
@@ -187,20 +162,33 @@ public func ebookTextProcessor(
             defaultFontSize: 20 // TODO: Pass this in from ReaderViewModel...
         )
         doc = preprocessEbookContent(doc: doc)
-
+        
         var payload: EbookProcessedSectionPayload
         if let processHTMLDocument {
-            let processed = try await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
-                try await processHTMLDocument(doc, isCacheWarmer)
+            guard let completionProof = EbookReaderProcessingCompletionProof(
+                sourceDocument: doc
+            ) else {
+                return EbookProcessedSectionPayload(
+                    documentHTML: Data(try doc.outerHtmlUTF8()),
+                    segmentSidecar: Data()
+                )
+            }
+            let processedPayload: EbookProcessedSectionPayload = try await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
+                try await processHTMLDocument(doc, isCacheWarmer, completionProof)
             }
             try Task.checkCancellation()
-            payload = EbookProcessedSectionPayload(
-                documentHTML: Data(processed.documentHTML),
-                segmentSidecar: processed.canonicalSegmentSidecar ?? Data()
-            )
+            payload = processedPayload
         } else {
-            var htmlBytes = try doc.outerHtmlUTF8ReusingSourceOutsideBody()
+            var htmlBytes = try doc.outerHtmlUTF8()
             if let processHTMLBytes {
+                guard let completionProof = EbookReaderProcessingCompletionProof(
+                    sourceDocument: doc
+                ) else {
+                    return EbookProcessedSectionPayload(
+                        documentHTML: Data(htmlBytes),
+                        segmentSidecar: Data()
+                    )
+                }
                 htmlBytes = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                     await processHTMLBytes(
                         htmlBytes,
@@ -208,12 +196,20 @@ public func ebookTextProcessor(
                     )
                 }
                 try Task.checkCancellation()
-            }
-            payload = splitCanonicalReaderSegmentSidecar(from: htmlBytes)
-                ?? EbookProcessedSectionPayload(
+                payload = splitCanonicalReaderSegmentSidecar(
+                    from: htmlBytes,
+                    completionProof: completionProof
+                ) ?? EbookProcessedSectionPayload(
                     documentHTML: Data(htmlBytes),
                     segmentSidecar: Data()
                 )
+            } else {
+                payload = splitCanonicalReaderSegmentSidecar(from: htmlBytes)
+                    ?? EbookProcessedSectionPayload(
+                        documentHTML: Data(htmlBytes),
+                        segmentSidecar: Data()
+                    )
+            }
         }
 
         if let processHTML {
@@ -224,24 +220,16 @@ public func ebookTextProcessor(
                 )
             }
             try Task.checkCancellation()
-            payload = EbookProcessedSectionPayload(
-                documentHTML: Data(html.utf8),
-                segmentSidecar: payload.segmentSidecar,
-                isAuthoritativelyProcessed: payload.isAuthoritativelyProcessed
-            )
-        }
-
-        if ebookTextProcessorDetailedLoggingEnabled {
-            let htmlBytes = Array(payload.documentHTML)
-            print(
-                "# EPUB",
-                "ebookTextProcessor.output",
-                "contentURL=\(contentURL.absoluteString)",
-                "sectionLocation=\(sectionLocation)",
-                "isCacheWarmer=\(isCacheWarmer)",
-                "segmentCount=\(bytePatternCount(ebookTextProcessorSegmentOpenTagBytes, in: htmlBytes))",
-                "sentenceCount=\(bytePatternCount(ebookTextProcessorSentenceOpenTagBytes, in: htmlBytes))"
-            )
+            let transformedDocumentHTML = Data(html.utf8)
+            if transformedDocumentHTML != payload.documentHTML {
+                // A downstream transform has no morphology coverage proof for
+                // text it may have introduced. Preserve the sidecar only as
+                // nonauthoritative diagnostic data and require reprocessing.
+                payload = EbookProcessedSectionPayload(
+                    documentHTML: transformedDocumentHTML,
+                    segmentSidecar: payload.segmentSidecar
+                )
+            }
         }
 
         try Task.checkCancellation()
@@ -252,33 +240,12 @@ public func ebookTextProcessor(
         if Task.isCancelled {
             throw CancellationError()
         }
-        if ebookTextProcessorDetailedLoggingEnabled {
+        if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
             debugPrint("Error processing readability content for ebook", error)
         }
     }
     return EbookProcessedSectionPayload(
         documentHTML: Data(content.utf8),
-        segmentSidecar: Data(),
-        isAuthoritativelyProcessed: false
+        segmentSidecar: Data()
     )
-}
-
-private func bytePatternCount(_ needle: [UInt8], in haystack: [UInt8]) -> Int {
-    guard !needle.isEmpty, haystack.count >= needle.count else { return 0 }
-    var count = 0
-    var index = 0
-    while index <= haystack.count - needle.count {
-        var matched = true
-        for offset in needle.indices where haystack[index + offset] != needle[offset] {
-            matched = false
-            break
-        }
-        if matched {
-            count += 1
-            index += needle.count
-        } else {
-            index += 1
-        }
-    }
-    return count
 }

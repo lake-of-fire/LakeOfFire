@@ -4,7 +4,7 @@ import test from 'node:test'
 import {
     beginOwnedElementOperation,
     finishOwnedElementOperation,
-} from '../../Sources/LakeOfFireReader/Resources/foliate-js/owned-element-operation.js'
+} from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/owned-element-operation.js'
 
 test('starting a new element operation finishes the previous owner exactly once', () => {
     const element = {}

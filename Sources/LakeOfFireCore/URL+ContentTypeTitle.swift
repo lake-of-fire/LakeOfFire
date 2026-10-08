@@ -1,41 +1,18 @@
 import Foundation
 
 public extension URL {
-    @MainActor
     var contentTypeTitle: String? {
         guard !isNativeReaderView else {
             return nil
         }
-        switch contentKind {
-        case .book:
-            return "This Book"
-        case .file:
-            return "This File"
-        case .snippet:
-            return "This Snippet"
-        case .webpage:
-            return "This Webpage"
+        if isEBookURL {
+            return "Book"
+        } else if isFileURL {
+            return "File"
+        } else if isSnippetURL {
+            return "Snippet"
         }
-    }
-
-    @MainActor
-    var hostContentTypeTitle: String? {
-        guard !isNativeReaderView else {
-            return nil
-        }
-        switch contentKind {
-        case .book:
-            return "All Books"
-        case .file:
-            return "All Files"
-        case .snippet:
-            return "All Snippets"
-        case .webpage:
-            guard let hostDisplayName = hostDisplayName else {
-                return "All Webpages"
-            }
-            return "All Pages on \(hostDisplayName)"
-        }
+        return "Webpage"
     }
 
     enum ContentKind {
@@ -46,13 +23,11 @@ public extension URL {
     }
 
     var contentKind: ContentKind {
-        if isReaderBookURL {
+        if isEBookURL {
             return .book
-        }
-        if isFileURL {
+        } else if isFileURL {
             return .file
-        }
-        if isSnippetURL {
+        } else if isSnippetURL {
             return .snippet
         }
         return .webpage
@@ -68,30 +43,6 @@ public extension URL {
             return "File"
         case .snippet:
             return "Snippet"
-        }
-    }
-
-    func contentKindCollectionTitle(pluralize: Bool = true) -> String {
-        let base = contentKindTitle
-        guard pluralize else { return base }
-        switch contentKind {
-        case .webpage:
-            return "Webpages"
-        case .book:
-            return "Books"
-        case .file:
-            return "Files"
-        case .snippet:
-            return "Snippets"
-        }
-    }
-
-    var contentMenuSubtitle: String {
-        switch contentKind {
-        case .webpage:
-            return hostDisplayName ?? contentKindTitle
-        case .book, .file, .snippet:
-            return contentKindTitle
         }
     }
 

@@ -1,5 +1,15 @@
 import Foundation
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireContent
+import LakeOfFireCore
 import ZIPFoundation
+import UniformTypeIdentifiers
+
+public extension UTType {
+    static let epubZip = UTType(mimeType: "application/epub+zip")!
+}
 
 struct EPub {
     // Forked from https://github.com/hbowie/NotenikLib/blob/master/Sources/NotenikLib/transform/WebBookMaker.swift#L934
@@ -15,7 +25,7 @@ struct EPub {
 //        }
         return archive.data
     }
-
+    
     static func addEpubFolder(archive: Archive, directoryURL: URL, relativePath: String) {
         let folderURL: URL
         if relativePath.isEmpty {
@@ -45,7 +55,7 @@ struct EPub {
             print("Could not read directory at \(folderURL)")
         }
     }
-
+    
     static func addEpubEntry(archive: Archive, directoryURL: URL, relativePath: String) {
         do {
             try archive.addEntry(
@@ -56,7 +66,7 @@ struct EPub {
             print("Unable to add \(relativePath) to epub archive: \(error)")
         }
     }
-
+    
     /// Join two path Strings, ensuring one and only one slash between the two.
     ///
     /// - Parameters:

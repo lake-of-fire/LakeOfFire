@@ -1,4 +1,9 @@
 import Foundation
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireContent
+import LakeOfFireCore
 import SwiftSoup
 
 public extension Document {
@@ -8,7 +13,7 @@ public extension Document {
             || select("html").hasAttr("xmlns:epub"))
         return isEbook ?? false
     }
-
+    
     func ebookSectionType() -> String? {
         return try? body()?.attr("epub:type")
     }

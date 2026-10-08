@@ -1,164 +1,10 @@
 import XCTest
-import SwiftSoup
 import ZIPFoundation
-@preconcurrency import WebKit
+import SwiftSoup
 @testable import LakeOfFireContent
-@testable import LakeOfFireFiles
-@testable import LakeOfFireReader
+@_spi(ReaderProcessing) @_spi(TestSupport) @testable import LakeOfFireReader
 
-private final class EbookNavigationDelegate: NSObject, WKNavigationDelegate {
-    let completionExpectation: XCTestExpectation
-    private(set) var error: Error?
-
-    init(completionExpectation: XCTestExpectation) {
-        self.completionExpectation = completionExpectation
-    }
-
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        completionExpectation.fulfill()
-    }
-
-    func webView(
-        _ webView: WKWebView,
-        didFail navigation: WKNavigation!,
-        withError error: Error
-    ) {
-        self.error = error
-        completionExpectation.fulfill()
-    }
-
-    func webView(
-        _ webView: WKWebView,
-        didFailProvisionalNavigation navigation: WKNavigation!,
-        withError error: Error
-    ) {
-        self.error = error
-        completionExpectation.fulfill()
-    }
-}
-
-private enum EbookJavaScriptProbeError: Error {
-    case timedOut
-}
-
-private struct EbookJavaScriptProbeValue: @unchecked Sendable {
-    let value: Any?
-}
-
-@MainActor
-private final class EbookJavaScriptProbeCompletion {
-    private var continuation: CheckedContinuation<EbookJavaScriptProbeValue, Error>?
-    private var task: Task<Void, Never>?
-
-    init(_ continuation: CheckedContinuation<EbookJavaScriptProbeValue, Error>) {
-        self.continuation = continuation
-    }
-
-    func install(task: Task<Void, Never>) {
-        self.task = task
-    }
-
-    func resume(with result: Result<EbookJavaScriptProbeValue, Error>) {
-        guard let continuation else { return }
-        self.continuation = nil
-        task?.cancel()
-        task = nil
-        continuation.resume(with: result)
-    }
-}
-
-@MainActor
-private func callEbookJavaScriptProbe(
-    in webView: WKWebView,
-    script: String,
-    timeout: TimeInterval = 30
-) async throws -> Any? {
-    let result = try await withCheckedThrowingContinuation {
-        (continuation: CheckedContinuation<EbookJavaScriptProbeValue, Error>) in
-        let completion = EbookJavaScriptProbeCompletion(continuation)
-        let task = Task { @MainActor in
-            do {
-                let result = try await webView.callAsyncJavaScript(
-                    script,
-                    arguments: [:],
-                    in: nil,
-                    contentWorld: .page
-                )
-                completion.resume(with: .success(EbookJavaScriptProbeValue(value: result)))
-            } catch {
-                completion.resume(with: .failure(error))
-            }
-        }
-        completion.install(task: task)
-        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
-            completion.resume(with: .failure(EbookJavaScriptProbeError.timedOut))
-        }
-    }
-    return result.value
-}
-
-private final class TestURLSchemeTask: NSObject, WKURLSchemeTask {
-    let request: URLRequest
-    private(set) var responses: [URLResponse] = []
-    private(set) var finishCount = 0
-    private(set) var failures: [Error] = []
-
-    init(request: URLRequest) {
-        self.request = request
-    }
-
-    func didReceive(_ response: URLResponse) {
-        responses.append(response)
-    }
-
-    func didReceive(_ data: Data) {}
-
-    func didFinish() {
-        finishCount += 1
-    }
-
-    func didFailWithError(_ error: Error) {
-        failures.append(error)
-    }
-}
-
-private func malformedURLRequest() -> URLRequest {
-    var request = URLRequest(url: URL(string: "about:blank")!)
-    request.url = nil
-    return request
-}
-
-private actor EBookProcessorInvocationCounter {
-    private var count = 0
-
-    func increment() -> Int {
-        count += 1
-        return count
-    }
-
-    func value() -> Int {
-        count
-    }
-}
-
-private final class SynchronousInvocationCounter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-
-    func increment() {
-        lock.lock()
-        count += 1
-        lock.unlock()
-    }
-
-    func value() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return count
-    }
-}
-
-private actor EBookProcessingGate {
+private actor EbookTestGate {
     private var releaseContinuation: CheckedContinuation<Void, Never>?
     private var isWaiting = false
 
@@ -179,383 +25,153 @@ private actor EBookProcessingGate {
     }
 }
 
+private actor EbookTestInvocationCounter {
+    private(set) var count = 0
+
+    func increment() {
+        count += 1
+    }
+}
+
 private func ebookTestPayload(
     _ documentHTML: String,
     sidecar: String = "",
-    isAuthoritativelyProcessed: Bool = true
+    isAuthoritativelyProcessed: Bool = false
 ) -> EbookProcessedSectionPayload {
-    EbookProcessedSectionPayload(
-        documentHTML: Data(documentHTML.utf8),
-        segmentSidecar: Data(sidecar.utf8),
-        isAuthoritativelyProcessed: isAuthoritativelyProcessed
-    )
-}
-
-private enum EbookPretransformedSidecarTestContract {
-    static let stableHashSeed: UInt64 = 5_381
-    static let stableHashMask: UInt64 = 0x00ff_ffff_ffff_ffff
-    static let stableHashMultiplier: UInt64 = 127
-}
-
-private func ebookPretransformedSidecarRevision(_ sidecar: Data) -> String {
-    var result = EbookPretransformedSidecarTestContract.stableHashSeed
-    for byte in sidecar {
-        result = (result & EbookPretransformedSidecarTestContract.stableHashMask)
-            * EbookPretransformedSidecarTestContract.stableHashMultiplier
-            + UInt64(byte)
-    }
-    return String(result, radix: 16, uppercase: true)
-}
-
-private func ebookPretransformedTestPayload(
-    bodyHTML: String,
-    sidecar: String,
-    revision: String? = nil,
-    markerSegmentCount: Int? = nil,
-    markerSentenceCount: Int? = nil,
-    markerCopies: Int = 1
-) -> EbookProcessedSectionPayload {
+    let document = Data(documentHTML.utf8)
     let sidecarData = Data(sidecar.utf8)
-    let fragment = try! SwiftSoup.parseBodyFragment(bodyHTML)
-    let segmentCount = markerSegmentCount
-        ?? (try! fragment.getElementsByTag("m-m").size())
-    let sentenceCount = markerSentenceCount
-        ?? (try! fragment.getElementsByTag("m-s").size())
-    let marker = """
-        <meta name="mnb-pretransformed-ebook-sidecar"
-              data-mnb-pretransformed-ebook="true"
-              data-mnb-sidecar-schema-version="9"
-              data-mnb-sidecar-contract-version="1"
-              data-mnb-sidecar-revision="\(revision ?? ebookPretransformedSidecarRevision(sidecarData))"
-              data-mnb-sidecar-segment-count="\(segmentCount)"
-              data-mnb-sidecar-sentence-count="\(sentenceCount)">
-        """
-    let markers = String(repeating: marker, count: markerCopies)
-    return EbookProcessedSectionPayload(
-        documentHTML: Data("<html><head>\(markers)</head><body>\(bodyHTML)</body></html>".utf8),
-        segmentSidecar: sidecarData
+    return isAuthoritativelyProcessed
+        ? .successfulReaderProcessing(documentHTML: document, segmentSidecar: sidecarData)
+        : EbookProcessedSectionPayload(documentHTML: document, segmentSidecar: sidecarData)
+}
+
+private func ebookIndexedSidecarPayload(_ index: Int) -> EbookProcessedSectionPayload {
+    EbookProcessedSectionPayload.successfulReaderProcessing(
+        documentHTML: Data("<m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">\(index)</m-m></m-s></m-c>".utf8),
+        segmentSidecar: Data("""
+        {"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h\(index)"],"x":["\(index)"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}
+        """.utf8)
     )
 }
 
-private let nestedResourceDocumentHTML = """
-<!doctype html><html><head>
-<link id="book-style" rel="stylesheet" href="../Styles/book.css#theme">
-</head><body><m-s><m-m id="a">本文</m-m></m-s>
-<img id="cover" src="../Images/cover.svg#shape">
-<audio id="sample-audio" preload="metadata" src="../Media/tone.wav"></audio>
-</body></html>
-"""
-
-private let nestedResourceStylesheet = """
-body {
-    background-color: rgb(1, 2, 3);
-    writing-mode: vertical-rl;
-}
-"""
-
-private let nestedResourceImage = """
-<svg xmlns="http://www.w3.org/2000/svg" width="4" height="3">
-<rect id="shape" width="4" height="3" fill="red"/>
-</svg>
-"""
-
-private func nestedResourceAudio() -> Data {
-    let sampleRate: UInt32 = 8_000
-    let sampleCount = 800
-    let dataByteCount = UInt32(sampleCount)
-    var data = Data()
-
-    func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
-        var littleEndianValue = value.littleEndian
-        withUnsafeBytes(of: &littleEndianValue) { data.append(contentsOf: $0) }
-    }
-
-    data.append(contentsOf: "RIFF".utf8)
-    appendLittleEndian(UInt32(36) + dataByteCount)
-    data.append(contentsOf: "WAVEfmt ".utf8)
-    appendLittleEndian(UInt32(16))
-    appendLittleEndian(UInt16(1))
-    appendLittleEndian(UInt16(1))
-    appendLittleEndian(sampleRate)
-    appendLittleEndian(sampleRate)
-    appendLittleEndian(UInt16(1))
-    appendLittleEndian(UInt16(8))
-    data.append(contentsOf: "data".utf8)
-    appendLittleEndian(dataByteCount)
-    data.append(contentsOf: repeatElement(UInt8(128), count: sampleCount))
-    return data
-}
+private let ebookTestProcessingVariant = EbookProcessingVariant(
+    availableDictionaryIDs: ["jmdict"],
+    includeJLPTClasses: false,
+    romajiModeEnabled: false
+)
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
-    func testURLSchemeCompletionOwnershipKeepsHashCollisionsIndependent() {
-        final class CollidingTask: NSObject {
-            override var hash: Int { 1 }
-        }
-        let ownership = URLSchemeTaskCompletionOwnership()
-        let first = CollidingTask()
-        let second = CollidingTask()
-        XCTAssertEqual(first.hash, second.hash)
+    func testEbookEndpointSourceRequiresTheRequestMainDocumentPackage() throws {
+        let manager = ReaderFileManager()
+        let bookURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/one.epub"))
+        let otherBookURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/two.epub"))
 
-        ownership.begin(first)
-        ownership.begin(second)
-
-        XCTAssertTrue(ownership.cancel(first))
-        XCTAssertFalse(ownership.claimCompletion(first))
-        XCTAssertTrue(ownership.claimCompletion(second))
-    }
-
-    func testURLSchemeCompletionOwnershipCancelsAttachedWorkExactlyOnce() {
-        let ownership = URLSchemeTaskCompletionOwnership()
-        let task = NSObject()
-        let counter = SynchronousInvocationCounter()
-        ownership.begin(task)
-        XCTAssertTrue(ownership.attachCancellation(task) { counter.increment() })
-
-        XCTAssertTrue(ownership.cancel(task))
-        XCTAssertFalse(ownership.cancel(task))
-        XCTAssertFalse(ownership.claimCompletion(task))
-        XCTAssertEqual(counter.value(), 1)
-    }
-
-    func testURLSchemeCompletionOwnershipCancelsLateWorkAttachment() {
-        let ownership = URLSchemeTaskCompletionOwnership()
-        let task = NSObject()
-        let counter = SynchronousInvocationCounter()
-        ownership.begin(task)
-        XCTAssertTrue(ownership.cancel(task))
-
-        XCTAssertFalse(ownership.attachCancellation(task) { counter.increment() })
-        XCTAssertEqual(counter.value(), 1)
-    }
-
-    @MainActor
-    func testReaderFileHandlerTerminatesMalformedRequestExactlyOnce() {
-        let handler = ReaderFileURLSchemeHandler()
-        let task = TestURLSchemeTask(request: malformedURLRequest())
-
-        handler.webView(WKWebView(), start: task)
-        handler.webView(WKWebView(), stop: task)
-
-        XCTAssertEqual(task.failures.count, 1)
-        XCTAssertEqual(task.finishCount, 0)
-        XCTAssertTrue(task.responses.isEmpty)
-    }
-
-    @MainActor
-    func testEbookHandlerTerminatesMalformedRequestExactlyOnce() {
-        let handler = EbookURLSchemeHandler()
-        let task = TestURLSchemeTask(request: malformedURLRequest())
-
-        handler.webView(WKWebView(), start: task)
-        handler.webView(WKWebView(), stop: task)
-
-        XCTAssertEqual(task.failures.count, 1)
-        XCTAssertEqual(task.finishCount, 0)
-        XCTAssertTrue(task.responses.isEmpty)
-    }
-
-    func testExternalizingTypedSidecarAvoidsEmbeddedJSONRoundTrip() throws {
-        let directoryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directoryURL) }
-        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let canonicalJSON = #"{"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0]]}"#
-        let documentHTML = "<html><head></head><body><m-m id=\"a\">A</m-m></body></html>"
-
-        let result = externalizingReaderSegmentSidecar(
-            documentHTML: Array(documentHTML.utf8),
-            canonicalSidecar: Data(canonicalJSON.utf8),
-            scheme: .ebook,
-            store: store
+        var request = URLRequest(
+            url: URL(string: "ebook://ebook/entries?sourceURL=\(bookURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)")!
         )
-        let output = String(decoding: result.documentHTML, as: UTF8.self)
-
-        XCTAssertFalse(output.contains(canonicalJSON))
-        XCTAssertTrue(output.contains("meta name=\"mnb-segment-sidecar\""))
-        XCTAssertEqual(result.canonicalSidecarByteCount, canonicalJSON.utf8.count)
-        XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities(output, store: store))
-        let endpoint = try XCTUnwrap(result.endpointURL.flatMap(URL.init(string:)))
+        request.mainDocumentURL = bookURL
+        request.setValue(bookURL.absoluteString, forHTTPHeaderField: "X-Ebook-Source-URL")
         XCTAssertEqual(
-            readerExternalSegmentSidecarResponse(for: endpoint, scheme: .ebook, store: store)?.data,
-            Data(canonicalJSON.utf8)
+            ebookAuthorizedMainDocumentURL(for: request, readerFileManager: manager),
+            bookURL
         )
+
+        request.setValue(otherBookURL.absoluteString, forHTTPHeaderField: "X-Ebook-Source-URL")
+        XCTAssertNil(ebookAuthorizedMainDocumentURL(for: request, readerFileManager: manager))
+
+        request.setValue(bookURL.absoluteString, forHTTPHeaderField: "X-Ebook-Source-URL")
+        request.mainDocumentURL = otherBookURL
+        XCTAssertNil(ebookAuthorizedMainDocumentURL(for: request, readerFileManager: manager))
     }
 
-    func testExternalizingTypedSidecarUsesStructuralHeadBoundaryAndPreservesDocumentBytes() throws {
-        let directoryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directoryURL) }
-        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let documentHTML = """
-        <!doctype html><HTML><HEAD><script>const marker = "</head>";</script></HEAD>\
-        <BODY data-note='2>1'>本文</BODY></HTML>
-        """
-
-        let result = externalizingReaderSegmentSidecar(
-            documentHTML: Array(documentHTML.utf8),
-            canonicalSidecar: Data(#"{"v":10,"t":{},"s":[]}"#.utf8),
-            scheme: .ebook,
-            store: store
+    func testEbookEndpointSourceCanonicalizesQueryAndFragmentBeforeComparing() throws {
+        let manager = ReaderFileManager()
+        let sourceURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/one.epub"))
+        let sourceWithDecorations = try XCTUnwrap(
+            URL(string: "ebook://ebook/load/local/Books/one.epub?subpath=OPS/chapter.xhtml#section")
         )
-        let endpointURL = try XCTUnwrap(result.endpointURL)
-        let signature = try XCTUnwrap(result.signature)
-        let descriptor = endpointURL.utf8
-        let expectedDescriptor = """
-        <meta name="mnb-segment-sidecar" content="\(endpointURL)" \
-        data-mnb-segment-sidecar-signature="\(signature)">
-        """
-        let output = String(decoding: result.documentHTML, as: UTF8.self)
+        var request = URLRequest(url: URL(string: "ebook://ebook/entries")!)
+        request.mainDocumentURL = sourceURL
+        request.setValue(sourceWithDecorations.absoluteString, forHTTPHeaderField: "X-Ebook-Source-URL")
 
-        XCTAssertTrue(output.contains("<HEAD><script>"))
-        XCTAssertTrue(output.contains("</script><meta name=\"mnb-segment-sidecar\""))
-        XCTAssertTrue(output.contains(String(decoding: descriptor, as: UTF8.self)))
-        XCTAssertTrue(output.contains("</HEAD><BODY data-note='2>1'>本文</BODY></HTML>"))
         XCTAssertEqual(
-            output.replacingOccurrences(
-                of: expectedDescriptor,
-                with: ""
+            ebookAuthorizedMainDocumentURL(for: request, readerFileManager: manager),
+            sourceURL
+        )
+    }
+
+    func testEbookEndpointRejectsMalformedRawSourceEscapes() throws {
+        XCTAssertFalse(ebookURLStringHasValidPercentEncoding("ebook://ebook/load/local/bad%ZZ.epub"))
+        XCTAssertFalse(ebookURLStringHasValidPercentEncoding("ebook://ebook/load/local/bad%2.epub"))
+        XCTAssertTrue(ebookURLStringHasValidPercentEncoding("ebook://ebook/load/local/100%25.epub"))
+    }
+
+    func testEbookEndpointAuthorizesProcessedSectionSubresourcesAgainstActivePackage() throws {
+        let manager = ReaderFileManager()
+        let bookURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/one.epub"))
+        let otherBookURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/two.epub"))
+        let encodedSource = bookURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
+        let processedSectionURL = try XCTUnwrap(
+            URL(string: "ebook://ebook/processed-section?sourceURL=\(encodedSource)&subpath=OPS/chapter.xhtml")
+        )
+        var request = URLRequest(url: URL(string: "ebook://ebook/entry-source/token/OPS/image.png")!)
+        request.mainDocumentURL = processedSectionURL
+
+        XCTAssertEqual(
+            ebookAuthorizedMainDocumentURL(
+                for: request,
+                activePackageURL: bookURL,
+                readerFileManager: manager
             ),
-            documentHTML
+            bookURL
+        )
+        XCTAssertNil(
+            ebookAuthorizedMainDocumentURL(
+                for: request,
+                activePackageURL: otherBookURL,
+                readerFileManager: manager
+            )
         )
     }
 
-    func testExternalizingTypedSidecarReplacesExistingDescriptor() throws {
-        let directoryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directoryURL) }
-        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let documentHTML = "<html><head><title>Test</title></head><body>本文</body></html>"
-        let first = externalizingReaderSegmentSidecar(
-            documentHTML: Array(documentHTML.utf8),
-            canonicalSidecar: Data(#"{"v":10,"t":{},"s":[]}"#.utf8),
-            scheme: .ebook,
-            store: store
-        )
-        let second = externalizingReaderSegmentSidecar(
-            documentHTML: Array(first.documentHTML),
-            canonicalSidecar: Data(#"{"v":10,"t":{"sid":["replacement"]},"s":[]}"#.utf8),
-            scheme: .ebook,
-            store: store
-        )
-        let output = String(decoding: second.documentHTML, as: UTF8.self)
-
-        XCTAssertEqual(output.components(separatedBy: "meta name=\"mnb-segment-sidecar\"").count - 1, 1)
-        XCTAssertFalse(output.contains(try XCTUnwrap(first.endpointURL)))
-        XCTAssertTrue(output.contains(try XCTUnwrap(second.endpointURL)))
-        XCTAssertTrue(output.contains("<title>Test</title>"))
-        XCTAssertTrue(output.contains("<body>本文</body>"))
-    }
-
-    func testDescriptorBackedCacheValidationRejectsMissingOrInvalidSidecar() throws {
-        let directoryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directoryURL) }
-        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let documentHTML = "<html><head></head><body><m-m>A</m-m></body></html>"
-        let invalidJSON = #"{"v":10,"t":{"sid":[]},"s":[["!a"]]}"#
-        let invalid = externalizingReaderSegmentSidecar(
-            documentHTML: Array(documentHTML.utf8),
-            canonicalSidecar: Data(invalidJSON.utf8),
-            scheme: .ebook,
-            store: store
-        )
-        let invalidHTML = String(decoding: invalid.documentHTML, as: UTF8.self)
-        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(invalidHTML, store: store))
-
-        let missingHTML = invalidHTML.replacingOccurrences(
-            of: invalid.endpointURL ?? "",
-            with: "ebook://ebook/processed-section-sidecar/" + String(repeating: "0", count: 64)
-        )
-        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(missingHTML, store: store))
-    }
-
-    func testDescriptorBackedCacheValidationBindsEndpointAndSignatureExactly() throws {
-        let directoryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directoryURL) }
-        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let canonicalJSON = #"{"v":10,"t":{"j":[[1001]],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,0,null,null,null,null,null,null,0,0]]}"#
-        let result = externalizingReaderSegmentSidecar(
-            documentHTML: Data("<html><head></head><body><m-m id=\"a\">A</m-m></body></html>".utf8),
-            canonicalSidecar: Data(canonicalJSON.utf8),
-            scheme: .ebook,
-            store: store
-        )
-        let validHTML = String(decoding: result.documentHTML, as: UTF8.self)
-        let signature = try XCTUnwrap(result.signature)
-
-        XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities(validHTML, store: store))
-        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(
-            validHTML.replacingOccurrences(
-                of: signature,
-                with: "sha256:\(canonicalJSON.utf8.count):\(String(repeating: "f", count: 64))"
-            ),
-            store: store
-        ))
-
-        let duplicatedDescriptorHTML = validHTML.replacingOccurrences(
-            of: "</head>",
-            with: "<meta name=\"mnb-segment-sidecar\" content=\"\(try XCTUnwrap(result.endpointURL))\" "
-                + "data-mnb-segment-sidecar-signature=\"\(signature)\"></head>"
-        )
-        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(
-            duplicatedDescriptorHTML,
-            store: store
-        ))
-    }
-
-    func testExternalizingCanonicalSidecarPublishesContentAddressedJSON() throws {
-        let directoryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directoryURL) }
-        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
-        let aggregateJSON = #"{"count":0}"#
+    func testExternalizingCanonicalSidecarKeepsAggregateAndPublishesRawJSON() throws {
+        let canonicalJSON = #"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
+        let aggregateJSON = #"{"c":0,"j":[],"n":[],"k":[],"sid":[]}"#
         let html = """
-        <html><head><title>Test</title></head><body>
-        <script id="mnb-segment-metadata-aggregate">\(aggregateJSON)</script>
-        <script id="mnb-segment-metadata" type="application/json">\(canonicalJSON)</script>
+        <html><head><title>Test</title></head><body><m-c pid="p"><m-s sid="s" o="true"><m-m id="m">本文</m-m></m-s></m-c>
+        <script id="mnb-segment-metadata-aggregate" type="application/json" data-mnb-seg-meta-aggregate="true">\(aggregateJSON)</script>
+        <script id="mnb-segment-metadata" type="application/json" data-mnb-seg-meta="true">\(canonicalJSON)</script>
         </body></html>
         """
 
         let result = externalizingCanonicalReaderSegmentSidecar(
             in: Array(html.utf8),
-            scheme: .ebook,
-            store: store
+            scheme: .ebook
         )
         let output = String(decoding: result.documentHTML, as: UTF8.self)
 
         XCTAssertFalse(output.contains("id=\"mnb-segment-metadata\""))
         XCTAssertTrue(output.contains("id=\"mnb-segment-metadata-aggregate\""))
         XCTAssertTrue(output.contains("meta name=\"mnb-segment-sidecar\""))
+        XCTAssertTrue(output.contains("ebook://ebook/processed-section-sidecar/"))
         XCTAssertLessThan(
             try XCTUnwrap(output.range(of: "meta name=\"mnb-segment-sidecar\"")?.lowerBound),
             try XCTUnwrap(output.range(of: "</head>")?.lowerBound)
         )
         XCTAssertEqual(result.canonicalSidecarByteCount, canonicalJSON.utf8.count)
-        let endpoint = try XCTUnwrap(result.endpointURL.flatMap(URL.init(string:)))
-        let served = try XCTUnwrap(readerExternalSegmentSidecarResponse(
-            for: endpoint,
-            scheme: .ebook,
-            store: store
-        ))
-        XCTAssertEqual(served.data, Data(canonicalJSON.utf8))
-        XCTAssertEqual(served.response.value(forHTTPHeaderField: "Cache-Control"), "no-store")
-        XCTAssertEqual(
-            served.response.value(forHTTPHeaderField: "X-Manabi-Sidecar-Signature"),
-            result.signature
-        )
+        let endpointURL = try XCTUnwrap(result.endpointURL)
+        let token = try XCTUnwrap(URL(string: endpointURL)?.lastPathComponent)
+        let stored = try XCTUnwrap(ReaderExternalSegmentSidecarStore.shared.entry(for: token))
+        XCTAssertEqual(String(decoding: stored.data, as: UTF8.self), canonicalJSON)
+        XCTAssertEqual(stored.signature, result.signature)
     }
 
     func testExternalizingCanonicalSidecarIgnoresIdentifierTextInsideEarlierScript() throws {
-        let directoryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directoryURL) }
-        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
+        let canonicalJSON = #"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
         let html = """
         <html><head></head><body>
         <script>window.decoy = 'id="mnb-segment-metadata"';</script>
+        <m-c pid="p"><m-s sid="s" o="true"><m-m id="m">本文</m-m></m-s></m-c>
         <script type="application/json" data-mnb-seg-meta="true" id="mnb-segment-metadata">
         \(canonicalJSON)
         </script>
@@ -564,34 +180,29 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
         let result = externalizingCanonicalReaderSegmentSidecar(
             in: Array(html.utf8),
-            scheme: .ebook,
-            store: store
+            scheme: .ebook
         )
         let output = String(decoding: result.documentHTML, as: UTF8.self)
 
         XCTAssertTrue(output.contains("window.decoy"))
         XCTAssertFalse(output.contains("data-mnb-seg-meta"))
         let endpoint = try XCTUnwrap(result.endpointURL.flatMap(URL.init(string:)))
-        let served = try XCTUnwrap(readerExternalSegmentSidecarResponse(
-            for: endpoint,
-            scheme: .ebook,
-            store: store
-        ))
+        let served = try XCTUnwrap(
+            readerExternalSegmentSidecarResponse(for: endpoint, scheme: .ebook)
+        )
         XCTAssertEqual(
-            String(decoding: served.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
+            String(decoding: served.data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
             canonicalJSON
         )
     }
 
     func testExternalizingCanonicalSidecarIgnoresCommentedScriptDecoy() throws {
-        let directoryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directoryURL) }
-        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
+        let canonicalJSON = #"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
         let html = """
         <html><head></head><body>
         <!-- <script id="mnb-segment-metadata">{"decoy":true}</script> -->
+        <m-c pid="p"><m-s sid="s" o="true"><m-m id="m">本文</m-m></m-s></m-c>
         <SCRIPT type="application/json" data-note="2 > 1" ID="mnb-segment-metadata">
         \(canonicalJSON)
         </SCRIPT>
@@ -599,268 +210,1256 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         """
 
         let result = externalizingCanonicalReaderSegmentSidecar(
-            in: Data(html.utf8),
-            scheme: .ebook,
-            store: store
+            in: Array(html.utf8),
+            scheme: .ebook
         )
         let output = String(decoding: result.documentHTML, as: UTF8.self)
 
         XCTAssertTrue(output.contains("{\"decoy\":true}"))
         XCTAssertFalse(output.contains("data-note=\"2 > 1\""))
         let endpoint = try XCTUnwrap(result.endpointURL.flatMap(URL.init(string:)))
-        let served = try XCTUnwrap(readerExternalSegmentSidecarResponse(
-            for: endpoint,
-            scheme: .ebook,
-            store: store
-        ))
+        let served = try XCTUnwrap(
+            readerExternalSegmentSidecarResponse(for: endpoint, scheme: .ebook)
+        )
         XCTAssertEqual(
-            String(decoding: served.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
+            String(decoding: served.data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
             canonicalJSON
         )
     }
 
     func testExternalizingCanonicalSidecarRejectsMultipleCanonicalOwners() {
+        let canonicalJSON = #"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
         let html = """
-        <html><body>
-        <script id="mnb-segment-metadata">{"v":10,"t":{},"s":[]}</script>
-        <script id="mnb-segment-metadata">{"v":10,"t":{},"s":[]}</script>
+        <html><body><m-c pid="p"><m-s sid="s" o="true"><m-m id="m">本文</m-m></m-s></m-c>
+        <script id="mnb-segment-metadata">\(canonicalJSON)</script>
+        <script id="mnb-segment-metadata">\(canonicalJSON)</script>
         </body></html>
         """
 
         let result = externalizingCanonicalReaderSegmentSidecar(
-            in: Data(html.utf8),
+            in: Array(html.utf8),
             scheme: .ebook
         )
 
         XCTAssertEqual(result.documentHTML, Data(html.utf8))
         XCTAssertEqual(result.canonicalSidecarByteCount, 0)
         XCTAssertNil(result.endpointURL)
-        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(html))
     }
 
-    func testInliningCanonicalSidecarReplacesAllStaleCanonicalOwnersAndDescriptor() {
-        let oldToken = String(repeating: "0", count: 64)
-        let html = """
-        <html><head>
-        <meta name="mnb-segment-sidecar"
-              content="ebook://ebook/processed-section-sidecar/\(oldToken)"
-              data-mnb-segment-sidecar-signature="sha256:1:\(oldToken)">
-        </head><body>
-        <script id="mnb-segment-metadata">{"old":1}</script>
-        <script id="mnb-segment-metadata">{"old":2}</script>
-        </body></html>
-        """
-        let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
+    func testExternalSidecarIdentityIsDeterministicAndCacheable() throws {
+        let payload = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: Data("<html><head></head><body><m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">本文</m-m></m-s></m-c></body></html>".utf8),
+            segmentSidecar: Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        )
 
-        let output = String(decoding: inliningReaderSegmentSidecar(
-            documentHTML: Data(html.utf8),
-            canonicalSidecar: Data(canonicalJSON.utf8)
+        let first = publishingCanonicalReaderSegmentSidecar(payload, scheme: .ebook)
+        let second = publishingCanonicalReaderSegmentSidecar(payload, scheme: .ebook)
+
+        XCTAssertEqual(first.endpointURL, second.endpointURL)
+        XCTAssertEqual(first.signature, second.signature)
+        let responseDocument = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            first.documentHTML,
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
+            writingHint: nil,
+            bodyAttributes: [:],
+            additionalHeadMarkup: first.headDescriptor
         ), as: UTF8.self)
-
-        XCTAssertEqual(output.components(separatedBy: "id=\"mnb-segment-metadata\"").count - 1, 1)
-        XCTAssertTrue(output.contains(canonicalJSON))
-        XCTAssertFalse(output.contains("{\"old\":"))
-        XCTAssertFalse(output.contains("meta name=\"mnb-segment-sidecar\""))
+        XCTAssertTrue(responseDocument.contains("<head><base href="))
+        XCTAssertTrue(responseDocument.contains("<meta name=\"mnb-segment-sidecar\""))
+        let endpoint = try XCTUnwrap(first.endpointURL.flatMap(URL.init(string:)))
+        let served = try XCTUnwrap(readerExternalSegmentSidecarResponse(for: endpoint, scheme: .ebook))
+        XCTAssertEqual(served.data, payload.segmentSidecar)
+        XCTAssertEqual(served.response.value(forHTTPHeaderField: "Cache-Control"), "no-store")
     }
 
-    func testExternalSidecarSurvivesMemoryEvictionAndStoreRestart() throws {
+    func testPublishedSidecarRemainsAvailableForDocumentLifetime() throws {
+        let firstPayload = ebookIndexedSidecarPayload(0)
+        let first = publishingCanonicalReaderSegmentSidecar(firstPayload, scheme: .ebook)
+        let firstEndpoint = try XCTUnwrap(first.endpointURL.flatMap(URL.init(string:)))
+
+        // This exceeded the former entry limit and evicted an otherwise valid
+        // sidecar URL retained by the first document.
+        for index in 1...40 {
+            _ = publishingCanonicalReaderSegmentSidecar(
+                ebookIndexedSidecarPayload(index),
+                scheme: .ebook
+            )
+        }
+
+        let served = try XCTUnwrap(
+            readerExternalSegmentSidecarResponse(for: firstEndpoint, scheme: .ebook)
+        )
+        XCTAssertEqual(served.data, firstPayload.segmentSidecar)
+    }
+
+    func testEvictedSidecarRegeneratesFromContentAddressedStorageAcrossStoreInstances() throws {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let firstStore = ReaderExternalSegmentSidecarStore(
             directoryURL: directoryURL,
             totalByteLimit: 1,
             countLimit: 1
         )
-        let firstHTML = """
-        <html><head></head><body>
-        <script id="mnb-segment-metadata">{"v":10,"t":{},"s":[]}</script>
-        </body></html>
-        """
-        let first = externalizingCanonicalReaderSegmentSidecar(
-            in: Array(firstHTML.utf8),
+        let firstPayload = ebookIndexedSidecarPayload(0)
+        let first = publishingCanonicalReaderSegmentSidecar(
+            firstPayload,
             scheme: .ebook,
             store: firstStore
         )
         let endpoint = try XCTUnwrap(first.endpointURL.flatMap(URL.init(string:)))
 
-        let secondHTML = """
-        <html><body>
-        <script id="mnb-segment-metadata">{"v":10,"t":{},"s":[["1"]]}</script>
-        </body></html>
-        """
-        _ = externalizingCanonicalReaderSegmentSidecar(
-            in: Array(secondHTML.utf8),
+        _ = publishingCanonicalReaderSegmentSidecar(
+            ebookIndexedSidecarPayload(1),
             scheme: .ebook,
             store: firstStore
         )
-        XCTAssertNotNil(readerExternalSegmentSidecarResponse(
-            for: endpoint,
-            scheme: .ebook,
-            store: firstStore
-        ))
+        XCTAssertEqual(
+            readerExternalSegmentSidecarResponse(
+                for: endpoint,
+                scheme: .ebook,
+                store: firstStore
+            )?.data,
+            firstPayload.segmentSidecar
+        )
 
         let restartedStore = ReaderExternalSegmentSidecarStore(
             directoryURL: directoryURL,
             totalByteLimit: 1,
             countLimit: 1
         )
-        XCTAssertNotNil(readerExternalSegmentSidecarResponse(
-            for: endpoint,
-            scheme: .ebook,
-            store: restartedStore
-        ))
-        let token = endpoint.lastPathComponent
-        try Data("corrupt".utf8).write(to: directoryURL.appendingPathComponent(token), options: [.atomic])
-        let corruptedStore = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        XCTAssertNil(readerExternalSegmentSidecarResponse(
-            for: endpoint,
-            scheme: .ebook,
-            store: corruptedStore
-        ))
-        _ = externalizingCanonicalReaderSegmentSidecar(
-            in: Array(firstHTML.utf8),
-            scheme: .ebook,
-            store: corruptedStore
+        XCTAssertEqual(
+            readerExternalSegmentSidecarResponse(
+                for: endpoint,
+                scheme: .ebook,
+                store: restartedStore
+            )?.data,
+            firstPayload.segmentSidecar
         )
-        XCTAssertNotNil(readerExternalSegmentSidecarResponse(
-            for: endpoint,
-            scheme: .ebook,
-            store: corruptedStore
-        ))
-        XCTAssertNil(readerExternalSegmentSidecarResponse(
-            for: URL(string: "ebook://ebook/processed-section-sidecar/not-a-token")!,
-            scheme: .ebook,
-            store: restartedStore
-        ))
-
-        let rejectedURLs = [
-            "internal://local/reader-sidecar/\(token)",
-            "ebook://other/processed-section-sidecar/\(token)",
-            "ebook://ebook/processed-section-sidecar/\(token)/extra",
-            "ebook://ebook/processed-section-sidecar/\(token)?query=1",
-            "ebook://ebook/processed-section-sidecar/\(token)#fragment",
-            "ebook://user@ebook/processed-section-sidecar/\(token)",
-            "ebook://ebook:81/processed-section-sidecar/\(token)",
-            "ebook://ebook/processed-section-sidecar/\(token.uppercased())",
-        ]
-        for rejectedURLString in rejectedURLs {
-            let rejectedURL = try XCTUnwrap(URL(string: rejectedURLString))
-            XCTAssertNil(
-                readerExternalSegmentSidecarResponse(
-                    for: rejectedURL,
-                    scheme: .ebook,
-                    store: restartedStore
-                ),
-                rejectedURLString
-            )
-        }
     }
 
-    func testProcessTextResponseKeepsCanonicalSidecarInlineForBlobDocument() throws {
-        let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
+    func testSidecarStorePrunesOldDiskEntriesButKeepsRecentRestartData() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-prune-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let old = String(repeating: "a", count: 64)
+        let recent = String(repeating: "b", count: 64)
+        let oldURL = directoryURL.appendingPathComponent(old)
+        let recentURL = directoryURL.appendingPathComponent(recent)
+        try Data("old".utf8).write(to: oldURL)
+        try Data("recent".utf8).write(to: recentURL)
+        let now = Date()
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-1_000)],
+            ofItemAtPath: oldURL.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: now],
+            ofItemAtPath: recentURL.path
+        )
+
+        _ = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            diskByteLimit: 1_024,
+            diskCountLimit: 10,
+            maximumDiskAge: 100,
+            now: now
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recentURL.path))
+    }
+
+    func testSidecarStoreHonorsMemoryBudgetWhenDiskPersistenceFails() throws {
+        let parentURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-failure-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: parentURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parentURL) }
+        let unusableDirectoryURL = parentURL.appendingPathComponent("not-a-directory")
+        try Data("file".utf8).write(to: unusableDirectoryURL)
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: unusableDirectoryURL,
+            totalByteLimit: 4,
+            countLimit: 1,
+            diskByteLimit: 16,
+            diskCountLimit: 2
+        )
+
+        let first = try XCTUnwrap(store.insert(Data("aaaa".utf8)))
+        let second = try XCTUnwrap(store.insert(Data("bbbb".utf8)))
+        let usage = store.memoryUsageForTesting()
+
+        XCTAssertLessThanOrEqual(usage.byteCount, 4)
+        XCTAssertLessThanOrEqual(usage.count, 1)
+        XCTAssertNil(store.entry(for: first.token))
+        XCTAssertEqual(store.entry(for: second.token)?.data, Data("bbbb".utf8))
+        XCTAssertEqual(store.diskUsageForTesting().count, 0)
+    }
+
+    func testSidecarStorePrunesDuringLongLivedInsertSequenceWithoutDeletingCurrentFile() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-long-lived-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: 1,
+            countLimit: 1,
+            diskByteLimit: 12,
+            diskCountLimit: 2
+        )
+
+        _ = try XCTUnwrap(store.insert(Data("aaaaaa".utf8)))
+        _ = try XCTUnwrap(store.insert(Data("bbbbbb".utf8)))
+        let current = try XCTUnwrap(store.insert(Data("cccccc".utf8)))
+        let diskUsage = store.diskUsageForTesting()
+
+        XCTAssertLessThanOrEqual(store.memoryUsageForTesting().byteCount, 1)
+        XCTAssertLessThanOrEqual(diskUsage.byteCount, 12)
+        XCTAssertLessThanOrEqual(diskUsage.count, 2)
+        XCTAssertEqual(store.entry(for: current.token)?.data, Data("cccccc".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: directoryURL.appendingPathComponent(current.token).path
+        ))
+    }
+
+    func testSidecarStoreRejectsEntryThatCannotFitEitherTierWithoutPublishingURL() {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-oversized-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: 3,
+            countLimit: 1,
+            diskByteLimit: 3,
+            diskCountLimit: 1
+        )
+
+        XCTAssertNil(store.insert(Data("oversized".utf8)))
+        XCTAssertEqual(store.memoryUsageForTesting().byteCount, 0)
+        XCTAssertEqual(store.diskUsageForTesting().byteCount, 0)
+        let published = publishingCanonicalReaderSegmentSidecar(
+            ebookIndexedSidecarPayload(99),
+            scheme: .ebook,
+            store: store
+        )
+        XCTAssertNil(published.endpointURL)
+        XCTAssertNil(published.signature)
+        XCTAssertEqual(published.canonicalSidecarByteCount, 0)
+    }
+
+    func testSpeechProgressSaturatesOverflowingUTF16Range() {
+        XCTAssertEqual(
+            ReaderTTSProgressEvaluator.fraction(
+                text: "A😀B",
+                spokenRange: NSRange(location: Int.max - 1, length: 10)
+            ),
+            1
+        )
+        XCTAssertEqual(
+            ReaderTTSProgressEvaluator.fraction(
+                text: "本文",
+                spokenRange: NSRange(location: NSNotFound, length: 0)
+            ),
+            0
+        )
+        XCTAssertEqual(
+            ReaderTTSProgressEvaluator.fraction(
+                text: "本文",
+                spokenRange: NSRange(location: -1, length: 1)
+            ),
+            0
+        )
+        XCTAssertEqual(
+            ReaderTTSProgressEvaluator.fraction(
+                text: "",
+                spokenRange: NSRange(location: 0, length: 1)
+            ),
+            0
+        )
+    }
+
+    func testUnversionedViewerAssetsDisableBrowserCaching() throws {
+        let response = ebookHTTPResponse(
+            url: try XCTUnwrap(URL(string: "ebook://ebook/load/viewer-assets/foliate-js/paginator.js")),
+            mimeType: "text/javascript",
+            byteCount: 123,
+            textEncodingName: "utf-8",
+            additionalHeaderFields: ebookViewerAssetCacheHeaderFields()
+        )
+
+        XCTAssertEqual(
+            response.value(forHTTPHeaderField: "Cache-Control"),
+            "no-store, no-cache, must-revalidate"
+        )
+        XCTAssertEqual(response.value(forHTTPHeaderField: "Pragma"), "no-cache")
+        XCTAssertEqual(response.value(forHTTPHeaderField: "Expires"), "0")
+    }
+
+    func testExternalizingCanonicalSidecarLeavesHTMLWithoutCanonicalSidecarUnchanged() {
+        let html = "<html><head></head><body><p>本文</p></body></html>"
+
+        let result = externalizingCanonicalReaderSegmentSidecar(
+            in: Array(html.utf8),
+            scheme: .internalReader
+        )
+
+        XCTAssertEqual(result.documentHTML, Data(html.utf8))
+        XCTAssertEqual(result.canonicalSidecarByteCount, 0)
+        XCTAssertNil(result.endpointURL)
+        XCTAssertNil(result.signature)
+    }
+
+    func testExternalizingCanonicalSidecarRetainsInlineMetadataWhenPublicationFails() {
+        let canonicalJSON = #"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
         let html = """
-        <html><head></head><body>
-        <script id="mnb-segment-metadata">\(canonicalJSON)</script>
+        <html><head></head><body><m-c pid="p"><m-s sid="s" o="true"><m-m id="m">本文</m-m></m-s></m-c>
+        <script id="mnb-segment-metadata" type="application/json" data-mnb-seg-meta="true">\(canonicalJSON)</script>
+        </body></html>
+        """
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true),
+            totalByteLimit: 1,
+            countLimit: 1,
+            diskByteLimit: 1,
+            diskCountLimit: 1
+        )
+
+        let result = externalizingCanonicalReaderSegmentSidecar(
+            in: Array(html.utf8),
+            scheme: .internalReader,
+            store: store
+        )
+        let output = String(decoding: result.documentHTML, as: UTF8.self)
+
+        XCTAssertEqual(result.documentHTML, Data(html.utf8))
+        XCTAssertTrue(output.contains("id=\"mnb-segment-metadata\""))
+        XCTAssertNil(result.endpointURL)
+        XCTAssertNil(result.signature)
+    }
+
+    func testProcessedSidecarCacheEnvelopeRoundTripsWithoutRescanningCombinedHTML() throws {
+        let canonicalJSON = #"{"v":11,"t":{"語":[1]},"s":[]}"#
+        let aggregateJSON = #"{"c":1,"j":["語"]}"#
+        let html = """
+        <html><head></head><body><p>本文</p>
+        <script id="mnb-segment-metadata-aggregate" type="application/json">\(aggregateJSON)</script>
+        <script id="mnb-segment-metadata" type="application/json" data-mnb-seg-meta="true">\(canonicalJSON)</script>
         </body></html>
         """
 
-        let response = try XCTUnwrap(ebookProcessTextResponseData(
-            processedText: html,
-            isCacheWarmer: false
-        ))
-        let responseHTML = String(decoding: response, as: UTF8.self)
-
-        XCTAssertTrue(responseHTML.contains("id=\"mnb-segment-metadata\""))
-        XCTAssertTrue(responseHTML.contains(canonicalJSON))
-        XCTAssertFalse(responseHTML.contains("meta name=\"mnb-segment-sidecar\""))
-        XCTAssertEqual(
-            ebookProcessTextResponseData(processedText: html, isCacheWarmer: true),
-            Data()
-        )
-    }
-
-    func testProcessTextResponseExplicitlyDeclaresAuthoritativeCacheability() throws {
-        let url = try XCTUnwrap(URL(string: "ebook://ebook/process-text"))
-        let responseData = Data("<html></html>".utf8)
-
-        let authoritative = ebookProcessTextHTTPResponse(
-            url: url,
-            data: responseData,
-            isAuthoritativelyProcessed: true
-        )
-        let fallback = ebookProcessTextHTTPResponse(
-            url: url,
-            data: responseData,
-            isAuthoritativelyProcessed: false
-        )
-
-        XCTAssertEqual(
-            authoritative.value(forHTTPHeaderField: "X-Manabi-Processing-Authoritative"),
-            "true"
-        )
-        XCTAssertEqual(
-            fallback.value(forHTTPHeaderField: "X-Manabi-Processing-Authoritative"),
-            "false"
-        )
-        XCTAssertEqual(authoritative.value(forHTTPHeaderField: "Cache-Control"), "no-store")
-        XCTAssertEqual(
-            authoritative.value(forHTTPHeaderField: "Content-Type"),
-            "text/plain; charset=utf-8"
-        )
-    }
-
-    func testProcessedHTMLCacheRequiresDurableIdentityForEveryGeneratedSegment() {
-        let valid = """
-        <html><body><m-m id="a">A</m-m><m-m id="b">B</m-m>
-        <script id="mnb-segment-metadata" type="application/json">
-        {"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash-a","hash-b"],"sid":["sentence-a","sentence-b"],"pid":["paragraph-a"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0],["!b",1,null,null,null,null,null,null,null,1,0]]}
-        </script></body></html>
-        """
-        let missingStableIdentity = """
-        <html><body><m-m id="a">A</m-m>
-        <script id="mnb-segment-metadata" type="application/json">
-        {"v":10,"t":{"sid":[]},"s":[["!a"]]}
-        </script></body></html>
-        """
-        let incompleteCoverage = """
-        <html><body><m-m id="a">A</m-m><m-m id="b">B</m-m>
-        <script id="mnb-segment-metadata" type="application/json">
-        {"v":10,"t":{"h":["hash-a"],"sid":["sentence-a"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}
-        </script></body></html>
-        """
-
-        XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities(valid))
-        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(missingStableIdentity))
-        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(incompleteCoverage))
-        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities("<m-m id=\"a\">A</m-m>"))
-        XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities("<mnb-segment-metadata></mnb-segment-metadata>"))
-    }
-
-    func testProcessedSectionEnvelopeRoundTripsSeparatedDocumentAndSidecar() throws {
-        let payload = ebookPretransformedTestPayload(
-            bodyHTML: """
-            <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="runtime">猫</m-m></m-s></m-c>
-            """,
-            sidecar: #"{"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#
-        )
-
+        let payload = try XCTUnwrap(splitCanonicalReaderSegmentSidecar(from: Array(html.utf8)))
+        XCTAssertFalse(payload.isAuthoritativelyProcessed)
         let encoded = encodedEbookProcessedSectionCacheValue(payload)
         let decoded = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(encoded))
+        let splitDocument = String(decoding: decoded.documentHTML, as: UTF8.self)
 
-        XCTAssertEqual(decoded.documentHTML, payload.documentHTML)
-        XCTAssertEqual(decoded.segmentSidecar, payload.segmentSidecar)
-        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(decoded))
+        XCTAssertFalse(splitDocument.contains("id=\"mnb-segment-metadata\""))
+        XCTAssertTrue(splitDocument.contains("id=\"mnb-segment-metadata-aggregate\""))
+        XCTAssertEqual(String(decoding: decoded.segmentSidecar, as: UTF8.self), canonicalJSON)
+
     }
 
-    func testRawFallbackWithoutGeneratedSegmentsIsNotDurableCacheAuthority() {
-        let payload = EbookProcessedSectionPayload(
-            documentHTML: Data("<html><body>raw source</body></html>".utf8),
-            segmentSidecar: Data(),
-            isAuthoritativelyProcessed: false
+    func testProcessedSidecarCacheEnvelopeRejectsTruncatedValue() throws {
+        let html = "<html><body><script id=\"mnb-segment-metadata\">{}</script></body></html>"
+        let payload = try XCTUnwrap(splitCanonicalReaderSegmentSidecar(from: Array(html.utf8)))
+        let encoded = encodedEbookProcessedSectionCacheValue(payload)
+
+        XCTAssertNil(decodedEbookProcessedSectionCacheValue(Array(encoded.dropLast())))
+    }
+
+    func testProcessedSidecarCacheEnvelopePreservesExplicitAuthority() throws {
+        let successful = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: Data(
+                "<html><body><m-c pid=\"p\"><m-s sid=\"s\" o=\"true\">記号だけ。</m-s></m-c></body></html>".utf8
+            ),
+            segmentSidecar: Data()
+        )
+        let fallback = EbookProcessedSectionPayload(
+            documentHTML: Data("<html><body>未処理の本文</body></html>".utf8),
+            segmentSidecar: Data()
         )
 
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+        let decodedSuccessful = try XCTUnwrap(
+            decodedEbookProcessedSectionCacheValue(
+                encodedEbookProcessedSectionCacheValue(successful)
+            )
+        )
+        let decodedFallback = try XCTUnwrap(
+            decodedEbookProcessedSectionCacheValue(
+                encodedEbookProcessedSectionCacheValue(fallback)
+            )
+        )
+
+        XCTAssertTrue(decodedSuccessful.isAuthoritativelyProcessed)
+        XCTAssertFalse(decodedFallback.isAuthoritativelyProcessed)
+    }
+
+    func testProcessedSidecarCacheEnvelopeCannotPromoteUnmarkedSegmentFreeFallback() {
+        let fallback = EbookProcessedSectionPayload(
+            documentHTML: Data("<html><body>未処理の本文</body></html>".utf8),
+            segmentSidecar: Data()
+        )
+        var encoded = encodedEbookProcessedSectionCacheValue(fallback)
+        let authorityByteIndex = Array("MNBPSC5".utf8).count
+            + (MemoryLayout<UInt64>.size * 2)
+        encoded[authorityByteIndex] = 1
+
+        XCTAssertNil(decodedEbookProcessedSectionCacheValue(encoded))
+    }
+
+    func testProcessedSidecarCacheEnvelopeRejectsPreStableIdentityVersion() throws {
+        let html = "<html><body><script id=\"mnb-segment-metadata\">{}</script></body></html>"
+        let payload = try XCTUnwrap(splitCanonicalReaderSegmentSidecar(from: Array(html.utf8)))
+        var legacyEncoded = encodedEbookProcessedSectionCacheValue(payload)
+        legacyEncoded.replaceSubrange(0..<7, with: Array("MNBPSC3".utf8))
+
+        XCTAssertNil(decodedEbookProcessedSectionCacheValue(legacyEncoded))
+    }
+
+    func testProcessedSidecarCacheEnvelopeRejectsImplicitAuthorityVersion() throws {
+        let payload = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: Data("<html><body>処理済み</body></html>".utf8),
+            segmentSidecar: Data()
+        )
+        var legacyEncoded = encodedEbookProcessedSectionCacheValue(payload)
+        legacyEncoded.replaceSubrange(0..<7, with: Array("MNBPSC4".utf8))
+
+        XCTAssertNil(decodedEbookProcessedSectionCacheValue(legacyEncoded))
+    }
+
+    func testProcessedSidecarCacheRequiresDurableIdentityForEverySegment() {
+        let documentHTML = Data("""
+        <m-c pid="paragraph"><m-s sid="sentence" o="true">
+        <m-m id="runtime"><m-t>text</m-t></m-m>
+        </m-s></m-c>
+        """.utf8)
+        let sidecar = Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["text"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        let valid = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: documentHTML,
+            segmentSidecar: sidecar
+        )
+        let missingSentenceIdentity = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: valid.documentHTML,
+            segmentSidecar: Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["text"],"sid":[],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        )
+        let previousSchemaVersion = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: valid.documentHTML,
+            segmentSidecar: Data(#"{"v":11,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["text"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        )
+        let mismatchedDocumentIdentifier = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: Data(
+                String(decoding: valid.documentHTML, as: UTF8.self)
+                    .replacingOccurrences(of: "id=\"runtime\"", with: "id=\"other\"")
+                    .utf8
+            ),
+            segmentSidecar: valid.segmentSidecar
+        )
+        let duplicateDocumentIdentifier = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: Data("""
+            <m-c pid="paragraph"><m-s sid="sentence" o="true">
+            <m-m id="runtime">A</m-m><m-m id="runtime">B</m-m>
+            </m-s></m-c>
+            """.utf8),
+            segmentSidecar: sidecar
+        )
+
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(valid))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(missingSentenceIdentity))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(previousSchemaVersion))
+        XCTAssertFalse(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+                mismatchedDocumentIdentifier
+            )
+        )
+        XCTAssertFalse(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+                duplicateDocumentIdentifier
+            )
+        )
+    }
+
+    func testProcessedSidecarCacheRejectsMissingOrIncompleteSegmentCoverage() {
+        let documentHTML = Data("""
+        <m-c pid="paragraph"><m-s sid="sentence" o="true">
+        <m-m id="a">A</m-m><m-m id="b">B</m-m>
+        </m-s></m-c>
+        """.utf8)
+        let missingSidecar = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: documentHTML,
+            segmentSidecar: Data()
+        )
+        let emptySidecar = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: documentHTML,
+            segmentSidecar: Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":[],"x":[],"sid":[],"pid":[]},"s":[]}"#.utf8)
+        )
+        let incompleteSidecar = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: documentHTML,
+            segmentSidecar: Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["A"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        )
+        let segmentFreeDocument = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: Data("<html><body><m-metadata>Plain text</m-metadata></body></html>".utf8),
+            segmentSidecar: Data()
+        )
+        let implicitSegmentFreeDocument = EbookProcessedSectionPayload(
+            documentHTML: Data("<html><body>日本語の未処理本文</body></html>".utf8),
+            segmentSidecar: Data()
+        )
+        let nonAuthoritativeFallback = EbookProcessedSectionPayload(
+            documentHTML: Data("<html><body>Raw fallback</body></html>".utf8),
+            segmentSidecar: Data()
+        )
+
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(missingSidecar))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(emptySidecar))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(incompleteSidecar))
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(segmentFreeDocument))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(implicitSegmentFreeDocument))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(nonAuthoritativeFallback))
+    }
+
+    func testProcessedSidecarCacheBindsSentenceParagraphAndSurface() {
+        let sidecar = Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["本文"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        let valid = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: Data("<m-c pid=\"paragraph\"><m-s sid=\"sentence\" o=\"true\"><m-m id=\"runtime\"><m-t>本文</m-t></m-m></m-s></m-c>".utf8),
+            segmentSidecar: sidecar
+        )
+        func changed(_ original: String, _ replacement: String) -> EbookProcessedSectionPayload {
+            EbookProcessedSectionPayload.successfulReaderProcessing(
+                documentHTML: Data(
+                    String(decoding: valid.documentHTML, as: UTF8.self)
+                        .replacingOccurrences(of: original, with: replacement)
+                        .utf8
+                ),
+                segmentSidecar: valid.segmentSidecar
+            )
+        }
+
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(valid))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(changed("sid=\"sentence\"", "sid=\"other\"")))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(changed("pid=\"paragraph\"", "pid=\"other\"")))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(changed("<m-t>本文</m-t>", "<m-t>別文</m-t>")))
+    }
+
+    func testProcessedSidecarCacheRejectsNonIntegralAndBooleanTupleIndexes() {
+        let document = Data("<m-c pid=\"paragraph\"><m-s sid=\"sentence\" o=\"true\"><m-m id=\"runtime\">本文</m-m></m-s></m-c>".utf8)
+        let fractional = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: document,
+            segmentSidecar: Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["本文"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0.5,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        )
+        let boolean = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: document,
+            segmentSidecar: Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["本文"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",true,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        )
+
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(fractional))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(boolean))
+    }
+
+    func testSuccessfulPayloadPreservesXHTMLBytesRubyEntitiesAndUnicodeWhitespace() {
+        let nonbreakingSpace = "\u{00A0}"
+        let body = """
+        <body><m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="runtime"><ruby><rb>学</rb><rt>がく</rt></ruby>&#xA0;校</m-m></m-s></m-c><img src="cover.jpg" /></body>
+        """
+        let source = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <html xmlns="http://www.w3.org/1999/xhtml"><head><title>A &amp; B</title></head>\(body)</html>
+        """
+        let sidecar = Data("""
+        {"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["学\(nonbreakingSpace)校"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}
+        """.utf8)
+
+        let payload = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: Data(source.utf8),
+            segmentSidecar: sidecar
+        )
+        let output = String(decoding: payload.documentHTML, as: UTF8.self)
+
+        XCTAssertTrue(payload.isAuthoritativelyProcessed)
+        XCTAssertTrue(output.hasPrefix("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"))
+        XCTAssertTrue(output.contains("xmlns=\"http://www.w3.org/1999/xhtml\""))
+        XCTAssertTrue(output.contains("<title>A &amp; B</title>"))
+        XCTAssertTrue(output.contains(body))
+        XCTAssertTrue(output.contains("<img src=\"cover.jpg\" />"))
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+    }
+
+    func testAuthorityDigestIgnoresOnlyBodyInsertedMarkerAndBindsRubyText() throws {
+        let html = """
+        <body><m-c pid="p"><m-s sid="s" o="true"><m-m id="m"><ruby><rb>猫</rb><rt>ねこ</rt></ruby></m-m></m-s></m-c></body>
+        """
+        let sidecar = Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["猫"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        let payload = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: Data(html.utf8),
+            segmentSidecar: sidecar
+        )
+
+        XCTAssertTrue(payload.isAuthoritativelyProcessed)
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+
+        var tamperedEnvelope = Data(encodedEbookProcessedSectionCacheValue(payload))
+        let rubyRange = try XCTUnwrap(tamperedEnvelope.range(of: Data("ねこ".utf8)))
+        tamperedEnvelope.replaceSubrange(rubyRange, with: Data("ネコ".utf8))
+
+        XCTAssertNil(decodedEbookProcessedSectionCacheValue(Array(tamperedEnvelope)))
+    }
+
+    func testCompletionProofReadsVisibleNativeDataNodeMarkup() throws {
+        let markup = "<m-s sid=\"s\" o=\"true\">猫　犬</m-s>"
+        let source = try SwiftSoup.parse("<html><body><p></p></body></html>")
+        let paragraph = try XCTUnwrap(source.select("p").first())
+        try paragraph.appendChild(DataNode(Array(markup.utf8), []))
+        let output = "<html><body><p>\(markup)</p></body></html>"
+        let structured = try SwiftSoup.parse(output)
+
+        XCTAssertEqual(readerVisibleSourceTextDigest(source), readerVisibleSourceTextDigest(structured))
+        let proof = try XCTUnwrap(EbookReaderProcessingCompletionProof(sourceDocument: source))
+        XCTAssertTrue(proof.complete(documentHTML: Data(output.utf8), segmentSidecar: Data()).isAuthoritativelyProcessed)
+
+        let changedProof = try XCTUnwrap(EbookReaderProcessingCompletionProof(sourceDocument: source))
+        let changed = output.replacingOccurrences(of: "猫　犬", with: "猫　鳥")
+        XCTAssertFalse(changedProof.complete(documentHTML: Data(changed.utf8), segmentSidecar: Data()).isAuthoritativelyProcessed)
+    }
+
+    func testRawMarkupProofPreservesAuthoredRubyAndExcludedContent() throws {
+        let markup = "<m-s sid=\"s\" o=\"true\"><ruby>猫<rt>ねこ</rt></ruby></m-s><script>const 日本語 = true;</script>"
+        let source = try SwiftSoup.parse("<html><body><p></p></body></html>")
+        let paragraph = try XCTUnwrap(source.select("p").first())
+        try paragraph.appendChild(DataNode(Array(markup.utf8), []))
+        let output = "<html><body><p>\(markup)</p></body></html>"
+        let proof = try XCTUnwrap(EbookReaderProcessingCompletionProof(sourceDocument: source))
+        XCTAssertTrue(proof.complete(documentHTML: Data(output.utf8), segmentSidecar: Data()).isAuthoritativelyProcessed)
+
+        let changedProof = try XCTUnwrap(EbookReaderProcessingCompletionProof(sourceDocument: source))
+        let changed = output.replacingOccurrences(of: "ねこ", with: "にゃん")
+        XCTAssertFalse(changedProof.complete(documentHTML: Data(changed.utf8), segmentSidecar: Data()).isAuthoritativelyProcessed)
+    }
+
+    func testCompletionProofIsSourceBoundSingleUseAndCoversJapaneseScalarFamilies() {
+        let source = "<html><body><m-s sid=\"s\" o=\"true\">本文</m-s></body></html>"
+        let proof = EbookReaderProcessingCompletionProof.forTesting(sourceHTML: source)
+        let first = proof.complete(documentHTML: Data(source.utf8), segmentSidecar: Data())
+        let second = proof.complete(documentHTML: Data(source.utf8), segmentSidecar: Data())
+
+        XCTAssertTrue(first.isAuthoritativelyProcessed)
+        XCTAssertFalse(second.isAuthoritativelyProcessed)
+
+        for uncoveredJapanese in ["ｶﾀｶﾅ", "\u{1B001}", "々", "〳"] {
+            let html = "<html><body>\(uncoveredJapanese)</body></html>"
+            let result = EbookReaderProcessingCompletionProof.forTesting(sourceHTML: html)
+                .complete(documentHTML: Data(html.utf8), segmentSidecar: Data())
+            XCTAssertFalse(result.isAuthoritativelyProcessed, uncoveredJapanese)
+        }
+
+        let changed = "<html><body><m-s sid=\"s\" o=\"true\">別文</m-s></body></html>"
+        let sourceBound = EbookReaderProcessingCompletionProof.forTesting(sourceHTML: source)
+            .complete(documentHTML: Data(changed.utf8), segmentSidecar: Data())
+        XCTAssertFalse(sourceBound.isAuthoritativelyProcessed)
+
+        let rubySource = "<html><body><m-s sid=\"s\" o=\"true\"><ruby>猫<rt>ねこ</rt></ruby></m-s></body></html>"
+        let changedRuby = "<html><body><m-s sid=\"s\" o=\"true\"><ruby class=\"mnb-src\">猫<rt>にゃん</rt></ruby></m-s></body></html>"
+        let rubyBound = EbookReaderProcessingCompletionProof.forTesting(
+            sourceHTML: rubySource
+        ).complete(
+            documentHTML: Data(changedRuby.utf8),
+            segmentSidecar: Data()
+        )
+        XCTAssertFalse(rubyBound.isAuthoritativelyProcessed)
+
+        let generatedRuby = "<html><body><m-s sid=\"s\" o=\"true\"><ruby class=\"mnb-gen\">本文<rt>ほんぶん</rt></ruby></m-s></body></html>"
+        let generatedRubyResult = EbookReaderProcessingCompletionProof.forTesting(
+            sourceHTML: source
+        ).complete(
+            documentHTML: Data(generatedRuby.utf8),
+            segmentSidecar: Data()
+        )
+        XCTAssertTrue(generatedRubyResult.isAuthoritativelyProcessed)
+    }
+
+    func testZeroMatchCoverageExemptsNonRenderedContainersAndRubyAnnotations() {
+        let html = """
+        <body><script>const 日本語 = true;</script><style>.日本語 { color: red; }</style><ruby>A<rt>かな</rt><rp>（</rp></ruby> Plain text.</body>
+        """
+        let payload = EbookProcessedSectionPayload.successfulReaderProcessing(
+            documentHTML: Data(html.utf8),
+            segmentSidecar: Data()
+        )
+
+        XCTAssertTrue(payload.isAuthoritativelyProcessed)
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+    }
+
+    func testIncompletePayloadCannotForgeOrPublishSidecarAuthority() {
+        let document = Data("<m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">本文</m-m></m-s></m-c>".utf8)
+        let sidecar = Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        let incomplete = EbookProcessedSectionPayload(
+            documentHTML: document,
+            segmentSidecar: sidecar
+        )
+
+        let published = publishingCanonicalReaderSegmentSidecar(
+            incomplete,
+            scheme: .ebook
+        )
+
+        XCTAssertFalse(incomplete.isAuthoritativelyProcessed)
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(incomplete))
+        XCTAssertNil(published.headDescriptor)
+        XCTAssertNil(published.endpointURL)
+        XCTAssertEqual(published.canonicalSidecarByteCount, 0)
+    }
+
+    func testHTMLTransformAppendingUncoveredJapaneseRevokesAuthority() async throws {
+        let source = "<html><head></head><body><m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">本文</m-m></m-s></m-c></body></html>"
+        let sidecar = Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+
+        let result = try await ebookTextProcessor(
+            contentURL: URL(string: "ebook://ebook/load/local/book.epub")!,
+            sectionLocation: "chapter.xhtml",
+            content: source,
+            contentFingerprint: "content",
+            isCacheWarmer: false,
+            processReadabilityContent: nil,
+            processHTMLDocument: { _, _, completionProof in
+                completionProof.complete(
+                    documentHTML: Data(source.utf8),
+                    segmentSidecar: sidecar
+                )
+            },
+            processHTMLBytes: nil,
+            processHTML: { html, _ in
+                html.replacingOccurrences(of: "</body>", with: "<p>未処理の追記</p></body>")
+            }
+        )
+        let published = publishingCanonicalReaderSegmentSidecar(result, scheme: .ebook)
+
+        XCTAssertFalse(result.isAuthoritativelyProcessed)
+        XCTAssertNil(published.headDescriptor)
+        XCTAssertNil(published.endpointURL)
+    }
+
+    func testInlineSharedReaderFontCSSInjectsBothDirectionalFamilies() throws {
+        let doc = try SwiftSoup.parse("<html><head></head><body class=\"readability-mode\"><p>本文</p></body></html>")
+        let css = """
+        @font-face {
+          font-family: 'YuKyokasho';
+          src: url("data:font/woff2;base64,AAAA") format("woff2");
+        }
+        """
+
+        try upsertInlineSharedReaderFontCSS(css, in: doc)
+
+        let style = try XCTUnwrap(doc.getElementById("mnb-custom-fonts-inline"))
+        let script = try XCTUnwrap(doc.getElementById("mnb-custom-fonts-inline-bootstrap"))
+        let styleText = try style.html()
+        let scriptText = try script.html()
+
+        XCTAssertTrue(styleText.contains("font-family: 'YuKyokasho';"))
+        XCTAssertTrue(styleText.contains("font-family: 'YuKyokasho Yoko';"))
+        XCTAssertTrue(scriptText.contains("manabiReaderFontCSSText"))
+        XCTAssertTrue(scriptText.contains("manabiReaderFontInjectionMode"))
+        XCTAssertTrue(scriptText.contains("manabiHorizontalFontFamilyName"))
+        XCTAssertTrue(scriptText.contains("manabiVerticalFontFamilyName"))
+        XCTAssertEqual(try doc.getElementsByTag("html").first()?.attr("data-mnb-horizontal-font-family"), "YuKyokasho")
+        XCTAssertEqual(try doc.getElementsByTag("html").first()?.attr("data-mnb-vertical-font-family"), "YuKyokasho Yoko")
+        XCTAssertTrue((try doc.getElementsByTag("html").first()?.attr("style") ?? "").contains("--mnb-content-font: 'YuKyokasho';"))
+        XCTAssertTrue((try doc.body()?.attr("style") ?? "").contains("--mnb-content-vertical-font: 'YuKyokasho Yoko';"))
+    }
+
+    func testResponseMetadataByteInjectionDecoratesUppercaseDocumentWithoutReserializingContent() {
+        let html = "<!doctype html><HTML><HEAD><title>T</title></HEAD><BODY class=\"book\"><p>本文</p></BODY></HTML>"
+        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            Data(html.utf8),
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml?x=1&y=2",
+            writingHint: EBookProcessedSectionWritingHint(
+                direction: "vertical",
+                writingMode: "vertical-rl"
+            ),
+            bodyAttributes: ["data-mnb-native-cache-outcome": "final-direct-hit"]
+        ), as: UTF8.self)
+
+        XCTAssertTrue(result.contains("<HEAD><base href=\"ebook://ebook/entry-source/token/chapter.xhtml?x=1&amp;y=2\">"))
+        XCTAssertTrue(result.contains("<BODY class=\"book\""))
+        XCTAssertTrue(result.contains("data-mnb-native-cache-outcome=\"final-direct-hit\""))
+        XCTAssertTrue(result.contains("data-mnb-writing-direction=\"vertical\""))
+        XCTAssertTrue(result.contains("data-mnb-writing-mode=\"vertical-rl\""))
+        XCTAssertTrue(result.contains("<p>本文</p>"))
+    }
+
+    func testResponseMetadataByteInjectionWrapsHTMLFragment() {
+        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            Data("<section>本文</section>".utf8),
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
+            writingHint: nil,
+            bodyAttributes: ["data-test": "ok"]
+        ), as: UTF8.self)
+
+        XCTAssertEqual(
+            result,
+            "<!doctype html><html><head><base href=\"ebook://ebook/entry-source/token/chapter.xhtml\"></head><body data-test=\"ok\"><section>本文</section></body></html>"
+        )
+    }
+
+    func testResponseMetadataScannerHandlesGreaterThanInsideQuotedAttributesAndInjectsPresentation() {
+        let html = "<HTML data-note='1>0'><HEAD data-note=\"2>1\"></HEAD><BODY data-note='3>2' style='color:red'>本文</BODY></HTML>"
+        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            Data(html.utf8),
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
+            writingHint: nil,
+            bodyAttributes: ["data-response": "ready"],
+            presentation: EbookSectionPresentation(
+                revision: "presentation-1",
+                bodyAttributes: ["data-mnb-dark-theme": "current"],
+                bodyStyleProperties: [
+                    "font-family": "'not allowlisted'",
+                    "font-size": "18px",
+                ]
+            )
+        ), as: UTF8.self)
+
+        XCTAssertTrue(result.contains("<HEAD data-note=\"2>1\"><base href="))
+        XCTAssertTrue(result.contains("<BODY data-note='3>2' style='color:red;font-size:18px!important;' data-mnb-dark-theme=\"current\" data-mnb-presentation-revision=\"presentation-1\" data-mnb-presentation-schema-version=\"1\" data-response=\"ready\">"))
+    }
+
+    func testResponseMetadataReplacesManagedPresentationAttributesBeforeLayout() {
+        let html = """
+        <html><head></head><body data-mnb-dark-theme="stale" data-mnb-settings-initialized="false" data-publisher="kept" style="color:red;font-size:9px">Text</body></html>
+        """
+        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            Data(html.utf8),
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
+            writingHint: nil,
+            bodyAttributes: [:],
+            presentation: EbookSectionPresentation(
+                revision: "presentation-2",
+                bodyAttributes: [
+                    "data-mnb-dark-theme": "current",
+                    "data-mnb-settings-initialized": "true",
+                    "data-publisher": "not-allowlisted",
+                ],
+                bodyStyleProperties: [
+                    "font-size": "18px",
+                    "background": "red",
+                    "font-weight": "600;display:none",
+                ]
+            )
+        ), as: UTF8.self)
+
+        XCTAssertEqual(result.components(separatedBy: "data-mnb-dark-theme=").count - 1, 1)
+        XCTAssertEqual(result.components(separatedBy: "data-mnb-settings-initialized=").count - 1, 1)
+        XCTAssertTrue(result.contains("data-mnb-dark-theme=\"current\""))
+        XCTAssertTrue(result.contains("data-mnb-settings-initialized=\"true\""))
+        XCTAssertTrue(result.contains("data-mnb-presentation-schema-version=\"1\""))
+        XCTAssertTrue(result.contains("data-mnb-presentation-revision=\"presentation-2\""))
+        XCTAssertTrue(result.contains("data-publisher=\"kept\""))
+        XCTAssertFalse(result.contains("not-allowlisted"))
+        XCTAssertTrue(result.contains("style=\"color:red;font-size:9px;font-size:18px!important;\""))
+        XCTAssertFalse(result.contains("background:red"))
+        XCTAssertFalse(result.contains("display:none"))
+    }
+
+    func testNativeSectionPrewarmReadsEntryAndRunsCacheWarmerProcessor() async throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let contentDirectory = packageRoot
+            .appendingPathComponent("item/xhtml", isDirectory: true)
+        let chapterURL = contentDirectory
+            .appendingPathComponent("chapter.xhtml")
+        let chapterHTML = "<html><body>native prewarm</body></html>"
+
+        try FileManager.default.createDirectory(at: contentDirectory, withIntermediateDirectories: true)
+        try Data(chapterHTML.utf8).write(to: chapterURL)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryRoot)
+        }
+
+        let source = try ReaderPackageEntrySource(localURL: packageRoot)
+        let contentURL = URL(string: "ebook://ebook/load/local/Books/test.epub")!
+        let actor = EBookProcessingActor(
+            ebookTextProcessor: { receivedContentURL, sectionHref, text, _, isCacheWarmer, _, _, _, _ in
+                XCTAssertEqual(receivedContentURL, contentURL)
+                XCTAssertEqual(sectionHref, "item/xhtml/chapter.xhtml")
+                XCTAssertEqual(text, chapterHTML)
+                XCTAssertTrue(isCacheWarmer)
+                return ebookTestPayload("<html><body>processed</body></html>")
+            },
+            processReadabilityContent: nil,
+            processHTMLDocument: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
+        )
+
+        let result = try await actor.prewarm(
+            contentURL: contentURL,
+            sectionHref: "item/xhtml/chapter.xhtml",
+            source: source
+        )
+
+        XCTAssertEqual(result.sectionHref, "item/xhtml/chapter.xhtml")
+        XCTAssertEqual(result.requestBytes, chapterHTML.utf8.count)
+        XCTAssertEqual(result.responseBytes, "<html><body>processed</body></html>".utf8.count)
+        XCTAssertTrue(result.pageStatsRequested)
+        XCTAssertEqual(result.pageStatsOutcome, .unsupported)
+    }
+
+    func testReaderPackageDirectorySourceRejectsSymlinksEscapingThePackageRoot() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let internalFileURL = packageRoot.appendingPathComponent("internal.xhtml")
+        let outsideFileURL = temporaryRoot.appendingPathComponent("outside.xhtml")
+        let internalLinkURL = packageRoot.appendingPathComponent("internal-link.xhtml")
+        let escapingLinkURL = packageRoot.appendingPathComponent("escaping-link.xhtml")
+
+        try FileManager.default.createDirectory(at: packageRoot, withIntermediateDirectories: true)
+        try Data("inside".utf8).write(to: internalFileURL)
+        try Data("outside".utf8).write(to: outsideFileURL)
+        try FileManager.default.createSymbolicLink(at: internalLinkURL, withDestinationURL: internalFileURL)
+        try FileManager.default.createSymbolicLink(at: escapingLinkURL, withDestinationURL: outsideFileURL)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryRoot)
+        }
+
+        let source = try ReaderPackageEntrySource(localURL: packageRoot)
+        XCTAssertEqual(
+            String(decoding: try source.readEntry(subpath: "internal-link.xhtml"), as: UTF8.self),
+            "inside"
+        )
+        let enumeratedPaths = try source.enumerateEntries().map(\.path)
+        XCTAssertTrue(enumeratedPaths.contains("internal-link.xhtml"))
+        XCTAssertFalse(enumeratedPaths.contains("escaping-link.xhtml"))
+        XCTAssertThrowsError(try source.readEntry(subpath: "escaping-link.xhtml")) { error in
+            guard case ReaderPackageEntrySourceError.invalidSubpath = error else {
+                XCTFail("Expected invalidSubpath, received \(error)")
+                return
+            }
+        }
+    }
+
+    func testReaderPackageDirectoryEnumerationHandlesStandardizedRootPaths() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let contentDirectory = packageRoot
+            .appendingPathComponent("OPS", isDirectory: true)
+        let chapterURL = contentDirectory
+            .appendingPathComponent("chapter1.xhtml")
+
+        try FileManager.default.createDirectory(at: contentDirectory, withIntermediateDirectories: true)
+        try Data("<html></html>".utf8).write(to: chapterURL)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryRoot)
+        }
+
+        let source = try ReaderPackageEntrySource(localURL: packageRoot)
+        let entries = try source.enumerateEntries()
+
+        XCTAssertEqual(entries.map(\.path), ["OPS/chapter1.xhtml"])
+    }
+
+    func testReaderPackageEntrySourceCacheEvictsLeastRecentlyUsedBooks() async throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        func makePackage(index: Int) throws -> (packageURL: URL, readerURL: URL) {
+            let packageURL = temporaryRoot
+                .appendingPathComponent("book-\(index).epub", isDirectory: true)
+            try FileManager.default.createDirectory(at: packageURL, withIntermediateDirectories: true)
+            try Data("<html>\(index)</html>".utf8)
+                .write(to: packageURL.appendingPathComponent("chapter.xhtml"))
+            var components = URLComponents(string: "ebook://ebook/load/local/Books/book-\(index).epub")!
+            components.queryItems = [
+                URLQueryItem(name: "diagnosticLocalFilePath", value: packageURL.path),
+            ]
+            return (packageURL, try XCTUnwrap(components.url))
+        }
+
+        let first = try makePackage(index: 1)
+        let second = try makePackage(index: 2)
+        let third = try makePackage(index: 3)
+        let fourth = try makePackage(index: 4)
+        let cache = ReaderPackageEntrySourceCache(countLimit: 2)
+        let fileManager = ReaderFileManager()
+
+        _ = try await cache.cachedSource(forPackageURL: first.readerURL, readerFileManager: fileManager)
+        _ = try await cache.cachedSource(forPackageURL: second.readerURL, readerFileManager: fileManager)
+        _ = try await cache.cachedSource(forPackageURL: third.readerURL, readerFileManager: fileManager)
+
+        let initialCount = await cache.cachedSourceCountForTesting()
+        let initialOrder = await cache.cachedSourcePathsInLRUOrderForTesting()
+        XCTAssertEqual(initialCount, 2)
+        XCTAssertEqual(
+            initialOrder,
+            [second.packageURL.standardizedFileURL.path, third.packageURL.standardizedFileURL.path]
+        )
+
+        _ = try await cache.cachedSource(forPackageURL: second.readerURL, readerFileManager: fileManager)
+        _ = try await cache.cachedSource(forPackageURL: fourth.readerURL, readerFileManager: fileManager)
+
+        let finalOrder = await cache.cachedSourcePathsInLRUOrderForTesting()
+        XCTAssertEqual(
+            finalOrder,
+            [second.packageURL.standardizedFileURL.path, fourth.packageURL.standardizedFileURL.path]
+        )
+    }
+
+    func testReaderPackageEntrySourceCacheDoesNotPublishFromAnAlreadyCancelledRequest() async throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageURL = temporaryRoot.appendingPathComponent("cancelled.epub", isDirectory: true)
+        try FileManager.default.createDirectory(at: packageURL, withIntermediateDirectories: true)
+        try Data("<html></html>".utf8)
+            .write(to: packageURL.appendingPathComponent("chapter.xhtml"))
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        var continuation: AsyncStream<Void>.Continuation!
+        let startStream = AsyncStream<Void> { continuation = $0 }
+        var components = URLComponents(string: "ebook://ebook/load/local/Books/cancelled.epub")!
+        components.queryItems = [
+            URLQueryItem(name: "diagnosticLocalFilePath", value: packageURL.path),
+        ]
+        let readerURL = try XCTUnwrap(components.url)
+        let cache = ReaderPackageEntrySourceCache(countLimit: 2)
+        let fileManager = ReaderFileManager()
+
+        let request = Task {
+            var iterator = startStream.makeAsyncIterator()
+            _ = await iterator.next()
+            return try await cache.cachedSource(
+                forPackageURL: readerURL,
+                readerFileManager: fileManager
+            )
+        }
+        await Task.yield()
+        request.cancel()
+        continuation.yield(())
+        continuation.finish()
+
+        do {
+            _ = try await request.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+        let cachedCount = await cache.cachedSourceCountForTesting()
+        XCTAssertEqual(cachedCount, 0)
+    }
+
+    func testReaderPackageArchiveSourceEnumeratesAndReadsEntriesWithoutExpansion() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let archiveURL = temporaryRoot.appendingPathComponent("book.epub")
+        let chapterPath = "OPS/chapter1.xhtml"
+        let chapterHTML = "<html><body>chapter</body></html>"
+
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryRoot)
+        }
+        guard let archive = Archive(url: archiveURL, accessMode: .create) else {
+            XCTFail("Expected archive to be created")
+            return
+        }
+        try archive.addEntry(with: chapterPath, type: .file, uncompressedSize: Int64(chapterHTML.utf8.count)) { position, size in
+            let bytes = Array(chapterHTML.utf8)
+            return Data(bytes[Int(position)..<Int(position) + size])
+        }
+
+        let source = try ReaderPackageEntrySource(localURL: archiveURL)
+        let entries = try source.enumerateEntries()
+
+        XCTAssertEqual(entries.map(\.path), [chapterPath])
+        XCTAssertEqual(String(decoding: try source.readEntry(subpath: chapterPath), as: UTF8.self), chapterHTML)
+    }
+
+    func testReaderPackageArchiveSourceAdvertisesOnlyFirstAddressableEntryPerPath() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let archiveURL = temporaryRoot.appendingPathComponent("book.epub")
+        let firstEntryData = Data("first".utf8)
+        let duplicateEntryData = Data("second-is-longer".utf8)
+
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        guard let archive = Archive(url: archiveURL, accessMode: .create) else {
+            XCTFail("Expected archive to be created")
+            return
+        }
+        func addEntry(path: String, data: Data) throws {
+            try archive.addEntry(
+                with: path,
+                type: .file,
+                uncompressedSize: Int64(data.count)
+            ) { position, size in
+                data.subdata(in: Int(position)..<Int(position) + size)
+            }
+        }
+
+        try addEntry(path: "OPS/chapter.xhtml", data: firstEntryData)
+        try addEntry(path: "../outside.xhtml", data: Data("outside".utf8))
+        try addEntry(path: "OPS\\windows.xhtml", data: Data("windows".utf8))
+        try addEntry(path: "OPS/chapter.xhtml", data: duplicateEntryData)
+
+        let source = try ReaderPackageEntrySource(localURL: archiveURL)
+
+        XCTAssertEqual(
+            try source.enumerateEntries(),
+            [ReaderPackageEntryMetadata(path: "OPS/chapter.xhtml", size: firstEntryData.count)]
+        )
+        XCTAssertEqual(
+            String(decoding: try source.readEntry(subpath: "OPS/chapter.xhtml"), as: UTF8.self),
+            "first"
+        )
+        XCTAssertThrowsError(try source.readEntry(subpath: "../outside.xhtml"))
+        XCTAssertThrowsError(try source.readEntry(subpath: "OPS\\windows.xhtml"))
+    }
+
+    func testReaderPackageResourceLimitsRejectArchiveEntryCountAndAggregateSize() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let archiveURL = temporaryRoot.appendingPathComponent("limited.epub")
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        guard let archive = Archive(url: archiveURL, accessMode: .create) else {
+            XCTFail("Expected archive to be created")
+            return
+        }
+        let first = Data(repeating: 1, count: 4)
+        let second = Data(repeating: 2, count: 4)
+        for (path, data) in [("one.xhtml", first), ("two.xhtml", second)] {
+            try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count)) { position, size in
+                data.subdata(in: Int(position)..<Int(position) + size)
+            }
+        }
+
+        let countLimited = try ReaderPackageEntrySource(
+            localURL: archiveURL,
+            limits: ReaderPackageResourceLimits(
+                maxEntryCount: 1,
+                maxEntryBytes: 10,
+                maxAggregateUncompressedBytes: 100
+            )
+        )
+        XCTAssertThrowsError(try countLimited.enumerateEntries()) { error in
+            guard case ReaderPackageEntrySourceError.entryCountExceeded(limit: 1) = error else {
+                XCTFail("Expected entry-count limit, received \(error)")
+                return
+            }
+        }
+
+        let aggregateLimited = try ReaderPackageEntrySource(
+            localURL: archiveURL,
+            limits: ReaderPackageResourceLimits(
+                maxEntryCount: 10,
+                maxEntryBytes: 10,
+                maxAggregateUncompressedBytes: 7
+            )
+        )
+        XCTAssertThrowsError(try aggregateLimited.enumerateEntries()) { error in
+            guard case ReaderPackageEntrySourceError.aggregateSizeExceeded(_, 7) = error else {
+                XCTFail("Expected aggregate-size limit, received \(error)")
+                return
+            }
+        }
+    }
+
+    func testReaderPackageDirectoryReadStreamsAndRejectsAdvertisedEntrySize() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot.appendingPathComponent("limited.epub", isDirectory: true)
+        try FileManager.default.createDirectory(at: packageRoot, withIntermediateDirectories: true)
+        try Data(repeating: 7, count: 8).write(to: packageRoot.appendingPathComponent("chapter.xhtml"))
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let source = try ReaderPackageEntrySource(
+            localURL: packageRoot,
+            limits: ReaderPackageResourceLimits(
+                maxEntryCount: 10,
+                maxEntryBytes: 4,
+                maxAggregateUncompressedBytes: 100
+            )
+        )
+        XCTAssertThrowsError(try source.readEntry(subpath: "chapter.xhtml")) { error in
+            guard case ReaderPackageEntrySourceError.entrySizeExceeded(
+                path: "chapter.xhtml",
+                size: 8,
+                limit: 4
+            ) = error else {
+                XCTFail("Expected per-entry limit, received \(error)")
+                return
+            }
+        }
+    }
+
+    func testReaderPackageSourceReportsCorruptArchiveAsTypedError() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let archiveURL = temporaryRoot.appendingPathComponent("corrupt.epub")
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        try Data("not a ZIP archive".utf8).write(to: archiveURL)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        XCTAssertThrowsError(try ReaderPackageEntrySource(localURL: archiveURL)) { error in
+            guard case ReaderPackageEntrySourceError.packageCorrupt = error else {
+                XCTFail("Expected typed corrupt-package error, received \(error)")
+                return
+            }
+        }
+    }
+
+    func testCacheWarmerProcessingReturnsProcessedContent() async throws {
+        let expectedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
+        let actor = EBookProcessingActor(
+            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in ebookTestPayload(expectedHTML) },
+            processReadabilityContent: nil,
+            processHTMLDocument: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
+        )
+
+        let result = try await actor.process(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            location: "item/xhtml/title.xhtml",
+            text: "<html><body>raw</body></html>",
+            isCacheWarmer: true
+        )
+
+        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), expectedHTML)
+    }
+
+    func testCacheWarmerWithoutProcessorFallsBackToOriginalText() async throws {
+        let originalText = "<html><body>raw</body></html>"
+        let actor = EBookProcessingActor(
+            ebookTextProcessor: nil,
+            processReadabilityContent: nil,
+            processHTMLDocument: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
+        )
+
+        let result = try await actor.process(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            location: "item/xhtml/title.xhtml",
+            text: originalText,
+            isCacheWarmer: true
+        )
+
+        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), originalText)
+        XCTAssertFalse(result.isAuthoritativelyProcessed)
     }
 
     func testEbookTextProcessorPropagatesCancellation() async throws {
@@ -883,10 +1482,12 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             XCTFail("Cancellation must not become a successful raw section response")
         } catch is CancellationError {
             // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
         }
     }
 
-    func testEbookTextProcessorRejectsSuccessfulResultAfterTaskCancellation() async throws {
+    func testEbookTextProcessorRejectsSuccessfulReadabilityResultAfterTaskCancellation() async throws {
         let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
         let task = Task {
             try await ebookTextProcessor(
@@ -896,7 +1497,9 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 contentFingerprint: "fingerprint",
                 isCacheWarmer: false,
                 processReadabilityContent: { content, _, sectionURL, _, _, _, _ in
-                    withUnsafeCurrentTask { $0?.cancel() }
+                    withUnsafeCurrentTask { currentTask in
+                        currentTask?.cancel()
+                    }
                     return try SwiftSoup.parse(content, sectionURL?.absoluteString ?? "")
                 },
                 processHTMLDocument: nil,
@@ -910,6 +1513,43 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             XCTFail("Cancelled processing must not publish a successful document")
         } catch is CancellationError {
             // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+    }
+
+    func testEbookTextProcessorTreatsTaskCancellationAsCancellationEvenForAnotherError() async throws {
+        enum ExpectedProcessingError: Error {
+            case failedAfterCancellation
+        }
+
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
+        let task = Task {
+            try await ebookTextProcessor(
+                contentURL: contentURL,
+                sectionLocation: "item/xhtml/title.xhtml",
+                content: "<html><body>Original</body></html>",
+                contentFingerprint: "fingerprint",
+                isCacheWarmer: false,
+                processReadabilityContent: { _, _, _, _, _, _, _ in
+                    withUnsafeCurrentTask { currentTask in
+                        currentTask?.cancel()
+                    }
+                    throw ExpectedProcessingError.failedAfterCancellation
+                },
+                processHTMLDocument: nil,
+                processHTMLBytes: nil,
+                processHTML: nil
+            )
+        }
+
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled processing must not become a recoverable raw fallback")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
         }
     }
 
@@ -917,9 +1557,9 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         enum ExpectedProcessingError: Error {
             case failed
         }
+
         let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
         let originalText = "<html><body>Original</body></html>"
-
         let result = try await ebookTextProcessor(
             contentURL: contentURL,
             sectionLocation: "item/xhtml/title.xhtml",
@@ -939,1502 +1579,72 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertFalse(result.isAuthoritativelyProcessed)
     }
 
-    func testProcessedSectionEnvelopeRejectsLegacyAndTruncatedValues() {
-        let payload = EbookProcessedSectionPayload(
-            documentHTML: Data("<html><body>猫</body></html>".utf8),
-            segmentSidecar: Data()
-        )
-        let encoded = encodedEbookProcessedSectionCacheValue(payload)
-        var legacy = encoded
-        legacy.replaceSubrange(0..<7, with: Array("MNBPSC2".utf8))
-
-        XCTAssertNil(decodedEbookProcessedSectionCacheValue(legacy))
-        XCTAssertNil(decodedEbookProcessedSectionCacheValue(Array(encoded.dropLast())))
-    }
-
-    func testProcessedSectionDurabilityRequiresCurrentSchemaSegmentCoverage() {
-        let oneSegmentBody = """
-        <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="a">猫</m-m></m-s></m-c>
-        """
-        let twoSegmentBody = """
-        <m-c pid="paragraph"><m-s sid="sentence" o="true">
-        <m-m id="a">猫</m-m><m-m id="b">犬</m-m>
-        </m-s></m-c>
-        """
-        let incomplete = ebookPretransformedTestPayload(
-            bodyHTML: twoSegmentBody,
-            sidecar: #"{"v":10,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}"#
-        )
-        let legacy = ebookPretransformedTestPayload(
-            bodyHTML: twoSegmentBody,
-            sidecar: #"{"v":3,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0],["!b",0,null,null,null,null,null,null,null,0]]}"#
-        )
-        let duplicateRuntimeIdentifier = ebookPretransformedTestPayload(
-            bodyHTML: twoSegmentBody,
-            sidecar: #"{"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0],["!a",0,null,null,null,null,null,null,null,0,0]]}"#
-        )
-        let transitionalTenFieldTuple = ebookPretransformedTestPayload(
-            bodyHTML: oneSegmentBody,
-            sidecar: #"{"v":10,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}"#
-        )
-        let canonicalBareToken = ebookPretransformedTestPayload(
-            bodyHTML: """
-            <m-c pid="paragraph"><m-s sid="sentence" o="true">
-            <m-m id="mnb-sAb09">猫</m-m></m-s></m-c>
-            """,
-            sidecar: #"""
-            {"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},
-             "s":[["Ab09",0,null,null,null,null,null,null,0,0,0]]}
-            """#
-        )
-        let collidingTokenAliases = ebookPretransformedTestPayload(
-            bodyHTML: """
-            <m-c pid="paragraph"><m-s sid="sentence" o="true">
-            <m-m id="mnb-sAb09">猫</m-m></m-s></m-c>
-            """,
-            sidecar: #"""
-            {"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},
-             "s":[["Ab09",0,null,null,null,null,null,null,null,0,0],
-                  ["!mnb-sAb09",0,null,null,null,null,null,null,null,0,0]]}
-            """#
-        )
-        let mismatchedDocumentIdentifier = ebookPretransformedTestPayload(
-            bodyHTML: """
-            <m-c pid="paragraph"><m-s sid="sentence" o="true">
-            <m-m id="different">猫</m-m></m-s></m-c>
-            """,
-            sidecar: String(decoding: canonicalBareToken.segmentSidecar, as: UTF8.self)
-        )
-        let markupInsideScript = EbookProcessedSectionPayload(
-            documentHTML: Data(
-                #"<html><body><script>const sample = '<m-m id=\"not-an-element\">';</script></body></html>"#.utf8
-            ),
-            segmentSidecar: Data()
-        )
-        let fractionalMandatoryIndex = ebookPretransformedTestPayload(
-            bodyHTML: oneSegmentBody,
-            sidecar: #"{"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0.5,null,null,null,null,null,null,null,0,0]]}"#
-        )
-        let booleanOptionalIndex = ebookPretransformedTestPayload(
-            bodyHTML: oneSegmentBody,
-            sidecar: #"{"v":10,"t":{"j":[[1001]],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,true,null,null,null,null,null,null,0,0]]}"#
-        )
-        let fractionalVersion = ebookPretransformedTestPayload(
-            bodyHTML: oneSegmentBody,
-            sidecar: #"{"v":10.5,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0]]}"#
-        )
-
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(incomplete))
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(legacy))
-        XCTAssertFalse(
-            ebookProcessedSectionPayloadHasDurableSegmentIdentities(duplicateRuntimeIdentifier)
-        )
-        XCTAssertFalse(
-            ebookProcessedSectionPayloadHasDurableSegmentIdentities(transitionalTenFieldTuple)
-        )
-        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(canonicalBareToken))
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(collidingTokenAliases))
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(mismatchedDocumentIdentifier))
-        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(markupInsideScript))
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(fractionalMandatoryIndex))
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(booleanOptionalIndex))
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(fractionalVersion))
-    }
-
-    func testProcessedSectionDurabilityRequiresExactPretransformedTransportContract() {
-        let sidecar = #"{"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,0,0,0]]}"#
-        let validBody = """
-        <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="a">猫</m-m></m-s></m-c>
-        """
-
-        XCTAssertTrue(
-            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
-                ebookPretransformedTestPayload(bodyHTML: validBody, sidecar: sidecar)
-            )
-        )
-        XCTAssertFalse(
-            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
-                ebookPretransformedTestPayload(bodyHTML: validBody, sidecar: sidecar, revision: "stale")
-            )
-        )
-        XCTAssertFalse(
-            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
-                ebookPretransformedTestPayload(bodyHTML: validBody, sidecar: sidecar, markerSegmentCount: 2)
-            )
-        )
-        XCTAssertFalse(
-            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
-                ebookPretransformedTestPayload(bodyHTML: validBody, sidecar: sidecar, markerSentenceCount: 2)
-            )
-        )
-        XCTAssertFalse(
-            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
-                ebookPretransformedTestPayload(bodyHTML: validBody, sidecar: sidecar, markerCopies: 0)
-            )
-        )
-        XCTAssertFalse(
-            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
-                ebookPretransformedTestPayload(bodyHTML: validBody, sidecar: sidecar, markerCopies: 2)
-            )
-        )
-    }
-
-    func testProcessedSectionDurabilityRequiresProducerOwnedDOMHierarchy() {
-        let sidecar = #"{"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,0,0,0]]}"#
-        let wrongSentence = """
-        <m-c pid="paragraph"><m-s sid="other" o="true"><m-m id="a">猫</m-m></m-s></m-c>
-        """
-        let wrongParagraph = """
-        <m-c pid="other"><m-s sid="sentence" o="true"><m-m id="a">猫</m-m></m-s></m-c>
-        """
-        let unownedSentence = """
-        <m-c pid="paragraph"><m-s sid="sentence"><m-m id="a">猫</m-m></m-s></m-c>
-        """
-        let embeddedCanonicalSidecar = """
-        <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="a">猫</m-m></m-s></m-c>
-        <script id="mnb-segment-metadata" type="application/json">\(sidecar)</script>
-        """
-
-        XCTAssertFalse(
-            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
-                ebookPretransformedTestPayload(bodyHTML: wrongSentence, sidecar: sidecar)
-            )
-        )
-        XCTAssertFalse(
-            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
-                ebookPretransformedTestPayload(bodyHTML: wrongParagraph, sidecar: sidecar)
-            )
-        )
-        XCTAssertFalse(
-            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
-                ebookPretransformedTestPayload(bodyHTML: unownedSentence, sidecar: sidecar)
-            )
-        )
-        XCTAssertFalse(
-            ebookProcessedSectionPayloadHasDurableSegmentIdentities(
-                ebookPretransformedTestPayload(bodyHTML: embeddedCanonicalSidecar, sidecar: sidecar)
-            )
-        )
-    }
-
-    func testProcessedSectionWithoutSidecarRejectsStaleTransportMarker() {
-        let payload = ebookPretransformedTestPayload(
-            bodyHTML: "<p>Plain processed text</p>",
-            sidecar: ""
-        )
-
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
-    }
-
-    func testProcessedSectionDurabilityRejectsOutOfDomainEntryIDsAndJLPTLevels() {
-        func payload(entryID: Int = 1001, jlptLevel: String = "null") -> EbookProcessedSectionPayload {
-            ebookPretransformedTestPayload(
-                bodyHTML: """
-                <m-c pid="paragraph"><m-s sid="sentence" o="true"><m-m id="a">猫</m-m></m-s></m-c>
-                """,
-                sidecar: """
-                {"v":10,"t":{"j":[[\(entryID)]],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["猫"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,0,null,null,null,null,\(jlptLevel),0,0,0]]}
-                """
-            )
+    func testPartiallyMutatedReaderFailureIsNonAuthoritativeAndIsNotCached() async throws {
+        enum ExpectedProcessingError: Error {
+            case failedAfterPartialMutation
         }
 
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload(entryID: 0)))
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload(jlptLevel: "0")))
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload(jlptLevel: "6")))
-        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload(jlptLevel: "1")))
-        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload(jlptLevel: "5")))
-    }
-
-    func testProcessingRegeneratesCachedHTMLWithoutDurableSegmentIdentity() async throws {
-        let cachedPayload = ebookTestPayload("<html><body><m-m>stale</m-m></body></html>")
-        let regeneratedHTML = """
-        <html><body><m-m id="fresh">fresh</m-m>
-        <script id="mnb-segment-metadata" type="application/json">
-        {"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!fresh",0,null,null,null,null,null,null,null,0,0]]}
-        </script></body></html>
-        """
+        let cacheWriteCount = EbookTestInvocationCounter()
+        let source = "<html><body>Original</body></html>"
         let actor = EBookProcessingActor(
-            ebookProcessedTextCacheReader: { _, _, _, _ in cachedPayload },
-            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in
-                ebookTestPayload(regeneratedHTML)
+            ebookProcessedTextCacheWriter: { _, _, _, _ in
+                await cacheWriteCount.increment()
             },
+            ebookTextProcessor: ebookTextProcessor,
             processReadabilityContent: nil,
-            processHTMLDocument: nil,
+            processHTMLDocument: { document, _, _ in
+                try document.body()?.append("<m-m id='partial'>猫</m-m>")
+                throw ExpectedProcessingError.failedAfterPartialMutation
+            },
             processHTMLBytes: nil,
             processHTML: nil
         )
 
         let result = try await actor.process(
             contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
-            location: "item/xhtml/chapter.xhtml",
-            text: "<html><body>raw</body></html>",
+            location: "item/xhtml/partial.xhtml",
+            text: source,
+            contentFingerprint: "partial-fingerprint",
             isCacheWarmer: false
         )
 
-        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), regeneratedHTML)
+        XCTAssertEqual(result.documentHTML, Data(source.utf8))
+        XCTAssertTrue(result.segmentSidecar.isEmpty)
+        XCTAssertFalse(result.isAuthoritativelyProcessed)
+        let writeCount = await cacheWriteCount.count
+        XCTAssertEqual(writeCount, 0)
     }
 
-    func testDirectSectionRequestPreservesUnicodeIdentityAndRejectsDuplicateOrUnsafeSubpaths() throws {
-        var components = URLComponents()
-        components.scheme = "ebook"
-        components.host = "ebook"
-        components.path = "/processed-section"
-        components.queryItems = [
-            URLQueryItem(name: "sourceURL", value: "ebook://ebook/load/local/Books/日本語.epub"),
-            URLQueryItem(name: "subpath", value: "OPS/日本語/chapter 1.xhtml"),
-            URLQueryItem(name: "direct", value: "1")
-        ]
-        let request = try XCTUnwrap(ebookDirectSectionRequest(from: try XCTUnwrap(components.url)))
-
-        XCTAssertEqual(
-            request.sourceURL.absoluteString,
-            "ebook://ebook/load/local/Books/%E6%97%A5%E6%9C%AC%E8%AA%9E.epub"
-        )
-        XCTAssertEqual(request.subpath, "OPS/日本語/chapter 1.xhtml")
-
-        components.queryItems?.append(URLQueryItem(name: "subpath", value: "OPS/other.xhtml"))
-        XCTAssertNil(ebookDirectSectionRequest(from: try XCTUnwrap(components.url)))
-        XCTAssertNil(normalizedEbookEntrySubpath("../secret.xhtml"))
-        XCTAssertNil(normalizedEbookEntrySubpath("OPS/../secret.xhtml"))
-        XCTAssertNil(normalizedEbookEntrySubpath("/OPS/chapter.xhtml"))
-        XCTAssertNil(normalizedEbookEntrySubpath("OPS\\chapter.xhtml"))
-    }
-
-    func testEPubParserUsesTypedContainedPackageAndPrimaryNamespacedMetadata() throws {
-        let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("epub-metadata-\(UUID().uuidString)", isDirectory: true)
-        let packageRoot = temporaryRoot.appendingPathComponent("book.epub", isDirectory: true)
-        let metadataDirectory = packageRoot.appendingPathComponent("META-INF", isDirectory: true)
-        let packageDirectory = packageRoot.appendingPathComponent("OPS/Text", isDirectory: true)
-        let outsidePackageURL = temporaryRoot.appendingPathComponent("outside.opf")
-        try FileManager.default.createDirectory(at: metadataDirectory, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
-
-        try Data("""
-        <c:container xmlns:c="urn:oasis:names:tc:opendocument:xmlns:container">
-          <c:rootfiles>
-            <c:rootfile full-path="../outside.opf" media-type="application/x-other"/>
-            <c:rootfile full-path="OPS/Text/package.opf"
-                        media-type="application/oebps-package+xml"/>
-          </c:rootfiles>
-        </c:container>
-        """.utf8).write(to: metadataDirectory.appendingPathComponent("container.xml"))
-        try Data("""
-        <pkg:package xmlns:pkg="http://www.idpf.org/2007/opf"
-                     xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0">
-          <pkg:metadata>
-            <dc:title>Primary
-              Title</dc:title>
-            <dc:title>Secondary Title</dc:title>
-            <dc:creator>Primary
-              Author</dc:creator>
-          </pkg:metadata>
-          <pkg:manifest>
-            <pkg:item id="cover" href="../Images/cover%20art.jpg"
-                      media-type="image/jpeg" properties="other cover-image"/>
-          </pkg:manifest>
-        </pkg:package>
-        """.utf8).write(to: packageDirectory.appendingPathComponent("package.opf"))
-        try Data("""
-        <package xmlns:dc="http://purl.org/dc/elements/1.1/">
-          <metadata><dc:title>Outside Book</dc:title></metadata>
-          <manifest><item id="cover" href="outside.jpg" properties="cover-image"/></manifest>
-        </package>
-        """.utf8).write(to: outsidePackageURL)
-
-        let metadata = try XCTUnwrap(EPubParser.parseMetadataAndCover(from: packageRoot))
-        XCTAssertEqual(metadata.title, "Primary Title")
-        XCTAssertEqual(metadata.author, "Primary Author")
-        XCTAssertEqual(metadata.coverHref, "OPS/Images/cover art.jpg")
-    }
-
-    func testEPubParserKeepsCoverlessMetadataAndParsesReducedPublicationDates() throws {
-        let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("epub-coverless-\(UUID().uuidString)", isDirectory: true)
-        let packageRoot = temporaryRoot.appendingPathComponent("book.epub", isDirectory: true)
-        let metadataDirectory = packageRoot.appendingPathComponent("META-INF", isDirectory: true)
-        let packageDirectory = packageRoot.appendingPathComponent("OPS", isDirectory: true)
-        try FileManager.default.createDirectory(at: metadataDirectory, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
-
-        try Data("""
-        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-          <rootfiles><rootfile full-path="OPS/package.opf"
-            media-type="application/oebps-package+xml"/></rootfiles>
-        </container>
-        """.utf8).write(to: metadataDirectory.appendingPathComponent("container.xml"))
-
-        let cases = [
-            ("2024", 2024, 1, 1),
-            ("2024-05", 2024, 5, 1),
-            ("2024-05-12", 2024, 5, 12),
-        ]
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        for testCase in cases {
-            try Data("""
-            <package xmlns="http://www.idpf.org/2007/opf"
-                     xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0">
-              <metadata>
-                <dc:title>Coverless Book</dc:title>
-                <dc:creator>Metadata Author</dc:creator>
-                <dc:date>\(testCase.0)</dc:date>
-              </metadata>
-              <manifest/>
-            </package>
-            """.utf8).write(to: packageDirectory.appendingPathComponent("package.opf"))
-
-            let metadata = try XCTUnwrap(
-                EPubParser.parseMetadataAndCover(from: packageRoot),
-                "Failed to retain coverless metadata for \(testCase.0)"
-            )
-            XCTAssertEqual(metadata.title, "Coverless Book")
-            XCTAssertEqual(metadata.author, "Metadata Author")
-            XCTAssertNil(metadata.coverHref)
-            let date = try XCTUnwrap(metadata.publicationDate)
-            let components = calendar.dateComponents([.year, .month, .day], from: date)
-            XCTAssertEqual(components.year, testCase.1)
-            XCTAssertEqual(components.month, testCase.2)
-            XCTAssertEqual(components.day, testCase.3)
-        }
-    }
-
-    func testEPubParserRejectsNestedRootfileAndMalformedContainerGraphs() throws {
-        let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("epub-invalid-\(UUID().uuidString)", isDirectory: true)
-        let packageRoot = temporaryRoot.appendingPathComponent("book.epub", isDirectory: true)
-        let metadataDirectory = packageRoot.appendingPathComponent("META-INF", isDirectory: true)
-        let packageDirectory = packageRoot.appendingPathComponent("OPS", isDirectory: true)
-        try FileManager.default.createDirectory(at: metadataDirectory, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
-        let containerURL = metadataDirectory.appendingPathComponent("container.xml")
-
-        try Data("""
-        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:x="urn:extension">
-          <x:wrapper><rootfile full-path="OPS/package.opf"
-            media-type="application/oebps-package+xml"/></x:wrapper>
-        </container>
-        """.utf8).write(to: containerURL)
-        try Data("""
-        <package xmlns="http://www.idpf.org/2007/opf"
-                 xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0">
-          <metadata><dc:title>Nested Rootfile</dc:title></metadata>
-          <manifest><item id="cover" href="cover.jpg" properties="cover-image"/></manifest>
-        </package>
-        """.utf8).write(to: packageDirectory.appendingPathComponent("package.opf"))
-        XCTAssertNil(
-            try EPubParser.parseMetadataAndCover(from: packageRoot),
-            "A nested rootfile must not become the package document"
-        )
-
-        try Data("""
-        <container><rootfiles><rootfile full-path="OPS/package.opf"
-          media-type="application/oebps-package+xml"/>
-        """.utf8).write(to: containerURL)
-        XCTAssertNil(
-            try EPubParser.parseMetadataAndCover(from: packageRoot),
-            "A rootfile discovered before malformed XML terminates must not be accepted"
-        )
-    }
-
-    func testEPubParserReadsMetadataThroughArchiveEntrySource() throws {
-        let archiveURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("epub-metadata-\(UUID().uuidString).epub")
-        defer { try? FileManager.default.removeItem(at: archiveURL) }
-        let entries = [
-            (
-                "META-INF/container.xml",
-                Data("""
-                <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-                  <rootfiles><rootfile full-path="OPS/package.opf"
-                    media-type="application/oebps-package+xml"/></rootfiles>
-                </container>
-                """.utf8)
-            ),
-            (
-                "OPS/package.opf",
-                Data("""
-                <package xmlns="http://www.idpf.org/2007/opf"
-                         xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0">
-                  <metadata><dc:title>Archived Book</dc:title></metadata>
-                  <manifest/>
-                </package>
-                """.utf8)
-            ),
-        ]
-        let archive = try Archive(url: archiveURL, accessMode: .create)
-        for (path, data) in entries {
-            try archive.addEntry(
-                with: path,
-                type: .file,
-                uncompressedSize: Int64(data.count),
-                compressionMethod: .deflate
-            ) { position, size in
-                data.subdata(in: Int(position)..<(Int(position) + size))
-            }
-        }
-
-        let metadata = try XCTUnwrap(EPubParser.parseMetadataAndCover(from: archiveURL))
-        XCTAssertEqual(metadata.title, "Archived Book")
-        XCTAssertNil(metadata.coverHref)
-    }
-
-    func testPathBackedEntryRequiresOwningProcessedDocumentSource() throws {
-        let sourceURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
-        let token = ebookBase64URLToken(for: sourceURL.absoluteString)
-        let generationID = "g1-" + String(repeating: "a", count: 64)
-        let entryURL = try XCTUnwrap(URL(
-            string: "ebook://ebook/entry-source/\(token)/\(generationID)/OPS/images/cover.jpg"
-        ))
-        var ownerComponents = URLComponents()
-        ownerComponents.scheme = "ebook"
-        ownerComponents.host = "ebook"
-        ownerComponents.path = "/processed-section"
-        ownerComponents.queryItems = [
-            URLQueryItem(name: "sourceURL", value: sourceURL.absoluteString),
-            URLQueryItem(name: "subpath", value: "OPS/chapter.xhtml")
-        ]
-
-        let request = try XCTUnwrap(ebookPathBackedEntryRequest(
-            from: entryURL,
-            mainDocumentURL: try XCTUnwrap(ownerComponents.url)
-        ))
-        XCTAssertEqual(request.sourceURL, sourceURL)
-        XCTAssertEqual(request.generationID, generationID)
-        XCTAssertEqual(request.subpath, "OPS/images/cover.jpg")
-
-        XCTAssertNil(ebookPathBackedEntryRequest(
-            from: try XCTUnwrap(URL(
-                string: "ebook://ebook/entry-source/\(token)/OPS/images/cover.jpg"
-            )),
-            mainDocumentURL: try XCTUnwrap(ownerComponents.url)
-        ))
-
-        ownerComponents.queryItems = [
-            URLQueryItem(name: "sourceURL", value: "ebook://ebook/load/local/Books/other.epub"),
-            URLQueryItem(name: "subpath", value: "OPS/chapter.xhtml")
-        ]
-        XCTAssertNil(ebookPathBackedEntryRequest(
-            from: entryURL,
-            mainDocumentURL: try XCTUnwrap(ownerComponents.url)
-        ))
-        XCTAssertNil(ebookPathBackedEntryRequest(from: entryURL, mainDocumentURL: nil))
-    }
-
-    func testProcessedSectionBaseURLCarriesPackageGeneration() throws {
-        let sourceURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
-        let generationID = "g1-" + String(repeating: "a", count: 64)
-
-        let baseURL = ebookProcessedSectionBaseURL(
-            sourceURL: sourceURL,
-            sectionHref: "OPS/Text/chapter.xhtml",
-            generationID: generationID
-        )
-
-        XCTAssertTrue(baseURL.contains("/\(generationID)/OPS/Text/"))
-        XCTAssertFalse(baseURL.contains("chapter.xhtml"))
-    }
-
-    func testPackageEntrySourceGenerationChangesOnlyWhenPackageChanges() async throws {
-        let directoryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("manabi-package-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directoryURL) }
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        let chapterURL = directoryURL.appendingPathComponent("chapter.xhtml")
-        let newerAssetURL = directoryURL.appendingPathComponent("newer.css")
-        try Data("first".utf8).write(to: chapterURL)
-        try Data("newer".utf8).write(to: newerAssetURL)
-        let baselineDate = Date()
-        try FileManager.default.setAttributes(
-            [.modificationDate: baselineDate],
-            ofItemAtPath: chapterURL.path
-        )
-        try FileManager.default.setAttributes(
-            [.modificationDate: baselineDate.addingTimeInterval(20)],
-            ofItemAtPath: newerAssetURL.path
-        )
-
-        var components = URLComponents()
-        components.scheme = "ebook"
-        components.host = "ebook"
-        components.path = "/load/local/Books/test.epub"
-        components.queryItems = [
-            URLQueryItem(name: "diagnosticLocalFilePath", value: directoryURL.path),
-        ]
-        let packageURL = try XCTUnwrap(components.url)
-        let cache = ReaderPackageEntrySourceCache()
-        let readerFileManager = ReaderFileManager()
-
-        let first = try await cache.cachedSource(
-            forPackageURL: packageURL,
-            readerFileManager: readerFileManager
-        )
-        let unchanged = try await cache.cachedSource(
-            forPackageURL: packageURL,
-            readerFileManager: readerFileManager
-        )
-        XCTAssertEqual(first.generationID, unchanged.generationID)
-
-        try Data("other".utf8).write(to: chapterURL)
-        try FileManager.default.setAttributes(
-            [.modificationDate: baselineDate.addingTimeInterval(10)],
-            ofItemAtPath: chapterURL.path
-        )
-        let changed = try await cache.cachedSource(
-            forPackageURL: packageURL,
-            readerFileManager: readerFileManager
-        )
-        XCTAssertNotEqual(first.generationID, changed.generationID)
-    }
-
-    func testDirectSectionMetadataInjectionPreservesDocumentBytesAndInstallsPathBackedBase() throws {
-        let html = """
-        <!doctype html><HTML data-note='1>0'><HEAD><base href="old/"></HEAD><BODY class="book">
-        <m-s><m-m>本文</m-m></m-s></BODY></HTML>
-        """
-        let result = ebookHTMLWithInjectedDirectSectionMetadata(
-            html,
-            baseURL: "ebook://ebook/entry-source/token/OPS/",
-            sourceHref: "OPS/chapter.xhtml"
-        )
-
-        XCTAssertTrue(result.contains(
-            "<HEAD><base href=\"ebook://ebook/entry-source/token/OPS/\"><base href=\"old/\">"
-        ))
-        let body = try XCTUnwrap(SwiftSoup.parse(result).body())
-        XCTAssertEqual(try body.attr("class"), "book")
-        XCTAssertEqual(try body.attr("data-mnb-source-href"), "OPS/chapter.xhtml")
-        XCTAssertEqual(try body.attr("data-mnb-has-sentences"), "true")
-        XCTAssertEqual(try body.attr("data-mnb-has-segments"), "true")
-        XCTAssertEqual(try body.select("m-s > m-m").text(), "本文")
-
-        XCTAssertEqual(
-            ebookHTMLWithInjectedDirectSectionMetadata(
-                "<section>fragment</section>",
-                baseURL: "ebook://ebook/entry-source/token/",
-                sourceHref: "chapter.xhtml"
-            ),
-            "<!doctype html><html><head><base href=\"ebook://ebook/entry-source/token/\">"
-                + "<style id=\"mnb-paginator-layout-bootstrap\">html{display:none!important}</style></head>"
-                + "<body data-mnb-source-href=\"chapter.xhtml\"><section>fragment</section></body></html>"
-        )
-    }
-
-    func testResponseMetadataByteInjectionDecoratesUppercaseDocumentWithoutReserializingContent() {
-        let html = "<!doctype html><HTML><HEAD><title>T</title></HEAD><BODY class=\"book\"><p>本文</p></BODY></HTML>"
-        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
-            Data(html.utf8),
-            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml?x=1&y=2",
-            writingHint: EBookProcessedSectionWritingHint(
-                direction: "vertical",
-                writingMode: "vertical-rl"
-            ),
-            bodyAttributes: ["data-mnb-native-cache-outcome": "final-direct-hit"]
-        ), as: UTF8.self)
-
-        XCTAssertTrue(result.contains(
-            "<HEAD><base href=\"ebook://ebook/entry-source/token/chapter.xhtml?x=1&amp;y=2\">"
-        ))
-        XCTAssertTrue(result.contains("<BODY class=\"book\""))
-        XCTAssertTrue(result.contains("data-mnb-native-cache-outcome=\"final-direct-hit\""))
-        XCTAssertTrue(result.contains("data-mnb-writing-direction=\"vertical\""))
-        XCTAssertTrue(result.contains("data-mnb-writing-mode=\"vertical-rl\""))
-        XCTAssertTrue(result.contains("<p>本文</p>"))
-    }
-
-    func testResponseMetadataByteInjectionWrapsHTMLFragment() {
-        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
-            Data("<section>本文</section>".utf8),
-            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
-            writingHint: nil,
-            bodyAttributes: ["data-test": "ok"]
-        ), as: UTF8.self)
-
-        XCTAssertEqual(
-            result,
-            "<!doctype html><html><head><base href=\"ebook://ebook/entry-source/token/chapter.xhtml\">"
-                + "</head><body data-test=\"ok\"><section>本文</section></body></html>"
-        )
-    }
-
-    func testResponseMetadataScannerHandlesGreaterThanInsideQuotedAttributesAndInjectsPresentation() {
-        let html = """
-        <HTML data-note='1>0'><HEAD data-note="2>1"></HEAD>\
-        <BODY data-note='3>2' style='color:red'>本文</BODY></HTML>
-        """
-        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
-            Data(html.utf8),
-            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
-            writingHint: nil,
-            bodyAttributes: ["data-response": "ready"],
-            presentation: EbookSectionPresentation(
-                revision: "presentation-1",
-                bodyAttributes: ["data-mnb-dark-theme": "current"],
-                bodyStyleProperties: [
-                    "font-family": "'not allowlisted'",
-                    "font-size": "18px",
-                ]
-            )
-        ), as: UTF8.self)
-
-        XCTAssertTrue(result.contains("<HEAD data-note=\"2>1\"><base href="))
-        XCTAssertTrue(result.contains(
-            "<BODY data-note='3>2' style='color:red;font-size:18px!important;' "
-                + "data-mnb-dark-theme=\"current\" data-mnb-presentation-revision=\"presentation-1\" "
-                + "data-mnb-presentation-schema-version=\"1\" data-response=\"ready\">"
-        ))
-    }
-
-    func testResponseMetadataScannerIgnoresCommentAndRawTextTagLookalikes() {
-        let html = """
-        <!-- <html><head><body>comment lookalikes</body></head></html> -->
-        <HTML><HEAD><script>const fake = "<body data-fake='true'>";</script></HEAD>\
-        <BODY data-publisher="kept">本文</BODY></HTML>
-        """
-        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
-            Data(html.utf8),
-            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
-            writingHint: nil,
-            bodyAttributes: ["data-response": "ready"]
-        ), as: UTF8.self)
-
-        XCTAssertTrue(result.hasPrefix("<!-- <html><head><body>"))
-        XCTAssertTrue(result.contains(
-            "<HTML><HEAD><base href=\"ebook://ebook/entry-source/token/chapter.xhtml\">"
-                + "<script>const fake = \"<body data-fake='true'>\";</script></HEAD>"
-        ))
-        XCTAssertTrue(result.contains(
-            "<BODY data-publisher=\"kept\" data-response=\"ready\">本文</BODY>"
-        ))
-        XCTAssertEqual(result.components(separatedBy: "data-response=").count - 1, 1)
-    }
-
-    func testResponseMetadataPreservesNonUTF8DocumentBytesOutsideInsertions() {
-        var html = Data("<html><head></head><body>".utf8)
-        html.append(contentsOf: [0x80, 0xFF])
-        html.append(contentsOf: "</body></html>".utf8)
-        let result = ebookHTMLDataWithInjectedResponseMetadata(
-            html,
-            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
-            writingHint: nil,
-            bodyAttributes: ["data-response": "ready"]
-        )
-        var expected = Data(
-            """
-            <html><head><base href="ebook://ebook/entry-source/token/chapter.xhtml"></head>\
-            <body data-response="ready">
-            """.utf8
-        )
-        expected.append(contentsOf: [0x80, 0xFF])
-        expected.append(contentsOf: "</body></html>".utf8)
-
-        XCTAssertEqual(result, expected)
-    }
-
-    func testResponseMetadataReplacesManagedPresentationAttributesAndPublishesSidecarInHead() {
-        let html = """
-        <html><head></head><body data-mnb-dark-theme="stale" \
-        data-mnb-settings-initialized="false" data-publisher="kept" \
-        style="color:red;font-size:9px">Text</body></html>
-        """
-        let sidecarDescriptor = Data(
-            #"<meta name="mnb-segment-sidecar" content="ebook://ebook/processed-section-sidecar/token">"#.utf8
-        )
-        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
-            Data(html.utf8),
-            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
-            writingHint: nil,
-            bodyAttributes: [:],
-            presentation: EbookSectionPresentation(
-                revision: "presentation-2",
-                bodyAttributes: [
-                    "data-mnb-dark-theme": "current",
-                    "data-mnb-settings-initialized": "true",
-                    "data-publisher": "not-allowlisted",
-                ],
-                bodyStyleProperties: [
-                    "font-size": "18px",
-                    "background": "red",
-                    "font-weight": "600;display:none",
-                ]
-            ),
-            additionalHeadMarkup: sidecarDescriptor
-        ), as: UTF8.self)
-
-        XCTAssertEqual(result.components(separatedBy: "data-mnb-dark-theme=").count - 1, 1)
-        XCTAssertEqual(result.components(separatedBy: "data-mnb-settings-initialized=").count - 1, 1)
-        XCTAssertTrue(result.contains("<head><base href="))
-        XCTAssertTrue(result.contains(String(decoding: sidecarDescriptor, as: UTF8.self)))
-        XCTAssertTrue(result.contains("data-mnb-dark-theme=\"current\""))
-        XCTAssertTrue(result.contains("data-mnb-settings-initialized=\"true\""))
-        XCTAssertTrue(result.contains("data-mnb-presentation-schema-version=\"1\""))
-        XCTAssertTrue(result.contains("data-mnb-presentation-revision=\"presentation-2\""))
-        XCTAssertTrue(result.contains("data-publisher=\"kept\""))
-        XCTAssertFalse(result.contains("not-allowlisted"))
-        XCTAssertTrue(result.contains("style=\"color:red;font-size:18px!important;\""))
-        XCTAssertFalse(result.contains("background:red"))
-        XCTAssertFalse(result.contains("display:none"))
-    }
-
-    func testDirectSectionPresentationHintInjectionPreservesProcessedDocument() throws {
-        let html = "<html><head></head><body data-note=\"2 > 1\" class=\"book\"><m-m>本文</m-m></body></html>"
-        let result = ebookHTMLWithInjectedPresentationHints(
-            html,
-            writingHint: EBookProcessedSectionWritingHint(
-                direction: "vertical",
-                writingMode: "vertical-lr"
-            )
-        )
-        let body = try XCTUnwrap(SwiftSoup.parse(result).body())
-
-        XCTAssertEqual(try body.attr("data-note"), "2 > 1")
-        XCTAssertEqual(try body.attr("class"), "book")
-        XCTAssertEqual(try body.attr("data-mnb-writing-direction"), "vertical")
-        XCTAssertEqual(try body.attr("data-mnb-writing-mode"), "vertical-lr")
-        XCTAssertEqual(try body.attr("data-mnb-foliate-writing-direction"), "vertical")
-        XCTAssertEqual(try body.attr("data-mnb-foliate-writing-mode"), "vertical-lr")
-        XCTAssertEqual(try body.select("m-m").text(), "本文")
-    }
-
-    func testDirectSectionWritingHintRequiresOneCompleteNormalizedPair() throws {
-        let accepted = try XCTUnwrap(URL(string:
-            "ebook://ebook/processed-section?mnbWritingDirection=vertical&mnbWritingMode=vertical-lr"
-        ))
-        let acceptedHint = try XCTUnwrap(ebookProcessedSectionWritingHint(from: accepted))
-        XCTAssertEqual(acceptedHint.direction, "vertical")
-        XCTAssertEqual(acceptedHint.writingMode, "vertical-lr")
-
-        let rejectedURLs = [
-            "ebook://ebook/processed-section?mnbWritingDirection=vertical",
-            "ebook://ebook/processed-section?mnbWritingDirection=horizontal&mnbWritingMode=horizontal-tb",
-            "ebook://ebook/processed-section?mnbWritingDirection=vertical&mnbWritingMode=sideways-rl",
-            "ebook://ebook/processed-section?mnbWritingDirection=vertical&mnbWritingDirection=vertical&mnbWritingMode=vertical-rl"
-        ]
-        for rawURL in rejectedURLs {
-            XCTAssertNil(ebookProcessedSectionWritingHint(from: try XCTUnwrap(URL(string: rawURL))))
-        }
-    }
-
-    func testSectionPresentationReplacesStaleCachedSettingsAndRejectsUnknownFields() throws {
-        let html = """
-        <html><body data-mnb-romaji-mode-enabled="false" data-unknown="preserved"
-        style='font-size:12px;color:red'>本文</body></html>
-        """
-        let result = ebookHTMLApplyingSectionPresentation(
-            html,
-            presentation: EbookSectionPresentation(
-                revision: "ABC123",
-                bodyAttributes: [
-                    "data-mnb-romaji-mode-enabled": "true",
-                    "data-mnb-settings-initialized": "true",
-                    "data-not-allowlisted": "rejected"
-                ],
-                bodyStyleProperties: [
-                    "font-size": "24px",
-                    "font-weight": "600",
-                    "--mnb-content-font": "'YuKyokasho Yoko', 'YuKyokasho'",
-                    "position": "fixed"
-                ]
-            )
-        )
-        let body = try XCTUnwrap(SwiftSoup.parse(result).body())
-
-        XCTAssertEqual(try body.attr("data-mnb-romaji-mode-enabled"), "true")
-        XCTAssertEqual(try body.attr("data-mnb-settings-initialized"), "true")
-        XCTAssertEqual(try body.attr("data-mnb-presentation-schema-version"), "1")
-        XCTAssertEqual(try body.attr("data-mnb-presentation-revision"), "ABC123")
-        XCTAssertEqual(try body.attr("data-unknown"), "preserved")
-        XCTAssertFalse(body.hasAttr("data-not-allowlisted"))
-        let style = try body.attr("style")
-        XCTAssertTrue(style.contains("color:red"))
-        XCTAssertTrue(style.contains("font-size:24px!important"))
-        XCTAssertTrue(style.contains("font-weight:600!important"))
-        XCTAssertTrue(style.contains("--mnb-content-font:'YuKyokasho Yoko', 'YuKyokasho'!important"))
-        XCTAssertFalse(style.contains("position:fixed"))
-        XCTAssertEqual(result.components(separatedBy: "data-mnb-romaji-mode-enabled=").count - 1, 1)
-        XCTAssertEqual(result.components(separatedBy: "font-size:24px!important").count - 1, 1)
-        XCTAssertEqual(
-            ebookHTMLApplyingSectionPresentation(result, presentation: EbookSectionPresentation(
-                revision: "ABC123",
-                bodyAttributes: ["data-mnb-romaji-mode-enabled": "true"],
-                bodyStyleProperties: ["font-size": "24px"]
-            )).components(separatedBy: "font-size:24px!important").count - 1,
-            1
-        )
-    }
-
-    func testEbookSchemeTaskPriorityKeepsOnlyDirectSectionLoadsForeground() throws {
-        let foregroundURLs = [
-            "ebook://ebook/load/local/Books/test.epub",
-            "ebook://ebook/load/viewer-assets/foliate-js/paginator.js",
-            "ebook://ebook/processed-section?subpath=chapter.xhtml&direct=1",
-        ]
-        let utilityURLs = [
-            "ebook://ebook/processed-section?subpath=chapter.xhtml",
-            "ebook://ebook/processed-section?subpath=chapter.xhtml&direct=0",
-            "ebook://ebook/processed-section?subpath=chapter.xhtml&direct=true",
-            "ebook://ebook/processed-section?subpath=chapter.xhtml&direct=1&direct=1",
-            "ebook://ebook/processed-section?subpath=chapter.xhtml&direct",
-        ]
-
-        for rawURL in foregroundURLs {
-            XCTAssertEqual(
-                ebookURLSchemeTaskPriority(for: try XCTUnwrap(URL(string: rawURL))),
-                .userInitiated,
-                rawURL
-            )
-        }
-        for rawURL in utilityURLs {
-            XCTAssertEqual(
-                ebookURLSchemeTaskPriority(for: try XCTUnwrap(URL(string: rawURL))),
-                .utility,
-                rawURL
-            )
-        }
-    }
-
-    func testEbookViewerAssetCacheReadsEachResolvedBundleURLOnce() async throws {
-        let directoryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directoryURL) }
-        let firstURL = directoryURL.appendingPathComponent("first.js")
-        let secondURL = directoryURL.appendingPathComponent("second.css")
-        try Data("first-revision".utf8).write(to: firstURL)
-        try Data("second-asset".utf8).write(to: secondURL)
-        let cache = EbookViewerAssetCache()
-
-        let firstRead = try await cache.data(for: firstURL)
-        XCTAssertEqual(firstRead, Data("first-revision".utf8))
-        try Data("changed-on-disk".utf8).write(to: firstURL)
-
-        let cachedRead = try await cache.data(for: firstURL)
-        let secondRead = try await cache.data(for: secondURL)
-        XCTAssertEqual(cachedRead, Data("first-revision".utf8))
-        XCTAssertEqual(secondRead, Data("second-asset".utf8))
-    }
-
-    func testEbookViewerAssetCacheCoalescesConcurrentReads() async throws {
-        let fileURL = URL(fileURLWithPath: "/bundle/foliate-js/ebook-viewer.js")
-        let expectedData = Data("viewer-module".utf8)
-        let invocationCounter = SynchronousInvocationCounter()
-        let cache = EbookViewerAssetCache { requestedURL in
-            XCTAssertEqual(requestedURL, fileURL)
-            invocationCounter.increment()
-            return expectedData
-        }
-
-        let values = try await withThrowingTaskGroup(of: Data.self) { group in
-            for _ in 0..<32 {
-                group.addTask {
-                    try await cache.data(for: fileURL)
-                }
-            }
-            var values = [Data]()
-            for try await value in group {
-                values.append(value)
-            }
-            return values
-        }
-
-        XCTAssertEqual(values, Array(repeating: expectedData, count: 32))
-        XCTAssertEqual(invocationCounter.value(), 1)
-    }
-
-    func testEbookViewerHTMLUsesOneRevisionForPreloadAndModuleExecution() throws {
-        let html = """
-        <html>
-        <head>
-        <link rel="modulepreload" href="/load/viewer-assets/__MNB_VIEWER_ASSET_REVISION__/foliate-js/ebook-viewer.js">
-        </head>
-        <body>
-        <script src="/load/viewer-assets/__MNB_VIEWER_ASSET_REVISION__/foliate-js/ebook-viewer.js" type="module"></script>
-        </body>
-        </html>
-        """
-
-        let revisedHTML = try ebookViewerHTMLApplyingAssetRevision(html, revision: "v1-abc123")
-
-        XCTAssertFalse(revisedHTML.contains("__MNB_VIEWER_ASSET_REVISION__"))
-        XCTAssertEqual(
-            revisedHTML.components(
-                separatedBy: "/load/viewer-assets/v1-abc123/foliate-js/ebook-viewer.js"
-            ).count - 1,
-            2
-        )
-    }
-
-    func testEbookViewerAssetPathRequiresCurrentRevisionAndSafeComponents() throws {
-        let currentURL = try XCTUnwrap(URL(
-            string: "ebook://ebook/load/viewer-assets/v1-current/foliate-js/ui/tree.js"
-        ))
-        XCTAssertEqual(
-            ebookViewerAssetRelativePath(from: currentURL, activeRevision: "v1-current"),
-            "foliate-js/ui/tree.js"
-        )
-
-        let rejectedURLs = [
-            "ebook://ebook/load/viewer-assets/foliate-js/ui/tree.js",
-            "ebook://ebook/load/viewer-assets/v1-stale/foliate-js/ui/tree.js",
-            "ebook://ebook/load/viewer-assets/v1-current/foliate-js/%2E%2E/secret.js",
-            "ebook://ebook/load/viewer-assets/v1-current/foliate-js/%5Csecret.js",
-            "ebook://ebook/load/viewer-assets/v1-current/",
-        ]
-        for rawURL in rejectedURLs {
-            XCTAssertNil(
-                ebookViewerAssetRelativePath(
-                    from: try XCTUnwrap(URL(string: rawURL)),
-                    activeRevision: "v1-current"
-                ),
-                rawURL
-            )
-        }
-    }
-
-    func testEbookViewerBundledResourceResolverUsesPackagedAssets() throws {
-        let viewerURL = try XCTUnwrap(
-            ebookViewerBundledResourceURL(relativePath: "foliate-js/ebook-viewer.html")
-        )
-        let moduleURL = try XCTUnwrap(
-            ebookViewerBundledResourceURL(relativePath: "foliate-js/ebook-viewer.js")
-        )
-
-        XCTAssertTrue(FileManager.default.fileExists(atPath: viewerURL.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: moduleURL.path))
-        XCTAssertNil(
-            ebookViewerBundledResourceURL(relativePath: "foliate-js/../Package.swift")
-        )
-        XCTAssertNil(
-            ebookViewerBundledResourceURL(relativePath: "/foliate-js/ebook-viewer.html")
-        )
-    }
-
-    func testEbookViewerAssetRevisionChangesWithApplicationBuild() {
-        let firstRevision = ebookViewerAssetRevision(
-            applicationIdentifier: "com.example.reader",
-            applicationVersion: "3.0",
-            applicationBuild: "100",
-            resourceSchemaVersion: 1
-        )
-        let nextBuildRevision = ebookViewerAssetRevision(
-            applicationIdentifier: "com.example.reader",
-            applicationVersion: "3.0",
-            applicationBuild: "101",
-            resourceSchemaVersion: 1
-        )
-
-        XCTAssertNotEqual(firstRevision, nextBuildRevision)
-        XCTAssertTrue(firstRevision.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") })
-    }
-
-    func testEbookBundleResourceResponseUsesImmutableCachingForRevisionedURL() throws {
-        let response = ebookHTTPResponse(
-            url: URL(string: "ebook://ebook/load/viewer-assets/v1-current/ebook-viewer.js")!,
-            mimeType: "text/javascript",
-            byteCount: 123,
-            textEncodingName: "utf-8",
-            additionalHeaderFields: ebookViewerAssetCacheHeaderFields
-        )
-
-        XCTAssertEqual(response.statusCode, 200)
-        XCTAssertEqual(response.value(forHTTPHeaderField: "Content-Type"), "text/javascript; charset=utf-8")
-        XCTAssertEqual(response.value(forHTTPHeaderField: "Content-Length"), "123")
-        XCTAssertEqual(response.value(forHTTPHeaderField: "Cache-Control"), "public, max-age=31536000, immutable")
-        XCTAssertNil(response.value(forHTTPHeaderField: "Pragma"))
-        XCTAssertNil(response.value(forHTTPHeaderField: "Expires"))
-    }
-
-    func testPackageEntryResponseCachesOnlyGenerationBackedResources() throws {
-        let url = try XCTUnwrap(URL(
-            string: "ebook://ebook/entry-source/token/g1-\(String(repeating: "a", count: 64))/image.jpg"
-        ))
-
-        let generationBacked = ebookPackageEntryResponse(
-            url: url,
-            metadata: ReaderPackageEntryResponseMetadata(
-                mimeType: "image/jpeg",
-                textEncodingName: nil
-            ),
-            byteCount: 10,
-            isGenerationBacked: true
-        )
-        let queryBacked = ebookPackageEntryResponse(
-            url: url,
-            metadata: ReaderPackageEntryResponseMetadata(
-                mimeType: "image/jpeg",
-                textEncodingName: nil
-            ),
-            byteCount: 10,
-            isGenerationBacked: false
-        )
-
-        XCTAssertEqual(
-            generationBacked.value(forHTTPHeaderField: "Cache-Control"),
-            "public, max-age=31536000, immutable"
-        )
-        XCTAssertEqual(queryBacked.value(forHTTPHeaderField: "Cache-Control"), "no-store")
-    }
-
-    @MainActor
-    func testProcessedSectionLoadsDirectoryBackedNestedResourcesInWebKit() async throws {
-        let directoryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("manabi-webkit-package-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directoryURL) }
-        let textDirectoryURL = directoryURL.appendingPathComponent("OPS/Text", isDirectory: true)
-        let stylesDirectoryURL = directoryURL.appendingPathComponent("OPS/Styles", isDirectory: true)
-        let imagesDirectoryURL = directoryURL.appendingPathComponent("OPS/Images", isDirectory: true)
-        let mediaDirectoryURL = directoryURL.appendingPathComponent("OPS/Media", isDirectory: true)
-        try FileManager.default.createDirectory(at: textDirectoryURL, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: stylesDirectoryURL, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: imagesDirectoryURL, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: mediaDirectoryURL, withIntermediateDirectories: true)
-
-        try Data(nestedResourceDocumentHTML.utf8).write(
-            to: textDirectoryURL.appendingPathComponent("chapter.xhtml")
-        )
-        try Data(nestedResourceStylesheet.utf8).write(
-            to: stylesDirectoryURL.appendingPathComponent("book.css")
-        )
-        try Data(nestedResourceImage.utf8).write(
-            to: imagesDirectoryURL.appendingPathComponent("cover.svg")
-        )
-        try nestedResourceAudio().write(
-            to: mediaDirectoryURL.appendingPathComponent("tone.wav")
-        )
-
-        try await assertProcessedSectionLoadsNestedResources(
-            from: diagnosticPackageURL(localURL: directoryURL)
-        )
-    }
-
-    @MainActor
-    func testProcessedSectionLoadsArchiveBackedNestedResourcesInWebKit() async throws {
-        let archiveURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("manabi-webkit-package-\(UUID().uuidString).epub")
-        defer { try? FileManager.default.removeItem(at: archiveURL) }
-        let entries = [
-            ("OPS/Text/chapter.xhtml", Data(nestedResourceDocumentHTML.utf8)),
-            ("OPS/Styles/book.css", Data(nestedResourceStylesheet.utf8)),
-            ("OPS/Images/cover.svg", Data(nestedResourceImage.utf8)),
-            ("OPS/Media/tone.wav", nestedResourceAudio()),
-        ]
-        let archive = try Archive(url: archiveURL, accessMode: .create)
-        for entry in entries {
-            try archive.addEntry(
-                with: entry.0,
-                type: .file,
-                uncompressedSize: Int64(entry.1.count),
-                compressionMethod: .deflate
-            ) { position, size in
-                entry.1.subdata(in: Int(position)..<(Int(position) + size))
-            }
-        }
-
-        try await assertProcessedSectionLoadsNestedResources(
-            from: diagnosticPackageURL(localURL: archiveURL)
-        )
-    }
-
-    private func diagnosticPackageURL(localURL: URL) throws -> URL {
-        var sourceComponents = URLComponents()
-        sourceComponents.scheme = "ebook"
-        sourceComponents.host = "ebook"
-        sourceComponents.path = "/load/local/Books/test.epub"
-        sourceComponents.queryItems = [
-            URLQueryItem(name: "diagnosticLocalFilePath", value: localURL.path),
-        ]
-        return try XCTUnwrap(sourceComponents.url)
-    }
-
-    @MainActor
-    private func assertProcessedSectionLoadsNestedResources(from sourceURL: URL) async throws {
-        var sectionComponents = URLComponents()
-        sectionComponents.scheme = "ebook"
-        sectionComponents.host = "ebook"
-        sectionComponents.path = "/processed-section"
-        sectionComponents.queryItems = [
-            URLQueryItem(name: "sourceURL", value: sourceURL.absoluteString),
-            URLQueryItem(name: "subpath", value: "OPS/Text/chapter.xhtml"),
-            URLQueryItem(name: "direct", value: "1"),
-        ]
-        let sectionURL = try XCTUnwrap(sectionComponents.url)
-        let sidecar = """
-        {"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],\
-        "h":["hash"],"sid":["sentence"],"pid":["paragraph"]},\
-        "s":[["!a",0,null,null,null,null,null,null,null,0,0]]}
-        """
-
-        let processorInvocationCounter = EBookProcessorInvocationCounter()
-        let handler = EbookURLSchemeHandler()
-        handler.readerFileManager = ReaderFileManager()
-        handler.ebookTextProcessor = { _, _, text, _, _, _, _, _, _ in
-            _ = await processorInvocationCounter.increment()
-            return ebookTestPayload(text, sidecar: sidecar)
-        }
-        let configuration = WKWebViewConfiguration()
-        configuration.mediaTypesRequiringUserActionForPlayback = []
-        configuration.setURLSchemeHandler(handler, forURLScheme: "ebook")
-        let webView = WKWebView(
-            frame: CGRect(x: 0, y: 0, width: 320, height: 480),
-            configuration: configuration
-        )
-        let completionExpectation = expectation(description: "processed section loaded")
-        let navigationDelegate = EbookNavigationDelegate(
-            completionExpectation: completionExpectation
-        )
-        webView.navigationDelegate = navigationDelegate
-
-        webView.load(URLRequest(url: sectionURL))
-        await fulfillment(of: [completionExpectation], timeout: 10)
-        XCTAssertNil(navigationDelegate.error)
-
-        let readyState = try await callEbookJavaScriptProbe(
-            in: webView,
-            script:
-            """
-            if (document.readyState !== "complete") {
-                await new Promise(resolve => {
-                    addEventListener("load", resolve, { once: true });
-                });
-            }
-            return document.readyState;
-            """,
-            timeout: 5
-        )
-        XCTAssertEqual(readyState as? String, "complete")
-
-        let result = try await callEbookJavaScriptProbe(
-            in: webView,
-            script:
-            """
-            const withTimeout = (label, operation, milliseconds = 2000) => Promise.race([
-                Promise.resolve(operation),
-                new Promise((_, reject) => setTimeout(
-                    () => reject(new Error(`${label}-timeout`)),
-                    milliseconds
-                )),
-            ]);
-            document.getElementById("mnb-paginator-layout-bootstrap")?.remove();
-            void document.documentElement.offsetWidth;
-            const image = document.getElementById("cover");
-            const audio = document.getElementById("sample-audio");
-            const mediaBootstrap = document.querySelector('script[src*="ebook-package-media.js"]');
-            const mediaBootstrapStatus = mediaBootstrap
-                ? await withTimeout(
-                    "media-bootstrap-fetch",
-                    fetch(mediaBootstrap.src).then(response => response.status)
-                )
-                : null;
-            let mediaBootstrapError = null;
-            try {
-                await withTimeout(
-                    "media-bootstrap-hydration",
-                    globalThis.manabiEbookPackageMediaHydration
-                );
-            } catch (error) {
-                mediaBootstrapError = String(error);
-            }
-            const fetchedAudioResponse = await withTimeout(
-                "audio-fetch",
-                fetch("../Media/tone.wav")
-            );
-            const fetchedAudioBlob = await withTimeout(
-                "audio-blob",
-                fetchedAudioResponse.blob()
-            );
-            const missingStatus = await withTimeout(
-                "missing-resource-fetch",
-                fetch("../Styles/missing.css").then(response => response.status)
-            );
-            return {
-                baseURL: document.baseURI,
-                backgroundColor: getComputedStyle(document.body).backgroundColor,
-                stylesheetURL: document.getElementById("book-style").href,
-                imageComplete: image.complete,
-                imageURL: image.src,
-                imageWidth: image.naturalWidth,
-                audioURL: audio.src,
-                fetchedAudioByteCount: fetchedAudioBlob.size,
-                fetchedAudioType: fetchedAudioBlob.type,
-                mediaBootstrapError,
-                mediaBootstrapState: document.documentElement.dataset.mnbPackageMediaState ?? null,
-                mediaBootstrapStatus,
-                mediaBootstrapURL: mediaBootstrap?.src ?? null,
-                missingStatus,
-                bodyText: document.body.textContent.trim(),
-            };
-            """
-        )
-        let values = try XCTUnwrap(result as? [String: Any])
-        let baseURL = try XCTUnwrap(values["baseURL"] as? String)
-        XCTAssertTrue(baseURL.contains("/entry-source/"))
-        XCTAssertTrue(baseURL.contains("/g1-"))
-        XCTAssertEqual(values["backgroundColor"] as? String, "rgb(1, 2, 3)")
-        XCTAssertTrue((values["stylesheetURL"] as? String)?.hasSuffix("/OPS/Styles/book.css#theme") == true)
-        XCTAssertEqual(values["imageComplete"] as? Bool, true)
-        XCTAssertTrue((values["imageURL"] as? String)?.hasSuffix("/OPS/Images/cover.svg#shape") == true)
-        XCTAssertEqual((values["imageWidth"] as? NSNumber)?.intValue, 4)
-        XCTAssertTrue((values["audioURL"] as? String)?.hasPrefix("blob:") == true)
-        XCTAssertEqual((values["fetchedAudioByteCount"] as? NSNumber)?.intValue, 844)
-        XCTAssertTrue((values["fetchedAudioType"] as? String)?.hasPrefix("audio/") == true)
-        XCTAssertTrue(values["mediaBootstrapError"] is NSNull)
-        XCTAssertEqual(values["mediaBootstrapState"] as? String, "ready")
-        XCTAssertEqual((values["mediaBootstrapStatus"] as? NSNumber)?.intValue, 200)
-        XCTAssertTrue((values["mediaBootstrapURL"] as? String)?.contains("/load/viewer-assets/") == true)
-        XCTAssertEqual((values["missingStatus"] as? NSNumber)?.intValue, 404)
-        XCTAssertEqual(values["bodyText"] as? String, "本文")
-        let processorInvocationCount = await processorInvocationCounter.value()
-        XCTAssertEqual(processorInvocationCount, 1)
-    }
-
-    func testMissingViewerAssetReturns404InsteadOfViewerHTMLFallback() throws {
-        let assetURL = try XCTUnwrap(URL(string: "ebook://ebook/load/viewer-assets/foliate-js/missing.js"))
-        let response = try XCTUnwrap(missingEbookViewerAssetResponse(for: assetURL))
-
-        XCTAssertEqual(response.statusCode, 404)
-        XCTAssertEqual(response.value(forHTTPHeaderField: "Cache-Control"), "no-store")
-        XCTAssertNil(missingEbookViewerAssetResponse(
-            for: try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/example.epub"))
-        ))
-    }
-
-    func testForegroundProcessingWaitsForCachePublicationBeforeReturning() async throws {
-        let writerGate = EBookProcessingGate()
-        let completionCounter = EBookProcessorInvocationCounter()
-        let actor = EBookProcessingActor(
-            ebookProcessedTextCacheReader: nil,
-            ebookProcessedTextCacheWriter: { _, _, _, _, _ in
-                await writerGate.waitUntilReleased()
-            },
-            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in ebookTestPayload("processed") },
-            processReadabilityContent: nil,
-            processHTMLDocument: nil,
-            processHTMLBytes: nil,
-            processHTML: nil
-        )
-
-        let processingTask = Task {
-            let result = try await actor.process(
-                contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
-                location: "item/xhtml/chapter.xhtml",
-                text: "raw",
-                isCacheWarmer: false
-            )
-            _ = await completionCounter.increment()
-            return result
-        }
-
-        for _ in 0..<1_000 {
-            if await writerGate.isWaitingForRelease() { break }
-            await Task.yield()
-        }
-        let writerIsWaiting = await writerGate.isWaitingForRelease()
-        let completionCountBeforeRelease = await completionCounter.value()
-        XCTAssertTrue(writerIsWaiting)
-        XCTAssertEqual(completionCountBeforeRelease, 0)
-
-        await writerGate.release()
-        let processedPayload = try await processingTask.value
-        XCTAssertEqual(String(decoding: processedPayload.documentHTML, as: UTF8.self), "processed")
-        let completionCountAfterRelease = await completionCounter.value()
-        XCTAssertEqual(completionCountAfterRelease, 1)
-    }
-
-    func testProcessTextRequestKeySeparatesYomitanGenerations() {
-        let contentURL = URL(string: "ebook://ebook/load/local/Books/test.epub")!
-        let firstVariant = EbookProcessingVariant(
-            availableDictionaryIDs: ["jmdict", "jmnedict"],
-            yomitanResolvedDictionaryID: 42,
-            yomitanJMDictGenerationKey: "jmdict-generation-1",
-            yomitanJMnedictGenerationKey: "jmnedict-generation-1",
-            includeJLPTClasses: true,
-            romajiModeEnabled: false
-        )
-        let secondVariant = EbookProcessingVariant(
-            availableDictionaryIDs: ["jmnedict", "jmdict"],
-            yomitanResolvedDictionaryID: 42,
-            yomitanJMDictGenerationKey: "jmdict-generation-2",
-            yomitanJMnedictGenerationKey: "jmnedict-generation-1",
-            includeJLPTClasses: true,
-            romajiModeEnabled: false
-        )
-
-        let firstKey = EBookProcessTextRequestKey(
+    func testSectionProcessingDeduperCoalescesEquivalentInFlightRequests() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let key = EBookSectionProcessingRequestKey(
             contentURL: contentURL,
-            location: "item/xhtml/chapter.xhtml",
-            isCacheWarmer: false,
-            text: "<html><body>raw</body></html>",
-            processingVariant: firstVariant
+            location: "chapter.xhtml",
+            contentData: Data("本文".utf8),
+            processingVariant: ebookTestProcessingVariant
         )
-        let secondKey = EBookProcessTextRequestKey(
-            contentURL: contentURL,
-            location: "item/xhtml/chapter.xhtml",
-            isCacheWarmer: false,
-            text: "<html><body>raw</body></html>",
-            processingVariant: secondVariant
-        )
-
-        XCTAssertNotEqual(firstKey, secondKey)
-    }
-
-    func testEbookProcessingVariantNormalizesDictionaryOrderAndDuplicates() {
-        let first = EbookProcessingVariant(
-            availableDictionaryIDs: ["jmnedict", "jmdict", "jmdict"],
-            includeJLPTClasses: false,
-            romajiModeEnabled: true
-        )
-        let second = EbookProcessingVariant(
-            availableDictionaryIDs: ["jmdict", "jmnedict"],
-            includeJLPTClasses: false,
-            romajiModeEnabled: true
-        )
-
-        XCTAssertEqual(first, second)
-        XCTAssertEqual(first.availableDictionaryIDs, ["jmdict", "jmnedict"])
-    }
-
-    func testOptionalEbookProcessingVariantPreservesMissingContext() async throws {
-        let absent = try await withEbookProcessingVariant(nil) {
-            EbookProcessingVariantContext.current
-        }
-        XCTAssertNil(absent)
-
-        let variant = EbookProcessingVariant(
-            availableDictionaryIDs: ["jmdict"],
-            includeJLPTClasses: true,
-            romajiModeEnabled: false
-        )
-        let present = try await withEbookProcessingVariant(variant) {
-            EbookProcessingVariantContext.current
-        }
-        XCTAssertEqual(present, variant)
-    }
-
-    func testReaderModeRenderGenerationRejectsStaleAndCancelledOwners() {
-        let current = UUID()
-
-        XCTAssertTrue(readerModeRenderGenerationIsCurrent(
-            activeGeneration: current,
-            expectedGeneration: current,
-            taskIsCancelled: false
-        ))
-        XCTAssertFalse(readerModeRenderGenerationIsCurrent(
-            activeGeneration: UUID(),
-            expectedGeneration: current,
-            taskIsCancelled: false
-        ))
-        XCTAssertFalse(readerModeRenderGenerationIsCurrent(
-            activeGeneration: current,
-            expectedGeneration: current,
-            taskIsCancelled: true
-        ))
-    }
-
-    func testReaderModeReadyGenerationAcceptsOnlyCurrentOrCompletedOwner() {
-        let current = UUID()
-        let stale = UUID()
-
-        XCTAssertTrue(readerModeReadyGenerationIsCurrent(
-            activeGeneration: current,
-            completedGeneration: nil,
-            reportedGeneration: current
-        ))
-        XCTAssertFalse(readerModeReadyGenerationIsCurrent(
-            activeGeneration: current,
-            completedGeneration: stale,
-            reportedGeneration: stale
-        ))
-        XCTAssertTrue(readerModeReadyGenerationIsCurrent(
-            activeGeneration: nil,
-            completedGeneration: current,
-            reportedGeneration: current
-        ))
-    }
-
-    func testProcessTextRequestKeyDistinguishesRawBytesWithSameLossyUTF8Text() {
-        let contentURL = URL(string: "ebook://ebook/load/local/Books/test.epub")!
-        let firstData = Data([0x80])
-        let secondData = Data([0x81])
-        XCTAssertEqual(
-            String(decoding: firstData, as: UTF8.self),
-            String(decoding: secondData, as: UTF8.self)
-        )
-
-        let firstKey = EBookProcessTextRequestKey(
-            contentURL: contentURL,
-            location: "item/xhtml/chapter.xhtml",
-            isCacheWarmer: false,
-            contentData: firstData
-        )
-        let secondKey = EBookProcessTextRequestKey(
-            contentURL: contentURL,
-            location: "item/xhtml/chapter.xhtml",
-            isCacheWarmer: false,
-            contentData: secondData
-        )
-
-        XCTAssertNotEqual(firstKey, secondKey)
-    }
-
-    func testProcessTextRequestDeduperDoesNotRetainCompletedResponses() async throws {
-        let counter = EBookProcessorInvocationCounter()
-        let key = EBookProcessTextRequestKey(
-            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
-            location: "item/xhtml/chapter.xhtml",
-            isCacheWarmer: false,
-            text: "<html><body>raw</body></html>"
-        )
-        let deduper = EBookProcessTextRequestDeduper()
-
-        let first = try await deduper.process(key: key) {
-            let invocation = await counter.increment()
-            return ebookTestPayload("<html><body>processed-\(invocation)</body></html>")
-        }
-        let second = try await deduper.process(key: key) {
-            let invocation = await counter.increment()
-            return ebookTestPayload("<html><body>processed-\(invocation)</body></html>")
-        }
-        let invocationCount = await counter.value()
-
-        XCTAssertEqual(String(decoding: first.payload.documentHTML, as: UTF8.self), "<html><body>processed-1</body></html>")
-        XCTAssertFalse(first.didCoalesce)
-        XCTAssertEqual(String(decoding: second.payload.documentHTML, as: UTF8.self), "<html><body>processed-2</body></html>")
-        XCTAssertFalse(second.didCoalesce)
-        XCTAssertEqual(invocationCount, 2)
-    }
-
-    func testProcessTextRequestDeduperCoalescesEquivalentInFlightRequests() async throws {
-        let key = EBookProcessTextRequestKey(
-            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
-            location: "item/xhtml/chapter.xhtml",
-            isCacheWarmer: false,
-            text: "<html><body>raw</body></html>"
-        )
-        let counter = EBookProcessorInvocationCounter()
-        let gate = EBookProcessingGate()
-        let started = expectation(description: "Processing starts")
-        let deduper = EBookProcessTextRequestDeduper()
+        let gate = EbookTestGate()
+        let invocationCounter = EbookTestInvocationCounter()
+        let started = expectation(description: "processing starts")
+        let deduper = EBookSectionProcessingDeduper()
 
         let firstTask = Task {
             try await deduper.process(key: key) {
-                _ = await counter.increment()
+                await invocationCounter.increment()
                 started.fulfill()
                 await gate.waitUntilReleased()
-                return ebookTestPayload("<html><body>shared</body></html>")
+                return ebookTestPayload("shared")
             }
         }
         await fulfillment(of: [started], timeout: 1)
         let secondTask = Task {
             try await deduper.process(key: key) {
                 XCTFail("Equivalent in-flight work should reuse the active operation")
-                return ebookTestPayload("<html><body>duplicate</body></html>")
+                return ebookTestPayload("duplicate")
             }
         }
         for _ in 0..<1_000 {
-            if await deduper.inFlightWaiterCountForTesting(key: key) == 1 {
+            if await deduper.inFlightWaiterCountForTesting(key: key) > 0 {
                 break
             }
             await Task.yield()
@@ -2445,46 +1655,52 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
         let first = try await firstTask.value
         let second = try await secondTask.value
-        XCTAssertEqual(first.payload.documentHTML, second.payload.documentHTML)
-        XCTAssertEqual(first.payload.segmentSidecar, second.payload.segmentSidecar)
+        let invocationCount = await invocationCounter.count
+        XCTAssertEqual(String(decoding: first.payload.documentHTML, as: UTF8.self), "shared")
+        XCTAssertEqual(String(decoding: second.payload.documentHTML, as: UTF8.self), "shared")
         XCTAssertFalse(first.didCoalesce)
         XCTAssertTrue(second.didCoalesce)
-        let invocationCount = await counter.value()
         XCTAssertEqual(invocationCount, 1)
     }
 
-    func testProcessTextRequestDeduperKeepsProducerAliveWhenOriginalCallerCancels() async throws {
-        let key = EBookProcessTextRequestKey(
-            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
-            location: "item/xhtml/chapter.xhtml",
-            isCacheWarmer: false,
-            text: "<html><body>raw</body></html>"
+    func testSectionProcessingDeduperKeepsSharedProducerAliveWhenOriginalCallerIsCancelled() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let key = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: Data("本文".utf8),
+            processingVariant: ebookTestProcessingVariant
         )
-        let gate = EBookProcessingGate()
-        let started = expectation(description: "Shared producer starts")
-        let deduper = EBookProcessTextRequestDeduper()
+        let gate = EbookTestGate()
+        let invocationCounter = EbookTestInvocationCounter()
+        let started = expectation(description: "shared producer starts")
+        let deduper = EBookSectionProcessingDeduper()
 
         let originalCaller = Task {
             try await deduper.process(key: key) {
+                await invocationCounter.increment()
                 started.fulfill()
                 await gate.waitUntilReleased()
                 try Task.checkCancellation()
-                return ebookTestPayload("<html><body>shared</body></html>")
+                return ebookTestPayload("shared-after-cancellation")
             }
         }
         await fulfillment(of: [started], timeout: 1)
+
         let activeWaiter = Task {
             try await deduper.process(key: key) {
-                XCTFail("The active waiter must reuse the independent producer")
-                return ebookTestPayload("<html><body>duplicate</body></html>")
+                XCTFail("The active waiter must reuse the independent shared producer")
+                return ebookTestPayload("duplicate")
             }
         }
         for _ in 0..<1_000 {
-            if await deduper.inFlightWaiterCountForTesting(key: key) == 1 {
+            if await deduper.inFlightWaiterCountForTesting(key: key) > 0 {
                 break
             }
             await Task.yield()
         }
+        let waiterCount = await deduper.inFlightWaiterCountForTesting(key: key)
+        XCTAssertEqual(waiterCount, 1)
 
         originalCaller.cancel()
         await gate.release()
@@ -2494,224 +1710,439 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             XCTFail("The cancelled caller must retain its own cancellation result")
         } catch is CancellationError {
             // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
         }
-        let waiterResult = try await activeWaiter.value
+
+        let activeResult = try await activeWaiter.value
         XCTAssertEqual(
-            String(decoding: waiterResult.payload.documentHTML, as: UTF8.self),
-            "<html><body>shared</body></html>"
+            String(decoding: activeResult.payload.documentHTML, as: UTF8.self),
+            "shared-after-cancellation"
         )
-        XCTAssertTrue(waiterResult.didCoalesce)
+        XCTAssertTrue(activeResult.didCoalesce)
+        let invocationCount = await invocationCounter.count
+        XCTAssertEqual(invocationCount, 1)
     }
 
-    func testProcessTextRequestDeduperCancelsProducerWhenLastWaiterCancels() async throws {
-        let key = EBookProcessTextRequestKey(
-            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
-            location: "item/xhtml/chapter.xhtml",
-            isCacheWarmer: false,
-            text: "<html><body>raw</body></html>"
+    func testSectionProcessingDeduperCancelledWaiterReturnsBeforeSharedProducerCompletes() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let key = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: Data("本文".utf8),
+            processingVariant: ebookTestProcessingVariant
         )
-        let producerStarted = expectation(description: "Producer starts")
-        let producerCancelled = expectation(description: "Orphaned producer is cancelled")
-        let deduper = EBookProcessTextRequestDeduper()
+        let gate = EbookTestGate()
+        let started = expectation(description: "shared producer starts")
+        let cancelledWaiterFinished = expectation(description: "cancelled waiter finishes promptly")
+        let deduper = EBookSectionProcessingDeduper()
+
+        let activeCaller = Task {
+            try await deduper.process(key: key) {
+                started.fulfill()
+                await gate.waitUntilReleased()
+                return ebookTestPayload("active-result")
+            }
+        }
+        await fulfillment(of: [started], timeout: 1)
+
+        let cancelledWaiter = Task {
+            try await deduper.process(key: key) {
+                XCTFail("The coalesced waiter must not start another producer")
+                return ebookTestPayload("duplicate")
+            }
+        }
+        for _ in 0..<1_000 {
+            if await deduper.inFlightWaiterCountForTesting(key: key) > 0 {
+                break
+            }
+            await Task.yield()
+        }
+
+        let cancellationObserver = Task {
+            do {
+                _ = try await cancelledWaiter.value
+                XCTFail("The cancelled waiter must not wait for the shared producer")
+            } catch is CancellationError {
+                cancelledWaiterFinished.fulfill()
+            } catch {
+                XCTFail("Expected CancellationError, received \(error)")
+            }
+        }
+        cancelledWaiter.cancel()
+        await fulfillment(of: [cancelledWaiterFinished], timeout: 1)
+
+        await gate.release()
+        let activeResult = try await activeCaller.value
+        _ = await cancellationObserver.result
+        XCTAssertEqual(String(decoding: activeResult.payload.documentHTML, as: UTF8.self), "active-result")
+    }
+
+    func testSectionProcessingDeduperCancelsProducerWhenItsLastWaiterCancels() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let key = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: Data("本文".utf8),
+            processingVariant: ebookTestProcessingVariant
+        )
+        let producerStarted = expectation(description: "producer starts")
+        let producerCancelled = expectation(description: "orphaned producer is cancelled")
+        let callerCancelled = expectation(description: "last waiter finishes with cancellation")
+        let deduper = EBookSectionProcessingDeduper()
 
         let onlyCaller = Task {
             try await deduper.process(key: key) {
                 producerStarted.fulfill()
                 return try await withTaskCancellationHandler {
-                    try await Task.sleep(for: .seconds(60))
-                    return ebookTestPayload("<html><body>unexpected</body></html>")
+                    try await Task.sleep(nanoseconds: 60_000_000_000)
+                    return ebookTestPayload("unexpected")
                 } onCancel: {
                     producerCancelled.fulfill()
                 }
             }
         }
         await fulfillment(of: [producerStarted], timeout: 1)
-        onlyCaller.cancel()
 
-        do {
-            _ = try await onlyCaller.value
-            XCTFail("The cancelled caller must not receive a result")
-        } catch is CancellationError {
-            // Expected.
-        }
-        await fulfillment(of: [producerCancelled], timeout: 1)
-
-        let replacement = try await deduper.process(key: key) {
-            ebookTestPayload("<html><body>replacement</body></html>")
-        }
-        XCTAssertEqual(
-            String(decoding: replacement.payload.documentHTML, as: UTF8.self),
-            "<html><body>replacement</body></html>"
-        )
-        XCTAssertFalse(replacement.didCoalesce)
-    }
-
-    func testCancelledCoalescedWaiterDoesNotCancelOrAwaitOwner() async throws {
-        let key = EBookProcessTextRequestKey(
-            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
-            location: "item/xhtml/chapter.xhtml",
-            isCacheWarmer: false,
-            text: "<html><body>raw</body></html>"
-        )
-        let gate = EBookProcessingGate()
-        let started = expectation(description: "Owner processing starts")
-        let waiterFinished = expectation(description: "Canceled waiter finishes")
-        let deduper = EBookProcessTextRequestDeduper()
-
-        let ownerTask = Task {
-            try await deduper.process(key: key) {
-                started.fulfill()
-                await gate.waitUntilReleased()
-                return ebookTestPayload("<html><body>owner</body></html>")
-            }
-        }
-        await fulfillment(of: [started], timeout: 1)
-        let waiterTask = Task {
-            defer { waiterFinished.fulfill() }
+        let cancellationObserver = Task {
             do {
-                _ = try await deduper.process(key: key) {
-                    XCTFail("A coalesced waiter must not start duplicate work")
-                    return ebookTestPayload("<html><body>duplicate</body></html>")
-                }
-                XCTFail("A canceled waiter must not receive the owner's result")
+                _ = try await onlyCaller.value
+                XCTFail("The last cancelled waiter must not receive a result")
             } catch is CancellationError {
-                return
+                callerCancelled.fulfill()
             } catch {
                 XCTFail("Expected CancellationError, received \(error)")
             }
         }
-        for _ in 0..<1_000 {
-            if await deduper.inFlightWaiterCountForTesting(key: key) == 1 {
-                break
-            }
-            await Task.yield()
-        }
-        waiterTask.cancel()
-        await fulfillment(of: [waiterFinished], timeout: 1)
-        for _ in 0..<1_000 {
-            if await deduper.inFlightWaiterCountForTesting(key: key) == 0 {
-                break
-            }
-            await Task.yield()
-        }
-        let remainingWaiterCount = await deduper.inFlightWaiterCountForTesting(key: key)
-        XCTAssertEqual(remainingWaiterCount, 0)
+        onlyCaller.cancel()
+        await fulfillment(of: [callerCancelled, producerCancelled], timeout: 1)
+        _ = await cancellationObserver.result
 
-        await gate.release()
-        let owner = try await ownerTask.value
-        XCTAssertEqual(
-            String(decoding: owner.payload.documentHTML, as: UTF8.self),
-            "<html><body>owner</body></html>"
-        )
-        XCTAssertFalse(owner.didCoalesce)
+        let replacement = try await deduper.process(key: key) {
+            ebookTestPayload("replacement")
+        }
+        XCTAssertEqual(String(decoding: replacement.payload.documentHTML, as: UTF8.self), "replacement")
+        XCTAssertFalse(replacement.didCoalesce)
     }
 
-    func testForegroundAndCacheWarmerRequestsDoNotCoalesceModeSpecificOutput() async throws {
-        let contentURL = URL(string: "ebook://ebook/load/local/Books/test.epub")!
-        let text = "<html><body>raw</body></html>"
-        let cacheWarmerKey = EBookProcessTextRequestKey(
-            contentURL: contentURL,
-            location: "item/xhtml/chapter.xhtml",
-            isCacheWarmer: true,
-            text: text
-        )
-        let foregroundKey = EBookProcessTextRequestKey(
-            contentURL: contentURL,
-            location: "item/xhtml/chapter.xhtml",
-            isCacheWarmer: false,
-            text: text
-        )
-        let counter = EBookProcessorInvocationCounter()
-        let gate = EBookProcessingGate()
-        let started = expectation(description: "Cache warmer processing starts")
-        let deduper = EBookProcessTextRequestDeduper()
+    func testProcessedSectionCacheProbePreservesCancellationAfterReaderReturns() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let gate = EbookTestGate()
+        let cacheReadStarted = expectation(description: "cache read starts")
 
-        let cacheWarmerTask = Task {
-            try await deduper.process(key: cacheWarmerKey) {
-                _ = await counter.increment()
-                started.fulfill()
-                await gate.waitUntilReleased()
-                return ebookTestPayload("<html><body>processed</body></html>")
-            }
+        let probe = Task {
+            try await probeEbookProcessedSectionCache(
+                reader: { _, _, _ in
+                    cacheReadStarted.fulfill()
+                    await gate.waitUntilReleased()
+                    return nil
+                },
+                contentURL: contentURL,
+                location: "chapter.xhtml",
+                contentFingerprint: "fingerprint"
+            )
         }
-        await fulfillment(of: [started], timeout: 1)
-        let foregroundTask = Task {
-            try await deduper.process(key: foregroundKey) {
-                _ = await counter.increment()
-                return ebookTestPayload("<html><body>foreground</body></html>")
-            }
-        }
+        await fulfillment(of: [cacheReadStarted], timeout: 1)
+        probe.cancel()
         await gate.release()
 
-        let cacheWarmerResult = try await cacheWarmerTask.value
-        let foregroundResult = try await foregroundTask.value
-        XCTAssertEqual(String(decoding: cacheWarmerResult.payload.documentHTML, as: UTF8.self), "<html><body>processed</body></html>")
-        XCTAssertEqual(String(decoding: foregroundResult.payload.documentHTML, as: UTF8.self), "<html><body>foreground</body></html>")
-        XCTAssertFalse(cacheWarmerResult.didCoalesce)
-        XCTAssertFalse(foregroundResult.didCoalesce)
-        let invocationCount = await counter.value()
+        do {
+            _ = try await probe.value
+            XCTFail("Cancellation must not become a cache miss")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+    }
+
+    func testProcessedSectionCacheProbePropagatesReaderCancellation() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+
+        do {
+            _ = try await probeEbookProcessedSectionCache(
+                reader: { _, _, _ in throw CancellationError() },
+                contentURL: contentURL,
+                location: "chapter.xhtml",
+                contentFingerprint: "fingerprint"
+            )
+            XCTFail("Reader cancellation must not become a cache miss")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+    }
+
+    func testProcessedSectionCacheProbeRejectsCancellationWithoutAReader() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let gate = EbookTestGate()
+        let probeStarted = expectation(description: "probe starts")
+        let probe = Task {
+            probeStarted.fulfill()
+            await gate.waitUntilReleased()
+            try await probeEbookProcessedSectionCache(
+                reader: nil,
+                contentURL: contentURL,
+                location: "chapter.xhtml",
+                contentFingerprint: "fingerprint"
+            )
+        }
+        await fulfillment(of: [probeStarted], timeout: 1)
+        probe.cancel()
+        await gate.release()
+
+        do {
+            _ = try await probe.value
+            XCTFail("Cancellation must not become an unavailable cache result")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+    }
+
+    func testProcessedSectionCacheProbeKeepsNonCancellationFailuresRetryable() async throws {
+        enum ExpectedCacheError: Error {
+            case failed
+        }
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+
+        let result = try await probeEbookProcessedSectionCache(
+            reader: { _, _, _ in throw ExpectedCacheError.failed },
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentFingerprint: "fingerprint"
+        )
+
+        XCTAssertNil(result.payload)
+        XCTAssertTrue(result.outcome.hasPrefix("error:"))
+    }
+
+    func testSectionProcessingDeduplicationDoesNotCrossHandlerOwners() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let key = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: Data("本文".utf8),
+            processingVariant: ebookTestProcessingVariant
+        )
+        let firstGate = EbookTestGate()
+        let firstStarted = expectation(description: "first handler processing starts")
+        let secondStarted = expectation(description: "second handler processing starts independently")
+        let firstHandler = EbookURLSchemeHandler()
+        let secondHandler = EbookURLSchemeHandler()
+
+        let firstTask = Task {
+            try await firstHandler.processSectionForRequest(key: key) {
+                firstStarted.fulfill()
+                await firstGate.waitUntilReleased()
+                return ebookTestPayload("first-owner")
+            }
+        }
+        await fulfillment(of: [firstStarted], timeout: 1)
+
+        let secondTask = Task {
+            try await secondHandler.processSectionForRequest(key: key) {
+                secondStarted.fulfill()
+                return ebookTestPayload("second-owner")
+            }
+        }
+        await fulfillment(of: [secondStarted], timeout: 1)
+        let second = try await secondTask.value
+        await firstGate.release()
+        let first = try await firstTask.value
+
+        XCTAssertEqual(String(decoding: first.payload.documentHTML, as: UTF8.self), "first-owner")
+        XCTAssertEqual(String(decoding: second.payload.documentHTML, as: UTF8.self), "second-owner")
+        XCTAssertFalse(first.didCoalesce)
+        XCTAssertFalse(second.didCoalesce)
+    }
+
+    func testSectionProcessingDeduperProducerInheritsExactProcessingVariantContext() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let variant = EbookProcessingVariant(
+            availableDictionaryIDs: ["jmnedict", "jmdict"],
+            includeJLPTClasses: true,
+            romajiModeEnabled: true
+        )
+        let key = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: Data("本文".utf8),
+            processingVariant: variant
+        )
+        let deduper = EBookSectionProcessingDeduper()
+
+        let result = try await EbookProcessingVariantContext.$current.withValue(variant) {
+            try await deduper.process(key: key) {
+                XCTAssertEqual(EbookProcessingVariantContext.current, variant)
+                return ebookTestPayload("variant-owned")
+            }
+        }
+
+        XCTAssertEqual(String(decoding: result.payload.documentHTML, as: UTF8.self), "variant-owned")
+        XCTAssertFalse(result.didCoalesce)
+    }
+
+    func testSectionProcessingDeduperDoesNotCoalesceDifferentProcessingVariants() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let contentData = Data("本文".utf8)
+        let firstKey = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: contentData,
+            processingVariant: EbookProcessingVariant(
+                availableDictionaryIDs: ["jmdict"],
+                includeJLPTClasses: false,
+                romajiModeEnabled: false
+            )
+        )
+        let secondKey = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: contentData,
+            processingVariant: EbookProcessingVariant(
+                availableDictionaryIDs: ["jmdict", "jmnedict"],
+                includeJLPTClasses: true,
+                romajiModeEnabled: true
+            )
+        )
+        let firstGate = EbookTestGate()
+        let firstStarted = expectation(description: "first variant starts")
+        let secondStarted = expectation(description: "second variant starts independently")
+        let invocationCounter = EbookTestInvocationCounter()
+        let deduper = EBookSectionProcessingDeduper()
+
+        let firstTask = Task {
+            try await deduper.process(key: firstKey) {
+                await invocationCounter.increment()
+                firstStarted.fulfill()
+                await firstGate.waitUntilReleased()
+                return ebookTestPayload("first-variant")
+            }
+        }
+        await fulfillment(of: [firstStarted], timeout: 1)
+
+        let secondTask = Task {
+            try await deduper.process(key: secondKey) {
+                await invocationCounter.increment()
+                secondStarted.fulfill()
+                return ebookTestPayload("second-variant")
+            }
+        }
+        await fulfillment(of: [secondStarted], timeout: 1)
+        let secondResult = try await secondTask.value
+        await firstGate.release()
+        let firstResult = try await firstTask.value
+
+        XCTAssertEqual(String(decoding: firstResult.payload.documentHTML, as: UTF8.self), "first-variant")
+        XCTAssertEqual(String(decoding: secondResult.payload.documentHTML, as: UTF8.self), "second-variant")
+        XCTAssertFalse(firstResult.didCoalesce)
+        XCTAssertFalse(secondResult.didCoalesce)
+        let invocationCount = await invocationCounter.count
         XCTAssertEqual(invocationCount, 2)
     }
 
-    func testCacheWarmerDoesNotReadLivePreparedTextCache() async throws {
-        let actor = EBookProcessingActor(
-            ebookProcessedTextCacheReader: { _, _, _, _ in
-                XCTFail("Cache warmers must not consume live presentation HTML")
-                return ebookTestPayload("<html><body>live presentation</body></html>")
-            },
-            ebookTextProcessor: { _, _, _, _, isCacheWarmer, _, _, _, _ in
-                XCTAssertTrue(isCacheWarmer)
-                return ebookTestPayload("<html><body>neutral warmer result</body></html>")
-            },
-            processReadabilityContent: nil,
-            processHTMLBytes: nil,
-            processHTML: nil
+    func testSectionProcessingDeduperDoesNotRetainCompletedResponses() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let key = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: Data("本文".utf8),
+            processingVariant: ebookTestProcessingVariant
         )
+        let deduper = EBookSectionProcessingDeduper()
+        let invocationCounter = EbookTestInvocationCounter()
 
-        let result = try await actor.process(
-            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
-            location: "item/xhtml/title.xhtml",
-            text: "<html><body>raw</body></html>",
-            isCacheWarmer: true
-        )
+        let first = try await deduper.process(key: key) {
+            await invocationCounter.increment()
+            return ebookTestPayload("first")
+        }
+        let second = try await deduper.process(key: key) {
+            await invocationCounter.increment()
+            return ebookTestPayload("second")
+        }
 
-        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), "<html><body>neutral warmer result</body></html>")
+        XCTAssertEqual(String(decoding: first.payload.documentHTML, as: UTF8.self), "first")
+        XCTAssertEqual(String(decoding: second.payload.documentHTML, as: UTF8.self), "second")
+        XCTAssertFalse(first.didCoalesce)
+        XCTAssertFalse(second.didCoalesce)
+        let invocationCount = await invocationCounter.count
+        XCTAssertEqual(invocationCount, 2)
     }
 
-    func testCacheWarmerProcessingReturnsProcessedContentToCaller() async throws {
-        let expectedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
+    func testCacheWarmerDoesNotPopulateDisplayReadyProcessedTextCache() async throws {
+        let writerInvocationCounter = EbookTestInvocationCounter()
         let actor = EBookProcessingActor(
-            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in ebookTestPayload(expectedHTML) },
-            processReadabilityContent: nil,
-            processHTMLBytes: nil,
-            processHTML: nil
-        )
-
-        let result = try await actor.process(
-            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
-            location: "item/xhtml/title.xhtml",
-            text: "<html><body>raw</body></html>",
-            isCacheWarmer: true
-        )
-
-        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), expectedHTML)
-    }
-
-    func testForegroundUsesPersistedProcessedTextWithoutReprocessing() async throws {
-        let expectedHTML = """
-        <html><body><m-m id="persisted">persisted</m-m>
-        <script id="mnb-segment-metadata" type="application/json">
-        {"v":10,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!persisted",0,null,null,null,null,null,null,null,0,0]]}
-        </script></body></html>
-        """
-        let actor = EBookProcessingActor(
-            ebookProcessedTextCacheReader: { _, _, _, _ in
-                let split = try XCTUnwrap(splitCanonicalReaderSegmentSidecar(from: Array(expectedHTML.utf8)))
-                return split
+            ebookProcessedTextCacheWriter: { _, _, _, _ in
+                await writerInvocationCounter.increment()
             },
             ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in
-                XCTFail("A persisted cache hit should bypass ebook text processing")
-                return ebookTestPayload("<html><body>unexpected processed value</body></html>")
+                ebookTestPayload("<html><body>warmer result</body></html>")
+            },
+            processReadabilityContent: nil,
+            processHTMLDocument: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
+        )
+
+        _ = try await actor.process(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            location: "item/xhtml/chapter.xhtml",
+            text: "<html><body>raw</body></html>",
+            isCacheWarmer: true
+        )
+
+        let writerInvocationCount = await writerInvocationCounter.count
+        XCTAssertEqual(writerInvocationCount, 0)
+    }
+
+    func testForegroundProcessingPopulatesDisplayReadyProcessedTextCache() async throws {
+        let writerCalled = expectation(description: "display-ready cache writer runs")
+        let canonicalJSON = #"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["foreground result"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
+        let processedHTML = "<html><body><m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">foreground result</m-m></m-s></m-c><script id=\"mnb-segment-metadata\">\(canonicalJSON)</script></body></html>"
+        let actor = EBookProcessingActor(
+            ebookProcessedTextCacheWriter: { _, _, _, payload in
+                XCTAssertTrue(payload.isAuthoritativelyProcessed)
+                XCTAssertTrue(String(decoding: payload.documentHTML, as: UTF8.self).contains("foreground result"))
+                XCTAssertEqual(String(decoding: payload.segmentSidecar, as: UTF8.self), canonicalJSON)
+                writerCalled.fulfill()
+            },
+            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in
+                let split = try XCTUnwrap(
+                    splitCanonicalReaderSegmentSidecar(from: Array(processedHTML.utf8))
+                )
+                return EbookProcessedSectionPayload.readerProcessingFixture(
+                    sourceDocumentHTML: Data(processedHTML.utf8),
+                    documentHTML: split.documentHTML,
+                    segmentSidecar: split.segmentSidecar
+                )
+            },
+            processReadabilityContent: nil,
+            processHTMLDocument: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
+        )
+
+        _ = try await actor.process(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            location: "item/xhtml/chapter.xhtml",
+            text: "<html><body>raw</body></html>",
+            isCacheWarmer: false
+        )
+
+        await fulfillment(of: [writerCalled], timeout: 1)
+    }
+
+    func testForegroundProcessingDoesNotCacheNonAuthoritativeFallback() async throws {
+        let writerInvocationCounter = EbookTestInvocationCounter()
+        let actor = EBookProcessingActor(
+            ebookProcessedTextCacheWriter: { _, _, _, _ in
+                await writerInvocationCounter.increment()
+            },
+            ebookTextProcessor: { _, _, text, _, _, _, _, _, _ in
+                ebookTestPayload(text, isAuthoritativelyProcessed: false)
             },
             processReadabilityContent: nil,
             processHTMLDocument: nil,
@@ -2722,74 +2153,12 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let result = try await actor.process(
             contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
             location: "item/xhtml/chapter.xhtml",
-            text: "<html><body>raw</body></html>",
+            text: "<html><body>raw fallback</body></html>",
             isCacheWarmer: false
         )
 
-        let expectedPayload = try XCTUnwrap(
-            splitCanonicalReaderSegmentSidecar(from: Array(expectedHTML.utf8))
-        )
-        XCTAssertEqual(result.documentHTML, expectedPayload.documentHTML)
-        XCTAssertEqual(result.segmentSidecar, expectedPayload.segmentSidecar)
-    }
-
-    func testProcessingCanSkipCacheReadAfterCallerAlreadyMissed() async throws {
-        let expectedHTML = "<html><body>processed once</body></html>"
-        let actor = EBookProcessingActor(
-            ebookProcessedTextCacheReader: { _, _, _, _ in
-                XCTFail("The scheme handler already performed this cache read")
-                return ebookTestPayload("<html><body>unexpected cached value</body></html>")
-            },
-            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in ebookTestPayload(expectedHTML) },
-            processReadabilityContent: nil,
-            processHTMLDocument: nil,
-            processHTMLBytes: nil,
-            processHTML: nil
-        )
-
-        let result = try await actor.process(
-            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
-            location: "item/xhtml/chapter.xhtml",
-            text: "<html><body>raw</body></html>",
-            isCacheWarmer: false,
-            shouldReadProcessedCache: false
-        )
-
-        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), expectedHTML)
-    }
-
-    func testCacheWarmerProcessTextResponseDoesNotReturnProcessedContent() throws {
-        let processedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
-
-        let cacheWarmerData = try XCTUnwrap(ebookProcessTextResponseData(
-            processedText: processedHTML,
-            isCacheWarmer: true
-        ))
-        let liveData = try XCTUnwrap(ebookProcessTextResponseData(
-            processedText: processedHTML,
-            isCacheWarmer: false
-        ))
-
-        XCTAssertTrue(cacheWarmerData.isEmpty)
-        XCTAssertEqual(String(data: liveData, encoding: .utf8), processedHTML)
-    }
-
-    func testCacheWarmerWithoutProcessorFallsBackToOriginalText() async throws {
-        let originalText = "<html><body>raw</body></html>"
-        let actor = EBookProcessingActor(
-            ebookTextProcessor: nil,
-            processReadabilityContent: nil,
-            processHTMLBytes: nil,
-            processHTML: nil
-        )
-
-        let result = try await actor.process(
-            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
-            location: "item/xhtml/title.xhtml",
-            text: originalText,
-            isCacheWarmer: true
-        )
-
-        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), originalText)
+        XCTAssertFalse(result.isAuthoritativelyProcessed)
+        let writerInvocationCount = await writerInvocationCounter.count
+        XCTAssertEqual(writerInvocationCount, 0)
     }
 }

@@ -22,7 +22,7 @@ finish() {
       fi
     fi
   fi
-  if ! rm -rf "$work"; then
+  if ! mv "$work" "$HOME/.Trash/$(basename "$work")"; then
     [[ "$status" != 0 ]] || status=1
   fi
   exit "$status"
@@ -39,6 +39,6 @@ done
 # Compile the actual package reader declaration, not an API double. The cache
 # following it depends on the full app/file-manager graph and is outside this
 # isolated target. Neither removed import is used by this exact source prefix.
-awk '/^public actor ReaderPackageEntrySourceCache/ { exit } !/^import LakeOfFire(Core|Adblock)$/ { print }' \
+awk '/^public actor ReaderPackageEntrySourceCache/ { exit } !/^import (LakeOfFire(Core|Adblock)|SwiftUIWebView)$/ { print }' \
   "$root/Sources/LakeOfFireContent/Files/Archive+Data.swift" > "$work/Sources/ReaderPackageEntrySource.swift"
 swift test --package-path "$work" "$@"

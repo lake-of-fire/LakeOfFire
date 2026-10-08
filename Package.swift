@@ -1,56 +1,21 @@
-// swift-tools-version: 6.2
-// The swift-tools-version declares the minimum version of Swift required to build this package.
+// swift-tools-version: 5.10
 
 import PackageDescription
 
 let package = Package(
     name: "LakeOfFire",
-    platforms: [.macOS(.v15), .iOS(.v15)],
+    platforms: [.macOS("15.0"), .iOS(.v15)],
     products: [
-        .library(
-            name: "LakeOfFireShareSupport",
-            targets: ["LakeOfFireShareSupport"]
-        ),
-        .library(
-            name: "LakeOfFireCore",
-            targets: ["LakeOfFireCore"]
-        ),
-        .library(
-            name: "LakeOfFireAdblock",
-            targets: ["LakeOfFireAdblock"]
-        ),
-        .library(
-            name: "LakeOfFireContent",
-            targets: ["LakeOfFireContent"]
-        ),
-        .library(
-            name: "LakeOfFireContentUI",
-            targets: ["LakeOfFireContentUI"]
-        ),
-        .library(
-            name: "LakeOfFireFiles",
-            targets: ["LakeOfFireFiles"]
-        ),
-        .library(
-            name: "LakeOfFireWeb",
-            targets: ["LakeOfFireWeb"]
-        ),
-        .library(
-            name: "LakeOfFireLibrary",
-            targets: ["LakeOfFireLibrary"]
-        ),
-        .library(
-            name: "LakeOfFireOPDS",
-            targets: ["LakeOfFireOPDS"]
-        ),
-        .library(
-            name: "LakeOfFireReader",
-            targets: ["LakeOfFireReader"]
-        ),
-        .executable(
-            name: "EbookRendererHarness",
-            targets: ["EbookRendererHarness"]
-        ),
+        .library(name: "LakeOfFireShareSupport", targets: ["LakeOfFireShareSupport"]),
+        .library(name: "LakeOfFireCore", targets: ["LakeOfFireCore"]),
+        .library(name: "LakeOfFireAdblock", targets: ["LakeOfFireAdblock"]),
+        .library(name: "LakeOfFireContent", targets: ["LakeOfFireContent"]),
+        .library(name: "LakeOfFireContentUI", targets: ["LakeOfFireContentUI"]),
+        .library(name: "LakeOfFireFiles", targets: ["LakeOfFireFiles"]),
+        .library(name: "LakeOfFireWeb", targets: ["LakeOfFireWeb"]),
+        .library(name: "LakeOfFireLibrary", targets: ["LakeOfFireLibrary"]),
+        .library(name: "LakeOfFireOPDS", targets: ["LakeOfFireOPDS"]),
+        .library(name: "LakeOfFireReader", targets: ["LakeOfFireReader"]),
         .library(
             name: "LakeOfFire",
             targets: ["LakeOfFire"]
@@ -58,42 +23,39 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../swiftui-webview"),
-        .package(path: "../swift-brave"),
         .package(url: "https://github.com/apple/swift-log.git", branch: "main"),
         .package(path: "../RealmSwiftGaps"),
         .package(path: "../BigSyncKit"),
         .package(path: "../SwiftUIDownloads"),
         .package(path: "../JapaneseLanguageTools"),
-        .package(url: "https://github.com/pointfreeco/swift-structured-queries", exact: "0.34.0"),
-        .package(url: "https://github.com/swiftlang/swift-syntax", exact: "603.0.1"),
         .package(path: "../SwiftUtilities"),
-        .package(url: "https://github.com/lake-of-fire/LakeImage.git", branch: "main"),
-        .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.4"),
+        .package(path: "../LakeImage"),
+        .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.5"),
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", branch: "development"),
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.5.0"),
         .package(url: "https://github.com/Tunous/DebouncedOnChange.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-collections.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/swift-opml.git", branch: "main"),
         .package(url: "https://github.com/nmdias/FeedKit.git", from: "9.1.2"),
         .package(url: "https://github.com/objecthub/swift-markdownkit.git", branch: "master"),
         .package(url: "https://github.com/satoshi-takano/OpenGraph.git", from: "1.6.0"),
+        .package(url: "https://github.com/lake-of-fire/Puppy.git", branch: "main"),
         .package(path: "../FaviconFinder"),
-        .package(path: "../SwiftSoup"),
-        .package(path: "../swift-readability"),
-        .package(url: "https://github.com/lake-of-fire/swift-dompurify.git", branch: "main"),
+        .package(url: "https://github.com/scinfu/SwiftSoup.git", branch: "master"),
         .package(url: "https://github.com/lake-of-fire/FilePicker.git", branch: "main"),
         .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
-        .package(url: "https://github.com/lake-of-fire/SwiftCloudDrive.git", branch: "main"),
+        .package(url: "https://github.com/lake-of-fire/SwiftCloudDrive.git", revision: "5f0d30e0e39fe9fd09e71b6ff1c01b444d8bdb9a"),
+        .package(url: "https://github.com/dagronf/DSFStepperView.git", branch: "main"),
+        .package(path: "../swift-readability"),
+        .package(url: "https://github.com/facebook/zstd.git", from: "1.5.7"),
         .package(url: "https://github.com/EmergeTools/Pow.git", branch: "main"),
         .package(path: "../LakeKit"),
-        .package(url: "https://github.com/nicklockwood/LRUCache.git", branch: "main"),
+        .package(url: "https://github.com/nicklockwood/LRUCache.git", from: "1.1.2"),
         .package(url: "https://github.com/ivan-magda/swiftui-expandable-text.git", branch: "main"),
+        .package(url: "https://github.com/pointfreeco/swift-perception", exact: "2.0.12"),
     ],
     targets: [
-        .target(
-            name: "LakeOfFireOPDS",
-            dependencies: []
-        ),
         .target(
             name: "LakeOfFireShareSupport",
             dependencies: [
@@ -105,18 +67,14 @@ let package = Package(
             dependencies: [
                 .product(name: "AsyncView", package: "AsyncView"),
                 .product(name: "LakeKit", package: "LakeKit"),
+                .product(name: "SwiftUtilities", package: "SwiftUtilities"),
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
             ]
         ),
         .target(
             name: "LakeOfFireAdblock",
             dependencies: [
-                .product(name: "BraveAdblock", package: "swift-brave"),
-                .product(name: "OrderedCollections", package: "swift-collections"),
-                .product(name: "SwiftUIWebView", package: "swiftui-webview"),
-            ],
-            resources: [
-                .copy("Resources/User Scripts/"),
+                "LakeOfFireCore",
             ]
         ),
         .target(
@@ -132,7 +90,9 @@ let package = Package(
                 .product(name: "OPML", package: "swift-opml"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
+                .product(name: "libzstd", package: "zstd"),
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
+                .product(name: "SwiftReadability", package: "swift-readability"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
                 .product(name: "SwiftUIDownloads", package: "SwiftUIDownloads"),
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
@@ -149,15 +109,6 @@ let package = Package(
             dependencies: [
                 "LakeOfFireContent",
                 "LakeOfFireCore",
-                "LakeOfFireAdblock",
-                .product(name: "LakeImage", package: "LakeImage"),
-                .product(name: "LakeKit", package: "LakeKit"),
-                .product(name: "Pow", package: "Pow"),
-                .product(name: "RealmSwift", package: "realm-swift"),
-                .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
-                .product(name: "SwiftUIWebView", package: "swiftui-webview"),
-                .product(name: "SwiftUtilities", package: "SwiftUtilities"),
-                .product(name: "ZIPFoundation", package: "ZipFoundation"),
             ]
         ),
         .target(
@@ -167,6 +118,8 @@ let package = Package(
                 "LakeOfFireCore",
                 "LakeOfFireAdblock",
                 .product(name: "RealmSwift", package: "realm-swift"),
+                .product(name: "SwiftUtilities", package: "SwiftUtilities"),
+                .product(name: "SwiftUIWebView", package: "swiftui-webview"),
                 .product(name: "ZIPFoundation", package: "ZipFoundation"),
             ]
         ),
@@ -175,6 +128,9 @@ let package = Package(
             dependencies: [
                 "LakeOfFireCore",
                 "LakeOfFireAdblock",
+                "LakeOfFireContent",
+                .product(name: "BigSyncKit", package: "BigSyncKit"),
+                .product(name: "SwiftUtilities", package: "SwiftUtilities"),
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
             ]
         ),
@@ -182,25 +138,26 @@ let package = Package(
             name: "LakeOfFireLibrary",
             dependencies: [
                 "LakeOfFireContent",
-                "LakeOfFireContentUI",
                 "LakeOfFireCore",
                 "LakeOfFireAdblock",
                 "LakeOfFireReader",
-                .product(name: "AsyncView", package: "AsyncView"),
+                "LakeOfFireWeb",
+                .product(name: "BigSyncKit", package: "BigSyncKit"),
                 .product(name: "DebouncedOnChange", package: "DebouncedOnChange"),
+                .product(name: "FeedKit", package: "FeedKit"),
                 .product(name: "FaviconFinder", package: "FaviconFinder"),
                 .product(name: "FilePicker", package: "FilePicker"),
-                .product(name: "LakeImage", package: "LakeImage"),
                 .product(name: "LakeKit", package: "LakeKit"),
+                .product(name: "MarkdownKit", package: "Swift-MarkdownKit"),
                 .product(name: "OpenGraph", package: "OpenGraph"),
-                .product(name: "OPML", package: "swift-opml"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "SwiftUIBackports", package: "SwiftUIBackports"),
-                .product(name: "SwiftUIWebView", package: "swiftui-webview"),
+                .product(name: "SwiftUIDownloads", package: "SwiftUIDownloads"),
                 .product(name: "SwiftUtilities", package: "SwiftUtilities"),
             ]
         ),
+        .target(name: "LakeOfFireOPDS"),
         .target(
             name: "LakeOfFireReader",
             dependencies: [
@@ -219,11 +176,11 @@ let package = Package(
                 .product(name: "LakeKit", package: "LakeKit"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "OrderedCollections", package: "swift-collections"),
+                .product(name: "Perception", package: "swift-perception"),
                 .product(name: "Pow", package: "Pow"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
-                .product(name: "SwiftDOMPurify", package: "swift-dompurify"),
                 .product(name: "SwiftReadability", package: "swift-readability"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
                 .product(name: "SwiftUIBackports", package: "SwiftUIBackports"),
@@ -233,21 +190,8 @@ let package = Package(
                 .product(name: "ZIPFoundation", package: "ZipFoundation"),
             ],
             resources: [
-                .copy("Resources/PDFJSWeb/"),
-                .copy("Resources/foliate-js/"),
-                .copy("Resources/User Scripts/"),
+                .copy("Resources/"),
             ]
-        ),
-        .executableTarget(
-            name: "EbookRendererHarness",
-            dependencies: [
-                "LakeOfFireContent",
-                "LakeOfFireCore",
-                "LakeOfFireFiles",
-                "LakeOfFireReader",
-                .product(name: "SwiftUIWebView", package: "swiftui-webview"),
-            ],
-            path: "Examples/EbookRendererHarness/Sources/EbookRendererHarness"
         ),
         .target(
             name: "LakeOfFire",
@@ -271,33 +215,26 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "LakeOfFireReaderWebMediaTests",
-            dependencies: [
-                "LakeOfFireContent",
-                "LakeOfFireReader",
-            ],
-            path: "Tests/LakeOfFireReaderWebMediaTests"
-        ),
-        .testTarget(
             name: "LakeOfFireTests",
             dependencies: [
-                .product(name: "BigSyncKit", package: "BigSyncKit"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
-                .product(name: "SwiftSoup", package: "SwiftSoup"),
+                .product(name: "BigSyncKit", package: "BigSyncKit"),
+                .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
+                .product(name: "OPML", package: "swift-opml"),
+                "LakeOfFireFiles",
                 "LakeOfFireContent",
-                "LakeOfFireContentUI",
                 "LakeOfFireCore",
+                "LakeOfFireLibrary",
                 "LakeOfFireReader",
                 "LakeOfFireWeb",
                 .product(name: "SwiftReadability", package: "swift-readability"),
-                .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
-                .product(name: "SwiftUIDownloads", package: "SwiftUIDownloads"),
-                .product(name: "WebMedia", package: "swift-brave"),
+                .product(name: "ZIPFoundation", package: "ZipFoundation"),
             ],
             path: "Tests/LakeOfFireTests",
             resources: [
-                .copy("Fixtures/Asahi"),
+                .copy("Fixtures/Asahi/"),
+                .copy("Fixtures/BEPAL/"),
                 .copy("Fixtures/Readability/mozilla-wikipedia-minerva.html"),
             ]
         ),

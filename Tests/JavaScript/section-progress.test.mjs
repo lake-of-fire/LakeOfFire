@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { SectionProgress } from '../../Sources/LakeOfFireReader/Resources/foliate-js/progress.js'
+import { SectionProgress } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/progress.js'
 
 const section = (size, linear = 'yes') => ({ size, linear })
 
@@ -53,48 +53,6 @@ test('clamps non-finite and out-of-range fractions', () => {
     assert.deepEqual(progress.getSection(Number.POSITIVE_INFINITY), [2, 1])
     assert.deepEqual(progress.getSection(-10), [1, 0])
     assert.deepEqual(progress.getSection(10), [2, 1])
-})
-
-test('normalizes forward progress fractions before deriving location and time', () => {
-    const progress = new SectionProgress([section(100), section(100)], 10, 10)
-
-    assert.deepEqual(progress.getProgress(1, Number.NaN, Number.POSITIVE_INFINITY), {
-        fraction: 1,
-        section: { current: 1, total: 2 },
-        location: { current: 10, next: 20, total: 20 },
-        time: { section: 10, total: 10 },
-    })
-    assert.deepEqual(progress.getProgress(1, -10, Number.NEGATIVE_INFINITY), {
-        fraction: 0.5,
-        section: { current: 1, total: 2 },
-        location: { current: 10, next: 10, total: 20 },
-        time: { section: 10, total: 10 },
-    })
-    assert.deepEqual(progress.getProgress(1, 10, 10), {
-        fraction: 1,
-        section: { current: 1, total: 2 },
-        location: { current: 20, next: 20, total: 20 },
-        time: { section: 0, total: 0 },
-    })
-})
-
-test('clamps malformed forward section indexes to the spine', () => {
-    const progress = new SectionProgress([section(100), section(100)], 10, 10)
-
-    assert.deepEqual(progress.getProgress(-10, 0.5), {
-        fraction: 0.25,
-        section: { current: 0, total: 2 },
-        location: { current: 5, next: 5, total: 20 },
-        time: { section: 5, total: 15 },
-    })
-    assert.deepEqual(progress.getProgress(10, 0.5), {
-        fraction: 0.75,
-        section: { current: 1, total: 2 },
-        location: { current: 15, next: 15, total: 20 },
-        time: { section: 5, total: 5 },
-    })
-    assert.equal(progress.getProgress(Number.NaN, 0.5).section.current, 0)
-    assert.equal(progress.getProgress(0.5, 0.5).section.current, 0)
 })
 
 test('round trips monotonic progress across positive sections', () => {

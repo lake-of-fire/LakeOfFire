@@ -1,7 +1,6 @@
 import SwiftUI
 import LakeOfFireContent
 import LakeOfFireCore
-import LakeOfFireAdblock
 
 public struct ReaderFileManagerSetupModifier: ViewModifier {
     @EnvironmentObject private var readerFileManager: ReaderFileManager
@@ -16,7 +15,7 @@ public struct ReaderFileManagerSetupModifier: ViewModifier {
 
 public extension View {
     @ViewBuilder
-    public func readerFileManagerSetup(_ updateHandler: @escaping (ReaderFileManager) -> Void) -> some View {
+    func readerFileManagerSetup(_ updateHandler: @escaping (ReaderFileManager) -> Void) -> some View {
         modifier(ReaderFileManagerSetupModifier(updateHandler: updateHandler))
     }
 }

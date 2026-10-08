@@ -26,14 +26,14 @@ final class ReaderHTTPErrorRecoveryPolicyTests: XCTestCase {
         )
         XCTAssertFalse(
             ReaderHTTPErrorRecoveryPolicy.shouldPreserveReaderState(
-                isMainFrame: false,
-                statusCode: 404
+                isMainFrame: true,
+                statusCode: 200
             )
         )
         XCTAssertFalse(
             ReaderHTTPErrorRecoveryPolicy.shouldPreserveReaderState(
-                isMainFrame: true,
-                statusCode: 200
+                isMainFrame: false,
+                statusCode: 404
             )
         )
         XCTAssertFalse(
@@ -46,7 +46,7 @@ final class ReaderHTTPErrorRecoveryPolicyTests: XCTestCase {
 
     func testShowOriginalKeepsReaderModeRecoverableWhenCapturedReadabilityContentExists() {
         let update = ReaderHTTPErrorRecoveryPolicy.showOriginalFlagUpdate(
-            currentFlags: .init(
+            currentFlags: ReaderHTTPErrorRecoveryPolicy.ReaderModeFlags(
                 isReaderModeByDefault: true,
                 isReaderModeAvailable: false,
                 isReaderModeOfferHidden: false
@@ -67,12 +67,13 @@ final class ReaderHTTPErrorRecoveryPolicyTests: XCTestCase {
 
     func testShowOriginalDoesNotInventReaderRecoveryWithoutCapturedOrStoredFullContent() {
         let update = ReaderHTTPErrorRecoveryPolicy.showOriginalFlagUpdate(
-            currentFlags: .init(
+            currentFlags: ReaderHTTPErrorRecoveryPolicy.ReaderModeFlags(
                 isReaderModeByDefault: true,
                 isReaderModeAvailable: false,
                 isReaderModeOfferHidden: false
             ),
-            hasCapturedReadabilityContent: false
+            hasCapturedReadabilityContent: false,
+            hasStoredFullContent: false
         )
 
         XCTAssertEqual(
@@ -88,7 +89,7 @@ final class ReaderHTTPErrorRecoveryPolicyTests: XCTestCase {
 
     func testShowOriginalKeepsReaderModeRecoverableForStoredFullContent() {
         let update = ReaderHTTPErrorRecoveryPolicy.showOriginalFlagUpdate(
-            currentFlags: .init(
+            currentFlags: ReaderHTTPErrorRecoveryPolicy.ReaderModeFlags(
                 isReaderModeByDefault: true,
                 isReaderModeAvailable: false,
                 isReaderModeOfferHidden: false

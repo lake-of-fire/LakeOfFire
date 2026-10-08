@@ -1,9 +1,8 @@
 import Foundation
-@preconcurrency import WebKit
-import RealmSwift
 import LakeOfFireContent
 import LakeOfFireCore
-import LakeOfFireAdblock
+import WebKit
+import ZIPFoundation
 
 fileprivate extension URL {
     var deletingQuery: URL? {
@@ -12,6 +11,8 @@ fileprivate extension URL {
         return components?.url
     }
 }
+
+fileprivate let zipArchiveExtensions = ["zip", "epub"]
 
 @globalActor
 public actor ReaderFileURLSchemeActor {
@@ -39,6 +40,9 @@ public final class URLSchemeTaskCompletionOwnership: @unchecked Sendable {
         activeTasks[ObjectIdentifier(task)] = ActiveTask(task: task)
     }
 
+    /// Attaches cancellation for asynchronous work owned by an active scheme task.
+    /// If WebKit already stopped or completed the task, the work is cancelled
+    /// immediately rather than being allowed to run without a terminal owner.
     @discardableResult
     public func attachCancellation(
         _ task: AnyObject,
@@ -59,7 +63,9 @@ public final class URLSchemeTaskCompletionOwnership: @unchecked Sendable {
 
     @discardableResult
     public func cancel(_ task: AnyObject) -> Bool {
-        guard let activeTask = remove(task) else { return false }
+        guard let activeTask = remove(task) else {
+            return false
+        }
         for cancellation in activeTask.workCancellations {
             cancellation()
         }
@@ -82,7 +88,6 @@ public final class URLSchemeTaskCompletionOwnership: @unchecked Sendable {
         return activeTask
     }
 }
-
 
 public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
     @ReaderFileURLSchemeActor public var readerFileManager: ReaderFileManager? = nil
@@ -116,7 +121,10 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     @discardableResult
-    private func failActiveTask(_ urlSchemeTask: WKURLSchemeTask, error: Error) -> Bool {
+    private func failActiveTask(
+        _ urlSchemeTask: WKURLSchemeTask,
+        error: Error
+    ) -> Bool {
         guard schemeTaskCompletionOwnership.claimCompletion(urlSchemeTask as AnyObject) else {
             return false
         }
@@ -166,60 +174,56 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 // Package (eg ZIP) subpath file
                 if let urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false),
                    let subpathValue = urlComponents.queryItems?.first(where: { $0.name == "subpath" })?.value {
-                    if let readerFileURL = url.deletingQuery {
-                        let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
-                            forPackageURL: readerFileURL,
-                            readerFileManager: readerFileManager
+                    if zipArchiveExtensions.contains(url.pathExtension.lowercased()),
+                       let readerFileURL = url.deletingQuery,
+                       let readerBackingURL = readerFileManager.canonicalReaderBackingURL(for: readerFileURL) {
+                        let localArchiveURL = try await readerFileManager.resolveReadableLocalURL(
+                            forReaderBackingURL: readerBackingURL
                         )
                         try Task.checkCancellation()
-                        let data = try cachedSource.source.readEntry(subpath: subpathValue)
-                        let metadata = try cachedSource.source.mimeType(
-                            subpath: subpathValue,
-                            data: data
+                        let packageSource = try ReaderPackageEntrySource(
+                            localURL: localArchiveURL,
+                            limits: .image
+                        )
+                        let imageData = try packageSource.readEntry(subpath: subpathValue)
+                        let responseMetadata = try packageSource.mimeType(
+                            subpath: subpathValue
                         )
                         try Task.checkCancellation()
+
                         let response = HTTPURLResponse(
                             url: url,
-                            mimeType: metadata.mimeType,
-                            expectedContentLength: data.count,
-                            textEncodingName: metadata.textEncodingName
+                            mimeType: responseMetadata.mimeType,
+                            expectedContentLength: imageData.count,
+                            textEncodingName: responseMetadata.textEncodingName
                         )
                         await { @MainActor in
                             self.finishActiveTask(
                                 urlSchemeTask,
                                 response: response,
-                                data: data
+                                data: imageData
                             )
                         }()
-                    } else {
-                        await { @MainActor in
-                            self.failActiveTask(
-                                urlSchemeTask,
-                                error: CustomSchemeHandlerError.fileNotFound
-                            )
-                        }()
+                        return
                     }
-                } else if
-                    let contentFilePrimaryKey = try? await ReaderFileManager.contentFilePrimaryKey(for: url),
-                    var data = try? await readerFileManager.read(fileURL: url)
-                {
-                    try Task.checkCancellation()
-                    // File
-                    var mimeType = (try? await ReaderFileManager.mimeType(forContentFilePrimaryKey: contentFilePrimaryKey)) ?? "application/octet-stream"
-                    var textEncodingName: String?
-                    if let text = String(data: data, encoding: .utf8),
-                       ReaderContentLoader.supportsReaderContent(mimeType: mimeType, pathExtension: url.pathExtension),
-                       let convertedData = ReaderContentLoader.normalizeIngestedText(
-                        text,
-                        mimeType: mimeType,
-                        pathExtension: url.pathExtension,
-                        source: .file
-                       ).html.data(using: .utf8) {
-                        mimeType = "text/html"
-                        textEncodingName = "UTF-8"
-                        data = convertedData
-                    }
-                    
+                    await { @MainActor in
+                        self.failActiveTask(
+                            urlSchemeTask,
+                            error: CustomSchemeHandlerError.fileNotFound
+                        )
+                    }()
+                    return
+                }
+                let payload = try await ReaderFileDocumentLoader.load(
+                    url: url,
+                    metadata: { try await ReaderFileManager.get(fileURL: url) },
+                    read: { try await readerFileManager.read(fileURL: url) }
+                )
+                if let payload {
+                    let data = payload.data
+                    let mimeType = payload.mimeType
+                    let textEncodingName = payload.textEncodingName
+
                     let response = HTTPURLResponse(
                         url: url,
                         mimeType: mimeType,
@@ -244,6 +248,14 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
             } catch is CancellationError {
                 return
+            } catch let error as ReaderPackageEntrySourceError {
+                guard !Task.isCancelled else { return }
+                await { @MainActor in
+                    self.failActiveTask(
+                        urlSchemeTask,
+                        error: error
+                    )
+                }()
             } catch {
                 guard !Task.isCancelled else { return }
                 await { @MainActor in

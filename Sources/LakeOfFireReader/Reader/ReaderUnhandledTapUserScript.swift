@@ -88,7 +88,8 @@ struct ReaderUnhandledTapUserScript {
             return false;
         }
         for (const entry of activePointers.values()) {
-            if (Math.hypot(x - entry.startX, y - entry.startY) <= MOVE_THRESHOLD) {
+            const distance = Math.hypot(x - entry.startX, y - entry.startY);
+            if (distance <= MOVE_THRESHOLD) {
                 entry.suppressUnhandledTap = true;
                 return true;
             }
@@ -131,7 +132,8 @@ struct ReaderUnhandledTapUserScript {
         const duration = performance.now() - entry.startTime;
         const finalDX = (event.clientX ?? entry.startX) - entry.startX;
         const finalDY = (event.clientY ?? entry.startY) - entry.startY;
-        if (Math.hypot(finalDX, finalDY) > MOVE_THRESHOLD) {
+        const finalDistance = Math.hypot(finalDX, finalDY);
+        if (finalDistance > MOVE_THRESHOLD) {
             entry.moved = true;
         }
         const newSelection = selectionText();
@@ -140,10 +142,6 @@ struct ReaderUnhandledTapUserScript {
             return;
         }
         if (entry.suppressUnhandledTap === true) {
-            return;
-        }
-        const suppressUntil = Number(window.__manabiSuppressUnhandledTapHideNavigationUntil || 0);
-        if (suppressUntil > Date.now()) {
             return;
         }
         const targetClosestSegment = event.target?.closest?.('m-m')?.getAttribute?.('id') ?? null;

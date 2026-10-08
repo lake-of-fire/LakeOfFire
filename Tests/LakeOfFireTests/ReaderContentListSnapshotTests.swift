@@ -1,14 +1,16 @@
 import Combine
 import XCTest
 @testable import LakeOfFireContent
-@testable import LakeOfFireContentUI
+@testable import LakeOfFireReader
 
 @MainActor
 final class ReaderContentListSnapshotTests: XCTestCase {
     func testFilteredContentsAndIDsPublishAsOneAlignedSnapshot() async throws {
         let first = contentFile(path: "first.epub")
         let second = contentFile(path: "second.epub")
-        let viewModel = ReaderContentListViewModel(initialContents: [first])
+        let viewModel = ReaderContentListViewModel(
+            initialContents: [first]
+        )
         var observedCounts = [(contents: Int, ids: Int)]()
         let observation = viewModel.objectWillChange.sink {
             observedCounts.append(
@@ -23,7 +25,10 @@ final class ReaderContentListSnapshotTests: XCTestCase {
         try await viewModel.load(contents: [first, second])
 
         XCTAssertFalse(observedCounts.isEmpty)
-        XCTAssertTrue(observedCounts.allSatisfy { $0.contents == $0.ids })
+        XCTAssertTrue(
+            observedCounts.allSatisfy { $0.contents == $0.ids },
+            "Every observable list state must pair values with the same number of stable IDs"
+        )
         XCTAssertEqual(viewModel.filteredContents.count, 2)
         XCTAssertEqual(viewModel.filteredContentIDs.count, 2)
     }
@@ -36,7 +41,10 @@ final class ReaderContentListSnapshotTests: XCTestCase {
 
         XCTAssertEqual(viewModel.filteredContents.count, 10_000)
         XCTAssertEqual(viewModel.filteredContentIDs.count, 10_000)
-        XCTAssertEqual(viewModel.filteredContents.map(\.compoundKey), viewModel.filteredContentIDs)
+        XCTAssertEqual(
+            viewModel.filteredContents.map(\.compoundKey),
+            viewModel.filteredContentIDs
+        )
     }
 
     private func contentFile(path: String) -> ContentFile {

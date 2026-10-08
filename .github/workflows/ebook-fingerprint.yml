@@ -9,7 +9,7 @@ on:
       - 'Sources/LakeOfFireReader/Reader/Books/ReaderEBook*.swift'
       - 'Sources/LakeOfFireReader/Reader/ReaderMessageHandlersViewModifier.swift'
       - 'Sources/LakeOfFireReader/Reader/ReaderWebView.swift'
-      - 'Sources/LakeOfFireReader/Resources/foliate-js/**'
+      - 'Sources/LakeOfFireReader/Resources/Resources/foliate-js/**'
       - 'Tests/LakeOfFireTests/ReaderEBook*Tests.swift'
       - 'Tests/LakeOfFireTests/Ebook*Tests.swift'
       - 'Tests/JavaScript/**'

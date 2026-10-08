@@ -80,9 +80,7 @@ public struct AsyncView<Success, Content: View>: View {
             }
         }
         .refreshable {
-            await Task { @MainActor in
-                await model.load(forceRefreshRequested: true)
-            }.value
+            await model.load(forceRefreshRequested: true)
         }
     }
 }

@@ -1,32 +1,35 @@
 import Foundation
-
-private func sharedReaderFontLog(
-    _ stage: String,
-    _ metadata: [String: String] = [:]
-) {
-    _ = stage
-    _ = metadata
-}
+import LakeOfFireContent
+import LakeOfFireCore
 
 public struct SharedReaderFontAsset: Equatable, Sendable {
     public let localFileURL: URL
     public let mimeType: String
     public let format: String
-    public let supportedFamilyNames: [String]
+    public let horizontalFamilyName: String
+    public let verticalFamilyName: String
     public let publicFilenameBase: String
 
     public init(
         localFileURL: URL,
         mimeType: String,
         format: String,
-        supportedFamilyNames: [String],
+        horizontalFamilyName: String,
+        verticalFamilyName: String,
         publicFilenameBase: String = "YuKyokasho"
     ) {
         self.localFileURL = localFileURL
         self.mimeType = mimeType
         self.format = format
-        self.supportedFamilyNames = supportedFamilyNames
+        self.horizontalFamilyName = horizontalFamilyName
+        self.verticalFamilyName = verticalFamilyName
         self.publicFilenameBase = publicFilenameBase
+    }
+
+    public var supportedFamilyNames: [String] {
+        horizontalFamilyName == verticalFamilyName
+            ? [horizontalFamilyName]
+            : [horizontalFamilyName, verticalFamilyName]
     }
 
     public var publicFilename: String {
@@ -45,6 +48,11 @@ public struct SharedReaderFontAsset: Equatable, Sendable {
 public struct SharedReaderFontServedResponse {
     public let response: HTTPURLResponse
     public let data: Data
+
+    public init(response: HTTPURLResponse, data: Data) {
+        self.response = response
+        self.data = data
+    }
 }
 
 public enum SharedReaderFontInjectionMode: String, Equatable, Sendable {
@@ -52,7 +60,7 @@ public enum SharedReaderFontInjectionMode: String, Equatable, Sendable {
     case blob
 }
 
-internal enum SharedReaderFontScheme: String, Sendable {
+public enum SharedReaderFontScheme: String, Sendable {
     case ebook
     case internalLocal = "internal"
     case readerFile = "reader-file"
@@ -112,7 +120,7 @@ private func sharedReaderFontBaseURL(for pageURL: URL) -> URL? {
     return URL(string: underlyingURLString)
 }
 
-internal enum SharedReaderFontRoute: Equatable, Sendable {
+public enum SharedReaderFontRoute: Equatable, Sendable {
     case stylesheet(familyName: String)
     case font
 }
@@ -126,7 +134,7 @@ public func sharedReaderFontInjectionMode(for pageURL: URL) -> SharedReaderFontI
     sharedReaderFontUsesLocalScheme(for: pageURL) ? .localScheme : .blob
 }
 
-internal func sharedReaderFontStylesheetURL(for pageURL: URL, familyName: String) -> URL? {
+public func sharedReaderFontStylesheetURL(for pageURL: URL, familyName: String) -> URL? {
     guard let baseURL = sharedReaderFontBaseURL(for: pageURL),
           let scheme = SharedReaderFontScheme(pageURL: baseURL) else { return nil }
     var components = URLComponents()
@@ -154,7 +162,7 @@ private func sharedReaderFontFontURL(
     return components.url
 }
 
-internal func sharedReaderFontRoute(
+public func sharedReaderFontRoute(
     for requestURL: URL,
     asset: SharedReaderFontAsset?
 ) -> SharedReaderFontRoute? {
@@ -202,45 +210,12 @@ public func sharedReaderFontResponse(
     asset: SharedReaderFontAsset?
 ) -> SharedReaderFontServedResponse? {
     guard let route = sharedReaderFontRoute(for: requestURL, asset: asset) else { return nil }
-    let routeDescription: String
-    let requestedFamilyName: String
-    switch route {
-    case .stylesheet(let familyName):
-        routeDescription = "stylesheet"
-        requestedFamilyName = familyName
-    case .font:
-        routeDescription = "font"
-        requestedFamilyName = ""
-    }
-
-    let baseMetadata: [String: String] = [
-        "requestURL": requestURL.absoluteString,
-        "scheme": requestURL.scheme ?? "nil",
-        "route": routeDescription,
-        "family": requestedFamilyName.isEmpty ? "nil" : requestedFamilyName,
-        "assetPresent": asset == nil ? "0" : "1",
-        "assetFilename": asset?.publicFilename ?? "nil",
-        "assetFormat": asset?.format ?? "nil",
-        "assetMimeType": asset?.mimeType ?? "nil",
-        "supportedFamilies": asset?.supportedFamilyNames.joined(separator: "|") ?? "nil",
-    ]
     guard let asset else {
         let response = sharedReaderFontHTTPResponse(
             url: requestURL,
             statusCode: 404,
             contentType: "text/plain",
             textEncodingName: "utf-8"
-        )
-        sharedReaderFontLog(
-            "response",
-            baseMetadata.merging(
-                [
-                    "status": "404",
-                    "reason": "missingAsset",
-                    "byteCount": "0",
-                ],
-                uniquingKeysWith: { _, new in new }
-            )
         )
         return SharedReaderFontServedResponse(response: response, data: Data())
     }
@@ -257,38 +232,34 @@ public func sharedReaderFontResponse(
                 contentType: "text/plain",
                 textEncodingName: "utf-8"
             )
-            sharedReaderFontLog(
-                "response",
-                baseMetadata.merging(
-                    [
-                        "status": "404",
-                        "reason": supportsFamily ? "missingFontURL" : "unsupportedFamily",
-                        "supportsFamily": supportsFamily ? "1" : "0",
-                        "fontURL": fontURL?.absoluteString ?? "nil",
-                        "byteCount": "0",
-                    ],
-                    uniquingKeysWith: { _, new in new }
-                )
-            )
             return SharedReaderFontServedResponse(response: response, data: Data())
         }
 
+        let fontFaces = asset.supportedFamilyNames.map { supportedFamilyName in
+            """
+            @font-face {
+              font-family: '\(supportedFamilyName)';
+              font-weight: 500;
+              font-style: normal;
+              src: url("\(fontURL.absoluteString)") format("\(asset.format)");
+              font-display: swap;
+            }
+            """
+        }.joined(separator: "\n")
         let css = """
-        @font-face {
-          font-family: '\(familyName)';
-          font-weight: 500;
-          font-style: normal;
-          src: url("\(fontURL.absoluteString)") format("\(asset.format)");
-          font-display: swap;
-        }
+        \(fontFaces)
         :root {
-          --mnb-content-font: '\(familyName)';
-          --mnb-content-vertical-font: '\(familyName)';
+          --mnb-content-font: '\(asset.horizontalFamilyName)';
+          --mnb-content-vertical-font: '\(asset.verticalFamilyName)';
         }
         html,
         body,
         body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt) {
-          font-family: '\(familyName)' !important;
+          font-family: var(--mnb-content-font, '\(asset.horizontalFamilyName)') !important;
+        }
+        body.reader-vertical-writing,
+        body.reader-vertical-writing *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt) {
+          font-family: var(--mnb-content-vertical-font, '\(asset.verticalFamilyName)') !important;
         }
         rt {
           font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', system-ui, sans-serif !important;
@@ -301,21 +272,6 @@ public func sharedReaderFontResponse(
             contentType: "text/css",
             textEncodingName: "utf-8"
         )
-        sharedReaderFontLog(
-            "response",
-            baseMetadata.merging(
-                [
-                    "status": "200",
-                    "reason": "ok",
-                    "supportsFamily": "1",
-                    "fontURL": fontURL.absoluteString,
-                    "byteCount": String(data.count),
-                    "containsAtFontFace": css.contains("@font-face") ? "1" : "0",
-                    "containsFontFamilyApplyRule": css.contains("font-family: '\\(familyName)' !important") ? "1" : "0",
-                ],
-                uniquingKeysWith: { _, new in new }
-            )
-        )
         return SharedReaderFontServedResponse(response: response, data: data)
 
     case .font:
@@ -326,18 +282,6 @@ public func sharedReaderFontResponse(
                 contentType: "text/plain",
                 textEncodingName: "utf-8"
             )
-            sharedReaderFontLog(
-                "response",
-                baseMetadata.merging(
-                    [
-                        "status": "404",
-                        "reason": "fontFileReadFailed",
-                        "assetLocalPath": asset.localFileURL.path,
-                        "byteCount": "0",
-                    ],
-                    uniquingKeysWith: { _, new in new }
-                )
-            )
             return SharedReaderFontServedResponse(response: response, data: Data())
         }
         let response = sharedReaderFontHTTPResponse(
@@ -345,18 +289,6 @@ public func sharedReaderFontResponse(
             statusCode: 200,
             contentType: asset.mimeType,
             extraHeaders: ["Access-Control-Allow-Origin": "*"]
-        )
-        sharedReaderFontLog(
-            "response",
-            baseMetadata.merging(
-                [
-                    "status": "200",
-                    "reason": "ok",
-                    "assetLocalPath": asset.localFileURL.path,
-                    "byteCount": String(data.count),
-                ],
-                uniquingKeysWith: { _, new in new }
-            )
         )
         return SharedReaderFontServedResponse(response: response, data: data)
     }

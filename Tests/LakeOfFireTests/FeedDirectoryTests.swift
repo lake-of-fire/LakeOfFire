@@ -11,6 +11,10 @@ final class FeedDirectoryTests: XCTestCase {
         var config = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         config.objectTypes = [FeedCategory.self, FeedDirectory.self, Feed.self]
         configureLakeOfFireMutationTrackingForTesting(&config)
+        let fixtureConfiguration = config
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
+        }
         let realm = try Realm(configuration: config)
 
         let categoryID = UUID()
@@ -64,16 +68,8 @@ final class FeedDirectoryTests: XCTestCase {
     }
 
     func testOPMLDirectoryImportAndManagedRootFeedMigration() async throws {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                Self.realmConfigurationSemaphore.wait()
-                continuation.resume()
-            }
-        }
+        Self.realmConfigurationSemaphore.wait()
         defer { Self.realmConfigurationSemaphore.signal() }
-        let originalObservesDownloadController = LibraryDataManager.observesDownloadController
-        LibraryDataManager.observesDownloadController = false
-        defer { LibraryDataManager.observesDownloadController = originalObservesDownloadController }
 
         try await verifyNestedOPMLImportAssignsMetadataAndSiblingOrdinals()
         try await verifyManagedOPMLImportMovesExistingRootFeedIntoNewDirectory()
@@ -83,11 +79,15 @@ final class FeedDirectoryTests: XCTestCase {
         let originalConfiguration = LibraryDataManager.realmConfiguration
         defer { LibraryDataManager.realmConfiguration = originalConfiguration }
         let realmURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).realm")
-        defer { try? FileManager.default.removeItem(at: realmURL) }
         var config = DefaultRealmConfiguration.configuration
         config.inMemoryIdentifier = nil
         config.fileURL = realmURL
         configureLakeOfFireMutationTrackingForTesting(&config)
+        let fixtureConfiguration = config
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
+            try? FileManager.default.removeItem(at: realmURL)
+        }
         XCTAssertNotNil(config.fileURL)
         LibraryDataManager.realmConfiguration = config
 
@@ -165,6 +165,22 @@ final class FeedDirectoryTests: XCTestCase {
         XCTAssertEqual(snapshot.12, 1)
         XCTAssertEqual(snapshot.13, nestedDirectoryID)
         XCTAssertEqual(snapshot.14, 0)
+        let exported = try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config)
+            let category = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+            try realm.write {
+                category.opmlOwnerName = nil
+                category.opmlURL = nil
+                category.refreshChangeMetadata(explicitlyModified: true)
+            }
+            return try await manager.exportUserOPML()
+        }()
+        let categoryOutline = try XCTUnwrap(exported.entries.first { $0.text == "News" })
+        let directoryOutline = try XCTUnwrap(categoryOutline.children?.first { $0.text == "Asahi Shimbun" })
+        XCTAssertTrue(directoryOutline.children?.contains { $0.text == "Breaking News" } == true)
+        let nestedOutline = try XCTUnwrap(directoryOutline.children?.first { $0.text == "Nested Directory" })
+        XCTAssertTrue(nestedOutline.children?.contains { $0.text == "Nested Feed" } == true)
+
     }
 
     private func verifyManagedOPMLImportMovesExistingRootFeedIntoNewDirectory() async throws {
@@ -176,10 +192,14 @@ final class FeedDirectoryTests: XCTestCase {
         }
         var config = DefaultRealmConfiguration.configuration
         let realmURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).realm")
-        defer { try? FileManager.default.removeItem(at: realmURL) }
         config.inMemoryIdentifier = nil
         config.fileURL = realmURL
         configureLakeOfFireMutationTrackingForTesting(&config)
+        let fixtureConfiguration = config
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
+            try? FileManager.default.removeItem(at: realmURL)
+        }
         XCTAssertNotNil(config.fileURL)
         LibraryDataManager.realmConfiguration = config
 

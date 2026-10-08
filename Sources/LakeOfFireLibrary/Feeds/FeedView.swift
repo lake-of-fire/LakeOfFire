@@ -1,23 +1,19 @@
+import LakeOfFireWeb
 import SwiftUI
-import Foundation
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireReader
+import LakeOfFireContent
+import LakeOfFireCore
 import RealmSwift
 import RealmSwiftGaps
 import AsyncView
-import LakeKit
 import Combine
-import SwiftUtilities
-import LakeOfFireCore
-import LakeOfFireAdblock
-import LakeOfFireContent
-import LakeOfFireContentUI
+import LakeKit
 
 let feedQueue = DispatchQueue(label: "FeedQueue")
 
-private func logRSS(_ message: String) {
-#if DEBUG
-    debugPrint("# RSS \(message)")
-#endif
-}
+
 
 private func sortFeedEntryCollections(_ collections: [FeedEntryCollection]) -> [FeedEntryCollection] {
     collections.sorted { lhs, rhs in
@@ -39,20 +35,16 @@ private func sortFeedEntryCollections(_ collections: [FeedEntryCollection]) -> [
 
 @MainActor
 public class FeedViewModel: ObservableObject {
-    @Published var entries: [FeedEntry]? = nil {
-        didSet {
-            let countDescription = entries.map { "\($0.count)" } ?? "nil"
-            debugPrint("# FeedViewModel.entries updated feedID=\(feedID.uuidString) title=\(feedTitle) count=\(countDescription)")
-        }
-    }
-    @Published var isFeedGroupFollowed = false
+    @Published var entries: [FeedEntry]? = nil
     @Published var collections: [FeedEntryCollection]? = nil
+    @Published var isFeedGroupFollowed = false
+
+    private static var recentAutomaticFetchAttempts: [UUID: Date] = [:]
+    private static let automaticFetchAttemptSuppressionInterval: TimeInterval = 60
+    private let canonicalFeedURLKey: String
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
-    private let feedID: UUID
-    private let feedTitle: String
-    private let canonicalFeedURLKey: String
 
     @MainActor
     private func reloadEntries(feedID: UUID, reason: String) async {
@@ -67,10 +59,8 @@ public class FeedViewModel: ObservableObject {
                 realm.objects(FeedEntry.self)
                     .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
             )
-            logRSS("stage=feedView.reloadEntries feedID=\(feedID.uuidString) reason=\(reason) groupCount=\(feedIDs.count) count=\(entries.count)")
-            self.entries = entries
+            self.entries = Feed.deduplicatedEntries(entries)
         } catch {
-            logRSS("stage=feedView.reloadEntries.error feedID=\(feedID.uuidString) reason=\(reason) error=\(error)")
         }
     }
 
@@ -87,9 +77,7 @@ public class FeedViewModel: ObservableObject {
                 realm.objects(FeedEntryCollection.self)
                     .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
             ))
-            logRSS("stage=feedView.reloadCollections feedID=\(feedID.uuidString) reason=\(reason) groupCount=\(feedIDs.count) count=\(collections?.count ?? 0)")
         } catch {
-            logRSS("stage=feedView.reloadCollections.error feedID=\(feedID.uuidString) reason=\(reason) error=\(error)")
         }
     }
 
@@ -101,21 +89,17 @@ public class FeedViewModel: ObservableObject {
                 .where { !$0.isDeleted }
                 .filter { $0.canonicalFollowingFeedURLKey == self.canonicalFeedURLKey }
                 .contains(where: \.isFollowed)
-            logRSS("stage=feedView.reloadFollowedStatus feedURLKey=\(canonicalFeedURLKey) reason=\(reason) isFollowed=\(isFeedGroupFollowed)")
         } catch {
-            logRSS("stage=feedView.reloadFollowedStatus.error feedURLKey=\(canonicalFeedURLKey) reason=\(reason) error=\(error)")
         }
     }
     
     public init(feed: Feed) {
-        self.feedID = feed.id
-        self.feedTitle = feed.title
-        self.canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey
-        self.isFeedGroupFollowed = feed.isFollowed
-        self.collections = feed.getCollections()
+        entries = feed.getEntries().map { Feed.deduplicatedEntries($0) }
+        collections = feed.getCollections()
+        isFeedGroupFollowed = feed.isFollowed
+        canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey
         let feedID = feed.id
         let canonicalFeedURLKey = canonicalFeedURLKey
-        debugPrint("# FeedViewModel.init feedID=\(feedID.uuidString) title=\(feedTitle)")
         Task { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) 
             let feedIDs = Feed.activeFeedGroupIDs(
@@ -131,7 +115,6 @@ public class FeedViewModel: ObservableObject {
                 .debounce(for: .seconds(0.3), scheduler: feedQueue)
                 .receive(on: feedQueue)
                 .sink(receiveCompletion: { @Sendable _ in}, receiveValue: { @Sendable [weak self] _ in
-                    debugPrint("# FeedViewModel.subscriptionTriggered feedID=\(feedID.uuidString)")
                     Task { @MainActor [weak self] in
                         await self?.reloadEntries(feedID: feedID, reason: "entriesChanged")
                     }
@@ -177,22 +160,26 @@ public class FeedViewModel: ObservableObject {
     
     @MainActor
     public func fetchIfNeeded(feed: Feed, force: Bool) async throws {
-        let shouldRefresh = feed.shouldRefreshAutomaticallyOnFeedAppear
-        logRSS(
-            "stage=feedView.fetchDecision feedID=\(feed.id.uuidString) title=\(feed.title) url=\(feed.rssUrl.absoluteString) force=\(force) shouldRefreshOnAppear=\(shouldRefresh) lastRefresh=\(feed.lastRefreshedEntriesAt?.description ?? "nil") hasRecentlyRefreshed=\(feed.hasRecentlyRefreshedEntries)"
-        )
-        if force || shouldRefresh {
-            do {
-                try await feed.fetch()
-                await reloadEntries(feedID: feed.id, reason: force ? "forceFetchComplete" : "autoFetchComplete")
-                logRSS("stage=feedView.fetchFinished feedID=\(feed.id.uuidString) title=\(feed.title)")
-            } catch {
-                logRSS("stage=feedView.fetchError feedID=\(feed.id.uuidString) title=\(feed.title) error=\(error)")
-                throw error
-            }
-        } else {
-            logRSS("stage=feedView.fetchSkipped feedID=\(feed.id.uuidString) title=\(feed.title) reason=recentlyRefreshed")
+        if force {
+            try await feed.fetch()
+            await reloadEntries(feedID: feed.id, reason: "forceFetchComplete")
+            return
         }
+
+        guard feed.shouldRefreshAutomaticallyOnFeedAppear else {
+            return
+        }
+
+        let now = Date()
+        if let lastAttempt = Self.recentAutomaticFetchAttempts[feed.id],
+           now.timeIntervalSince(lastAttempt) < Self.automaticFetchAttemptSuppressionInterval {
+            await reloadEntries(feedID: feed.id, reason: "skipRecentAttempt")
+            return
+        }
+
+        Self.recentAutomaticFetchAttempts[feed.id] = now
+        try await feed.fetch()
+        await reloadEntries(feedID: feed.id, reason: "autoFetchComplete")
     }
 }
 
@@ -204,8 +191,10 @@ public struct FeedView: View {
     var initialScrollEntryID: String?
     @State private var showsReaderContentNewBadges = true
     @State private var hasAppliedInitialScrollEntryID = false
-
     @Environment(\.contentSelection) private var contentSelection
+#if os(iOS)
+    @Environment(\.editMode) private var editMode
+#endif
 
     private var entries: [FeedEntry] {
         viewModel.entries ?? []
@@ -213,6 +202,122 @@ public struct FeedView: View {
 
     private var showsMarkAllAsSeenAction: Bool {
         feed.showsUnseenBadge && !entries.isEmpty
+    }
+
+    private var allowsVideoMakerSelection: Bool {
+#if DEBUG
+        true
+#else
+        false
+#endif
+    }
+
+#if DEBUG
+    private var showsSelectionInOverflowMenu: Bool {
+#if os(iOS)
+        if #available(iOS 26, *) {
+            return true
+        }
+        return false
+#else
+        return false
+#endif
+    }
+
+    private var showsSelectionToolbarButton: Bool {
+#if os(iOS)
+        !showsSelectionInOverflowMenu
+#else
+        false
+#endif
+    }
+#endif
+
+#if DEBUG && os(iOS)
+    private func setSelectionModeActive(_ isActive: Bool) {
+        editMode?.wrappedValue = isActive ? .active : .inactive
+    }
+#endif
+
+    private func consumeInitialScrollEntryIDIfNeeded(_ content: FeedEntry) {
+        if content.compoundKey == initialScrollEntryID {
+            hasAppliedInitialScrollEntryID = true
+        }
+    }
+
+    @ViewBuilder
+    private func feedContent(entries: [FeedEntry]) -> some View {
+        let entryIDs = entries.map(\.compoundKey)
+        let collections = viewModel.collections ?? []
+        let activeScrollTargetID = hasAppliedInitialScrollEntryID ? nil : initialScrollEntryID
+        Group {
+            if isHorizontal {
+                ReaderContentHorizontalList(
+                    contents: entries,
+                    sortOrder: .publicationDate,
+                    includeSource: false,
+                    contentSelection: contentSelection
+                ) {
+                    EmptyView()
+                }
+                .id("feed-horizontal-\(feed.id.uuidString)")
+                .animation(.easeInOut(duration: 0.25), value: entryIDs)
+            } else {
+                ReaderContentList(
+                    contents: entries,
+                    sortOrder: .publicationDate,
+                    includeSource: false,
+                    entrySelection: contentSelection,
+                    useDefaultRowInsets: true,
+                    showsNewBadges: showsReaderContentNewBadges,
+                    separateRowsIntoSections: true,
+                    allowEditing: allowsVideoMakerSelection,
+                    onContentAppear: { content in
+                        consumeInitialScrollEntryIDIfNeeded(content)
+                    },
+                    scrollTargetID: activeScrollTargetID,
+                    supplementarySections: {
+                        if !collections.isEmpty {
+                            Section {
+                                ForEach(collections) { collection in
+                                    NavigationLink {
+                                        FeedEntryCollectionView(
+                                            collection: collection,
+                                            viewModel: viewModel
+                                        )
+                                    } label: {
+                                        FeedEntryCollectionCell(collection: collection)
+                                    }
+                                }
+                            } header: {
+                                Text("Collections")
+                            }
+                        }
+                    },
+                    headerView: {
+                        EmptyView()
+                    },
+                    emptyStateView: {
+                        EmptyStateBoxView(
+                            title: Text("No Entries Available"),
+                            text: Text("This feed is empty. Try refreshing or checking back later."),
+                            systemImageName: "newspaper.fill"
+                        )
+                    }
+                )
+                .id("feed-vertical-\(feed.id.uuidString)")
+                .animation(.easeInOut(duration: 0.25), value: entryIDs)
+                .onAppear {
+                    applyInitialScrollEntryIDIfNeeded()
+                }
+                .onChange(of: entryIDs) { _ in
+                    applyInitialScrollEntryIDIfNeeded()
+                }
+#if os(iOS)
+                .listStyle(.insetGrouped)
+#endif
+            }
+        }
     }
 
     @MainActor
@@ -227,89 +332,39 @@ public struct FeedView: View {
     }
 
     public var body: some View {
+        let currentEntries = viewModel.entries
         let isFeedGroupFollowed = viewModel.isFeedGroupFollowed
         let allowsFollowing = feed.entryContentKind != .contentListing
+        let showInitialContent = !(currentEntries?.isEmpty ?? true)
         AsyncView(operation: { forceRefreshRequested in
             try await viewModel.fetchIfNeeded(feed: feed, force: forceRefreshRequested)
-        }, showInitialContent: !(viewModel.entries?.isEmpty ?? true)) { _ in
-            if let entries = viewModel.entries {
-                let entryIDs = entries.map(\.compoundKey)
-                let collections = viewModel.collections ?? []
-                let activeScrollTargetID = hasAppliedInitialScrollEntryID ? nil : initialScrollEntryID
-                Group {
-                    if isHorizontal {
-                        ReaderContentHorizontalList(
-                            contents: entries,
-                            sortOrder: .publicationDate,
-                            includeSource: false,
-                            contentSelection: contentSelection
-                        ) {
-                            EmptyView()
-                        }
-                        .id("feed-horizontal-\(feed.id.uuidString)")
-                        .animation(.easeInOut(duration: 0.25), value: entryIDs)
-                    } else {
-                        ReaderContentList(
-                            contents: entries,
-                            sortOrder: .publicationDate,
-                            includeSource: false,
-                            entrySelection: contentSelection,
-                            useDefaultRowInsets: true,
-                            showsNewBadges: showsReaderContentNewBadges,
-                            separateRowsIntoSections: true,
-                            listSectionSpacing: 10,
-                            onContentAppear: { content in
-                                if content.compoundKey == initialScrollEntryID {
-                                    hasAppliedInitialScrollEntryID = true
-                                }
-                            },
-                            scrollTargetID: activeScrollTargetID
-                        ) {
-                            if !collections.isEmpty {
-                                Section {
-                                    ForEach(collections) { collection in
-                                        NavigationLink {
-                                            FeedEntryCollectionView(
-                                                collection: collection,
-                                                viewModel: viewModel
-                                            )
-                                        } label: {
-                                            FeedEntryCollectionCell(collection: collection)
-                                        }
-                                    }
-                                } header: {
-                                    Text("Collections")
-                                }
-                            }
-                        } headerView: {
-                            EmptyView()
-                        } emptyStateView: {
-                            EmptyStateBoxView(
-                                title: Text("No Entries Available"),
-                                text: Text("This feed is empty. Try refreshing or checking back later."),
-                                systemImageName: "newspaper.fill"
-                            )
-                        }
-                        .id("feed-vertical-\(feed.id.uuidString)")
-                        .animation(.easeInOut(duration: 0.25), value: entryIDs)
-                        .onAppear {
-                            applyInitialScrollEntryIDIfNeeded()
-                        }
-                        .onChange(of: entryIDs) { _ in
-                            applyInitialScrollEntryIDIfNeeded()
-                        }
-#if os(iOS)
-                        .listStyle(.insetGrouped)
-#endif
-                    }
-                }
+        }, showInitialContent: showInitialContent) { _ in
+            let contentEntries = viewModel.entries
+            if let contentEntries {
+                feedContent(entries: contentEntries)
+            } else {
+                Color.clear
             }
-    }
+        }
         .task(id: feed.id) {
             try? await markFeedAsViewed()
         }
         .toolbar {
-            ToolbarItem(placement: .automatic) {
+            ToolbarItem(placement: toolbarTrailingPlacement) {
+#if DEBUG
+#if os(iOS)
+                if showsToolbar,
+                   !isHorizontal,
+                   !(currentEntries?.isEmpty ?? true),
+                   showsSelectionToolbarButton {
+                    EditButton()
+                }
+#endif
+#else
+                EmptyView()
+#endif
+            }
+            ToolbarItem(placement: toolbarTrailingPlacement) {
                 if showsToolbar {
                     Menu {
                         if allowsFollowing {
@@ -323,6 +378,19 @@ public struct FeedView: View {
                                 }
                             }
                         }
+#if DEBUG
+                        if !isHorizontal && !(currentEntries?.isEmpty ?? true) {
+#if os(iOS)
+                            if showsSelectionInOverflowMenu {
+                                Button {
+                                    setSelectionModeActive(editMode?.wrappedValue == .inactive)
+                                } label: {
+                                    Label(editMode?.wrappedValue == .inactive ? "Select" : "Done", systemImage: "checklist")
+                                }
+                            }
+#endif
+                        }
+#endif
                         if showsMarkAllAsSeenAction {
                             Button("Mark All as Seen") {
                                 Task { @MainActor in
@@ -347,6 +415,9 @@ public struct FeedView: View {
                 }
             }
         }
+#if os(iOS)
+        .navigationBarTitleDisplayMode(.automatic)
+#endif
     }
     
     public init(feed: Feed, viewModel: FeedViewModel, isHorizontal: Bool = false, showsToolbar: Bool = true, initialScrollEntryID: String? = nil) {
@@ -355,6 +426,14 @@ public struct FeedView: View {
         self.isHorizontal = isHorizontal
         self.showsToolbar = showsToolbar
         self.initialScrollEntryID = initialScrollEntryID
+    }
+
+    private var toolbarTrailingPlacement: ToolbarItemPlacement {
+#if os(macOS)
+        .automatic
+#else
+        .navigationBarTrailing
+#endif
     }
 
     @MainActor
@@ -488,7 +567,7 @@ private struct FeedEntryCollectionHeader: View {
 }
 
 private struct FeedEntryCollectionTitleVisibilityPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = .greatestFiniteMagnitude
+    static var defaultValue: CGFloat = .greatestFiniteMagnitude
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = min(value, nextValue())

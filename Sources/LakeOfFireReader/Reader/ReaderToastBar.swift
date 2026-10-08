@@ -1,12 +1,17 @@
 import SwiftUI
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireContent
+import LakeOfFireCore
 import LakeKit
 
-public enum ReaderToastBarStyle: Sendable {
+public enum ReaderToastBarStyle {
     case bordered
     case borderless
 }
 
-public enum ReaderToastLayoutMode: Sendable {
+public enum ReaderToastLayoutMode {
     case standard
     case inline
 }
@@ -49,7 +54,7 @@ public struct ReaderToastBar<Content: View>: View {
     @Environment(\.readerToastBarStyle) private var toastStyle
     @Environment(\.readerToastLayoutMode) private var layoutMode
     @Environment(\.controlSize) private var controlSize
-
+    
     public init(
         isPresented: Binding<Bool>,
         onDismiss: (() -> Void)? = nil,
@@ -78,7 +83,7 @@ public struct ReaderToastBar<Content: View>: View {
             self.trailingAccessory = nil
         }
     }
-
+    
     public var body: some View {
         if isPresented {
             if layoutMode == .inline {

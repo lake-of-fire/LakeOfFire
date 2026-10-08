@@ -26,7 +26,6 @@ public struct ReadabilityImagesUserScript: Sendable {
         userScriptSource = readabilityImagesJS
     }
     
-    @MainActor
     public var userScript: WebViewUserScript {
         WebViewUserScript(
             source: userScriptSource,

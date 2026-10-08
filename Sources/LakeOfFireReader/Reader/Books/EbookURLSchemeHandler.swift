@@ -1,21 +1,26 @@
 import SwiftUI
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireContent
+import LakeOfFireCore
 @preconcurrency import WebKit
-import CryptoKit
 import UniformTypeIdentifiers
 import SwiftSoup
 import SwiftUtilities
 import LakeKit
-import LakeOfFireCore
-import LakeOfFireContent
-import LakeOfFireFiles
 
-private let ebookPageTurnInteractionDiagnosticsEnabled: Bool = {
-#if DEBUG
-    ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
-#else
-    false
-#endif
-}()
+func ebookProcessedSectionMediaBootstrapMarkup() -> Data {
+    Data(#"<script type="module" src="ebook://ebook/load/viewer-assets/foliate-js/ebook-package-media.js"></script>"#.utf8)
+}
+
+func ebookViewerAssetCacheHeaderFields() -> [String: String] {
+    [
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    ]
+}
 
 fileprivate func ebookRequestBodyData(_ request: URLRequest) -> Data? {
     if let body = request.httpBody, !body.isEmpty {
@@ -43,26 +48,123 @@ fileprivate func ebookRequestBodyData(_ request: URLRequest) -> Data? {
     return result.isEmpty ? nil : result
 }
 
-func ebookProcessedSectionMediaBootstrapMarkup(assetRevision: String) -> Data {
-    Data(
-        """
-        <script type="module" src="ebook://ebook/load/viewer-assets/\(assetRevision)/foliate-js/ebook-package-media.js"></script>
-        """.utf8
-    )
+fileprivate func ebookEntrySubpath(from url: URL) -> String? {
+    URLComponents(url: url, resolvingAgainstBaseURL: false)?
+        .queryItems?
+        .first(where: { $0.name == "subpath" })?
+        .value
 }
 
 func ebookURLSchemeTaskPriority(for url: URL) -> TaskPriority {
-    guard url.path == "/processed-section" else { return .userInitiated }
-    guard let directItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.filter({
-        $0.name == "direct"
-    }), directItems.count == 1, directItems[0].value == "1" else {
-        return .utility
+    guard url.path == "/processed-section" else {
+        return .userInitiated
     }
-    return .userInitiated
+    let isDirectForegroundSection = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+        .queryItems?
+        .contains(where: { $0.name == "direct" && $0.value == "1" }) == true
+    return isDirectForegroundSection ? .userInitiated : .utility
 }
 
-fileprivate func logEbookAsset(_ line: String) {
-    Logger.shared.logger.info("\(line)")
+func ebookURLStringHasValidPercentEncoding(_ value: String) -> Bool {
+    let bytes = Array(value.utf8)
+    func isHex(_ byte: UInt8) -> Bool {
+        (byte >= 48 && byte <= 57)
+            || (byte >= 65 && byte <= 70)
+            || (byte >= 97 && byte <= 102)
+    }
+    var index = 0
+    while index < bytes.count {
+        if bytes[index] == UInt8(ascii: "%") {
+            guard index + 2 < bytes.count,
+                  isHex(bytes[index + 1]),
+                  isHex(bytes[index + 2]) else {
+                return false
+            }
+            index += 3
+        } else {
+            index += 1
+        }
+    }
+    return true
+}
+
+/// Returns the canonical package URL only when it is a valid ebook backing URL.
+/// The reader file manager owns the path grammar and containment checks, so the
+/// scheme handler cannot accidentally accept a source URL that later resolves
+/// differently when it is opened from a drive.
+func ebookValidatedSourceURL(
+    _ url: URL,
+    readerFileManager: ReaderFileManager
+) -> URL? {
+    guard url.scheme == "ebook",
+          url.host == "ebook",
+          let canonicalReaderURL = readerFileManager.canonicalReaderBackingURL(for: url),
+          var components = URLComponents(url: canonicalReaderURL, resolvingAgainstBaseURL: false) else {
+        return nil
+    }
+    // Use the file manager's validated representation as the source of truth
+    // for path normalization, then retain ebook as the document scheme.
+    components.scheme = "ebook"
+    components.host = "ebook"
+    components.query = nil
+    components.fragment = nil
+    return components.url
+}
+
+/// Resolves the package source for an endpoint request. WebKit's main document
+/// URL is the capability: values supplied by page JavaScript are accepted only
+/// when they exactly identify that same package.
+func ebookAuthorizedMainDocumentURL(
+    for request: URLRequest,
+    activePackageURL: URL? = nil,
+    readerFileManager: ReaderFileManager
+) -> URL? {
+    func packageURL(from documentURL: URL?) -> URL? {
+        guard let documentURL else { return nil }
+        if let packageURL = ebookValidatedSourceURL(
+            documentURL,
+            readerFileManager: readerFileManager
+        ) {
+            return packageURL
+        }
+        guard documentURL.scheme == "ebook",
+              documentURL.host == "ebook",
+              documentURL.path == "/processed-section",
+              let rawSourceURL = URLComponents(url: documentURL, resolvingAgainstBaseURL: false)?
+                .queryItems?
+                .first(where: { $0.name == "sourceURL" })?
+                .value,
+              ebookURLStringHasValidPercentEncoding(rawSourceURL),
+              let sourceURL = URL(string: rawSourceURL) else {
+            return nil
+        }
+        return ebookValidatedSourceURL(sourceURL, readerFileManager: readerFileManager)
+    }
+
+    guard let documentPackageURL = packageURL(from: request.mainDocumentURL) else {
+        return nil
+    }
+    let authorizedPackageURL = activePackageURL ?? documentPackageURL
+    guard documentPackageURL == authorizedPackageURL else { return nil }
+
+    let requestedSourceURL = request.value(forHTTPHeaderField: "X-Ebook-Source-URL")
+    let requestSourceURL = URLComponents(
+        url: request.url ?? URL(fileURLWithPath: "/"),
+        resolvingAgainstBaseURL: false
+    )?
+        .queryItems?
+        .first(where: { $0.name == "sourceURL" })?
+        .value
+
+    for candidateString in [requestedSourceURL, requestSourceURL].compactMap({ $0 }) {
+        guard ebookURLStringHasValidPercentEncoding(candidateString),
+              let candidateURL = URL(string: candidateString),
+              ebookValidatedSourceURL(candidateURL, readerFileManager: readerFileManager)
+                == authorizedPackageURL else {
+            return nil
+        }
+    }
+    return authorizedPackageURL
 }
 
 func ebookHTTPResponse(
@@ -87,287 +189,39 @@ func ebookHTTPResponse(
     )!
 }
 
-func ebookProcessTextHTTPResponse(
-    url: URL,
-    data: Data,
-    isAuthoritativelyProcessed: Bool
-) -> HTTPURLResponse {
-    ebookHTTPResponse(
-        url: url,
-        mimeType: "text/plain",
-        byteCount: data.count,
-        textEncodingName: "utf-8",
-        additionalHeaderFields: [
-            "Cache-Control": "no-store",
-            "X-Manabi-Processing-Authoritative": isAuthoritativelyProcessed ? "true" : "false",
-        ]
-    )
-}
-
-func missingEbookViewerAssetResponse(for url: URL) -> HTTPURLResponse? {
-    guard url.path.hasPrefix("/load/viewer-assets/") else { return nil }
-    return HTTPURLResponse(
-        url: url,
-        statusCode: 404,
-        httpVersion: nil,
-        headerFields: ["Cache-Control": "no-store"]
-    )
-}
-
-let ebookViewerAssetCacheHeaderFields = [
-    "Cache-Control": "public, max-age=31536000, immutable",
-]
-
-func ebookPackageEntryResponse(
-    url: URL,
-    metadata: ReaderPackageEntryResponseMetadata,
-    byteCount: Int,
-    isGenerationBacked: Bool
-) -> HTTPURLResponse {
-    ebookHTTPResponse(
-        url: url,
-        mimeType: metadata.mimeType,
-        byteCount: byteCount,
-        textEncodingName: metadata.textEncodingName,
-        additionalHeaderFields: isGenerationBacked
-            ? ebookViewerAssetCacheHeaderFields
-            : ["Cache-Control": "no-store"]
-    )
-}
-
-private let ebookViewerAssetRevisionPlaceholder = "__MNB_VIEWER_ASSET_REVISION__"
-private let ebookViewerAssetResourceSchemaVersion = 1
-
-enum EbookViewerAssetRevisionError: Error {
-    case invalidRevision
-    case invalidViewerHTML
-}
-
-func ebookViewerAssetRevision(
-    applicationIdentifier: String,
-    applicationVersion: String,
-    applicationBuild: String,
-    resourceSchemaVersion: Int
-) -> String {
-    let identity = [
-        applicationIdentifier,
-        applicationVersion,
-        applicationBuild,
-        String(resourceSchemaVersion),
-    ].joined(separator: "\u{0}")
-    let digest = SHA256.hash(data: Data(identity.utf8))
-    let digestPrefix = digest.prefix(8).map { String(format: "%02x", $0) }.joined()
-    return "v\(resourceSchemaVersion)-\(digestPrefix)"
-}
-
-func ebookViewerHTMLApplyingAssetRevision(
-    _ html: String,
-    revision: String
-) throws -> String {
-    guard revision.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) else {
-        throw EbookViewerAssetRevisionError.invalidRevision
-    }
-    guard html.components(separatedBy: ebookViewerAssetRevisionPlaceholder).count - 1 == 2 else {
-        throw EbookViewerAssetRevisionError.invalidViewerHTML
-    }
-    return html.replacingOccurrences(
-        of: ebookViewerAssetRevisionPlaceholder,
-        with: revision
-    )
-}
-
-func ebookViewerAssetRelativePath(
-    from url: URL,
-    activeRevision: String
-) -> String? {
-    guard url.scheme == "ebook",
-          url.host == "ebook" else {
-        return nil
-    }
-    let prefix = "/load/viewer-assets/"
-    guard let encodedPath = URLComponents(
-        url: url,
-        resolvingAgainstBaseURL: false
-    )?.percentEncodedPath else {
-        return nil
-    }
-    guard encodedPath.hasPrefix(prefix) else {
-        return nil
-    }
-    let encodedComponents = encodedPath
-        .dropFirst(prefix.count)
-        .split(separator: "/", omittingEmptySubsequences: false)
-    guard encodedComponents.count >= 2 else {
-        return nil
-    }
-    let components = encodedComponents.compactMap {
-        String($0).removingPercentEncoding
-    }
-    guard components.count == encodedComponents.count,
-          components[0] == activeRevision else {
-        return nil
-    }
-    let assetComponents = components.dropFirst()
-    guard assetComponents.allSatisfy({
-        !$0.isEmpty &&
-        $0 != "." &&
-        $0 != ".." &&
-        !$0.contains("/") &&
-        !$0.contains("\\") &&
-        !$0.contains("\u{0}")
-    }) else {
-        return nil
-    }
-    return assetComponents.joined(separator: "/")
-}
-
-func ebookViewerBundledResourceURL(relativePath: String) -> URL? {
-    let normalizedPath = relativePath.replacingOccurrences(of: "\\", with: "/")
-    let pathComponents = normalizedPath.split(
-        separator: "/",
-        omittingEmptySubsequences: false
-    )
-    guard !normalizedPath.hasPrefix("/"),
-          pathComponents.first == "foliate-js",
-          pathComponents.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
-        return nil
-    }
-    let relativeURL = URL(fileURLWithPath: normalizedPath)
-    let assetName = relativeURL.deletingPathExtension().lastPathComponent
-    let assetExtension = relativeURL.lakePathExtension
-    let assetDirectory = relativeURL.deletingLastPathComponent().relativePath
-    return [
-        assetDirectory,
-        "Resources/\(assetDirectory)",
-        "Resources/Resources/\(assetDirectory)",
-    ].lazy.compactMap { subdirectory in
-        Bundle.module.url(
-            forResource: assetName,
-            withExtension: assetExtension,
-            subdirectory: subdirectory
-        )
-    }.first
-}
-
-private func currentEbookViewerAssetRevision() -> String {
-    let bundle = Bundle.main
-    return ebookViewerAssetRevision(
-        applicationIdentifier: bundle.bundleIdentifier ?? "unknown-application",
-        applicationVersion: bundle.object(
-            forInfoDictionaryKey: "CFBundleShortVersionString"
-        ) as? String ?? "0",
-        applicationBuild: bundle.object(
-            forInfoDictionaryKey: "CFBundleVersion"
-        ) as? String ?? "0",
-        resourceSchemaVersion: ebookViewerAssetResourceSchemaVersion
-    )
-}
-
-func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) -> Data? {
-    if isCacheWarmer {
-        return Data()
-    }
-    let htmlData = Data(processedText.utf8)
-    guard let payload = splitCanonicalReaderSegmentSidecar(from: htmlData) else {
-        return htmlData
-    }
-    return inliningReaderSegmentSidecar(
-        documentHTML: payload.documentHTML,
-        canonicalSidecar: payload.segmentSidecar
-    )
-}
-
-actor EbookViewerAssetCache {
-    static let shared = EbookViewerAssetCache()
-
-    typealias DataLoader = @Sendable (URL) throws -> Data
-
-    private var dataByFileURL = [URL: Data]()
-    private let dataLoader: DataLoader
-
-    init(dataLoader: @escaping DataLoader = {
-        try Data(contentsOf: $0, options: [.mappedIfSafe])
-    }) {
-        self.dataLoader = dataLoader
-    }
-
-    func data(for fileURL: URL) throws -> Data {
-        if let cachedData = dataByFileURL[fileURL] {
-            return cachedData
-        }
-        let data = try dataLoader(fileURL)
-        dataByFileURL[fileURL] = data
-        return data
-    }
-}
-
-public func ebookProcessTextFingerprint(_ text: String) -> String {
-    "\(text.utf8.count)-\(stableHash(text))"
-}
-
-public func ebookProcessDataFingerprint(_ data: Data) -> String {
-    "\(data.count)-\(stableHash(data: data))"
-}
-
-struct EBookProcessTextRequestKey: Hashable, Sendable {
+struct EBookSectionProcessingRequestKey: Hashable, Sendable {
     let contentURLString: String
     let packageSessionID: String?
     let location: String
     let textFingerprint: String
-    let isCacheWarmer: Bool
     let processingVariant: EbookProcessingVariant
 
     init(
         contentURL: URL,
         location: String,
-        isCacheWarmer: Bool,
-        text: String,
-        processingVariant: EbookProcessingVariant = .unspecified,
-        packageSessionID: String? = nil
-    ) {
-        contentURLString = contentURL.absoluteString
-        self.packageSessionID = packageSessionID
-        self.location = location
-        textFingerprint = ebookProcessTextFingerprint(text)
-        self.isCacheWarmer = isCacheWarmer
-        self.processingVariant = processingVariant
-    }
-
-    init(
-        contentURL: URL,
-        location: String,
-        isCacheWarmer: Bool,
         contentData: Data,
-        processingVariant: EbookProcessingVariant = .unspecified,
+        processingVariant: EbookProcessingVariant,
         packageSessionID: String? = nil
     ) {
         contentURLString = contentURL.absoluteString
         self.packageSessionID = packageSessionID
         self.location = location
         textFingerprint = ebookProcessDataFingerprint(contentData)
-        self.isCacheWarmer = isCacheWarmer
         self.processingVariant = processingVariant
-    }
-
-    init(
-        contentURL: URL,
-        location: String,
-        text: String,
-        processingVariant: EbookProcessingVariant = .unspecified,
-        packageSessionID: String? = nil
-    ) {
-        self.init(
-            contentURL: contentURL,
-            location: location,
-            isCacheWarmer: false,
-            text: text,
-            processingVariant: processingVariant,
-            packageSessionID: packageSessionID
-        )
     }
 }
 
-enum EBookProcessTextRequestDeduperError: Error, Sendable, Equatable, LocalizedError {
+@inline(__always)
+public func ebookProcessTextFingerprint(_ text: String) -> String {
+    "\(text.utf8.count)-\(stableHash(text))"
+}
+
+@inline(__always)
+public func ebookProcessDataFingerprint(_ data: Data) -> String {
+    "\(data.count)-\(stableHash(data: data))"
+}
+
+fileprivate enum EBookSectionProcessingDeduperError: Error, Sendable, Equatable, LocalizedError {
     case failed(String)
 
     var errorDescription: String? {
@@ -378,15 +232,15 @@ enum EBookProcessTextRequestDeduperError: Error, Sendable, Equatable, LocalizedE
     }
 }
 
-actor EBookProcessTextRequestDeduper {
-    private enum ProcessTextOutcome: Sendable {
+actor EBookSectionProcessingDeduper {
+    private enum SectionProcessingOutcome: Sendable {
         case success(EbookProcessedSectionPayload)
         case cancelled
         case failure(String)
     }
 
     private struct Waiter {
-        let continuation: CheckedContinuation<ProcessTextOutcome, Never>
+        let continuation: CheckedContinuation<SectionProcessingOutcome, Never>
         let didCoalesce: Bool
     }
 
@@ -396,31 +250,31 @@ actor EBookProcessTextRequestDeduper {
         var waiters: [UInt64: Waiter]
     }
 
-    private var inFlightOperationByKey: [EBookProcessTextRequestKey: InFlightOperation] = [:]
+    private var inFlightOperationByKey: [EBookSectionProcessingRequestKey: InFlightOperation] = [:]
     private var nextOperationID: UInt64 = 0
     private var nextWaiterID: UInt64 = 0
 
-    private func resolve(_ outcome: ProcessTextOutcome) throws -> EbookProcessedSectionPayload {
+    private func resolve(_ outcome: SectionProcessingOutcome) throws -> EbookProcessedSectionPayload {
         switch outcome {
-        case .success(let responseText):
-            return responseText
+        case .success(let payload):
+            return payload
         case .cancelled:
             throw CancellationError()
         case .failure(let message):
-            throw EBookProcessTextRequestDeduperError.failed(message)
+            throw EBookSectionProcessingDeduperError.failed(message)
         }
     }
 
 #if DEBUG
-    func inFlightWaiterCountForTesting(key: EBookProcessTextRequestKey) -> Int {
-        inFlightOperationByKey[key]?.waiters.values.filter(\.didCoalesce).count ?? 0
+    func inFlightWaiterCountForTesting(key: EBookSectionProcessingRequestKey) -> Int {
+        inFlightOperationByKey[key]?.waiters.values.filter { $0.didCoalesce }.count ?? 0
     }
 #endif
 
     private func complete(
-        key: EBookProcessTextRequestKey,
+        key: EBookSectionProcessingRequestKey,
         operationID: UInt64,
-        outcome: ProcessTextOutcome
+        outcome: SectionProcessingOutcome
     ) {
         guard let operation = inFlightOperationByKey[key], operation.id == operationID else {
             return
@@ -432,7 +286,7 @@ actor EBookProcessTextRequestDeduper {
     }
 
     private func cancelWaiter(
-        key: EBookProcessTextRequestKey,
+        key: EBookSectionProcessingRequestKey,
         operationID: UInt64,
         waiterID: UInt64
     ) {
@@ -455,7 +309,7 @@ actor EBookProcessTextRequestDeduper {
     }
 
     func process(
-        key: EBookProcessTextRequestKey,
+        key: EBookSectionProcessingRequestKey,
         operation: @Sendable @escaping () async throws -> EbookProcessedSectionPayload
     ) async throws -> (payload: EbookProcessedSectionPayload, didCoalesce: Bool) {
         try Task.checkCancellation()
@@ -479,7 +333,7 @@ actor EBookProcessTextRequestDeduper {
             )
 
             let producer = Task { [operation] in
-                let outcome: ProcessTextOutcome
+                let outcome: SectionProcessingOutcome
                 do {
                     outcome = .success(try await operation())
                 } catch is CancellationError {
@@ -499,7 +353,7 @@ actor EBookProcessTextRequestDeduper {
         }
 
         let response = await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<ProcessTextOutcome, Never>) in
+            await withCheckedContinuation { (continuation: CheckedContinuation<SectionProcessingOutcome, Never>) in
                 guard var currentOperation = inFlightOperationByKey[key],
                       currentOperation.id == operationID else {
                     continuation.resume(returning: .cancelled)
@@ -510,13 +364,6 @@ actor EBookProcessTextRequestDeduper {
                     didCoalesce: didCoalesce
                 )
                 inFlightOperationByKey[key] = currentOperation
-                if Task.isCancelled {
-                    cancelWaiter(
-                        key: key,
-                        operationID: operationID,
-                        waiterID: waiterID
-                    )
-                }
             }
         } onCancel: {
             Task {
@@ -534,7 +381,10 @@ actor EBookProcessTextRequestDeduper {
 }
 
 public enum EBookNativeSectionPageStatsOutcome: Equatable, Sendable {
+    /// Native processing produced and published an authoritative section row.
     case produced
+    /// This section cannot produce page stats for the current processing contract.
+    /// Retrying without a causal contract change would repeat the same result.
     case unsupported
 }
 
@@ -544,10 +394,6 @@ public struct EBookNativeSectionPrewarmResult: Equatable, Sendable {
     public let responseBytes: Int
     public let pageStatsRequested: Bool
     public let pageStatsOutcome: EBookNativeSectionPageStatsOutcome
-
-    public var pageStatsProduced: Bool {
-        pageStatsOutcome == .produced
-    }
 
     public init(
         sectionHref: String,
@@ -564,25 +410,22 @@ public struct EBookNativeSectionPrewarmResult: Equatable, Sendable {
     }
 }
 
-actor EBookProcessingActor {
-    let ebookProcessedTextCacheReader: EbookProcessedTextCacheReader?
-    let ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
-    let ebookTextProcessor: EbookTextProcessor?
-    let processReadabilityContent: EbookReadabilityContentProcessor?
-    let processHTMLDocument: EbookHTMLDocumentProcessor?
-    let processHTMLBytes: EbookHTMLBytesProcessor?
-    let processHTML: EbookHTMLProcessor?
-
-    init(
-        ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil,
+public actor EBookProcessingActor {
+    private let ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
+    private let ebookTextProcessor: EbookTextProcessor?
+    private let processReadabilityContent: EbookReadabilityContentProcessor?
+    private let processHTMLDocument: EbookHTMLDocumentProcessor?
+    private let processHTMLBytes: EbookHTMLBytesProcessor?
+    private let processHTML: EbookHTMLProcessor?
+    
+    public init(
         ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil,
         ebookTextProcessor: EbookTextProcessor?,
         processReadabilityContent: EbookReadabilityContentProcessor?,
-        processHTMLDocument: EbookHTMLDocumentProcessor? = nil,
+        processHTMLDocument: EbookHTMLDocumentProcessor?,
         processHTMLBytes: EbookHTMLBytesProcessor?,
         processHTML: EbookHTMLProcessor?
     ) {
-        self.ebookProcessedTextCacheReader = ebookProcessedTextCacheReader
         self.ebookProcessedTextCacheWriter = ebookProcessedTextCacheWriter
         self.ebookTextProcessor = ebookTextProcessor
         self.processReadabilityContent = processReadabilityContent
@@ -591,17 +434,18 @@ actor EBookProcessingActor {
         self.processHTML = processHTML
     }
 
-    func prewarm(
+    public func prewarm(
         contentURL: URL,
         sectionHref: String,
         source: ReaderPackageEntrySource
     ) async throws -> EBookNativeSectionPrewarmResult {
         let entryData = try source.readEntry(subpath: sectionHref)
-        let entryText = ReaderPackageEntrySource.decodeText(entryData)
+        let entryText = String(decoding: entryData, as: UTF8.self)
         let processedPayload = try await process(
             contentURL: contentURL,
             location: sectionHref,
             text: entryText,
+            contentFingerprint: ebookProcessDataFingerprint(entryData),
             isCacheWarmer: true
         )
         return EBookNativeSectionPrewarmResult(
@@ -610,36 +454,19 @@ actor EBookProcessingActor {
             responseBytes: processedPayload.combinedByteCount
         )
     }
-
-    func process(
+    
+    public func process(
         contentURL: URL,
         location: String,
         text: String,
         contentFingerprint: String? = nil,
-        isCacheWarmer: Bool,
-        shouldReadProcessedCache: Bool = true
+        isCacheWarmer: Bool
     ) async throws -> EbookProcessedSectionPayload {
-        let resolvedContentFingerprint = contentFingerprint ?? EBookProcessTextRequestKey(
-            contentURL: contentURL,
-            location: location,
-            isCacheWarmer: isCacheWarmer,
-            text: text
-        ).textFingerprint
-        if !isCacheWarmer, shouldReadProcessedCache, let ebookProcessedTextCacheReader {
-            if let cachedResult = try await ebookProcessedTextCacheReader(
-                contentURL,
-                location,
-                text,
-                resolvedContentFingerprint
-            ), ebookProcessedSectionPayloadHasDurableSegmentIdentities(cachedResult) {
-                return cachedResult
-            }
-        }
+        let resolvedContentFingerprint = contentFingerprint ?? ebookProcessTextFingerprint(text)
         guard let ebookTextProcessor else {
             return EbookProcessedSectionPayload(
                 documentHTML: Data(text.utf8),
-                segmentSidecar: Data(),
-                isAuthoritativelyProcessed: false
+                segmentSidecar: Data()
             )
         }
 
@@ -657,9 +484,30 @@ actor EBookProcessingActor {
         if !isCacheWarmer,
            ebookProcessedSectionPayloadHasDurableSegmentIdentities(result),
            let ebookProcessedTextCacheWriter {
-            await ebookProcessedTextCacheWriter(contentURL, location, text, resolvedContentFingerprint, result)
+            // Publish to the foreground memory cache before returning the response.
+            // The writer detaches its persisted write internally, so awaiting it here
+            // prevents an immediate reload from racing an unstarted utility task
+            // without putting disk I/O on the visible processing path.
+            await ebookProcessedTextCacheWriter(contentURL, location, resolvedContentFingerprint, result)
         }
         return result
+    }
+}
+    
+fileprivate actor EbookViewerAssetCache {
+    static let shared = EbookViewerAssetCache()
+
+    private var dataByURL = [URL: Data]()
+
+    func data(for fileURL: URL) throws -> Data {
+        if let cached = dataByURL[fileURL] {
+            return cached
+        }
+        // Callers provide Bundle.module URLs, so normalization only adds filesystem
+        // metadata I/O before an otherwise in-memory cache hit.
+        let data = try Data(contentsOf: fileURL, options: [.mappedIfSafe])
+        dataByURL[fileURL] = data
+        return data
     }
 }
 
@@ -671,22 +519,63 @@ fileprivate actor EBookLoadingActor {
     func loadViewerFile(
         at viewerHtmlPath: String,
         originalURL: URL,
-        assetRevision: String,
         sharedFontCSSBase64 _: String?,
-        sharedFontCSSBase64Provider _: SharedFontCSSBase64Provider?
+        sharedFontCSSBase64Provider _: (() async -> String?)?
     ) async throws -> (HTTPURLResponse, Data) {
-        let shouldEnablePageTurnInteractionDiagnostic = ebookPageTurnInteractionDiagnosticsEnabled
-        var html = try String(contentsOfFile: viewerHtmlPath, encoding: .utf8)
-        html = try ebookViewerHTMLApplyingAssetRevision(
-            html,
-            revision: assetRevision
-        )
-        if shouldEnablePageTurnInteractionDiagnostic {
+        let shouldEnablePageTurnInteractionDiagnostic: Bool = {
+#if DEBUG
+            ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
+#else
+            false
+#endif
+        }()
+        let shouldEnableProgressAdmissionDiagnostic: Bool = {
+#if DEBUG
+            ProcessInfo.processInfo.environment["MANABI_EBOOK_PROGRESS_ADMISSION_DIAGNOSTIC"] == "1"
+#else
+            false
+#endif
+        }()
+        let data: Data
+        if shouldEnablePageTurnInteractionDiagnostic || shouldEnableProgressAdmissionDiagnostic {
+            var html = try String(contentsOfFile: viewerHtmlPath, encoding: .utf8)
             let diagnosticPayload = """
             <script>
             (function() {
                 try {
-                    globalThis.manabiPageTurnInteractionDiagnostic = true;
+                    globalThis.manabiPageTurnInteractionDiagnostic = \(shouldEnablePageTurnInteractionDiagnostic);
+                    if (\(shouldEnableProgressAdmissionDiagnostic)) {
+                        const stages = new Set([
+                            'ebook.confirmedProgress.rejected',
+                            'ebook.updateReadingProgress.rejected',
+                            'ebook.updateReadingProgress.dispatch',
+                            'ebook.relocate.progressAdmission',
+                            'ebook.positionSave.userInput'
+                        ]);
+                        const fields = new Set([
+                            'stage', 'reason', 'source', 'closed', 'hasLoadedLastPosition',
+                            'restoreInProgress', 'suppressNextSave', 'requiresUserInput',
+                            'hasProducerOwner', 'hasBookScope', 'locationRevision',
+                            'capturedRevision', 'currentRevision', 'sectionIndex',
+                            'documentMismatch', 'sectionMismatch', 'locationCFIMismatch',
+                            'locationFractionMismatch'
+                        ]);
+                        globalThis.__manabiRestoreDebugLog = (stage, payload = {}) => {
+                            if (!stages.has(stage)) return;
+                            const safe = {};
+                            for (const [key, value] of Object.entries(payload)) {
+                                if (!fields.has(key)) continue;
+                                if (typeof value === 'boolean' || Number.isFinite(value)) safe[key] = value;
+                                else if (['stage', 'reason', 'source'].includes(key) && typeof value === 'string') {
+                                    safe[key] = value.slice(0, 80);
+                                }
+                            }
+                            window.webkit?.messageHandlers?.readerConsoleLog?.postMessage({
+                                severity: 'debug',
+                                arguments: '# READER ebook-progress-boundary stage=' + stage + ' ' + JSON.stringify(safe)
+                            });
+                        };
+                    }
                 } catch (err) {
                     console.error('Failed to enable page-turn interaction diagnostic flag', err);
                 }
@@ -698,16 +587,24 @@ fileprivate actor EBookLoadingActor {
             } else {
                 html.append(diagnosticPayload)
             }
+            guard let encodedHTML = html.data(using: .utf8) else {
+                throw EbookLoadingError.fileNotFound
+            }
+            data = encodedHTML
+        } else {
+            data = try await EbookViewerAssetCache.shared.data(
+                for: URL(fileURLWithPath: viewerHtmlPath)
+            )
         }
-        guard let data = html.data(using: .utf8) else {
-            throw EbookLoadingError.fileNotFound
-        }
-        let mimeType = "text/html"
-        let response = HTTPURLResponse(
+        let response = ebookHTTPResponse(
             url: originalURL,
-            mimeType: mimeType,
-            expectedContentLength: data.count,
-            textEncodingName: "utf-8"
+            mimeType: "text/html",
+            byteCount: data.count,
+            textEncodingName: "utf-8",
+            // Viewer URLs are stable across app updates. They cannot be
+            // advertised as immutable until the resource revision is part of
+            // the URL itself.
+            additionalHeaderFields: ebookViewerAssetCacheHeaderFields()
         )
         return (response, data)
     }
@@ -721,30 +618,82 @@ fileprivate struct EBookEntriesResponse: Codable, Sendable {
 @globalActor
 public actor EbookURLSchemeActor {
     public static let shared = EbookURLSchemeActor()
-
+    
     public init() { }
 }
 
 public typealias EbookDocumentTransform = @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document
 public typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, Bool, String?, EbookDocumentTransform) async throws -> SwiftSoup.Document
+public enum EbookReaderProcessingCompletion: UInt8, Sendable {
+    case incomplete
+    case completed
+}
+
 public struct EbookProcessedDocumentPayload: Sendable {
     public let documentHTML: [UInt8]
     public let canonicalSegmentSidecar: Data?
+    public let processingCompletion: EbookReaderProcessingCompletion
 
-    public init(documentHTML: [UInt8], canonicalSegmentSidecar: Data? = nil) {
+    public init(
+        documentHTML: [UInt8],
+        canonicalSegmentSidecar: Data? = nil,
+        processingCompletion: EbookReaderProcessingCompletion = .incomplete
+    ) {
         self.documentHTML = documentHTML
         self.canonicalSegmentSidecar = canonicalSegmentSidecar
+        self.processingCompletion = processingCompletion
     }
 }
 
-public typealias EbookHTMLDocumentProcessor = @Sendable (SwiftSoup.Document, Bool) async throws -> EbookProcessedDocumentPayload
+public typealias EbookHTMLDocumentProcessor = @Sendable (
+    SwiftSoup.Document,
+    Bool,
+    EbookReaderProcessingCompletionProof
+) async throws -> EbookProcessedSectionPayload
 public typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
 public typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
 public typealias EbookTextProcessor = @Sendable (URL, String, String, String?, Bool, EbookReadabilityContentProcessor?, EbookHTMLDocumentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> EbookProcessedSectionPayload
-public typealias EbookProcessedTextCacheReader = @Sendable (URL, String, String, String?) async throws -> EbookProcessedSectionPayload?
-public typealias EbookProcessedTextCacheWriter = @Sendable (URL, String, String, String?, EbookProcessedSectionPayload) async -> Void
+public typealias EbookProcessedTextCacheReader = @Sendable (URL, String, String) async throws -> EbookProcessedSectionPayload?
+public typealias EbookProcessedTextCacheWriter = @Sendable (URL, String, String, EbookProcessedSectionPayload) async -> Void
 public typealias EbookSectionPresentationProvider = @Sendable () async -> EbookSectionPresentation
 public typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
+
+struct EbookProcessedSectionCacheProbeResult: Sendable {
+    let payload: EbookProcessedSectionPayload?
+    let outcome: String
+}
+
+func probeEbookProcessedSectionCache(
+    reader: EbookProcessedTextCacheReader?,
+    contentURL: URL,
+    location: String,
+    contentFingerprint: String
+) async throws -> EbookProcessedSectionCacheProbeResult {
+    try Task.checkCancellation()
+    guard let reader else {
+        return EbookProcessedSectionCacheProbeResult(payload: nil, outcome: "unavailable")
+    }
+
+    do {
+        let candidate = try await reader(contentURL, location, contentFingerprint)
+        try Task.checkCancellation()
+        let payload = candidate.flatMap {
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities($0) ? $0 : nil
+        }
+        return EbookProcessedSectionCacheProbeResult(
+            payload: payload,
+            outcome: payload == nil ? "miss" : "hit"
+        )
+    } catch is CancellationError {
+        throw CancellationError()
+    } catch {
+        try Task.checkCancellation()
+        return EbookProcessedSectionCacheProbeResult(
+            payload: nil,
+            outcome: "error:\(String(describing: type(of: error)))"
+        )
+    }
+}
 
 /// Resource access captured synchronously at WKURLSchemeTask receipt. Never
 /// select a replacement session after waiting for the processing actor/cache.
@@ -817,14 +766,22 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     private let schemeTaskCompletionOwnership = URLSchemeTaskCompletionOwnership()
-    private let processTextRequestDeduper = EBookProcessTextRequestDeduper()
-
+    private let sectionProcessingDeduper = EBookSectionProcessingDeduper()
+    @EbookURLSchemeActor private var activePackageURL: URL?
+    
     enum CustomSchemeHandlerError: Error {
         case fileNotFound
     }
 
     public override init() {
         super.init()
+    }
+
+    func processSectionForRequest(
+        key: EBookSectionProcessingRequestKey,
+        operation: @Sendable @escaping () async throws -> EbookProcessedSectionPayload
+    ) async throws -> (payload: EbookProcessedSectionPayload, didCoalesce: Bool) {
+        try await sectionProcessingDeduper.process(key: key, operation: operation)
     }
 
     @discardableResult
@@ -848,28 +805,28 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     @discardableResult
-    private func failActiveTask(_ urlSchemeTask: WKURLSchemeTask, error: Error) -> Bool {
+    private func failActiveTask(
+        _ urlSchemeTask: WKURLSchemeTask,
+        error: Error
+    ) -> Bool {
         guard schemeTaskCompletionOwnership.claimCompletion(urlSchemeTask as AnyObject) else {
             return false
         }
         urlSchemeTask.didFailWithError(error)
         return true
     }
-
+    
     public func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
         schemeTaskCompletionOwnership.cancel(urlSchemeTask as AnyObject)
     }
-
+    
     public func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         schemeTaskCompletionOwnership.begin(urlSchemeTask as AnyObject)
-
-        guard let url = urlSchemeTask.request.url else {
+        
+        let request = urlSchemeTask.request
+        guard let url = request.url else {
             failActiveTask(urlSchemeTask, error: CustomSchemeHandlerError.fileNotFound)
             return
-        }
-        let mainDocumentURL = urlSchemeTask.request.mainDocumentURL?.absoluteString ?? "nil"
-        if ebookPageTurnInteractionDiagnosticsEnabled {
-            logEbookAsset("# EBOOKASSET start url=\(url.absoluteString) mainDocument=\(mainDocumentURL)")
         }
         let sharedReaderFontAsset = self.sharedReaderFontAsset
         if let fontResponse = sharedReaderFontResponse(
@@ -884,11 +841,18 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
         if url.path.hasPrefix(ReaderExternalSegmentSidecarScheme.ebook.endpointPathPrefix) {
-            guard let sidecar = readerExternalSegmentSidecarResponse(for: url, scheme: .ebook) else {
+            guard let sidecar = readerExternalSegmentSidecarResponse(
+                for: url,
+                scheme: .ebook
+            ) else {
                 failActiveTask(urlSchemeTask, error: CustomSchemeHandlerError.fileNotFound)
                 return
             }
-            finishActiveTask(urlSchemeTask, response: sidecar.response, data: sidecar.data)
+            finishActiveTask(
+                urlSchemeTask,
+                response: sidecar.response,
+                data: sidecar.data
+            )
             return
         }
         guard let readerFileManager else {
@@ -897,7 +861,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
         let packageRead: EbookCapturedPackageRead?
-        do { packageRead = try capturePackageRead(urlSchemeTask.request) }
+        do { packageRead = try capturePackageRead(request, readerFileManager: readerFileManager) }
         catch {
             failActiveTask(urlSchemeTask, error: error)
             return
@@ -914,247 +878,36 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let sharedFontCSSBase64 = self.sharedFontCSSBase64
         let sharedFontCSSBase64Provider = self.sharedFontCSSBase64Provider
 
+        
         let workTask = Task.detached(priority: ebookURLSchemeTaskPriority(for: url)) { @EbookURLSchemeActor [weak self] in
-            guard let self, !Task.isCancelled else { return }
+            guard let self else { return }
+            guard !Task.isCancelled else { return }
+            if let requestedPackageURL = ebookValidatedSourceURL(
+                url,
+                readerFileManager: readerFileManager
+            ) {
+                let mainDocumentPackageURL = request.mainDocumentURL.flatMap {
+                    ebookValidatedSourceURL($0, readerFileManager: readerFileManager)
+                }
+                if request.mainDocumentURL == nil
+                    || mainDocumentPackageURL == requestedPackageURL {
+                    // This handler belongs to one WebView. Only a top-level
+                    // package navigation may replace its package binding.
+                    self.activePackageURL = requestedPackageURL
+                }
+            }
+            if let packageRead, packageRead.lease == nil,
+               self.validatedMainDocumentURL(for: request, readerFileManager: readerFileManager)
+                != packageRead.sourceURL {
+                await { @MainActor in
+                    self.failActiveTask(urlSchemeTask, error: CustomSchemeHandlerError.fileNotFound)
+                }()
+                return
+            }
             if url.path == "/processed-section" {
-                guard let request = ebookDirectSectionRequest(from: url),
-                      let ebookTextProcessor else {
-                    await { @MainActor in
-                        self.failActiveTask(
-                            urlSchemeTask,
-                            error: CustomSchemeHandlerError.fileNotFound
-                        )
-                    }()
-                    return
-                }
-                do {
-                    let processingVariant = await ebookProcessingVariantProvider?()
-                    try Task.checkCancellation()
-                    guard let capturedRead = packageRead else { throw CustomSchemeHandlerError.fileNotFound }
-                    let cachedSource = try await capturedRead.source(readerFileManager: readerFileManager)
-                    let sourceData = try cachedSource.readEntry(subpath: request.subpath)
-                    let sourceText = ReaderPackageEntrySource.decodeText(sourceData)
-                    let processRequestKey = EBookProcessTextRequestKey(
-                        contentURL: request.sourceURL,
-                        location: request.subpath,
-                        isCacheWarmer: false,
-                        contentData: sourceData,
-                        processingVariant: processingVariant ?? .unspecified,
-                        packageSessionID: packageRead?.lease?.id
-                    )
-                    let (processedPayload, _) = try await self.processTextRequestDeduper.process(
-                        key: processRequestKey
-                    ) {
-                        try await withEbookProcessingVariant(processingVariant) {
-                            let processingActor = EBookProcessingActor(
-                                ebookProcessedTextCacheReader: ebookProcessedTextCacheReader,
-                                ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
-                                ebookTextProcessor: ebookTextProcessor,
-                                processReadabilityContent: processReadabilityContent,
-                                processHTMLDocument: processHTMLDocument,
-                                processHTMLBytes: processHTMLBytes,
-                                processHTML: processHTML
-                            )
-                            return try await processingActor.process(
-                                contentURL: request.sourceURL,
-                                location: request.subpath,
-                                text: sourceText,
-                                contentFingerprint: processRequestKey.textFingerprint,
-                                isCacheWarmer: false
-                            )
-                        }
-                    }
-                    guard ebookProcessedSectionPayloadHasDurableSegmentIdentities(processedPayload) else {
-                        throw CustomSchemeHandlerError.fileNotFound
-                    }
-                    let publishedSidecar = publishingCanonicalReaderSegmentSidecar(
-                        processedPayload,
-                        scheme: .ebook
-                    )
-                    let presentation = await withEbookProcessingVariant(processingVariant) {
-                        await ebookSectionPresentationProvider?()
-                    }
-                    var additionalHeadMarkup = publishedSidecar.headDescriptor ?? Data()
-                    additionalHeadMarkup.append(
-                        ebookProcessedSectionMediaBootstrapMarkup(
-                            assetRevision: currentEbookViewerAssetRevision()
-                        )
-                    )
-                    let responseData = ebookHTMLDataWithInjectedDirectSectionResponseMetadata(
-                        publishedSidecar.documentHTML,
-                        baseURL: ebookProcessedSectionBaseURL(
-                            sourceURL: request.sourceURL,
-                            sectionHref: request.subpath,
-                            generationID: cachedSource.generationID,
-                            packageSessionID: packageRead?.lease?.id
-                        ),
-                        sourceHref: request.subpath,
-                        writingHint: ebookProcessedSectionWritingHint(from: url),
-                        presentation: presentation,
-                        additionalHeadMarkup: additionalHeadMarkup
-                    )
-                    let response = ebookHTTPResponse(
-                        url: url,
-                        mimeType: "text/html",
-                        byteCount: responseData.count,
-                        textEncodingName: "utf-8",
-                        additionalHeaderFields: ["Cache-Control": "no-store"]
-                    )
-                    await { @MainActor in
-                        self.finishActiveTask(
-                            urlSchemeTask,
-                            requiring: packageRead,
-                            response: response,
-                            data: responseData
-                        )
-                    }()
-                } catch {
-                    await { @MainActor in
-                        self.failActiveTask(urlSchemeTask, error: error)
-                    }()
-                }
-            } else if url.path == "/process-text" {
-                if urlSchemeTask.request.httpMethod == "POST", let payload = ebookRequestBodyData(urlSchemeTask.request), let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
-                    if let ebookTextProcessor {
-                        let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER") == "true"
-                        let processingVariant = await ebookProcessingVariantProvider?()
-                        guard !Task.isCancelled else { return }
-                        let processRequestKey = EBookProcessTextRequestKey(
-                            contentURL: contentURL,
-                            location: replacedTextLocation,
-                            isCacheWarmer: isCacheWarmer,
-                            text: text,
-                            processingVariant: processingVariant ?? .unspecified,
-                            packageSessionID: packageRead?.lease?.id
-                        )
-                        let cachedPayload: EbookProcessedSectionPayload?
-                        if !isCacheWarmer, let ebookProcessedTextCacheReader {
-                            cachedPayload = try? await withEbookProcessingVariant(
-                                processingVariant
-                            ) {
-                                try await ebookProcessedTextCacheReader(
-                                    contentURL,
-                                    replacedTextLocation,
-                                    text,
-                                    processRequestKey.textFingerprint
-                                )
-                            }
-                        } else {
-                            cachedPayload = nil
-                        }
-                        if let cachedPayload,
-                           ebookProcessedSectionPayloadHasDurableSegmentIdentities(cachedPayload) {
-                            let cachedData = inliningReaderSegmentSidecar(
-                                documentHTML: cachedPayload.documentHTML,
-                                canonicalSidecar: cachedPayload.segmentSidecar
-                            )
-                            let resp = ebookProcessTextHTTPResponse(
-                                url: url,
-                                data: cachedData,
-                                isAuthoritativelyProcessed: cachedPayload.isAuthoritativelyProcessed
-                            )
-                            await { @MainActor in
-                                self.finishActiveTask(
-                                    urlSchemeTask,
-                                    requiring: packageRead,
-                                    response: resp,
-                                    data: cachedData
-                                )
-                            }()
-                            return
-                        }
-                        let responsePayload: EbookProcessedSectionPayload
-                        do {
-                            (responsePayload, _) = try await self.processTextRequestDeduper.process(
-                                key: processRequestKey
-                            ) {
-                                try await withEbookProcessingVariant(processingVariant) {
-                                    let processingActor = EBookProcessingActor(
-                                        ebookProcessedTextCacheReader: ebookProcessedTextCacheReader,
-                                        ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
-                                        ebookTextProcessor: ebookTextProcessor,
-                                        processReadabilityContent: processReadabilityContent,
-                                        processHTMLDocument: processHTMLDocument,
-                                        processHTMLBytes: processHTMLBytes,
-                                        processHTML: processHTML
-                                    )
-                                    return try await processingActor.process(
-                                        contentURL: contentURL,
-                                        location: replacedTextLocation,
-                                        text: text,
-                                        contentFingerprint: processRequestKey.textFingerprint,
-                                        isCacheWarmer: isCacheWarmer,
-                                        shouldReadProcessedCache: false
-                                    )
-                                }
-                            }
-                        } catch {
-                            await { @MainActor in
-                                self.failActiveTask(urlSchemeTask, error: error)
-                            }()
-                            return
-                        }
-                        if !isCacheWarmer,
-                           !ebookProcessedSectionPayloadHasDurableSegmentIdentities(responsePayload) {
-                            await { @MainActor in
-                                self.failActiveTask(
-                                    urlSchemeTask,
-                                    error: CustomSchemeHandlerError.fileNotFound
-                                )
-                            }()
-                            return
-                        }
-                        let responseData = isCacheWarmer
-                            ? Data()
-                            : inliningReaderSegmentSidecar(
-                                documentHTML: responsePayload.documentHTML,
-                                canonicalSidecar: responsePayload.segmentSidecar
-                            )
-                        let response = ebookProcessTextHTTPResponse(
-                            url: url,
-                            data: responseData,
-                            isAuthoritativelyProcessed: responsePayload.isAuthoritativelyProcessed
-                        )
-                        await { @MainActor in
-                            self.finishActiveTask(
-                                urlSchemeTask,
-                                requiring: packageRead,
-                                response: response,
-                                data: responseData
-                            )
-                        }()
-                    } else if let respData = text.data(using: .utf8) {
-                        let resp = ebookProcessTextHTTPResponse(
-                            url: url,
-                            data: respData,
-                            isAuthoritativelyProcessed: false
-                        )
-                        await { @MainActor in
-                            self.finishActiveTask(
-                                urlSchemeTask,
-                                requiring: packageRead,
-                                response: resp,
-                                data: respData
-                            )
-                        }()
-                    } else {
-                        await { @MainActor in
-                            self.failActiveTask(
-                                urlSchemeTask,
-                                error: CustomSchemeHandlerError.fileNotFound
-                            )
-                        }()
-                    }
-                } else {
-                    await { @MainActor in
-                        self.failActiveTask(
-                            urlSchemeTask,
-                            error: CustomSchemeHandlerError.fileNotFound
-                        )
-                    }()
-                }
-            } else if url.path == "/entries" {
-                guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entries") else {
+                guard let sectionRequest = ebookDirectSectionRequest(from: url),
+                      let capturedRead = packageRead,
+                      sectionRequest.sourceURL == capturedRead.sourceURL else {
                     await { @MainActor in
                         self.failActiveTask(
                             urlSchemeTask,
@@ -1164,16 +917,196 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     return
                 }
 
+                let mainDocumentURL = capturedRead.sourceURL
+                let sectionHref = sectionRequest.subpath
+
+                let requestStartedAt = Date()
+                do {
+                    try Task.checkCancellation()
+                    let processingVariant = await ebookProcessingVariantProvider?()
+                    try Task.checkCancellation()
+                    try await EbookProcessingVariantContext.$current.withValue(processingVariant) {
+                    let isDirectSectionLoad = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                        .queryItems?
+                        .contains(where: { $0.name == "direct" && $0.value == "1" }) == true
+                    guard let capturedRead = packageRead else { throw CustomSchemeHandlerError.fileNotFound }
+                    let cachedSource = try await capturedRead.source(readerFileManager: readerFileManager)
+                    try Task.checkCancellation()
+                    let sourceReadyElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
+                    let sourceData = try cachedSource.readEntry(subpath: sectionHref)
+                    try Task.checkCancellation()
+                    let sourceReadElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000) - sourceReadyElapsedMs
+                    let didCoalesce: Bool
+                    let cacheOutcome: String
+                    let processRequestKey = EBookSectionProcessingRequestKey(
+                        contentURL: mainDocumentURL,
+                        location: sectionHref,
+                        contentData: sourceData,
+                        processingVariant: processingVariant ?? .unspecified,
+                        packageSessionID: packageRead?.lease?.id
+                    )
+                    let cacheProbeStartedAt = Date()
+                    let cacheProbe = try await probeEbookProcessedSectionCache(
+                        reader: ebookProcessedTextCacheReader,
+                        contentURL: mainDocumentURL,
+                        location: sectionHref,
+                        contentFingerprint: processRequestKey.textFingerprint
+                    )
+                    let cachedPayload = cacheProbe.payload
+                    let cacheProbeOutcome = cacheProbe.outcome
+                    let cacheProbeElapsedMs = Int(Date().timeIntervalSince(cacheProbeStartedAt) * 1000)
+                    let processedPayload: EbookProcessedSectionPayload
+                    if let ebookTextProcessor {
+                        if let cachedPayload {
+                            processedPayload = cachedPayload
+                            didCoalesce = false
+                            cacheOutcome = "final-direct-hit"
+                        } else {
+                            let sourceText = ReaderPackageEntrySource.decodeText(sourceData)
+                            let processedResult = try await self.processSectionForRequest(
+                                key: processRequestKey
+                            ) {
+                                let processingActor = EBookProcessingActor(
+                                    ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter.map { writer in
+                                        { contentURL, location, fingerprint, payload in
+                                            do { try capturedRead.validate() } catch { return }
+                                            await writer(contentURL, location, fingerprint, payload)
+                                        }
+                                    },
+                                    ebookTextProcessor: ebookTextProcessor,
+                                    processReadabilityContent: processReadabilityContent,
+                                    processHTMLDocument: processHTMLDocument,
+                                    processHTMLBytes: processHTMLBytes,
+                                    processHTML: processHTML
+                                )
+                                return try await processingActor.process(
+                                    contentURL: mainDocumentURL,
+                                    location: sectionHref,
+                                    text: sourceText,
+                                    contentFingerprint: processRequestKey.textFingerprint,
+                                    isCacheWarmer: false
+                                )
+                            }
+                            processedPayload = processedResult.payload
+                            didCoalesce = processedResult.didCoalesce
+                            if processedPayload.isAuthoritativelyProcessed {
+                                cacheOutcome = processedResult.didCoalesce
+                                    ? "final-miss-coalesced"
+                                    : "final-miss-processed"
+                            } else {
+                                cacheOutcome = processedResult.didCoalesce
+                                    ? "final-miss-coalesced-fallback"
+                                    : "final-miss-fallback"
+                            }
+                        }
+                    } else {
+                        throw CustomSchemeHandlerError.fileNotFound
+                    }
+                    try Task.checkCancellation()
+
+                    let sectionPresentation = await ebookSectionPresentationProvider?()
+                    try Task.checkCancellation()
+
+                    let processingElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
+                        - sourceReadyElapsedMs
+                        - sourceReadElapsedMs
+                    try capturedRead.validate()
+                    let sidecarPublishStartedAt = Date()
+                    let publishedSidecar = publishingCanonicalReaderSegmentSidecar(
+                        processedPayload,
+                        scheme: .ebook
+                    )
+                    let sidecarPublishElapsedMs = Int(
+                        Date().timeIntervalSince(sidecarPublishStartedAt) * 1000
+                    )
+                    let processedResponseByteCount = processedPayload.combinedByteCount
+                    let writingHint = ebookProcessedSectionWritingHint(from: url)
+                    let responseBodyAttributes = [
+                        "data-mnb-native-cache-outcome": cacheOutcome,
+                        "data-mnb-native-cache-probe-outcome": cacheProbeOutcome,
+                        "data-mnb-native-cache-probe-ms": "\(cacheProbeElapsedMs)",
+                        "data-mnb-native-cache-reader-available": ebookProcessedTextCacheReader == nil ? "false" : "true",
+                        "data-mnb-native-cache-writer-available": ebookProcessedTextCacheWriter == nil ? "false" : "true",
+                        "data-mnb-native-content-fingerprint": processRequestKey.textFingerprint,
+                        "data-mnb-native-did-coalesce": didCoalesce ? "true" : "false",
+                        "data-mnb-native-processing-authoritative": processedPayload.isAuthoritativelyProcessed ? "true" : "false",
+                        "data-mnb-native-response-bytes": "\(processedResponseByteCount)",
+                        "data-mnb-native-source-bytes": "\(sourceData.count)",
+                        "data-mnb-native-source-ready-ms": "\(sourceReadyElapsedMs)",
+                        "data-mnb-native-source-read-ms": "\(sourceReadElapsedMs)",
+                        "data-mnb-native-processing-ms": "\(processingElapsedMs)",
+                        "data-mnb-native-document-bytes": "\(publishedSidecar.documentHTML.count)",
+                        "data-mnb-native-sidecar-bytes": "\(publishedSidecar.canonicalSidecarByteCount)",
+                        "data-mnb-native-sidecar-delivery": publishedSidecar.endpointURL == nil ? "embedded-or-empty" : "external",
+                        "data-mnb-native-sidecar-publish-ms": "\(sidecarPublishElapsedMs)",
+                    ]
+                    let responseDecorationStartedAt = Date()
+                    var sectionHeadMarkup = publishedSidecar.headDescriptor ?? Data()
+                    sectionHeadMarkup.append(ebookProcessedSectionMediaBootstrapMarkup())
+                    let responseData = ebookHTMLDataWithInjectedResponseMetadata(
+                        publishedSidecar.documentHTML,
+                        baseURL: ebookProcessedSectionBaseURL(
+                            sourceURL: mainDocumentURL,
+                            sectionHref: sectionHref,
+                            generationID: cachedSource.generationID,
+                            packageSessionID: packageRead?.lease?.id
+                        ),
+                        writingHint: writingHint,
+                        bodyAttributes: responseBodyAttributes,
+                        presentation: sectionPresentation,
+                        additionalHeadMarkup: sectionHeadMarkup,
+                        suppressesInitialPaginatorLayout: isDirectSectionLoad
+                    )
+                    let responseEncodeElapsedMs = Int(Date().timeIntervalSince(responseDecorationStartedAt) * 1000)
+                    let responseReadyElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
+                    let response = HTTPURLResponse(
+                        url: url,
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: [
+                            "Cache-Control": "no-store",
+                            "Content-Type": isDirectSectionLoad ? "text/html; charset=utf-8" : "text/plain; charset=utf-8",
+                            "Content-Length": "\(responseData.count)",
+                            "X-Manabi-Process-Cache": cacheOutcome,
+                            "X-Manabi-Response-Ready-Elapsed-Ms": "\(responseReadyElapsedMs)",
+                            "X-Manabi-Response-Encode-Elapsed-Ms": "\(responseEncodeElapsedMs)",
+                            "X-Manabi-Did-Coalesce": didCoalesce ? "true" : "false",
+                            "X-Manabi-Processing-Authoritative": processedPayload.isAuthoritativelyProcessed ? "true" : "false",
+                            "X-Manabi-Sidecar-Delivery": publishedSidecar.endpointURL == nil ? "embedded-or-empty" : "external",
+                            "X-Manabi-Sidecar-Bytes": "\(publishedSidecar.canonicalSidecarByteCount)",
+                            "X-Manabi-Sidecar-Publish-Elapsed-Ms": "\(sidecarPublishElapsedMs)",
+                        ]
+                    ) ?? HTTPURLResponse(
+                        url: url,
+                        mimeType: nil,
+                        expectedContentLength: responseData.count,
+                        textEncodingName: "utf-8"
+                    )
+                    await { @MainActor in
+                        self.finishActiveTask(
+                            urlSchemeTask,
+                            requiring: packageRead,
+                            response: response,
+                            data: responseData
+                        )
+                    }()
+                    }
+                } catch {
+                    await { @MainActor in
+                        self.failActiveTask(urlSchemeTask, error: error)
+                    }()
+                }
+            } else if url.path == "/entries" {
                 do {
                     guard let capturedRead = packageRead else { throw CustomSchemeHandlerError.fileNotFound }
                     let cachedSource = try await capturedRead.source(readerFileManager: readerFileManager)
                     let responseBody = EBookEntriesResponse(entries: cachedSource.entries,
                         packageDocumentPath: packageRead?.lease?.package.fingerprint.packageDocumentPath)
                     let data = try JSONEncoder().encode(responseBody)
-                    let response = HTTPURLResponse(
+                    let response = ebookHTTPResponse(
                         url: url,
                         mimeType: "application/json",
-                        expectedContentLength: data.count,
+                        byteCount: data.count,
                         textEncodingName: "utf-8"
                     )
                     await { @MainActor in
@@ -1192,26 +1125,18 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             } else if url.path == "/entry" || url.path.hasPrefix("/entry-source/") || url.path.hasPrefix("/entry-session/") {
                 let pathBackedRequest = ebookPathBackedEntryRequest(
                     from: url,
-                    mainDocumentURL: urlSchemeTask.request.mainDocumentURL
+                    mainDocumentURL: request.mainDocumentURL
                 )
                 let queryBackedRequest: EbookPathBackedEntryRequest? = {
                     guard url.path == "/entry",
-                          let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entry"),
-                          let normalizedSubpath = ebookEntryQuerySubpath(in: url) else {
-                        return nil
-                    }
-                    return EbookPathBackedEntryRequest(
-                        sourceURL: mainDocumentURL,
-                        generationID: nil,
-                        subpath: normalizedSubpath
-                    )
+                          let capturedRead = packageRead,
+                          let subpath = ebookEntryQuerySubpath(in: url) else { return nil }
+                    return .init(sourceURL: capturedRead.sourceURL, generationID: nil,
+                                 subpath: subpath, packageSessionID: capturedRead.lease?.id)
                 }()
                 guard let entryRequest = pathBackedRequest ?? queryBackedRequest else {
                     await { @MainActor in
-                        self.failActiveTask(
-                            urlSchemeTask,
-                            error: CustomSchemeHandlerError.fileNotFound
-                        )
+                        self.failActiveTask(urlSchemeTask, error: CustomSchemeHandlerError.fileNotFound)
                     }()
                     return
                 }
@@ -1229,11 +1154,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         subpath: entryRequest.subpath,
                         data: data
                     )
-                    let response = ebookPackageEntryResponse(
+                    let response = ebookHTTPResponse(
                         url: url,
-                        metadata: metadata,
+                        mimeType: metadata.mimeType,
                         byteCount: data.count,
-                        isGenerationBacked: entryRequest.generationID != nil
+                        textEncodingName: metadata.textEncodingName,
+                        additionalHeaderFields: ["Cache-Control": "no-store"]
                     )
                     await { @MainActor in
                         self.finishActiveTask(
@@ -1267,22 +1193,18 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
             } else if url.pathComponents.starts(with: ["/", "load"]) {
                 // Bundle file.
-                let assetRevision = currentEbookViewerAssetRevision()
-                if let fileUrl = Self.bundleURLFromWebURL(
-                    url,
-                    activeRevision: assetRevision
-                ),
+                if let fileUrl = Self.bundleURLFromWebURL(url),
                    let mimeType = Self.mimeType(ofFileAtUrl: fileUrl),
                    let data = try? await EbookViewerAssetCache.shared.data(for: fileUrl) {
-                    if ebookPageTurnInteractionDiagnosticsEnabled {
-                        logEbookAsset("# EBOOKASSET hit url=\(url.absoluteString) fileURL=\(fileUrl.absoluteString) mime=\(mimeType) bytes=\(data.count)")
-                    }
+                    guard !Task.isCancelled else { return }
                     let response = ebookHTTPResponse(
                         url: url,
                         mimeType: mimeType,
                         byteCount: data.count,
                         textEncodingName: mimeType.hasPrefix("text/") ? "utf-8" : nil,
-                        additionalHeaderFields: ebookViewerAssetCacheHeaderFields
+                        // Bundle asset URLs are not revisioned across app
+                        // updates, so browser persistence must be disabled.
+                        additionalHeaderFields: ebookViewerAssetCacheHeaderFields()
                     )
                     await { @MainActor in
                         self.finishActiveTask(
@@ -1292,27 +1214,16 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             data: data
                         )
                     }()
-                } else if let missingAssetResponse = missingEbookViewerAssetResponse(for: url) {
-                    await { @MainActor in
-                        self.finishActiveTask(
-                            urlSchemeTask,
-                            requiring: packageRead,
-                            response: missingAssetResponse
-                        )
-                    }()
                 } else if let viewerHtmlPath = Self.viewerHTMLPath() {
                     // File viewer bundle file.
-                        if ebookPageTurnInteractionDiagnosticsEnabled {
-                            logEbookAsset("# EBOOKASSET fallbackViewerHTML url=\(url.absoluteString) path=\(viewerHtmlPath)")
-                        }
                         do {
                             let (response, data) = try await EBookLoadingActor().loadViewerFile(
                                 at: viewerHtmlPath,
                                 originalURL: url,
-                                assetRevision: assetRevision,
                                 sharedFontCSSBase64: sharedFontCSSBase64,
                                 sharedFontCSSBase64Provider: sharedFontCSSBase64Provider
                             )
+                            try Task.checkCancellation()
                             await { @MainActor in
                                 self.finishActiveTask(
                                     urlSchemeTask,
@@ -1322,15 +1233,11 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 )
                             }()
                         } catch {
-                            print(error)
                             await { @MainActor in
                                 self.failActiveTask(urlSchemeTask, error: error)
                             }()
                         }
                 } else {
-                    if ebookPageTurnInteractionDiagnosticsEnabled {
-                        logEbookAsset("# EBOOKASSET missing url=\(url.absoluteString)")
-                    }
                     await { @MainActor in
                         self.failActiveTask(
                             urlSchemeTask,
@@ -1352,31 +1259,40 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             cancellation: { workTask.cancel() }
         )
     }
-
-    nonisolated private static func bundleURLFromWebURL(
-        _ url: URL,
-        activeRevision: String
-    ) -> URL? {
-        guard let relativePath = ebookViewerAssetRelativePath(
-            from: url,
-            activeRevision: activeRevision
-        ) else {
-            return nil
-        }
-        let resolvedURL = ebookViewerBundledResourceURL(relativePath: relativePath)
-        if resolvedURL == nil, ebookPageTurnInteractionDiagnosticsEnabled {
-            logEbookAsset(
-                "# EBOOKASSET resolveMiss url=\(url.absoluteString) relativePath=\(relativePath)"
+    
+    nonisolated private static func bundleURLFromWebURL(_ url: URL) -> URL? {
+        guard url.path.hasPrefix("/load/viewer-assets/") else { return nil }
+        let assetName = url.deletingPathExtension().lastPathComponent
+        let assetExtension = url.lakePathExtension
+        let assetDirectory = url.deletingLastPathComponent().path.deletingPrefix("/load/viewer-assets/")
+        let resolvedURL = [
+            assetDirectory,
+            "Resources/\(assetDirectory)",
+            "Resources/Resources/\(assetDirectory)",
+        ].lazy.compactMap { subdirectory in
+            Bundle.module.url(
+                forResource: assetName,
+                withExtension: assetExtension,
+                subdirectory: subdirectory
             )
-        }
+        }.first
         return resolvedURL
     }
 
     nonisolated private static func viewerHTMLPath() -> String? {
-        ebookViewerBundledResourceURL(relativePath: "foliate-js/ebook-viewer.html")?.path
+        [
+            "foliate-js",
+            "Resources/foliate-js",
+            "Resources/Resources/foliate-js",
+        ].lazy.compactMap { directory in
+            Bundle.module.path(forResource: "ebook-viewer", ofType: "html", inDirectory: directory)
+        }.first
     }
 
-    private func capturePackageRead(_ request: URLRequest) throws -> EbookCapturedPackageRead? {
+    private func capturePackageRead(
+        _ request: URLRequest,
+        readerFileManager: ReaderFileManager
+    ) throws -> EbookCapturedPackageRead? {
         guard let url = request.url else { throw CustomSchemeHandlerError.fileNotFound }
         let sourceURL: URL
         let generationID: String?
@@ -1388,12 +1304,11 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             guard let parsed = ebookDirectSectionRequest(from: url) else { throw CustomSchemeHandlerError.fileNotFound }
             // The document's URL must retain the capability for relative asset
             // ownership; accepting only a header here would lose that context.
-            guard parsed.packageSessionID == suppliedID else { throw CustomSchemeHandlerError.fileNotFound }
+            guard parsed.packageSessionID == suppliedID,
+                  ebookPackageSourceURL(requestURL: url, mainDocumentURL: request.mainDocumentURL,
+                    header: request.value(forHTTPHeaderField: "X-Ebook-Source-URL"))
+                    == parsed.sourceURL else { throw CustomSchemeHandlerError.fileNotFound }
             sourceURL = parsed.sourceURL; sessionID = suppliedID; generationID = nil
-        case "/process-text":
-            guard let raw = request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"),
-                  let source = URL(string: raw) else { throw CustomSchemeHandlerError.fileNotFound }
-            sourceURL = source; sessionID = suppliedID; generationID = nil
         case "/entries", "/entry":
             guard let source = ebookPackageSourceURL(requestURL: url, mainDocumentURL: request.mainDocumentURL,
                 header: request.value(forHTTPHeaderField: "X-Ebook-Source-URL")) else {
@@ -1403,23 +1318,51 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         default:
             guard url.path.hasPrefix("/entry-source/") || url.path.hasPrefix("/entry-session/") else { return nil }
             guard let parsed = ebookPathBackedEntryRequest(from: url, mainDocumentURL: request.mainDocumentURL),
-                  suppliedID == nil || suppliedID == parsed.packageSessionID else {
+                  suppliedID == nil || suppliedID == parsed.packageSessionID,
+                  ebookPackageSourceURL(requestURL: url, mainDocumentURL: request.mainDocumentURL,
+                    header: request.value(forHTTPHeaderField: "X-Ebook-Source-URL"))
+                    == parsed.sourceURL else {
                 throw CustomSchemeHandlerError.fileNotFound
             }
             sourceURL = parsed.sourceURL; sessionID = parsed.packageSessionID; generationID = parsed.generationID
+        }
+        if let documentURL = request.mainDocumentURL, documentURL.path == "/processed-section" {
+            guard let owner = ebookDirectSectionRequest(from: documentURL),
+                  owner.packageSessionID == sessionID else {
+                throw CustomSchemeHandlerError.fileNotFound
+            }
+        }
+        // Bound sessions authorize their immutable snapshot even after the
+        // physical path disappears. Legacy requests retain file-manager and
+        // main-document authorization before any asynchronous source lookup.
+        if sessionID == nil {
+            guard ebookAuthorizedMainDocumentURL(for: request, readerFileManager: readerFileManager)
+                    == sourceURL else { throw CustomSchemeHandlerError.fileNotFound }
         }
         return .init(access: try packageSessionBinding.capture(
             sourceURL: sourceURL, sessionID: sessionID, generationID: generationID))
     }
 
     @EbookURLSchemeActor
-    private func validatedMainDocumentURL(for request: URLRequest, route: String) -> URL? {
-        guard let url = request.url else { return nil }
-        return ebookPackageSourceURL(requestURL: url, mainDocumentURL: request.mainDocumentURL,
-            header: request.value(forHTTPHeaderField: "X-Ebook-Source-URL"))
+    private func validatedMainDocumentURL(
+        for request: URLRequest,
+        readerFileManager: ReaderFileManager
+    ) -> URL? {
+        return ebookAuthorizedMainDocumentURL(
+            for: request,
+            activePackageURL: activePackageURL,
+            readerFileManager: readerFileManager
+        )
     }
-
+    
     nonisolated private static func mimeType(ofFileAtUrl url: URL) -> String? {
         return UTType(filenameExtension: url.lakePathExtension)?.preferredMIMEType ?? "application/octet-stream"
+    }
+}
+
+fileprivate extension String {
+    func deletingPrefix(_ prefix: String) -> String {
+        guard self.hasPrefix(prefix) else { return self }
+        return String(self.dropFirst(prefix.count))
     }
 }

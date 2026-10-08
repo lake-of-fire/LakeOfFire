@@ -14,6 +14,7 @@
             }, false);
         }
     }
+
     function init() {
         wireViewOriginal();
         new MutationObserver(() => wireViewOriginal())

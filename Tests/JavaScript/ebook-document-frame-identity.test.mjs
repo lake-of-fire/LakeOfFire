@@ -1,0 +1,104 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+import {
+    ebookDocumentFrameIdentity,
+    nativeLookupFramePublicationTransition,
+    shouldPublishForDocumentFrame,
+} from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-document-frame-identity.js'
+
+const documentWithIdentity = (url, frameIdentifier) => ({
+    URL: url,
+    body: { dataset: { swiftuiwebviewFrameUuid: frameIdentifier } },
+})
+
+test('same-URL documents retain distinct frame-owned publication keys', () => {
+    const first = documentWithIdentity('ebook://book/chapter.xhtml', 'frame-1')
+    const second = documentWithIdentity('ebook://book/chapter.xhtml', 'frame-2')
+
+    assert.deepEqual(ebookDocumentFrameIdentity(first), {
+        documentURL: 'ebook://book/chapter.xhtml',
+        frameIdentifier: 'frame-1',
+        frameKey: 'ebook://book/chapter.xhtml|frame-1',
+    })
+    assert.notEqual(
+        ebookDocumentFrameIdentity(first).frameKey,
+        ebookDocumentFrameIdentity(second).frameKey
+    )
+})
+
+test('publication requires the content-script frame identity', () => {
+    assert.equal(ebookDocumentFrameIdentity({ URL: 'ebook://book/chapter.xhtml', body: { dataset: {} } }), null)
+})
+
+test('scheduled publication rejects stale generations and detached documents', () => {
+    const current = documentWithIdentity('ebook://book/current.xhtml', 'current')
+    const detached = documentWithIdentity('ebook://book/detached.xhtml', 'detached')
+
+    assert.equal(shouldPublishForDocumentFrame({
+        scheduledGeneration: 2,
+        currentGeneration: 3,
+        currentDocuments: [current],
+    }), false)
+    assert.equal(shouldPublishForDocumentFrame({
+        scheduledGeneration: 3,
+        currentGeneration: 3,
+        explicitDocument: detached,
+        currentDocuments: [current],
+    }), false)
+    assert.equal(shouldPublishForDocumentFrame({
+        scheduledGeneration: 3,
+        currentGeneration: 3,
+        explicitDocument: current,
+        currentDocuments: [current],
+    }), true)
+})
+
+
+test('fragment-only navigation retains one frame publication key', () => {
+    const before = documentWithIdentity(
+        'ebook://book/chapter.xhtml?edition=1#before',
+        'frame-1'
+    )
+    const after = documentWithIdentity(
+        'ebook://book/chapter.xhtml?edition=1#after',
+        'frame-1'
+    )
+    const otherQuery = documentWithIdentity(
+        'ebook://book/chapter.xhtml?edition=2#after',
+        'frame-1'
+    )
+
+    assert.equal(
+        ebookDocumentFrameIdentity(before).frameKey,
+        ebookDocumentFrameIdentity(after).frameKey
+    )
+    assert.equal(
+        ebookDocumentFrameIdentity(before).documentURL,
+        'ebook://book/chapter.xhtml?edition=1'
+    )
+    assert.notEqual(
+        ebookDocumentFrameIdentity(before).frameKey,
+        ebookDocumentFrameIdentity(otherQuery).frameKey
+    )
+})
+
+test('a newly displayed frame creates a destructive publication reset boundary', () => {
+    const previous = documentWithIdentity('ebook://book/chapter.xhtml', 'frame-1')
+    const next = documentWithIdentity('ebook://book/chapter.xhtml', 'frame-2')
+
+    assert.deepEqual(nativeLookupFramePublicationTransition({
+        previousFrameKey: ebookDocumentFrameIdentity(previous).frameKey,
+        document: next,
+    }), {
+        frameKey: 'ebook://book/chapter.xhtml|frame-2',
+        shouldResetPreviousTargets: true,
+    })
+    assert.deepEqual(nativeLookupFramePublicationTransition({
+        previousFrameKey: ebookDocumentFrameIdentity(next).frameKey,
+        document: next,
+    }), {
+        frameKey: 'ebook://book/chapter.xhtml|frame-2',
+        shouldResetPreviousTargets: false,
+    })
+})

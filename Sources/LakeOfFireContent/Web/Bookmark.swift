@@ -1,64 +1,40 @@
 import Foundation
+import LakeOfFireCore
 import RealmSwift
 import RealmSwiftGaps
 import SwiftCloudDrive
 import BigSyncKit
-import LakeOfFireCore
-import LakeOfFireAdblock
 
-private let readerParaBookmarkEmptyParagraphPattern = try! NSRegularExpression(pattern: #"(?is)<p\b[^>]*>\s*</p>"#)
-private let readerParaBookmarkBreakOnlyParagraphPattern = try! NSRegularExpression(pattern: #"(?is)<p\b[^>]*>\s*(?:<span\b[^>]*>\s*)?<br\s*/?>\s*(?:</span>\s*)?</p>"#)
-private let readerParaBookmarkStandaloneBreakSpanPattern = try! NSRegularExpression(pattern: #"(?is)<span\b[^>]*>\s*<br\s*/?>\s*</span>"#)
-private let readerParaBookmarkBreakTagPattern = try! NSRegularExpression(pattern: #"(?is)<br\s*/?>"#)
-
-private func logReaderParaBookmarkPayload(
-    stage: String,
-    url: URL?,
-    html: String?,
-    content: Data?
-) {
-    guard let html else {
-        debugPrint(
-            "# READERPARA \(stage)",
-            "url=\(url?.absoluteString ?? "<nil>")",
-            "hasHTML=0",
-            "compressedBytes=\(content?.count ?? 0)"
-        )
-        return
-    }
-    let range = NSRange(location: 0, length: (html as NSString).length)
-    debugPrint(
-        "# READERPARA \(stage)",
-        "url=\(url?.absoluteString ?? "<nil>")",
-        "inputBytes=\(html.utf8.count)",
-        "compressedBytes=\(content?.count ?? 0)",
-        "emptyParagraphCount=\(readerParaBookmarkEmptyParagraphPattern.numberOfMatches(in: html, options: [], range: range))",
-        "breakOnlyParagraphCount=\(readerParaBookmarkBreakOnlyParagraphPattern.numberOfMatches(in: html, options: [], range: range))",
-        "standaloneBreakSpanCount=\(readerParaBookmarkStandaloneBreakSpanPattern.numberOfMatches(in: html, options: [], range: range))",
-        "breakTagCount=\(readerParaBookmarkBreakTagPattern.numberOfMatches(in: html, options: [], range: range))"
-    )
+// Task-scoped completion observation for behavior tests of the real association
+// entry point. No observer is installed in normal use.
+enum BookmarkAssociationObservation {
+    @TaskLocal static var completed: (@Sendable (Bool) -> Void)? = nil
 }
 
-open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol, DeletableReaderContent {
+public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol {
     @Persisted(primaryKey: true) public var compoundKey = ""
     
     @Persisted(indexed: true) public var url = URL(string: "about:blank")!
     @Persisted public var sourceDownloadURL: URL?
     @Persisted public var title = ""
+    @Persisted public var isTitlePrefixOfContent = false
     @Persisted public var author = ""
     @Persisted public var imageUrl: URL?
     @Persisted public var sourceIconURL: URL?
     @Persisted public var publicationDate: Date?
+    @Persisted public var readerContentKindRawValue = ReaderContentKind.readerContent.rawValue
+    @Persisted public var feedEntryCollectionKey: String?
+    @Persisted public var feedEntryCollectionScheme: String?
+    @Persisted public var feedEntryCollectionTerm: String?
+    @Persisted public var feedEntryCollectionTitle: String?
     @Persisted public var isFromClipboard = false
-    @Persisted public var isTitlePrefixOfContent = false
     @Persisted public var isPhysicalMedia = false
-    
+
     // Caches
     /// Deprecated, use `content` via `html`.
     @Persisted public var htmlContent: String?
     @Persisted public var content: Data?
     @Persisted public var isReaderModeAvailable = false
-    @Persisted public var isReaderModeOfferHidden = false
     
     // Feed entry metadata.
     @Persisted public var rssURLs = RealmSwift.List<URL>()
@@ -81,22 +57,22 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
     
     // Feed options.
     @Persisted public var isReaderModeByDefault = false
+    @Persisted public var isReaderModeOfferHidden = false
     @Persisted public var rssContainsFullContent = false
     @Persisted public var meaningfulContentMinLength = 0
     @Persisted public var injectEntryImageIntoHeader = false
     @Persisted public var displayPublicationDate = true
-    @Persisted public var readerContentKindRawValue = ReaderContentKind.readerContent.rawValue
-    @Persisted public var feedEntryCollectionKey: String?
-    @Persisted public var feedEntryCollectionScheme: String?
-    @Persisted public var feedEntryCollectionTerm: String?
-    @Persisted public var feedEntryCollectionTitle: String?
     
     @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
-    open var locationBarTitle: String? {
+    public var displayAbsolutePublicationDate: Bool {
+        return isPhysicalMedia
+    }
+
+    public var locationBarTitle: String? {
         let url = url
         if url.isSnippetURL {
             return ReaderContentLoader.resolvedSnippetLocationBarTitle(
@@ -105,86 +81,53 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
                 needsClipboardIndicator: needsClipboardIndicator,
                 isTitlePrefixOfContent: isTitlePrefixOfContent
             )
-        } else if url.isEBookURL {
-            return title
-        } else if url.isReaderFileURL {
-            return url.lastPathComponent
-        } else if url.isReaderURLLoaderURL {
-            if let loadURLHost = ReaderContentLoader.getContentURL(fromLoaderURL: url)?.normalizedHost() {
-                return loadURLHost
-            }
-        } else if url.absoluteString == "about:blank" {
-            return nil
-        } else if url.scheme == "http" || url.scheme == "https" {
-            if let googleQuery = url.googleSearchQuery {
-                return googleQuery
-            }
-            // Otherwise, fall back to host or full URL
-            return url.normalizedHost() ?? url.absoluteString
         }
-        return url.normalizedHost() ?? url.absoluteString
+        if url.isEBookURL {
+            return title
+        }
+        if url.isReaderFileURL {
+            return url.lastPathComponent
+        }
+        if url.isReaderURLLoaderURL,
+           let loadURLHost = ReaderContentLoader.getContentURL(fromLoaderURL: url)?.normalizedHost() {
+            return loadURLHost
+        }
+        return defaultLocationBarTitle
     }
-    
-    open var displayAbsolutePublicationDate: Bool {
-        return isPhysicalMedia
-    }
-    
-    open func imageURLToDisplay() -> URL? {
+
+    public func imageURLToDisplay() -> URL? {
         return imageUrl
     }
     
     /// Used by subclasses of Bookmark
     @RealmBackgroundActor
-    open func configureBookmark(_ bookmark: Bookmark) {
+    public func configureBookmark(_ bookmark: Bookmark) {
         let url = url
         let targetBookmarkID = bookmark.compoundKey
+        let realmConfiguration = bookmark.realm?.configuration ?? ReaderContentLoader.bookmarkRealmConfiguration
         Task { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration)
-            //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            var completedSuccessfully = false
+            defer { BookmarkAssociationObservation.completed?(completedSuccessfully) }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+//            await realm.asyncRefresh()
+            try await realm.asyncWritePreservingOwnership {
+                guard let target = realm.object(
+                    ofType: Bookmark.self, forPrimaryKey: targetBookmarkID
+                ), !target.isDeleted else { return }
                 let deletedBookmarkIDs = Set(realm.objects(Bookmark.self).where { $0.isDeleted }.map { $0.compoundKey })
-                for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmarkID == nil || $0.bookmarkID.in(deletedBookmarkIDs)) && !$0.isDeleted }).filter(NSPredicate(format: "url == %@", url.absoluteString)) {
+                for historyRecord in HistoryRecord.openedRecords(matching: url, in: realm)
+                    .where({ $0.bookmarkID == nil || $0.bookmarkID.in(deletedBookmarkIDs) }) {
                     historyRecord.bookmarkID = targetBookmarkID
                     historyRecord.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
+            completedSuccessfully = true
         }
     }
-    
-    open var deleteActionTitle: String {
-        "Remove from Saved for Later…"
-    }
-    
-    open var deletionConfirmationTitle: String {
-        return "Removal Confirmation"
-    }
-    
-    open var deletionConfirmationMessage: String {
-        return "Are you sure you want to remove from Saved for Later?"
-    }
-    
-    open var deletionConfirmationActionTitle: String {
-        return "Remove"
-    }
+}
 
-    @MainActor
-    open func delete() async throws {
-        guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
-        try await { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: contentRef.realmConfiguration)
-            let deletedURL = try await realm.asyncWritePreservingOwnership { () -> URL? in
-                guard let content = realm.object(ofType: contentRef.contentType,
-                    forPrimaryKey: contentRef.contentKey) as? any ReaderContentProtocol,
-                    !content.isDeleted else { return nil }
-                content.isDeleted = true
-                content.refreshChangeMetadata(explicitlyModified: true)
-                return content.url
-            }
-            if let deletedURL { ReaderContentLoader.invalidateCachedContent(for: deletedURL) }
-        }()
-    }
-
-    open func skipSyncingProperties() -> Set<String>? {
+extension Bookmark: SyncSkippablePropertiesModel {
+    public func skipSyncingProperties() -> Set<String>? {
         if url.isFileURL || url.isHTTP || url.isReaderFileURL {
             return ["htmlContent", "content", "isReaderModeAvailable"]
         }
@@ -192,11 +135,16 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
     }
 }
 
-extension Bookmark: SyncSkippablePropertiesModel {}
-
 public extension Bookmark {
+    @RealmBackgroundActor
+    static func get(forURL url: URL) async throws -> Self? {
+        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration)
+        return get(forURL: url, realm: bookmarkRealm)
+    }
+
+    @RealmBackgroundActor
     static func get(forURL url: URL, realm: Realm) -> Self? {
-        return realm.objects(Self.self)
+        realm.objects(Self.self)
             .filter(NSPredicate(format: "isDeleted == false AND url == %@", url.absoluteString as CVarArg))
             .sorted(byKeyPath: "createdAt", ascending: false)
             .first
@@ -211,133 +159,110 @@ public extension Bookmark {
         html: String? = nil,
         content: Data? = nil,
         publicationDate: Date? = nil,
-        isFromClipboard: Bool,
-        isTitlePrefixOfContent: Bool = false,
-        rssContainsFullContent: Bool,
-        isReaderModeByDefault: Bool,
-        isReaderModeAvailable: Bool,
-        isReaderModeOfferHidden: Bool = false,
-        autoOpenMediaPlayer: Bool = false,
         readerContentKind: ReaderContentKind = .readerContent,
         feedEntryCollectionKey: String? = nil,
         feedEntryCollectionScheme: String? = nil,
         feedEntryCollectionTerm: String? = nil,
         feedEntryCollectionTitle: String? = nil,
+        isFromClipboard: Bool,
+        isTitlePrefixOfContent: Bool = false,
+        rssContainsFullContent: Bool,
+        isReaderModeByDefault: Bool,
+        isReaderModeAvailable: Bool,
+        isReaderModeOfferHidden: Bool,
+        autoOpenMediaPlayer: Bool = false,
         realmConfiguration: Realm.Configuration
     ) async throws -> Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        let pk = Bookmark.makePrimaryKey(url: url)
-        let shouldStripClipboardIndicator = isFromClipboard || (url?.isSnippetURL ?? false)
-        let sanitizedTitle = title.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
-        if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
-            //            await realm.asyncRefresh()
-            try realm.writeIfNeeded {
-                bookmark.title = sanitizedTitle
+        return try await realm.asyncWritePreservingOwnership {
+            let pk = Bookmark.makePrimaryKey(url: url, html: html)
+            if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
+                bookmark.title = title
                 bookmark.imageUrl = imageUrl
                 bookmark.sourceIconURL = sourceIconURL
                 if let html = html {
-                    logReaderParaBookmarkPayload(
-                        stage: "bookmark.persist.update.html",
-                        url: url,
-                        html: html,
-                        content: html.readerContentData
-                    )
                     bookmark.html = html
                 } else if let content = content {
-                    logReaderParaBookmarkPayload(
-                        stage: "bookmark.persist.update.content",
-                        url: url,
-                        html: Bookmark.contentToHTML(content: content),
-                        content: content
-                    )
                     bookmark.content = content
                 }
                 bookmark.publicationDate = publicationDate
-                bookmark.isFromClipboard = isFromClipboard
-                bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
-                bookmark.isReaderModeByDefault = isReaderModeByDefault
-                bookmark.isReaderModeAvailable = isReaderModeAvailable
-                bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
-                bookmark.rssContainsFullContent = rssContainsFullContent
-                bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
                 bookmark.readerContentKind = readerContentKind
                 bookmark.feedEntryCollectionKey = feedEntryCollectionKey
                 bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
                 bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
                 bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
+                bookmark.isFromClipboard = isFromClipboard
+                bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
+                bookmark.isReaderModeByDefault = isReaderModeByDefault
+                bookmark.isReaderModeAvailable = isReaderModeAvailable
+                bookmark.rssContainsFullContent = rssContainsFullContent
+                bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
+                bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
                 bookmark.isDeleted = false
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
-            }
-            return bookmark
-        } else {
-            let bookmark = Bookmark()
-            if let html = html {
-                logReaderParaBookmarkPayload(
-                    stage: "bookmark.persist.create.html",
-                    url: url,
-                    html: html,
-                    content: html.readerContentData
-                )
-                bookmark.html = html
-            } else if let content = content {
-                logReaderParaBookmarkPayload(
-                    stage: "bookmark.persist.create.content",
-                    url: url,
-                    html: Bookmark.contentToHTML(content: content),
-                    content: content
-                )
-                bookmark.content = content
-            }
-            if let url = url {
-                bookmark.url = url
-                bookmark.updateCompoundKey()
+                return bookmark
             } else {
-                bookmark.updateCompoundKey()
-                bookmark.url = ReaderContentLoader.snippetURL(key: bookmark.compoundKey) ?? bookmark.url
-            }
-            bookmark.title = sanitizedTitle
-            bookmark.imageUrl = imageUrl
-            bookmark.sourceIconURL = sourceIconURL
-            bookmark.publicationDate = publicationDate
-            bookmark.isFromClipboard = isFromClipboard
-            bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
-            bookmark.isReaderModeByDefault = isReaderModeByDefault
-            bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
-            bookmark.rssContainsFullContent = rssContainsFullContent
-            bookmark.isReaderModeAvailable = isReaderModeAvailable
-            bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
-            bookmark.readerContentKind = readerContentKind
-            bookmark.feedEntryCollectionKey = feedEntryCollectionKey
-            bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
-            bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
-            bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
-            //            await realm.asyncRefresh()
-            try realm.writeIfNeeded {
+                let bookmark = Bookmark()
+                if let html = html {
+                    bookmark.html = html
+                } else if let content = content {
+                    bookmark.content = content
+                }
+                if let url = url {
+                    bookmark.url = url
+                    bookmark.updateCompoundKey()
+                } else {
+                    bookmark.updateCompoundKey()
+                    bookmark.url = ReaderContentLoader.snippetURL(key: bookmark.compoundKey) ?? bookmark.url
+                }
+                bookmark.title = title
+                bookmark.imageUrl = imageUrl
+                bookmark.sourceIconURL = sourceIconURL
+                bookmark.publicationDate = publicationDate
+                bookmark.readerContentKind = readerContentKind
+                bookmark.feedEntryCollectionKey = feedEntryCollectionKey
+                bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
+                bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
+                bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
+                bookmark.isFromClipboard = isFromClipboard
+                bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
+                bookmark.isReaderModeByDefault = isReaderModeByDefault
+                bookmark.rssContainsFullContent = rssContainsFullContent
+                bookmark.isReaderModeAvailable = isReaderModeAvailable
+                bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
+                bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
                 realm.add(bookmark, update: .modified)
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
+                return bookmark
             }
-            return bookmark
         }
     }
     
-    //    func fetchRecords() -> [HistoryRecord] {
-    //        var limitedRecords: [HistoryRecord] = []
-    //        let records = realm.objects(HistoryRecord.self).filter("isDeleted == false").sorted(byKeyPath: "lastVisitedAt", ascending: false)
-    //        for idx in 0..<100 {
-    //            limitedRecords.append(records[idx])
-    //        }
-    //        return limitedRecords
-    //    }
+//    func fetchRecords() -> [HistoryRecord] {
+//        var limitedRecords: [HistoryRecord] = []
+//        let records = realm.objects(HistoryRecord.self).filter("isDeleted == false").sorted(byKeyPath: "lastVisitedAt", ascending: false)
+//        for idx in 0..<100 {
+//            limitedRecords.append(records[idx])
+//        }
+//        return limitedRecords
+//    }
     
     @RealmBackgroundActor
-    static func removeAll(realmConfiguration: Realm.Configuration) async throws {
+    static func removeAll(
+        realmConfiguration: Realm.Configuration,
+        at date: Date = Date()
+    ) async throws {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        //        await realm.asyncRefresh()
-        try await realm.asyncWrite {
-            let timestamp = Date()
-            for record in realm.objects(self).where({ !$0.isDeleted }) {
+        try await realm.asyncWritePreservingOwnership {
+            let activeRecords = Array(
+                realm.objects(self).filter("isDeleted == false")
+            )
+            for record in activeRecords {
                 record.isDeleted = true
-                record.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                record.refreshChangeMetadata(
+                    explicitlyModified: true,
+                    at: date
+                )
             }
         }
     }

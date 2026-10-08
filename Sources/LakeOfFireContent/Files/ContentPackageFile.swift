@@ -1,9 +1,8 @@
 import Foundation
+import LakeOfFireCore
 import RealmSwift
 import RealmSwiftGaps
 import ZIPFoundation
-import LakeOfFireCore
-import LakeOfFireAdblock
 
 public class ContentPackageFile: Bookmark {
     @Persisted public var packageContentFileID: String?

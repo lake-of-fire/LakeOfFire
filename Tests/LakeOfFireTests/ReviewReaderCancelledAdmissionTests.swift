@@ -1,0 +1,124 @@
+import Foundation
+import XCTest
+@testable import LakeOfFireContent
+@testable import LakeOfFireReader
+
+@MainActor
+private final class CancelledAdmissionGate {
+    let entered: XCTestExpectation
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    private(set) var callCount = 0
+    private(set) var wasCancelledOnReturn = false
+
+    init(_ entered: XCTestExpectation) { self.entered = entered }
+
+    func wait() async {
+        callCount += 1
+        // An unexpected second caller must fail an assertion, not hang the runner.
+        guard callCount == 1 else { return }
+        await withCheckedContinuation { continuation in
+            if released {
+                continuation.resume()
+            } else {
+                self.continuation = continuation
+            }
+            entered.fulfill()
+        }
+        wasCancelledOnReturn = Task.isCancelled
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+@MainActor
+final class ReviewReaderCancelledAdmissionTests: XCTestCase {
+    private func item(_ name: String) -> ContentFile {
+        let file = ContentFile()
+        file.url = URL(string: "reader-file://file/load/local/\(name).txt")!
+        file.updateCompoundKey()
+        return file
+    }
+
+    func testAlreadyCancelledStatusCallerCannotRevokeCurrentProducer() async {
+        let entered = expectation(description: "current status producer suspended")
+        let gate = CancelledAdmissionGate(entered)
+        let model = CloudDriveSyncStatusModel(statusLoader: { _ in
+            await gate.wait()
+            return .localOnly
+        })
+        let currentItem = item("current")
+        let discardedItem = item("discarded")
+        let current = Task { await model.refreshAsync(item: currentItem) }
+        await fulfillment(of: [entered], timeout: 3)
+
+        let discarded = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            XCTAssertTrue(Task.isCancelled)
+            await model.refreshAsync(item: discardedItem)
+        }
+        await discarded.value
+        gate.release()
+        await current.value
+
+        XCTAssertEqual(gate.callCount, 1)
+        XCTAssertFalse(gate.wasCancelledOnReturn, "A cancelled newcomer cannot revoke an admitted caller")
+        XCTAssertEqual(model.status, .localOnly)
+    }
+
+    func testAlreadyCancelledListCallerCannotRevokeCurrentFilteredLoad() async throws {
+        let entered = expectation(description: "current list filter suspended")
+        let gate = CancelledAdmissionGate(entered)
+        let initialItem = item("initial")
+        let currentItem = item("current")
+        let discardedItem = item("discarded")
+        let model = ReaderContentListViewModel(initialContents: [initialItem])
+        let current = Task {
+            try await model.load(contents: [currentItem], contentFilter: { @ReaderContentListActor _, _ in
+                await gate.wait()
+                return true
+            })
+        }
+        await fulfillment(of: [entered], timeout: 3)
+
+        let discarded = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                try await model.load(contents: [discardedItem])
+                XCTFail("Already-cancelled list caller must throw before changing ownership")
+            } catch is CancellationError {
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+        }
+        await discarded.value
+        XCTAssertTrue(model.isLoading, "Cancelled admission must leave the current load handle intact")
+        gate.release()
+        try await current.value
+
+        XCTAssertFalse(gate.wasCancelledOnReturn)
+        XCTAssertEqual(model.filteredContentIDs, [currentItem.compoundKey])
+        XCTAssertEqual(model.filteredContents.map(\.compoundKey), model.filteredContentIDs)
+        XCTAssertFalse(model.isLoading)
+    }
+
+    func testAlreadyCancelledStatusCallerDoesNotStartAProvider() async {
+        var providerCalls = 0
+        let model = CloudDriveSyncStatusModel(statusLoader: { _ in
+            providerCalls += 1
+            return .localOnly
+        })
+        let file = item("cancelled")
+        let caller = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await model.refreshAsync(item: file)
+        }
+        await caller.value
+        XCTAssertEqual(providerCalls, 0)
+        XCTAssertEqual(model.status, .loadingStatus)
+    }
+}

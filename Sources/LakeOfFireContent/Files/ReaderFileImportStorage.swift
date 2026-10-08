@@ -1,0 +1,125 @@
+import Foundation
+import SwiftCloudDrive
+import SwiftUtilities
+import LakeOfFireCore
+
+/// Installs without overwriting an existing item. Content identity, not URL inequality,
+/// decides whether an existing destination can be reused.
+@MainActor
+enum ReaderFileImportStorage {
+    static func install(fileURL: URL, targetDirectory: RootRelativePath, drive: CloudDrive) async throws -> RootRelativePath {
+        // The managed library owns real file/directory entries. Importing a
+        // symlink would retain authority over data outside the selected drive.
+        guard (try? FileManager.default.destinationOfSymbolicLink(
+            atPath: fileURL.path
+        )) == nil else {
+            throw CocoaError(.fileReadUnsupportedScheme)
+        }
+
+        let sourceValues = try fileURL.resourceValues(forKeys: [.isDirectoryKey])
+        guard let sourceIsDirectory = sourceValues.isDirectory else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        var originData: Data?
+        var collisionHash: String?
+        var collision = 0
+        let baseName = fileURL.deletingPathExtension().lastPathComponent
+        let ext = fileURL.lakePathExtension.isEmpty ? "" : "." + fileURL.lakePathExtension
+        var candidate = targetDirectory.appending(fileURL.lastPathComponent)
+        // Validate the parent before inspecting an occupied leaf. A leaf link
+        // is a name collision, while a parent link must never escape the drive.
+        let validatedTargetDirectory = try targetDirectory.directoryURL(forRoot: drive.rootDirectory)
+
+        func sourceIdentity() async throws -> Data {
+            if let originData { return originData }
+            let data: Data
+            if sourceIsDirectory {
+                let work = Task.detached(priority: .utility) {
+                    try fileURL.packageManifestDigest()
+                }
+                data = try await withTaskCancellationHandler {
+                    try await work.value
+                } onCancel: {
+                    work.cancel()
+                }
+            } else {
+                data = try await CoordinatedFileManager().contentsOfFile(coordinatingAccessAt: fileURL)
+            }
+            try Task.checkCancellation()
+            originData = data
+            return data
+        }
+
+        func existingMatches(_ path: RootRelativePath, at destination: URL) async throws -> Bool {
+            if destination.standardizedFileURL == fileURL.standardizedFileURL { return true }
+
+            // Never satisfy managed-library identity by following a link to an
+            // unrelated target. Leave the link untouched and collision-resolve
+            // the imported item beside it.
+            if (try? FileManager.default.destinationOfSymbolicLink(
+                atPath: destination.path
+            )) != nil {
+                return false
+            }
+
+            let destinationIsDirectory = try await drive.directoryExists(at: path)
+            if destinationIsDirectory != sourceIsDirectory { return false }
+
+            let source = try await sourceIdentity()
+            if sourceIsDirectory {
+                let work = Task.detached(priority: .utility) {
+                    try destination.packageManifestDigest()
+                }
+                let digest = try await withTaskCancellationHandler {
+                    try await work.value
+                } onCancel: {
+                    work.cancel()
+                }
+                try Task.checkCancellation()
+                return digest == source
+            }
+            return try await drive.readFile(at: path) == source
+        }
+
+        while true {
+            try Task.checkCancellation()
+            let lexicalDestination = validatedTargetDirectory.appendingPathComponent(
+                (candidate.path as NSString).lastPathComponent
+            )
+            let occupiedBySymlink = (try? FileManager.default.destinationOfSymbolicLink(
+                atPath: lexicalDestination.path
+            )) != nil
+            // Do not ask the strict drive resolver to follow an occupied leaf
+            // link. Keep it intact and choose the next collision-free name.
+            if !occupiedBySymlink {
+                let destination = try candidate.fileURL(forRoot: drive.rootDirectory)
+                let fileExists = try await drive.fileExists(at: candidate)
+                let directoryExists = try await drive.directoryExists(at: candidate)
+                let exists = fileExists || directoryExists
+                if exists {
+                    if try await existingMatches(candidate, at: destination) { return candidate }
+                } else {
+                    do {
+                        try await drive.upload(from: fileURL, to: candidate)
+                        return candidate
+                    } catch {
+                        // A concurrent import may have installed the same name after our check.
+                        // Only an existing-destination error is retried; never swallow I/O failure.
+                        let nsError = error as NSError
+                        guard nsError.domain == NSCocoaErrorDomain,
+                              nsError.code == CocoaError.fileWriteFileExists.rawValue else { throw error }
+                        if try await existingMatches(candidate, at: destination) { return candidate }
+                    }
+                }
+            }
+            if collisionHash == nil {
+                let identity = try await sourceIdentity()
+                collisionHash = String(format: "%02X", stableHash(data: identity)).prefix(6).uppercased()
+            }
+            guard collision < Int.max else { throw CocoaError(.fileWriteFileExists) }
+            collision += 1
+            let suffix = collision == 1 ? "" : "-\(collision)"
+            candidate = targetDirectory.appending(baseName + " (" + (collisionHash ?? "") + suffix + ")" + ext)
+        }
+    }
+}

@@ -1,4 +1,9 @@
 import SwiftUI
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireContent
+import LakeOfFireCore
 import RealmSwift
 import LakeKit
 import SwiftUIWebView
@@ -6,21 +11,45 @@ import WebKit
 import SwiftSoup
 import Combine
 import RealmSwiftGaps
-import LakeOfFireContent
+import Perception
 #if os(iOS)
 import UIKit
 #endif
 
+
 #if os(iOS)
-@MainActor
-private func currentReaderWindowTopSafeAreaInset() -> CGFloat {
+private func currentWindowTopSafeAreaInset() -> CGFloat {
     UIApplication.shared.connectedScenes
         .compactMap { $0 as? UIWindowScene }
-        .flatMap { $0.windows }
+        .flatMap(\.windows)
         .first { $0.isKeyWindow }?
         .safeAreaInsets.top ?? 0
 }
 #endif
+
+private enum EBookViewportStabilityCoordinator {
+    static let suspiciousTopSafeAreaChangeThreshold: CGFloat = 32
+
+    static func acceptedSampledTopInset(
+        current: CGFloat,
+        previous: CGFloat?,
+        preservesPreviousWhenDecreasing: Bool = false
+    ) -> CGFloat {
+        let clampedCurrent = min(max(0, current), 88)
+        guard let previous, previous > 0 else { return clampedCurrent }
+        if clampedCurrent <= 0 {
+            return previous
+        }
+        if preservesPreviousWhenDecreasing,
+           clampedCurrent < previous {
+            return previous
+        }
+        if abs(clampedCurrent - previous) > suspiciousTopSafeAreaChangeThreshold {
+            return previous
+        }
+        return clampedCurrent
+    }
+}
 
 private struct ReaderStatusBarFadeOverlay: ViewModifier {
     var topFadeHeight: CGFloat
@@ -73,70 +102,50 @@ private extension View {
         modifier(ReaderStatusBarFadeOverlay(topFadeHeight: top, backgroundColor: backgroundColor))
     }
 
+#if os(iOS)
     @ViewBuilder
     func readerStatusBarFadeForCurrentDevice(top: CGFloat, backgroundColor: Color) -> some View {
-#if os(iOS)
         let idiom = UIDevice.current.userInterfaceIdiom
         if idiom == .phone {
             readerStatusBarFade(top: top, backgroundColor: backgroundColor)
         } else {
             self
         }
-#else
-        self
-#endif
     }
 
     @ViewBuilder
     func readerWebViewSafeAreaExpansionForCurrentDevice() -> some View {
-#if os(iOS)
-        if ReaderWebViewSafeAreaPolicy.expandsIntoAllSafeAreas(
-            isPhone: UIDevice.current.userInterfaceIdiom == .phone
-        ) {
+        if UIDevice.current.userInterfaceIdiom == .phone {
             ignoresSafeArea(.all, edges: .all)
+        } else if #available(iOS 26, *) {
+            // Keep the WebView inside its iPad split-view column while letting
+            // its themed background continue beneath vertical reader chrome.
+            // The sampled WebKit obscured insets still keep document content
+            // below the native controls.
+            ignoresSafeArea(.container, edges: .vertical)
         } else {
             self
         }
-#else
-        self
+    }
+#elseif os(macOS)
+    @ViewBuilder
+    func readerWebViewSafeAreaExpansionForCurrentDevice() -> some View {
+        if #available(macOS 26, *) {
+            ignoresSafeArea(.all, edges: .top)
+        } else {
+            self
+        }
+    }
 #endif
-    }
-
 }
 
-enum ReaderWebViewSafeAreaPolicy {
-    static func expandsIntoAllSafeAreas(isPhone: Bool) -> Bool {
-        isPhone
-    }
-}
+
+
 
 typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiTargetFrames: Bool) async throws -> Void
 
-@MainActor private var ebookChromeInsetRevision: Int = 0
-
-private enum EBookViewportStabilityCoordinator {
-    static let suspiciousTopSafeAreaChangeThreshold: CGFloat = 32
-
-    static func acceptedSampledTopInset(
-        current: CGFloat,
-        previous: CGFloat?,
-        preservesPreviousWhenDecreasing: Bool = false
-    ) -> CGFloat {
-        let clampedCurrent = min(max(0, current), 88)
-        guard let previous, previous > 0 else { return clampedCurrent }
-        if clampedCurrent <= 0 {
-            return previous
-        }
-        if preservesPreviousWhenDecreasing,
-           clampedCurrent < previous {
-            return previous
-        }
-        if abs(clampedCurrent - previous) > suspiciousTopSafeAreaChangeThreshold {
-            return previous
-        }
-        return clampedCurrent
-    }
-}
+private var ebookChromeInsetRevision: Int = 0
+private var lastSyncedEbookChromeInsets: (pageURL: URL, top: CGFloat, toolbarBottom: CGFloat, bottom: CGFloat)?
 
 @MainActor
 func readerPaginationTrackingSettingsKey(
@@ -156,13 +165,31 @@ func applyAdaptiveReaderWidth(
     evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
 ) async {
     guard hasAsyncCaller else {
-        debugPrint("# EPUB  readerAdaptiveWidth.set.skip", "reason=\(reason)", "info=no asyncCaller")
         return
     }
     let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
     do {
         try await evaluateJavaScript(
-            "document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');",
+            """
+            (() => {
+                const mark = (event, payload = '') => {
+                    const label = `MANABI swiftSettings.adaptiveWidth.${event}${payload ? ' ' + payload : ''}`;
+                    try { performance.mark(label); } catch (_) {}
+                    try { console.timeStamp?.(label); } catch (_) {}
+                };
+                mark('start', 'reason=\(reason) maxWidth=\(maxWidthOverride)');
+                const value = '\(maxWidthOverride)';
+                const style = document.body?.style;
+                let changed = false;
+                if (style && style.getPropertyValue('--mnb-reader-max-width-override') !== value) {
+                    style.setProperty('--mnb-reader-max-width-override', value);
+                    changed = true;
+                }
+                mark('finish', `reason=\(reason) maxWidth=\(maxWidthOverride) changed=${changed}`);
+            })();
+            //# sourceURL=lake-reader-adaptive-width-sync.js
+
+            """,
             true
         )
         if requestGeometryBake {
@@ -183,7 +210,6 @@ func syncReaderPaginationTrackingSettingsKey(
     evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
 ) async {
     guard hasAsyncCaller else {
-        debugPrint("# EPUB  paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
         return
     }
     let key = readerPaginationTrackingSettingsKey(
@@ -196,9 +222,7 @@ func syncReaderPaginationTrackingSettingsKey(
             "window.paginationTrackingSettingsKey = '" + key + "';",
             true
         )
-        debugPrint("# EPUB  paginationSettingsKey.set", "reason=\(reason)", "key=\(key)")
     } catch {
-        debugPrint("# EPUB  paginationSettingsKey.set.error", error.localizedDescription)
     }
 }
 
@@ -232,6 +256,8 @@ func requestReaderTypographyPaginationRefresh(
                 }
                 return { rendered: false, reason: 'missing-renderer' };
             })();
+            //# sourceURL=lake-reader-typography-refresh.js
+
             """,
             true
         )
@@ -251,19 +277,23 @@ func applyReaderFontSize(
     evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
 ) async {
     guard hasAsyncCaller else {
-        debugPrint("# EPUB  paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
         return
     }
     do {
-        let fontSize = "\(size)px"
         try await evaluateJavaScript(
             """
             (function() {
-                const fontSize = '\(fontSize)';
+                const mark = (event, payload = '') => {
+                    const label = `MANABI swiftSettings.fontSize.${event}${payload ? ' ' + payload : ''}`;
+                    try { performance.mark(label); } catch (_) {}
+                    try { console.timeStamp?.(label); } catch (_) {}
+                };
+                mark('start', 'reason=\(reason) size=\(size)');
+                const fontSize = '\(size)px';
                 const applyFontSize = (doc) => {
                     const body = doc?.body;
                     if (!body) { return false; }
-                    body.style.fontSize;
+                    if (body.style.fontSize === fontSize) { return false; }
                     body.style.fontSize = fontSize;
                     return true;
                 };
@@ -288,8 +318,11 @@ func applyReaderFontSize(
                 try {
                     appliedCount += globalThis.manabiApplyReaderFontSizeToEbookDocuments?.('lake-reader-font-size')?.appliedCount ?? 0;
                 } catch (_) {}
+                mark('finish', `reason=\(reason) size=\(size) appliedCount=${appliedCount}`);
                 return { appliedCount, fontSize };
             })();
+            //# sourceURL=lake-reader-font-size-sync.js
+
             """,
             true
         )
@@ -305,6 +338,83 @@ func applyReaderFontSize(
         await requestReaderTrackingSectionGeometryBake(reason: reason, evaluateJavaScript: evaluateJavaScript)
     } catch {
         print("Font size update failed: \(error)")
+    }
+}
+
+@MainActor
+func applyReaderTheme(
+    colorScheme: ColorScheme,
+    lightModeTheme: LightModeTheme,
+    darkModeTheme: DarkModeTheme,
+    reason: String,
+    hasAsyncCaller: Bool,
+    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
+) async {
+    guard hasAsyncCaller else { return }
+    let colorSchemeValue = colorScheme == .dark ? "dark" : "light"
+    do {
+        try await evaluateJavaScript(
+            """
+            (function() {
+                const colorScheme = '\(colorSchemeValue)';
+                const lightModeTheme = '\(lightModeTheme.rawValue)';
+                const darkModeTheme = '\(darkModeTheme.rawValue)';
+                const applyTheme = (doc) => {
+                    const body = doc?.body;
+                    if (!body) { return false; }
+                    let changed = false;
+                    if (body.dataset.mnbColorScheme !== colorScheme) {
+                        body.dataset.mnbColorScheme = colorScheme;
+                        changed = true;
+                    }
+                    if (body.dataset.mnbLightTheme !== lightModeTheme) {
+                        body.dataset.mnbLightTheme = lightModeTheme;
+                        changed = true;
+                    }
+                    if (body.dataset.mnbDarkTheme !== darkModeTheme) {
+                        body.dataset.mnbDarkTheme = darkModeTheme;
+                        changed = true;
+                    }
+                    if (doc.documentElement?.style?.getPropertyValue?.('color-scheme') !== colorScheme) {
+                        doc.documentElement?.style?.setProperty?.('color-scheme', colorScheme);
+                        changed = true;
+                    }
+                    if (body.style?.getPropertyValue?.('color-scheme') !== colorScheme) {
+                        body.style?.setProperty?.('color-scheme', colorScheme);
+                        changed = true;
+                    }
+                    return changed;
+                };
+                globalThis.manabiReaderColorScheme = colorScheme;
+                globalThis.manabiReaderLightModeTheme = lightModeTheme;
+                globalThis.manabiReaderDarkModeTheme = darkModeTheme;
+                globalThis.manabiApplyReaderThemeToEbookDocuments = (reason = 'manual', explicitDoc = null) => {
+                    let appliedCount = 0;
+                    const docs = [];
+                    if (explicitDoc) { docs.push(explicitDoc); }
+                    try {
+                        const contents = globalThis.reader?.view?.renderer?.getContents?.() || [];
+                        for (const content of contents) {
+                            const doc = content?.doc ?? content?.document ?? null;
+                            if (doc && !docs.includes(doc)) { docs.push(doc); }
+                        }
+                    } catch (_) {}
+                    for (const doc of docs) {
+                        if (applyTheme(doc)) { appliedCount += 1; }
+                    }
+                    return { reason, appliedCount, colorScheme, lightModeTheme, darkModeTheme };
+                };
+                let appliedCount = applyTheme(document) ? 1 : 0;
+                appliedCount += globalThis.manabiApplyReaderThemeToEbookDocuments('\(reason)')?.appliedCount ?? 0;
+                return { appliedCount, colorScheme, lightModeTheme, darkModeTheme };
+            })();
+            //# sourceURL=lake-reader-theme-sync.js
+
+            """,
+            true
+        )
+    } catch {
+        print("Reader theme update failed: \(error)")
     }
 }
 
@@ -354,65 +464,6 @@ func applyInitialReaderPresentationSettings(
 }
 
 @MainActor
-func applyReaderTheme(
-    colorScheme: ColorScheme,
-    lightModeTheme: LightModeTheme,
-    darkModeTheme: DarkModeTheme,
-    reason: String,
-    hasAsyncCaller: Bool,
-    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
-) async {
-    guard hasAsyncCaller else { return }
-    let colorSchemeValue = colorScheme == .dark ? "dark" : "light"
-    do {
-        try await evaluateJavaScript(
-            """
-            (function() {
-                const colorScheme = '\(colorSchemeValue)';
-                const lightModeTheme = '\(lightModeTheme.rawValue)';
-                const darkModeTheme = '\(darkModeTheme.rawValue)';
-                const applyTheme = (doc) => {
-                    const body = doc?.body;
-                    if (!body) { return false; }
-                    body.dataset.mnbColorScheme = colorScheme;
-                    body.dataset.mnbLightTheme = lightModeTheme;
-                    body.dataset.mnbDarkTheme = darkModeTheme;
-                    doc.documentElement?.style?.setProperty?.('color-scheme', colorScheme);
-                    body.style?.setProperty?.('color-scheme', colorScheme);
-                    return true;
-                };
-                globalThis.manabiReaderColorScheme = colorScheme;
-                globalThis.manabiReaderLightModeTheme = lightModeTheme;
-                globalThis.manabiReaderDarkModeTheme = darkModeTheme;
-                globalThis.manabiApplyReaderThemeToEbookDocuments = (reason = 'manual', explicitDoc = null) => {
-                    let appliedCount = 0;
-                    const docs = [];
-                    if (explicitDoc) { docs.push(explicitDoc); }
-                    try {
-                        const contents = globalThis.reader?.view?.renderer?.getContents?.() || [];
-                        for (const content of contents) {
-                            const doc = content?.doc ?? content?.document ?? null;
-                            if (doc && !docs.includes(doc)) { docs.push(doc); }
-                        }
-                    } catch (_) {}
-                    for (const doc of docs) {
-                        if (applyTheme(doc)) { appliedCount += 1; }
-                    }
-                    return { reason, appliedCount, colorScheme, lightModeTheme, darkModeTheme };
-                };
-                let appliedCount = applyTheme(document) ? 1 : 0;
-                appliedCount += globalThis.manabiApplyReaderThemeToEbookDocuments('\(reason)')?.appliedCount ?? 0;
-                return { appliedCount, colorScheme, lightModeTheme, darkModeTheme };
-            })();
-            """,
-            true
-        )
-    } catch {
-        print("Reader theme update failed: \(error)")
-    }
-}
-
-@MainActor
 private func ebookToolbarBottomOffset(
     obscuredBottomInset: CGFloat,
     additionalBottomSafeAreaInset: CGFloat
@@ -442,18 +493,39 @@ func syncEbookViewerChromeInsets(
     let obscuredTopInset = max(0, obscuredTopInset)
     let toolbarBottomOffset = max(0, toolbarBottomOffset)
     let obscuredBottomInset = max(0, obscuredBottomInset)
+    if let lastSyncedEbookChromeInsets,
+       lastSyncedEbookChromeInsets.pageURL == pageURL,
+       lastSyncedEbookChromeInsets.top == obscuredTopInset,
+       lastSyncedEbookChromeInsets.toolbarBottom == toolbarBottomOffset,
+       lastSyncedEbookChromeInsets.bottom == obscuredBottomInset {
+        return
+    }
+    lastSyncedEbookChromeInsets = (
+        pageURL: pageURL,
+        top: obscuredTopInset,
+        toolbarBottom: toolbarBottomOffset,
+        bottom: obscuredBottomInset
+    )
     let obscuredTopInsetCSS = "\(obscuredTopInset)px"
     let toolbarBottomOffsetCSS = "\(toolbarBottomOffset)px"
     let obscuredBottomInsetCSS = "\(obscuredBottomInset)px"
-    print("# BOOK native.chromeInsets.sync pageURL=\(pageURL.absoluteString) revision=\(revision) top=\(obscuredTopInset) toolbarBottomOffset=\(toolbarBottomOffset) bottom=\(obscuredBottomInset)")
     do {
         try await evaluateJavaScript(
             """
             (function() {
+              const postMay8 = (_stage, _payload = {}) => {};
               const hasApplyFunction = typeof window.manabiApplyChromeInsets === 'function';
               const obscuredTopInset = '\(obscuredTopInsetCSS)';
               const toolbarBottomOffset = '\(toolbarBottomOffsetCSS)';
               const obscuredBottomInset = '\(obscuredBottomInsetCSS)';
+              postMay8('before', {
+                hasApplyFunction,
+                previousInsets: window.__swiftUIWebViewObscuredInsets || null,
+                obscuredTopInset,
+                toolbarBottomOffset,
+                obscuredBottomInset,
+                revision: \(revision),
+              });
               const appliedInsets = {
                 obscuredTopInset,
                 toolbarBottomOffset,
@@ -461,9 +533,10 @@ func syncEbookViewerChromeInsets(
                 source: 'native',
                 revision: \(revision),
               };
-              window.__manabiChromeInsets = appliedInsets;
+              window.__swiftUIWebViewObscuredInsets = appliedInsets;
               if (hasApplyFunction) {
                 window.manabiApplyChromeInsets(appliedInsets, 'native-sync');
+                postMay8('after.applyFunction', { appliedInsets });
                 return;
               }
               const targets = [document.documentElement, document.body].filter(Boolean);
@@ -476,16 +549,14 @@ func syncEbookViewerChromeInsets(
                 readerStage.style.top = obscuredTopInset;
                 readerStage.style.bottom = 'var(--mnb-reader-stage-bottom-inset, 0px)';
               }
+              postMay8('after.fallbackStyle', { appliedInsets });
             })();
+            //# sourceURL=lake-reader-chrome-insets-sync.js
+
             """,
             true
         )
     } catch {
-        debugPrint(
-            "# EPUB  ebook.viewer.insets.apply.error",
-            "pageURL=\(pageURL.absoluteString)",
-            "error=\(error.localizedDescription)"
-        )
     }
 }
 
@@ -513,6 +584,10 @@ fileprivate struct ThemeModifier: ViewModifier {
             lightModeTheme.rawValue,
             darkModeTheme.rawValue,
         ].joined(separator: "|")
+    }
+
+    private var isCurrentPageEBook: Bool {
+        readerViewModel.state.pageURL.scheme == "ebook"
     }
 
     private func applyFontSize(_ size: Double, reason: String) async {
@@ -616,6 +691,7 @@ fileprivate struct ThemeModifier: ViewModifier {
                 }
             }
             .task(id: initialReaderPresentationSettingsTaskID) { @MainActor in
+                guard !isCurrentPageEBook else { return }
                 await applyInitialReaderPresentationSettings(
                     readerFontSize: resolvedReaderFontSize,
                     colorScheme: colorScheme,
@@ -652,7 +728,7 @@ fileprivate struct ThemeModifier: ViewModifier {
 fileprivate struct PageMetadataModifier: ViewModifier {
     @EnvironmentObject var readerContent: ReaderContent
     @EnvironmentObject var readerViewModel: ReaderViewModel
-
+    
     func body(content: Content) -> some View {
         content
             .onChange(of: readerViewModel.state.pageImageURL) { pageImageURL in
@@ -665,7 +741,7 @@ fileprivate struct PageMetadataModifier: ViewModifier {
                 Task { @RealmBackgroundActor in
                     let contents = try await ReaderContentLoader.loadAll(url: contentURL)
                     for content in contents where content.imageUrl == nil {
-                        try await content.realm?.asyncWrite {
+                        try await content.realm?.asyncWritePreservingOwnership {
                             content.imageUrl = imageURL
                             content.refreshChangeMetadata(explicitlyModified: true)
                         }
@@ -683,14 +759,14 @@ fileprivate struct PageMetadataModifier: ViewModifier {
 fileprivate struct ReaderStateChangeModifier: ViewModifier {
     @EnvironmentObject var readerContent: ReaderContent
     @EnvironmentObject var readerViewModel: ReaderViewModel
-
+    
     func body(content: Content) -> some View {
         content
             .onChange(of: readerViewModel.state) { [oldState = readerViewModel.state] state in
                 if readerContent.isReaderProvisionallyNavigating != state.isProvisionallyNavigating {
                     readerContent.isReaderProvisionallyNavigating = state.isProvisionallyNavigating
                 }
-
+                
                 //            if !state.isLoading && !state.isProvisionallyNavigating, oldState.pageURL != state.pageURL, readerContent.content.url != state.pageURL {
                 // May be from replaceState or pushState
                 // TODO: Improve replaceState support
@@ -700,13 +776,26 @@ fileprivate struct ReaderStateChangeModifier: ViewModifier {
     }
 }
 
+fileprivate struct ReaderHeaderMediaSyncID: Equatable {
+    let readerPageURL: URL
+    let contentCompoundKey: String?
+    let contentHasAudio: Bool
+    let hasRecordedAudio: Bool
+    let hasPreparedAITTS: Bool
+    let isPlaying: Bool
+    let playbackSource: String
+    let lastRenderedURL: URL?
+    let webViewPageURL: URL
+    let hasReaderRenderReady: Bool
+}
+
 fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
     @EnvironmentObject var readerContent: ReaderContent
     @EnvironmentObject var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     @EnvironmentObject var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject var readerViewModel: ReaderViewModel
     @EnvironmentObject var scriptCaller: WebViewScriptCaller
-
+    
     func body(content: Content) -> some View {
         content
             .task(id: readerHeaderMediaSyncID) {
@@ -731,12 +820,12 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
                     await syncReaderHeaderMediaButton(reason: "playbackSource")
                 }
             }
-            .onChange(of: readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil") { _ in
+            .onChange(of: readerModeViewModel.lastRenderedURL) { _ in
                 Task { @MainActor in
                     await syncReaderHeaderMediaButton(reason: "readerModeRendered")
                 }
             }
-            .onChange(of: readerViewModel.state.pageURL.absoluteString) { _ in
+            .onChange(of: readerViewModel.state.pageURL) { _ in
                 Task { @MainActor in
                     await syncReaderHeaderMediaButton(reason: "webViewPageURL")
                 }
@@ -748,26 +837,26 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
             }
     }
 
-    private var readerHeaderMediaSyncID: String {
-        [
-            readerContent.pageURL.absoluteString,
-            readerContent.content?.compoundKey ?? "nil",
-            String(readerContent.content?.hasAudio ?? false),
-            String(readerContent.content?.hasHTML ?? false),
-            String(readerMediaPlayerViewModel.hasRecordedAudio),
-            String(readerMediaPlayerViewModel.hasPreparedAITTS),
-            String(readerMediaPlayerViewModel.isPlaying),
-            readerMediaPlayerViewModel.playbackSource.rawValue,
-            readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil",
-            readerViewModel.state.pageURL.absoluteString,
-            String(readerViewModel.state.hasReaderRenderReady),
-        ].joined(separator: "|")
+    private var readerHeaderMediaSyncID: ReaderHeaderMediaSyncID {
+        ReaderHeaderMediaSyncID(
+            readerPageURL: readerContent.pageURL,
+            contentCompoundKey: readerContent.content?.compoundKey,
+            contentHasAudio: readerContent.content?.hasAudio ?? false,
+            hasRecordedAudio: readerMediaPlayerViewModel.hasRecordedAudio,
+            hasPreparedAITTS: readerMediaPlayerViewModel.hasPreparedAITTS,
+            isPlaying: readerMediaPlayerViewModel.isPlaying,
+            playbackSource: readerMediaPlayerViewModel.playbackSource.rawValue,
+            lastRenderedURL: readerModeViewModel.lastRenderedURL,
+            webViewPageURL: readerViewModel.state.pageURL,
+            hasReaderRenderReady: readerViewModel.state.hasReaderRenderReady
+        )
     }
 
     @MainActor
     private func syncReaderHeaderMediaButton(reason: String) async {
-        guard scriptCaller.hasAsyncCaller else { return }
-
+        guard scriptCaller.hasAsyncCaller else {
+            return
+        }
         let isPlaying = readerMediaPlayerViewModel.isPlaying
         let webViewPageURL = readerViewModel.state.pageURL
         let contentURL = readerContent.content?.url ?? readerContent.pageURL
@@ -785,19 +874,20 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
             hasLoadedRecordedMedia: readerMediaPlayerViewModel.hasRecordedAudio
         )
         let hasRecordedAudio = availability.hasRecordedAudio
-        let ttsAvailable = availability.canReadAloud && !hasRecordedAudio
-        let usesTTS = readerMediaPlayerViewModel.playbackSource == .aiTextToSpeech
-            || (!hasRecordedAudio && ttsAvailable)
+        let ttsAvailable = availability.canReadAloud
+        let usesTTS = readerMediaPlayerViewModel.playbackSource == .aiTextToSpeech || (!hasRecordedAudio && ttsAvailable)
         let mediaAvailable = availability.hasAnyPlayableAudio
             || readerMediaPlayerViewModel.hasPreparedAITTS
-
         if isReaderModeContent {
-            guard !webViewPageURL.isReaderURLLoaderURL else { return }
-            guard renderedCanonicalURL == contentCanonicalURL || readerViewModel.state.hasReaderRenderReady else { return }
+            guard !webViewPageURL.isReaderURLLoaderURL else {
+                return
+            }
+            guard renderedCanonicalURL == contentCanonicalURL || readerViewModel.state.hasReaderRenderReady else {
+                return
+            }
         }
-
         do {
-            _ = try await scriptCaller.evaluateJavaScript(
+            try await scriptCaller.evaluateJavaScript(
                 """
                 window.manabiSyncReaderHeaderMediaButton?.({
                     mediaAvailable: \(mediaAvailable ? "true" : "false"),
@@ -809,51 +899,66 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
                 duplicateInMultiTargetFrames: true
             )
         } catch {
-            debugPrint("# MEDIA readerHeader.sync.error", error.localizedDescription)
         }
     }
 }
 
 fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
+    let isEnabled: Bool
+
     @EnvironmentObject var readerContent: ReaderContent
     @EnvironmentObject var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject var readerViewModel: ReaderViewModel
-
+    
     func body(content: Content) -> some View {
-        let currentCanonicalURL = readerContent.pageURL.canonicalReaderContentURLForHotfix()
-        let renderedCanonicalURL = readerModeViewModel.lastRenderedURL?.canonicalReaderContentURLForHotfix()
-        let webViewPageURL = readerViewModel.state.pageURL
-        let webViewShowingNonLoaderPage = !webViewPageURL.isNativeReaderView && !webViewPageURL.isReaderURLLoaderURL
-        let expectsReaderModeCompletion = (readerContent.content?.isReaderModeByDefault ?? false)
-            || readerModeViewModel.pendingReaderModeURL != nil
-            || readerModeViewModel.expectedSyntheticReaderLoaderURL != nil
-            || readerModeViewModel.isReaderModeLoading
-            || readerContent.isRenderingReaderHTML
-        let webViewHasReaderRenderReady = readerViewModel.state.hasReaderRenderReady
-        let hasRenderedCurrentPage = renderedCanonicalURL == currentCanonicalURL
-            && renderedCanonicalURL != nil
-            && webViewShowingNonLoaderPage
-        let hasVisibleContent =
-            hasRenderedCurrentPage
-            || (
-                webViewShowingNonLoaderPage
-                && expectsReaderModeCompletion
-                && webViewHasReaderRenderReady
-            )
-            || (
-                readerContent.content != nil
-                && webViewShowingNonLoaderPage
-                && !readerContent.isReaderProvisionallyNavigating
-                && !readerContent.isRenderingReaderHTML
-            )
-        let shouldShowOverlay = readerModeViewModel.isReaderModeLoading && !hasVisibleContent
-        content
-            .modifier(
-                ReaderLoadingProgressOverlayViewModifier(
-                    isLoading: shouldShowOverlay,
-                    context: "ReaderOverlay"
+        WithPerceptionTracking {
+            if isEnabled {
+                let currentCanonicalURL = readerContent.pageURL
+                    .canonicalReaderContentURLForHotfix()
+                let renderedCanonicalURL = readerModeViewModel.lastRenderedURL?
+                    .canonicalReaderContentURLForHotfix()
+                let webViewPageURL = readerViewModel.state.pageURL
+                let webViewShowingNonLoaderPage =
+                    !webViewPageURL.isNativeReaderView
+                    && !webViewPageURL.isReaderURLLoaderURL
+                let expectsReaderModeCompletion =
+                    (readerContent.content?.isReaderModeByDefault ?? false)
+                    || readerModeViewModel.pendingReaderModeURL != nil
+                    || readerModeViewModel.expectedSyntheticReaderLoaderURL
+                        != nil
+                    || readerModeViewModel.isReaderModeLoading
+                    || readerContent.isRenderingReaderHTML
+                let webViewHasReaderRenderReady = readerViewModel.state
+                    .hasReaderRenderReady
+                let hasRenderedCurrentPage =
+                    renderedCanonicalURL == currentCanonicalURL
+                    && renderedCanonicalURL != nil
+                    && webViewShowingNonLoaderPage
+                let hasVisibleContent =
+                    hasRenderedCurrentPage
+                    || (
+                        webViewShowingNonLoaderPage
+                        && expectsReaderModeCompletion
+                        && webViewHasReaderRenderReady
+                    )
+                    || (
+                        readerContent.content != nil
+                        && webViewShowingNonLoaderPage
+                        && !readerContent.isReaderProvisionallyNavigating
+                        && !readerContent.isRenderingReaderHTML
+                    )
+                let shouldShowOverlay =
+                    readerModeViewModel.isReaderModeLoading
+                    && !hasVisibleContent
+                content.modifier(
+                    ReaderLoadingProgressOverlayViewModifier(
+                        isLoading: shouldShowOverlay
+                    )
                 )
-            )
+            } else {
+                content
+            }
+        }
 //            .overlay { Text(readerModeViewModel.isReaderModeLoading ? "read" : "") }
 //            .overlay {
 //                Text(readerModeViewModel.isReaderModeLoading.description)
@@ -862,59 +967,125 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
     }
 }
 
+public struct WebViewNavigatorEnvironmentKey: EnvironmentKey {
+    public static var defaultValue = WebViewNavigator()
+}
+
+public extension EnvironmentValues {
+    // the new key path to access your object (\.object)
+    var webViewNavigator: WebViewNavigator {
+        get { self[WebViewNavigatorEnvironmentKey.self] }
+        set { self[WebViewNavigatorEnvironmentKey.self] = newValue }
+    }
+
+    var readerReservedTopChromeInset: CGFloat {
+        get { self[ReaderReservedTopChromeInsetEnvironmentKey.self] }
+        set { self[ReaderReservedTopChromeInsetEnvironmentKey.self] = newValue }
+    }
+}
+
+public struct ReaderReservedTopChromeInsetEnvironmentKey: EnvironmentKey {
+    public static let defaultValue: CGFloat = 0
+}
+
+enum ReaderContentSelectionOpenAction: Equatable {
+    case recordHistoryVisit
+    case navigate
+
+    static func resolve(
+        contentURL: URL,
+        currentPageURL: URL
+    ) -> ReaderContentSelectionOpenAction {
+        contentURL.matchesReaderURL(currentPageURL)
+            ? .recordHistoryVisit
+            : .navigate
+    }
+}
+
 public extension WebViewNavigator {
+    @MainActor
+    func openReaderContentSelection(
+        _ content: any ReaderContentProtocol,
+        currentPageURL: URL,
+        readerModeViewModel: ReaderModeViewModel?,
+        source: String = "WebViewNavigator.openReaderContentSelection"
+    ) async throws {
+        switch ReaderContentSelectionOpenAction.resolve(
+            contentURL: content.url,
+            currentPageURL: currentPageURL
+        ) {
+        case .recordHistoryVisit:
+            try await ReaderContentLoader.recordHistoryVisit(
+                for: content,
+                source: "\(source).alreadyLoaded"
+            )
+        case .navigate:
+            try await load(
+                content: content,
+                readerModeViewModel: readerModeViewModel
+            )
+        }
+    }
+
     /// Injects browser history (unlike loadHTMLWithBaseURL)
     @MainActor
     func load(
         content: any ReaderContentProtocol,
         readerFileManager: ReaderFileManager = ReaderFileManager.shared,
-        readerModeViewModel: ReaderModeViewModel?
+        readerModeViewModel: ReaderModeViewModel?,
+        shouldLoad: @MainActor () -> Bool = { true }
     ) async throws {
-        let loadStartedAt = CFAbsoluteTimeGetCurrent()
-        if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
-            let loadSnapshot = debugLoadSnapshot
-            let resolvedAt = CFAbsoluteTimeGetCurrent()
-            debugPrint(
-                "# READERLOAD stage=navigator.loadContent.begin contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault)"
-            )
-            debugPrint(
-                "# READERLOAD stage=navigator.loadContent.state targetURL=\(url.absoluteString) currentWebViewURL=\(loadSnapshot.currentWebViewURL) lastRequestURL=\(loadSnapshot.lastRequestURL) lastDataLoadBaseURL=\(loadSnapshot.lastDataLoadBaseURL) lastHTMLBaseURL=\(loadSnapshot.lastHTMLBaseURL) hasAttachedWebView=\(loadSnapshot.hasAttachedWebView) isLoading=\(loadSnapshot.isLoading)"
-            )
-            if let readerModeViewModel {
-                if url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
-                    let isLoading = content.isReaderModeByDefault || url.isReaderURLLoaderURL
-                    readerModeViewModel.readerModeLoading(isLoading)
-                    debugPrint(
-                        "# READERLOAD stage=navigator.loadContent.readerModeLoading targetURL=\(url.absoluteString) loading=\(isLoading) source=currentContent contentURL=\(content.url.absoluteString)"
-                    )
-//                    debugPrint("# WebViewNavigator load", isLoading)
-                }
+        try await loadResolvedContent(
+            content: content, readerModeViewModel: readerModeViewModel, shouldLoad: shouldLoad,
+            resolveURL: {
+                try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager)
             }
+        )
+    }
+
+    /// Shared execution path; the resolver permits deterministic suspension tests
+    /// without replacing navigation or presentation effects with a model.
+    @MainActor
+    internal func loadResolvedContent(
+        content: any ReaderContentProtocol,
+        readerModeViewModel: ReaderModeViewModel?,
+        shouldLoad: @MainActor () -> Bool,
+        resolveURL: @MainActor () async throws -> URL?
+    ) async throws {
+        let beginSnapshot = debugLoadSnapshot
+        if let url = try await resolveURL() {
+            // Callers refreshing an existing document can lose ownership while
+            // native content is being resolved. Check before any UI mutation.
+            guard shouldLoad() else { return }
+            let loadSnapshot = debugLoadSnapshot
             if loadSnapshot.lastRequestURL == url.absoluteString
                 || loadSnapshot.lastDataLoadBaseURL == url.absoluteString
                 || loadSnapshot.lastHTMLBaseURL == url.absoluteString
                 || loadSnapshot.currentWebViewURL == url.absoluteString {
-                debugPrint(
-                    "# READERLOAD stage=navigator.loadContent.duplicateTarget targetURL=\(url.absoluteString) currentWebViewURL=\(loadSnapshot.currentWebViewURL) lastRequestURL=\(loadSnapshot.lastRequestURL) lastDataLoadBaseURL=\(loadSnapshot.lastDataLoadBaseURL) lastHTMLBaseURL=\(loadSnapshot.lastHTMLBaseURL) isLoading=\(loadSnapshot.isLoading)"
-                )
                 if loadSnapshot.isLoading {
-                    debugPrint(
-                        "# READERLOAD stage=navigator.loadContent.skipDuplicateActiveLoad targetURL=\(url.absoluteString)"
-                    )
                     return
                 }
             }
+            let navigatorMovedSinceBegin =
+                beginSnapshot.currentWebViewURL != loadSnapshot.currentWebViewURL
+                || beginSnapshot.lastRequestURL != loadSnapshot.lastRequestURL
+                || beginSnapshot.lastDataLoadBaseURL != loadSnapshot.lastDataLoadBaseURL
+                || beginSnapshot.lastHTMLBaseURL != loadSnapshot.lastHTMLBaseURL
+            let targetStillCurrent =
+                loadSnapshot.currentWebViewURL == url.absoluteString
+                || loadSnapshot.lastRequestURL == url.absoluteString
+                || loadSnapshot.lastDataLoadBaseURL == url.absoluteString
+                || loadSnapshot.lastHTMLBaseURL == url.absoluteString
+            if navigatorMovedSinceBegin && !targetStillCurrent {
+                return
+            }
+            // No presentation effect may precede the stale-navigation check.
+            if let readerModeViewModel,
+               url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
+                readerModeViewModel.readerModeLoading(content.isReaderModeByDefault || url.isReaderURLLoaderURL)
+            }
             load(URLRequest(url: url))
-            debugPrint(
-                "# READERLOAD stage=navigator.loadContent.dispatched targetURL=\(url.absoluteString)"
-            )
-            debugPrint(
-                "# READERLOAD stage=navigator.loadContent.summary contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) resolveElapsed=\(String(format: "%.3f", resolvedAt - loadStartedAt))s dispatchElapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - resolvedAt))s totalElapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - loadStartedAt))s readerDefault=\(content.isReaderModeByDefault) targetKind=\(url.isReaderURLLoaderURL ? "readerLoader" : (url.isHTTP ? "http" : (url.isFileURL ? "file" : "other")))"
-            )
         } else {
-            debugPrint(
-                "# READERLOAD stage=navigator.loadContent.missingURL contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content)))"
-            )
         }
     }
 }
@@ -928,28 +1099,32 @@ public struct Reader: View {
     var additionalLeadingSafeAreaInset: CGFloat? = nil
     var additionalBottomSafeAreaInset: CGFloat? = nil
     var ebookChromeBottomSafeAreaInset: CGFloat? = nil
-    var onAdditionalSafeAreaBarTap: (() -> Void)?
     var ignoresSampledTopObscuredInset = false
     var hidesTopScrollEdgeEffect = false
+    var showsLoadingOverlay = true
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
     let onNavigationFailed: ((WebViewState) -> Void)?
+    let onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     let onURLChanged: ((WebViewState) async throws -> Void)?
+    let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
-
+    
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerViewModel: ReaderViewModel
     @EnvironmentObject private var scriptCaller: WebViewScriptCaller
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.readerReservedTopChromeInset) private var reservedTopChromeInset
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     @AppStorage("readerFontSize") private var readerFontSize: Double?
-
+    
     @State private var obscuredInsets: EdgeInsets? = nil
-
+    @State private var obscuredGeometrySize: CGSize? = nil
+    
     public init(
         persistentWebViewID: String? = nil,
         forceReaderModeWhenAvailable: Bool = false,
@@ -959,14 +1134,16 @@ public struct Reader: View {
         additionalLeadingSafeAreaInset: CGFloat? = nil,
         additionalBottomSafeAreaInset: CGFloat? = nil,
         ebookChromeBottomSafeAreaInset: CGFloat? = nil,
-        onAdditionalSafeAreaBarTap: (() -> Void)? = nil,
         ignoresSampledTopObscuredInset: Bool = false,
         hidesTopScrollEdgeEffect: Bool = false,
+        showsLoadingOverlay: Bool = true,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
+        onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
+        onScrollBottomStateChanged: (@MainActor (Bool) -> Void)? = nil,
         hideNavigationDueToScroll: Binding<Bool> = .constant(false),
         textSelection: Binding<String?>? = nil,
         buildMenu: BuildMenuType? = nil
@@ -979,19 +1156,21 @@ public struct Reader: View {
         self.additionalLeadingSafeAreaInset = additionalLeadingSafeAreaInset
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
         self.ebookChromeBottomSafeAreaInset = ebookChromeBottomSafeAreaInset
-        self.onAdditionalSafeAreaBarTap = onAdditionalSafeAreaBarTap
         self.ignoresSampledTopObscuredInset = ignoresSampledTopObscuredInset
         self.hidesTopScrollEdgeEffect = hidesTopScrollEdgeEffect
+        self.showsLoadingOverlay = showsLoadingOverlay
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
         self.onNavigationFailed = onNavigationFailed
+        self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
+        self.onScrollBottomStateChanged = onScrollBottomStateChanged
         _hideNavigationDueToScroll = hideNavigationDueToScroll
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
     }
-
+    
     public var body: some View {
         let pageURL = readerContent.content?.url ?? readerContent.pageURL
         let statusBarFadeBackgroundColor = readerThemeBackgroundColor(
@@ -1003,33 +1182,52 @@ public struct Reader: View {
         let effectiveSampledTopInset: CGFloat = {
             guard ignoresSampledTopObscuredInset else { return sampledTopInset }
 #if os(iOS)
-            let fallbackTopInset = max(0, currentReaderWindowTopSafeAreaInset())
+            let fallbackTopInset = max(0, currentWindowTopSafeAreaInset())
             let clampedSampledInset = sampledTopInset > 0 ? min(sampledTopInset, 88) : 0
             return max(fallbackTopInset, clampedSampledInset)
 #else
             return 0
 #endif
         }()
-        let effectiveObscuredInsets = ignoresSampledTopObscuredInset
-            ? EdgeInsets(
+        let rawSampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
+        let sampledBottomInset = pageURL.isEBookURL ? 0 : rawSampledBottomInset
+        let effectiveObscuredInsets: EdgeInsets? = {
+            if ignoresSampledTopObscuredInset {
+                return EdgeInsets(
+                    top: effectiveSampledTopInset,
+                    leading: obscuredInsets?.leading ?? 0,
+                    bottom: sampledBottomInset,
+                    trailing: obscuredInsets?.trailing ?? 0
+                )
+            }
+            guard pageURL.isEBookURL else {
+                return obscuredInsets
+            }
+            return EdgeInsets(
                 top: effectiveSampledTopInset,
                 leading: obscuredInsets?.leading ?? 0,
-                bottom: obscuredInsets?.bottom ?? 0,
+                bottom: sampledBottomInset,
                 trailing: obscuredInsets?.trailing ?? 0
             )
-            : obscuredInsets
-        let explicitTopInset = max(0, additionalTopSafeAreaInset ?? 0)
+        }()
+        let explicitTopInset = max(
+            0,
+            additionalTopSafeAreaInset ?? 0,
+            reservedTopChromeInset
+        )
         let effectiveTopInset = pageURL.isEBookURL
             ? max(explicitTopInset, effectiveSampledTopInset)
             : explicitTopInset
-        let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
         let additionalLeadingInset = max(0, additionalLeadingSafeAreaInset ?? 0)
-        let additionalBottomInset = max(0, additionalBottomSafeAreaInset ?? 0)
+        let additionalBottomInset = pageURL.isEBookURL
+            ? 0
+            : max(0, additionalBottomSafeAreaInset ?? 0)
         let ebookChromeBottomInset = max(
             sampledBottomInset,
             additionalBottomInset,
             max(0, ebookChromeBottomSafeAreaInset ?? 0)
         )
+        let ebookChromeExtraBottomInset = max(0, ebookChromeBottomInset - sampledBottomInset)
         let effectiveBottomInset = pageURL.isEBookURL
             ? ebookChromeBottomInset
             : max(sampledBottomInset, additionalBottomInset)
@@ -1040,7 +1238,6 @@ public struct Reader: View {
             obscuredBottomInset: toolbarReferenceBottomInset,
             additionalBottomSafeAreaInset: additionalBottomInset
         )
-        let viewerLoadedProbeSummary = readerViewModel.ebookViewerLoadedProbeSummary ?? "nil"
         let chromeInsetsTaskID = [
             pageURL.absoluteString,
             "\(effectiveTopInset)",
@@ -1051,23 +1248,23 @@ public struct Reader: View {
             "\(readerViewModel.state.hasReaderRenderReady)",
             "\(readerViewModel.ebookChromeInsetsResyncID)",
         ].joined(separator: "|")
-
         //            VStack(spacing: 0) {
         ReaderWebView(
             persistentWebViewID: persistentWebViewID,
             obscuredInsets: effectiveObscuredInsets,
             usesEBookChromeInsets: pageURL.isEBookURL,
-            ignoresSampledTopObscuredInset: ignoresSampledTopObscuredInset,
             bounces: bounces,
             additionalTopSafeAreaInset: effectiveTopInset,
             additionalLeadingSafeAreaInset: additionalLeadingInset,
-            additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
+            additionalBottomSafeAreaInset: pageURL.isEBookURL ? 0 : additionalBottomSafeAreaInset,
             hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
             schemeHandlers: schemeHandlers,
             onNavigationCommitted: onNavigationCommitted,
             onNavigationFinished: onNavigationFinished,
             onNavigationFailed: onNavigationFailed,
+            onDocumentContextInvalidated: onDocumentContextInvalidated,
             onURLChanged: onURLChanged,
+            onScrollBottomStateChanged: onScrollBottomStateChanged,
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
             buildMenu: buildMenu,
@@ -1076,74 +1273,78 @@ public struct Reader: View {
         )
 #if os(iOS)
         .readerStatusBarFadeForCurrentDevice(
-            top: effectiveSampledTopInset,
+            top: effectiveSampledTopInset,//    + 8 + 2)
             backgroundColor: statusBarFadeBackgroundColor
         )
-        .readerWebViewSafeAreaExpansionForCurrentDevice()
-        .modifier {
-            if #available(iOS 26, *) {
-                $0
-                    .safeAreaBar(edge: .bottom, spacing: 0) {
-                        if let additionalBottomSafeAreaInset, additionalBottomSafeAreaInset > 0 {
-                            Color.white.opacity(0.0000000001)
-                                .frame(height: additionalBottomSafeAreaInset)
-                                .onTapGesture {
-                                    onAdditionalSafeAreaBarTap?()
-                                }
-                        }
-                    }
-            } else { $0 }
-        }
 #endif
+        .readerWebViewSafeAreaExpansionForCurrentDevice()
         .background {
             GeometryReader { geometry in
-                Color.clear
-                    .task {
-                        var sampledInsets = EdgeInsets(
-                            top: max(0, geometry.safeAreaInsets.top),
-                            leading: max(0, geometry.safeAreaInsets.leading),
-                            bottom: max(0, geometry.safeAreaInsets.bottom),
-                            trailing: max(0, geometry.safeAreaInsets.trailing)
-                        )
-                        if pageURL.isEBookURL {
-                            sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
-                                current: sampledInsets.top,
-                                previous: obscuredInsets?.top,
-                                preservesPreviousWhenDecreasing: hideNavigationDueToScroll
+                WithPerceptionTracking {
+                    let geometrySize = geometry.size
+                    let geometrySafeAreaInsets = geometry.safeAreaInsets
+                    let currentPageURL = pageURL
+                    let currentObscuredInsets = obscuredInsets
+                    let currentHideNavigationDueToScroll = hideNavigationDueToScroll
+                    Color.clear
+#if DEBUG
+                        // WKWebView's macOS accessibility frame reports its
+                        // unobscured document viewport even when SwiftUI has
+                        // expanded the rendered surface beneath native chrome.
+                        // Expose the post-expansion geometry so UI tests can
+                        // verify the surface separately from document insets.
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityIdentifier("ReaderWebView.Surface")
+#endif
+                        .onAppear {
+                            var sampledInsets = EdgeInsets(
+                                top: max(0, geometrySafeAreaInsets.top),
+                                leading: max(0, geometrySafeAreaInsets.leading),
+                                bottom: max(0, geometrySafeAreaInsets.bottom),
+                                trailing: max(0, geometrySafeAreaInsets.trailing)
                             )
-                        } else if explicitTopInset > 0,
-                                  sampledInsets.top > explicitTopInset {
-                            sampledInsets.top = explicitTopInset
-                        }
-                        obscuredInsets = sampledInsets
-                    }
-                    .onChange(of: geometry.safeAreaInsets) { safeAreaInsets in
-                        var sampledInsets = EdgeInsets(
-                            top: max(0, safeAreaInsets.top),
-                            leading: max(0, safeAreaInsets.leading),
-                            bottom: max(0, safeAreaInsets.bottom),
-                            trailing: max(0, safeAreaInsets.trailing)
-                        )
-                        let previousInsets = obscuredInsets
-                        if pageURL.isEBookURL {
-                            sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
-                                current: sampledInsets.top,
-                                previous: previousInsets?.top,
-                                preservesPreviousWhenDecreasing: hideNavigationDueToScroll
-                            )
-                        } else {
-                            if explicitTopInset > 0,
-                               sampledInsets.top > explicitTopInset {
+                            if currentPageURL.isEBookURL {
+                                sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
+                                    current: sampledInsets.top,
+                                    previous: currentObscuredInsets?.top,
+                                    preservesPreviousWhenDecreasing: currentHideNavigationDueToScroll
+                                )
+                            } else if explicitTopInset > 0,
+                                      sampledInsets.top > explicitTopInset {
                                 sampledInsets.top = explicitTopInset
                             }
-                            if let previousInsets,
-                               previousInsets.top > 0,
-                               sampledInsets.top > previousInsets.top {
-                                sampledInsets.top = previousInsets.top
-                            }
+                            obscuredGeometrySize = geometrySize
+                            obscuredInsets = sampledInsets
                         }
-                        obscuredInsets = sampledInsets
-                    }
+                        .onChange(of: geometry.safeAreaInsets) { safeAreaInsets in
+                            var sampledInsets = EdgeInsets(
+                                top: max(0, safeAreaInsets.top),
+                                leading: max(0, safeAreaInsets.leading),
+                                bottom: max(0, safeAreaInsets.bottom),
+                                trailing: max(0, safeAreaInsets.trailing)
+                            )
+                            let previousInsets = obscuredInsets
+                            if currentPageURL.isEBookURL {
+                                sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
+                                    current: sampledInsets.top,
+                                    previous: previousInsets?.top,
+                                    preservesPreviousWhenDecreasing: currentHideNavigationDueToScroll
+                                )
+                            } else {
+                                if explicitTopInset > 0,
+                                   sampledInsets.top > explicitTopInset {
+                                    sampledInsets.top = explicitTopInset
+                                }
+                                if let previousInsets,
+                                   previousInsets.top > 0,
+                                   sampledInsets.top > previousInsets.top {
+                                    sampledInsets.top = previousInsets.top
+                                }
+                            }
+                            obscuredGeometrySize = geometrySize
+                            obscuredInsets = sampledInsets
+                        }
+                }
             }
         }
         //            }
@@ -1152,7 +1353,9 @@ public struct Reader: View {
         //            .ignoresSafeArea(.all, edges: [.top, .bottom])
         //#endif
 //                .ignoresSafeArea(.all, edges: [.top, .bottom])
-        .modifier(ReaderLoadingOverlayModifier())
+        .modifier(ReaderLoadingOverlayModifier(
+            isEnabled: showsLoadingOverlay
+        ))
         .modifier(ReaderMessageHandlersViewModifier(
             forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
             hideNavigationDueToScroll: $hideNavigationDueToScroll
@@ -1167,56 +1370,18 @@ public struct Reader: View {
         .modifier(ReaderMediaPlayerViewModifier())
         .task(id: chromeInsetsTaskID) {
             guard pageURL.isEBookURL else { return }
-            debugPrint(
-                "# EPUB  ebook.viewer.insets.task",
-                "pageURL=\(pageURL.absoluteString)",
-                "sampledTopInset=\(sampledTopInset)",
-                "explicitTopInset=\(explicitTopInset)",
-                "effectiveTopInset=\(effectiveTopInset)",
-                "effectiveBottomInset=\(effectiveBottomInset)",
-                "effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset)",
-                "viewerLoadedProbeSummary=\(viewerLoadedProbeSummary)"
-            )
-            let retryDelaysInNanoseconds: [UInt64] = [
-                0,
-                80_000_000,
-                250_000_000,
-                600_000_000,
-            ]
-            for (attempt, delay) in retryDelaysInNanoseconds.enumerated() {
-                if delay > 0 {
-                    do {
-                        try await Task.sleep(nanoseconds: delay)
-                    } catch {
-                        return
-                    }
-                }
-                guard !Task.isCancelled else { return }
-                let chromeInsetsState = [
-                    "attempt=\(attempt)",
-                    "pageURL=\(pageURL.absoluteString)",
-                    "top=\(effectiveTopInset)",
-                    "toolbarBottomOffset=\(effectiveToolbarBottomOffset)",
-                    "bottom=\(effectiveBottomInset)",
-                    "safeAreaTop=\(sampledTopInset)",
-                    "safeAreaBottom=\(sampledBottomInset)",
-                    "hasAsyncCaller=\(scriptCaller.hasAsyncCaller)",
-                    "renderReady=\(readerViewModel.state.hasReaderRenderReady)",
-                    "resyncID=\(readerViewModel.ebookChromeInsetsResyncID)",
-                ].joined(separator: " ")
-                print("# BOOK native.chromeInsets.attempt \(chromeInsetsState)")
-                await syncEbookViewerChromeInsets(
-                    pageURL: pageURL,
-                    obscuredTopInset: effectiveTopInset,
-                    toolbarBottomOffset: effectiveToolbarBottomOffset,
-                    obscuredBottomInset: effectiveBottomInset,
-                    hasAsyncCaller: scriptCaller.hasAsyncCaller
-                ) { js, duplicateInMultiTargetFrames in
-                    _ = try await scriptCaller.evaluateJavaScript(
-                        js,
-                        duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
-                    )
-                }
+            guard !Task.isCancelled else { return }
+            await syncEbookViewerChromeInsets(
+                pageURL: pageURL,
+                obscuredTopInset: effectiveTopInset,
+                toolbarBottomOffset: effectiveToolbarBottomOffset,
+                obscuredBottomInset: effectiveBottomInset,
+                hasAsyncCaller: scriptCaller.hasAsyncCaller
+            ) { js, duplicateInMultiTargetFrames in
+                _ = try await scriptCaller.evaluateJavaScript(
+                    js,
+                    duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+                )
             }
         }
         .onReceive(readerContent.contentTitleSubject.receive(on: RunLoop.main)) { _ in
@@ -1231,30 +1396,10 @@ public struct Reader: View {
                 let hideRedundantSnippetTitle =
                     readerContent.content?.url.isSnippetURL == true &&
                     readerContent.snippetTitleIsGeneratedFromPrefix
-                debugPrint(
-                    "# SNIPPETTITLE liveSync",
-                    "url=\(readerContent.content?.url.absoluteString ?? readerContent.pageURL.absoluteString)",
-                    "rawTitle=\(rawTitle)",
-                    "displayTitle=\(displayTitle)",
-                    "hideReaderTitle=\(hideRedundantSnippetTitle)"
-                )
                 do {
                     try await scriptCaller.evaluateJavaScript(
                         """
                         (function() {
-                          const postSnippetTitleLog = (payload) => {
-                            try {
-                              const message = '# SNIPPETTITLE ' + JSON.stringify(payload);
-                              const webkitPrint = window.webkit?.messageHandlers?.print;
-                              if (webkitPrint && typeof webkitPrint.postMessage === 'function') {
-                                webkitPrint.postMessage(message);
-                                return;
-                              }
-                              if (typeof print !== 'undefined' && print && typeof print.postMessage === 'function') {
-                                print.postMessage(message);
-                              }
-                            } catch (_) {}
-                          };
                           const el = document.getElementById('reader-title');
                           const body = document.body;
                           if (el && el.textContent !== title) {
@@ -1263,15 +1408,6 @@ public struct Reader: View {
                           if (body) {
                             body.classList.toggle(bodyClassName, !!hideReaderTitle);
                           }
-                          postSnippetTitleLog({
-                            source: 'liveSync.js',
-                            hideReaderTitle: !!hideReaderTitle,
-                            bodyClassName,
-                            bodyClasses: body ? body.className : null,
-                            hasTitleElement: !!el,
-                            titleText: el ? el.textContent : null,
-                            computedDisplay: el ? window.getComputedStyle(el).display : null,
-                          });
                         })();
                         """,
                         arguments: [
@@ -1282,7 +1418,6 @@ public struct Reader: View {
                         duplicateInMultiTargetFrames: true
                     )
                 } catch {
-                    debugPrint("# EPUB  title.sync.failed", error.localizedDescription)
                 }
             }
         }

@@ -20,7 +20,7 @@ final class ReaderModeProcessingDependencyPublicationTests: XCTestCase {
         viewModel.performBatchProcessingDependencyUpdate {
             viewModel.processHTMLBytes = { bytes, _ in bytes }
             viewModel.processHTML = { html, _ in html }
-            viewModel.ebookProcessedTextCacheReader = { _, _, _, _ in nil }
+            viewModel.ebookProcessedTextCacheReader = { _, _, _ in nil }
         }
 
         XCTAssertEqual(publicationCount, 1)

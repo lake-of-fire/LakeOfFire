@@ -1,32 +1,124 @@
+import LakeOfFireWeb
 import SwiftUI
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireReader
+import LakeOfFireContent
+import LakeOfFireCore
 import Combine
 import RealmSwift
 import RealmSwiftGaps
-import SwiftUtilities
 import SwiftUIWebView
-import LakeOfFireCore
-import LakeOfFireAdblock
-import LakeOfFireContent
-import LakeOfFireReader
 
 let libraryScriptFormSectionsQueue = DispatchQueue(label: "LibraryScriptFormSections")
 
+private enum LibraryScriptFieldEdit: Equatable, Sendable {
+    case title(String)
+    case text(String)
+    case enabled(Bool)
+    case injectAtStart(Bool)
+    case mainFrameOnly(Bool)
+    case sandboxed(Bool)
+    case previewURL(String)
+
+    var fieldIdentifier: Int {
+        switch self {
+        case .title: return 0
+        case .text: return 1
+        case .enabled: return 2
+        case .injectAtStart: return 3
+        case .mainFrameOnly: return 4
+        case .sandboxed: return 5
+        case .previewURL: return 6
+        }
+    }
+
+    func apply(to script: UserScript) -> Bool {
+        switch self {
+        case .title(let value):
+            guard script.title != value else { return false }
+            script.title = value
+        case .text(let value):
+            guard script.script != value else { return false }
+            script.script = value
+        case .enabled(let value):
+            guard script.isArchived != !value else { return false }
+            script.isArchived = !value
+        case .injectAtStart(let value):
+            guard script.injectAtStart != value else { return false }
+            script.injectAtStart = value
+        case .mainFrameOnly(let value):
+            guard script.mainFrameOnly != value else { return false }
+            script.mainFrameOnly = value
+        case .sandboxed(let value):
+            guard script.sandboxed != value else { return false }
+            script.sandboxed = value
+        case .previewURL(let value):
+            let url = value.isEmpty ? nil : URL(string: value)
+            guard script.previewURL != url else { return false }
+            script.previewURL = url
+        }
+        return true
+    }
+}
+
+private struct LibraryScriptFieldCommand: Sendable {
+    let scriptID: UUID
+    let realmConfiguration: Realm.Configuration
+    let edit: LibraryScriptFieldEdit
+    let sequence: UInt64
+    let writeOrdering: LibraryEditorWriteOrdering
+
+    @RealmBackgroundActor
+    func write() async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        try await realm.asyncWritePreservingOwnership {
+            guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
+                  !script.isDeleted, script.isUserEditable,
+                  writeOrdering.admits(recordID: scriptID, field: edit.fieldIdentifier, sequence: sequence),
+                  edit.apply(to: script) else { return }
+            script.refreshChangeMetadata(explicitlyModified: true)
+        }
+    }
+}
+
 @MainActor
 class LibraryScriptFormSectionsViewModel: ObservableObject {
+    let realmConfiguration: Realm.Configuration
+    private let observesRealm: Bool
+    private var isRefreshing = false
+    private var pendingFieldCommands: [Int: LibraryScriptFieldCommand] = [:]
+    private let writeOrdering: LibraryEditorWriteOrdering
+    private var scriptObservationGeneration: UInt64 = 0
+    @RealmBackgroundActor private var installedScriptObservationGeneration: UInt64 = 0
     var script: UserScript? {
+        willSet {
+            finishEditing()
+            pendingFieldCommands.removeAll()
+        }
         didSet {
-            guard let script else { return }
-            let scriptRef = ThreadSafeReference(to: script)
+            scriptObservationGeneration &+= 1
+            let generation = scriptObservationGeneration
+            refresh()
+            guard observesRealm, let script else { return }
+            let scriptID = script.id
             Task { @RealmBackgroundActor [weak self] in
                 guard let self else { return }
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                guard let script = realm.resolve(scriptRef) else { return }
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+                guard await MainActor.run(body: {
+                    self.scriptObservationGeneration == generation && self.script?.id == scriptID
+                }), generation >= installedScriptObservationGeneration,
+                      let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID) else { return }
+                installedScriptObservationGeneration = generation
+                objectNotificationToken?.invalidate()
                 objectNotificationToken = script
                     .observe { [weak self] change in
                         switch change {
                         case .change(_, _), .deleted:
                             Task { @MainActor [weak self] in
-                                self?.refresh()
+                                guard let self, self.scriptObservationGeneration == generation,
+                                      self.script?.id == scriptID else { return }
+                                self.refresh()
                             }
                         case .error(let error):
                             print("An error occurred: \(error)")
@@ -50,113 +142,77 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     var cancellables = Set<AnyCancellable>()
     @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
     
-    init() {
-        $scriptTitle
-            .removeDuplicates()
-            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { @MainActor [weak self] scriptTitle in
-                guard let self = self, let script = script else { return }
-                let scriptRef = ThreadSafeReference(to: script)
-                Task.detached {
-                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
-                        guard script.title != scriptTitle else { return }
-                        script.title = scriptTitle
-                        script.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
-            }
-            .store(in: &cancellables)
-        $scriptText
-            .removeDuplicates()
-            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { @MainActor [weak self] scriptText in
-                guard let self = self, let script = script else { return }
-                let scriptRef = ThreadSafeReference(to: script)
-                Task.detached {
-                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
-                        guard script.script != scriptText else { return }
-                        script.script = scriptText
-                        script.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
-            }
-            .store(in: &cancellables)
-        $scriptEnabled
-            .removeDuplicates()
-            .sink { @MainActor [weak self] scriptEnabled in
-                guard let self = self, let script = script else { return }
-                let scriptRef = ThreadSafeReference(to: script)
-                Task.detached {
-                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
-                        let isArchived = !scriptEnabled
-                        guard script.isArchived != isArchived else { return }
-                        script.isArchived = isArchived
-                        script.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
-            }
-            .store(in: &cancellables)
-        $scriptInjectAtStart
-            .removeDuplicates()
-            .sink { @MainActor [weak self] scriptInjectAtStart in
-                guard let self = self, let script = script else { return }
-                let scriptRef = ThreadSafeReference(to: script)
-                Task.detached {
-                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
-                        guard script.injectAtStart != scriptInjectAtStart else { return }
-                        script.injectAtStart = scriptInjectAtStart
-                        script.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
-            }
-            .store(in: &cancellables)
-        $scriptMainFrameOnly
-            .removeDuplicates()
-            .sink { @MainActor [weak self] scriptMainFrameOnly in
-                guard let self = self, let script = script else { return }
-                let scriptRef = ThreadSafeReference(to: script)
-                Task.detached {
-                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
-                        guard script.mainFrameOnly != scriptMainFrameOnly else { return }
-                        script.mainFrameOnly = scriptMainFrameOnly
-                        script.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
-            }
-            .store(in: &cancellables)
-        $scriptSandboxed
-            .removeDuplicates()
-            .sink { @MainActor [weak self] scriptSandboxed in
-                guard let self = self, let script = script else { return }
-                let scriptRef = ThreadSafeReference(to: script)
-                Task.detached {
-                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
-                        guard script.sandboxed != scriptSandboxed else { return }
-                        script.sandboxed = scriptSandboxed
-                        script.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
-            }
-            .store(in: &cancellables)
-        $scriptPreviewURL
-            .removeDuplicates()
-            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { @MainActor [weak self] scriptPreviewURL in
-                guard let self = self, let script = script else { return }
-                let scriptRef = ThreadSafeReference(to: script)
-                Task.detached {
-                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
-                        let previewURL = scriptPreviewURL.isEmpty ? nil : URL(string: scriptPreviewURL)
-                        guard script.previewURL != previewURL else { return }
-                        script.previewURL = previewURL
-                        script.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
-            }
-            .store(in: &cancellables)
+    init(
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration,
+        observesRealm: Bool = true
+    ) {
+        self.realmConfiguration = realmConfiguration
+        writeOrdering = .shared(configuration: realmConfiguration, recordKind: "script")
+        self.observesRealm = observesRealm
+        observe($scriptTitle, edit: LibraryScriptFieldEdit.title, debounced: true)
+        observe($scriptText, edit: LibraryScriptFieldEdit.text, debounced: true)
+        observe($scriptEnabled, edit: LibraryScriptFieldEdit.enabled)
+        observe($scriptInjectAtStart, edit: LibraryScriptFieldEdit.injectAtStart)
+        observe($scriptMainFrameOnly, edit: LibraryScriptFieldEdit.mainFrameOnly)
+        observe($scriptSandboxed, edit: LibraryScriptFieldEdit.sandboxed)
+        observe($scriptPreviewURL, edit: LibraryScriptFieldEdit.previewURL, debounced: true)
     }
-    
+
+    private func observe<Value>(
+        _ publisher: Published<Value>.Publisher,
+        edit: @escaping (Value) -> LibraryScriptFieldEdit,
+        debounced: Bool = false
+    ) {
+        let commands = publisher
+            .compactMap { [weak self] value -> LibraryScriptFieldCommand? in
+                // @Published emits synchronously. Capture the originating record
+                // before debounce, and never enqueue hydration as a user edit.
+                guard let self, !self.isRefreshing, let script = self.script, !script.isInvalidated else { return nil }
+                let sequence = self.writeOrdering.issueSequence()
+                let command = LibraryScriptFieldCommand(
+                    scriptID: script.id, realmConfiguration: self.realmConfiguration, edit: edit(value),
+                    sequence: sequence, writeOrdering: self.writeOrdering
+                )
+                self.pendingFieldCommands[command.edit.fieldIdentifier] = command
+                return command
+            }
+            .eraseToAnyPublisher()
+        let writes = debounced
+            ? commands.debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
+                .eraseToAnyPublisher()
+            : commands
+        writes.sink { [weak self] command in self?.submit(command) }
+        .store(in: &cancellables)
+    }
+
+    private func submit(_ command: LibraryScriptFieldCommand) {
+        Task { @RealmBackgroundActor [weak self] in
+            do { try await command.write() }
+            catch { print("LibraryScriptEditor field write failed: \(error)") }
+            await self?.settle(command)
+        }
+    }
+
+    private func settle(_ command: LibraryScriptFieldCommand) {
+        let field = command.edit.fieldIdentifier
+        guard let pending = pendingFieldCommands[field],
+              pending.scriptID == command.scriptID, pending.sequence == command.sequence else { return }
+        pendingFieldCommands[field] = nil
+        refresh()
+    }
+
+    func finishEditing() {
+        for command in pendingFieldCommands.values { submit(command) }
+    }
+
     deinit {
+        let commands = Array(pendingFieldCommands.values)
+        Task { @RealmBackgroundActor in
+            for command in commands {
+                do { try await command.write() }
+                catch { print("LibraryScriptEditor retirement write failed: \(error)") }
+            }
+        }
         Task { @RealmBackgroundActor [weak objectNotificationToken] in
             objectNotificationToken?.invalidate()
         }
@@ -164,64 +220,101 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     
     @MainActor
     func refresh() {
+        if let script, !script.isFrozen { script.realm?.refresh() }
+        guard script?.isInvalidated != true else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
         if let allowedDomainIDs = script?.allowedDomainIDs {
             self.allowedDomainIDs = Array(allowedDomainIDs)
         } else {
             allowedDomainIDs = nil
         }
         
-        scriptTitle = script?.title ?? ""
-        scriptText = script?.script ?? ""
-        scriptEnabled = !(script?.isArchived ?? true || script?.isDeleted ?? true)
-        scriptInjectAtStart = script?.injectAtStart ?? false
-        scriptMainFrameOnly = script?.mainFrameOnly ?? true
-        scriptSandboxed = script?.sandboxed ?? false
-        scriptPreviewURL = script?.previewURL?.absoluteString ?? ""
+        if pendingFieldCommands[0] == nil { scriptTitle = script?.title ?? "" }
+        if pendingFieldCommands[1] == nil { scriptText = script?.script ?? "" }
+        if pendingFieldCommands[2] == nil { scriptEnabled = !(script?.isArchived ?? true || script?.isDeleted ?? true) }
+        if pendingFieldCommands[3] == nil { scriptInjectAtStart = script?.injectAtStart ?? false }
+        if pendingFieldCommands[4] == nil { scriptMainFrameOnly = script?.mainFrameOnly ?? true }
+        if pendingFieldCommands[5] == nil { scriptSandboxed = script?.sandboxed ?? false }
+        if pendingFieldCommands[6] == nil { scriptPreviewURL = script?.previewURL?.absoluteString ?? "" }
     }
     
-    @MainActor
-    func onDeleteOfAllowedDomains(at offsets: IndexSet) {
-        Task { @MainActor [weak self] in
-            guard let self = self, let script else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { realm, script in
-                let deletedDomainIDs = offsets.compactMap { offset in
-                    script.allowedDomainIDs.indices.contains(offset) ? script.allowedDomainIDs[offset] : nil
-                }
-                for domainID in deletedDomainIDs {
-                    if let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID), !domain.isDeleted {
-                        domain.isDeleted = true
-                        domain.refreshChangeMetadata(explicitlyModified: true)
+    @discardableResult
+    func onDeleteOfAllowedDomains(
+        at offsets: IndexSet, displayedDomainIDs: [UUID], scriptID: UUID? = nil
+    ) -> Task<Void, Error> {
+        let domainIDs = offsets.compactMap {
+            displayedDomainIDs.indices.contains($0) ? displayedDomainIDs[$0] : nil
+        }
+        return deleteAllowedDomains(domainIDs, scriptID: scriptID)
+    }
+
+    @discardableResult
+    func deleteAllowedDomains(_ domainIDs: [UUID], scriptID: UUID? = nil) -> Task<Void, Error> {
+        let scriptID = scriptID ?? script?.id
+        let selectedIDs = Set(domainIDs)
+        return Task { @MainActor [realmConfiguration] in
+            try await Task { @RealmBackgroundActor in
+                guard let scriptID, !selectedIDs.isEmpty else { return }
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+                try await realm.asyncWritePreservingOwnership {
+                    guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
+                          !script.isDeleted, script.isUserEditable else { return }
+                    let removedIDs = Set(script.allowedDomainIDs).intersection(selectedIDs)
+                    guard !removedIDs.isEmpty else { return }
+                    let now = Date()
+                    for domainID in removedIDs {
+                        if let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID),
+                           !domain.isDeleted {
+                            domain.isDeleted = true
+                            domain.refreshChangeMetadata(explicitlyModified: true, at: now)
+                        }
                     }
+                    for index in script.allowedDomainIDs.indices.reversed()
+                        where removedIDs.contains(script.allowedDomainIDs[index]) {
+                        script.allowedDomainIDs.remove(at: index)
+                    }
+                    script.refreshChangeMetadata(explicitlyModified: true, at: now)
                 }
-                guard !deletedDomainIDs.isEmpty else { return }
-                script.allowedDomainIDs.remove(atOffsets: offsets)
-                script.refreshChangeMetadata(explicitlyModified: true)
-            }
+            }.value
         }
     }
-    
-    func addEmptyDomain() {
-        Task { @MainActor [weak self] in
-            guard let self = self, let script else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { realm, script in
+
+    @discardableResult
+    func addEmptyDomain(scriptID: UUID? = nil) -> Task<Void, Error> {
+        let scriptID = scriptID ?? script?.id
+        return Task { @RealmBackgroundActor [realmConfiguration] in
+            guard let scriptID else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+            try await realm.asyncWritePreservingOwnership {
+                guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
+                      !script.isDeleted, script.isUserEditable else { return }
                 let allowedDomain = UserScriptAllowedDomain()
-                realm.add(allowedDomain, update: .modified)
-                allowedDomain.refreshChangeMetadata(explicitlyModified: true)
+                let now = Date()
+                realm.add(allowedDomain)
+                allowedDomain.refreshChangeMetadata(explicitlyModified: true, at: now)
                 script.allowedDomainIDs.append(allowedDomain.id)
-                script.refreshChangeMetadata(explicitlyModified: true)
+                script.refreshChangeMetadata(explicitlyModified: true, at: now)
             }
         }
     }
-    
-    func pastePreviewURL(strings: [String]) {
-        Task { @MainActor [weak self] in
-            guard let self = self, let script = script else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
-                let previewURL = URL(string: (strings.first ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) ?? URL(string: "about:blank")!
-                guard script.previewURL != previewURL else { return }
-                script.previewURL = previewURL
-                script.refreshChangeMetadata(explicitlyModified: true)
-            }
+
+    @discardableResult
+    func pastePreviewURL(strings: [String]) -> Task<Void, Error> {
+        let scriptID = script?.id
+        let url = URL(
+            string: (strings.first ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        ) ?? URL(string: "about:blank")!
+        // Replace buffered field edits with this explicit current input. The
+        // transaction equality check makes the later trailing write a no-op.
+        scriptPreviewURL = url.absoluteString
+        let sequence = writeOrdering.issueSequence()
+        return Task { @RealmBackgroundActor [realmConfiguration, writeOrdering] in
+            guard let scriptID else { return }
+            try await LibraryScriptFieldCommand(
+                scriptID: scriptID, realmConfiguration: realmConfiguration,
+                edit: .previewURL(url.absoluteString), sequence: sequence, writeOrdering: writeOrdering
+            ).write()
         }
     }
 }
@@ -236,13 +329,27 @@ struct LibraryScriptFormSections: View {
     
     @State private var webState = WebViewState.empty
     @StateObject private var webNavigator = WebViewNavigator()
-    @StateObject private var webViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
-    @StateObject private var readerModeViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
+    @StateObject private var webViewModel: ReaderViewModel
+    @StateObject private var readerModeViewModel: ReaderViewModel
     
     @AppStorage("LibraryScriptFormSections.isPreviewReaderMode") private var isPreviewReaderMode = true
     @AppStorage("LibraryScriptFormSections.isWordWrapping") private var isWordWrapping = true
     
-    @StateObject private var viewModel = LibraryScriptFormSectionsViewModel()
+    @StateObject private var viewModel: LibraryScriptFormSectionsViewModel
+
+    init(script: UserScript) {
+        self.script = script
+        let configuration = script.realm?.configuration ?? LibraryDataManager.realmConfiguration
+        _viewModel = StateObject(wrappedValue: LibraryScriptFormSectionsViewModel(
+            realmConfiguration: configuration
+        ))
+        _webViewModel = StateObject(wrappedValue: ReaderViewModel(
+            realmConfiguration: configuration, systemScripts: []
+        ))
+        _readerModeViewModel = StateObject(wrappedValue: ReaderViewModel(
+            realmConfiguration: configuration, systemScripts: []
+        ))
+    }
     
     //    @State var webViewUserScripts =  LibraryConfiguration.getOrCreate().activeWebViewUserScripts
     //    @State var webViewSystemScripts = LibraryConfiguration.getOrCreate().systemScripts
@@ -309,25 +416,22 @@ struct LibraryScriptFormSections: View {
         }
         Section(header: Text("Allowed Domains"), footer: Text("Top-level hostnames of domains this script is allowed to run on. No support for wildcards or subdomains. All subdomains are matched against their top-level parent domain. Leave empty for access to all domains.").font(.footnote).foregroundColor(.secondary)) {
             // TODO: Cache allowedDomains in a subview struct
-            ForEach(viewModel.allowedDomainIDs ?? [], id: \.self) { (domainID: UUID) in
-                UserScriptAllowedDomainCell(domainID: domainID)
+            let displayedDomainIDs = viewModel.allowedDomainIDs ?? []
+            let scriptID = script.id
+            let realmConfiguration = viewModel.realmConfiguration
+            ForEach(displayedDomainIDs, id: \.self) { (domainID: UUID) in
+                UserScriptAllowedDomainCell(
+                    domainID: domainID, scriptID: scriptID, realmConfiguration: realmConfiguration
+                )
+                    .id(LibraryRecordPresentationIdentity(
+                        recordID: domainID, ownerID: scriptID, configuration: realmConfiguration
+                    ))
                     .disabled(!script.isUserEditable)
                     .deleteDisabled(!script.isUserEditable)
                     .contextMenu {
                         if script.isUserEditable {
                             Button(role: .destructive) {
-                                Task { @MainActor in
-                                    try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { realm, script in
-                                        if let idx = script.allowedDomainIDs.index(of: domainID) {
-                                            script.allowedDomainIDs.remove(at: idx)
-                                            if let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID), !domain.isDeleted {
-                                                domain.isDeleted = true
-                                                domain.refreshChangeMetadata(explicitlyModified: true)
-                                            }
-                                            script.refreshChangeMetadata(explicitlyModified: true)
-                                        }
-                                    }
-                                }
+                                viewModel.deleteAllowedDomains([domainID], scriptID: scriptID)
                             } label: {
                                 Text("Delete")
                             }
@@ -336,11 +440,13 @@ struct LibraryScriptFormSections: View {
                     }
             }
             .onDelete { offsets in
-                viewModel.onDeleteOfAllowedDomains(at: offsets)
+                viewModel.onDeleteOfAllowedDomains(
+                    at: offsets, displayedDomainIDs: displayedDomainIDs, scriptID: scriptID
+                )
             }
             
             Button {
-                viewModel.addEmptyDomain()
+                viewModel.addEmptyDomain(scriptID: scriptID)
             } label: {
                 Label("Add Domain", systemImage: "plus.circle")
                     .fixedSize(horizontal: false, vertical: true)
@@ -406,7 +512,7 @@ struct LibraryScriptFormSections: View {
                         .environmentObject(readerModeViewModel)
                     } else {
                         WebView(
-                            config: WebViewConfig(userScripts: script.getWebViewUserScript().map { [$0] } ?? []),
+                            config: WebViewConfig(userScripts: [script.getWebViewUserScript()].compactMap { $0 }),
                             navigator: webNavigator,
                             state: $webState,
                             bounces: false)
@@ -433,6 +539,7 @@ struct LibraryScriptFormSections: View {
         .task(id: script.id) { @MainActor in
             viewModel.script = script
         }
+        .onDisappear { viewModel.finishEditing() }
     }
     
     private func refresh(url: URL? = nil, forceRefresh: Bool = false) {

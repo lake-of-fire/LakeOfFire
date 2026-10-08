@@ -4,7 +4,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'mv "$work" "$HOME/.Trash/$(basename "$work")"' EXIT
 mkdir -p "$work/Sources" "$work/Tests"
 cp "$root/Tools/EBookEntryPathTests/Package.swift" "$work/Package.swift"
 cp "$root/Sources/LakeOfFireReader/Reader/Books/ReaderEBookInitialization.swift" "$work/Sources/"

@@ -3,7 +3,7 @@ import test from 'node:test';
 import {
     hydratePackageMedia,
     isPackageMediaURL,
-} from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-package-media.js';
+} from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-package-media.js';
 
 const packageURL = suffix =>
     `ebook://ebook/entry-source/source/g1-${'a'.repeat(64)}/OPS/Media/${suffix}`;

@@ -1,6 +1,10 @@
 import SwiftUI
-import SwiftUIWebView
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
 import LakeOfFireContent
+import LakeOfFireCore
+import SwiftUIWebView
 
 public struct ReaderModeButton: View {
     @EnvironmentObject private var readerContent: ReaderContent
@@ -19,7 +23,7 @@ public struct ReaderModeButton: View {
             Label(title, systemImage: systemImage)
         }
     }
-
+    
     public init(title: String = "Show Reader", systemImage: String = "doc.plaintext") {
         self.title = title
         self.systemImage = systemImage

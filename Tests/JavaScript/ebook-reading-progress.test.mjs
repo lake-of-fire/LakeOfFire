@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import {
-    ebookProgressFractionForRelocate,
-} from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-reading-progress.js'
+import { ebookProgressFractionForRelocate } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-reading-progress.js'
 
 test('persists the exact relocate fraction instead of rounded display progress', () => {
     assert.equal(ebookProgressFractionForRelocate({
@@ -12,18 +10,11 @@ test('persists the exact relocate fraction instead of rounded display progress',
     }), 0.42)
 })
 
-test('falls back to authoritative progress only when relocate progress is unavailable', () => {
+test('falls back to authoritative progress and clamps the storage domain', () => {
     assert.equal(ebookProgressFractionForRelocate({
         relocateFraction: Number.NaN,
         authoritativeFraction: 0.25,
     }), 0.25)
-    assert.equal(ebookProgressFractionForRelocate({
-        relocateFraction: undefined,
-        authoritativeFraction: Number.POSITIVE_INFINITY,
-    }), null)
-})
-
-test('clamps persisted progress to the storage domain', () => {
     assert.equal(ebookProgressFractionForRelocate({
         relocateFraction: -0.2,
         authoritativeFraction: 0.5,

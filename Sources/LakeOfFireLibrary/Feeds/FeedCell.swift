@@ -1,9 +1,12 @@
+import LakeOfFireWeb
 import SwiftUI
-import RealmSwift
-import LakeOfFireCore
-import LakeOfFireAdblock
-import LakeOfFireContent
+import LakeOfFireFiles
 import LakeOfFireContentUI
+import LakeOfFireReader
+import LakeOfFireContent
+import LakeOfFireCore
+import RealmSwift
+import LakeImage
 
 private struct FeedCellNewBadge: View {
     var body: some View {
@@ -31,29 +34,6 @@ private struct FeedCellNewBadge: View {
     }
 }
 
-private struct FeedCellLayoutLog: View {
-    let label: String
-    let details: String
-
-    var body: some View {
-        GeometryReader { proxy in
-            Color.clear
-                .onAppear {
-                    log(frame: proxy.frame(in: .global))
-                }
-                .onChange(of: proxy.frame(in: .global)) { frame in
-                    log(frame: frame)
-                }
-        }
-    }
-
-    private func log(frame: CGRect) {
-        debugPrint(
-            "# FEEDCELL \(label) minX=\(frame.minX) minY=\(frame.minY) width=\(frame.width) height=\(frame.height) \(details)"
-        )
-    }
-}
-
 public struct FeedCell: View {
     @ObservedRealmObject var feed: Feed
     var includesDescription = true
@@ -62,6 +42,7 @@ public struct FeedCell: View {
     
     @ScaledMetric(relativeTo: .headline) private var scaledIconHeight: CGFloat = 40
     @ScaledMetric(relativeTo: .caption2) private var scaledNewBadgeHeight: CGFloat = 19
+    
     private func titleText(for feed: Feed) -> Text {
         if feed.title.isEmpty {
             return Text("Untitled Feed")
@@ -85,13 +66,12 @@ public struct FeedCell: View {
         HStack(spacing: 0) {
             VStack(alignment: .leading) {
                 HStack(alignment: shouldCenterTitleWithIcon ? .center : .top, spacing: horizontalSpacing) {
-                    ReaderContentSourceIconImage(
-                        sourceIconURL: feed.iconUrl,
-                        iconSize: scaledIconHeight
-                    )
-                    .saturation(feed.isArchived ? 0 : 1)
-                    .opacity(feed.isArchived ? 0.8 : 1)
-                    .padding(4)
+                    LakeImage(feed.iconUrl)
+                        .saturation(feed.isArchived ? 0 : 1)
+                        .opacity(feed.isArchived ? 0.8 : 1)
+                        .cornerRadius(scaledIconHeight / 5, antialiased: true)
+                        .frame(width: scaledIconHeight, height: scaledIconHeight)
+                        .padding(4)
                     VStack(alignment: .leading, spacing: 6) {
                         titleText(for: feed)
                             .font(.headline.bold())
@@ -122,12 +102,6 @@ public struct FeedCell: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            FeedCellLayoutLog(
-                label: "feed-category-cell",
-                details: "title=\(feed.title) includesDescription=\(includesDescription) showsDescription=\(showsDescription) showsStatusRow=\(showsStatusRow) iconHeight=\(scaledIconHeight)"
-            )
-        )
         .tag(feed.id.uuidString)
     }
     

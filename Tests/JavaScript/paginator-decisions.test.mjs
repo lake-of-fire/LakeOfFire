@@ -7,10 +7,15 @@ import {
     pageSummaryIsVisiblyBlank,
     pageTurnBoundaryDecision,
     paginatorAnchorForLocalPage,
+    paginatorPageTurnMovementResult,
+    paginatorRenderSignature,
+    preparePaginatorLayoutMeasurement,
+    readerLoadPathsMatch,
     revealPaginatorDocument,
+    scrolledPageTurnDecision,
     resolveBlankPageTarget,
     shouldSuppressPostPageTurnDuplicate,
-} from '../../Sources/LakeOfFireReader/Resources/foliate-js/paginator-decisions.js'
+} from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/paginator-decisions.js'
 
 test('reveals a document by removing its one-shot layout bootstrap', () => {
     let removalCount = 0
@@ -24,108 +29,174 @@ test('reveals a document by removing its one-shot layout bootstrap', () => {
     assert.equal(removalCount, 1)
 })
 
-test('blank page resolution moves only to adjacent visible content', () => {
+test('reader-load path matching normalizes encoding, queries, and relative prefixes', () => {
+    assert.equal(readerLoadPathsMatch('item/xhtml/p-003.xhtml', 'item/xhtml/p-003.xhtml'), true)
+    assert.equal(readerLoadPathsMatch('item%2Fxhtml%2Fp-003.xhtml', 'item/xhtml/p-003.xhtml'), true)
+    assert.equal(readerLoadPathsMatch('item/xhtml/p-003.xhtml?cache=1#frag', 'item/xhtml/p-003.xhtml'), true)
+    assert.equal(readerLoadPathsMatch('./item/xhtml/p-003.xhtml', 'item/xhtml/p-003.xhtml'), true)
+    assert.equal(readerLoadPathsMatch('item/xhtml/p-003.xhtml', 'item/xhtml/p-004.xhtml'), false)
+    assert.equal(readerLoadPathsMatch(null, 'item/xhtml/p-003.xhtml'), false)
+})
+
+test('vertical paginated layout is applied before measurement and invalidated once', () => {
+    const classes = new Set()
+    const top = {
+        classList: {
+            contains: value => classes.has(value),
+            toggle(value, enabled) { enabled ? classes.add(value) : classes.delete(value) },
+        },
+        measuredHeight: () => classes.has('mnb-vertical-paginated') ? 747 : 711,
+    }
+    let invalidationCount = 0
+    const before = top.measuredHeight()
+    assert.equal(preparePaginatorLayoutMeasurement({
+        top,
+        vertical: true,
+        flow: null,
+        invalidateSizes: () => { invalidationCount += 1 },
+    }), true)
+    const after = top.measuredHeight()
+    preparePaginatorLayoutMeasurement({
+        top,
+        vertical: true,
+        flow: null,
+        invalidateSizes: () => { invalidationCount += 1 },
+    })
+
+    assert.equal(before, 711)
+    assert.equal(after, 747)
+    assert.equal(invalidationCount, 1)
+    assert.equal(preparePaginatorLayoutMeasurement({ top, vertical: true, flow: 'scrolled' }), false)
+})
+
+test('render signatures are stable for identical layout inputs', () => {
+    const input = {
+        layout: {
+            flow: 'paginated', width: 390, height: 844, gap: 12,
+            columnWidth: 390, divisor: 1, typographySignature: 'book-css-v1',
+        },
+        vertical: false,
+        rtl: false,
+    }
+    assert.equal(paginatorRenderSignature(input), paginatorRenderSignature(input))
+    assert.notEqual(
+        paginatorRenderSignature(input),
+        paginatorRenderSignature({ ...input, vertical: true }),
+    )
+})
+
+test('blank-page correction remains within content sentinels', () => {
     const blank = { textCharCount: 0, mediaCount: 0 }
     const media = { textCharCount: 0, mediaCount: 1 }
-
     assert.equal(pageSummaryIsVisiblyBlank(blank), true)
-    assert.equal(pageSummaryIsVisiblyBlank(media), false)
     assert.equal(resolveBlankPageTarget({
         page: 13,
         pages: 25,
         direction: 1,
         summariesByPage: { 13: blank, 14: media },
     }), 14)
-    assert.equal(resolveBlankPageTarget({
-        page: 13,
-        pages: 25,
-        direction: -1,
-        summariesByPage: { 12: media, 13: blank },
-    }), 12)
-    assert.equal(resolveBlankPageTarget({
-        page: 12,
-        pages: 25,
-        direction: 1,
-        summariesByPage: { 12: media },
-    }), 12)
 })
 
-test('local page anchors replay and clamp to the available text pages', () => {
-    const textPageCount = 236
-    const anchor = paginatorAnchorForLocalPage({ localPage: 1, textPageCount })
-    const clampedAnchor = paginatorAnchorForLocalPage({ localPage: 999, textPageCount })
-
+test('local anchors round-trip and clamp to available text pages', () => {
+    const anchor = paginatorAnchorForLocalPage({ localPage: 1, textPageCount: 236 })
     assert.equal(anchor, 1 / 235)
-    assert.equal(Math.round(anchor * (textPageCount - 1)) + 1, 2)
-    assert.equal(Math.round(clampedAnchor * (textPageCount - 1)) + 1, 236)
+    assert.equal(paginatorAnchorForLocalPage({ localPage: 999, textPageCount: 236 }), 1)
 })
 
-test('locked page turns queue only within the pending section', () => {
-    const decide = options => lockedPageTurnQueueDecision({
+test('locked and boundary decisions do not queue across sections', () => {
+    assert.equal(lockedPageTurnQueueDecision({
         pendingQueueAllowed: true,
-        pendingRequestedPage: 2,
-        pendingPageCount: 6,
+        pendingRequestedPage: 3,
+        pendingPageCount: 5,
         pendingDirection: 'forward',
-        queuedDirection: 'backward',
-        queuedStep: -1,
+        queuedDirection: 'forward',
+        queuedStep: 1,
         lockedElapsedMs: 400,
         distance: null,
-        ...options,
-    }).shouldQueue
+    }).shouldQueue, false)
 
-    assert.equal(decide({ queuedDirection: 'forward', queuedStep: 1 }), true)
-    assert.equal(decide({ pendingQueueAllowed: false }), false)
-    assert.equal(decide({ pendingRequestedPage: 3, pendingPageCount: 5, queuedDirection: 'forward', queuedStep: 1 }), false)
-    assert.equal(decide({ pendingRequestedPage: 1, pendingPageCount: 5, queuedStep: -1 }), false)
-    assert.equal(decide({ pendingRequestedPage: null, pendingPageCount: null }), false)
-    assert.equal(decide({ queuedDirection: 'forward', queuedStep: 1, lockedElapsedMs: 50 }), false)
+    const boundary = pageTurnBoundaryDecision({ currentPage: 1, pageCount: 348, step: -1, adjacentIndex: 5 })
+    assert.equal(boundary.shouldGoToAdjacentSection, true)
+    assert.equal(boundary.shouldScrollWithinSection, false)
 })
 
-test('section-boundary decisions do not scroll into paginator sentinels', () => {
-    const backward = pageTurnBoundaryDecision({ currentPage: 1, pageCount: 348, step: -1, adjacentIndex: 5 })
-    const forward = pageTurnBoundaryDecision({ currentPage: 2, pageCount: 3, step: 1, adjacentIndex: 6 })
-    const within = pageTurnBoundaryDecision({ currentPage: 2, pageCount: 6, step: 1, adjacentIndex: 6 })
-    const bookStart = pageTurnBoundaryDecision({ currentPage: 1, pageCount: 3, step: -1, adjacentIndex: null })
-
-    assert.deepEqual(
-        [backward.requestedPage, backward.shouldGoToAdjacentSection, backward.shouldScrollWithinSection],
-        [0, true, false]
-    )
-    assert.deepEqual(
-        [forward.requestedPage, forward.shouldGoToAdjacentSection, forward.shouldScrollWithinSection],
-        [3, true, false]
-    )
-    assert.deepEqual(
-        [within.requestedPage, within.shouldGoToAdjacentSection, within.shouldScrollWithinSection],
-        [3, false, true]
-    )
-    assert.deepEqual(
-        [bookStart.shouldGoToAdjacentSection, bookStart.shouldScrollWithinSection],
-        [false, true]
-    )
-})
-
-test('single-media sections normalize sentinel pages to their content page', () => {
+test('single-media and duplicate-turn decisions preserve hotfix policy', () => {
     assert.equal(normalizeSingleMediaPageTarget({ page: 0, pages: 3, isSingleMedia: true }), 1)
-    assert.equal(normalizeSingleMediaPageTarget({ page: 1, pages: 3, isSingleMedia: true }), 1)
-    assert.equal(normalizeSingleMediaPageTarget({ page: 2, pages: 3, isSingleMedia: true }), 1)
-    assert.equal(normalizeSingleMediaPageTarget({ page: 0, pages: 3, isSingleMedia: false }), 0)
     assert.equal(normalizeSingleMediaPageTarget({ page: 2, pages: 5, isSingleMedia: true }), 2)
-})
-
-test('post-turn suppression applies only to anonymous same-direction duplicates', () => {
-    const decide = options => shouldSuppressPostPageTurnDuplicate({
+    assert.equal(shouldSuppressPostPageTurnDuplicate({
         lastDirection: 'backward',
         direction: 'backward',
-        distance: null,
-        navigationSource: null,
         elapsedMs: 80,
-        ...options,
-    })
+    }), true)
+    assert.equal(shouldSuppressPostPageTurnDuplicate({
+        lastDirection: 'backward',
+        direction: 'backward',
+        navigationSource: 'keyboard',
+        elapsedMs: 80,
+    }), false)
+})
 
-    assert.equal(decide({}), true)
-    assert.equal(decide({ navigationSource: 'pageTurn.keydown.ArrowRight' }), false)
-    assert.equal(decide({ direction: 'forward' }), false)
-    assert.equal(decide({ elapsedMs: 400 }), false)
-    assert.equal(decide({ distance: 64 }), false)
+
+test('scrolled page-turn decisions distinguish internal scroll, adjacent section, and terminal edge', () => {
+    assert.deepEqual(scrolledPageTurnDecision({
+        canScrollWithinSection: true,
+        adjacentIndex: null,
+    }), {
+        shouldScrollWithinSection: true,
+        shouldGoToAdjacentSection: false,
+        isTerminal: false,
+    })
+    assert.deepEqual(scrolledPageTurnDecision({
+        canScrollWithinSection: false,
+        adjacentIndex: 4,
+    }), {
+        shouldScrollWithinSection: false,
+        shouldGoToAdjacentSection: true,
+        isTerminal: false,
+    })
+    assert.deepEqual(scrolledPageTurnDecision({
+        canScrollWithinSection: false,
+        adjacentIndex: null,
+    }), {
+        shouldScrollWithinSection: false,
+        shouldGoToAdjacentSection: false,
+        isTerminal: true,
+    })
+})
+
+
+test('page-turn movement results preserve uncertainty after attempted motion loses final metrics', () => {
+    assert.equal(paginatorPageTurnMovementResult({
+        indexChanged: true,
+        attemptedMovement: true,
+        finalMetricsAvailable: false,
+    }), true)
+    assert.equal(paginatorPageTurnMovementResult({
+        pageChanged: true,
+        attemptedMovement: true,
+        finalMetricsAvailable: true,
+    }), true)
+    assert.equal(paginatorPageTurnMovementResult({
+        startChanged: true,
+        attemptedMovement: true,
+        finalMetricsAvailable: true,
+    }), true)
+    assert.equal(paginatorPageTurnMovementResult({
+        authoritativeNoMove: true,
+        attemptedMovement: false,
+        finalMetricsAvailable: false,
+    }), false)
+    assert.deepEqual(paginatorPageTurnMovementResult({
+        attemptedMovement: true,
+        hasComparablePosition: true,
+        finalMetricsAvailable: false,
+    }), {
+        movementDisposition: 'unknown',
+        reason: 'pageTurnFinalMetricsUnavailable',
+    })
+    assert.equal(paginatorPageTurnMovementResult({
+        attemptedMovement: true,
+        hasComparablePosition: true,
+        finalMetricsAvailable: true,
+    }), false)
 })

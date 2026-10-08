@@ -1,52 +1,74 @@
 import Foundation
+import LakeOfFireCore
 import RealmSwift
 import RealmSwiftGaps
-import LakeOfFireCore
-import LakeOfFireAdblock
 
 public class HistoryRecord: Bookmark {
     @Persisted public var lastVisitedAt = Date()
     
     @Persisted public var isDemoted: Bool?
-    
+
     @Persisted public var bookmarkID: String?
     
     public override func configureBookmark(_ bookmark: Bookmark) {
         super.configureBookmark(bookmark)
     }
-    
-    public override var deleteActionTitle: String {
-        "Remove History…"
-    }
-    
-    public override var deletionConfirmationTitle: String {
-        return "Deletion Confirmation"
-    }
-    
-    public override var deletionConfirmationMessage: String {
-        return "Are you sure you want to delete from history?"
-    }
-    
-    public override var deletionConfirmationActionTitle: String {
-        return "Delete"
+}
+
+extension HistoryRecord: DeletableReaderContent {
+    public var deleteActionTitle: String {
+        "Remove from History…"
     }
 
     @MainActor
-    public override func delete() async throws {
+    public func delete() async throws {
         let historyURL = url
         guard let contentReference = ReaderContentLoader.ContentReference(content: self) else {
             return
         }
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                for: contentReference.realmConfiguration
+                for: contentReference.realmConfiguration, storageAdmission: contentReference.storageAdmission
             )
             try await realm.asyncWritePreservingOwnership {
-                HistoryRecord.markOpenedRecordsDeleted(matching: historyURL, in: realm)
+                try Task.checkCancellation()
+                try contentReference.validateStorage()
+                HistoryRecord.markOpenedRecordsDeleted(
+                    matching: historyURL,
+                    in: realm
+                )
             }
-            ReaderContentLoader.invalidateCachedContent(for: historyURL)
         }()
     }
+}
+
+extension DeletableReaderContent {
+    @MainActor
+    public func delete() async throws {
+        guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
+        try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: contentRef.realmConfiguration, storageAdmission: contentRef.storageAdmission)
+            try await realm.asyncWritePreservingOwnership {
+                try Task.checkCancellation()
+                try contentRef.validateStorage()
+                guard let content = realm.object(ofType: contentRef.contentType,
+                    forPrimaryKey: contentRef.contentKey) as? any ReaderContentProtocol else { return }
+                guard !content.isDeleted else { return }
+                content.isDeleted = true
+                content.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }()
+    }
+    
+//    @MainActor
+//    public func delete() async throws {
+//        guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
+//        await realm.asyncRefresh()
+//        try await realm.asyncWrite {
+//            content.isDeleted = true
+//            content.refreshChangeMetadata(explicitlyModified: true)
+//        }
+//    }
 }
 
 public extension HistoryRecord {
@@ -83,23 +105,20 @@ public extension HistoryRecord {
     }
 
     @discardableResult
-    static func markOpenedRecordsDeleted(matching url: URL, in realm: Realm) -> Int {
+    static func markOpenedRecordsDeleted(
+        matching url: URL,
+        in realm: Realm,
+        at timestamp: Date = Date()
+    ) -> Int {
         let openedRecords = Array(openedRecords(matching: url, in: realm))
-        let now = Date()
         for record in openedRecords {
             record.isDeleted = true
-            record.refreshChangeMetadata(explicitlyModified: true, at: now)
+            record.refreshChangeMetadata(
+                explicitlyModified: true,
+                at: timestamp
+            )
         }
         return openedRecords.count
-    }
-
-    static func getOpenedRecord(forURL url: URL, in realm: Realm) -> HistoryRecord? {
-        openedRecords(matching: url, in: realm)
-            .sorted(by: [
-                SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
-                SortDescriptor(keyPath: "compoundKey", ascending: true),
-            ])
-            .first
     }
 
     @RealmBackgroundActor
@@ -108,6 +127,16 @@ public extension HistoryRecord {
             for: ReaderContentLoader.historyRealmConfiguration
         )
         return getOpenedRecord(forURL: url, in: realm)
+    }
+
+    @RealmBackgroundActor
+    static func getOpenedRecord(forURL url: URL, in realm: Realm) -> HistoryRecord? {
+        openedRecords(matching: url, in: realm)
+            .sorted(by: [
+                SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
+                SortDescriptor(keyPath: "compoundKey", ascending: true),
+            ])
+            .first
     }
 
     static func hasOpenedRecord(for url: URL, in realm: Realm) -> Bool {
@@ -120,88 +149,133 @@ public extension HistoryRecord {
             .max()
     }
 
+    /// Demotion has already been requested by a loader/readability callback.
+    /// Prefer committed opened identity so a provisional deletion cannot drop
+    /// that request. Live selection is only a fallback for creation/revival;
+    /// the existing owned writer decides whether that identity survives.
+    @RealmBackgroundActor
+    static func refreshDemotedStatus(
+        forURL url: URL,
+        historyRealmConfiguration: Realm.Configuration = ReaderContentLoader.historyRealmConfiguration,
+        historyStorageAdmission: RealmStorageAdmission? = nil,
+        bookmarkRealmConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
+        bookmarkStorageAdmission: RealmStorageAdmission? = nil,
+        skipPreviouslyDemoted: Bool = true
+    ) async throws {
+        let actor = RealmBackgroundActor.shared
+        let historyAdmission = historyStorageAdmission ?? actor.captureStorageAdmission(for: historyRealmConfiguration)
+        let bookmarkAdmission = bookmarkStorageAdmission ?? (actor.realmCacheKey(for: bookmarkRealmConfiguration) == actor.realmCacheKey(for: historyRealmConfiguration)
+            ? historyAdmission : actor.captureStorageAdmission(for: bookmarkRealmConfiguration))
+        let realm = try await actor.cachedRealm(for: historyRealmConfiguration, storageAdmission: historyAdmission)
+        if !realm.isFrozen && !realm.isInWriteTransaction { await realm.asyncRefresh() }
+        try Task.checkCancellation()
+        guard historyAdmission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: historyRealmConfiguration) }),
+              bookmarkAdmission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: bookmarkRealmConfiguration) }) else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+        }
+        let reference: ReaderContentLoader.ContentReference? = {
+            let committed = realm.freeze()
+            let record = getOpenedRecord(forURL: url, in: committed)
+                ?? getOpenedRecord(forURL: url, in: realm)
+            return record.flatMap { ReaderContentLoader.ContentReference(content: $0, storageAdmission: historyAdmission) }
+        }()
+        guard let reference else { return }
+        try await refreshDemotedStatus(for: reference,
+            bookmarkRealmConfiguration: bookmarkRealmConfiguration,
+            bookmarkStorageAdmission: bookmarkAdmission,
+            skipPreviouslyDemoted: skipPreviouslyDemoted)
+    }
+
     @RealmBackgroundActor
     func refreshDemotedStatus(
         bookmarkRealmConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
+        bookmarkStorageAdmission: RealmStorageAdmission? = nil,
         skipPreviouslyDemoted: Bool = true
     ) async throws {
-        guard !isInvalidated, !isDeleted,
-              isDemoted != false || !skipPreviouslyDemoted,
+        guard !isInvalidated,
               let reference = ReaderContentLoader.ContentReference(content: self) else { return }
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: reference.realmConfiguration)
-        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
+        try await Self.refreshDemotedStatus(for: reference,
+            bookmarkRealmConfiguration: bookmarkRealmConfiguration,
+            bookmarkStorageAdmission: bookmarkStorageAdmission,
+            skipPreviouslyDemoted: skipPreviouslyDemoted)
+    }
+
+    /// Exact loader identity and its original storage admission survive live
+    /// deletion filtering. No object wrapper crosses native write admission.
+    @RealmBackgroundActor
+    static func refreshDemotedStatus(
+        for reference: ReaderContentLoader.ContentReference,
+        bookmarkRealmConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
+        bookmarkStorageAdmission: RealmStorageAdmission? = nil,
+        skipPreviouslyDemoted: Bool = true
+    ) async throws {
+        guard reference.contentType == HistoryRecord.self else { return }
+        let actor = RealmBackgroundActor.shared
+        let bookmarkAdmission = bookmarkStorageAdmission ?? (actor.realmCacheKey(for: bookmarkRealmConfiguration) == actor.realmCacheKey(for: reference.realmConfiguration)
+            ? reference.storageAdmission : actor.captureStorageAdmission(for: bookmarkRealmConfiguration))
+        nonisolated func validateAdmission() throws {
+            try Task.checkCancellation()
+            try reference.validateStorage()
+            // An explicit bookmark configuration belongs to this operation;
+            // do not replace it with the loader's later global configuration.
+            guard bookmarkAdmission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: bookmarkRealmConfiguration) }) else {
+                throw RealmBackgroundActorError.realmFileChangedDuringOpen
+            }
+        }
+        try validateAdmission()
+        let realm = try await actor.cachedRealm(for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
+        if !realm.isFrozen && !realm.isInWriteTransaction { await realm.asyncRefresh() }
+        try validateAdmission()
+        let needsRefresh: Bool = {
+            // Live caller selection can deliver a provisionally revived row,
+            // or a row whose committed visibility is about to change. A
+            // committed no-op cannot settle that owner's pending transaction.
+            // Let native admission wait, then evaluate the settled row below.
+            if realm.isInWriteTransaction { return true }
+            // A different owner's provisional deletion or visibility value must
+            // not suppress this request. Keep the cheap committed no-op path,
+            // but carry no frozen object across write admission.
+            let committed = realm.freeze()
+            guard let record = committed.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey) else {
+                // The supplied managed row may belong to an uncommitted
+                // creation. Absence is not a no-op receipt: let write admission
+                // settle its owner, then resolve the row without recreating it.
+                return true
+            }
+            return !record.isDeleted && (record.isDemoted != false || !skipPreviouslyDemoted)
+        }()
+        try validateAdmission()
+        guard needsRefresh else { return }
+        let bookmarkRealm = try await actor.cachedRealm(for: bookmarkRealmConfiguration, storageAdmission: bookmarkAdmission)
         await ReaderContentLoader.contentWriteGateForTesting?(.demotion)
         try await realm.asyncWritePreservingOwnership {
-            try Task.checkCancellation()
+            try validateAdmission()
+            let admittedBookmarks: Realm
+            if bookmarkRealm == realm {
+                // The owning write already contains both models. Its current
+                // bookmark state commits or rolls back with this history row.
+                admittedBookmarks = realm
+            } else {
+                if !bookmarkRealm.isFrozen && !bookmarkRealm.isInWriteTransaction { bookmarkRealm.refresh() }
+                admittedBookmarks = bookmarkRealm.freeze()
+            }
+            // Refresh may notify a writer, retire a store, or cancel this task.
+            // Resolve the history row only after that synchronous callout.
+            try validateAdmission()
             guard let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey),
                   !record.isDeleted, record.isDemoted != false || !skipPreviouslyDemoted else { return }
-            if bookmarkRealm != realm { bookmarkRealm.refresh() }
-            // Compute from the live row in the final writer, including metadata
-            // or bookmark edits committed while Realm acquisition suspended.
-            let bookmarked = bookmarkRealm.objects(Bookmark.self)
+            let bookmarked = admittedBookmarks.objects(Bookmark.self)
                 .filter(NSPredicate(format: "isDeleted == false AND url == %@", record.url.absoluteString)).first != nil
-            let demoted = isGoogleSearchURL(record.url) || !(record.isReaderModeByDefault || record.isReaderModeAvailable
+            let demoted = !(record.isReaderModeByDefault || record.isReaderModeAvailable
                 || record.rssContainsFullContent || record.isFromClipboard || record.isPhysicalMedia || bookmarked)
             guard demoted != record.isDemoted else { return }
             record.isDemoted = demoted
             record.refreshChangeMetadata(explicitlyModified: true)
+            // Metadata providers may withdraw storage admission too. A failed
+            // final fence rolls back only this operation's fields and journal.
+            try validateAdmission()
         }
     }
-}
-
-fileprivate func hostIsGoogleRegistrableDomain(_ host: String) -> Bool {
-    let labels = host.lowercased().split(separator: ".").map(String.init)
-    guard labels.count >= 2 else { return false }
-    let last = labels[labels.count - 1]
-    let secondLast = labels[labels.count - 2]
-    
-    // Case 1: *.google.<tld>  (e.g., google.com, www.google.de, news.google.dev)
-    if secondLast == "google" { return true }
-    
-    // Case 2: *.google.<sld>.<cc> (e.g., google.co.uk, www.google.com.au)
-    if labels.count >= 3 {
-        let thirdLast = labels[labels.count - 3]
-        let sld = secondLast
-        let cc = last
-        let allowedSLDs: Set<String> = [
-            "com", // e.g., google.com.au, google.com.br, google.com.mx, google.com.tr
-            "co"   // e.g., google.co.uk, google.co.jp, google.co.kr, google.co.za
-        ]
-        if thirdLast == "google",
-           allowedSLDs.contains(sld),
-           cc.count == 2, cc.allSatisfy({ $0.isLetter }) {
-            return true
-        }
-    }
-    
-    return false
-}
-
-fileprivate func isGoogleSearchURL(_ url: URL) -> Bool {
-    guard let host = url.host?.lowercased() else { return false }
-    // Host must contain a "google" label (e.g., google.com, www.google.co.jp, news.google.de)
-    guard hostIsGoogleRegistrableDomain(host) else { return false }
-    
-    let path = url.path.lowercased()
-    let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
-    let queryItems = comps?.queryItems ?? []
-    let q = queryItems.first(where: { $0.name == "q" })?.value
-    
-    // Common search entry points:
-    // - /search?q=...
-    // - /webhp?q=... (or with fragment #q=...)
-    // - /url?q=... (redirector) or /url?url=...
-    // - Root with fragment #q=... (older patterns)
-    if path == "/search" || path == "/webhp" || path == "/url" || path.isEmpty || path == "/" {
-        if let q, !q.isEmpty { return true }
-    }
-    
-    // Fallback: query in fragment (#q=...)
-    if let fragment = url.fragment?.lowercased(), fragment.contains("q=") {
-        return true
-    }
-    
-    return false
 }
 
 //public extension HistoryRecord {

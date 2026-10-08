@@ -1,6 +1,10 @@
 import SwiftUI
-import SwiftUIWebView
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
 import LakeOfFireContent
+import LakeOfFireCore
+import SwiftUIWebView
 
 struct ReaderWebViewStateKey: EnvironmentKey {
     static let defaultValue: WebViewState = .empty
@@ -55,7 +59,7 @@ public extension EnvironmentValues {
 
 fileprivate struct ReaderViewModelModifier: ViewModifier {
     @EnvironmentObject private var readerViewModel: ReaderViewModel
-
+    
     func body(content: Content) -> some View {
         content
             .environment(\.readerWebViewState, readerViewModel.state)
@@ -69,7 +73,7 @@ fileprivate struct ReaderViewModelModifier: ViewModifier {
 
 fileprivate struct ReaderModeLoadPendingModifier: ViewModifier {
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
-
+    
     func body(content: Content) -> some View {
         content
             .environment(\.isReaderModeLoadPending, readerModeViewModel.isReaderModeLoadPending)
@@ -78,9 +82,9 @@ fileprivate struct ReaderModeLoadPendingModifier: ViewModifier {
 
 fileprivate struct ReaderFileManagerModifier: ViewModifier {
     let ubiquityContainerIdentifier: String
-
+    
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
-
+    
     func body(content: Content) -> some View {
         content
             .task(id: ubiquityContainerIdentifier) { @MainActor in
@@ -94,7 +98,7 @@ fileprivate struct ReaderNavigatorModifier: ViewModifier {
     @EnvironmentObject private var readerViewModel: ReaderViewModel
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
-
+    
     func body(content: Content) -> some View {
         content
             .task { @MainActor in
@@ -107,7 +111,7 @@ fileprivate struct ReaderNavigatorModifier: ViewModifier {
 fileprivate struct ReaderFontSizeModifier: ViewModifier {
     @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
-
+    
     func body(content: Content) -> some View {
         content
             .task { @MainActor in

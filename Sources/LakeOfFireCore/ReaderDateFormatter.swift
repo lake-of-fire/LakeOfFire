@@ -23,19 +23,16 @@ public enum ReaderDateFormatter {
         let earlierDate = isPast ? date : referenceDate
         let laterDate = isPast ? referenceDate : date
 
-        let components = calendar.dateComponents([
-            .year,
-            .month,
-            .day,
-            .hour,
-            .minute,
-            .second
-        ], from: earlierDate, to: laterDate)
+        let components = calendar.dateComponents(
+            [.year, .month, .day, .hour, .minute, .second],
+            from: earlierDate,
+            to: laterDate
+        )
 
         var quantity: Int?
-        var longUnitSingular: String = ""
-        var longUnitPlural: String = ""
-        var shortUnit: String = ""
+        var longUnitSingular = ""
+        var longUnitPlural = ""
+        var shortUnit = ""
 
         if let year = components.year, year > 0 {
             quantity = year
@@ -70,8 +67,8 @@ public enum ReaderDateFormatter {
         }
 
         guard let quantity else { return nil }
-        let phrase: String
 
+        let phrase: String
         switch style {
         case .long:
             let unit = quantity == 1 ? longUnitSingular : longUnitPlural
@@ -79,6 +76,7 @@ public enum ReaderDateFormatter {
         case .short:
             phrase = "\(quantity)\(shortUnit)"
         }
+
         return isPast ? "\(phrase) ago" : "in \(phrase)"
     }
 
@@ -123,7 +121,7 @@ public enum ReaderDateFormatter {
         from date: Date,
         dateFormatter: DateFormatter = ReaderDateFormatter.defaultAbsoluteFormatter
     ) -> String {
-        return dateFormatter.string(from: date)
+        dateFormatter.string(from: date)
     }
 
     public static func makeAbsoluteFormatter(

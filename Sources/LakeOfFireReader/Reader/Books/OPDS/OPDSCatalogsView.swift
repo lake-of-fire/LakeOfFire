@@ -1,9 +1,12 @@
 import SwiftUI
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireContent
+import LakeOfFireCore
 import LakeOfFireOPDS
 import RealmSwift
 import RealmSwiftGaps
-import Combine
-import LakeOfFireContent
 
 struct OPDSCatalogSnapshot: Identifiable, Hashable, Sendable {
     let id: UUID
@@ -21,33 +24,33 @@ struct OPDSCatalogSnapshot: Identifiable, Hashable, Sendable {
 class OPDSCatalogsViewModel: ObservableObject {
     @Published var catalogs: [OPDSCatalogSnapshot] = []
     @Published var errorMessage: String?
-    private var cancellables = Set<AnyCancellable>()
-
+    
     @RealmBackgroundActor
     private var notificationToken: NotificationToken?
-
+    
     init() {
         observeCatalogs()
     }
-
+    
     deinit {
         Task { @RealmBackgroundActor [weak notificationToken] in
             notificationToken?.invalidate()
         }
     }
-
+    
     private func observeCatalogs() {
         Task { @RealmBackgroundActor in
             do {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                    for: ReaderContentLoader.historyRealmConfiguration
-                )
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration)
                 let results = realm.objects(OPDSCatalog.self)
                     .where { !$0.isDeleted }
-                notificationToken = results.observe { [weak self] (changes: RealmCollectionChange) in
+                notificationToken = results.observe { [weak self] changes in
                     switch changes {
-                    case .initial(let catalogs), .update(let catalogs, _, _, _):
-                        let snapshots = Array(catalogs.map(OPDSCatalogSnapshot.init))
+                    case .initial(let catalogs),
+                         .update(let catalogs, _, _, _):
+                        let snapshots = Array(
+                            catalogs.map(OPDSCatalogSnapshot.init)
+                        )
                         Task { @MainActor [weak self] in
                             self?.catalogs = snapshots
                         }
@@ -58,13 +61,14 @@ class OPDSCatalogsViewModel: ObservableObject {
                     }
                 }
             } catch {
-                await MainActor.run { [weak self] in
-                    self?.errorMessage = "Error observing catalogs: \(error.localizedDescription)"
+                Task { @MainActor [weak self] in
+                    self?.errorMessage =
+                        "Error observing catalogs: \(error.localizedDescription)"
                 }
             }
         }
     }
-
+    
     func fetchAllData() async {
         do {
             catalogs = try await Self.loadCatalogs()
@@ -76,7 +80,7 @@ class OPDSCatalogsViewModel: ObservableObject {
     @RealmBackgroundActor
     private static func loadCatalogs() async throws -> [OPDSCatalogSnapshot] {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
-            for: ReaderContentLoader.historyRealmConfiguration
+            for: .defaultConfiguration
         )
         await realm.asyncRefresh()
         return Array(
@@ -85,15 +89,13 @@ class OPDSCatalogsViewModel: ObservableObject {
                 .map(OPDSCatalogSnapshot.init)
         )
     }
-
+    
     @RealmBackgroundActor
     func addCatalog(title: String, url: String) async {
         do {
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                for: ReaderContentLoader.historyRealmConfiguration
-            )
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration)
             await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 OPDSCatalog.add(title: title, url: url, to: realm)
             }
         } catch {
@@ -102,23 +104,27 @@ class OPDSCatalogsViewModel: ObservableObject {
             }
         }
     }
-
+    
     func deleteCatalogs(at offsets: IndexSet) {
         let catalogIDsToDelete = offsets.map { catalogs[$0].id }
         Task { @RealmBackgroundActor [weak self] in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                    for: ReaderContentLoader.historyRealmConfiguration
+                    for: .defaultConfiguration
                 )
                 await realm.asyncRefresh()
-                try await realm.asyncWrite {
-                    for catalog in Array(realm.objects(OPDSCatalog.self).where { $0.id.in(catalogIDsToDelete) }) {
+                try await realm.asyncWritePreservingOwnership {
+                    for catalog in Array(
+                        realm.objects(OPDSCatalog.self)
+                            .where { $0.id.in(catalogIDsToDelete) }
+                    ) {
                         catalog.softDelete()
                     }
                 }
             } catch {
-                await MainActor.run { [weak self] in
-                    self?.errorMessage = "Error deleting catalogs: \(error.localizedDescription)"
+                Task { @MainActor [weak self] in
+                    self?.errorMessage =
+                        "Error deleting catalogs: \(error.localizedDescription)"
                 }
             }
         }
@@ -128,9 +134,9 @@ class OPDSCatalogsViewModel: ObservableObject {
 struct OPDSCatalogsView: View {
     @EnvironmentObject private var viewModel: OPDSCatalogsViewModel
     @State private var showingCatalogDetail: OPDSCatalogSnapshot?
-
+    
     @EnvironmentObject private var bookLibraryModalsModel: BookLibraryModalsModel
-
+    
     var body: some View {
         List {
             ForEach(viewModel.catalogs) { catalog in
@@ -150,7 +156,7 @@ struct OPDSCatalogsView: View {
             Button("Add") { bookLibraryModalsModel.showingAddCatalog = true }
         }
     }
-
+    
     private func deleteCatalogs(at offsets: IndexSet) {
         viewModel.deleteCatalogs(at: offsets)
     }
@@ -160,7 +166,7 @@ struct OPDSCatalogDetailView: View {
     let catalog: OPDSCatalogSnapshot
     @State private var publications: [Publication] = []
     @State private var errorMessage: String?
-
+    
     var body: some View {
         List(publications) { publication in
             Text(publication.title)
@@ -170,13 +176,13 @@ struct OPDSCatalogDetailView: View {
             fetchCatalog()
         }
     }
-
+    
     private func fetchCatalog() {
         guard let url = URL(string: catalog.url) else {
             errorMessage = "Invalid catalog URL"
             return
         }
-
+        
         OPDSParser.parseURL(url: url) { parseData, error in
             DispatchQueue.main.async {
                 if let feed = parseData?.feed {
@@ -194,7 +200,7 @@ struct AddCatalogView: View {
     @State private var url = ""
     @State private var errorMessage: String? = nil
     @Environment(\.dismiss) var dismiss
-
+    
     var body: some View {
         NavigationView {
             Form {
@@ -202,14 +208,14 @@ struct AddCatalogView: View {
                     TextField("Title", text: $title)
                     TextField("URL", text: $url)
                 }
-
+                
                 if let errorMessage = errorMessage {
                     Section {
                         Text(errorMessage)
                             .foregroundColor(.red)
                     }
                 }
-
+                
                 Section {
                     Button("Add") {
                         Task {
@@ -234,15 +240,13 @@ struct AddCatalogView: View {
             }
         }
     }
-
+    
     @RealmBackgroundActor
     private func addCatalog(title: String, url: String) async {
         do {
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                for: ReaderContentLoader.historyRealmConfiguration
-            )
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration) 
             await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 OPDSCatalog.add(title: title, url: url, to: realm)
             }
             await MainActor.run { dismiss() }

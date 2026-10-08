@@ -1,0 +1,104 @@
+name: Book Actions tests
+# Qualify the combined chapter-pass and Article-producer runtime.
+on:
+  push:
+    branches: [codex/book-actions-epochs-20260920]
+    paths:
+      - Sources/LakeOfFireReader/Resources/Resources/foliate-js/**
+      - Tests/Browser/**
+      - Tests/JavaScript/**
+      - .github/workflows/book-actions-tests.yml
+  pull_request:
+    paths:
+      - Sources/LakeOfFireReader/Resources/Resources/foliate-js/**
+      - Tests/Browser/**
+      - Tests/JavaScript/**
+      - .github/workflows/book-actions-tests.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: book-actions-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  behavior:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: JavaScript behavioral tests
+        run: |
+          set -o pipefail
+          node --test Tests/JavaScript/*.test.mjs 2>&1 | tee book-actions-unit-results.txt
+      - name: Install browser dependencies
+        run: |
+          python3 -m pip install playwright==1.57.0
+          python3 -m playwright install --with-deps chromium
+      - name: Renderer journeys
+        run: |
+          set -o pipefail
+          python3 Tests/Browser/test_book_endcap.py 2>&1 | tee book-actions-browser-results.txt
+      - name: Full viewer-shell journey
+        run: |
+          set -o pipefail
+          python3 Tests/Browser/test_book_endcap_shell.py 2>&1 | tee book-actions-shell-results.txt
+      - name: Combined Article and chapter ownership journeys
+        run: |
+          set -o pipefail
+          python3 Tests/Browser/test_book_article_producer.py 2>&1 | tee book-actions-composition-results.txt
+      - name: Book action integrity runtime journeys
+        run: |
+          set -o pipefail
+          integrity_bin=$(mktemp -d "$RUNNER_TEMP/book-action-integrity-bin.XXXXXX")
+          chromium_path=$(python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          test -x "$chromium_path"
+          ln -s "$chromium_path" "$integrity_bin/chromium"
+          PATH="$integrity_bin:$PATH" python3 Tests/Browser/BookActionIntegrity/run.py --output book-actions-integrity-results.json 2>&1 | tee book-actions-integrity-results.txt
+      - name: Book endcap lifecycle runtime journeys
+        run: |
+          set -o pipefail
+          lifecycle_bin=$(mktemp -d "$RUNNER_TEMP/book-endcap-lifecycle-bin.XXXXXX")
+          chromium_path=$(python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          test -x "$chromium_path"
+          ln -s "$chromium_path" "$lifecycle_bin/chromium"
+          PATH="$lifecycle_bin:$PATH" python3 Tests/Browser/BookEndcapLifecycle/run.py --output book-actions-lifecycle-results.json 2>&1 | tee book-actions-lifecycle-results.txt
+      - name: Book state transaction runtime journeys
+        run: |
+          set -o pipefail
+          transaction_bin=$(mktemp -d "$RUNNER_TEMP/book-transaction-bin.XXXXXX")
+          chromium_path=$(python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          test -x "$chromium_path"
+          ln -s "$chromium_path" "$transaction_bin/chromium"
+          PATH="$transaction_bin:$PATH" python3 Tests/Browser/BookStateTransaction/run.py --output book-actions-transaction-results.json 2>&1 | tee book-actions-transaction-results.txt
+      - name: Book runtime boundary journeys
+        run: |
+          set -o pipefail
+          boundaries_bin=$(mktemp -d "$RUNNER_TEMP/book-boundaries-bin.XXXXXX")
+          chromium_path=$(python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          test -x "$chromium_path"
+          ln -s "$chromium_path" "$boundaries_bin/chromium"
+          PATH="$boundaries_bin:$PATH" python3 Tests/Browser/BookRuntimeBoundaries/run.py --output book-actions-boundaries-results.json 2>&1 | tee book-actions-boundaries-results.txt
+      - name: Book action settlement runtime journeys
+        run: |
+          set -o pipefail
+          settlement_bin=$(mktemp -d "$RUNNER_TEMP/book-settlement-bin.XXXXXX")
+          chromium_path=$(python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          test -x "$chromium_path"
+          ln -s "$chromium_path" "$settlement_bin/chromium"
+          PATH="$settlement_bin:$PATH" python3 Tests/Browser/BookActionSettlement/run.py --output book-actions-settlement-results.json 2>&1 | tee book-actions-settlement-results.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: book-actions-test-results
+          path: |
+            book-actions-*-results.txt
+            book-actions-integrity-results.json
+            book-actions-lifecycle-results.json
+            book-actions-transaction-results.json
+            book-actions-boundaries-results.json
+            book-actions-settlement-results.json
+          retention-days: 14

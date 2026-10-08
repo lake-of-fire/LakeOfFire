@@ -1,20 +1,11 @@
 import Foundation
-import SwiftUIWebView
+import LakeOfFireContent
 import LakeOfFireCore
-import LakeOfFireAdblock
+import SwiftUIWebView
 //import WebKit
 
 public struct YoutubeCaptionsUserScript {
-    @MainActor
-    public static var userScript: WebViewUserScript {
-        WebViewUserScript(
-            source: script,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: false,
-            in: .page,
-            allowedDomains: Set(["youtube.com", "m.youtube.com", "www.youtube.com"])
-        )
-    }
+    public static let userScript = WebViewUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page, allowedDomains: Set(["youtube.com", "m.youtube.com", "www.youtube.com"]))
     
     static private let script = #"""
         (function() {

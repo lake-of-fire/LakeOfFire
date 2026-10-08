@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head>
+    <title>Manabi Reader BE-PAL defaults test fixture</title>
+  </head>
+  <body>
+    <outline title="BE-PAL" type="rss" xmlUrl="https://www.bepal.net/feed/" uuid="161CAA2A-7BD8-4D72-B7CA-43DD84C80752" extractImageFromContent="true" isReaderModeByDefault="true" iconUrl="https://www.bepal.net/apple-touch-icon.png" markdownDescription="Camping, outdoor gear, and nature-focused daily life." rssContainsFullContent="false" injectEntryImageIntoHeader="false" displayPublicationDate="true" meaningfulContentMinLength="0" text="BE-PAL"></outline>
+  </body>
+</opml>

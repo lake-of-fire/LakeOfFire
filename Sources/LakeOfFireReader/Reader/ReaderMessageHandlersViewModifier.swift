@@ -1,15 +1,19 @@
+import Foundation
 import SwiftUI
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
+import LakeOfFireContent
+import LakeOfFireCore
 @preconcurrency import WebKit
 import OrderedCollections
 import SwiftUIWebView
 import RealmSwift
 import RealmSwiftGaps
 import LakeKit
-import LakeOfFireContent
-import LakeOfFireCore
 
 private struct ReaderEBookInitialRestoreBridgeRequest {
-    let requestID = UUID().uuidString
+    let requestID: String
     let cfi: String
     let fractionalCompletion: Double?
     let requestedLocator: String
@@ -23,19 +27,20 @@ private struct ReaderEBookInitialRestoreBridgeRequest {
             cfi: cfi,
             fractionalCompletion: restore.fractionalCompletion
         ) else { return nil }
+        requestID = UUID().uuidString
         requestedLocator = hasCFI ? "cfi" : "fraction"
     }
 
     var javaScriptArgument: [String: any Sendable] {
-        var argument: [String: any Sendable] = [
+        var payload: [String: any Sendable] = [
             "requestID": requestID,
             "requestedLocator": requestedLocator,
             "cfi": cfi,
         ]
         if let fractionalCompletion {
-            argument["fractionalCompletion"] = fractionalCompletion
+            payload["fractionalCompletion"] = fractionalCompletion
         }
-        return argument
+        return payload
     }
 }
 
@@ -82,45 +87,6 @@ public extension View {
 
     func onReaderNavigationVisibilityWillChange(_ handler: @escaping ReaderNavigationVisibilityWillChangeHandler) -> some View {
         environment(\.readerNavigationVisibilityWillChangeHandler, handler)
-    }
-}
-
-struct ReaderProgressMessageSequenceGate {
-    private var activeContentURL: URL?
-    private var latestSequence: UInt64?
-
-    mutating func activate(contentURL: URL) {
-        let canonicalURL = Self.canonicalContentURL(contentURL)
-        guard activeContentURL != canonicalURL else { return }
-        activeContentURL = canonicalURL
-        latestSequence = nil
-    }
-
-    mutating func reserve(sequence: UInt64, contentURL: URL) -> Bool {
-        let canonicalURL = Self.canonicalContentURL(contentURL)
-        if let activeContentURL, activeContentURL != canonicalURL {
-            return false
-        }
-        if activeContentURL == nil {
-            activeContentURL = canonicalURL
-        }
-        if let latestSequence, sequence <= latestSequence {
-            return false
-        }
-        latestSequence = sequence
-        return true
-    }
-
-    private static func canonicalContentURL(_ url: URL) -> URL {
-        let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
-        guard var components = URLComponents(
-            url: resolvedURL,
-            resolvingAgainstBaseURL: false
-        ) else {
-            return resolvedURL
-        }
-        components.fragment = nil
-        return components.url ?? resolvedURL
     }
 }
 
@@ -183,10 +149,22 @@ private struct ReaderSizeTrackingCacheBucket: Codable {
     }
 }
 
-@MainActor
-fileprivate class ReaderMessageHandlers: Identifiable {
-    var forceReaderModeWhenAvailable: Bool
+private let readerPaginationSizeTrackingCache = PersistedCache<String, ReaderSizeTrackingCacheBucket>(
+    namespace: "reader-pagination-size-tracking-cache-v2",
+    version: 2,
+    totalBytesLimit: 20 * 1024 * 1024,
+    countLimit: 10_000
+)
 
+/// Opens the shared pagination cache before a reader view needs to install its message handlers.
+public func prewarmReaderPaginationSizeTrackingCache() {
+    _ = readerPaginationSizeTrackingCache
+}
+
+@MainActor
+fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
+    var forceReaderModeWhenAvailable: Bool
+    
     var scriptCaller: WebViewScriptCaller
     var readerViewModel: ReaderViewModel
     var readerModeViewModel: ReaderModeViewModel
@@ -206,19 +184,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     }
 
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
-    private var readingProgressSequenceGate = ReaderProgressMessageSequenceGate()
-    private let trackingSizeCache = PersistedCache<String, ReaderSizeTrackingCacheBucket>(
-        namespace: "reader-pagination-size-tracking-cache-v2",
-        version: 2,
-        totalBytesLimit: 20 * 1024 * 1024,
-        countLimit: 10_000
-    )
+    private var lastNonEBookReaderProgress: (url: URL, fractionalCompletion: Float)?
     private let trackingSizeHistoryLimit = 10
     fileprivate var automaticReadabilityTask: Task<Void, Never>?
-
-    fileprivate func activateReadingProgressContentURL(_ contentURL: URL) {
-        readingProgressSequenceGate.activate(contentURL: contentURL)
-    }
 
     nonisolated private func makeBucketKey(from cacheKey: String) -> String {
         let parts = cacheKey.split(separator: "|").map(String.init)
@@ -291,7 +259,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     @MainActor
     private func registerEbookViewerFrame(_ frameInfo: WKFrameInfo?) {
         guard let frameInfo else { return }
-        let pageURL = readerViewModel.state.pageURL
+        let stateURL = readerViewModel.state.pageURL
+        let pageURL = stateURL.isEBookURL ? stateURL : readerContent.pageURL
         _ = scriptCaller.addMultiTargetFrame(
             frameInfo,
             uuid: "ebook-viewer-frame:\(pageURL.absoluteString)",
@@ -306,51 +275,44 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     ) async throws -> (any ReaderContentProtocol)? {
         if let currentContent = readerContent.content,
            currentContent.url.matchesReaderURL(windowURL) {
-            debugPrint(
-                "# READERLOAD stage=readerMessageHandlers.contentReuseCurrent",
-                "source=\(source)",
-                "windowURL=\(windowURL.absoluteString)",
-                "contentURL=\(currentContent.url.absoluteString)",
-                "readerPageURL=\(readerContent.pageURL.absoluteString)"
-            )
             return currentContent
         }
-        debugPrint(
-            "# READERLOAD stage=readerMessageHandlers.contentFallbackLoad",
-            "source=\(source)",
-            "windowURL=\(windowURL.absoluteString)",
-            "readerPageURL=\(readerContent.pageURL.absoluteString)",
-            "currentContentURL=\(readerContent.content?.url.absoluteString ?? "nil")"
-        )
         return try await ReaderViewModel.getContent(forURL: windowURL, source: source)
     }
 
+    private func documentIsStillCurrent(_ expectedURL: URL) -> Bool {
+        urlsMatchWithoutHash(expectedURL, readerViewModel.state.pageURL)
+    }
+    
     lazy var webViewMessageHandlers = {
         WebViewMessageHandlers([
-            ("readerConsoleLog", { @MainActor [weak self] message in
+            ("readerConsoleLog", { [weak self] message in
                 guard let self else { return }
                 guard let result = ConsoleLogMessage(fromMessage: message) else {
                     return
                 }
-
+                
                 // Filter error logging based on URL
                 let mainDocumentURL = message.frameInfo.request.mainDocumentURL
                 if let mainDocumentURL {
                     guard mainDocumentURL.isEBookURL || mainDocumentURL.scheme == "blob" || mainDocumentURL.isFileURL || mainDocumentURL.isReaderFileURL || mainDocumentURL.isSnippetURL else { return }
                 }
-
+                
+                let renderedMessage = result.message ?? result.arguments?.map { "\($0 ?? "nil")" }.joined(separator: " ") ?? "(no message)"
+#if DEBUG
+                if ProcessInfo.processInfo.environment["MANABI_EBOOK_PROGRESS_ADMISSION_DIAGNOSTIC"] == "1",
+                   renderedMessage.hasPrefix("# READER ebook-progress-boundary ") {
+                    print(String(renderedMessage.prefix(1200)))
+                }
+#endif
                 Logger.shared.logger.log(
                     level: .init(rawValue: result.severity.lowercased()) ?? .info,
-                    "[JS] \(result.severity.capitalized) [\(mainDocumentURL?.lastPathComponent ?? "(unknown URL)")]: \(result.message ?? result.arguments?.map { "\($0 ?? "nil")" }.joined(separator: " ") ?? "(no message)")"
+                    "[JS] \(result.severity.capitalized) [\(mainDocumentURL?.lastPathComponent ?? "(unknown URL)")]: \(renderedMessage)"
                 )
             }),
             ("print", { @MainActor [weak self] message in
                 guard let self else { return }
                 if let logMessage = message.body as? String {
-                    if logMessage.hasPrefix("# CAROUSEL") {
-                        print(logMessage)
-                        Logger.shared.logger.info("\(logMessage)")
-                    }
                     if logMessage.contains("\"reader.open:view-ready\"")
                         || logMessage.contains("\"loadEBook:posting-loaded\"")
                         || logMessage.contains("\"loadEBook:delayed-state:1s\"")
@@ -362,45 +324,14 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             registerEbookViewerFrame(message.frameInfo)
                         }
                     }
-                    if logMessage.hasPrefix("# EBOOKFIX1")
-                        || logMessage.hasPrefix("# BOOKBUG1")
-                        || logMessage.hasPrefix("# EBOOKHTML")
-                        || logMessage.hasPrefix("# EBOOKFETCH") {
-                        Logger.shared.logger.info("\(logMessage)")
-                    }
-                    debugPrint(logMessage)
                     return
                 }
                 guard let payload = message.body as? [String: Any] else {
-                    debugPrint("# EPUB  readabilityInit.swiftLog", "body=\(String(describing: message.body))")
                     return
                 }
-                let logMessage = payload["message"] as? String ?? "# EPUB  SwiftReadability.print"
-                var components: [String] = []
-                if let windowURL = payload["windowURL"] as? String, !windowURL.isEmpty {
-                    components.append("windowURL=\(windowURL)")
-                }
-                if let pageURL = payload["pageURL"] as? String, !pageURL.isEmpty {
-                    components.append("pageURL=\(pageURL)")
-                }
-                for (key, value) in payload where key != "message" && key != "windowURL" && key != "pageURL" {
-                    let printable: String
-                    if value is NSNull {
-                        printable = "null"
-                    } else {
-                        printable = String(describing: value)
-                    }
-                    components.append("\(key)=\(printable)")
-                }
-                if logMessage.hasPrefix("# READER") || logMessage.hasPrefix("# CAROUSEL") {
-                    let line = components.isEmpty
-                        ? logMessage
-                        : "\(logMessage) \(components.joined(separator: " "))"
-                    if line.hasPrefix("# CAROUSEL") {
-                        print(line)
-                    }
-                    Logger.shared.logger.info("\(line)")
-                }
+
+                let logMessage = payload["message"] as? String ?? "SwiftReadability.print"
+                _ = logMessage
             }),
             ("readerDocState", { @MainActor [weak self] message in
                 guard let self else { return }
@@ -411,38 +342,20 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let hasReaderRenderReady = body["hasReaderRenderReady"] as? Bool ?? false
                 let renderGeneration = (body["readerRenderGeneration"] as? String)
                     .flatMap(UUID.init(uuidString:))
-                let hasReaderContent = body["hasReaderContent"] as? Bool ?? false
-                let readyState = body["readyState"] as? String ?? "unknown"
-                let reason = body["reason"] as? String ?? "unknown"
-                let manabiFontPending = body["mnbFontPending"].map { String(describing: $0) } ?? "nil"
-                let bodyVisibility = body["bodyVisibility"] as? String ?? "nil"
-                let bodyOpacity = body["bodyOpacity"].map { String(describing: $0) } ?? "nil"
-
                 guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
-                readerModeViewModel.logSyntheticDocumentState(
-                    pageURL: pageURL,
-                    readyState: readyState,
-                    hasReaderContent: hasReaderContent,
-                    hasReaderRenderReady: hasReaderRenderReady,
-                    reason: reason,
-                    manabiFontPending: manabiFontPending,
-                    bodyVisibility: bodyVisibility,
-                    bodyOpacity: bodyOpacity
-                )
-                debugPrint(
-                    "# READERLOAD stage=readerDocState.ready",
-                    "pageURL=\(pageURL.absoluteString)",
-                    "readyState=\(readyState)",
-                    "hasReaderContent=\(hasReaderContent)",
-                    "manabiFontPending=\(manabiFontPending)",
-                    "bodyVisibility=\(bodyVisibility)",
-                    "bodyOpacity=\(bodyOpacity)",
-                    "reason=\(reason)"
-                )
+                let currentContentURL = readerContent.content?.url
+                let currentContentOwnsCompletedRender = currentContentURL.map { contentURL in
+                    self.readerContent.pageURL.matchesReaderURL(contentURL)
+                        && self.readerModeViewModel.lastRenderedURL?.matchesReaderURL(contentURL) == true
+                } ?? false
+                let renderOwnerURL = currentContentOwnsCompletedRender
+                    ? (currentContentURL ?? pageURL)
+                    : pageURL
                 let accepted = readerModeViewModel.handleRenderedReaderDocumentReady(
-                    pageURL: pageURL,
+                    pageURL: renderOwnerURL,
                     hasReaderContent: true,
-                    renderGeneration: renderGeneration
+                    renderGeneration: renderGeneration,
+                    navigator: navigator
                 )
                 guard accepted else { return }
                 if !readerViewModel.state.hasReaderRenderReady {
@@ -474,10 +387,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         arguments: ["bookKey": bookKey],
                         in: message.frameInfo
                     )
-                    debugPrint("# EPUB  paginationBookKey.set", "key=\(bookKey.prefix(72))…")
                 }
             }),
-            ("trackingSizeCache", { @MainActor [weak self] message in
+            ("trackingSizeCache", { [weak self] message in
                 guard let self else { return }
                 guard let body = message.body as? [String: Any],
                       let command = body["command"] as? String,
@@ -500,7 +412,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 blockStart: blockStart
                             )
                         }
-                        var bucket = trackingSizeCache.value(forKey: bucketKey) ?? ReaderSizeTrackingCacheBucket()
+                        var bucket = readerPaginationSizeTrackingCache.value(forKey: bucketKey) ?? ReaderSizeTrackingCacheBucket()
                         let snapshot = ReaderSizeTrackingCacheSnapshot(
                             cacheKey: key,
                             savedAt: Date(),
@@ -508,47 +420,35 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             entries: decoded
                         )
                         bucket.upsertSnapshot(snapshot, limit: trackingSizeHistoryLimit)
-                        trackingSizeCache.setValue(bucket, forKey: bucketKey)
-                        debugPrint(
-                            "# EPUB  trackingSizeCache set",
-                            "bucket=\(bucketKey.prefix(72))…",
-                            "cacheKey=\(key.prefix(72))…",
-                            "entries=\(decoded.count)",
-                            "snapshots=\(bucket.snapshots.count)",
-                            "reason=\(snapshot.reason ?? "<nil>")"
-                        )
+                        readerPaginationSizeTrackingCache.setValue(bucket, forKey: bucketKey)
                     }
                 case "get":
                     guard let requestId = body["requestId"] as? String else { return }
-                    if let bucket = trackingSizeCache.value(forKey: bucketKey),
+                    if let bucket = readerPaginationSizeTrackingCache.value(forKey: bucketKey),
                        let cached = bucket.snapshot(for: key)?.entries {
                         do {
                             let data = try JSONEncoder().encode(cached)
                             if let json = String(data: data, encoding: .utf8) {
                                 let js = "window.manabiResolveTrackingSizeCache(requestId, \(json))"
-                                try? await self.scriptCaller.evaluateJavaScript(
-                                    js,
-                                    arguments: ["requestId": requestId],
-                                    in: message.frameInfo
-                                )
+                                Task { @MainActor in
+                                    try? await self.scriptCaller.evaluateJavaScript(
+                                        js,
+                                        arguments: ["requestId": requestId],
+                                        in: message.frameInfo
+                                    )
+                                }
                             }
-                            debugPrint(
-                                "# EPUB  trackingSizeCache hit",
-                                "bucket=\(bucketKey.prefix(72))…",
-                                "cacheKey=\(key.prefix(72))…",
-                                "entries=\(cached.count)",
-                                "snapshots=\(bucket.snapshots.count)"
-                            )
                         } catch {
                             // Ignore encoding errors.
                         }
                     } else {
-                        try? await self.scriptCaller.evaluateJavaScript(
-                            "window.manabiResolveTrackingSizeCache(requestId, null)",
-                            arguments: ["requestId": requestId],
-                            in: message.frameInfo
-                        )
-                        debugPrint("# EPUB  trackingSizeCache miss", "key=\(key.prefix(72))…")
+                        Task { @MainActor in
+                            try? await self.scriptCaller.evaluateJavaScript(
+                                "window.manabiResolveTrackingSizeCache(requestId, null)",
+                                arguments: ["requestId": requestId],
+                                in: message.frameInfo
+                            )
+                        }
                     }
                 default:
                     break
@@ -559,11 +459,22 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let result = ReaderOnErrorMessage(fromMessage: message) else {
                     return
                 }
-
+                
                 // Filter error logging based on URL
-                guard result.source.isEBookURL || result.source.scheme == "blob" || result.source.isFileURL || result.source.isReaderFileURL || result.source.isSnippetURL else { return }
-
-                Logger.shared.logger.error("[JS] Error: \(result.message ?? "unknown message") @ \(result.source.absoluteString):\(result.lineno ?? -1):\(result.colno ?? -1) — error: \(result.error ?? "n/a")")
+                let mainDocumentURL = message.frameInfo.request.mainDocumentURL
+                let isReaderErrorSource =
+                    result.source.isEBookURL
+                    || result.source.scheme == "blob"
+                    || result.source.isFileURL
+                    || result.source.isReaderFileURL
+                    || result.source.isSnippetURL
+                    || mainDocumentURL?.isEBookURL == true
+                    || mainDocumentURL?.isReaderFileURL == true
+                guard isReaderErrorSource else { return }
+                let source = result.source.absoluteString
+                let messageText = result.message ?? "unknown message"
+                let errorText = result.error ?? "n/a"
+                Logger.shared.logger.error("[JS] Error: \(messageText) @ \(source):\(result.lineno ?? -1):\(result.colno ?? -1) — error: \(errorText)")
             }),
             ("ebookNavigationVisibility", { @MainActor [weak self] message in
                 guard let self else { return }
@@ -631,7 +542,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard !windowURL.isNativeReaderView,
                       let content = try? await contentForWindowURL(windowURL, source: "readabilityFramePing") else { return }
                 if await readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
-                    readerViewModel.refreshSettingsInWebView(content: content)
+                    readerViewModel.refreshSettingsInWebView(content: content, reason: "readability-frame-ping")
                 }
             }),
             ("readabilityModeUnavailable", { @MainActor [weak self] message in
@@ -648,56 +559,28 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     pageURL: result.pageURL,
                     windowURL: result.windowURL,
                     isMainFrame: message.frameInfo.isMainFrame
+                ), ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                    claimedURL: result.windowURL,
+                    frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                    currentPageURL: readerViewModel.state.pageURL,
+                    requiresMainFrame: false,
+                    isMainFrame: message.frameInfo.isMainFrame
                 ) else {
                     return
                 }
-                debugPrint(
-                    "# READERLOAD stage=readerMessageHandlers.readabilityUnavailableEvaluating",
-                    "windowURL=\(url.absoluteString)",
-                    "readerPageURL=\(readerContent.pageURL.absoluteString)",
-                    "readerStateURL=\(readerViewModel.state.pageURL.absoluteString)",
-                    "httpStatus=\(readerViewModel.state.mainFrameHTTPStatusCode.map(String.init) ?? "nil")",
-                    "frameURL=\(message.frameInfo.request.url?.absoluteString ?? "nil")",
-                    "frameMainDocumentURL=\(message.frameInfo.request.mainDocumentURL?.absoluteString ?? "nil")",
-                    "isMainFrame=\(message.frameInfo.isMainFrame)",
-                    "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)",
-                    "isHandlingURL=\(readerModeViewModel.isReaderModeHandlingURL(url))",
-                    "hasReadabilityContent=\(readerModeViewModel.readabilityContent != nil)"
-                )
                 if ReaderHTTPErrorRecoveryPolicy.shouldPreserveReaderState(
                     isMainFrame: message.frameInfo.isMainFrame,
                     statusCode: readerViewModel.state.mainFrameHTTPStatusCode
                 ) {
-                    let statusCode = readerViewModel.state.mainFrameHTTPStatusCode
-                    debugPrint(
-                        "# 404 reader.readabilityUnavailable.skip",
-                        "url=\(url.absoluteString)",
-                        "status=\(statusCode.map(String.init) ?? "nil")",
-                        "hasReadabilityContent=\(readerModeViewModel.readabilityContent?.isEmpty == false)",
-                        "preservedAvailability=true"
-                    )
-                    debugPrint(
-                        "# READERLOAD stage=readerMessageHandlers.readabilityUnavailableSkipped",
-                        "reason=httpError",
-                        "status=\(statusCode.map(String.init) ?? "nil")",
-                        "windowURL=\(url.absoluteString)"
-                    )
                     return
                 }
                 if readerModeViewModel.isReaderModeLoading || readerModeViewModel.isReaderModeHandlingURL(url) {
-                    debugPrint(
-                        "# READERLOAD stage=readerMessageHandlers.readabilityUnavailableSkipped",
-                        "reason=readerModeInFlight",
-                        "windowURL=\(url.absoluteString)",
-                        "readerPageURL=\(readerContent.pageURL.absoluteString)",
-                        "isMainFrame=\(message.frameInfo.isMainFrame)",
-                        "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)"
-                    )
                     return
                 }
                 guard let content = try? await contentForWindowURL(url, source: "readabilityModeUnavailable") else {
                     return
                 }
+                guard documentIsStillCurrent(url) else { return }
                 if content.rssContainsFullContent && !content.isReaderModeByDefault {
                     try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
@@ -707,6 +590,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
                         """)
+                    guard documentIsStillCurrent(url) else { return }
                     try? await ReaderContentLoader.updateContent(url: url) { object in
                         var didChange = false
                         if !object.isReaderModeAvailable {
@@ -727,27 +611,29 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 guard !url.isReaderURLLoaderURL else { return }
 
+                guard documentIsStillCurrent(url) else { return }
                 try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
                         """)
-
+                
+                guard documentIsStillCurrent(url) else { return }
                 if readerModeViewModel.isReaderMode {
                     readerModeViewModel.isReaderMode = false
                 }
-
+                
                 do {
+                    guard documentIsStillCurrent(url) else { return }
                     try await ReaderContentLoader.updateContent(url: url) { object in
                         guard object.isReaderModeAvailable else { return false }
                         object.isReaderModeAvailable = false
                         return true
                     }
-
+                    
+                    guard documentIsStillCurrent(url) else { return }
                     try await { @RealmBackgroundActor in
-                        if let historyRecord = try await HistoryRecord.getOpenedRecord(forURL: url) {
-                            try await historyRecord.refreshDemotedStatus()
-                        }
+                        try await HistoryRecord.refreshDemotedStatus(forURL: url)
                     }()
                 } catch {
                     print(error)
@@ -767,6 +653,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     pageURL: result.pageURL,
                     windowURL: result.windowURL,
                     isMainFrame: message.frameInfo.isMainFrame
+                ), ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                    claimedURL: result.windowURL,
+                    frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                    currentPageURL: readerViewModel.state.pageURL,
+                    requiresMainFrame: false,
+                    isMainFrame: message.frameInfo.isMainFrame
                 ) else {
                     return
                 }
@@ -774,30 +666,16 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     isMainFrame: message.frameInfo.isMainFrame,
                     statusCode: readerViewModel.state.mainFrameHTTPStatusCode
                 ) {
-                    let statusCode = readerViewModel.state.mainFrameHTTPStatusCode
-                    debugPrint(
-                        "# 404 reader.readabilityParsed.skip",
-                        "url=\(url.absoluteString)",
-                        "status=\(statusCode.map(String.init) ?? "nil")",
-                        "newHTMLBytes=\(result.outputHTML.utf8.count)",
-                        "hasReadabilityContent=\(readerModeViewModel.readabilityContent?.isEmpty == false)",
-                        "preservedReadabilityContent=true"
-                    )
-                    debugPrint(
-                        "# READERLOAD stage=readerMessageHandlers.readabilityParsedSkipped",
-                        "reason=httpError",
-                        "status=\(statusCode.map(String.init) ?? "nil")",
-                        "windowURL=\(url.absoluteString)",
-                        "preservedReadabilityContent=\(readerModeViewModel.readabilityContent?.isEmpty == false)"
-                    )
                     return
                 }
                 if !message.frameInfo.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
                     // Don't override a parent window readability result.
                     return
                 }
+                guard documentIsStillCurrent(url) else { return }
                 guard !result.outputHTML.isEmpty else {
                     if content.rssContainsFullContent && !content.isReaderModeByDefault {
+                        guard documentIsStillCurrent(url) else { return }
                         try? await ReaderContentLoader.updateContent(url: url) { object in
                             var didChange = false
                             if !object.isReaderModeAvailable {
@@ -812,6 +690,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         }
                         return
                     }
+                    guard documentIsStillCurrent(url) else { return }
                     try? await ReaderContentLoader.updateContent(url: url) { object in
                         guard object.isReaderModeAvailable else { return false }
                         object.isReaderModeAvailable = false
@@ -819,15 +698,31 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     }
                     return
                 }
-
+                
                 guard !url.isNativeReaderView else { return }
+                let hasParsedPublicationDate = result.outputHTML.contains("id=\"reader-publication-date\"")
+                let publicationDateFallback = hasParsedPublicationDate
+                    ? nil
+                    : await readerContentPublicationDateFallback(for: content)
+                guard documentIsStillCurrent(url) else { return }
+                let resolvedOutputHTML = publicationDateFallback.map {
+                    buildCanonicalReadabilityHTML(
+                        title: result.title,
+                        byline: result.byline,
+                        publishedTime: $0,
+                        content: result.content,
+                        contentURL: content.url
+                    )
+                } ?? result.outputHTML
+                if publicationDateFallback != nil {
+                }
                 let shouldPreserveFullContentOriginal = content.rssContainsFullContent && !content.isReaderModeByDefault
                 if shouldPreserveFullContentOriginal {
                     readerModeViewModel.readabilityContent = nil
                     readerModeViewModel.readabilityContainerSelector = nil
                     readerModeViewModel.readabilityContainerFrameInfo = nil
                 } else {
-                    readerModeViewModel.readabilityContent = result.outputHTML
+                    readerModeViewModel.readabilityContent = resolvedOutputHTML
                     readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                     readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
                 }
@@ -836,7 +731,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         readerContent: readerContent,
                         scriptCaller: scriptCaller
                     )
-                } else if result.outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
+                } else if resolvedOutputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
                     try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.mnbReaderModeAvailableConfidently = 'true';
@@ -850,8 +745,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         }
                         """)
                 }
-
+                
                 do {
+                    guard documentIsStillCurrent(url) else { return }
                     try await ReaderContentLoader.updateContent(url: url) { object in
                         var didChange = false
                         if !object.isReaderModeAvailable {
@@ -864,12 +760,15 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         }
                         return didChange
                     }
+                    guard documentIsStillCurrent(url) else { return }
                     await readerContent.content?.realm?.asyncRefresh()
+                    guard documentIsStillCurrent(url) else { return }
                     if let observedObject = readerContent.content as? (Object & ReaderContentProtocol),
                        observedObject.url.matchesReaderURL(url),
-                       !observedObject.isReaderModeAvailable,
+                        !observedObject.isReaderModeAvailable,
                        let observedRealm = observedObject.realm {
-                        try await observedRealm.asyncWrite {
+                        try await observedRealm.asyncWritePreservingOwnership {
+                            guard !Task.isCancelled else { return }
                             observedObject.isReaderModeAvailable = true
                             if shouldPreserveFullContentOriginal && !observedObject.isReaderModeOfferHidden {
                                 observedObject.isReaderModeOfferHidden = true
@@ -878,15 +777,16 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         }
                     }
 
+                    guard documentIsStillCurrent(url) else { return }
                     try await { @RealmBackgroundActor in
-                        if let historyRecord = try await HistoryRecord.getOpenedRecord(forURL: url) {
-                            try await historyRecord.refreshDemotedStatus()
-                        }
+                        try await HistoryRecord.refreshDemotedStatus(forURL: url)
                     }()
                 } catch {
                     print(error)
                 }
+                guard documentIsStillCurrent(url) else { return }
                 await readerContent.content?.realm?.asyncRefresh()
+                guard documentIsStillCurrent(url) else { return }
                 readerContent.refreshObservedContentState()
             }),
             ("showOriginal", { @MainActor [weak self] _ in
@@ -908,11 +808,19 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 do {
                     guard let result = RSSURLsMessage(fromMessage: message) else { return }
                     guard let windowURL = result.windowURL,
-                          !windowURL.isNativeReaderView,
-                          let _ = try await contentForWindowURL(windowURL, source: "rssURLs") else { return }
+                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                            claimedURL: windowURL,
+                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                            currentPageURL: readerViewModel.state.pageURL,
+                            requiresMainFrame: true,
+                            isMainFrame: message.frameInfo.isMainFrame
+                          ),
+                          let _ = try await contentForWindowURL(windowURL, source: "rssURLs"),
+                          documentIsStillCurrent(windowURL) else { return }
                     let pairs = result.rssURLs.prefix(10)
                     let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
                     let titles = pairs.map { $0.last ?? $0.first ?? "" }
+                    guard documentIsStillCurrent(windowURL) else { return }
                     try await ReaderContentLoader.updateContent(url: windowURL) { object in
                         let existingURLs = Array(object.rssURLs)
                         let existingTitles = Array(object.rssTitles)
@@ -937,25 +845,48 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let self else { return }
                 do {
                     guard let result = PageMetadataUpdatedMessage(fromMessage: message) else { return }
-                    guard urlsMatchWithoutHash(result.url, readerViewModel.state.pageURL) else { return }
+                    guard ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                        claimedURL: result.url,
+                        frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                        currentPageURL: readerViewModel.state.pageURL,
+                        requiresMainFrame: true,
+                        isMainFrame: message.frameInfo.isMainFrame
+                    ), let expectedURL = result.url else { return }
                     try await readerViewModel.pageMetadataUpdated(
                         title: result.title,
-                        author: result.author
+                        author: result.author,
+                        expectedDocumentURL: expectedURL
                     )
                 } catch {
                     print(error)
                 }
             }),
-            ("imageUpdated", { @RealmBackgroundActor [weak self] message in
+            ("imageUpdated", { @MainActor [weak self] message in
                 guard let self else { return }
                 do {
                     guard let result = ImageUpdatedMessage(fromMessage: message) else { return }
-                    guard let url = result.mainDocumentURL, !url.isNativeReaderView else { return }
-                    let contents = try await ReaderContentLoader.loadAll(url: url)
-                    for content in contents {
+                    guard let url = result.mainDocumentURL,
+                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                            claimedURL: url,
+                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                            currentPageURL: readerViewModel.state.pageURL,
+                            requiresMainFrame: false,
+                            isMainFrame: message.frameInfo.isMainFrame
+                          ) else { return }
+                    let contentRefs = try await { @RealmBackgroundActor in
+                        let contents = try await ReaderContentLoader.loadAll(url: url)
+                        return contents.compactMap {
+                            ReaderContentLoader.ContentReference(content: $0)
+                        }
+                    }()
+                    guard documentIsStillCurrent(url) else { return }
+                    for contentRef in contentRefs {
+                        guard documentIsStillCurrent(url),
+                              let content = try await contentRef.resolveOnMainActor() else { return }
                         guard content.imageUrl != result.newImageURL else { continue }
-                        //                        await content.realm?.asyncRefresh()
-                        try await content.realm?.asyncWrite {
+                        guard documentIsStillCurrent(url) else { return }
+                        try await content.asyncWrite { _, content in
+                            guard !Task.isCancelled else { return }
                             content.imageUrl = result.newImageURL
                             content.refreshChangeMetadata(explicitlyModified: true)
                         }
@@ -1068,46 +999,62 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             ("updateReadingProgress", { @MainActor [weak self] message in
                 guard let self else { return }
                 guard let result = FractionalCompletionMessage(fromMessage: message) else { return }
-                guard let sequence = message.receiptSequence,
-                      let contentURL = result.mainDocumentURL ?? message.mainDocumentURL,
-                      readingProgressSequenceGate.reserve(
-                        sequence: sequence,
-                        contentURL: contentURL
-                      ) else {
-                    return
-                }
                 handleNavigationVisibility(for: result)
             }),
-            (ReaderWebMediaBridge.messageHandlerName, { @MainActor message in
-                guard let event = ReaderWebMediaBridge.decode(message: message) else { return }
-                switch event {
-                case .readyState:
-                    break
-                case .media(let info):
-                    let pageURL = URL(string: info.pageSrc) ?? message.frameInfo.request.mainDocumentURL ?? message.frameInfo.request.url
-                    ReaderWebMediaBridge.postCandidateUpdate(
-                        info,
-                        requestHeaders: pageURL.map {
-                            ReaderWebMediaBridge.mediaRequestHeaders(from: message, pageURL: $0)
-                        } ?? [:]
-                    )
-                case .playback(let event):
-                    let pageURL = URL(string: event.snapshot.pageSrc) ?? message.frameInfo.request.mainDocumentURL ?? message.frameInfo.request.url
-                    ReaderWebMediaBridge.postPlaybackUpdate(
-                        event,
-                        requestHeaders: pageURL.map {
-                            ReaderWebMediaBridge.mediaRequestHeaders(from: message, pageURL: $0)
-                        } ?? [:]
-                    )
+            ("videoStatus", { @MainActor [weak self] message in
+                guard let self else { return }
+                do {
+                    guard let result = VideoStatusMessage(fromMessage: message) else { return }
+                    guard let windowURL = result.windowURL,
+                          let pageURL = result.pageURL,
+                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                            claimedURL: windowURL,
+                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                            currentPageURL: readerViewModel.state.pageURL,
+                            requiresMainFrame: false,
+                            isMainFrame: message.frameInfo.isMainFrame
+                          ),
+                          ReaderDocumentMutationAdmission.acceptsFrameTarget(
+                            claimedFrameURL: pageURL,
+                            frameRequestURL: message.frameInfo.request.url
+                          ),
+                          documentIsStillCurrent(windowURL) else { return }
+                    _ = try await MediaStatus.getOrCreate(url: pageURL)
+                } catch {
+                    print(error)
                 }
-            }),
-            ("videoStatus", { @MainActor message in
-                ReaderWebMediaBridge.postExternalSubtitlesUpdate(from: message)
             })
         ])
+        .requiringTrustedUserAction("showOriginal")
     }()
-
+    
     init(
+        forceReaderModeWhenAvailable: Bool,
+        scriptCaller: WebViewScriptCaller,
+        readerViewModel: ReaderViewModel,
+        readerModeViewModel: ReaderModeViewModel,
+        readerContent: ReaderContent,
+        navigator: WebViewNavigator,
+        hideNavigationDueToScroll: Binding<Bool>,
+        showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
+        navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
+        ebookOpeningPreparer: ReaderEBookOpeningPreparer? = nil,
+        colorScheme: ColorScheme
+    ) {
+        self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
+        self.scriptCaller = scriptCaller
+        self.readerViewModel = readerViewModel
+        self.readerModeViewModel = readerModeViewModel
+        self.readerContent = readerContent
+        self.navigator = navigator
+        self.hideNavigationDueToScroll = hideNavigationDueToScroll
+        self.showOriginalWillBeginHandler = showOriginalWillBeginHandler
+        self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
+        self.ebookOpeningPreparer = ebookOpeningPreparer
+        self.colorScheme = colorScheme
+    }
+
+    func update(
         forceReaderModeWhenAvailable: Bool,
         scriptCaller: WebViewScriptCaller,
         readerViewModel: ReaderViewModel,
@@ -1132,9 +1079,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         self.ebookOpeningPreparer = ebookOpeningPreparer
         self.colorScheme = colorScheme
     }
-
+    
     // MARK: Readability
-
+    
     @MainActor
     func showOriginal() async throws {
         let contentURL = readerContent.content?.url
@@ -1149,13 +1096,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             readerModeViewModel.readabilityContainerFrameInfo = nil
         }
         await showOriginalWillBeginHandler?(contentURL, readerContent.pageURL)
-        debugPrint(
-            "# 404 reader.showOriginal.begin",
-            "contentURL=\(contentURL.absoluteString)",
-            "pageURL=\(readerContent.pageURL.absoluteString)",
-            "hasCapturedReadabilityContent=\(hasCapturedReadabilityContent)",
-            "shouldRestoreStoredFullContent=\(shouldRestoreStoredFullContent)"
-        )
         try await ReaderContentLoader.updateContent(url: contentURL) { object in
             let update = ReaderHTTPErrorRecoveryPolicy.showOriginalFlagUpdate(
                 currentFlags: ReaderHTTPErrorRecoveryPolicy.ReaderModeFlags(
@@ -1169,18 +1109,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             object.isReaderModeByDefault = update.flags.isReaderModeByDefault
             object.isReaderModeAvailable = update.flags.isReaderModeAvailable
             object.isReaderModeOfferHidden = update.flags.isReaderModeOfferHidden
-            let shouldKeepReaderModeAvailable = hasCapturedReadabilityContent || object.rssContainsFullContent
-            debugPrint(
-                "# 404 reader.showOriginal.persist",
-                "contentURL=\(object.url.absoluteString)",
-                "hasCapturedReadabilityContent=\(hasCapturedReadabilityContent)",
-                "rssContainsFullContent=\(object.rssContainsFullContent)",
-                "shouldKeepReaderModeAvailable=\(shouldKeepReaderModeAvailable)",
-                "isReaderModeByDefault=\(object.isReaderModeByDefault)",
-                "isReaderModeAvailable=\(object.isReaderModeAvailable)",
-                "isReaderModeOfferHidden=\(object.isReaderModeOfferHidden)",
-                "didChange=\(update.didChange)"
-            )
             return update.didChange
         }
         await readerContent.content?.realm?.asyncRefresh()
@@ -1227,12 +1155,44 @@ fileprivate class ReaderMessageHandlers: Identifiable {
 
     private func handleNavigationVisibility(for result: FractionalCompletionMessage) {
         let normalizedReason = result.reason.lowercased()
+        let messageURL = result.mainDocumentURL ?? readerContent.pageURL
+        let isEBookProgressMessage = messageURL.isEBookURL || readerContent.pageURL.isEBookURL
+        if !isEBookProgressMessage,
+           normalizedReason == "navigation" {
+            lastNonEBookReaderProgress = (messageURL, result.fractionalCompletion)
+            return
+        }
+        if !isEBookProgressMessage,
+           normalizedReason == "live-scroll" {
+            let previousProgress = lastNonEBookReaderProgress
+            lastNonEBookReaderProgress = (messageURL, result.fractionalCompletion)
+            if let previousProgress,
+               previousProgress.url == messageURL,
+               previousProgress.fractionalCompletion != result.fractionalCompletion {
+                let isForwardProgress = result.fractionalCompletion > previousProgress.fractionalCompletion
+                setHideNavigationDueToScroll(
+                    isForwardProgress,
+                    reason: normalizedReason,
+                    source: "updateReadingProgress",
+                    direction: isForwardProgress ? "forward" : "backward"
+                )
+            }
+            return
+        }
         if ["navigation", "selection", "live-scroll"].contains(normalizedReason) {
+            let recentPageMotionHide = lastNavigationVisibilityEvent.flatMap { event -> (age: TimeInterval, source: String?, direction: String?)? in
+                let isPageMotion =
+                    event.source?.contains("page-turn") == true
+                    || event.source?.contains("relocate") == true
+                    || event.source?.contains("goTo") == true
+                guard event.shouldHide, isPageMotion else { return nil }
+                return (Date().timeIntervalSince(event.timestamp), event.source, event.direction)
+            }
             if normalizedReason == "navigation",
-               let event = lastNavigationVisibilityEvent,
-               event.shouldHide,
-               event.direction == "forward",
-               Date().timeIntervalSince(event.timestamp) < 0.8 {
+               hideNavigationDueToScroll.wrappedValue,
+               let recentPageMotionHide,
+               recentPageMotionHide.age >= 0,
+               recentPageMotionHide.age < 5.0 {
                 return
             }
             setHideNavigationDueToScroll(
@@ -1248,9 +1208,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
 internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     var forceReaderModeWhenAvailable = false
     var hideNavigationDueToScroll: Binding<Bool> = .constant(false)
-
+    
     @AppStorage("ebookViewerLayout") internal var ebookViewerLayout = "paginated"
-
+    
     @EnvironmentObject internal var scriptCaller: WebViewScriptCaller
     @EnvironmentObject internal var readerViewModel: ReaderViewModel
     @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
@@ -1261,61 +1221,118 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.readerNavigationVisibilityWillChangeHandler) internal var navigationVisibilityWillChangeHandler
     @Environment(\.readerEBookOpeningPreparer) internal var ebookOpeningPreparer
     @Environment(\.colorScheme) internal var colorScheme
-
-    @State private var readerMessageHandlers: ReaderMessageHandlers?
-    @State private var lastAppendedHandlerKeys: [String] = []
-
+    
     func body(content: Content) -> some View {
+        ReaderMessageHandlersInstaller(
+            content: content,
+            forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
+            scriptCaller: scriptCaller,
+            readerViewModel: readerViewModel,
+            readerModeViewModel: readerModeViewModel,
+            readerContent: readerContent,
+            navigator: navigator,
+            hideNavigationDueToScroll: hideNavigationDueToScroll,
+            showOriginalWillBeginHandler: showOriginalWillBeginHandler,
+            navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
+            ebookOpeningPreparer: ebookOpeningPreparer,
+            colorScheme: colorScheme,
+            webViewMessageHandlers: webViewMessageHandlers
+        )
+    }
+}
+
+@MainActor
+private struct ReaderMessageHandlersInstaller<Content: View>: View {
+    let content: Content
+    var forceReaderModeWhenAvailable: Bool
+    var scriptCaller: WebViewScriptCaller
+    var readerViewModel: ReaderViewModel
+    var readerModeViewModel: ReaderModeViewModel
+    var readerContent: ReaderContent
+    var navigator: WebViewNavigator
+    var hideNavigationDueToScroll: Binding<Bool>
+    var showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?
+    var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
+    var ebookOpeningPreparer: ReaderEBookOpeningPreparer?
+    var colorScheme: ColorScheme
+    var webViewMessageHandlers: WebViewMessageHandlers
+
+    @StateObject private var readerMessageHandlers: ReaderMessageHandlers
+    @State private var lastPushedHideNavigationDueToScroll: Bool?
+    @State private var lastPushedHideNavigationPageURL: URL?
+
+    init(
+        content: Content,
+        forceReaderModeWhenAvailable: Bool,
+        scriptCaller: WebViewScriptCaller,
+        readerViewModel: ReaderViewModel,
+        readerModeViewModel: ReaderModeViewModel,
+        readerContent: ReaderContent,
+        navigator: WebViewNavigator,
+        hideNavigationDueToScroll: Binding<Bool>,
+        showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
+        navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
+        ebookOpeningPreparer: ReaderEBookOpeningPreparer?,
+        colorScheme: ColorScheme,
+        webViewMessageHandlers: WebViewMessageHandlers
+    ) {
+        self.content = content
+        self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
+        self.scriptCaller = scriptCaller
+        self.readerViewModel = readerViewModel
+        self.readerModeViewModel = readerModeViewModel
+        self.readerContent = readerContent
+        self.navigator = navigator
+        self.hideNavigationDueToScroll = hideNavigationDueToScroll
+        self.showOriginalWillBeginHandler = showOriginalWillBeginHandler
+        self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
+        self.ebookOpeningPreparer = ebookOpeningPreparer
+        self.colorScheme = colorScheme
+        self.webViewMessageHandlers = webViewMessageHandlers
+        _readerMessageHandlers = StateObject(wrappedValue: ReaderMessageHandlers(
+            forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
+            scriptCaller: scriptCaller,
+            readerViewModel: readerViewModel,
+            readerModeViewModel: readerModeViewModel,
+            readerContent: readerContent,
+            navigator: navigator,
+            hideNavigationDueToScroll: hideNavigationDueToScroll,
+            showOriginalWillBeginHandler: showOriginalWillBeginHandler,
+            navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
+            ebookOpeningPreparer: ebookOpeningPreparer,
+            colorScheme: colorScheme
+        ))
+    }
+
+    var body: some View {
         content
-            .environment(\.webViewMessageHandlers, readerMessageHandlers?.webViewMessageHandlers ?? webViewMessageHandlers)
-            .task(id: colorScheme) { @MainActor in
-                if readerMessageHandlers == nil {
-                    readerMessageHandlers = ReaderMessageHandlers(
-                        forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
-                        scriptCaller: scriptCaller,
-                        readerViewModel: readerViewModel,
-                        readerModeViewModel: readerModeViewModel,
-                        readerContent: readerContent,
-                        navigator: navigator,
-                        hideNavigationDueToScroll: hideNavigationDueToScroll,
-                        showOriginalWillBeginHandler: showOriginalWillBeginHandler,
-                        navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
-                        ebookOpeningPreparer: ebookOpeningPreparer,
-                        colorScheme: colorScheme
-                    )
-                } else if let readerMessageHandlers {
-                    readerMessageHandlers.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
-                    readerMessageHandlers.scriptCaller = scriptCaller
-                    readerMessageHandlers.readerViewModel = readerViewModel
-                    readerMessageHandlers.readerModeViewModel = readerModeViewModel
-                    readerMessageHandlers.readerContent = readerContent
-                    readerMessageHandlers.navigator = navigator
-                    readerMessageHandlers.hideNavigationDueToScroll = hideNavigationDueToScroll
-                    readerMessageHandlers.showOriginalWillBeginHandler = showOriginalWillBeginHandler
-                    readerMessageHandlers.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
-                    readerMessageHandlers.ebookOpeningPreparer = ebookOpeningPreparer
-                    readerMessageHandlers.colorScheme = colorScheme
-                }
-            }
-            .task(id: webViewMessageHandlers.handlers.keys) {
-                let handlerKeys = Array(webViewMessageHandlers.handlers.keys).sorted()
-                guard handlerKeys != lastAppendedHandlerKeys else { return }
-                if let existing = readerMessageHandlers?.webViewMessageHandlers {
-                    readerMessageHandlers?.webViewMessageHandlers = existing + webViewMessageHandlers
-                    lastAppendedHandlerKeys = handlerKeys
-                }
+            .environment(\.webViewMessageHandlers, readerMessageHandlers.webViewMessageHandlers + webViewMessageHandlers)
+            .task { @MainActor in
+                readerMessageHandlers.update(
+                    forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
+                    scriptCaller: scriptCaller,
+                    readerViewModel: readerViewModel,
+                    readerModeViewModel: readerModeViewModel,
+                    readerContent: readerContent,
+                    navigator: navigator,
+                    hideNavigationDueToScroll: hideNavigationDueToScroll,
+                    showOriginalWillBeginHandler: showOriginalWillBeginHandler,
+                    navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
+                    ebookOpeningPreparer: ebookOpeningPreparer,
+                    colorScheme: colorScheme
+                )
             }
             .task(id: hideNavigationDueToScroll.wrappedValue) {
                 await pushHideNavigationStateToWebView(reason: "binding", force: false)
             }
+            .task(id: colorScheme) { @MainActor in
+                readerMessageHandlers.colorScheme = colorScheme
+            }
             .task(id: readerContent.pageURL) {
-                readerMessageHandlers?.activateReadingProgressContentURL(readerContent.pageURL)
                 await pushHideNavigationStateToWebView(reason: "pageURL", force: true)
             }
     }
-}
 
-extension ReaderMessageHandlersViewModifier {
     @MainActor
     private func pushHideNavigationStateToWebView(reason: String, force: Bool) async {
         let pageURL = readerContent.pageURL
@@ -1329,9 +1346,22 @@ extension ReaderMessageHandlersViewModifier {
                 return
             }
         }
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        let lastNativeLookupTapAtMs = UserDefaults.standard.double(forKey: "MAY15LastNativeLookupTapAtMs")
+        let nativeLookupTapAgeMs = lastNativeLookupTapAtMs > 0 ? nowMs - lastNativeLookupTapAtMs : nil
+        let isRecentNativeLookupHide =
+            reason == "binding"
+            && shouldHide
+            && lastNativeLookupTapAtMs > 0
+            && nowMs - lastNativeLookupTapAtMs < 750
+        if isRecentNativeLookupHide {
+            return
+        }
         let boolLiteral = shouldHide ? "true" : "false"
         do {
             try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral), 'swift.bindingPush');")
+            lastPushedHideNavigationDueToScroll = shouldHide
+            lastPushedHideNavigationPageURL = pageURL
         } catch {
             // Ignore boot timing races.
         }

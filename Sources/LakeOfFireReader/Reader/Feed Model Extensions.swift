@@ -1,25 +1,29 @@
 import Foundation
-import RealmSwift
+import LakeOfFireWeb
+import LakeOfFireFiles
+import LakeOfFireContentUI
 import LakeOfFireContent
+import LakeOfFireCore
+import RealmSwift
 
 public extension Feed {
     static let automaticEntriesRefreshInterval: TimeInterval = 30 * 60
 
     @MainActor
-    func fetch() async throws {
+    public func fetch() async throws {
         try await fetch(realmConfiguration: ReaderContentLoader.feedEntryRealmConfiguration)
     }
 
-    var hasRecentlyRefreshedEntries: Bool {
+    public var hasRecentlyRefreshedEntries: Bool {
         guard let lastRefreshedEntriesAt else { return false }
         return Date().timeIntervalSince(lastRefreshedEntriesAt) < Self.automaticEntriesRefreshInterval
     }
 
-    var shouldRefreshAutomaticallyOnFeedAppear: Bool {
+    public var shouldRefreshAutomaticallyOnFeedAppear: Bool {
         !hasRecentlyRefreshedEntries
     }
 
-    var shouldMarkAsViewedOnAppear: Bool {
+    public var shouldMarkAsViewedOnAppear: Bool {
         guard let latestEntryCreatedAt else {
             return lastViewedAt == nil
         }
@@ -29,16 +33,16 @@ public extension Feed {
         return latestEntryCreatedAt > effectiveFeedSeenDate
     }
 
-    var firstEntryHasAudio: Bool {
+    public var firstEntryHasAudio: Bool {
         getEntries()?.first?.hasAudio ?? false
     }
 
-    var hasActiveEntries: Bool {
+    public var hasActiveEntries: Bool {
         guard let realm else { return false }
         return !activeEntries(in: realm).isEmpty
     }
 
-    var anyEntryHasAudio: Bool {
+    public var anyEntryHasAudio: Bool {
         guard let realm else {
             print("Warning: Unexpectedly unmanaged object")
             return false
@@ -47,13 +51,15 @@ public extension Feed {
             .contains { $0.hasAudio }
     }
 
-    var latestEntryCreatedAt: Date? {
-        guard let realm else { return nil }
+    public var latestEntryCreatedAt: Date? {
+        guard let realm else {
+            return nil
+        }
         return activeEntries(in: realm)
             .max(of: \.createdAt)
     }
 
-    var latestHistoryRecordLastVisitedAtForFeedEntries: Date? {
+    public var latestHistoryRecordLastVisitedAtForFeedEntries: Date? {
         guard let realm else { return nil }
         return latestHistoryRecordLastVisitedAtForFeedEntries(activeEntries(in: realm))
     }
@@ -76,7 +82,7 @@ public extension Feed {
             .max(of: \.lastVisitedAt)
     }
 
-    var effectiveFeedSeenDate: Date? {
+    public var effectiveFeedSeenDate: Date? {
         resolvedFeedSeenDate(latestHistoryLastVisitedAt: latestHistoryRecordLastVisitedAtForFeedEntries)
     }
 
@@ -86,7 +92,7 @@ public extension Feed {
             .max()
     }
 
-    func hasUnseenEntries(_ entries: [FeedEntry]) -> Bool {
+    public func hasUnseenEntries(_ entries: [FeedEntry]) -> Bool {
         guard showsUnseenBadge else { return false }
         guard let historyRealm = try? Realm(configuration: ReaderContentLoader.historyRealmConfiguration) else {
             return entries.contains { isEntryUnseen($0, latestHistoryLastVisitedAt: nil) }
@@ -97,7 +103,7 @@ public extension Feed {
         }
     }
 
-    var hasEntriesNewerThanLastViewedAt: Bool {
+    public var hasEntriesNewerThanLastViewedAt: Bool {
         guard showsUnseenBadge else { return false }
         guard let realm else { return false }
         let entries = activeEntries(in: realm)

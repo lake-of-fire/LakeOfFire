@@ -38,7 +38,6 @@ public extension URL {
         return absoluteURL(from: rawReaderURL)
     }
 
-    /// Extracts the snippet key embedded in either a snippet URL or a snippet loader URL.
     var snippetKey: String? {
         let absolute = absoluteString
         if absolute.hasPrefix("internal://local/load/reader") {
@@ -61,5 +60,28 @@ public extension URL {
         }
 
         return nil
+    }
+
+    func removingFragmentIfNeeded() -> URL {
+        guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false),
+              components.fragment != nil else {
+            return self
+        }
+        components.fragment = nil
+        return components.url ?? self
+    }
+}
+
+public func urlsMatchWithoutHash(_ lhs: URL?, _ rhs: URL?) -> Bool {
+    switch (lhs, rhs) {
+    case (nil, nil):
+        return true
+    case let (.some(lhsURL), .some(rhsURL)):
+        if lhsURL == rhsURL {
+            return true
+        }
+        return lhsURL.removingFragmentIfNeeded() == rhsURL.removingFragmentIfNeeded()
+    default:
+        return false
     }
 }
