@@ -223,17 +223,33 @@ public actor ReaderLegacyDocumentsMigration {
     }
 
     static func logicalChildren(_ urls: [URL], root: URL) throws -> [URL] {
-        let prefix = root.standardizedFileURL.path + "/"
+        let canonicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let prefix = canonicalRoot.path + "/"
         var children = Set<URL>()
         for url in urls {
             guard url.isFileURL else { throw Failure.inventoryUnavailable }
-            let path = url.standardizedFileURL.path
+            let path = canonicalLogicalURL(url).path
             guard path.hasPrefix(prefix) else { continue }
             let relative = String(path.dropFirst(prefix.count))
             guard let name = relative.split(separator: "/").first, !name.hasPrefix(".") else { continue }
-            children.insert(root.appendingPathComponent(String(name)))
+            children.insert(canonicalRoot.appendingPathComponent(String(name)))
         }
         return Array(children)
+    }
+
+    /// An evicted logical descendant need not exist locally. Resolve its
+    /// nearest existing ancestor first, then restore the missing components;
+    /// resolving the full nonexistent URL alone may preserve a /var alias.
+    private static func canonicalLogicalURL(_ url: URL) -> URL {
+        var ancestor = url.standardizedFileURL
+        var missingComponents: [String] = []
+        while ancestor.path != "/", !FileManager.default.fileExists(atPath: ancestor.path) {
+            missingComponents.append(ancestor.lastPathComponent)
+            ancestor.deleteLastPathComponent()
+        }
+        return missingComponents.reversed().reduce(ancestor.resolvingSymlinksInPath()) {
+            $0.appendingPathComponent($1)
+        }
     }
 
     private static func requireAvailablePayload(_ url: URL) throws {

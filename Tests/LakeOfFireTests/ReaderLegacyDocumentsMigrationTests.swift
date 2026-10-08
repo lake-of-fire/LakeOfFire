@@ -655,6 +655,20 @@ final class ReaderLegacyDocumentsMigrationTests: XCTestCase {
         XCTAssertEqual(children, [root.appendingPathComponent("book.epub")])
     }
 
+    func testLogicalCloudDescendantThroughExistingRootAliasIsNotIgnored() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let alias = FileManager.default.temporaryDirectory.appendingPathComponent("legacy-alias-" + UUID().uuidString)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixture.root)
+        defer { try? FileManager.default.removeItem(at: alias) }
+        let logical = alias.appendingPathComponent("cloud-only.epub/OPS/chapter.xhtml")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: logical.path))
+        let children = try ReaderLegacyDocumentsMigration.logicalChildren([logical], root: fixture.root)
+        XCTAssertEqual(children, [fixture.url("cloud-only.epub")])
+        let throughAlias = try ReaderLegacyDocumentsMigration.logicalChildren([logical], root: alias)
+        XCTAssertEqual(throughAlias, [fixture.url("cloud-only.epub")])
+    }
+
     // Mutations occur only in the migration actor's synchronous callbacks;
     // XCTest reads the state after joining that actor operation.
     private final class MoveState: @unchecked Sendable {
@@ -666,8 +680,9 @@ final class ReaderLegacyDocumentsMigrationTests: XCTestCase {
     private final class Fixture {
         let root: URL
         init() throws {
-            root = FileManager.default.temporaryDirectory.appendingPathComponent("legacy-documents-\(UUID().uuidString)").resolvingSymlinksInPath()
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("legacy-documents-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            root = directory.standardizedFileURL.resolvingSymlinksInPath()
         }
         func url(_ path: String) -> URL { root.appendingPathComponent(path) }
         func exists(_ path: String) -> Bool { FileManager.default.fileExists(atPath: url(path).path) }
