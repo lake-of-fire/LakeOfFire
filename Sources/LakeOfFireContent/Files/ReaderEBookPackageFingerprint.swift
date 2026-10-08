@@ -120,7 +120,7 @@ public struct ReaderEBookPackageFingerprint: Equatable, Sendable {
         for entry in archive {
             try budget.countEntry()
             if entry.type == .directory {
-                guard entry.uncompressedSize == 0, entry.compressedSize == 0 else {
+                guard entry.uncompressedSize == 0, entry.checksum == 0 else {
                     throw ReaderEBookFingerprintError.unsupportedEntry(entry.path)
                 }
                 let path = entry.path.hasSuffix("/") ? String(entry.path.dropLast()) : entry.path

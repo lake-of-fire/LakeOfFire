@@ -39,6 +39,74 @@ final class ReaderEBookPackageFingerprintTests: XCTestCase {
             XCTAssertEqual(try fingerprint(a), try fingerprint(b))
         }
     }
+    /// ZIPFoundation emits stored directories, so create a deflated empty file
+    /// and mark its central record as a DOS directory in the real ZIP fixture.
+    private func zipWithDirectory(_ url: URL, compressed: Bool, corrupt: Bool = false,
+                                  checksum: UInt8 = 0) throws {
+        try zip(url, files: files)
+        let archive = try Archive(url: url, accessMode: .update)
+        try archive.addEntry(with: "OPS/", type: .file, uncompressedSize: Int64(0),
+                             compressionMethod: compressed ? .deflate : .none) { _, _ in Data() }
+        var bytes = try Data(contentsOf: url)
+        let name = Data("OPS/".utf8)
+        let signature = Data([0x50, 0x4b, 0x01, 0x02])
+        var search = bytes.startIndex
+        var central: Int?
+        while let range = bytes.range(of: signature, in: search..<bytes.endIndex) {
+            let offset = range.lowerBound
+            let length = Int(bytes[offset + 28]) | Int(bytes[offset + 29]) << 8
+            if bytes.subdata(in: offset + 46..<offset + 46 + length) == name {
+                central = offset
+                break
+            }
+            search = offset + 4
+        }
+        let offset = try XCTUnwrap(central)
+        bytes[offset + 5] = 0 // DOS host: trailing slash denotes a directory.
+        bytes.replaceSubrange(offset + 38..<offset + 42, with: Data([0x10, 0, 0, 0]))
+        let local = (0..<4).reduce(0) { $0 | Int(bytes[offset + 42 + $1]) << ($1 * 8) }
+        let nameLength = Int(bytes[local + 26]) | Int(bytes[local + 27]) << 8
+        let extraLength = Int(bytes[local + 28]) | Int(bytes[local + 29]) << 8
+        let compressedSize = (0..<4).reduce(0) { $0 | Int(bytes[offset + 20 + $1]) << ($1 * 8) }
+        if compressed { XCTAssertGreaterThan(compressedSize, 0) }
+        if corrupt {
+            bytes[local + 30 + nameLength + extraLength] = 0xff
+        }
+        if checksum != 0 {
+            bytes[offset + 16] = checksum
+            bytes[local + 14] = checksum
+        }
+        try bytes.write(to: url)
+    }
+
+    func testDeflatedEmptyDirectoryDoesNotChangeExactPackageIdentity() throws {
+        try withRoot { root in
+            let stored = root.appendingPathComponent("stored.epub")
+            let deflated = root.appendingPathComponent("deflated.epub")
+            try zipWithDirectory(stored, compressed: false)
+            try zipWithDirectory(deflated, compressed: true)
+            XCTAssertEqual(try fingerprint(stored), try fingerprint(deflated))
+        }
+    }
+
+    func testMalformedDeflatedDirectoryCannotBeIgnored() throws {
+        try withRoot { root in
+            let url = root.appendingPathComponent("corrupt.epub")
+            try zipWithDirectory(url, compressed: true, corrupt: true)
+            XCTAssertThrowsError(try fingerprint(url))
+        }
+    }
+
+    func testEmptyDirectoryMustHaveTheChecksumOfEmptyBytes() throws {
+        try withRoot { root in
+            for compressed in [false, true] {
+                let url = root.appendingPathComponent("crc-\(compressed).epub")
+                try zipWithDirectory(url, compressed: compressed, checksum: 1)
+                XCTAssertThrowsError(try fingerprint(url))
+            }
+        }
+    }
+
     func testUnpackedAndPackedPackagesAgree() throws {
         try withRoot { root in
             let directory = root.appendingPathComponent("unpacked", isDirectory: true)

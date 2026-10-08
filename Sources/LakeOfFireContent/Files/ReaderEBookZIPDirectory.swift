@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Compression)
+import Compression
+#endif
 
 /// Structural preflight for the exact-identity reader, not a replacement ZIP
 /// extractor. ZIPFoundation must see the same complete ordinary ZIP that this
@@ -96,6 +99,28 @@ enum ReaderEBookZIPDirectory {
             }), method != 0 || compressed == uncompressed else {
                 throw ReaderEBookFingerprintError.invalidPackage
             }
+            // ZIPFoundation does not decompress directory entries. Validate
+            // their payload here so a legal deflated empty directory is accepted
+            // without trusting its advertised zero size or ignoring corrupt data.
+            let host = u16(central, 4) >> 8
+            let attributes = u32(central, 38)
+            let mode = (attributes >> 16) & 0xf000
+            let directory: Bool
+            if (host == 3 || host == 19), mode == 0x8000 || mode == 0xa000 {
+                directory = false
+            } else if (host == 3 || host == 19), mode == 0x4000 {
+                directory = true
+            } else {
+                directory = name.last == 0x2f || (host == 0 && attributes >> 4 == 1)
+            }
+            if directory {
+                guard uncompressed == 0, crc == 0 else {
+                    throw ReaderEBookFingerprintError.invalidPackage
+                }
+                if method == 8 {
+                    try validateEmptyDeflate(input, at: dataStart, count: compressed)
+                }
+            }
             var recordEnd = dataStart + compressed
             if hasDescriptor {
                 // Both signed and unsigned descriptors are legal. Check values,
@@ -121,6 +146,57 @@ enum ReaderEBookZIPDirectory {
             previousEnd = span.end
         }
         return Int(count)
+    }
+
+    private static func validateEmptyDeflate(_ file: FileHandle, at offset: UInt64,
+                                             count: UInt64) throws {
+#if canImport(Compression)
+        // One output byte is enough to reject a directory which actually has
+        // data, even when its header claims zero uncompressed bytes.
+        let output = UnsafeMutablePointer<UInt8>.allocate(capacity: 1)
+        defer { output.deallocate() }
+        var stream = compression_stream(dst_ptr: output, dst_size: 1,
+                                        src_ptr: UnsafePointer(output), src_size: 0, state: nil)
+        guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB)
+                != COMPRESSION_STATUS_ERROR else {
+            throw ReaderEBookFingerprintError.invalidPackage
+        }
+        defer { compression_stream_destroy(&stream) }
+        var position: UInt64 = 0
+        while position < count {
+            let chunk = try read(file, at: offset + position, count: Int(min(65_536, count - position)))
+            position += UInt64(chunk.count)
+            let finished = try chunk.withUnsafeBytes { bytes -> Bool in
+                stream.src_ptr = bytes.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                stream.src_size = bytes.count
+                repeat {
+                    try Task.checkCancellation()
+                    stream.dst_ptr = output
+                    stream.dst_size = 1
+                    let before = stream.src_size
+                    let flags = position == count ? Int32(COMPRESSION_STREAM_FINALIZE.rawValue) : 0
+                    let status = compression_stream_process(&stream, flags)
+                    guard stream.dst_size == 1, status != COMPRESSION_STATUS_ERROR else {
+                        throw ReaderEBookFingerprintError.invalidPackage
+                    }
+                    if status == COMPRESSION_STATUS_END {
+                        guard stream.src_size == 0, position == count else {
+                            throw ReaderEBookFingerprintError.invalidPackage
+                        }
+                        return true
+                    }
+                    guard stream.src_size < before else {
+                        throw ReaderEBookFingerprintError.invalidPackage
+                    }
+                } while stream.src_size > 0
+                return false
+            }
+            if finished { return }
+        }
+        throw ReaderEBookFingerprintError.invalidPackage
+#else
+        throw ReaderEBookFingerprintError.unsupportedEntry("Deflated directory validation unavailable")
+#endif
     }
 
     private static func validateExtra(_ data: Data, name: Data, nameIsUTF8: Bool) throws {
