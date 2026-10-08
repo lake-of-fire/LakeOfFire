@@ -2,8 +2,26 @@ import SwiftUI
 import LakeOfFireCore
 import Combine
 import SwiftUIWebView
+import Foundation
 
+/// A selection can only lose authority. The fence retains this tiny token,
+/// never its MainActor content owner or a replacement selection.
+private final class ReaderContentSelectionLifetime: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isCurrent = true
 
+    func permitsCommit() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isCurrent
+    }
+
+    func withdraw() {
+        lock.lock()
+        defer { lock.unlock() }
+        isCurrent = false
+    }
+}
 
 @MainActor
 public class ReaderContent: ObservableObject {
@@ -32,11 +50,27 @@ public class ReaderContent: ObservableObject {
     // The last admitted selection outlives its loading task: a completed task
     // may still have readers queued to receive its result.
     private var selectionID: UUID?
+    private var selectionLifetime = ReaderContentSelectionLifetime()
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
     private var preloadedContent: (any ReaderContentProtocol)?
 
     public init() {
+    }
+
+    deinit {
+        selectionLifetime.withdraw()
+    }
+
+    /// The existing native content selection, including its unresolved load.
+    public var currentSelectionID: UUID? { selectionID }
+
+    /// Capture before suspending. A replacement selection closes this fence
+    /// permanently, even if navigation later returns to the same URL.
+    public func makeSelectionCommitFence(requiring expectedID: UUID?) -> @Sendable () -> Bool {
+        guard selectionID == expectedID else { return { false } }
+        let lifetime = selectionLifetime
+        return { lifetime.permitsCommit() }
     }
 
     @MainActor
@@ -181,6 +215,8 @@ public class ReaderContent: ObservableObject {
         // invoke callbacks; an old completion may never republish its content.
         let retiredTask = loadingTask
         let loadID = UUID()
+        selectionLifetime.withdraw()
+        selectionLifetime = ReaderContentSelectionLifetime()
         selectionID = loadID
         loadingTask = nil
         loadingResolvedContentURL = nil
