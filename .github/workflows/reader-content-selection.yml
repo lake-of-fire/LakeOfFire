@@ -26,6 +26,13 @@ jobs:
           ref: ${{ env.IMPLEMENTATION_SHA }}
           persist-credentials: false
           fetch-depth: 1
+      - name: Select Swift 6.2 toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d /Applications/Xcode_26.3.app
+          sudo xcode-select -s /Applications/Xcode_26.3.app
+          swift --version
       - name: Record exact source and toolchain
         shell: bash
         run: |
