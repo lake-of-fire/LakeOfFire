@@ -1,10 +1,123 @@
 import BigSyncKit
 import RealmSwift
-import RealmSwiftGaps
+@testable import RealmSwiftGaps
 import XCTest
 @testable import LakeOfFireContent
 
-final class LibraryRegressionTests: XCTestCase {
+final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
+    @RealmBackgroundActor
+    func testAppFeedCreatesAfterForeignProvisionalMatchRollsBack() async throws {
+        try await verifyAppFeedSelectionAfterForeignRollback(provisionalCreation: true)
+    }
+
+    @RealmBackgroundActor
+    func testAppFeedRetainsCanonicalAfterForeignDeletionRollsBack() async throws {
+        try await verifyAppFeedSelectionAfterForeignRollback(provisionalCreation: false)
+    }
+
+    @RealmBackgroundActor
+    func testAppFeedUnarchivesAlreadyConfiguredCanonicalWithoutCreatingDuplicate() async throws {
+        let configuration = makeConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let feed = makeFeed(title: "Application feed")
+        let feedID = feed.id
+        feed.deleteOrphans = true
+        feed.meaningfulContentMinLength = 0
+        feed.isReaderModeByDefault = true
+        feed.rssContainsFullContent = true
+        feed.isArchived = true
+        try realm.write {
+            realm.add(feed)
+            feed.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let originalGeneration = try XCTUnwrap(realm.object(
+            ofType: BigSyncPendingMutation.self, forPrimaryKey: "Feed.\(feedID)"
+        )?.generation)
+
+        let result = try await LibraryDataManager.shared.getOrCreateAppFeed(
+            rssURL: feed.rssUrl,
+            isReaderModeByDefault: true,
+            rssContainsFullContent: true,
+            title: "Application feed",
+            realmConfiguration: configuration
+        )
+
+        XCTAssertEqual(result?.id, feedID)
+        XCTAssertFalse(feed.isArchived)
+        XCTAssertEqual(realm.objects(Feed.self).count, 1)
+        XCTAssertNotEqual(realm.object(
+            ofType: BigSyncPendingMutation.self, forPrimaryKey: "Feed.\(feedID)"
+        )?.generation, originalGeneration)
+    }
+
+    @RealmBackgroundActor
+    private func verifyAppFeedSelectionAfterForeignRollback(provisionalCreation: Bool) async throws {
+        let configuration = makeConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let feed = makeFeed(title: "Application feed")
+        let originalID = feed.id
+        let rssURL = feed.rssUrl
+        feed.deleteOrphans = true
+        feed.meaningfulContentMinLength = 0
+        feed.isReaderModeByDefault = true
+        feed.rssContainsFullContent = true
+        var originalGeneration: String?
+        if !provisionalCreation {
+            try realm.write {
+                realm.add(feed)
+                feed.refreshChangeMetadata(explicitlyModified: true)
+            }
+            originalGeneration = try XCTUnwrap(realm.object(
+                ofType: BigSyncPendingMutation.self, forPrimaryKey: "Feed.\(originalID)"
+            )?.generation)
+        }
+        try realm.beginWrite()
+        if provisionalCreation { realm.add(feed) } else { feed.isDeleted = true }
+        defer { if realm.isInWriteTransaction { realm.cancelWrite() } }
+        let submitted = expectation(description: "Application feed selection acquires its own writer")
+        let publication = Task { @RealmBackgroundActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({
+                Task { @RealmBackgroundActor in submitted.fulfill() }
+            }) {
+                let resolved = try await LibraryDataManager.shared.getOrCreateAppFeed(
+                    rssURL: rssURL,
+                    isReaderModeByDefault: true,
+                    rssContainsFullContent: true,
+                    title: "Application feed",
+                    realmConfiguration: configuration
+                )
+                return resolved?.id
+            }
+        }
+        defer { publication.cancel() }
+        await fulfillment(of: [submitted], timeout: 5)
+        XCTAssertTrue(realm.isInWriteTransaction)
+        realm.cancelWrite()
+        let resultID = try await publication.value
+        let publishedID = try XCTUnwrap(resultID)
+        let published = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: publishedID))
+
+        XCTAssertFalse(published.isDeleted)
+        XCTAssertFalse(published.isArchived)
+        XCTAssertEqual(published.title, "Application feed")
+        XCTAssertTrue(published.isReaderModeByDefault)
+        XCTAssertTrue(published.rssContainsFullContent)
+        XCTAssertEqual(realm.objects(Feed.self).count, 1)
+        let mutation = try XCTUnwrap(realm.object(
+            ofType: BigSyncPendingMutation.self, forPrimaryKey: "Feed.\(publishedID)"
+        ))
+        if provisionalCreation {
+            XCTAssertNotEqual(publishedID, originalID)
+            XCTAssertNil(realm.object(ofType: BigSyncPendingMutation.self,
+                                     forPrimaryKey: "Feed.\(originalID)"))
+        } else {
+            XCTAssertEqual(publishedID, originalID)
+            XCTAssertEqual(mutation.generation, originalGeneration)
+        }
+    }
+
     func test_scriptPublisherKeepsObservedRealmAfterConfigurationReplacement() async throws {
         try await verifyScriptPublisherKeepsObservedRealmAfterConfigurationReplacement()
     }

@@ -693,6 +693,7 @@ public class LibraryDataManager: NSObject {
     ) async throws -> UUID {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         let category = FeedCategory()
+        let categoryID = category.id
 //        await realm.asyncRefresh()
         try await realm.asyncWritePreservingOwnership {
             realm.add(category, update: .modified)
@@ -702,15 +703,21 @@ public class LibraryDataManager: NSObject {
             let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(
                 realmConfiguration: realmConfiguration
             )
-            let categoryID = category.id
+            let configurationID = configuration.id
 //            await realm.asyncRefresh()
             try await realm.asyncWritePreservingOwnership {
-                guard !configuration.categoryIDs.contains(where: { $0 == categoryID }) else { return }
-                configuration.categoryIDs.append(categoryID)
-                configuration.refreshChangeMetadata(explicitlyModified: true)
+                guard let currentConfiguration = realm.object(
+                    ofType: LibraryConfiguration.self, forPrimaryKey: configurationID
+                ), !currentConfiguration.isDeleted,
+                   let currentCategory = realm.object(
+                    ofType: FeedCategory.self, forPrimaryKey: categoryID
+                ), !currentCategory.isDeleted,
+                   !currentConfiguration.categoryIDs.contains(categoryID) else { return }
+                currentConfiguration.categoryIDs.append(categoryID)
+                currentConfiguration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
-        return category.id
+        return categoryID
     }
     
     @RealmBackgroundActor
@@ -737,67 +744,58 @@ public class LibraryDataManager: NSObject {
         isReaderModeByDefault: Bool,
         rssContainsFullContent: Bool,
         title: String? = nil,
-        iconURL: URL? = nil
+        iconURL: URL? = nil,
+        realmConfiguration: Realm.Configuration = ReaderContentLoader.feedEntryRealmConfiguration
     ) async throws -> Feed? {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) 
-        var feed = Feed()
-        let existingAppFeeds = realm.objects(Feed.self).where({ !$0.isDeleted && $0.categoryID == nil }).filter { $0.rssUrl == rssURL }
-        if let existing = existingAppFeeds.first {
-            feed = existing
-            let shouldUpdateTitle = title.map { feed.title != $0 } ?? false
-            let shouldUpdateIcon = iconURL.map { feed.iconUrl != $0 } ?? false
-            if feed.meaningfulContentMinLength != 0 ||
-                feed.isReaderModeByDefault != isReaderModeByDefault ||
-                feed.rssContainsFullContent != rssContainsFullContent ||
-                !feed.deleteOrphans ||
-                shouldUpdateTitle ||
-                shouldUpdateIcon {
-//                await realm.asyncRefresh()
-                try await realm.asyncWritePreservingOwnership {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        let feedID = try await realm.asyncWritePreservingOwnership {
+            // Selection, no-op decisions and duplicate retirement belong to
+            // this writer. A live preflight can otherwise retain a provisional
+            // feed invalidated by a predecessor's rollback, or create a second
+            // feed after that rollback restores the original canonical row.
+            let existingAppFeeds = Array(realm.objects(Feed.self)
+                .where { !$0.isDeleted && $0.categoryID == nil }
+                .filter { $0.rssUrl == rssURL })
+            let timestamp = Date()
+            let feed: Feed
+            if let existing = existingAppFeeds.first {
+                feed = existing
+                let shouldUpdateTitle = title.map { feed.title != $0 } ?? false
+                let shouldUpdateIcon = iconURL.map { feed.iconUrl != $0 } ?? false
+                if feed.meaningfulContentMinLength != 0 ||
+                    feed.isReaderModeByDefault != isReaderModeByDefault ||
+                    feed.rssContainsFullContent != rssContainsFullContent ||
+                    !feed.deleteOrphans || feed.isArchived ||
+                    shouldUpdateTitle || shouldUpdateIcon {
                     feed.deleteOrphans = true
                     feed.isArchived = false
                     feed.meaningfulContentMinLength = 0
                     feed.isReaderModeByDefault = isReaderModeByDefault
                     feed.rssContainsFullContent = rssContainsFullContent
-                    if let title {
-                        feed.title = title
-                    }
-                    if let iconURL {
-                        feed.iconUrl = iconURL
-                    }
-                    feed.refreshChangeMetadata(explicitlyModified: true)
+                    if let title { feed.title = title }
+                    if let iconURL { feed.iconUrl = iconURL }
+                    feed.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 }
-            }
-            
-            // Delete any duplicate feeds perhaps synced from other devices via iCloud
-            let dupeFeeds = existingAppFeeds.filter { $0.id != existing.id }
-            if !dupeFeeds.isEmpty {
-//                await realm.asyncRefresh()
-                try await realm.asyncWritePreservingOwnership {
-                    for dupeFeed in dupeFeeds {
-                        dupeFeed.isDeleted = true
-                        dupeFeed.refreshChangeMetadata(explicitlyModified: true)
-                    }
+                for duplicate in existingAppFeeds.dropFirst() {
+                    duplicate.isDeleted = true
+                    duplicate.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 }
-            }
-        } else {
-            feed.deleteOrphans = true
-            feed.rssUrl = rssURL
-            if let title {
-                feed.title = title
-            }
-            if let iconURL {
-                feed.iconUrl = iconURL
-            }
-            feed.meaningfulContentMinLength = 0
-            feed.isReaderModeByDefault = isReaderModeByDefault
-            feed.rssContainsFullContent = rssContainsFullContent
-//            await realm.asyncRefresh()
-            try await realm.asyncWritePreservingOwnership {
+            } else {
+                feed = Feed()
+                feed.deleteOrphans = true
+                feed.rssUrl = rssURL
+                if let title { feed.title = title }
+                if let iconURL { feed.iconUrl = iconURL }
+                feed.meaningfulContentMinLength = 0
+                feed.isReaderModeByDefault = isReaderModeByDefault
+                feed.rssContainsFullContent = rssContainsFullContent
                 realm.add(feed, update: .modified)
-                feed.refreshChangeMetadata(explicitlyModified: true)
+                feed.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
             }
+            return feed.id
         }
+        guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
+              !feed.isDeleted else { return nil }
         return feed
     }
     
@@ -831,6 +829,7 @@ public class LibraryDataManager: NSObject {
     ) async throws -> UUID {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         let script = UserScript()
+        let scriptID = script.id
         script.title = ""
         if addToLibrary {
 //            await realm.asyncRefresh()
@@ -842,7 +841,6 @@ public class LibraryDataManager: NSObject {
                 realmConfiguration: realmConfiguration
             )
             let configurationID = configuration.id
-            let scriptID = script.id
 //            await realm.asyncRefresh()
             try await realm.asyncWritePreservingOwnership {
                 guard let currentConfiguration = realm.object(
@@ -860,7 +858,7 @@ public class LibraryDataManager: NSObject {
                 currentConfiguration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
-        return script.id
+        return scriptID
     }
     
     @RealmBackgroundActor
