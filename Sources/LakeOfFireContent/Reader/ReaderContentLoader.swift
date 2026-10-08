@@ -632,19 +632,21 @@ public struct ReaderContentLoader {
             
             try Task.checkCancellation()
             guard let match, !match.isInvalidated,
-                  let reference = storage.reference(for: match) else { return nil }
-            let loadedReference = try await finishLoadedContent(
+                  let reference = storage.reference(for: match) else {
+                try await HistoryRecord.refreshDemotedStatus(forURL: url,
+                    historyRealmConfiguration: storage.historyConfiguration,
+                    historyStorageAdmission: storage.historyAdmission,
+                    bookmarkRealmConfiguration: storage.bookmarkConfiguration,
+                    bookmarkStorageAdmission: storage.bookmarkAdmission)
+                return nil
+            }
+            let loadedReference = try await finishLoadedContentAndRefreshDemotion(
                 reference,
                 countsAsHistoryVisit: historyVisitPending,
-                readerModeRequired: persist && ((url.isReaderFileURL && url.contains(.plainText)) || url.isEBookURL)
+                readerModeRequired: persist && ((url.isReaderFileURL && url.contains(.plainText)) || url.isEBookURL),
+                bookmarkRealmConfiguration: storage.bookmarkConfiguration,
+                bookmarkStorageAdmission: storage.bookmarkAdmission
             )
-            guard let loadedReference else { return nil }
-            if loadedReference.contentType == HistoryRecord.self {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: loadedReference.realmConfiguration, storageAdmission: loadedReference.storageAdmission)
-                if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: loadedReference.contentKey), !record.isDeleted {
-                    try await record.refreshDemotedStatus(bookmarkRealmConfiguration: storage.bookmarkConfiguration, bookmarkStorageAdmission: storage.bookmarkAdmission)
-                }
-            }
             return loadedReference
         }()
         try Task.checkCancellation()
@@ -653,6 +655,25 @@ public struct ReaderContentLoader {
         return result
     }
     
+    @RealmBackgroundActor
+    static func finishLoadedContentAndRefreshDemotion(
+        _ reference: ContentReference,
+        countsAsHistoryVisit: Bool,
+        readerModeRequired: Bool,
+        bookmarkRealmConfiguration: Realm.Configuration,
+        bookmarkStorageAdmission: RealmStorageAdmission
+    ) async throws -> ContentReference? {
+        let loadedReference = try await finishLoadedContent(reference,
+            countsAsHistoryVisit: countsAsHistoryVisit, readerModeRequired: readerModeRequired)
+        // A live final read can reject a provisionally deleted identity. The
+        // delivered demotion still belongs to its captured store and must reach
+        // settled write evaluation, even when there is no load result to return.
+        try await HistoryRecord.refreshDemotedStatus(for: reference,
+            bookmarkRealmConfiguration: bookmarkRealmConfiguration,
+            bookmarkStorageAdmission: bookmarkStorageAdmission)
+        return loadedReference
+    }
+
     @RealmBackgroundActor
     static func finishLoadedContent(
         _ reference: ContentReference,

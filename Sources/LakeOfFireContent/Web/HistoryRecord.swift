@@ -149,6 +149,43 @@ public extension HistoryRecord {
             .max()
     }
 
+    /// Demotion has already been requested by a loader/readability callback.
+    /// Prefer committed opened identity so a provisional deletion cannot drop
+    /// that request. Live selection is only a fallback for creation/revival;
+    /// the existing owned writer decides whether that identity survives.
+    @RealmBackgroundActor
+    static func refreshDemotedStatus(
+        forURL url: URL,
+        historyRealmConfiguration: Realm.Configuration = ReaderContentLoader.historyRealmConfiguration,
+        historyStorageAdmission: RealmStorageAdmission? = nil,
+        bookmarkRealmConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
+        bookmarkStorageAdmission: RealmStorageAdmission? = nil,
+        skipPreviouslyDemoted: Bool = true
+    ) async throws {
+        let actor = RealmBackgroundActor.shared
+        let historyAdmission = historyStorageAdmission ?? actor.captureStorageAdmission(for: historyRealmConfiguration)
+        let bookmarkAdmission = bookmarkStorageAdmission ?? (actor.realmCacheKey(for: bookmarkRealmConfiguration) == actor.realmCacheKey(for: historyRealmConfiguration)
+            ? historyAdmission : actor.captureStorageAdmission(for: bookmarkRealmConfiguration))
+        let realm = try await actor.cachedRealm(for: historyRealmConfiguration, storageAdmission: historyAdmission)
+        if !realm.isFrozen && !realm.isInWriteTransaction { await realm.asyncRefresh() }
+        try Task.checkCancellation()
+        guard historyAdmission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: historyRealmConfiguration) }),
+              bookmarkAdmission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: bookmarkRealmConfiguration) }) else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+        }
+        let reference: ReaderContentLoader.ContentReference? = {
+            let committed = realm.freeze()
+            let record = getOpenedRecord(forURL: url, in: committed)
+                ?? getOpenedRecord(forURL: url, in: realm)
+            return record.flatMap { ReaderContentLoader.ContentReference(content: $0, storageAdmission: historyAdmission) }
+        }()
+        guard let reference else { return }
+        try await refreshDemotedStatus(for: reference,
+            bookmarkRealmConfiguration: bookmarkRealmConfiguration,
+            bookmarkStorageAdmission: bookmarkAdmission,
+            skipPreviouslyDemoted: skipPreviouslyDemoted)
+    }
+
     @RealmBackgroundActor
     func refreshDemotedStatus(
         bookmarkRealmConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
@@ -157,6 +194,22 @@ public extension HistoryRecord {
     ) async throws {
         guard !isInvalidated,
               let reference = ReaderContentLoader.ContentReference(content: self) else { return }
+        try await Self.refreshDemotedStatus(for: reference,
+            bookmarkRealmConfiguration: bookmarkRealmConfiguration,
+            bookmarkStorageAdmission: bookmarkStorageAdmission,
+            skipPreviouslyDemoted: skipPreviouslyDemoted)
+    }
+
+    /// Exact loader identity and its original storage admission survive live
+    /// deletion filtering. No object wrapper crosses native write admission.
+    @RealmBackgroundActor
+    static func refreshDemotedStatus(
+        for reference: ReaderContentLoader.ContentReference,
+        bookmarkRealmConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
+        bookmarkStorageAdmission: RealmStorageAdmission? = nil,
+        skipPreviouslyDemoted: Bool = true
+    ) async throws {
+        guard reference.contentType == HistoryRecord.self else { return }
         let actor = RealmBackgroundActor.shared
         let bookmarkAdmission = bookmarkStorageAdmission ?? (actor.realmCacheKey(for: bookmarkRealmConfiguration) == actor.realmCacheKey(for: reference.realmConfiguration)
             ? reference.storageAdmission : actor.captureStorageAdmission(for: bookmarkRealmConfiguration))
@@ -174,6 +227,11 @@ public extension HistoryRecord {
         if !realm.isFrozen && !realm.isInWriteTransaction { await realm.asyncRefresh() }
         try validateAdmission()
         let needsRefresh: Bool = {
+            // Live caller selection can deliver a provisionally revived row,
+            // or a row whose committed visibility is about to change. A
+            // committed no-op cannot settle that owner's pending transaction.
+            // Let native admission wait, then evaluate the settled row below.
+            if realm.isInWriteTransaction { return true }
             // A different owner's provisional deletion or visibility value must
             // not suppress this request. Keep the cheap committed no-op path,
             // but carry no frozen object across write admission.
