@@ -155,32 +155,62 @@ public extension HistoryRecord {
         bookmarkStorageAdmission: RealmStorageAdmission? = nil,
         skipPreviouslyDemoted: Bool = true
     ) async throws {
-        guard !isInvalidated, !isDeleted,
-              isDemoted != false || !skipPreviouslyDemoted,
+        guard !isInvalidated,
               let reference = ReaderContentLoader.ContentReference(content: self) else { return }
-        let bookmarkAdmission = bookmarkStorageAdmission ?? (RealmBackgroundActor.shared.realmCacheKey(for: bookmarkRealmConfiguration) == RealmBackgroundActor.shared.realmCacheKey(for: reference.realmConfiguration)
-            ? reference.storageAdmission : RealmBackgroundActor.shared.captureStorageAdmission(for: bookmarkRealmConfiguration))
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
-        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration, storageAdmission: bookmarkAdmission)
-        await ReaderContentLoader.contentWriteGateForTesting?(.demotion)
-        try await realm.asyncWritePreservingOwnership {
+        let actor = RealmBackgroundActor.shared
+        let bookmarkAdmission = bookmarkStorageAdmission ?? (actor.realmCacheKey(for: bookmarkRealmConfiguration) == actor.realmCacheKey(for: reference.realmConfiguration)
+            ? reference.storageAdmission : actor.captureStorageAdmission(for: bookmarkRealmConfiguration))
+        nonisolated func validateAdmission() throws {
             try Task.checkCancellation()
             try reference.validateStorage()
-            guard bookmarkAdmission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: bookmarkRealmConfiguration) }) else {
+            // An explicit bookmark configuration belongs to this operation;
+            // do not replace it with the loader's later global configuration.
+            guard bookmarkAdmission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: bookmarkRealmConfiguration) }) else {
                 throw RealmBackgroundActorError.realmFileChangedDuringOpen
             }
+        }
+        try validateAdmission()
+        let realm = try await actor.cachedRealm(for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
+        if !realm.isFrozen && !realm.isInWriteTransaction { await realm.asyncRefresh() }
+        try validateAdmission()
+        let needsRefresh: Bool = {
+            // A different owner's provisional deletion or visibility value must
+            // not suppress this request. Keep the cheap committed no-op path,
+            // but carry no frozen object across write admission.
+            let committed = realm.freeze()
+            guard let record = committed.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey) else { return false }
+            return !record.isDeleted && (record.isDemoted != false || !skipPreviouslyDemoted)
+        }()
+        try validateAdmission()
+        guard needsRefresh else { return }
+        let bookmarkRealm = try await actor.cachedRealm(for: bookmarkRealmConfiguration, storageAdmission: bookmarkAdmission)
+        await ReaderContentLoader.contentWriteGateForTesting?(.demotion)
+        try await realm.asyncWritePreservingOwnership {
+            try validateAdmission()
+            let admittedBookmarks: Realm
+            if bookmarkRealm == realm {
+                // The owning write already contains both models. Its current
+                // bookmark state commits or rolls back with this history row.
+                admittedBookmarks = realm
+            } else {
+                if !bookmarkRealm.isFrozen && !bookmarkRealm.isInWriteTransaction { bookmarkRealm.refresh() }
+                admittedBookmarks = bookmarkRealm.freeze()
+            }
+            // Refresh may notify a writer, retire a store, or cancel this task.
+            // Resolve the history row only after that synchronous callout.
+            try validateAdmission()
             guard let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey),
                   !record.isDeleted, record.isDemoted != false || !skipPreviouslyDemoted else { return }
-            if bookmarkRealm != realm { bookmarkRealm.refresh() }
-            // Compute from the live row in the final writer, including metadata
-            // or bookmark edits committed while Realm acquisition suspended.
-            let bookmarked = bookmarkRealm.objects(Bookmark.self)
+            let bookmarked = admittedBookmarks.objects(Bookmark.self)
                 .filter(NSPredicate(format: "isDeleted == false AND url == %@", record.url.absoluteString)).first != nil
             let demoted = !(record.isReaderModeByDefault || record.isReaderModeAvailable
                 || record.rssContainsFullContent || record.isFromClipboard || record.isPhysicalMedia || bookmarked)
             guard demoted != record.isDemoted else { return }
             record.isDemoted = demoted
             record.refreshChangeMetadata(explicitlyModified: true)
+            // Metadata providers may withdraw storage admission too. A failed
+            // final fence rolls back only this operation's fields and journal.
+            try validateAdmission()
         }
     }
 }
