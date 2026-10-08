@@ -490,13 +490,18 @@ struct LibraryCategoryView: View {
                     }
                 }
 #endif
-                ToolbarItemGroup(placement: .keyboard) {
-                    // Keep the accessory's layout stable while keyboard dismissal
-                    // clears focus; the keyboard controls its visibility.
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if focusedField != nil {
+                HStack {
                     Spacer()
                     Button("Done") { focusedField = nil }
                         .accessibilityIdentifier("Library.CategoryKeyboardDone")
                 }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.bar)
             }
         }
         .task(id: libraryCategoryViewModel.category.id) { @MainActor in
