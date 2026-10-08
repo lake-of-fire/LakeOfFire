@@ -174,6 +174,11 @@ public extension HistoryRecord {
         if !realm.isFrozen && !realm.isInWriteTransaction { await realm.asyncRefresh() }
         try validateAdmission()
         let needsRefresh: Bool = {
+            // Live caller selection can deliver a provisionally revived row,
+            // or a row whose committed visibility is about to change. A
+            // committed no-op cannot settle that owner's pending transaction.
+            // Let native admission wait, then evaluate the settled row below.
+            if realm.isInWriteTransaction { return true }
             // A different owner's provisional deletion or visibility value must
             // not suppress this request. Keep the cheap committed no-op path,
             // but carry no frozen object across write admission.

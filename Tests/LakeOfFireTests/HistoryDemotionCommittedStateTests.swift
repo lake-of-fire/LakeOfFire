@@ -35,8 +35,16 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
                     .init(installationIdentifier: "history-demotion-fixture",
                           replicaBindingGenerationIdentifier: "history-demotion-binding")
                 })
-            historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configurations[0])
-            bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configurations[shared ? 0 : 1])
+            do {
+                historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configurations[0])
+                bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configurations[shared ? 0 : 1])
+            } catch {
+                // A throwing initializer never registers XCTest teardown.
+                for configuration in configurations {
+                    _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+                }
+                throw error
+            }
             history = HistoryRecord()
             history.url = url
             history.updateCompoundKey()
@@ -48,8 +56,15 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
             bookmark.updateCompoundKey()
             bookmark.createdAt = originalDate
             bookmark.modifiedAt = originalDate
-            if insertHistory { try historyRealm.write { historyRealm.add(history) } }
-            if hasBookmark { try bookmarkRealm.write { bookmarkRealm.add(bookmark) } }
+            do {
+                if insertHistory { try historyRealm.write { historyRealm.add(history) } }
+                if hasBookmark { try bookmarkRealm.write { bookmarkRealm.add(bookmark) } }
+            } catch {
+                for configuration in configurations {
+                    _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+                }
+                throw error
+            }
             ReaderContentLoader.bookmarkRealmConfiguration = bookmarkRealm.configuration
             ReaderContentLoader.contentWriteGateForTesting = nil
         }
@@ -86,6 +101,11 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
                 if historyRealm.isInWriteTransaction { historyRealm.cancelWrite() }
             }
         }
+        func deleteHistoryAtGate() {
+            gateWasReached = true
+            do { try historyRealm.write { historyRealm.delete(history) } }
+            catch { gateError = error }
+        }
         func commitEligibilityAtGate() {
             gateWasReached = true
             do { try historyRealm.write { history.isReaderModeAvailable = true } }
@@ -95,7 +115,9 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
             XCTAssertEqual(history.isDemoted, demoted, file: file, line: line)
             let row = try XCTUnwrap(mutation(), file: file, line: line)
             XCTAssertEqual(row.changedAt, history.explicitlyModifiedAt, file: file, line: line)
-            XCTAssertFalse(row.isDeletion, file: file, line: line)
+            XCTAssertFalse(history.isDeleted, file: file, line: line)
+            XCTAssertEqual(row.entityType, HistoryRecord.className(), file: file, line: line)
+            XCTAssertEqual(row.objectIdentifier, history.compoundKey, file: file, line: line)
             XCTAssertFalse(historyRealm.isInWriteTransaction, file: file, line: line)
         }
     }
@@ -104,7 +126,7 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
     func testProvisionalBookmarkDeletionDoesNotDemoteCommittedHistory() async throws {
         let f = try await Fixture()
         addTeardownBlock { await f.close() }
-        f.bookmarkRealm.beginWrite()
+        try f.bookmarkRealm.beginWrite()
         f.bookmark.isDeleted = true
         try await f.apply()
         try f.assertJournaled(false)
@@ -120,7 +142,7 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
     func testProvisionalBookmarkInsertionCannotPromoteHistory() async throws {
         let f = try await Fixture(hasBookmark: false)
         addTeardownBlock { await f.close() }
-        f.bookmarkRealm.beginWrite()
+        try f.bookmarkRealm.beginWrite()
         f.bookmarkRealm.add(f.bookmark)
         try await f.apply()
         try f.assertJournaled(true)
@@ -135,7 +157,7 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
     func testProvisionalBookmarkURLCannotHideCommittedMembership() async throws {
         let f = try await Fixture()
         addTeardownBlock { await f.close() }
-        f.bookmarkRealm.beginWrite()
+        try f.bookmarkRealm.beginWrite()
         let other = URL(string: "https://history-demotion.example/provisional")!
         f.bookmark.url = other
         try await f.apply()
@@ -150,7 +172,7 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
     func testProvisionalHistoryDeletionCannotSuppressCommittedRequest() async throws {
         let f = try await Fixture(hasBookmark: false)
         addTeardownBlock { await f.close() }
-        f.historyRealm.beginWrite()
+        try f.historyRealm.beginWrite()
         f.history.isDeleted = true
         ReaderContentLoader.contentWriteGateForTesting = { operation in
             guard operation == .demotion else { return }
@@ -166,7 +188,7 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
     func testProvisionalVisibilityCannotSupplyCommittedNoOp() async throws {
         let f = try await Fixture(hasBookmark: false)
         addTeardownBlock { await f.close() }
-        f.historyRealm.beginWrite()
+        try f.historyRealm.beginWrite()
         f.history.isDemoted = false
         ReaderContentLoader.contentWriteGateForTesting = { operation in
             guard operation == .demotion else { return }
@@ -269,7 +291,7 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
     func testPendingHistoryCreationIsRefreshedAfterItsOwnerCommits() async throws {
         let f = try await Fixture(hasBookmark: false, insertHistory: false)
         addTeardownBlock { await f.close() }
-        f.historyRealm.beginWrite()
+        try f.historyRealm.beginWrite()
         f.historyRealm.add(f.history)
         ReaderContentLoader.contentWriteGateForTesting = { operation in
             guard operation == .demotion else { return }
@@ -285,7 +307,7 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
     func testRolledBackHistoryCreationIsNotRecreatedOrJournaled() async throws {
         let f = try await Fixture(hasBookmark: false, insertHistory: false)
         addTeardownBlock { await f.close() }
-        f.historyRealm.beginWrite()
+        try f.historyRealm.beginWrite()
         f.historyRealm.add(f.history)
         ReaderContentLoader.contentWriteGateForTesting = { operation in
             guard operation == .demotion else { return }
@@ -295,6 +317,153 @@ final class HistoryDemotionCommittedStateTests: XCTestCase {
         XCTAssertTrue(f.gateWasReached)
         // A rolled-back insertion may invalidate its managed wrapper. Inspect
         // the owning Realm, not fields on that now-retired object.
+        XCTAssertTrue(f.historyRealm.objects(HistoryRecord.self).isEmpty)
+        XCTAssertTrue(f.historyRealm.objects(BigSyncPendingMutation.self).isEmpty)
+        XCTAssertFalse(f.historyRealm.isInWriteTransaction)
+    }
+
+    @RealmBackgroundActor
+    func testOpenedRecordDeliversPendingRevivalBeforeOwnerCommits() async throws {
+        let f = try await Fixture(hasBookmark: false)
+        addTeardownBlock { await f.close() }
+        try f.historyRealm.write { f.history.isDeleted = true }
+        try f.historyRealm.beginWrite()
+        f.history.isDeleted = false
+        // Both message handlers use this live query. Keep its read semantics.
+        let selected = try XCTUnwrap(HistoryRecord.getOpenedRecord(forURL: f.url, in: f.historyRealm))
+        ReaderContentLoader.contentWriteGateForTesting = { operation in
+            guard operation == .demotion else { return }
+            await f.commitHistoryAtGate()
+        }
+        try await selected.refreshDemotedStatus(bookmarkRealmConfiguration: f.bookmarkRealm.configuration)
+        XCTAssertTrue(f.gateWasReached, "A delivered revival cannot use its committed tombstone as a no-op")
+        XCTAssertNil(f.gateError)
+        try f.assertJournaled(true)
+    }
+
+    @RealmBackgroundActor
+    func testLoaderIdentityDeliversPendingRevivalBeforeOwnerCommits() async throws {
+        let f = try await Fixture(hasBookmark: false)
+        addTeardownBlock { await f.close() }
+        let reference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: f.history))
+        try f.historyRealm.write { f.history.isDeleted = true }
+        try f.historyRealm.beginWrite()
+        f.history.isDeleted = false
+        ReaderContentLoader.contentWriteGateForTesting = { operation in
+            guard operation == .demotion else { return }
+            await f.commitHistoryAtGate()
+        }
+        // Reproduce the loader's final identity resolution and live deletion guard.
+        if let record = f.historyRealm.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey), !record.isDeleted {
+            try await record.refreshDemotedStatus(bookmarkRealmConfiguration: f.bookmarkRealm.configuration)
+        } else {
+            XCTFail("The provisionally revived row must pass the existing loader guard")
+        }
+        XCTAssertTrue(f.gateWasReached)
+        XCTAssertNil(f.gateError)
+        try f.assertJournaled(true)
+    }
+
+    @RealmBackgroundActor
+    func testDeliveredRevivalRollbackDoesNotReviveOrJournalTombstone() async throws {
+        let f = try await Fixture(hasBookmark: false)
+        addTeardownBlock { await f.close() }
+        try f.historyRealm.write { f.history.isDeleted = true }
+        try f.historyRealm.beginWrite()
+        f.history.isDeleted = false
+        let selected = try XCTUnwrap(HistoryRecord.getOpenedRecord(forURL: f.url, in: f.historyRealm))
+        ReaderContentLoader.contentWriteGateForTesting = { operation in
+            guard operation == .demotion else { return }
+            await f.rollbackHistoryAtGate()
+        }
+        try await selected.refreshDemotedStatus(bookmarkRealmConfiguration: f.bookmarkRealm.configuration)
+        XCTAssertTrue(f.gateWasReached)
+        XCTAssertTrue(f.history.isDeleted)
+        XCTAssertNil(f.history.isDemoted)
+        XCTAssertNil(f.mutation())
+        XCTAssertEqual(f.history.modifiedAt, f.originalDate)
+        XCTAssertFalse(f.historyRealm.isInWriteTransaction)
+    }
+
+    @RealmBackgroundActor
+    func testPendingDemotionCannotUseCommittedVisibilityAsNoOp() async throws {
+        let f = try await Fixture(demoted: false)
+        addTeardownBlock { await f.close() }
+        try f.historyRealm.beginWrite()
+        f.history.isDemoted = true
+        ReaderContentLoader.contentWriteGateForTesting = { operation in
+            guard operation == .demotion else { return }
+            await f.commitHistoryAtGate()
+        }
+        try await f.apply()
+        XCTAssertTrue(f.gateWasReached)
+        XCTAssertNil(f.gateError)
+        // The settled demoted row must reconsider the committed bookmark.
+        try f.assertJournaled(false)
+    }
+
+    @RealmBackgroundActor
+    func testLiveCallerGuardsStillExcludeProvisionalDeletion() async throws {
+        let f = try await Fixture(hasBookmark: false)
+        addTeardownBlock { await f.close() }
+        try f.historyRealm.beginWrite()
+        f.history.isDeleted = true
+        XCTAssertNil(HistoryRecord.getOpenedRecord(forURL: f.url, in: f.historyRealm))
+        let record = try XCTUnwrap(f.historyRealm.object(ofType: HistoryRecord.self, forPrimaryKey: f.history.compoundKey))
+        XCTAssertTrue(record.isDeleted, "The loader's live deletion guard also excludes this row")
+        f.historyRealm.cancelWrite()
+        XCTAssertNil(f.mutation())
+        XCTAssertNil(f.history.isDemoted)
+    }
+
+    @RealmBackgroundActor
+    func testCancellationAtDemotionGateLeavesNoMutation() async throws {
+        let f = try await Fixture(hasBookmark: false)
+        addTeardownBlock { await f.close() }
+        ReaderContentLoader.contentWriteGateForTesting = { operation in
+            guard operation == .demotion else { return }
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+        let request = Task { @RealmBackgroundActor in try await f.apply() }
+        do {
+            try await request.value
+            XCTFail("Cancellation before native admission must reject the request")
+        } catch is CancellationError { }
+        XCTAssertNil(f.history.isDemoted)
+        XCTAssertNil(f.mutation())
+        XCTAssertEqual(f.history.modifiedAt, f.originalDate)
+        XCTAssertFalse(f.historyRealm.isInWriteTransaction)
+    }
+
+    @RealmBackgroundActor
+    func testCommittedTombstoneRemainsANoOpWithoutPendingWriter() async throws {
+        let f = try await Fixture(hasBookmark: false)
+        addTeardownBlock { await f.close() }
+        try f.historyRealm.write { f.history.isDeleted = true }
+        ReaderContentLoader.contentWriteGateForTesting = { _ in
+            XCTFail("A settled tombstone should retain its existing early no-op")
+        }
+        try await f.apply()
+        XCTAssertTrue(f.history.isDeleted)
+        XCTAssertNil(f.history.isDemoted)
+        XCTAssertNil(f.mutation())
+        XCTAssertEqual(f.history.modifiedAt, f.originalDate)
+    }
+
+    @RealmBackgroundActor
+    func testHistoryInvalidatedBeforeAdmissionIsNotRecreated() async throws {
+        let f = try await Fixture(hasBookmark: false)
+        addTeardownBlock { await f.close() }
+        ReaderContentLoader.contentWriteGateForTesting = { operation in
+            guard operation == .demotion else { return }
+            await f.deleteHistoryAtGate()
+        }
+        try await f.apply()
+        XCTAssertTrue(f.gateWasReached)
+        XCTAssertNil(f.gateError)
+        XCTAssertTrue(f.history.isInvalidated)
+        // This fixture hard-deletes to invalidate a wrapper; production deletion
+        // remains a soft mutation. Never read persisted fields on that wrapper.
         XCTAssertTrue(f.historyRealm.objects(HistoryRecord.self).isEmpty)
         XCTAssertTrue(f.historyRealm.objects(BigSyncPendingMutation.self).isEmpty)
         XCTAssertFalse(f.historyRealm.isInWriteTransaction)
