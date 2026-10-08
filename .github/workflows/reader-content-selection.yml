@@ -1,0 +1,233 @@
+name: Reader content selection fence qualification
+
+on:
+  push:
+    branches:
+      - fix/native-content-selection-fence-20261008
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reader-content-selection-fence
+  cancel-in-progress: true
+
+env:
+  IMPLEMENTATION_SHA: 98a1b665453900611cc2b428912ca4d166c053cb
+
+jobs:
+  selection:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.IMPLEMENTATION_SHA }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Record exact source and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$IMPLEMENTATION_SHA"
+          {
+            printf 'implementation=%s\n' "$actual"
+            git rev-parse 'HEAD^{tree}'
+            xcodebuild -version
+            swift --version
+            git ls-tree HEAD -- \
+              Sources/LakeOfFireContent/Reader/ReaderContent.swift \
+              Tests/LakeOfFireTests/ReaderContentLoadingOwnershipTests.swift
+          } | tee reader-content-selection-inputs.txt
+          git archive --format=tar.gz --output=reader-content-selection-source.tar.gz \
+            HEAD Sources/LakeOfFireContent/Reader/ReaderContent.swift \
+            Tests/LakeOfFireTests/ReaderContentLoadingOwnershipTests.swift
+      - name: Build exact portable graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d "$RUNNER_TEMP/reader-content-selection.XXXXXX")"
+          mkdir -p \
+            "$root/Sources/LakeOfFireCore" \
+            "$root/Sources/SwiftUIWebView" \
+            "$root/Sources/LakeOfFireContent" \
+            "$root/Tests/LakeOfFireTests"
+          cp Sources/LakeOfFireContent/Reader/ReaderContent.swift \
+            "$root/Sources/LakeOfFireContent/ReaderContent.swift"
+          cp Tests/LakeOfFireTests/ReaderContentLoadingOwnershipTests.swift \
+            "$root/Tests/LakeOfFireTests/ReaderContentLoadingOwnershipTests.swift"
+
+          cat > "$root/Package.swift" <<'SWIFT'
+          // swift-tools-version: 6.2
+          import PackageDescription
+
+          let package = Package(
+              name: "ReaderContentSelectionQualification",
+              platforms: [.macOS(.v15)],
+              targets: [
+                  .target(name: "LakeOfFireCore"),
+                  .target(name: "SwiftUIWebView"),
+                  .target(
+                      name: "LakeOfFireContent",
+                      dependencies: ["LakeOfFireCore", "SwiftUIWebView"]
+                  ),
+                  .testTarget(
+                      name: "LakeOfFireTests",
+                      dependencies: ["LakeOfFireContent"]
+                  ),
+              ],
+              swiftLanguageModes: [.v6]
+          )
+          SWIFT
+
+          cat > "$root/Sources/LakeOfFireCore/LakeOfFireCore.swift" <<'SWIFT'
+          public enum LakeOfFireCorePortableMarker {}
+          SWIFT
+
+          cat > "$root/Sources/SwiftUIWebView/SwiftUIWebView.swift" <<'SWIFT'
+          import Foundation
+
+          @MainActor
+          public final class WebViewReaderLoadActivity {
+              public static let shared = WebViewReaderLoadActivity()
+              public var hasPendingPreProvisionalLoad = false
+              private init() {}
+          }
+          SWIFT
+
+          cat > "$root/Sources/LakeOfFireContent/PortableSupport.swift" <<'SWIFT'
+          import Foundation
+
+          public protocol ReaderContentProtocol: AnyObject {
+              var url: URL { get set }
+              var title: String { get set }
+              var locationBarTitle: String? { get }
+              var createdAt: Date? { get }
+              var needsClipboardIndicator: Bool { get }
+              var isTitlePrefixOfContent: Bool { get }
+          }
+
+          public final class HistoryRecord: ReaderContentProtocol {
+              public var url = URL(string: "about:blank")!
+              public var title = ""
+              public var createdAt: Date?
+              public var needsClipboardIndicator = false
+              public var isTitlePrefixOfContent = false
+              public private(set) var compoundKey = ""
+              public var locationBarTitle: String? { title }
+
+              public init() {}
+              public func updateCompoundKey() {
+                  compoundKey = url.absoluteString
+              }
+          }
+
+          @MainActor
+          enum ContentLoadProbe {
+              typealias Resolver = @MainActor (URL) async throws -> (any ReaderContentProtocol)?
+              static var resolve: Resolver?
+          }
+
+          @MainActor
+          enum ReaderContentLoader {
+              static let unsavedHome: any ReaderContentProtocol = {
+                  let value = HistoryRecord()
+                  value.title = "Home"
+                  return value
+              }()
+
+              static func getContentURL(fromLoaderURL url: URL) -> URL? { url }
+
+              static func getContent(
+                  forURL url: URL,
+                  countsAsHistoryVisit: Bool,
+                  source: String
+              ) async throws -> (any ReaderContentProtocol)? {
+                  if let resolve = ContentLoadProbe.resolve {
+                      return try await resolve(url)
+                  }
+                  return unsavedHome
+              }
+
+              static func resolvedSnippetLocationBarTitle(
+                  title: String,
+                  createdAt: Date?,
+                  needsClipboardIndicator: Bool,
+                  isTitlePrefixOfContent: Bool
+              ) -> String? { title }
+
+              static func updateSnippetTitle(contentURL: URL, title: String) async throws -> Bool {
+                  true
+              }
+
+              struct ContentReference {
+                  private let content: any ReaderContentProtocol
+                  init?(content: any ReaderContentProtocol) { self.content = content }
+                  @MainActor func resolveOnMainActor() async throws -> (any ReaderContentProtocol)? {
+                      content
+                  }
+              }
+          }
+
+          extension URL {
+              var isSnippetURL: Bool { scheme == "snippet" }
+
+              func matchesReaderURL(_ other: URL) -> Bool {
+                  func normalized(_ value: URL) -> String {
+                      guard var components = URLComponents(
+                          url: value,
+                          resolvingAgainstBaseURL: false
+                      ) else { return value.absoluteString }
+                      components.fragment = nil
+                      return components.url?.absoluteString ?? value.absoluteString
+                  }
+                  return normalized(self) == normalized(other)
+              }
+          }
+
+          extension String {
+              func truncate(_ maximum: Int, trailing: String = "") -> String {
+                  guard count > maximum else { return self }
+                  return String(prefix(maximum)) + trailing
+              }
+          }
+          SWIFT
+
+          printf 'PORTABLE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
+      - name: Debug exact production source and ownership tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PORTABLE_ROOT"
+          swift test --configuration debug \
+            -Xswiftc -DREADER_CONTENT_PORTABLE \
+            --filter ReaderContentLoadingOwnershipTests \
+            2>&1 | tee "$GITHUB_WORKSPACE/reader-content-selection-debug.log"
+      - name: Release exact production source and ownership tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PORTABLE_ROOT"
+          swift test --configuration release \
+            -Xswiftc -DREADER_CONTENT_PORTABLE \
+            --filter ReaderContentLoadingOwnershipTests \
+            2>&1 | tee "$GITHUB_WORKSPACE/reader-content-selection-release.log"
+      - name: Verify selected source remained unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$IMPLEMENTATION_SHA"
+          git diff --exit-code
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: reader-content-selection-${{ env.IMPLEMENTATION_SHA }}
+          path: |
+            reader-content-selection-inputs.txt
+            reader-content-selection-source.tar.gz
+            reader-content-selection-debug.log
+            reader-content-selection-release.log
+          if-no-files-found: warn
+          retention-days: 14
