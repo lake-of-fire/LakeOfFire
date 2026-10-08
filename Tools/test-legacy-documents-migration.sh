@@ -7,7 +7,9 @@ fi
 root="$(cd "$(dirname "$0")/.." && pwd)"
 evidence="${LEGACY_DOCUMENTS_EVIDENCE_DIRECTORY:?Set a fresh absolute evidence directory}"
 [[ "$evidence" = /* ]] || { echo 'Evidence directory must be absolute' >&2; exit 1; }
-mkdir -p "$evidence"
+mkdir -p "$(dirname "$evidence")"
+mkdir "$evidence" # Never overwrite an earlier evidence packet.
+command -v xcsift >/dev/null
 git -C "$root" rev-parse HEAD > "$evidence/tested-commit.txt"
 git -C "$root" ls-tree -r HEAD > "$evidence/source-manifest.txt"
 swift --version > "$evidence/toolchain.txt"
@@ -18,7 +20,8 @@ finish() {
     mkdir -p "$LEGACY_DOCUMENTS_EVIDENCE_DIRECTORY" || status=1
     tar -czf "$LEGACY_DOCUMENTS_EVIDENCE_DIRECTORY/executed-source.tar.gz" -C "$work" Package.swift Sources Tests || status=1
   fi
-  rm -rf "$work" || status=1
+  mkdir -p "$HOME/.Trash" || status=1
+  mv "$work" "$HOME/.Trash/" || status=1
   exit "$status"
 }
 trap finish EXIT
@@ -29,11 +32,11 @@ cp "$root/Tests/LakeOfFireTests/ReaderLegacyDocumentsMigrationTests.swift" "$wor
 set +e
 swift test --package-path "$work" -Xswiftc -warnings-as-errors \
   --parallel --num-workers 1 --disable-swift-testing \
-  --xunit-output "$evidence/native.junit.xml" "$@" 2>&1 | tee "$evidence/test.log"
+  --xunit-output "$evidence/native.junit.xml" "$@" 2>&1 | tee "$evidence/test.log" | xcsift > "$evidence/test.summary.json"
 statuses=("${PIPESTATUS[@]}")
 set -e
 printf '%s\n' "${statuses[*]}" > "$evidence/test-pipeline-statuses.txt"
-if [[ "${statuses[0]}" != 0 || "${statuses[1]}" != 0 ]]; then exit 1; fi
+if [[ "${statuses[*]}" != "0 0 0" ]]; then exit 1; fi
 python3 - "$work/Tests/LegacyDocumentsTests/ReaderLegacyDocumentsMigrationTests.swift" "$evidence/native.junit.xml" "$evidence/method-roster.txt" <<'PY'
 from collections import Counter
 from pathlib import Path
