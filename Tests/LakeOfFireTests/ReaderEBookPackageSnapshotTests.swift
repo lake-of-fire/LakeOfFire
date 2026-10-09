@@ -32,6 +32,15 @@ final class ReaderEBookPackageSnapshotTests: XCTestCase {
             .filter { $0.lastPathComponent.hasPrefix("manabi-epub-snapshot-") }
     }
 
+    func testSourceVersionChangesAfterSameLengthEditAndExcludesDirectories() throws {
+        try withFixture { source, parent in
+            let before = try XCTUnwrap(ReaderEBookPackageSnapshot.sourceVersionToken(at: source))
+            try Data("changed! bytes".utf8).write(to: source)
+            XCTAssertNotEqual(try ReaderEBookPackageSnapshot.sourceVersionToken(at: source), before)
+            XCTAssertNil(try ReaderEBookPackageSnapshot.sourceVersionToken(at: parent))
+        }
+    }
+
     func testRetainsIndependentBytesAfterOriginalIsEdited() throws {
         try withFixture { source, parent in
             let owned = try snapshot(source, parent)
