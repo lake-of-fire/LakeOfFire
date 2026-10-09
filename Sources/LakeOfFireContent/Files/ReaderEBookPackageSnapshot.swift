@@ -151,6 +151,27 @@ public final class ReaderEBookPackageSnapshot: Sendable {
         return result
     }
 
+    /// Optimistic source validation for an in-memory fingerprint cache. This
+    /// is not a content identity. Matching candidates are always snapshotted
+    /// again; exclusion hints are revalidated at the final opening boundary.
+    /// Directories are deliberately uncached: parent metadata cannot prove that
+    /// their children stayed unchanged.
+    public static func sourceVersionToken(at url: URL) throws -> String? {
+        try Task.checkCancellation()
+        guard url.isFileURL, url.baseURL == nil else {
+            throw ReaderEBookPackageSnapshotError.invalidSource
+        }
+        let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values.isSymbolicLink != true else { throw ReaderEBookPackageSnapshotError.unsupportedSource }
+        if values.isDirectory == true { return nil }
+        let input = try openRegularFile(url)
+        defer { try? input.close() }
+        let observed = try fileObservation(input.fileDescriptor)
+        return [String(observed.device), String(observed.inode), String(observed.size),
+            String(observed.modifiedSeconds), String(observed.modifiedNanoseconds),
+            String(observed.changedSeconds), String(observed.changedNanoseconds)].joined(separator: ":")
+    }
+
     private struct FileObservation: Equatable, Sendable {
         let device: UInt64
         let inode: UInt64
