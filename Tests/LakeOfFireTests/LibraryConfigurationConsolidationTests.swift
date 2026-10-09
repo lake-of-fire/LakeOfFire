@@ -1,10 +1,293 @@
 import BigSyncKit
 import RealmSwift
-import RealmSwiftGaps
+@testable import RealmSwiftGaps
 import XCTest
 @testable import LakeOfFireContent
 
-final class LibraryConfigurationConsolidationTests: XCTestCase {
+final class LibraryConfigurationConsolidationTests: XCTestCase, @unchecked Sendable {
+    @RealmBackgroundActor
+    func testScriptRefreshDoesNotSkipCommittedLibraryDuringForeignDeletion() async throws {
+        let (configuration, _) = try await makeRealm()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let library = LibraryConfiguration()
+        let script = UserScript()
+        try realm.write { realm.add([library, script]) }
+        try realm.beginWrite()
+        library.isDeleted = true
+        script.isDeleted = true
+        defer { if realm.isInWriteTransaction { realm.cancelWrite() } }
+        let submitted = expectation(description: "Committed script refresh queues despite provisional empty state")
+        submitted.assertForOverFulfill = false
+        let refresh = Task { @RealmBackgroundActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({
+                Task { @RealmBackgroundActor in submitted.fulfill() }
+            }) {
+                try await LibraryDataManager.shared.refreshScripts(realmConfiguration: configuration)
+            }
+        }
+        defer { refresh.cancel() }
+        await fulfillment(of: [submitted], timeout: 5)
+        XCTAssertTrue(realm.isInWriteTransaction)
+        realm.cancelWrite()
+        try await refresh.value
+
+        XCTAssertFalse(library.isDeleted)
+        XCTAssertFalse(script.isDeleted)
+        XCTAssertEqual(Array(library.userScriptIDs), [script.id])
+        XCTAssertNotNil(pendingMutation(for: library, in: realm))
+    }
+
+    @RealmBackgroundActor
+    func testScriptRefreshRemovesDuplicateTombstonesAndPreservesUnresolvedReferences() async throws {
+        let (_, realm) = try await makeRealm()
+        let library = LibraryConfiguration()
+        let deleted = UserScript()
+        deleted.isDeleted = true
+        let existing = UserScript()
+        let newScript = UserScript()
+        let unresolvedID = UUID()
+        library.userScriptIDs.append(objectsIn: [deleted.id, existing.id, deleted.id, unresolvedID, existing.id])
+        try realm.write {
+            realm.add(library)
+            realm.add([deleted, existing, newScript])
+        }
+
+        try realm.write { library.reconcileUserScriptIDs() }
+        XCTAssertEqual(Array(library.userScriptIDs), [existing.id, unresolvedID, newScript.id])
+        let generation = try XCTUnwrap(pendingMutation(for: library, in: realm)?.generation)
+        let modifiedAt = library.modifiedAt
+        try realm.write { library.reconcileUserScriptIDs() }
+        XCTAssertEqual(pendingMutation(for: library, in: realm)?.generation, generation)
+        XCTAssertEqual(library.modifiedAt, modifiedAt)
+    }
+
+    @RealmBackgroundActor
+    func testCreateEmptyScriptRegistersOnceInExistingConfiguration() async throws {
+        let (configuration, realm) = try await makeRealm()
+        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let library = LibraryConfiguration()
+        try realm.write { realm.add(library) }
+
+        let scriptID = try await LibraryDataManager.shared.createEmptyScript(
+            addToLibrary: true,
+            realmConfiguration: configuration
+        )
+
+        XCTAssertEqual(Array(library.userScriptIDs), [scriptID])
+        let script = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: scriptID))
+        XCTAssertNotNil(pendingMutation(for: script, in: realm))
+        XCTAssertNotNil(pendingMutation(for: library, in: realm))
+    }
+
+    @RealmBackgroundActor
+    func testImportedRelationshipsIgnoreRolledBackForeignListPositions() async throws {
+        let (configuration, _) = try await makeRealm()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let library = LibraryConfiguration()
+        let originalCategoryID = UUID()
+        let originalScriptID = UUID()
+        library.categoryIDs.append(originalCategoryID)
+        library.userScriptIDs.append(originalScriptID)
+        let category = FeedCategory()
+        let script = UserScript()
+        try realm.write { realm.add([library, category, script]) }
+        let libraryID = library.id
+        let categoryID = category.id
+        let scriptID = script.id
+
+        try realm.beginWrite()
+        library.categoryIDs.append(objectsIn: [UUID(), UUID(), UUID()])
+        library.userScriptIDs.append(objectsIn: [UUID(), UUID(), UUID()])
+        defer { if realm.isInWriteTransaction { realm.cancelWrite() } }
+        let submitted = expectation(description: "Import relationship update queued")
+        let publication = Task { @RealmBackgroundActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({
+                Task { @RealmBackgroundActor in submitted.fulfill() }
+            }) {
+                try await LibraryDataManager.reconcileImportedLibraryRelationships(
+                    configurationID: libraryID,
+                    categoryIDs: [categoryID],
+                    scriptIDs: [scriptID],
+                    downloadURL: nil,
+                    in: realm
+                )
+            }
+        }
+        defer { publication.cancel() }
+        await fulfillment(of: [submitted], timeout: 5)
+        XCTAssertTrue(realm.isInWriteTransaction)
+        XCTAssertEqual(library.categoryIDs.count, 4)
+        realm.cancelWrite()
+        try await publication.value
+
+        XCTAssertEqual(Array(library.categoryIDs), [originalCategoryID, categoryID])
+        XCTAssertEqual(Array(library.userScriptIDs), [originalScriptID, scriptID])
+        XCTAssertNotNil(pendingMutation(for: library, in: realm))
+    }
+
+    @RealmBackgroundActor
+    func testImportedOrderingPreservesUnresolvedNeighborsAndDoesNotRejournalNoOp() async throws {
+        let (_, realm) = try await makeRealm()
+        let sourceURL = URL(string: "https://example.test/library.opml")!
+        let categories = (0..<3).map { _ in FeedCategory() }
+        let scripts = (0..<3).map { _ in UserScript() }
+        for category in categories { category.opmlURL = sourceURL }
+        for script in scripts { script.opmlURL = sourceURL }
+        let unresolvedCategoryID = UUID()
+        let unresolvedScriptID = UUID()
+        let library = LibraryConfiguration()
+        library.categoryIDs.append(objectsIn: [categories[0].id, unresolvedCategoryID, categories[1].id])
+        library.userScriptIDs.append(objectsIn: [scripts[0].id, unresolvedScriptID, scripts[1].id])
+        try realm.write {
+            realm.add(library)
+            realm.add(categories)
+            realm.add(scripts)
+        }
+        let desiredCategoryIDs = [categories[1].id, categories[2].id, categories[0].id]
+        let desiredScriptIDs = [scripts[1].id, scripts[2].id, scripts[0].id]
+        try await LibraryDataManager.reconcileImportedLibraryRelationships(
+            configurationID: library.id,
+            categoryIDs: desiredCategoryIDs + [categories[1].id],
+            scriptIDs: desiredScriptIDs + [scripts[1].id],
+            downloadURL: sourceURL,
+            in: realm
+        )
+
+        XCTAssertEqual(Array(library.categoryIDs), [categories[1].id, unresolvedCategoryID, categories[2].id, categories[0].id])
+        XCTAssertEqual(Array(library.userScriptIDs), [scripts[1].id, unresolvedScriptID, scripts[2].id, scripts[0].id])
+        let generation = try XCTUnwrap(pendingMutation(for: library, in: realm)?.generation)
+        let modifiedAt = library.modifiedAt
+        try await LibraryDataManager.reconcileImportedLibraryRelationships(
+            configurationID: library.id,
+            categoryIDs: desiredCategoryIDs,
+            scriptIDs: desiredScriptIDs,
+            downloadURL: sourceURL,
+            in: realm
+        )
+        XCTAssertEqual(pendingMutation(for: library, in: realm)?.generation, generation)
+        XCTAssertEqual(library.modifiedAt, modifiedAt)
+    }
+
+    @RealmBackgroundActor
+    func testImportedRelationshipsRejectConfigurationRetiredWhileQueued() async throws {
+        let (configuration, _) = try await makeRealm()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let library = LibraryConfiguration()
+        let category = FeedCategory()
+        try realm.write { realm.add([library, category]) }
+        let libraryID = library.id
+        let categoryID = category.id
+        try realm.beginWrite()
+        library.isDeleted = true
+        defer { if realm.isInWriteTransaction { realm.cancelWrite() } }
+        let submitted = expectation(description: "Import update waits for configuration retirement")
+        let publication = Task { @RealmBackgroundActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({
+                Task { @RealmBackgroundActor in submitted.fulfill() }
+            }) {
+                try await LibraryDataManager.reconcileImportedLibraryRelationships(
+                    configurationID: libraryID,
+                    categoryIDs: [categoryID],
+                    scriptIDs: [],
+                    downloadURL: nil,
+                    in: realm
+                )
+            }
+        }
+        defer { publication.cancel() }
+        await fulfillment(of: [submitted], timeout: 5)
+        XCTAssertTrue(realm.isInWriteTransaction)
+        try realm.commitWrite()
+        do {
+            try await publication.value
+            XCTFail("Import must not publish relationships into a retired configuration")
+        } catch LibraryConfigurationConsolidationError.configurationChangedDuringImport { }
+        XCTAssertTrue(library.isDeleted)
+        XCTAssertTrue(library.categoryIDs.isEmpty)
+        XCTAssertNil(pendingMutation(for: library, in: realm))
+    }
+
+    @RealmBackgroundActor
+    func testConsolidationCreatesAfterForeignProvisionalPrimaryRollsBack() async throws {
+        let (configuration, _) = try await makeRealm()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let provisional = LibraryConfiguration()
+        let provisionalID = provisional.id
+        try realm.beginWrite()
+        realm.add(provisional)
+        defer { if realm.isInWriteTransaction { realm.cancelWrite() } }
+
+        let submitted = expectation(description: "Consolidation submitted its owned write")
+        let consolidation = Task { @RealmBackgroundActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({
+                Task { @RealmBackgroundActor in submitted.fulfill() }
+            }) {
+                try await LibraryConfiguration.getConsolidatedOrCreate(
+                    realmConfiguration: configuration
+                )
+            }
+        }
+        defer { consolidation.cancel() }
+        await fulfillment(of: [submitted], timeout: 5)
+        XCTAssertTrue(realm.isInWriteTransaction)
+        realm.cancelWrite()
+
+        let consolidated = try await consolidation.value
+        XCTAssertNotNil(consolidated.realm)
+        XCTAssertFalse(consolidated.isInvalidated)
+        XCTAssertFalse(consolidated.isDeleted)
+        XCTAssertNotEqual(consolidated.id, provisionalID)
+        XCTAssertEqual(realm.objects(LibraryConfiguration.self).count, 1)
+        XCTAssertNotNil(pendingMutation(for: consolidated, in: realm))
+    }
+
+    @RealmBackgroundActor
+    func testConsolidationReselectsCanonicalPrimaryAfterForeignDeletionRollsBack() async throws {
+        let (configuration, _) = try await makeRealm()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let primary = LibraryConfiguration()
+        primary.createdAt = Date(timeIntervalSinceReferenceDate: 1_000)
+        let primaryCategoryID = UUID()
+        primary.categoryIDs.append(primaryCategoryID)
+        let duplicate = LibraryConfiguration()
+        duplicate.createdAt = Date(timeIntervalSinceReferenceDate: 2_000)
+        let duplicateCategoryID = UUID()
+        duplicate.categoryIDs.append(duplicateCategoryID)
+        try realm.write { realm.add([primary, duplicate]) }
+
+        try realm.beginWrite()
+        primary.isDeleted = true
+        defer { if realm.isInWriteTransaction { realm.cancelWrite() } }
+        let submitted = expectation(description: "Consolidation queued behind provisional deletion")
+        let consolidation = Task { @RealmBackgroundActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({
+                Task { @RealmBackgroundActor in submitted.fulfill() }
+            }) {
+                try await LibraryConfiguration.getConsolidatedOrCreate(
+                    realmConfiguration: configuration
+                )
+            }
+        }
+        defer { consolidation.cancel() }
+        await fulfillment(of: [submitted], timeout: 5)
+        XCTAssertTrue(realm.isInWriteTransaction)
+        realm.cancelWrite()
+
+        let consolidated = try await consolidation.value
+        XCTAssertEqual(consolidated.id, primary.id)
+        XCTAssertEqual(Array(consolidated.categoryIDs), [primaryCategoryID, duplicateCategoryID])
+        XCTAssertFalse(primary.isDeleted)
+        XCTAssertTrue(duplicate.isDeleted)
+        XCTAssertNotNil(pendingMutation(for: primary, in: realm))
+        XCTAssertNotNil(pendingMutation(for: duplicate, in: realm))
+        XCTAssertEqual(realm.objects(LibraryConfiguration.self).where({ !$0.isDeleted }).count, 1)
+    }
+
     func testConsolidationDoesNotAppendTheSameCategoryOrScriptFromMultipleDuplicates() async throws {
         try await verifyConsolidationDoesNotAppendTheSameCategoryOrScriptFromMultipleDuplicates()
     }
