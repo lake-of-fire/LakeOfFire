@@ -1,4 +1,4 @@
-name: Final Unmark live-v3 conflict probe
+name: Final Unmark live-v3 integration
 
 on:
   push:
@@ -6,75 +6,36 @@ on:
       - integration/final-unmark-live-v3-20261009
     paths:
       - .github/workflows/final-unmark-live-v3-conflict-probe.yml
-  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: final-unmark-live-v3-conflict-probe
-  cancel-in-progress: true
+  group: final-unmark-live-v3-integration
+  cancel-in-progress: false
 
 jobs:
-  probe:
+  integrate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: true
 
-      - name: Materialize exact conflict stages
-        id: merge
+      - name: Merge the exact live v3 history
         shell: bash
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/final-unmark-live-v3"
-          mkdir -p "$evidence/stages"
-          git rev-parse HEAD > "$evidence/candidate-head.txt"
           git fetch --no-tags origin v3-hotfix
-          git rev-parse origin/v3-hotfix > "$evidence/live-v3-head.txt"
-          git merge-base HEAD origin/v3-hotfix > "$evidence/merge-base.txt"
-
-          set +e
-          git -c user.name=qualification-probe \
-            -c user.email=qualification-probe@invalid.example \
-            merge --no-commit --no-ff origin/v3-hotfix \
-            >"$evidence/merge.stdout" 2>"$evidence/merge.stderr"
-          merge_status=$?
-          set -e
-
-          printf '%s\n' "$merge_status" > "$evidence/merge-status.txt"
-          git status --short > "$evidence/worktree-status.txt"
-          git diff --name-only --diff-filter=U > "$evidence/conflicts.txt"
-          git diff --cc > "$evidence/combined-conflict.diff"
-
-          while IFS= read -r path; do
-            [[ -n "$path" ]] || continue
-            safe="${path//\//__}"
-            for stage in 1 2 3; do
-              git show ":$stage:$path" > "$evidence/stages/${safe}.stage${stage}" 2>/dev/null || true
-            done
-          done < "$evidence/conflicts.txt"
-
-          git merge --abort >/dev/null 2>&1 || true
-          echo "status=$merge_status" >> "$GITHUB_OUTPUT"
-
-      - name: Retain exact merge evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: lake-final-unmark-live-v3-${{ github.sha }}
-          path: ${{ runner.temp }}/final-unmark-live-v3
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Report merge disposition
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${{ steps.merge.outputs.status }}" != "0" ]]; then
-            echo "Semantic conflict resolution required; inspect retained stage files." >&2
-            exit 1
-          fi
+          live_head="$(git rev-parse origin/v3-hotfix)"
+          test "$live_head" = d2fd5ed8e964e91a92ce1aeb02018293a5ca539c
+          git -c user.name=github-actions-ci \
+            -c user.email=41898282+github-actions-ci@users.noreply.github.com \
+            merge --no-ff origin/v3-hotfix \
+            -m "Merge landed EPUB continuity into final Unmark candidate"
+          git merge-base --is-ancestor b3cc6ec112466a13d518bb89cdc27920cebe55ea HEAD
+          git merge-base --is-ancestor "$live_head" HEAD
+          git diff --check HEAD^1..HEAD
+          git push origin HEAD:integration/final-unmark-live-v3-20261009
