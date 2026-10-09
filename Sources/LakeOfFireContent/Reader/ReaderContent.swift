@@ -50,6 +50,8 @@ public class ReaderContent: ObservableObject {
     // The last admitted selection outlives its loading task: a completed task
     // may still have readers queued to receive its result.
     private var selectionID: UUID?
+    private var pendingNativeSelectionURL: URL?
+    private var selectionWaiters: [UUID: (UUID, CheckedContinuation<Bool, Never>)] = [:]
     private var selectionLifetime = ReaderContentSelectionLifetime()
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
@@ -71,6 +73,73 @@ public class ReaderContent: ObservableObject {
         guard selectionID == expectedID else { return { false } }
         let lifetime = selectionLifetime
         return { lifetime.permitsCommit() }
+    }
+
+    /// Called only with a native main-frame receipt URL. Reserve the next
+    /// selection before semantic loading can be deferred; this changes no display.
+    /// The eventual load adopts this identity, while any different selection
+    /// permanently retires it, including a return to the same URL.
+    public func reserveNativeSelectionIntent(for url: URL) -> UUID? {
+        let resolved = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        if let pendingNativeSelectionURL,
+           pendingNativeSelectionURL.matchesReaderURL(resolved) { return selectionID }
+        if pendingNativeSelectionURL == nil, pageURL.matchesReaderURL(resolved) {
+            return selectionID
+        }
+        let retiredTask = loadingTask
+        selectionLifetime.withdraw()
+        finishSelectionWaiters(selected: false)
+        loadingTask = nil
+        loadingResolvedContentURL = nil
+        selectionLifetime = ReaderContentSelectionLifetime()
+        selectionID = UUID()
+        pendingNativeSelectionURL = resolved
+        let reservedID = selectionID
+        retiredTask?.cancel()
+        return reservedID
+    }
+
+    /// Await only the original reserved selection. Replacement and cancellation
+    /// release the waiter; readiness never creates a selection or an Article.
+    public func waitForNativeSelection(requiring id: UUID?, url: URL) async -> Bool {
+        guard let id, selectionID == id, !Task.isCancelled else { return false }
+        if pendingNativeSelectionURL == nil { return pageURL.matchesReaderURL(url) }
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled, selectionID == id else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                selectionWaiters[waiterID] = (id, continuation)
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.selectionWaiters.removeValue(forKey: waiterID)?.1.resume(returning: false)
+            }
+        }
+    }
+
+    /// Document retirement must settle an unresolved receipt even when its
+    /// deferred semantic load never arrives. It does not alter displayed content.
+    public func withdrawPendingNativeSelection() {
+        guard pendingNativeSelectionURL != nil || !selectionWaiters.isEmpty else { return }
+        let retiredTask = loadingTask
+        selectionLifetime.withdraw()
+        pendingNativeSelectionURL = nil
+        selectionID = nil
+        loadingTask = nil
+        loadingResolvedContentURL = nil
+        finishSelectionWaiters(selected: false)
+        retiredTask?.cancel()
+    }
+
+    private func finishSelectionWaiters(selected: Bool) {
+        let waiters = selectionWaiters
+        selectionWaiters.removeAll()
+        for (_, waiter) in waiters {
+            waiter.1.resume(returning: selected && selectionID == waiter.0)
+        }
     }
 
     @MainActor
@@ -204,7 +273,7 @@ public class ReaderContent: ObservableObject {
 
         // Reopening the already displayed content is not a new selection.
         // Keep completed readers valid, but still retire any unrelated task.
-        if loadingTask == nil, let existingContent = content,
+        if pendingNativeSelectionURL == nil, loadingTask == nil, let existingContent = content,
            matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL),
            matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
             return
@@ -214,13 +283,24 @@ public class ReaderContent: ObservableObject {
         // preloaded fast paths. Withdraw its identity before cancellation can
         // invoke callbacks; an old completion may never republish its content.
         let retiredTask = loadingTask
-        let loadID = UUID()
-        selectionLifetime.withdraw()
-        selectionLifetime = ReaderContentSelectionLifetime()
-        selectionID = loadID
+        let adoptsNativeIntent = pendingNativeSelectionURL?.matchesReaderURL(resolvedContentURL) == true
+        let loadID = adoptsNativeIntent ? (selectionID ?? UUID()) : UUID()
+        if !adoptsNativeIntent {
+            selectionLifetime.withdraw()
+            finishSelectionWaiters(selected: false)
+            selectionLifetime = ReaderContentSelectionLifetime()
+            selectionID = loadID
+        }
+        pendingNativeSelectionURL = nil
         loadingTask = nil
         loadingResolvedContentURL = nil
-        defer { finishLoading(ifOwnedBy: loadID) }
+        defer {
+            if selectionID == loadID {
+                finishSelectionWaiters(selected: !Task.isCancelled
+                    && content?.url.matchesReaderURL(resolvedContentURL) == true)
+            }
+            finishLoading(ifOwnedBy: loadID)
+        }
         retiredTask?.cancel()
 
         if let existingContent = content,

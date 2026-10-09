@@ -84,6 +84,38 @@ final class ReaderContentLoadingOwnershipTests: XCTestCase, @unchecked Sendable 
         catch Failure.expected {} catch { XCTFail("Unexpected failure: \(error)", file: file, line: line) }
     }
 
+    func testRetirementDuringAdoptedNativeLoadSettlesWaiterAndRejectsLatePublication() async throws {
+        let reader = ReaderContent(), a = record("pending-retirement"), gate = Gate()
+        defer { gate.open() }
+        let id = reader.reserveNativeSelectionIntent(for: a.url)
+        let originalFence = reader.makeSelectionCommitFence(requiring: id)
+        let entered = XCTestExpectation(description: "native waiter entered")
+        let waiter = Task { @MainActor in
+            entered.fulfill()
+            return await reader.waitForNativeSelection(requiring: id, url: a.url)
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        let producer = Task { @MainActor in
+            try await self.load(reader, a.url) { _ in await gate.wait(); return a }
+        }
+        await gate.waitForEntry()
+        XCTAssertEqual(reader.currentSelectionID, id)
+        XCTAssertTrue(originalFence())
+        reader.withdrawPendingNativeSelection()
+        let selected = await waiter.value
+        XCTAssertFalse(selected)
+        XCTAssertFalse(originalFence())
+        XCTAssertNil(reader.currentSelectionID)
+        gate.open()
+        try await producer.value
+        XCTAssertNil(reader.content, "A late cancelled loader cannot publish its retired selection")
+        XCTAssertNil(reader.currentSelectionID)
+        try await load(reader, a.url) { _ in a }
+        XCTAssertTrue(reader.content === a)
+        XCTAssertNotEqual(reader.currentSelectionID, id)
+        XCTAssertFalse(originalFence(), "A same-URL retry must retain a new selection identity")
+    }
+
     func testSelectionFenceMatchesOnlyTheCapturedInitialAndLoadedSelection() async throws {
         let reader = ReaderContent(), a = record("selection-initial")
         XCTAssertNil(reader.currentSelectionID)
