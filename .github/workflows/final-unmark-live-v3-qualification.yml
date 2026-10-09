@@ -1,0 +1,73 @@
+name: Final Unmark and EPUB integration qualification
+
+on:
+  push:
+    branches:
+      - qualification/final-unmark-live-v3-20261009
+    paths:
+      - .github/workflows/final-unmark-live-v3-qualification.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: final-unmark-live-v3-qualification
+  cancel-in-progress: true
+
+jobs:
+  selection:
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 3ba106a03ed05cfc12786c9d37032ca7e1f2d9e3
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify exact integrated tree
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 3ba106a03ed05cfc12786c9d37032ca7e1f2d9e3
+          git merge-base --is-ancestor b3cc6ec112466a13d518bb89cdc27920cebe55ea HEAD
+          git merge-base --is-ancestor d2fd5ed8e964e91a92ce1aeb02018293a5ca539c HEAD
+          swift --version
+      - name: Execute native selection ownership suite
+        run: |
+          set -euo pipefail
+          swift test --configuration "${{ matrix.configuration }}" \
+            --filter ReaderContentLoadingOwnershipTests
+
+  epub:
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
+        zipfoundation: [released, locked-development]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 3ba106a03ed05cfc12786c9d37032ca7e1f2d9e3
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify exact integrated tree
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 3ba106a03ed05cfc12786c9d37032ca7e1f2d9e3
+          git merge-base --is-ancestor b3cc6ec112466a13d518bb89cdc27920cebe55ea HEAD
+          git merge-base --is-ancestor d2fd5ed8e964e91a92ce1aeb02018293a5ca539c HEAD
+      - name: Execute EPUB native and JavaScript regressions
+        env:
+          BUILD_CONFIGURATION: ${{ matrix.configuration }}
+          ZIPFOUNDATION_TEST_REFERENCE: ${{ matrix.zipfoundation }}
+        run: |
+          set -euo pipefail
+          bash Tools/test-ebook-initialization.sh -c "$BUILD_CONFIGURATION"
+          bash Tools/test-ebook-entry-path.sh -c "$BUILD_CONFIGURATION"
+          bash Tools/test-ebook-fingerprint.sh -c "$BUILD_CONFIGURATION"
+          node --test Tests/JavaScript/*.test.mjs
