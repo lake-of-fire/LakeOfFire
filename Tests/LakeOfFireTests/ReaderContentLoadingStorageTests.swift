@@ -153,6 +153,14 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         XCTAssertNotNil(reader.locationBarTitle)
         XCTAssertTrue(reader.snippetTitleIsGeneratedFromPrefix)
         XCTAssertEqual(reader.cachedContentURL, url)
+        XCTAssertEqual(reader.cachedContentTitle, "Snippet title")
+        XCTAssertTrue(reader.validCachedContent === original)
+        try realm.write {
+            original.title = "Current row title"
+            original.refreshChangeMetadata(explicitlyModified: true)
+        }
+        XCTAssertEqual(reader.cachedContentTitle, "Current row title")
+        XCTAssertEqual(reader.contentTitle, "Snippet title")
         var publishedTitles = [String]()
         let observation = reader.contentTitleSubject.sink { publishedTitles.append($0) }
         defer { observation.cancel() }
@@ -161,6 +169,9 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         let journalAfterDeletion = realm.objects(BigSyncPendingMutation.self)
             .map { $0.recordName + ":" + $0.generation }.sorted()
         XCTAssertNil(reader.cachedContentURL)
+        XCTAssertNil(reader.cachedContentTitle)
+        XCTAssertNil(reader.validCachedContent)
+        XCTAssertTrue(reader.content === original)
         XCTAssertEqual(reader.pageURL, url)
         reader.refreshObservedContentState()
         XCTAssertNil(reader.locationBarTitle)
@@ -173,6 +184,12 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         XCTAssertFalse(renamed)
         XCTAssertEqual(realm.objects(BigSyncPendingMutation.self)
             .map { $0.recordName + ":" + $0.generation }.sorted(), journalAfterDeletion)
+
+        let replacement = try managedReaderRecord(in: realm, url: url, title: "Replacement title")
+        try await reader.load(url: url, resolveContent: { _ in replacement })
+        XCTAssertEqual(reader.cachedContentURL, url)
+        XCTAssertEqual(reader.cachedContentTitle, "Replacement title")
+        XCTAssertTrue(reader.validCachedContent === replacement)
     }
 
     @MainActor

@@ -78,8 +78,20 @@ public class ReaderContent: ObservableObject {
     /// Cached model identity is optional after cleanup; the mounted document's
     /// native identity continues to live in pageURL and its selection fence.
     public var cachedContentURL: URL? {
+        validCachedContent?.url
+    }
+
+    /// Read the current row rather than the retained contentTitle projection,
+    /// which can outlive a removed cached model.
+    public var cachedContentTitle: String? {
+        validCachedContent?.title
+    }
+
+    /// Only use this model synchronously on MainActor. Revalidate after any
+    /// suspension; a valid row can still be removed while work is pending.
+    public var validCachedContent: (any ReaderContentProtocol)? {
         guard let content, !content.isInvalidated else { return nil }
-        return content.url
+        return content
     }
 
     deinit {
