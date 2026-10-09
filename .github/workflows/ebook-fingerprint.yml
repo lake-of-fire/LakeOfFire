@@ -1,8 +1,5 @@
 name: Exact EPUB package fingerprints
 on:
-  push:
-    branches:
-      - fix/compose-epub-reader-hotfix-lake-20261009
   pull_request:
     paths:
       - 'Sources/LakeOfFireContent/Files/ReaderEBook*.swift'
