@@ -8928,6 +8928,23 @@ class Reader {
         });
         this.bookEndcap = this.bookReadingRuntime?.endcap ?? null;
         this.bookActionBridge = this.bookReadingRuntime?.bridge ?? null;
+        this.#listen(window, 'manabi-article-producer-ready', () => {
+            if (!isCurrent() || this.view !== view) return;
+            const producerOwner = this.#captureProducerEvidence();
+            if (!producerOwner) return;
+            if (this.bookReadingRuntime) {
+                this.#bookPositionRefreshNeeded = true;
+                // A replacement can also follow a peer lifetime transition.
+                // Ask native for the current chapter pass before observing it.
+                this.bookReadingRuntime.state.refresh();
+                return;
+            }
+            // Session activation can retire the initial producer before its
+            // first progress delivery. Observe the current location anew when
+            // native publishes its replacement; never replay that old payload.
+            // The normal restore, document, chapter and position guards apply.
+            this.#postConfirmedPageTurnProgress(producerOwner);
+        });
         const initialRestore = options?.initialRestore ?? null;
         globalThis.__manabiPostReaderDocStateEvent?.('reader.open.viewAssigned');
         // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
