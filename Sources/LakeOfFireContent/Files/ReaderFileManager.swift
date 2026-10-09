@@ -1734,7 +1734,7 @@ public class ReaderFileManager: ObservableObject {
     /// nil is not evidence that the book/history is absent on another device.
     @MainActor
     public func resolveAlreadyReadableEBookURL(forReaderBackingURL url: URL) async throws -> URL? {
-        guard url.pathExtension.lowercased() == "epub" else { throw ReaderFileManagerError.invalidFileURL }
+        guard url.lakePathExtension.lowercased() == "epub" else { throw ReaderFileManagerError.invalidFileURL }
         let observed = try readerBackingPathContext(for: url)
         guard let candidate = observed.activeRootURL else { return nil }
         let location: ReaderEBookLocalAvailability.StorageLocation =
