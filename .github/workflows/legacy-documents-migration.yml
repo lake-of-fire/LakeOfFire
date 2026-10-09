@@ -49,6 +49,26 @@ jobs:
           set -e
           printf '%s\n' "${statuses[*]}" > evidence/ios-pipeline-statuses.txt
           test "${statuses[0]}" = 0 && test "${statuses[1]}" = 0
+      # Both paths touch ReaderFileManager's selected source tree. Exercise the
+      # real EPUB helpers beside the existing migration suite on this composition.
+      - name: Check retained EPUB snapshot and serving helpers
+        shell: bash
+        env:
+          BUILD_CONFIGURATION: ${{ matrix.configuration }}
+          ZIPFOUNDATION_TEST_REFERENCE: released
+          EBOOK_FINGERPRINT_EVIDENCE_DIRECTORY: ${{ github.workspace }}/evidence/epub
+        run: |
+          set -euo pipefail
+          mkdir -p "$EBOOK_FINGERPRINT_EVIDENCE_DIRECTORY"
+          bash Tools/test-ebook-initialization.sh -c "$BUILD_CONFIGURATION" 2>&1 \
+            | tee evidence/epub-initialization.log
+          bash Tools/test-ebook-entry-path.sh -c "$BUILD_CONFIGURATION" 2>&1 \
+            | tee evidence/epub-entry-path.log
+          bash Tools/test-ebook-fingerprint.sh -c "$BUILD_CONFIGURATION" 2>&1 \
+            | tee evidence/epub-fingerprint.log
+          node --version > evidence/epub-node-version.txt
+          node --test Tests/JavaScript/*.test.mjs 2>&1 \
+            | tee evidence/epub-javascript.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
