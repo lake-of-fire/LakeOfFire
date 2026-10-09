@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import XCTest
 @testable import LakeOfFireContent
+@testable import SwiftUIWebView
 
 private final class SelectionFenceCancellationProbe: @unchecked Sendable {
     private let lock = NSLock()
@@ -84,91 +85,87 @@ final class ReaderContentLoadingOwnershipTests: XCTestCase, @unchecked Sendable 
         catch Failure.expected {} catch { XCTFail("Unexpected failure: \(error)", file: file, line: line) }
     }
 
+
+    private func nativeIntent(_ url: URL) throws -> WebViewURLTransitionIntent {
+        let caller = WebViewScriptCaller()
+        caller.installBinding(ownedBy: UUID(), asyncCaller: { _, _, _, _ in .init(nil) },
+            unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil })
+        return WebViewURLTransitionIntent(destinationURL: url,
+            javaScriptBindingToken: try XCTUnwrap(caller.currentJavaScriptBindingToken))
+    }
+
     func testRetirementDuringAdoptedNativeLoadSettlesWaiterAndRejectsLatePublication() async throws {
-        let reader = ReaderContent(), a = record("pending-retirement"), gate = Gate()
-        defer { gate.open() }
-        let id = reader.reserveNativeSelectionIntent(for: a.url)
-        let originalFence = reader.makeSelectionCommitFence(requiring: id)
-        let entered = XCTestExpectation(description: "native waiter entered")
-        let waiter = Task { @MainActor in
-            entered.fulfill()
-            return await reader.waitForNativeSelection(requiring: id, url: a.url)
-        }
-        await fulfillment(of: [entered], timeout: 5)
-        let producer = Task { @MainActor in
-            try await self.load(reader, a.url) { _ in await gate.wait(); return a }
-        }
-        await gate.waitForEntry()
-        XCTAssertEqual(reader.currentSelectionID, id)
-        XCTAssertTrue(originalFence())
-        reader.withdrawPendingNativeSelection()
-        let selected = await waiter.value
-        XCTAssertFalse(selected)
-        XCTAssertFalse(originalFence())
-        XCTAssertNotEqual(reader.currentSelectionID, id)
-        gate.open()
-        try await producer.value
-        XCTAssertNil(reader.content, "A late cancelled loader cannot publish its retired selection")
-        XCTAssertNotEqual(reader.currentSelectionID, id)
-        try await load(reader, a.url) { _ in a }
-        XCTAssertTrue(reader.content === a)
-        XCTAssertNotEqual(reader.currentSelectionID, id)
-        XCTAssertFalse(originalFence(), "A same-URL retry must retain a new selection identity")
+        try await verifyAdoptedNativeRetirement(cancelOnlyWaiter: false)
     }
 
     func testRetirementDuringAdoptedNativeLoadWithoutWaiterRejectsLatePublication() async throws {
-        try await verifyAdoptedNativeRetirement(cancelOnlyWaiter: false)
+        try await verifyAdoptedNativeRetirement(cancelOnlyWaiter: nil)
     }
 
     func testRetirementDuringAdoptedNativeLoadAfterOnlyWaiterCancellationRejectsLatePublication() async throws {
         try await verifyAdoptedNativeRetirement(cancelOnlyWaiter: true)
     }
 
-    private func verifyAdoptedNativeRetirement(cancelOnlyWaiter: Bool) async throws {
-        let reader = ReaderContent(), a = record("retired-no-waiter"), gate = Gate()
+    private func verifyAdoptedNativeRetirement(cancelOnlyWaiter: Bool?) async throws {
+        let reader = ReaderContent(), a = record("retired-native-handoff"), gate = Gate()
         defer { gate.open() }
-        let id = reader.reserveNativeSelectionIntent(for: a.url)
-        let originalFence = reader.makeSelectionCommitFence(requiring: id)
-        if cancelOnlyWaiter {
-            let entered = XCTestExpectation(description: "sole waiter entered")
-            let waiter = Task { @MainActor in
+        let intent = try nativeIntent(a.url)
+        let handoff = try XCTUnwrap(reader.receiveSelectionIntent(intent))
+        var waiter: Task<Bool, Never>?
+        if let cancelOnlyWaiter {
+            let entered = expectation(description: "original waiter entered")
+            let pending = Task { @MainActor in
                 entered.fulfill()
-                return await reader.waitForNativeSelection(requiring: id, url: a.url)
+                return await handoff.waitUntilSelected()
             }
+            waiter = pending
             await fulfillment(of: [entered], timeout: 5)
-            waiter.cancel()
+            if cancelOnlyWaiter {
+                pending.cancel()
+                let selected = await pending.value
+                XCTAssertFalse(selected)
+                XCTAssertTrue(handoff.permitsCapture, "Cancelling a waiter cannot retire its producer")
+            }
+        }
+        let producer = Task { @MainActor in
+            try await reader.load(url: a.url, consuming: intent) { _ in await gate.wait(); return a }
+        }
+        await gate.waitForEntry()
+        let selectedID = reader.currentSelectionID
+        reader.withdrawSelectionIntent(intent)
+        if let waiter {
             let selected = await waiter.value
             XCTAssertFalse(selected)
         }
-        let producer = Task { @MainActor in
-            try await self.load(reader, a.url) { _ in await gate.wait(); return a }
-        }
-        await gate.waitForEntry()
-        reader.withdrawPendingNativeSelection()
-        XCTAssertFalse(originalFence())
+        XCTAssertFalse(handoff.permitsCapture)
         gate.open()
-        try await producer.value
+        do { try await producer.value; XCTFail("Expected withdrawn handoff cancellation") }
+        catch is CancellationError { }
         XCTAssertNil(reader.content)
-        XCTAssertNotEqual(reader.contentTitle, a.title, "Retired content must not publish its title")
-        XCTAssertFalse(originalFence())
-        let fresh = reader.reserveNativeSelectionIntent(for: a.url)
-        try await load(reader, a.url) { _ in a }
-        XCTAssertEqual(reader.currentSelectionID, fresh)
-        XCTAssertTrue(reader.makeSelectionCommitFence(requiring: fresh)())
+        XCTAssertNotEqual(reader.contentTitle, a.title)
+        let freshIntent = try nativeIntent(a.url)
+        let fresh = try XCTUnwrap(reader.receiveSelectionIntent(freshIntent))
+        try await reader.load(url: a.url, consuming: freshIntent) { _ in a }
+        let selected = await fresh.waitUntilSelected()
+        XCTAssertTrue(selected)
+        XCTAssertNotEqual(reader.currentSelectionID, selectedID)
         XCTAssertTrue(reader.content === a)
+        XCTAssertFalse(handoff.permitsCommit)
     }
 
     func testDuplicateNativeInitializationAfterResolverFailureKeepsOriginalSelection() async throws {
         let reader = ReaderContent(), a = record("failed-native-load")
-        let id = reader.reserveNativeSelectionIntent(for: a.url)
-        let originalFence = reader.makeSelectionCommitFence(requiring: id)
+        let intent = try nativeIntent(a.url)
+        let handoff = try XCTUnwrap(reader.receiveSelectionIntent(intent))
         do {
-            try await load(reader, a.url) { _ in throw Failure.expected }
+            try await reader.load(url: a.url, consuming: intent) { _ in throw Failure.expected }
             XCTFail("The original resolver must fail")
-        } catch Failure.expected {}
+        } catch Failure.expected { }
+        let selectedID = reader.currentSelectionID
         XCTAssertNil(reader.content)
-        XCTAssertEqual(reader.reserveNativeSelectionIntent(for: a.url), id)
-        XCTAssertTrue(originalFence(), "A duplicate receipt must not mint replacement selection authority")
+        XCTAssertNil(reader.receiveSelectionIntent(intent))
+        XCTAssertEqual(reader.currentSelectionID, selectedID)
+        XCTAssertFalse(handoff.permitsCommit, "Failed native identity cannot mint replacement authority")
     }
 
     func testSelectionFenceMatchesOnlyTheCapturedInitialAndLoadedSelection() async throws {
@@ -277,6 +274,127 @@ final class ReaderContentLoadingOwnershipTests: XCTestCase, @unchecked Sendable 
             try await held.value
             XCTAssertTrue(reader.content === b)
         }
+    }
+
+    func testCancellationDuringResolvedPublicationAllowsFreshSameURLReuse() async throws {
+        try await verifyCancelledPublicationRetry(preloaded: false)
+    }
+
+    func testCancellationDuringPreloadedPublicationAllowsFreshSameURLReuse() async throws {
+        try await verifyCancelledPublicationRetry(preloaded: true)
+    }
+
+    func testCancellationDuringCachedPublicationAllowsFreshSameURLReuse() async throws {
+        let reader = ReaderContent(), a = record("cancelled-cached-publication")
+        reader.content = a
+        var producer: Task<Void, Error>?
+        var originalID: UUID?
+        var originalFence: (@Sendable () -> Bool)?
+        let observation = reader.$pageURL.sink { url in
+            guard url == a.url, originalFence == nil else { return }
+            originalID = reader.currentSelectionID
+            originalFence = reader.makeSelectionCommitFence(requiring: originalID)
+            XCTAssertTrue(originalFence?() == true)
+            producer?.cancel()
+            XCTAssertTrue(originalFence?() == false)
+        }
+        defer { observation.cancel() }
+        var resolverCalls = 0
+        let task = Task { @MainActor in
+            try await self.load(reader, a.url) { _ in
+                resolverCalls += 1
+                XCTFail("Cached publication must not resolve")
+                return a
+            }
+        }
+        producer = task
+        do { try await task.value; XCTFail("Expected cached publication cancellation") }
+        catch is CancellationError { }
+        let cancelledID = try XCTUnwrap(originalID)
+        let oldFence = try XCTUnwrap(originalFence)
+        XCTAssertFalse(oldFence())
+        try await load(reader, a.url) { _ in
+            resolverCalls += 1
+            XCTFail("Cached retry must retain content")
+            return a
+        }
+        let freshID = try XCTUnwrap(reader.currentSelectionID)
+        XCTAssertNotEqual(freshID, cancelledID)
+        XCTAssertFalse(oldFence())
+        XCTAssertTrue(reader.makeSelectionCommitFence(requiring: freshID)())
+        XCTAssertTrue(reader.content === a)
+        XCTAssertEqual(resolverCalls, 0)
+    }
+
+    private func verifyCancelledPublicationRetry(preloaded: Bool) async throws {
+        let reader = ReaderContent(), a = record("cancelled-publication")
+        let intent = try nativeIntent(a.url)
+        let handoff = try XCTUnwrap(reader.receiveSelectionIntent(intent))
+        if preloaded { reader.preloadResolvedContent(a, for: a.url) }
+        var resolverCalls = 0
+        var producer: Task<Void, Error>?
+        var cancelled = false
+        var originalID: UUID?
+        var originalFence: (@Sendable () -> Bool)?
+        let observation = reader.contentTitleSubject.sink { title in
+            guard title == a.title, !cancelled else { return }
+            cancelled = true
+            originalID = reader.currentSelectionID
+            originalFence = reader.makeSelectionCommitFence(requiring: originalID)
+            XCTAssertTrue(originalFence?() == true)
+            producer?.cancel()
+            XCTAssertTrue(originalFence?() == false,
+                          "Caller cancellation must withdraw authority during publication")
+        }
+        defer { observation.cancel() }
+        let task = Task { @MainActor in
+            try await reader.load(url: a.url, consuming: intent) { _ in
+                resolverCalls += 1
+                return a
+            }
+        }
+        producer = task
+        do { try await task.value; XCTFail("Expected publication cancellation") }
+        catch is CancellationError { }
+        XCTAssertTrue(cancelled)
+        let cancelledID = try XCTUnwrap(originalID)
+        let oldFence = try XCTUnwrap(originalFence)
+        XCTAssertFalse(oldFence())
+        XCTAssertTrue(reader.content === a, "Published content remains available for independent reuse")
+        XCTAssertFalse(handoff.permitsCapture)
+        XCTAssertFalse(handoff.permitsCommit)
+        XCTAssertNil(reader.receiveSelectionIntent(intent), "Cancelled native intent cannot revive")
+        let callsBeforeRetry = resolverCalls
+        XCTAssertEqual(callsBeforeRetry, preloaded ? 0 : 1)
+
+        try await load(reader, a.url) { _ in
+            resolverCalls += 1
+            XCTFail("Independent retry must reuse the retained content")
+            return a
+        }
+        let freshID = try XCTUnwrap(reader.currentSelectionID)
+        let freshFence = reader.makeSelectionCommitFence(requiring: freshID)
+        XCTAssertNotEqual(freshID, cancelledID)
+        XCTAssertFalse(oldFence())
+        XCTAssertTrue(freshFence())
+        XCTAssertTrue(reader.content === a)
+        XCTAssertEqual(reader.pageURL, a.url)
+        XCTAssertEqual(resolverCalls, callsBeforeRetry)
+        XCTAssertFalse(handoff.permitsCommit)
+        XCTAssertNil(reader.receiveSelectionIntent(intent), "Ordinary retry cannot reopen the old native intent")
+
+        // Successful ordinary reuse continues to preserve selection identity.
+        reader.currentSectionIndex = 7
+        try await load(reader, a.url) { _ in
+            resolverCalls += 1
+            XCTFail("Ordinary completed content reuse must not resolve again")
+            return a
+        }
+        XCTAssertEqual(reader.currentSelectionID, freshID)
+        XCTAssertTrue(freshFence())
+        XCTAssertFalse(oldFence())
+        XCTAssertEqual(reader.currentSectionIndex, 7)
+        XCTAssertEqual(resolverCalls, callsBeforeRetry)
     }
 
     func testSelectionFenceDoesNotRetainItsContentOwner() {

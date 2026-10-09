@@ -9,6 +9,7 @@ import Foundation
 private final class ReaderContentSelectionLifetime: @unchecked Sendable {
     private let lock = NSLock()
     private var isCurrent = true
+    private var withdrawalObservers: [@Sendable () -> Void] = []
 
     func permitsCommit() -> Bool {
         lock.lock()
@@ -16,10 +17,25 @@ private final class ReaderContentSelectionLifetime: @unchecked Sendable {
         return isCurrent
     }
 
+    func onWithdrawal(_ observer: @escaping @Sendable () -> Void) {
+        lock.lock()
+        if isCurrent {
+            withdrawalObservers.append(observer)
+            lock.unlock()
+        } else {
+            lock.unlock()
+            observer()
+        }
+    }
+
     func withdraw() {
         lock.lock()
-        defer { lock.unlock() }
+        guard isCurrent else { lock.unlock(); return }
         isCurrent = false
+        let observers = withdrawalObservers
+        withdrawalObservers.removeAll()
+        lock.unlock()
+        observers.forEach { $0() }
     }
 }
 
@@ -50,11 +66,8 @@ public class ReaderContent: ObservableObject {
     // The last admitted selection outlives its loading task: a completed task
     // may still have readers queued to receive its result.
     private var selectionID: UUID?
-    private var pendingNativeSelectionURL: URL?
-    private var adoptedNativeSelectionLoadID: UUID?
-    private var needsNativeSelectionAdoption = false
-    private var selectionWaiters: [UUID: (UUID, CheckedContinuation<Bool, Never>)] = [:]
     private var selectionLifetime = ReaderContentSelectionLifetime()
+    private var selectionHandoff: ReaderContentSelectionHandoff?
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
     private var preloadedContent: (any ReaderContentProtocol)?
@@ -63,6 +76,7 @@ public class ReaderContent: ObservableObject {
     }
 
     deinit {
+        selectionHandoff?.withdraw()
         selectionLifetime.withdraw()
     }
 
@@ -77,81 +91,43 @@ public class ReaderContent: ObservableObject {
         return { lifetime.permitsCommit() }
     }
 
-    /// Called only with a native main-frame receipt URL. Reserve the next
-    /// selection before semantic loading can be deferred; this changes no display.
-    /// The eventual load adopts this identity, while any different selection
-    /// permanently retires it, including a return to the same URL.
-    public func reserveNativeSelectionIntent(for url: URL) -> UUID? {
-        let resolved = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
-        if let pendingNativeSelectionURL,
-           pendingNativeSelectionURL.matchesReaderURL(resolved) { return selectionID }
-        if pendingNativeSelectionURL == nil, pageURL.matchesReaderURL(resolved),
-           selectionLifetime.permitsCommit(), !needsNativeSelectionAdoption {
-            return selectionID
+    /// Called synchronously at native URL publication, before semantic deferral.
+    @discardableResult
+    public func receiveSelectionIntent(_ intent: WebViewURLTransitionIntent) -> ReaderContentSelectionHandoff? {
+        guard intent.isCurrent, intent.representsURLChange else { return nil }
+        if let selectionHandoff, selectionHandoff.intent === intent {
+            return selectionHandoff.permitsCapture ? selectionHandoff : nil
         }
-        let retiredTask = loadingTask
-        selectionLifetime.withdraw()
-        finishSelectionWaiters(selected: false)
-        loadingTask = nil
-        loadingResolvedContentURL = nil
-        adoptedNativeSelectionLoadID = nil
-        needsNativeSelectionAdoption = false
-        selectionLifetime = ReaderContentSelectionLifetime()
-        selectionID = UUID()
-        pendingNativeSelectionURL = resolved
-        let reservedID = selectionID
-        retiredTask?.cancel()
-        return reservedID
+        selectionHandoff?.withdraw()
+        // A cancelled owner closes its lifetime synchronously, even while its
+        // resolver ignores cancellation. A different native intent may retry;
+        // the old token and load identity remain permanently retired.
+        if !selectionLifetime.permitsCommit() {
+            let retiredTask = loadingTask
+            loadingTask = nil
+            loadingResolvedContentURL = nil
+            selectionLifetime = ReaderContentSelectionLifetime()
+            selectionID = UUID()
+            retiredTask?.cancel()
+        }
+        let handoff = ReaderContentSelectionHandoff(intent: intent,
+            predecessorSelectionID: selectionID,
+            predecessorIsCurrent: makeSelectionCommitFence(requiring: selectionID))
+        selectionHandoff = handoff
+        return handoff
     }
 
-    /// Await only the original reserved selection. Replacement and cancellation
-    /// release the waiter; readiness never creates a selection or an Article.
-    public func waitForNativeSelection(requiring id: UUID?, url: URL) async -> Bool {
-        guard let id, selectionID == id, !Task.isCancelled else { return false }
-        if pendingNativeSelectionURL == nil { return pageURL.matchesReaderURL(url) }
-        let waiterID = UUID()
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                guard !Task.isCancelled, selectionID == id else {
-                    continuation.resume(returning: false)
-                    return
-                }
-                selectionWaiters[waiterID] = (id, continuation)
-            }
-        } onCancel: {
-            Task { @MainActor [weak self] in
-                self?.selectionWaiters.removeValue(forKey: waiterID)?.1.resume(returning: false)
-            }
-        }
+    public func selectionHandoff(for intent: WebViewURLTransitionIntent) -> ReaderContentSelectionHandoff? {
+        guard let selectionHandoff, selectionHandoff.intent === intent,
+              selectionHandoff.permitsCapture else { return nil }
+        return selectionHandoff
     }
 
-    /// Document retirement must settle an unresolved receipt even when its
-    /// deferred semantic load never arrives. It does not alter displayed content.
-    public func withdrawPendingNativeSelection() {
-        let ownsUnresolvedLoad = adoptedNativeSelectionLoadID != nil
-            && adoptedNativeSelectionLoadID == selectionID
-        guard pendingNativeSelectionURL != nil || ownsUnresolvedLoad || !selectionWaiters.isEmpty else { return }
-        let retiredTask = loadingTask
-        selectionLifetime.withdraw()
-        // Old fences retain the withdrawn token. Retained display gets a new
-        // usable selection; cancelling a reservation must not poison its reload.
-        selectionLifetime = ReaderContentSelectionLifetime()
-        pendingNativeSelectionURL = nil
-        selectionID = UUID()
-        adoptedNativeSelectionLoadID = nil
-        needsNativeSelectionAdoption = content == nil
-        loadingTask = nil
-        loadingResolvedContentURL = nil
-        finishSelectionWaiters(selected: false)
-        retiredTask?.cancel()
-    }
-
-    private func finishSelectionWaiters(selected: Bool) {
-        let waiters = selectionWaiters
-        selectionWaiters.removeAll()
-        for (_, waiter) in waiters {
-            waiter.1.resume(returning: selected && selectionID == waiter.0)
-        }
+    public func withdrawSelectionIntent(_ intent: WebViewURLTransitionIntent? = nil) {
+        guard intent == nil || selectionHandoff?.intent === intent else { return }
+        selectionHandoff?.withdraw()
+        // Keep this exact intent's closed handoff until a different native
+        // intent replaces it. A fragment or retry cannot revive failed work.
     }
 
     @MainActor
@@ -240,8 +216,8 @@ public class ReaderContent: ObservableObject {
     }
 
     @MainActor
-    public func load(url: URL) async throws {
-        try await load(url: url) { url in
+    public func load(url: URL, consuming intent: WebViewURLTransitionIntent? = nil) async throws {
+        try await load(url: url, consuming: intent) { url in
             try await ReaderContentLoader.getContent(
                 forURL: url,
                 countsAsHistoryVisit: true,
@@ -255,11 +231,20 @@ public class ReaderContent: ObservableObject {
     @MainActor
     func load(
         url: URL,
+        consuming intent: WebViewURLTransitionIntent? = nil,
         resolveContent: @escaping @MainActor (URL) async throws -> (any ReaderContentProtocol)?
     ) async throws {
+        let handoff = intent.flatMap { expected in
+            selectionHandoff?.intent === expected ? selectionHandoff : nil
+        }
+        defer { handoff?.withdrawIfUnselected() }
         try Task.checkCancellation()
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
         let displayURL = resolvedContentURL
+        if let intent {
+            guard let handoff, handoff.permitsCapture,
+                  resolvedContentURL.matchesReaderURL(intent.destinationURL) else { throw CancellationError() }
+        }
 
         if resolvedContentURL.absoluteString == "about:blank",
            let suppressedTargetURL = suppressedTransientAboutBlankTargetURL,
@@ -279,94 +264,160 @@ public class ReaderContent: ObservableObject {
         if let loadingTask,
            let loadingResolvedContentURL,
            matchesResolvedContentURL(loadingResolvedContentURL, resolvedContentURL: resolvedContentURL) {
-            _ = try await loadingTask.value
+            let loadID = selectionID
+            if let handoff {
+                guard handoff.beginSelection(selectionID: loadID,
+                    fence: makeSelectionCommitFence(requiring: loadID)) else { throw CancellationError() }
+                selectionLifetime.onWithdrawal { [weak handoff] in handoff?.withdraw() }
+            }
+            _ = try await withTaskCancellationHandler {
+                try await loadingTask.value
+            } onCancel: {
+                // Retire this consuming intent without cancelling the shared resolver.
+                handoff?.withdraw()
+            }
+            if handoff != nil {
+                try Task.checkCancellation()
+                guard selectionID == loadID, handoff?.permitsCapture != false else { throw CancellationError() }
+            }
+            completeSelectionHandoff(handoff, selectionID: loadID, url: resolvedContentURL)
             return
         }
 
         // Reopening the already displayed content is not a new selection.
         // Keep completed readers valid, but still retire any unrelated task.
-        if pendingNativeSelectionURL == nil, loadingTask == nil, let existingContent = content,
+        if handoff?.isPending != true, loadingTask == nil, selectionLifetime.permitsCommit(),
+           let existingContent = content,
            matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL),
            matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
+            completeSelectionHandoff(handoff, selectionID: selectionID, url: resolvedContentURL)
             return
         }
 
         // Every new selection retires the preceding load, including cached and
         // preloaded fast paths. Withdraw its identity before cancellation can
         // invoke callbacks; an old completion may never republish its content.
-        let retiredTask = loadingTask
-        let adoptsNativeIntent = pendingNativeSelectionURL?.matchesReaderURL(resolvedContentURL) == true
-        let loadID = adoptsNativeIntent ? (selectionID ?? UUID()) : UUID()
-        if !adoptsNativeIntent {
-            selectionLifetime.withdraw()
-            finishSelectionWaiters(selected: false)
-            selectionLifetime = ReaderContentSelectionLifetime()
-            selectionID = loadID
+        if let handoff {
+            guard handoff.predecessorSelectionID == selectionID, handoff.permitsCapture else {
+                throw CancellationError()
+            }
+        } else {
+            withdrawSelectionIntent()
         }
-        pendingNativeSelectionURL = nil
-        adoptedNativeSelectionLoadID = adoptsNativeIntent ? loadID : nil
-        needsNativeSelectionAdoption = false
+        let retiredTask = loadingTask
+        let loadID = UUID()
+        let nextLifetime = ReaderContentSelectionLifetime()
+        if let handoff {
+            guard handoff.beginSelection(selectionID: loadID,
+                fence: { nextLifetime.permitsCommit() }) else { throw CancellationError() }
+            nextLifetime.onWithdrawal { [weak handoff] in handoff?.withdraw() }
+        }
+        selectionLifetime.withdraw()
+        selectionLifetime = nextLifetime
+        selectionID = loadID
         loadingTask = nil
         loadingResolvedContentURL = nil
         defer {
-            if selectionID == loadID {
-                finishSelectionWaiters(selected: !Task.isCancelled
-                    && content?.url.matchesReaderURL(resolvedContentURL) == true)
-            }
+            completeSelectionHandoff(handoff, selectionID: loadID, url: resolvedContentURL)
             finishLoading(ifOwnedBy: loadID)
         }
-        retiredTask?.cancel()
+        // Cover synchronous cached/preloaded publication as well as resolver
+        // suspension. Cancellation closes this caller's captured lifetime,
+        // never a replacement selection or a coalesced caller's owner.
+        try await withTaskCancellationHandler {
+            retiredTask?.cancel()
+            func validatePublication() throws {
+                try Task.checkCancellation()
+                guard selectionID == loadID, nextLifetime.permitsCommit(),
+                      handoff?.permitsCapture != false else { throw CancellationError() }
+            }
+            try validatePublication()
 
-        if let existingContent = content,
-           matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL) {
-            let pageAlreadyMatchesDisplay = matchesResolvedContentURL(
-                pageURL, resolvedContentURL: displayURL
-            )
-            if pageAlreadyMatchesDisplay {
+            if let existingContent = content,
+               matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL) {
+                let pageAlreadyMatchesDisplay = matchesResolvedContentURL(
+                    pageURL, resolvedContentURL: displayURL
+                )
+                if pageAlreadyMatchesDisplay {
+                    return
+                }
+                if !pageURL.matchesReaderURL(url) {
+                    pageURL = displayURL
+                    try validatePublication()
+                }
                 return
             }
-            if !pageURL.matchesReaderURL(url) {
+
+            if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL) {
+                currentSectionIndex = nil
+                try validatePublication()
+                content = preloadedContent
+                try validatePublication()
                 pageURL = displayURL
+                try validatePublication()
+                return
             }
-            return
-        }
 
-        if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL) {
+            content = nil
+            try validatePublication()
             currentSectionIndex = nil
-            content = preloadedContent
+            try validatePublication()
             pageURL = displayURL
+            try validatePublication()
+
+            loadingResolvedContentURL = resolvedContentURL
+            let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor [weak self, loadID] in
+                // Finish before any coalesced waiter receives success/error. Its
+                // immediate retry must not rejoin this already-completed task.
+                defer { self?.finishLoading(ifOwnedBy: loadID) }
+                try Task.checkCancellation()
+                let content = try await resolveContent(url) ?? ReaderContentLoader.unsavedHome
+                // Preserve the existing nonthrowing retirement result for a superseded load.
+                guard let self, self.selectionID == loadID else { return nil }
+                try Task.checkCancellation()
+                guard handoff?.permitsCapture != false else { throw CancellationError() }
+                guard content.url.matchesReaderURL(resolvedContentURL) else {
+                    debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
+                    return nil
+                }
+                self.content = content
+                guard self.selectionID == loadID, nextLifetime.permitsCommit(),
+                      handoff?.permitsCapture != false, self.content === content else { return nil }
+                return content
+            }
+            loadingTask = task
+            _ = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                // Nested handler order must not let resolver cancellation
+                // callbacks observe a still-current owner.
+                nextLifetime.withdraw()
+                handoff?.withdraw()
+                task.cancel()
+            }
+            try Task.checkCancellation()
+        } onCancel: {
+            nextLifetime.withdraw()
+            handoff?.withdraw()
+        }
+    }
+
+    private func completeSelectionHandoff(_ handoff: ReaderContentSelectionHandoff?,
+                                          selectionID expectedID: UUID?, url: URL) {
+        guard let handoff else { return }
+        guard !Task.isCancelled, handoff.intent.isCurrent,
+              selectionID == expectedID, let content, !content.isInvalidated,
+              matchesResolvedContentURL(content.url, resolvedContentURL: url),
+              matchesResolvedContentURL(pageURL, resolvedContentURL: url) else {
+            handoff.withdraw()
             return
         }
-
-        content = nil
-        currentSectionIndex = nil
-        pageURL = displayURL
-        
-        loadingResolvedContentURL = resolvedContentURL
-        let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor [weak self, loadID] in
-            // Finish before any coalesced waiter receives success/error. Its
-            // immediate retry must not rejoin this already-completed task.
-            defer { self?.finishLoading(ifOwnedBy: loadID) }
-            try Task.checkCancellation()
-            let content = try await resolveContent(url) ?? ReaderContentLoader.unsavedHome
-            guard content.url.matchesReaderURL(resolvedContentURL) else {
-                debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
-                return nil
-            }
-            guard let self, self.selectionID == loadID else {
-                return nil
-            }
-            self.content = content
-            return content
-        }
-        loadingTask = task
-        _ = try await task.value
+        handoff.completeSelection(selectionID: expectedID)
     }
 
     private func finishLoading(ifOwnedBy loadID: UUID) {
         // Old completion is independent of a new selection's loading slot.
         guard selectionID == loadID else { return }
-        adoptedNativeSelectionLoadID = nil
         loadingResolvedContentURL = nil
         loadingTask = nil
     }
