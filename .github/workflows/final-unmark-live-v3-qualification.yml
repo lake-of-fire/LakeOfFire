@@ -27,7 +27,7 @@ jobs:
         with:
           ref: 3ba106a03ed05cfc12786c9d37032ca7e1f2d9e3
           persist-credentials: false
-          fetch-depth: 1
+          fetch-depth: 0
       - name: Verify exact integrated tree
         run: |
           set -euo pipefail
@@ -54,7 +54,7 @@ jobs:
         with:
           ref: 3ba106a03ed05cfc12786c9d37032ca7e1f2d9e3
           persist-credentials: false
-          fetch-depth: 1
+          fetch-depth: 0
       - name: Verify exact integrated tree
         run: |
           set -euo pipefail
