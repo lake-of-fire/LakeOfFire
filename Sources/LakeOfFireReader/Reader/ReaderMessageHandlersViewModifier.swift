@@ -916,9 +916,9 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 do {
                     try await ReaderEBookInitialization.perform(
                         receiptBinding: receiptBinding,
-                        currentBinding: { scriptCaller.currentJavaScriptBindingToken },
+                        currentBinding: { caller.currentJavaScriptBindingToken },
                         registerFrame: { _ in
-                            registerEbookViewerFrame(message.frameInfo)
+                            self.registerEbookViewerFrame(message.frameInfo)
                         },
                         acknowledge: { bindingToken in
                             _ = try await caller.evaluateJavaScript(
@@ -948,7 +948,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                                 ? rawWritingDirection
                                 : "original"
                             let readerPresentationState: [String: any Sendable] = [
-                                "colorScheme": colorScheme == .dark ? "dark" : "light",
+                                "colorScheme": self.colorScheme == .dark ? "dark" : "light",
                                 "lightModeTheme": defaults.string(forKey: "lightModeTheme") ?? "white",
                                 "darkModeTheme": defaults.string(forKey: "darkModeTheme") ?? "black",
                                 "readerFontSize": readerFontSize,
