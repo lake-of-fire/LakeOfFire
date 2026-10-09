@@ -20,14 +20,14 @@ private struct ReaderEBookInitialRestoreBridgeRequest {
 
     init?(restore: ReaderContentEbookInitialRestore?) {
         guard let restore else { return nil }
-        let normalizedCFI = restore.cfi
-        let normalizedFraction = restore.fractionalCompletion.map { Double($0) }
-        let hasCFI = !normalizedCFI.isEmpty
-        let hasFraction = (normalizedFraction ?? 0) > 0
-        guard hasCFI || hasFraction else { return nil }
+        cfi = restore.cfi
+        fractionalCompletion = restore.fractionalCompletion.map(Double.init)
+        let hasCFI = !cfi.isEmpty
+        guard ReaderEBookInitialRestorePolicy.shouldRequestRestore(
+            cfi: cfi,
+            fractionalCompletion: restore.fractionalCompletion
+        ) else { return nil }
         requestID = UUID().uuidString
-        cfi = normalizedCFI
-        fractionalCompletion = normalizedFraction
         requestedLocator = hasCFI ? "cfi" : "fraction"
     }
 
@@ -173,6 +173,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
     var hideNavigationDueToScroll: Binding<Bool>
     var showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?
     var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
+    var ebookOpeningPreparer: ReaderEBookOpeningPreparer?
     var colorScheme: ColorScheme
 
     private struct NavigationVisibilityEvent {
@@ -317,7 +318,11 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                         || logMessage.contains("\"loadEBook:delayed-state:1s\"")
                         || logMessage.contains("\"loadEBook:delayed-state:3s\"")
                         || logMessage.contains("\"loadEBook:delayed-state:8s\"") {
-                        registerEbookViewerFrame(message.frameInfo)
+                        if message.isMainFrame,
+                           let binding = message.javaScriptBindingToken,
+                           scriptCaller.currentJavaScriptBindingToken == binding {
+                            registerEbookViewerFrame(message.frameInfo)
+                        }
                     }
                     return
                 }
@@ -891,47 +896,104 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 }
             }),
             ("ebookViewerInitialized", { @MainActor [weak self] message in
-                guard let self else { return }
-                registerEbookViewerFrame(message.frameInfo)
+                guard let self, message.isMainFrame else { return }
+                // Use the framework's immutable receipt, never the current
+                // document sampled after acknowledgment or package discovery.
+                let receiptBinding = message.javaScriptBindingToken
                 let stateURL = readerViewModel.state.pageURL
                 let url = stateURL.isEBookURL ? stateURL : readerContent.pageURL
-                if let scheme = url.scheme,
-                   (scheme == "ebook" || scheme == "ebook-url"),
-                   url.absoluteString.hasPrefix("\(scheme)://"),
-                   url.isEBookURL,
-                   let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))") {
-                    let initialRestore = try? await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
-                    var loadArguments: [String: any Sendable] = [
-                        "url": loaderURL.absoluteString,
-                        "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
-                    ]
-                    let readerFontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double ?? 16
-                    loadArguments["readerPresentationState"] = [
-                        "colorScheme": colorScheme == .dark ? "dark" : "light",
-                        "lightModeTheme": UserDefaults.standard.string(forKey: "lightModeTheme") ?? "white",
-                        "darkModeTheme": UserDefaults.standard.string(forKey: "darkModeTheme") ?? "black",
-                        "readerFontSize": readerFontSize,
-                        "readerContentRTSize": readerFontSize * 0.46,
-                        "readerBoldText": UserDefaults.standard.object(forKey: "readerBoldText") as? Bool ?? false,
-                        "maxWidthOverride": readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize),
-                        "writingDirection": "original",
-                    ]
-                    let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(restore: initialRestore)
-                    loadArguments["initialRestore"] = initialRestoreRequest?.javaScriptArgument ?? NSNull()
-                    loadArguments["initialRestoreRequestID"] = initialRestoreRequest?.requestID ?? "nil"
-                    loadArguments["initialRestoreRequestedLocator"] = initialRestoreRequest?.requestedLocator ?? "none"
-                    do {
-                        _ = try await scriptCaller.evaluateJavaScript(
-                            """
-                            window.loadEBook({ url, layoutMode, initialRestore, readerPresentationState });
-                            """,
-                            arguments: loadArguments,
-                            in: message.frameInfo
-                        )
-                    } catch {
-                        let loaderURLString = loaderURL.absoluteString
-                        Logger.shared.logger.error("Ebook viewer load failed for \(loaderURLString): \(String(describing: error))")
-                    }
+                guard url.isEBookURL,
+                      let scheme = url.scheme,
+                      scheme == "ebook" || scheme == "ebook-url",
+                      let receiptURL = message.requestURL ?? message.mainDocumentURL,
+                      urlsMatchIgnoringFragment(
+                        ReaderContentLoader.getContentURL(fromLoaderURL: receiptURL) ?? receiptURL,
+                        ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+                      ) else { return }
+                let loaderURL = url
+                let openingPreparer = ebookOpeningPreparer
+                let caller = scriptCaller
+                do {
+                    try await ReaderEBookInitialization.perform(
+                        receiptBinding: receiptBinding,
+                        currentBinding: { caller.currentJavaScriptBindingToken },
+                        registerFrame: { _ in
+                            self.registerEbookViewerFrame(message.frameInfo)
+                        },
+                        acknowledge: { bindingToken in
+                            _ = try await caller.evaluateJavaScript(
+                                "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
+                                in: message.frameInfo,
+                                requiring: bindingToken
+                            )
+                        },
+                        prepare: { bindingToken -> ReaderEBookPreparedOpen? in
+                            try await openingPreparer?(loaderURL, bindingToken)
+                        },
+                        restore: { bindingToken -> ReaderContentEbookInitialRestore? in
+                            try await ReaderEBookOpeningDocumentContext
+                                .$javaScriptBindingToken.withValue(bindingToken) {
+                                    try await ReaderContentReadingProgressLoader
+                                        .ebookInitialRestoreLoader?(url)
+                                }
+                        },
+                        publish: { bindingToken, preparedOpen, initialRestore in
+                            let defaults = UserDefaults.standard
+                            let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16
+                            let rawWritingDirection = defaults.string(
+                                forKey: "bookWritingDirectionSetting"
+                            ) ?? "original"
+                            let writingDirection = ["original", "horizontal", "vertical"]
+                                .contains(rawWritingDirection)
+                                ? rawWritingDirection
+                                : "original"
+                            let readerPresentationState: [String: any Sendable] = [
+                                "colorScheme": self.colorScheme == .dark ? "dark" : "light",
+                                "lightModeTheme": defaults.string(forKey: "lightModeTheme") ?? "white",
+                                "darkModeTheme": defaults.string(forKey: "darkModeTheme") ?? "black",
+                                "readerFontSize": readerFontSize,
+                                "readerContentRTSize": readerFontSize * 0.46,
+                                "readerBoldText": defaults.object(forKey: "readerBoldText") as? Bool ?? false,
+                                "maxWidthOverride": readerAdaptiveMaxWidthOverrideCSSValue(
+                                    readerFontSize: readerFontSize
+                                ),
+                                "writingDirection": writingDirection,
+                            ]
+                            var loadArguments: [String: any Sendable] = [
+                                "url": loaderURL.absoluteString,
+                                "layoutMode": defaults.string(forKey: "ebookViewerLayout") ?? "paginated",
+                                "readerPresentationState": readerPresentationState,
+                                "packageSessionID":
+                                    preparedOpen?.packageSessionID ?? NSNull(),
+                            ]
+                            let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(
+                                restore: initialRestore
+                            )
+                            loadArguments["initialRestore"] =
+                                initialRestoreRequest?.javaScriptArgument ?? NSNull()
+                            try await caller.evaluateJavaScript(
+                                """
+                                window.loadEBook({
+                                    url,
+                                    packageSessionID,
+                                    layoutMode,
+                                    initialRestore,
+                                    readerPresentationState
+                                });
+                                """,
+                                arguments: loadArguments,
+                                in: message.frameInfo,
+                                requiring: bindingToken
+                            )
+                        }
+                    )
+                } catch is CancellationError {
+                    // Navigation, owner revocation and parent cancellation are
+                    // expected terminal outcomes. Do not launch detached retry.
+                } catch {
+                    Logger.shared.logger.error(
+                        "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
+                    )
                 }
             }),
             ("updateReadingProgress", { @MainActor [weak self] message in
@@ -976,6 +1038,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         hideNavigationDueToScroll: Binding<Bool>,
         showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
         navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
+        ebookOpeningPreparer: ReaderEBookOpeningPreparer? = nil,
         colorScheme: ColorScheme
     ) {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -987,6 +1050,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         self.hideNavigationDueToScroll = hideNavigationDueToScroll
         self.showOriginalWillBeginHandler = showOriginalWillBeginHandler
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
+        self.ebookOpeningPreparer = ebookOpeningPreparer
         self.colorScheme = colorScheme
     }
 
@@ -1000,6 +1064,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         hideNavigationDueToScroll: Binding<Bool>,
         showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
         navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
+        ebookOpeningPreparer: ReaderEBookOpeningPreparer?,
         colorScheme: ColorScheme
     ) {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -1011,6 +1076,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         self.hideNavigationDueToScroll = hideNavigationDueToScroll
         self.showOriginalWillBeginHandler = showOriginalWillBeginHandler
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
+        self.ebookOpeningPreparer = ebookOpeningPreparer
         self.colorScheme = colorScheme
     }
     
@@ -1153,6 +1219,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
     @Environment(\.readerShowOriginalWillBeginHandler) internal var showOriginalWillBeginHandler
     @Environment(\.readerNavigationVisibilityWillChangeHandler) internal var navigationVisibilityWillChangeHandler
+    @Environment(\.readerEBookOpeningPreparer) internal var ebookOpeningPreparer
     @Environment(\.colorScheme) internal var colorScheme
     
     func body(content: Content) -> some View {
@@ -1167,6 +1234,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
             hideNavigationDueToScroll: hideNavigationDueToScroll,
             showOriginalWillBeginHandler: showOriginalWillBeginHandler,
             navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
+            ebookOpeningPreparer: ebookOpeningPreparer,
             colorScheme: colorScheme,
             webViewMessageHandlers: webViewMessageHandlers
         )
@@ -1185,6 +1253,7 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
     var hideNavigationDueToScroll: Binding<Bool>
     var showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?
     var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
+    var ebookOpeningPreparer: ReaderEBookOpeningPreparer?
     var colorScheme: ColorScheme
     var webViewMessageHandlers: WebViewMessageHandlers
 
@@ -1203,6 +1272,7 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
         hideNavigationDueToScroll: Binding<Bool>,
         showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
         navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
+        ebookOpeningPreparer: ReaderEBookOpeningPreparer?,
         colorScheme: ColorScheme,
         webViewMessageHandlers: WebViewMessageHandlers
     ) {
@@ -1216,6 +1286,7 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
         self.hideNavigationDueToScroll = hideNavigationDueToScroll
         self.showOriginalWillBeginHandler = showOriginalWillBeginHandler
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
+        self.ebookOpeningPreparer = ebookOpeningPreparer
         self.colorScheme = colorScheme
         self.webViewMessageHandlers = webViewMessageHandlers
         _readerMessageHandlers = StateObject(wrappedValue: ReaderMessageHandlers(
@@ -1228,6 +1299,7 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
             hideNavigationDueToScroll: hideNavigationDueToScroll,
             showOriginalWillBeginHandler: showOriginalWillBeginHandler,
             navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
+            ebookOpeningPreparer: ebookOpeningPreparer,
             colorScheme: colorScheme
         ))
     }
@@ -1246,6 +1318,7 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
                     hideNavigationDueToScroll: hideNavigationDueToScroll,
                     showOriginalWillBeginHandler: showOriginalWillBeginHandler,
                     navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
+                    ebookOpeningPreparer: ebookOpeningPreparer,
                     colorScheme: colorScheme
                 )
             }
