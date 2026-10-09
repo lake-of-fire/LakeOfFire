@@ -51,6 +51,8 @@ public class ReaderContent: ObservableObject {
     // may still have readers queued to receive its result.
     private var selectionID: UUID?
     private var pendingNativeSelectionURL: URL?
+    private var adoptedNativeSelectionLoadID: UUID?
+    private var needsNativeSelectionAdoption = false
     private var selectionWaiters: [UUID: (UUID, CheckedContinuation<Bool, Never>)] = [:]
     private var selectionLifetime = ReaderContentSelectionLifetime()
     private var suppressedTransientAboutBlankTargetURL: URL?
@@ -83,7 +85,8 @@ public class ReaderContent: ObservableObject {
         let resolved = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
         if let pendingNativeSelectionURL,
            pendingNativeSelectionURL.matchesReaderURL(resolved) { return selectionID }
-        if pendingNativeSelectionURL == nil, pageURL.matchesReaderURL(resolved) {
+        if pendingNativeSelectionURL == nil, pageURL.matchesReaderURL(resolved),
+           selectionLifetime.permitsCommit(), !needsNativeSelectionAdoption {
             return selectionID
         }
         let retiredTask = loadingTask
@@ -91,6 +94,8 @@ public class ReaderContent: ObservableObject {
         finishSelectionWaiters(selected: false)
         loadingTask = nil
         loadingResolvedContentURL = nil
+        adoptedNativeSelectionLoadID = nil
+        needsNativeSelectionAdoption = false
         selectionLifetime = ReaderContentSelectionLifetime()
         selectionID = UUID()
         pendingNativeSelectionURL = resolved
@@ -123,11 +128,18 @@ public class ReaderContent: ObservableObject {
     /// Document retirement must settle an unresolved receipt even when its
     /// deferred semantic load never arrives. It does not alter displayed content.
     public func withdrawPendingNativeSelection() {
-        guard pendingNativeSelectionURL != nil || !selectionWaiters.isEmpty else { return }
+        let ownsUnresolvedLoad = adoptedNativeSelectionLoadID != nil
+            && adoptedNativeSelectionLoadID == selectionID
+        guard pendingNativeSelectionURL != nil || ownsUnresolvedLoad || !selectionWaiters.isEmpty else { return }
         let retiredTask = loadingTask
         selectionLifetime.withdraw()
+        // Old fences retain the withdrawn token. Retained display gets a new
+        // usable selection; cancelling a reservation must not poison its reload.
+        selectionLifetime = ReaderContentSelectionLifetime()
         pendingNativeSelectionURL = nil
-        selectionID = nil
+        selectionID = UUID()
+        adoptedNativeSelectionLoadID = nil
+        needsNativeSelectionAdoption = content == nil
         loadingTask = nil
         loadingResolvedContentURL = nil
         finishSelectionWaiters(selected: false)
@@ -292,6 +304,8 @@ public class ReaderContent: ObservableObject {
             selectionID = loadID
         }
         pendingNativeSelectionURL = nil
+        adoptedNativeSelectionLoadID = adoptsNativeIntent ? loadID : nil
+        needsNativeSelectionAdoption = false
         loadingTask = nil
         loadingResolvedContentURL = nil
         defer {
@@ -352,6 +366,7 @@ public class ReaderContent: ObservableObject {
     private func finishLoading(ifOwnedBy loadID: UUID) {
         // Old completion is independent of a new selection's loading slot.
         guard selectionID == loadID else { return }
+        adoptedNativeSelectionLoadID = nil
         loadingResolvedContentURL = nil
         loadingTask = nil
     }
