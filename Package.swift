@@ -218,6 +218,7 @@ let package = Package(
             name: "LakeOfFireTests",
             dependencies: [
                 .product(name: "RealmSwift", package: "realm-swift"),
+                .product(name: "SwiftUIWebView", package: "swiftui-webview"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "BigSyncKit", package: "BigSyncKit"),
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),

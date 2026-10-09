@@ -8928,6 +8928,23 @@ class Reader {
         });
         this.bookEndcap = this.bookReadingRuntime?.endcap ?? null;
         this.bookActionBridge = this.bookReadingRuntime?.bridge ?? null;
+        this.#listen(window, 'manabi-article-producer-ready', () => {
+            if (!isCurrent() || this.view !== view) return;
+            const producerOwner = this.#captureProducerEvidence();
+            if (!producerOwner) return;
+            if (this.bookReadingRuntime) {
+                this.#bookPositionRefreshNeeded = true;
+                // A replacement can also follow a peer lifetime transition.
+                // Ask native for the current chapter pass before observing it.
+                this.bookReadingRuntime.state.refresh();
+                return;
+            }
+            // Session activation can retire the initial producer before its
+            // first progress delivery. Observe the current location anew when
+            // native publishes its replacement; never replay that old payload.
+            // The normal restore, document, chapter and position guards apply.
+            this.#postConfirmedPageTurnProgress(producerOwner);
+        });
         const initialRestore = options?.initialRestore ?? null;
         globalThis.__manabiPostReaderDocStateEvent?.('reader.open.viewAssigned');
         // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
@@ -10711,6 +10728,9 @@ class Reader {
             this.sameIndexGoToDidDisplaySkips = Math.max(1, this.sameIndexGoToDidDisplaySkips || 0);
             return;
         }
+        // Retire an outstanding display before the replacement iframe commits.
+        // Document identity alone remains unchanged during that navigation gap.
+        this.#didDisplaySequence += 1;
         this.#clearVisiblePageReadChrome('goTo');
         this.#invalidateVisiblePageSegmentSnapshot('renderer.goTo');
         requestLookupCloseForPageMotion('renderer.goTo', {
@@ -10722,12 +10742,18 @@ class Reader {
         if (this.#closed) return;
         const lifecycleGeneration = this.#lifecycleGeneration;
         const renderer = this.view?.renderer ?? null;
-        const visiblePageCollectionGeneration = this.visiblePageCollectionGeneration;
+        // Font/layout refreshes retire geometry, not the physical display. Its
+        // receipt belongs to this document and renderer until a newer display.
+        const primaryContent = getPrimaryRendererContent(renderer);
+        const displayDocument = primaryContent?.doc ?? primaryContent?.document ?? null;
         const didDisplaySequence = ++this.#didDisplaySequence;
-        const isCurrentDidDisplay = () =>
-            this.#isRendererLifecycleCurrent(lifecycleGeneration, renderer)
-            && this.#didDisplaySequence === didDisplaySequence
-            && this.visiblePageCollectionGeneration === visiblePageCollectionGeneration;
+        const isCurrentDidDisplay = () => {
+            const currentContent = getPrimaryRendererContent(renderer);
+            const currentDocument = currentContent?.doc ?? currentContent?.document ?? null;
+            return this.#isRendererLifecycleCurrent(lifecycleGeneration, renderer)
+                && this.#didDisplaySequence === didDisplaySequence
+                && currentDocument === displayDocument;
+        };
         const shouldSkipSameIndexDidDisplay =
             (this.sameIndexGoToDidDisplaySkips || 0) > 0
             && !document.body?.classList?.contains?.('loading');
@@ -10777,12 +10803,16 @@ class Reader {
         if (!isCurrentDidDisplay()) return;
         let didDisplayVisibleContentState = null;
         let didDisplayNativeLookupTargetCount = null;
-        try {
-            const doc = getPrimaryRendererContent(this.view?.renderer)?.doc ?? null;
-            if (isDocumentLike(doc)) {
-                const visibleRange = this.#visibleRangeForDocument(doc);
-                let visibleSegmentsResult = this.#visiblePageSegmentResult(
-                    doc,
+        let sampledGeometryGeneration = null;
+        const sampleCurrentDisplay = () => {
+            sampledGeometryGeneration = this.visiblePageCollectionGeneration;
+            didDisplayVisibleContentState = null;
+            didDisplayNativeLookupTargetCount = null;
+            try {
+                if (!isDocumentLike(displayDocument)) return;
+                const visibleRange = this.#visibleRangeForDocument(displayDocument);
+                const visibleSegmentsResult = this.#visiblePageSegmentResult(
+                    displayDocument,
                     visibleRange,
                     'didDisplay.pre-render-ready',
                     {
@@ -10795,17 +10825,11 @@ class Reader {
                     }
                 );
                 didDisplayNativeLookupTargetCount = visibleSegmentsResult?.nativeLookupTargetCount ?? null;
-                const visibleContentState = visibleRenderableContentStateForDocument(doc, visibleSegmentsResult);
-                didDisplayVisibleContentState = visibleContentState;
-                if (
-                    globalThis.__manabiInitialRestoreRenderReadyGate?.active === true
-                    && visibleContentState.hasRenderableContent === true
-                ) {
-                    this.#settleInitialDisplayFromVisibleContent('didDisplay.pre-render-ready');
-                }
+                didDisplayVisibleContentState = visibleRenderableContentStateForDocument(displayDocument, visibleSegmentsResult);
+            } catch {
             }
-        } catch {
-        }
+        };
+        sampleCurrentDisplay();
         if (!isCurrentDidDisplay()) return;
         // Keep the loading cover up through the first paint opportunity after the
         // final paginator settle. Large books can spend another frame (or several
@@ -10842,10 +10866,16 @@ class Reader {
             // already found visible content. One animation-frame boundary is the
             // first opportunity for that final geometry to paint; a second frame
             // repeats the same full-document layout on large vertical sections.
+            if (sampledGeometryGeneration !== this.visiblePageCollectionGeneration) {
+                sampleCurrentDisplay();
+            }
+            if (!isCurrentDidDisplay()) return;
             markLoadingPaintBoundary('after-frame-1-before-clear');
-            this.setLoadingIndicator(false, 'didDisplay', { paintCommitted: true });
-            markReaderRenderReady('didDisplay.loading-cleared');
-            markLoadingPaintBoundary('after-clear');
+            if (didDisplayVisibleContentState?.hasRenderableContent === true) {
+                this.setLoadingIndicator(false, 'didDisplay', { paintCommitted: true });
+                markReaderRenderReady('didDisplay.loading-cleared');
+                markLoadingPaintBoundary('after-clear');
+            }
         }
         if (!isCurrentDidDisplay()) return;
         this.hasReachedLoadingDidDisplayBoundary = true;
