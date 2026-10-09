@@ -82,6 +82,54 @@ public struct ReaderContentLoader {
     public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
     public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
 
+    /// Capture before a download or actor hop. The same admission is shared
+    /// when multiple content representations use one physical store, including
+    /// its first creation. This does not grant account/replica authority.
+    public struct MutationStorage: @unchecked Sendable {
+        let bookmarkConfiguration: Realm.Configuration
+        let historyConfiguration: Realm.Configuration
+        let feedConfiguration: Realm.Configuration
+        let bookmarkAdmission: RealmStorageAdmission
+        let historyAdmission: RealmStorageAdmission
+        let feedAdmission: RealmStorageAdmission
+
+        public init(bookmarkConfiguration: Realm.Configuration,
+            historyConfiguration: Realm.Configuration, feedConfiguration: Realm.Configuration) {
+            self.bookmarkConfiguration = bookmarkConfiguration
+            self.historyConfiguration = historyConfiguration
+            self.feedConfiguration = feedConfiguration
+            let actor = RealmBackgroundActor.shared
+            let history = actor.captureStorageAdmission(for: historyConfiguration)
+            let bookmark = actor.realmCacheKey(for: bookmarkConfiguration) == actor.realmCacheKey(for: historyConfiguration)
+                ? history : actor.captureStorageAdmission(for: bookmarkConfiguration)
+            let feedKey = actor.realmCacheKey(for: feedConfiguration)
+            let feed = feedKey == actor.realmCacheKey(for: historyConfiguration) ? history
+                : feedKey == actor.realmCacheKey(for: bookmarkConfiguration) ? bookmark
+                : actor.captureStorageAdmission(for: feedConfiguration)
+            historyAdmission = history
+            bookmarkAdmission = bookmark
+            feedAdmission = feed
+        }
+
+        @MainActor
+        public static func capture() -> Self {
+            Self(bookmarkConfiguration: bookmarkRealmConfiguration,
+                historyConfiguration: historyRealmConfiguration,
+                feedConfiguration: feedEntryRealmConfiguration)
+        }
+
+        func validate(includeFeed: Bool) throws {
+            let actor = RealmBackgroundActor.shared
+            for (configuration, admission) in [(historyConfiguration, historyAdmission),
+                (bookmarkConfiguration, bookmarkAdmission)]
+                + (includeFeed ? [(feedConfiguration, feedAdmission)] : []) {
+                guard admission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: configuration) }) else {
+                    throw RealmBackgroundActorError.realmFileChangedDuringOpen
+                }
+            }
+        }
+    }
+
     /// The storage selected when a snippet edit began. A delayed save must not
     /// follow mutable global configurations into another account's Realm.
     public struct SnippetStorage {
@@ -375,6 +423,101 @@ public struct ReaderContentLoader {
         } catch {
             cancelledBeforeCommit = cancelledBeforeCommit || error is CancellationError || Task.isCancelled
             return (ReaderContentMutationOutcome(matchedObjectCount: matched, committedObjectCount: committed, mutatedObjectCount: mutated, cancelledBeforeCommit: cancelledBeforeCommit, errorMessage: error.localizedDescription), error)
+        }
+    }
+
+    /// Explicit storage variant for work prepared before asynchronous media
+    /// acquisition. The caller supplies its domain authority validator; Lake
+    /// owns physical storage admission and the existing metadata write lane.
+    /// Commits in earlier stores remain successful if a later store rejects.
+    @RealmBackgroundActor
+    public static func updateContentWithOutcome(
+        url: URL, storage: MutationStorage,
+        skipContentFiles: Bool = false, skipFeedEntries: Bool = false,
+        validateAuthority: @Sendable () throws -> Void,
+        mutate: (Object & ReaderContentProtocol) -> Bool
+    ) async -> ReaderContentMutationOutcome {
+        var matched = 0
+        var committed = 0
+        var mutated = 0
+        do {
+            try Task.checkCancellation()
+            try validateAuthority()
+            try storage.validate(includeFeed: !skipFeedEntries)
+            let actor = RealmBackgroundActor.shared
+            let historyRealm = try await actor.cachedRealm(for: storage.historyConfiguration,
+                storageAdmission: storage.historyAdmission)
+            let bookmarkRealm = try await actor.cachedRealm(for: storage.bookmarkConfiguration,
+                storageAdmission: storage.bookmarkAdmission)
+            let feedRealm: Realm?
+            if skipFeedEntries { feedRealm = nil }
+            else {
+                feedRealm = try await actor.cachedRealm(for: storage.feedConfiguration,
+                    storageAdmission: storage.feedAdmission)
+            }
+            await historyRealm.asyncRefresh()
+            await bookmarkRealm.asyncRefresh()
+            if let feedRealm { await feedRealm.asyncRefresh() }
+            try Task.checkCancellation()
+            try validateAuthority()
+            try storage.validate(includeFeed: !skipFeedEntries)
+
+            // Gather identity values only after the final discovery suspension.
+            // Resolve each managed object again inside its owned transaction.
+            var candidates: [(Realm, RealmSwift.Object.Type, String)] = []
+            if !skipContentFiles, let content = bookmarkRealm.objects(ContentFile.self)
+                .filter(NSPredicate(format: "isDeleted == false AND url == %@", url.absoluteString))
+                .sorted(byKeyPath: "createdAt", ascending: false).first {
+                candidates.append((bookmarkRealm, ContentFile.self, content.compoundKey))
+            }
+            if let content = bookmarkRealm.objects(Bookmark.self)
+                .filter(NSPredicate(format: "isDeleted == false AND url == %@", url.absoluteString))
+                .sorted(byKeyPath: "createdAt", ascending: false).first {
+                candidates.append((bookmarkRealm, Bookmark.self, content.compoundKey))
+            }
+            if let content = HistoryRecord.openedRecords(matching: url, in: historyRealm)
+                .sorted(by: [SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
+                    SortDescriptor(keyPath: "compoundKey", ascending: true)]).first {
+                candidates.append((historyRealm, HistoryRecord.self, content.compoundKey))
+            }
+            if let feedRealm, !url.isReaderFileURL {
+                let feeds = feedRealm.objects(FeedEntry.self).where { !$0.isDeleted }
+                    .sorted(by: \.createdAt, ascending: false)
+                let content = url.scheme == "https"
+                    ? feeds.filter(NSPredicate(format: "url == %@ OR url == %@",
+                        url.absoluteString, url.settingScheme("http").absoluteString)).first
+                    : feeds.filter(NSPredicate(format: "url == %@", url.absoluteString)).first
+                if let content { candidates.append((feedRealm, FeedEntry.self, content.compoundKey)) }
+            }
+            matched = candidates.count
+            let timestamp = Date()
+            for (realm, type, key) in candidates {
+                try Task.checkCancellation()
+                let change: Bool? = try await realm.asyncWritePreservingOwnership {
+                    try Task.checkCancellation()
+                    try validateAuthority()
+                    try storage.validate(includeFeed: !skipFeedEntries)
+                    guard let object = realm.object(ofType: type, forPrimaryKey: key)
+                        as? (Object & ReaderContentProtocol), !object.isDeleted else { return nil }
+                    let changed = mutate(object)
+                    if changed { object.refreshChangeMetadata(explicitlyModified: true, at: timestamp) }
+                    try validateAuthority()
+                    try storage.validate(includeFeed: !skipFeedEntries)
+                    return changed
+                }
+                if let change {
+                    committed += 1
+                    if change { mutated += 1 }
+                }
+            }
+            return ReaderContentMutationOutcome(matchedObjectCount: matched,
+                committedObjectCount: committed, mutatedObjectCount: mutated,
+                cancelledBeforeCommit: false, errorMessage: nil)
+        } catch {
+            return ReaderContentMutationOutcome(matchedObjectCount: matched,
+                committedObjectCount: committed, mutatedObjectCount: mutated,
+                cancelledBeforeCommit: error is CancellationError || Task.isCancelled,
+                errorMessage: error.localizedDescription)
         }
     }
 
@@ -1645,4 +1788,3 @@ private extension ReaderContentLoader {
         record.displayPublicationDate = source.displayPublicationDate
     }
 }
-
