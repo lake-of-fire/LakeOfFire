@@ -38,7 +38,9 @@ jobs:
           git merge-base HEAD origin/v3-hotfix > "$evidence/merge-base.txt"
 
           set +e
-          git merge --no-commit --no-ff origin/v3-hotfix \
+          git -c user.name=qualification-probe \
+            -c user.email=qualification-probe@invalid.example \
+            merge --no-commit --no-ff origin/v3-hotfix \
             >"$evidence/merge.stdout" 2>"$evidence/merge.stderr"
           merge_status=$?
           set -e
