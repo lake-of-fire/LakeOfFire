@@ -304,6 +304,8 @@ public struct ReaderWebView: View {
     let darkModeTheme: DarkModeTheme
     
     @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
+    @State private var defaultEBookPackageSessions = ReaderEBookServingSessionStore()
+    @Environment(\.readerEBookPackageSessions) private var readerEBookPackageSessions
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
     // SwiftUI can rebuild this value-type view while a navigation callback is
     // suspended. Keep one task owner across those rebuilds so a newer callback,
@@ -397,10 +399,18 @@ public struct ReaderWebView: View {
         self.lightModeTheme = lightModeTheme
         self.darkModeTheme = darkModeTheme
     }
+
+    private func configuredEBookURLSchemeHandler() -> EbookURLSchemeHandler {
+        let handler = ebookURLSchemeHandler
+        handler.packageSessions = readerEBookPackageSessions ?? defaultEBookPackageSessions
+        return handler
+    }
+
     
     public var body: some View {
         let handler = makeHandler()
         let _ = callbackRelay.handler = handler
+        let ebookURLSchemeHandler = configuredEBookURLSchemeHandler()
         ReaderWebViewInternal(
             persistentWebViewID: persistentWebViewID,
             obscuredInsets: obscuredInsets,

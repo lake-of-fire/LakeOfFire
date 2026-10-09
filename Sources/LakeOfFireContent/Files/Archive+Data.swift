@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import LakeOfFireCore
 import SwiftUIWebView
@@ -232,6 +233,63 @@ public struct ReaderPackageEntrySource: Sendable {
         let mimeType = type?.preferredMIMEType ?? "application/octet-stream"
         let textEncodingName = Self.isUTF8TextType(utType: type, mimeType: mimeType) ? "utf-8" : nil
         return ReaderPackageEntryResponseMetadata(mimeType: mimeType, textEncodingName: textEncodingName)
+    }
+
+    public func mimeType(
+        subpath rawSubpath: String,
+        data: Data
+    ) throws -> ReaderPackageEntryResponseMetadata {
+        let metadata = try mimeType(subpath: rawSubpath)
+        guard metadata.textEncodingName != nil else { return metadata }
+        return ReaderPackageEntryResponseMetadata(
+            mimeType: metadata.mimeType,
+            textEncodingName: Self.detectedTextEncoding(in: data).ianaName
+        )
+    }
+
+    public static func decodeText(_ data: Data) -> String {
+        let encoding = detectedTextEncoding(in: data).foundationEncoding
+        if let decoded = String(data: data, encoding: encoding) {
+            return decoded
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private struct DetectedTextEncoding {
+        let ianaName: String
+        let foundationEncoding: String.Encoding
+    }
+
+    private static func detectedTextEncoding(in data: Data) -> DetectedTextEncoding {
+        let prefix = Array(data.prefix(4))
+        if prefix.starts(with: [0xEF, 0xBB, 0xBF]) {
+            return DetectedTextEncoding(ianaName: "utf-8", foundationEncoding: .utf8)
+        }
+        if prefix.starts(with: [0xFF, 0xFE]) {
+            return DetectedTextEncoding(ianaName: "utf-16le", foundationEncoding: .utf16)
+        }
+        if prefix.starts(with: [0xFE, 0xFF]) {
+            return DetectedTextEncoding(ianaName: "utf-16be", foundationEncoding: .utf16)
+        }
+        if prefix.count == 4 {
+            if prefix[1] == 0x00,
+               prefix[3] == 0x00,
+               prefix[0] != 0x00 || prefix[2] != 0x00 {
+                return DetectedTextEncoding(
+                    ianaName: "utf-16le",
+                    foundationEncoding: .utf16LittleEndian
+                )
+            }
+            if prefix[0] == 0x00,
+               prefix[2] == 0x00,
+               prefix[1] != 0x00 || prefix[3] != 0x00 {
+                return DetectedTextEncoding(
+                    ianaName: "utf-16be",
+                    foundationEncoding: .utf16BigEndian
+                )
+            }
+        }
+        return DetectedTextEncoding(ianaName: "utf-8", foundationEncoding: .utf8)
     }
 
     private static func knownResponseMetadata(forExtension fileExtension: String) -> ReaderPackageEntryResponseMetadata? {
@@ -520,10 +578,12 @@ public actor ReaderPackageEntrySourceCache {
     public struct CachedSource: Sendable {
         public let source: ReaderPackageEntrySource
         public let entries: [ReaderPackageEntryMetadata]
+        public let generationID: String
 
-        public init(source: ReaderPackageEntrySource, entries: [ReaderPackageEntryMetadata]) {
+        public init(source: ReaderPackageEntrySource, entries: [ReaderPackageEntryMetadata], generationID: String) {
             self.source = source
             self.entries = entries
+            self.generationID = generationID
         }
     }
 
@@ -532,6 +592,7 @@ public actor ReaderPackageEntrySourceCache {
         let entries: [ReaderPackageEntryMetadata]
         let localURL: URL
         let freshnessToken: String
+        let generationID: String
     }
 
     private let countLimit: Int
@@ -572,22 +633,24 @@ public actor ReaderPackageEntrySourceCache {
            cached.freshnessToken == freshnessToken {
             try Task.checkCancellation()
             recordAccess(forKey: cacheKey)
-            return CachedSource(source: cached.source, entries: cached.entries)
+            return CachedSource(source: cached.source, entries: cached.entries, generationID: cached.generationID)
         }
 
         let source = try Self.preparedSource(for: localURL)
         let entries = try source.enumerateEntries()
+        let generationID = Self.generationID(for: freshnessToken)
         try Task.checkCancellation()
         store(
             CacheRecord(
                 source: source,
                 entries: entries,
                 localURL: localURL,
-                freshnessToken: freshnessToken
+                freshnessToken: freshnessToken,
+                generationID: generationID
             ),
             forKey: cacheKey
         )
-        return CachedSource(source: source, entries: entries)
+        return CachedSource(source: source, entries: entries, generationID: generationID)
     }
 
     private func freshCachedSource(forKey cacheKey: String) throws -> CachedSource? {
@@ -601,7 +664,7 @@ public actor ReaderPackageEntrySourceCache {
         }
         try Task.checkCancellation()
         recordAccess(forKey: cacheKey)
-        return CachedSource(source: cached.source, entries: cached.entries)
+        return CachedSource(source: cached.source, entries: cached.entries, generationID: cached.generationID)
     }
 
     private func store(_ record: CacheRecord, forKey cacheKey: String) {
@@ -631,6 +694,11 @@ public actor ReaderPackageEntrySourceCache {
         accessOrder.compactMap { cachedSources[$0]?.localURL.standardizedFileURL.path }
     }
 #endif
+
+    private static func generationID(for freshnessToken: String) -> String {
+        let digest = SHA256.hash(data: Data(freshnessToken.utf8))
+        return "g1-" + digest.map { String(format: "%02x", $0) }.joined()
+    }
 
     private static func resolvedLocalURL(
         forPackageURL readerFileURL: URL,

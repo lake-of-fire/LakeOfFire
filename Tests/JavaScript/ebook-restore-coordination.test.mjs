@@ -5,6 +5,8 @@ import { ebookProgressFractionForRelocate } from '../../Sources/LakeOfFireReader
 
 import {
     LatestRestoreTransactionCoordinator,
+    normalizeInitialRestoreRequest,
+    restoreLocatorKind,
     PendingInitialRestoreMailbox,
     isRestoreTransactionSupersededError,
     makeSyntheticRestoreLocator,
@@ -25,6 +27,28 @@ test('synthetic restore locators round trip normalized section state', () => {
         rendererTotal: 5,
         fractionInSection: 0.5,
     })
+    assert.equal(normalizeInitialRestoreRequest({ requestID: '', cfi: 'epubcfi(/6/14!)' }), null)
+    assert.deepEqual(normalizeInitialRestoreRequest({
+        requestID: 'request-zero',
+        cfi: '',
+        fractionalCompletion: 0,
+    }), {
+        requestID: 'request-zero',
+        requestedLocator: 'fraction',
+        cfi: '',
+        fractionalCompletion: 0,
+    })
+    assert.equal(normalizeInitialRestoreRequest({ requestID: 'request-2', cfi: '', fractionalCompletion: 2 }), null)
+    assert.equal(normalizeInitialRestoreRequest({
+        requestID: 'request-invalid-with-cfi',
+        cfi: 'epubcfi(/6/14!)',
+        fractionalCompletion: -0.1,
+    }), null)
+    assert.equal(normalizeInitialRestoreRequest({
+        requestID: 'request-nan-with-cfi',
+        cfi: 'epubcfi(/6/14!)',
+        fractionalCompletion: Number.NaN,
+    }), null)
 })
 
 test('synthetic restore locators reject malformed values and clamp coordinates', () => {
@@ -252,6 +276,16 @@ test('pending initial restore mailbox is exact-load, latest-value, and close own
     assert.equal(mailbox.take(), null)
     assert.equal(mailbox.closeAndTake(), null)
     assert.equal(mailbox.close(), false)
+})
+
+test('restore routing gives explicit locators priority over fractional completion', () => {
+    assert.equal(restoreLocatorKind({ cfi: 'mnb-loc-v1:7:2:5', fractionalCompletion: 0.7 }), 'synthetic')
+    assert.equal(restoreLocatorKind({ cfi: 'epubcfi(/6/14!)', fractionalCompletion: 0.7 }), 'cfi')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0.7 }), 'fraction')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0 }), 'fraction')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 1 }), 'fraction')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: -0.01 }), 'none')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 1.01 }), 'none')
 })
 
 
