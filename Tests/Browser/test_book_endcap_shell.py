@@ -116,10 +116,17 @@ class BookEndcapShellTests(unittest.TestCase):
         cls.server = ViewerAssetServer(('127.0.0.1', 0), partial(Handler, directory=str(ROOT)))
         Thread(target=cls.server.serve_forever, daemon=True).start()
         cls.pw = sync_playwright().start()
-        cls.browser = cls.pw.chromium.launch(executable_path=os.environ.get('CHROMIUM_PATH'), headless=True)
+        cls.browser = cls.pw.chromium.launch(executable_path=os.environ.get('CHROMIUM_PATH'), headless=True, args=['--disable-features=MacAppCodeSignClone'])
     @classmethod
     def tearDownClass(cls):
-        cls.browser.close(); cls.pw.stop(); cls.server.shutdown(); cls.server.server_close()
+        try:
+            cls.browser.close()
+        finally:
+            try:
+                cls.pw.stop()
+            finally:
+                cls.server.shutdown()
+                cls.server.server_close()
 
     def test_actual_viewer_end_page_does_not_mark_skipped_content(self):
         page = self.browser.new_page(viewport={'width':390, 'height':844})
