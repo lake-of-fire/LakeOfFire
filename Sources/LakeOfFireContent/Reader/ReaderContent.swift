@@ -75,6 +75,13 @@ public class ReaderContent: ObservableObject {
     public init() {
     }
 
+    /// Cached model identity is optional after cleanup; the mounted document's
+    /// native identity continues to live in pageURL and its selection fence.
+    public var cachedContentURL: URL? {
+        guard let content, !content.isInvalidated else { return nil }
+        return content.url
+    }
+
     deinit {
         selectionHandoff?.withdraw()
         selectionLifetime.withdraw()
@@ -143,7 +150,7 @@ public class ReaderContent: ObservableObject {
             locationBarTitle = nil
             return
         }
-        guard let content,
+        guard let content, !content.isInvalidated,
               content.url.matchesReaderURL(pageURL) else {
             snippetTitleIsGeneratedFromPrefix = false
             locationBarTitle = nil
@@ -169,7 +176,7 @@ public class ReaderContent: ObservableObject {
     }
 
     private func syncContentTitle() {
-        guard let content else {
+        guard let content, !content.isInvalidated else {
             return
         }
         let newTitle = content.title
@@ -196,7 +203,7 @@ public class ReaderContent: ObservableObject {
     @MainActor
     public func preloadResolvedContent(_ content: any ReaderContentProtocol, for targetURL: URL) {
         let resolvedTargetURL = ReaderContentLoader.getContentURL(fromLoaderURL: targetURL) ?? targetURL
-        guard content.url.matchesReaderURL(resolvedTargetURL) else {
+        guard !content.isInvalidated, content.url.matchesReaderURL(resolvedTargetURL) else {
             return
         }
         preloadedResolvedContentURL = resolvedTargetURL
@@ -204,6 +211,11 @@ public class ReaderContent: ObservableObject {
     }
 
     private func consumePreloadedContentIfMatching(resolvedContentURL: URL) -> (any ReaderContentProtocol)? {
+        if preloadedContent?.isInvalidated == true {
+            preloadedResolvedContentURL = nil
+            preloadedContent = nil
+            return nil
+        }
         guard let preloadedResolvedContentURL,
               let preloadedContent,
               preloadedContent.url.matchesReaderURL(resolvedContentURL),
@@ -287,7 +299,7 @@ public class ReaderContent: ObservableObject {
         // Reopening the already displayed content is not a new selection.
         // Keep completed readers valid, but still retire any unrelated task.
         if handoff?.isPending != true, loadingTask == nil, selectionLifetime.permitsCommit(),
-           let existingContent = content,
+           let existingContent = content, !existingContent.isInvalidated,
            matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL),
            matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
             completeSelectionHandoff(handoff, selectionID: selectionID, url: resolvedContentURL)
@@ -333,7 +345,7 @@ public class ReaderContent: ObservableObject {
             }
             try validatePublication()
 
-            if let existingContent = content,
+            if let existingContent = content, !existingContent.isInvalidated,
                matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL) {
                 let pageAlreadyMatchesDisplay = matchesResolvedContentURL(
                     pageURL, resolvedContentURL: displayURL
@@ -376,6 +388,7 @@ public class ReaderContent: ObservableObject {
                 guard let self, self.selectionID == loadID else { return nil }
                 try Task.checkCancellation()
                 guard handoff?.permitsCapture != false else { throw CancellationError() }
+                guard !content.isInvalidated else { return nil }
                 guard content.url.matchesReaderURL(resolvedContentURL) else {
                     debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
                     return nil
@@ -430,7 +443,7 @@ public class ReaderContent: ObservableObject {
     @MainActor
     public func getContent() async throws -> (any ReaderContentProtocol)? {
         if let content {
-            return content
+            return content.isInvalidated ? nil : content
         }
         let selectionID = self.selectionID
         let resolvedContent = try await loadingTask?.value
@@ -439,24 +452,32 @@ public class ReaderContent: ObservableObject {
         // before this waiter resumes. Never return the displaced value or
         // substitute the newly displayed content for the original read.
         guard self.selectionID == selectionID,
-              let resolvedContent, content === resolvedContent else { return nil }
+              let resolvedContent, !resolvedContent.isInvalidated,
+              content === resolvedContent else { return nil }
         return resolvedContent
     }
 
     @MainActor
     @discardableResult
     public func updateContentTitle(_ newTitle: String, for targetURL: URL? = nil) async throws -> Bool {
-        guard let contentURL = targetURL ?? content?.url else { return false }
+        let contentURL: URL
+        if let targetURL {
+            contentURL = targetURL
+        } else {
+            guard let content, !content.isInvalidated else { return false }
+            contentURL = content.url
+        }
         let didChange = try await ReaderContentLoader.updateSnippetTitle(
             contentURL: contentURL,
             title: newTitle
         )
         // The rename belongs to the snippet captured when its UI was opened.
         // A completed write must not replace a subsequently displayed document.
-        guard let observedContent = content,
+        guard let observedContent = content, !observedContent.isInvalidated,
               observedContent.url == contentURL,
               let reference = ReaderContentLoader.ContentReference(content: observedContent),
               let refreshedContent = try await reference.resolveOnMainActor(),
+              !refreshedContent.isInvalidated,
               content === observedContent else { return didChange }
         content = refreshedContent
         refreshObservedContentState()

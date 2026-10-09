@@ -1,4 +1,5 @@
 import BigSyncKit
+import Combine
 import XCTest
 import RealmSwift
 @testable import RealmSwiftGaps
@@ -49,6 +50,160 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         configuration.objectTypes = objectTypes ?? storageObjectTypes
         configureLakeOfFireMutationTrackingForTesting(&configuration)
         return configuration
+    }
+
+    @MainActor
+    private func managedReaderRecord(in realm: Realm, url: URL, title: String) throws -> HistoryRecord {
+        let record = HistoryRecord()
+        record.url = url
+        record.title = title
+        record.updateCompoundKey()
+        try realm.write {
+            realm.add(record)
+            record.refreshChangeMetadata(explicitlyModified: true)
+            try assertPendingMutation(for: record, in: realm)
+        }
+        return record
+    }
+
+    @MainActor
+    func testReloadPhysicallyDeletedDisplayedContentResolvesAgain() async throws {
+        for displayStillMatches in [true, false] {
+            let realm = try await Realm(configuration: makeConfiguration(), actor: MainActor.shared)
+            let url = URL(string: "https://example.com/deleted-display/" + UUID().uuidString)!
+            let original = try managedReaderRecord(in: realm, url: url, title: "Original")
+            let reader = ReaderContent()
+            try await reader.load(url: url, resolveContent: { _ in original })
+            let originalSelection = try XCTUnwrap(reader.currentSelectionID)
+            let originalFence = reader.makeSelectionCommitFence(requiring: originalSelection)
+            reader.currentSectionIndex = 7
+            if !displayStillMatches {
+                reader.pageURL = URL(string: "https://example.com/other-display")!
+            }
+            // Model acknowledged cleanup removing a row still cached by the reader.
+            try realm.write { realm.delete(original) }
+            XCTAssertTrue(original.isInvalidated)
+            let replacement = try managedReaderRecord(in: realm, url: url, title: "Replacement")
+            var resolutionCount = 0
+            try await reader.load(url: url, resolveContent: { requestedURL in
+                XCTAssertEqual(requestedURL, url)
+                resolutionCount += 1
+                return replacement
+            })
+            XCTAssertEqual(resolutionCount, 1)
+            XCTAssertTrue(reader.content === replacement)
+            XCTAssertEqual(reader.pageURL, url)
+            XCTAssertEqual(reader.contentTitle, "Replacement")
+            XCTAssertNil(reader.currentSectionIndex)
+            XCTAssertNotEqual(reader.currentSelectionID, originalSelection)
+            XCTAssertFalse(originalFence())
+        }
+    }
+
+    @MainActor
+    func testPreloadIgnoresAlreadyPhysicallyDeletedContent() async throws {
+        let realm = try await Realm(configuration: makeConfiguration(), actor: MainActor.shared)
+        let url = URL(string: "https://example.com/deleted-before-preload/" + UUID().uuidString)!
+        let original = try managedReaderRecord(in: realm, url: url, title: "Original")
+        let reader = ReaderContent()
+        try realm.write { realm.delete(original) }
+        XCTAssertTrue(original.isInvalidated)
+        reader.preloadResolvedContent(original, for: url)
+        let replacement = try managedReaderRecord(in: realm, url: url, title: "Replacement")
+        var resolutionCount = 0
+        try await reader.load(url: url, resolveContent: { _ in
+            resolutionCount += 1
+            return replacement
+        })
+        XCTAssertEqual(resolutionCount, 1)
+        XCTAssertTrue(reader.content === replacement)
+    }
+
+    @MainActor
+    func testPreloadPhysicallyDeletedBeforeConsumptionResolvesAgain() async throws {
+        let realm = try await Realm(configuration: makeConfiguration(), actor: MainActor.shared)
+        let url = URL(string: "https://example.com/deleted-after-preload/" + UUID().uuidString)!
+        let original = try managedReaderRecord(in: realm, url: url, title: "Original")
+        let reader = ReaderContent()
+        reader.preloadResolvedContent(original, for: url)
+        try realm.write { realm.delete(original) }
+        XCTAssertTrue(original.isInvalidated)
+        let replacement = try managedReaderRecord(in: realm, url: url, title: "Replacement")
+        var resolutionCount = 0
+        try await reader.load(url: url, resolveContent: { _ in
+            resolutionCount += 1
+            return replacement
+        })
+        XCTAssertEqual(resolutionCount, 1)
+        XCTAssertTrue(reader.content === replacement)
+        XCTAssertEqual(reader.contentTitle, "Replacement")
+    }
+
+    @MainActor
+    func testRefreshObservedContentStateSkipsPhysicallyDeletedContent() async throws {
+        let realm = try await Realm(configuration: makeConfiguration(), actor: MainActor.shared)
+        let url = ReaderContentLoader.snippetURL(key: UUID().uuidString)!
+        let original = try managedReaderRecord(in: realm, url: url, title: "Snippet title")
+        try realm.write {
+            original.isTitlePrefixOfContent = true
+            original.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let reader = ReaderContent()
+        try await reader.load(url: url, resolveContent: { _ in original })
+        XCTAssertNotNil(reader.locationBarTitle)
+        XCTAssertTrue(reader.snippetTitleIsGeneratedFromPrefix)
+        XCTAssertEqual(reader.cachedContentURL, url)
+        var publishedTitles = [String]()
+        let observation = reader.contentTitleSubject.sink { publishedTitles.append($0) }
+        defer { observation.cancel() }
+        try realm.write { realm.delete(original) }
+        XCTAssertTrue(original.isInvalidated)
+        let journalAfterDeletion = realm.objects(BigSyncPendingMutation.self)
+            .map { $0.recordName + ":" + $0.generation }.sorted()
+        XCTAssertNil(reader.cachedContentURL)
+        XCTAssertEqual(reader.pageURL, url)
+        reader.refreshObservedContentState()
+        XCTAssertNil(reader.locationBarTitle)
+        XCTAssertFalse(reader.snippetTitleIsGeneratedFromPrefix)
+        XCTAssertEqual(reader.contentTitle, "Snippet title")
+        XCTAssertTrue(publishedTitles.isEmpty)
+        let cachedContent = try await reader.getContent()
+        XCTAssertNil(cachedContent)
+        let renamed = try await reader.updateContentTitle("Must not rename deleted content")
+        XCTAssertFalse(renamed)
+        XCTAssertEqual(realm.objects(BigSyncPendingMutation.self)
+            .map { $0.recordName + ":" + $0.generation }.sorted(), journalAfterDeletion)
+    }
+
+    @MainActor
+    func testPhysicallyDeletedResolverResultCannotPublishAndAllowsRetry() async throws {
+        let realm = try await Realm(configuration: makeConfiguration(), actor: MainActor.shared)
+        let url = URL(string: "https://example.com/deleted-resolver/" + UUID().uuidString)!
+        let original = try managedReaderRecord(in: realm, url: url, title: "Deleted result")
+        let reader = ReaderContent()
+        var publishedTitles = [String]()
+        let observation = reader.contentTitleSubject.sink { publishedTitles.append($0) }
+        defer { observation.cancel() }
+        try await reader.load(url: url, resolveContent: { _ in
+            // A resolver can retain a managed row that cleanup has removed.
+            try realm.write { realm.delete(original) }
+            return original
+        })
+        XCTAssertTrue(original.isInvalidated)
+        XCTAssertNil(reader.content)
+        XCTAssertEqual(reader.pageURL, url)
+        XCTAssertEqual(reader.contentTitle, "")
+        XCTAssertNil(reader.locationBarTitle)
+        XCTAssertTrue(publishedTitles.isEmpty)
+        let replacement = try managedReaderRecord(in: realm, url: url, title: "Replacement")
+        var retryCount = 0
+        try await reader.load(url: url, resolveContent: { _ in
+            retryCount += 1
+            return replacement
+        })
+        XCTAssertEqual(retryCount, 1)
+        XCTAssertTrue(reader.content === replacement)
+        XCTAssertEqual(publishedTitles, ["Replacement"])
     }
 
     @RealmBackgroundActor
