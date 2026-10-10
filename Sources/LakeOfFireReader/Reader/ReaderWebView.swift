@@ -126,7 +126,9 @@ final class ReaderWebViewHandler {
         }
         do {
             try Task.checkCancellation()
+            ReaderSnippetFinalDocumentDiagnostics.record("content-load-start", contentURL: state.pageURL)
             try await readerContent.load(url: state.pageURL, consuming: selectionIntent)
+            ReaderSnippetFinalDocumentDiagnostics.record("content-load-returned", contentURL: state.pageURL)
             try Task.checkCancellation()
             guard let content = readerContent.content else {
                 readerModeViewModel.cancelReaderModeLoad(
@@ -157,8 +159,10 @@ final class ReaderWebViewHandler {
             )
             try Task.checkCancellation()
         } catch is CancellationError {
+            ReaderSnippetFinalDocumentDiagnostics.record("commit-cancelled", contentURL: state.pageURL)
             throw CancellationError()
         } catch {
+            ReaderSnippetFinalDocumentDiagnostics.record("commit-failed", contentURL: state.pageURL)
             // Replacement commits cancel the previous task. If an unrelated
             // operation failed at the same time, its cleanup must not release a
             // newer same-URL reader render.

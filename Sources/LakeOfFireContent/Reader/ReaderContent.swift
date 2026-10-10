@@ -287,25 +287,35 @@ public class ReaderContent: ObservableObject {
 
         if let loadingTask,
            let loadingResolvedContentURL,
+           selectionLifetime.permitsCommit(),
            matchesResolvedContentURL(loadingResolvedContentURL, resolvedContentURL: resolvedContentURL) {
             let loadID = selectionID
+            let joinedLifetime = selectionLifetime
             if let handoff {
                 guard handoff.beginSelection(selectionID: loadID,
                     fence: makeSelectionCommitFence(requiring: loadID)) else { throw CancellationError() }
                 selectionLifetime.onWithdrawal { [weak handoff] in handoff?.withdraw() }
             }
-            _ = try await withTaskCancellationHandler {
-                try await loadingTask.value
-            } onCancel: {
-                // Retire this consuming intent without cancelling the shared resolver.
-                handoff?.withdraw()
+            do {
+                _ = try await withTaskCancellationHandler {
+                    try await loadingTask.value
+                } onCancel: {
+                    // Retire this consuming intent without cancelling the shared resolver.
+                    handoff?.withdraw()
+                }
+                guard selectionID == loadID, joinedLifetime.permitsCommit() else { throw CancellationError() }
+                if handoff != nil {
+                    try Task.checkCancellation()
+                    guard handoff?.permitsCapture != false else { throw CancellationError() }
+                }
+                completeSelectionHandoff(handoff, selectionID: loadID, url: resolvedContentURL)
+                return
+            } catch is CancellationError {
+                guard intent == nil, !Task.isCancelled, selectionID == loadID,
+                      !joinedLifetime.permitsCommit() else { throw CancellationError() }
+                // One fresh request through the existing selection path below.
+                // Never reopen the withdrawn lifetime or adopt a successor.
             }
-            if handoff != nil {
-                try Task.checkCancellation()
-                guard selectionID == loadID, handoff?.permitsCapture != false else { throw CancellationError() }
-            }
-            completeSelectionHandoff(handoff, selectionID: loadID, url: resolvedContentURL)
-            return
         }
 
         // Reopening the already displayed content is not a new selection.

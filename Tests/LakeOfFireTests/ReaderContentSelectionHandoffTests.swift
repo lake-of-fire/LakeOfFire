@@ -57,6 +57,60 @@ final class ReaderContentSelectionHandoffTests: XCTestCase {
         return result
     }
 
+    func testDuplicateCommitOwnersResolveFreshAfterCreatorCancellationWithoutRevivingAuthority() async throws {
+        let reader = ReaderContent()
+        let creatorManager = NavigationTaskManager(), joinedManager = NavigationTaskManager()
+        let gate = SelectionHandoffTestGate()
+        defer { Task { await gate.release() } }
+        let old = HistoryRecord(), fresh = HistoryRecord()
+        let url = URL(string: "https://example.invalid/duplicate-commit")!
+        old.url = url; old.title = "retired commit"; old.updateCompoundKey()
+        fresh.url = url; fresh.title = "fresh commit"; fresh.updateCompoundKey()
+        let entered = expectation(description: "creator commit resolver held")
+        creatorManager.startOnNavigationCommitted {
+            try await reader.load(url: url) { _ in
+                entered.fulfill()
+                await gate.wait()
+                XCTAssertTrue(Task.isCancelled)
+                return old
+            }
+        }
+        let creator = try XCTUnwrap(creatorManager.onNavigationCommittedTask)
+        await fulfillment(of: [entered], timeout: 5)
+        let oldID = reader.currentSelectionID
+        let oldFence = reader.makeSelectionCommitFence(requiring: oldID)
+        let joinedEntered = expectation(description: "second commit owner joined")
+        var freshCalls = 0
+        joinedManager.startOnNavigationCommitted {
+            joinedEntered.fulfill()
+            try await reader.load(url: url) { _ in freshCalls += 1; return fresh }
+        }
+        let joined = try XCTUnwrap(joinedManager.onNavigationCommittedTask)
+        await fulfillment(of: [joinedEntered], timeout: 5)
+        XCTAssertEqual(freshCalls, 0, "Duplicate commits initially share the live load")
+        creatorManager.cancelNavigationWork()
+        XCTAssertFalse(oldFence())
+        await gate.release()
+        do { try await creator.value; XCTFail("Retired commit must cancel") }
+        catch is CancellationError { }
+        try await joined.value
+        let freshID = reader.currentSelectionID
+        XCTAssertEqual(freshCalls, 1)
+        XCTAssertNotEqual(freshID, oldID)
+        XCTAssertFalse(oldFence())
+        XCTAssertTrue(reader.makeSelectionCommitFence(requiring: freshID)())
+        XCTAssertTrue(reader.content === fresh)
+        XCTAssertEqual(reader.pageURL, url)
+        var finishes = 0
+        joinedManager.startOnNavigationFinished {
+            finishes += 1
+            XCTAssertTrue(reader.content === fresh)
+            XCTAssertFalse(oldFence())
+        }
+        try await joinedManager.onNavigationFinishedTask?.value
+        XCTAssertEqual(finishes, 1, "Only the successful commit authorizes its semantic finish")
+    }
+
     func testRejectedSemanticPhaseWithdrawsItsExactHandoff() async throws {
         let fixture = try fixture()
         let manager = NavigationTaskManager()
