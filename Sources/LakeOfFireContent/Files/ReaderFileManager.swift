@@ -780,6 +780,7 @@ public class ReaderFileManager: ObservableObject {
     private func publishDiscoveredFiles(
         _ discoveredFileRefs: [ThreadSafeReference<ContentFile>],
         selection: MetadataRefreshSelection,
+        requireComplete: Bool = false,
         openRealm: @MainActor (Realm.Configuration) async throws -> Realm = {
             try await Realm.open(configuration: $0)
         }
@@ -800,7 +801,10 @@ public class ReaderFileManager: ObservableObject {
         }
         for discoveredFileRef in discoveredFileRefs {
             guard let discoveredFile = realm.resolve(discoveredFileRef),
-                  !discoveredFile.isInvalidated, !discoveredFile.isDeleted else { continue }
+                  !discoveredFile.isInvalidated, !discoveredFile.isDeleted else {
+                if requireComplete { throw ReaderFileManagerError.incompleteMetadataScan }
+                continue
+            }
             if let existingIndex = mergedFiles.firstIndex(where: { $0.url == discoveredFile.url }) {
                 mergedFiles[existingIndex] = discoveredFile
             } else {
@@ -921,6 +925,15 @@ public class ReaderFileManager: ObservableObject {
     /// Ordinary inventory refresh remains best-effort across independent roots.
     @MainActor
     public func refreshMigratedCloudDocumentsMetadata(containerURL: URL) async throws {
+        try await refreshMigratedCloudDocumentsMetadata(containerURL: containerURL,
+            openRealm: { try await Realm.open(configuration: $0) })
+    }
+
+    @MainActor
+    func refreshMigratedCloudDocumentsMetadata(
+        containerURL: URL,
+        openRealm: @MainActor (Realm.Configuration) async throws -> Realm
+    ) async throws {
         let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
         let expectedRoot = containerURL.appendingPathComponent("Documents", isDirectory: true)
             .standardizedFileURL.resolvingSymlinksInPath()
@@ -941,10 +954,12 @@ public class ReaderFileManager: ObservableObject {
         guard drive.isConnected else { throw ReaderFileManagerError.driveMissing }
         guard scan.isComplete else { throw ReaderFileManagerError.incompleteMetadataScan }
         guard let references = try await makeContentFileReferences(
-            for: scan.contentFileIDs, realmConfiguration: selection.realmConfiguration
+            for: scan.contentFileIDs, realmConfiguration: selection.realmConfiguration,
+            requireComplete: true
         ) else { throw ReaderFileManagerError.incompleteMetadataScan }
         try validateMetadataRefreshSelection(selection)
-        try await publishDiscoveredFiles(references, selection: selection)
+        try await publishDiscoveredFiles(references, selection: selection, requireComplete: true,
+            openRealm: openRealm)
         try validateMetadataRefreshSelection(selection)
         guard drive.isConnected else { throw ReaderFileManagerError.driveMissing }
     }
@@ -1414,15 +1429,22 @@ public class ReaderFileManager: ObservableObject {
     @RealmBackgroundActor
     private func makeContentFileReferences(
         for contentFileIDs: [String]?,
-        realmConfiguration: Realm.Configuration
+        realmConfiguration: Realm.Configuration,
+        requireComplete: Bool = false
     ) async throws -> [ThreadSafeReference<ContentFile>]? {
         guard let contentFileIDs else { return nil }
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
             for: realmConfiguration
         )
-        return contentFileIDs.compactMap {
+        let files = contentFileIDs.compactMap {
             realm.object(ofType: ContentFile.self, forPrimaryKey: $0)
-        }.map(ThreadSafeReference.init(to:))
+        }
+        // A complete filesystem scan is insufficient if its indexed rows were
+        // removed or retired before transfer to the migration publisher.
+        if requireComplete && (files.count != contentFileIDs.count || files.contains(where: { $0.isDeleted })) {
+            return nil
+        }
+        return files.map(ThreadSafeReference.init(to:))
     }
 
     @RealmBackgroundActor

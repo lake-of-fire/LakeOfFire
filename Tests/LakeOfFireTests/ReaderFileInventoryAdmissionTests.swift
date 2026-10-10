@@ -26,6 +26,12 @@ private actor InventoryAdmissionGate {
     }
 }
 
+private actor MigrationMetadataRetirementProbe {
+    private var observation: ([String], [String: String])?
+    func capture(ids: [String], journal: [String: String]) { observation = (ids, journal) }
+    func snapshot() -> ([String], [String: String])? { observation }
+}
+
 private enum InventoryAdmissionFixtureError: Swift.Error { case mappingDidNotStart }
 
 /// Real manager, filesystem, Realm and mutation journal. Only URL-mapping
@@ -90,6 +96,128 @@ final class ReaderFileInventoryAdmissionTests: XCTestCase {
         }
         await manager.inventoryRefreshQueue?.waitForIdle()
         await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+    }
+
+    func testMigratedMetadataRejectsMissingOrRetiredScannedRecordsWithoutPartialPublication() async throws {
+        for removesIndex in [false, true] {
+            try await withFixture(libraryName: "Documents") { f in
+                // A local-directory drive emits local backing URLs even when
+                // assigned as the migration cloud root. Keep their resolver
+                // pointed at the same disposable directory.
+                f.manager.localDrive = f.drive
+                f.manager.cloudDrive = f.drive
+                try Data("Migration metadata".utf8).write(to: f.library.appendingPathComponent("book.txt"))
+                let retained = try seed("retained", in: f)
+                f.manager.files = [retained]
+                let beforePublished = f.manager.files?.map { $0.compoundKey }
+                let probe = MigrationMetadataRetirementProbe()
+                ReaderFileManager.fileProcessors = [{ files in
+                    XCTAssertEqual(files.count, 1, "The real scan must discover and persist the payload")
+                    let realm = try XCTUnwrap(files.first?.realm)
+                    let ids = files.map { $0.compoundKey }
+                    // Simulate retirement after scanned IDs were captured. The
+                    // second variant additionally simulates fixture-only index loss.
+                    try realm.write {
+                        for file in files {
+                            file.isDeleted = true
+                            file.refreshChangeMetadata(explicitlyModified: true)
+                            if removesIndex {
+                                // Fixture-only loss of the index after its durable
+                                // retirement; exercise unresolved scanned IDs too.
+                                realm.delete(file)
+                            }
+                        }
+                    }
+                    let journal = Dictionary(uniqueKeysWithValues:
+                        realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) })
+                    await probe.capture(ids: ids, journal: journal)
+                }]
+                do {
+                    try await f.manager.refreshMigratedCloudDocumentsMetadata(containerURL: f.root)
+                    XCTFail("A filesystem scan cannot complete migration with a retired index row")
+                } catch ReaderFileManagerError.incompleteMetadataScan { }
+                let observed = await probe.snapshot()
+                let (ids, journal) = try XCTUnwrap(observed)
+                f.realm.refresh()
+                XCTAssertEqual(f.manager.files?.map { $0.compoundKey }, beforePublished)
+                XCTAssertEqual(Dictionary(uniqueKeysWithValues:
+                    f.realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }), journal)
+                for id in ids {
+                    let row = f.realm.object(ofType: ContentFile.self, forPrimaryKey: id)
+                    if removesIndex { XCTAssertNil(row) }
+                    else { XCTAssertTrue(try XCTUnwrap(row).isDeleted) }
+                }
+                XCTAssertEqual(try Data(contentsOf: f.library.appendingPathComponent("book.txt")),
+                    Data("Migration metadata".utf8))
+            }
+        }
+    }
+
+    func testMigratedMetadataPublishesCompleteScannedRecords() async throws {
+        try await withFixture(libraryName: "Documents") { f in
+            f.manager.localDrive = f.drive
+            f.manager.cloudDrive = f.drive
+            try Data("Complete metadata".utf8).write(to: f.library.appendingPathComponent("book.txt"))
+            try await f.manager.refreshMigratedCloudDocumentsMetadata(containerURL: f.root)
+            let published = try XCTUnwrap(f.manager.files)
+            XCTAssertEqual(published.count, 1)
+            XCTAssertEqual(published.first?.url.lastPathComponent, "book.txt")
+            XCTAssertFalse(try XCTUnwrap(published.first).isDeleted)
+            f.realm.refresh()
+            XCTAssertEqual(f.realm.objects(ContentFile.self).filter("isDeleted == false").count, 1)
+            XCTAssertFalse(f.realm.objects(BigSyncPendingMutation.self).isEmpty)
+        }
+    }
+
+    func testMigratedMetadataRetirementDuringPublicationPreservesPriorListAndJournal() async throws {
+        try await withFixture(libraryName: "Documents") { f in
+            f.manager.localDrive = f.drive
+            f.manager.cloudDrive = f.drive
+            for name in ["first.txt", "second.txt"] {
+                try Data(name.utf8).write(to: f.library.appendingPathComponent(name))
+            }
+            let retained = try seed("retained", in: f)
+            f.manager.files = [retained]
+            let beforePublished = f.manager.files?.map { $0.compoundKey }
+            var reachedPublication = false
+            var retirementJournal = [String: String]()
+            do {
+                try await f.manager.refreshMigratedCloudDocumentsMetadata(containerURL: f.root,
+                    openRealm: { configuration in
+                        // This opening occurs after the actual scan and complete
+                        // reference transfer, at the MainActor publisher boundary.
+                        let realm = try await Realm.open(configuration: configuration)
+                        reachedPublication = true
+                        let discovered = Array(realm.objects(ContentFile.self)).filter {
+                            ["first.txt", "second.txt"].contains($0.url.lastPathComponent)
+                        }
+                        XCTAssertEqual(discovered.count, 2)
+                        let retiring = try XCTUnwrap(discovered.first {
+                            $0.url.lastPathComponent == "second.txt"
+                        })
+                        try realm.write {
+                            retiring.isDeleted = true
+                            retiring.refreshChangeMetadata(explicitlyModified: true)
+                        }
+                        retirementJournal = Dictionary(uniqueKeysWithValues:
+                            realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) })
+                        return realm
+                    })
+                XCTFail("Retirement after transfer must prevent partial migration publication")
+            } catch ReaderFileManagerError.incompleteMetadataScan { }
+            XCTAssertTrue(reachedPublication, "The reference-completeness guard must have succeeded first")
+            f.realm.refresh()
+            XCTAssertEqual(f.manager.files?.map { $0.compoundKey }, beforePublished)
+            XCTAssertEqual(Dictionary(uniqueKeysWithValues:
+                f.realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }), retirementJournal)
+            let valid = f.realm.objects(ContentFile.self).filter {
+                $0.url.lastPathComponent == "first.txt" && !$0.isDeleted
+            }
+            XCTAssertEqual(valid.count, 1)
+            for name in ["first.txt", "second.txt"] {
+                XCTAssertEqual(try Data(contentsOf: f.library.appendingPathComponent(name)), Data(name.utf8))
+            }
+        }
     }
 
     private func seed(_ name: String, in f: Fixture) throws -> ContentFile {
