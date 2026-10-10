@@ -9,7 +9,9 @@ final class LibraryConfigurationConsolidationTests: XCTestCase, @unchecked Senda
     func testScriptRefreshDoesNotSkipCommittedLibraryDuringForeignDeletion() async throws {
         let (configuration, _) = try await makeRealm()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
         let library = LibraryConfiguration()
         let script = UserScript()
         try realm.write { realm.add([library, script]) }
@@ -65,7 +67,9 @@ final class LibraryConfigurationConsolidationTests: XCTestCase, @unchecked Senda
     @RealmBackgroundActor
     func testCreateEmptyScriptRegistersOnceInExistingConfiguration() async throws {
         let (configuration, realm) = try await makeRealm()
-        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
         let library = LibraryConfiguration()
         try realm.write { realm.add(library) }
 
@@ -84,7 +88,9 @@ final class LibraryConfigurationConsolidationTests: XCTestCase, @unchecked Senda
     func testImportedRelationshipsIgnoreRolledBackForeignListPositions() async throws {
         let (configuration, _) = try await makeRealm()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
         let library = LibraryConfiguration()
         let originalCategoryID = UUID()
         let originalScriptID = UUID()
@@ -174,7 +180,9 @@ final class LibraryConfigurationConsolidationTests: XCTestCase, @unchecked Senda
     func testImportedRelationshipsRejectConfigurationRetiredWhileQueued() async throws {
         let (configuration, _) = try await makeRealm()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
         let library = LibraryConfiguration()
         let category = FeedCategory()
         try realm.write { realm.add([library, category]) }
@@ -214,7 +222,9 @@ final class LibraryConfigurationConsolidationTests: XCTestCase, @unchecked Senda
     func testConsolidationCreatesAfterForeignProvisionalPrimaryRollsBack() async throws {
         let (configuration, _) = try await makeRealm()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
         let provisional = LibraryConfiguration()
         let provisionalID = provisional.id
         try realm.beginWrite()
@@ -249,7 +259,9 @@ final class LibraryConfigurationConsolidationTests: XCTestCase, @unchecked Senda
     func testConsolidationReselectsCanonicalPrimaryAfterForeignDeletionRollsBack() async throws {
         let (configuration, _) = try await makeRealm()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
         let primary = LibraryConfiguration()
         primary.createdAt = Date(timeIntervalSinceReferenceDate: 1_000)
         let primaryCategoryID = UUID()

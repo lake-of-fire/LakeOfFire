@@ -19,7 +19,9 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
     func testAppFeedUnarchivesAlreadyConfiguredCanonicalWithoutCreatingDuplicate() async throws {
         let configuration = makeConfiguration()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
         let feed = makeFeed(title: "Application feed")
         let feedID = feed.id
         feed.deleteOrphans = true
@@ -55,7 +57,9 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
     private func verifyAppFeedSelectionAfterForeignRollback(provisionalCreation: Bool) async throws {
         let configuration = makeConfiguration()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-        defer { _ = RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
         let feed = makeFeed(title: "Application feed")
         let originalID = feed.id
         let rssURL = feed.rssUrl
