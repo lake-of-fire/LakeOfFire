@@ -112,7 +112,7 @@ final class ReaderWebViewHandler {
         self.navigator = navigator
     }
     
-    func handleNavigationCommitted(state: WebViewState) async throws {
+    func handleNavigationCommitted(state: WebViewState, selectionIntent: WebViewURLTransitionIntent? = nil) async throws {
 //        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
 
         try Task.checkCancellation()
@@ -126,7 +126,7 @@ final class ReaderWebViewHandler {
         }
         do {
             try Task.checkCancellation()
-            try await readerContent.load(url: state.pageURL)
+            try await readerContent.load(url: state.pageURL, consuming: selectionIntent)
             try Task.checkCancellation()
             guard let content = readerContent.content else {
                 readerModeViewModel.cancelReaderModeLoad(
@@ -191,15 +191,21 @@ final class ReaderWebViewHandler {
     }
 
     func handleURLChanged(state: WebViewState) async throws {
-        try await handleNavigationCommitted(state: state)
+        try await handleNavigationCommitted(state: state, selectionIntent: state.urlTransitionIntent)
         try Task.checkCancellation()
         await handleNavigationFinished(state: state)
         try Task.checkCancellation()
     }
 
     func onNavigationCommitted(state: WebViewState) {
+        readerContent.withdrawSelectionIntent()
         navigationTaskManager.startOnNavigationCommitted {
-            try await self.handleNavigationCommitted(state: state)
+            do {
+                try await self.handleNavigationCommitted(state: state)
+            } catch {
+                if !Task.isCancelled { self.readerContent.withdrawSelectionIntent() }
+                throw error
+            }
             try Task.checkCancellation()
             do {
                 try await self.onNavigationCommitted?(state)
@@ -226,6 +232,7 @@ final class ReaderWebViewHandler {
         disposition: WebViewNavigationFailureDisposition
     ) {
         let preservesCommittedDocument = disposition == .preservedCommittedDocument
+        if !preservesCommittedDocument { readerContent.withdrawSelectionIntent() }
         navigationTaskManager.startOnNavigationFailed(
             preservingCommittedDocument: preservesCommittedDocument
         ) { @MainActor in
@@ -245,6 +252,7 @@ final class ReaderWebViewHandler {
     ) {
         // A committed replacement, process loss, or host detach invalidates all
         // asynchronous work that still belongs to the previous document.
+        readerContent.withdrawSelectionIntent()
         navigationTaskManager.cancelNavigationWork()
         if reason == .webContentProcessTerminated {
             if readerContent.pageURL.matchesReaderURL(state.pageURL) {
@@ -257,7 +265,7 @@ final class ReaderWebViewHandler {
     }
 
     func onURLChanged(state: WebViewState) {
-        navigationTaskManager.startOnURLChanged { @MainActor in
+        navigationTaskManager.startOnURLChanged(state: state, readerContent: readerContent) { @MainActor in
             try await self.handleURLChanged(state: state)
             do {
                 try await self.onURLChanged?(state)

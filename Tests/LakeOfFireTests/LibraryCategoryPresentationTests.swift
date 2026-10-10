@@ -13,6 +13,46 @@ import UIKit
 
 @MainActor
 final class LibraryCategoryPresentationTests: XCTestCase {
+    func testCreatedCategoryMovesToArchiveAndDeletesThroughRetainedDisplayedIdentity() async throws {
+        let (realm, restoreConfiguration) = try makeRealm()
+        defer { restoreConfiguration() }
+        let model = LibraryCategoriesViewModel(observesRealm: false)
+        let id = try await model.createCategory()
+        try await model.refreshData().value
+        let displayed = try XCTUnwrap(model.userLibraryCategories?.first { $0.id == id })
+        let configuration = try XCTUnwrap(model.libraryConfiguration)
+        XCTAssertTrue(configuration.categoryIDs.contains(id))
+        XCTAssertNotNil(journal(for: displayed, in: realm), "Creation must be durable after add")
+        let createdGeneration = try XCTUnwrap(journal(for: displayed, in: realm)).generation
+
+        try await model.deleteCategory(displayed)
+        try await model.refreshData().value
+        realm.refresh()
+        XCTAssertTrue(displayed.isArchived)
+        XCTAssertFalse(displayed.isDeleted)
+        XCTAssertFalse(configuration.categoryIDs.contains(id))
+        XCTAssertFalse(model.userLibraryCategories?.contains { $0.id == id } ?? false)
+        let archivedRow = try XCTUnwrap(model.archivedCategories?.first { $0.id == id })
+        XCTAssertEqual(model.deletionTitle(category: archivedRow), "Delete")
+        XCTAssertTrue(model.showRestoreButton(category: archivedRow))
+        XCTAssertTrue(model.showDeleteButton(category: archivedRow))
+        XCTAssertNotEqual(journal(for: archivedRow, in: realm)?.generation, createdGeneration)
+        XCTAssertNotNil(journal(for: configuration, in: realm))
+        let archivedGeneration = try XCTUnwrap(journal(for: archivedRow, in: realm)).generation
+
+        try await model.deleteCategory(archivedRow)
+        try await model.refreshData().value
+        realm.refresh()
+        let tombstone = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: id))
+        XCTAssertTrue(tombstone.isDeleted, "Deletion must retain a synchronized tombstone")
+        XCTAssertFalse(model.archivedCategories?.contains { $0.id == id } ?? false)
+        XCTAssertNotEqual(journal(for: tombstone, in: realm)?.generation, archivedGeneration)
+        let settledGenerations = journalGenerations(in: realm)
+        try await model.deleteCategory(tombstone)
+        realm.refresh()
+        XCTAssertEqual(journalGenerations(in: realm), settledGenerations, "Repeated deletion is a no-op")
+    }
+
     func testDisplayedUserAndArchiveDeletionSelectsTheirOwnRows() async throws {
         let (realm, restoreConfiguration) = try makeRealm()
         defer { restoreConfiguration() }

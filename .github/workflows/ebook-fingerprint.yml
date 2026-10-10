@@ -22,6 +22,8 @@ on:
       - 'Tools/test-ebook-zip-directory.sh'
       - 'Tools/test-ebook-namespace.sh'
       - '.github/workflows/ebook-fingerprint.yml'
+env:
+  MANABI_EPUB_EVIDENCE_ROOT: ${{ runner.temp }}/epub-fingerprint-evidence
 permissions:
   contents: read
 jobs:
@@ -38,6 +40,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Install build output formatter
+        run: brew install xcsift
       - name: Capture exact source and toolchain evidence
         shell: bash
         run: |

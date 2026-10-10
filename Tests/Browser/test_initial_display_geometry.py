@@ -27,10 +27,10 @@ DISPLAY_COMPLETION_BRIDGE = """
 
 class InitialDisplayGeometryTests(unittest.TestCase):
     setUpClass = classmethod(shell.BookEndcapShellTests.setUpClass.__func__)
-    tearDownClass = classmethod(shell.BookEndcapShellTests.tearDownClass.__func__)
 
     def test_geometry_refresh_during_first_display_reaches_publication_boundary(self):
         page = self.browser.new_page(viewport={'width':390,'height':844})
+        self.addCleanup(page.close)
         try:
             page.add_init_script(shell.BRIDGE + """
                 const fixtureFrameID = crypto.randomUUID();
@@ -67,7 +67,6 @@ class InitialDisplayGeometryTests(unittest.TestCase):
             self.assertTrue(page.evaluate('reader.initialDisplaySettled'))
         finally:
             print('DISPLAY GEOMETRY STATE',page.evaluate("""() => ({invalidation:window.displayGeometryInvalidation,ready:document.documentElement.dataset.mnbReaderRenderReady,bodyClasses:document.body.className,settled:globalThis.reader?.initialDisplaySettled,boundary:globalThis.reader?.hasReachedLoadingDidDisplayBoundary,restoreAttempt:globalThis.reader?.hasCompletedLastPositionLoadAttempt,targets:(window.nativeMessages??[]).filter(x=>x.name==='nativeLookupHitTargetsUpdated').map(x=>({reason:x.payload.reason,count:x.payload.targets?.length})),errors:(window.nativeMessages??[]).filter(x=>x.name==='readerOnError')})"""))
-            page.close()
 
     def open_ready_page(self):
         page = self.browser.new_page(viewport={'width':390,'height':844})
@@ -189,3 +188,16 @@ class InitialDisplayGeometryTests(unittest.TestCase):
         self.assertFalse(result['boundary'])
         self.assertNotEqual(result.get('ready'), '1')
         self.assertTrue(result['loading'])
+
+    def test_terminal_load_error_rejects_held_display(self):
+        page = self.open_ready_page()
+        self.pause_display(page)
+        result = page.evaluate("""async () => {
+            reader.setLoadingIndicator(false, 'loadEBook.error', {terminal:true});
+            reader.close('loadEBook.error');
+            delete document.documentElement.dataset.mnbReaderRenderReady;
+            releaseDisplay(); await heldDisplay;
+            return {boundary:reader.hasReachedLoadingDidDisplayBoundary,ready:document.documentElement.dataset.mnbReaderRenderReady};
+        }""")
+        self.assertFalse(result['boundary'])
+        self.assertNotEqual(result.get('ready'), '1')
