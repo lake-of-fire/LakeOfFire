@@ -31,7 +31,8 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
             manager.unregisterOPMLExportUI(second)
         }
 
-        XCTAssertTrue(await waitUntil { manager.opmlExportFailed })
+        let didReportWriteFailure = await waitUntil { manager.opmlExportFailed }
+        XCTAssertTrue(didReportWriteFailure)
         XCTAssertNil(manager.exportedOPML)
         XCTAssertNil(manager.exportedOPMLFileURL)
         XCTAssertEqual(writeAttempts, 1)
@@ -45,9 +46,10 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
         XCTAssertTrue(manager.opmlExportFailed)
 
         manager.refreshOPMLExport()
-        XCTAssertTrue(await waitUntil {
+        let didPrepareRetry = await waitUntil {
             manager.exportedOPMLFileURL != nil && !manager.opmlExportFailed
-        })
+        }
+        XCTAssertTrue(didPrepareRetry)
         let url = try XCTUnwrap(manager.exportedOPMLFileURL)
         XCTAssertEqual(writeAttempts, 2)
         XCTAssertTrue(url.isFileURL)
@@ -73,15 +75,17 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
         manager.registerOPMLExportUI(registration)
         defer { manager.unregisterOPMLExportUI(registration) }
 
-        XCTAssertTrue(await waitUntil { manager.exportedOPMLFileURL != nil })
+        let didPrepareFirstExport = await waitUntil { manager.exportedOPMLFileURL != nil }
+        XCTAssertTrue(didPrepareFirstExport)
         let firstURL = try XCTUnwrap(manager.exportedOPMLFileURL)
         let firstBytes = try Data(contentsOf: firstURL)
 
         manager.invalidateOPMLExport()
-        XCTAssertTrue(await waitUntil {
+        let didPrepareReplacementExport = await waitUntil {
             guard let current = manager.exportedOPMLFileURL else { return false }
             return current != firstURL
-        })
+        }
+        XCTAssertTrue(didPrepareReplacementExport)
         let secondURL = try XCTUnwrap(manager.exportedOPMLFileURL)
 
         XCTAssertNotEqual(firstURL, secondURL)
@@ -138,7 +142,8 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
         manager.registerOPMLExportUI(registration)
         defer { manager.unregisterOPMLExportUI(registration) }
 
-        XCTAssertTrue(await waitUntil { manager.exportedOPMLFileURL != nil })
+        let didPrepareCapturedRealmExport = await waitUntil { manager.exportedOPMLFileURL != nil }
+        XCTAssertTrue(didPrepareCapturedRealmExport)
         let url = try XCTUnwrap(manager.exportedOPMLFileURL)
         let xml = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(xml.contains("Observed export script"))
@@ -158,15 +163,17 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
         let registration = UUID()
         manager.registerOPMLExportUI(registration)
 
-        XCTAssertTrue(await waitUntil { manager.exportedOPMLFileURL != nil })
+        let didPrepareFirstExport = await waitUntil { manager.exportedOPMLFileURL != nil }
+        XCTAssertTrue(didPrepareFirstExport)
         let firstURL = try XCTUnwrap(manager.exportedOPMLFileURL)
         let firstBytes = try Data(contentsOf: firstURL)
 
         manager.invalidateOPMLExport()
-        XCTAssertTrue(await waitUntil {
+        let didPrepareReplacementExport = await waitUntil {
             guard let current = manager.exportedOPMLFileURL else { return false }
             return current != firstURL
-        })
+        }
+        XCTAssertTrue(didPrepareReplacementExport)
         let secondURL = try XCTUnwrap(manager.exportedOPMLFileURL)
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: firstURL.path))
@@ -213,16 +220,18 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
         manager.registerOPMLExportUI(registration)
         defer { manager.unregisterOPMLExportUI(registration) }
 
-        XCTAssertTrue(await waitUntil { manager.opmlExportFailed })
+        let didReportWriteFailure = await waitUntil { manager.opmlExportFailed }
+        XCTAssertTrue(didReportWriteFailure)
         let failedURL = try XCTUnwrap(partialURL)
         XCTAssertTrue(FileManager.default.fileExists(atPath: failedURL.path))
         XCTAssertNil(manager.exportedOPMLFileURL)
         XCTAssertEqual(removalAttempts, 1)
 
         manager.refreshOPMLExport()
-        XCTAssertTrue(await waitUntil {
+        let didPrepareRetry = await waitUntil {
             manager.exportedOPMLFileURL != nil && !manager.opmlExportFailed
-        })
+        }
+        XCTAssertTrue(didPrepareRetry)
 
         XCTAssertEqual(removalAttempts, 2)
         XCTAssertFalse(FileManager.default.fileExists(atPath: failedURL.path))
