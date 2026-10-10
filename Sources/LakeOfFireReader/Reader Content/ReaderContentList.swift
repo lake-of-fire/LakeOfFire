@@ -136,6 +136,18 @@ public class ReaderContentListModalsModel: ObservableObject {
     func clearDeleteDialog() {
         deleteDialog = nil
     }
+
+    func deleteConfirmedItems(_ items: [any DeletableReaderContent]) async {
+        do {
+            try await preflightDeleteBatch(items)
+            for item in items {
+                try await item.delete()
+            }
+            clearDeleteDialog()
+        } catch {
+            presentDeleteError(for: error)
+        }
+    }
 }
 
 struct ReaderContentListSheetsModifier: ViewModifier {
@@ -154,15 +166,7 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                         message: Text(message),
                         primaryButton: .destructive(Text(actionTitle)) {
                             Task { @MainActor in
-                                do {
-                                    try await preflightDeleteBatch(items)
-                                    for item in items {
-                                        try await item.delete()
-                                    }
-                                    readerContentListModalsModel.clearDeleteDialog()
-                                } catch {
-                                    readerContentListModalsModel.presentDeleteError(for: error)
-                                }
+                                await readerContentListModalsModel.deleteConfirmedItems(items)
                             }
                         },
                         secondaryButton: .cancel {

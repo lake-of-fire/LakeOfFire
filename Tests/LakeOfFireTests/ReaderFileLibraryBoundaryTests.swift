@@ -521,7 +521,8 @@ extension ReaderFileLibraryBoundaryTests {
             let initial = try self.journalGeneration(f, record: record)
             let packageJournalID = ContentPackageFile.className() + "." + package.compoundKey
             let initialPackage = try XCTUnwrap(f.realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: packageJournalID)).generation
-            XCTAssertEqual(f.manager.canonicalReaderBackingURL(for: record.url), URL(string: "reader-file://file/load/local/Books/delete.epub"))
+            let backingURL = try XCTUnwrap(f.manager.canonicalReaderBackingURL(for: record.url))
+            XCTAssertEqual(backingURL, URL(string: "reader-file://file/load/local/Books/delete.epub"))
             // This is the production command invoked by the confirmation action.
             try await record.delete()
             f.realm.refresh()
@@ -530,16 +531,29 @@ extension ReaderFileLibraryBoundaryTests {
             XCTAssertTrue(record.isDeleted)
             XCTAssertTrue(package.isDeleted)
             XCTAssertEqual(record.modifiedAt, package.modifiedAt)
-            XCTAssertEqual(f.manager.files?.map(\.compoundKey), [])
+            XCTAssertFalse(f.manager.files?.contains {
+                f.manager.canonicalReaderBackingURL(for: $0.url) == backingURL
+            } ?? false)
+            try await f.manager.refreshAllFilesMetadata(force: true)
+            await f.manager.inventoryRefreshQueue?.waitForIdle()
+            XCTAssertFalse(f.manager.files?.contains {
+                f.manager.canonicalReaderBackingURL(for: $0.url) == backingURL
+            } ?? false)
+            XCTAssertEqual(try Data(contentsOf: sibling), Data("unrelated bytes".utf8))
             let committed = try self.journalGeneration(f, record: record)
             let committedPackage = try XCTUnwrap(f.realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: packageJournalID)).generation
             XCTAssertNotEqual(committed, initial)
             XCTAssertNotEqual(committedPackage, initialPackage)
             try await record.delete()
+            try await f.manager.refreshAllFilesMetadata(force: true)
+            await f.manager.inventoryRefreshQueue?.waitForIdle()
             f.realm.refresh()
             XCTAssertEqual(try self.journalGeneration(f, record: record), committed)
             XCTAssertEqual(try XCTUnwrap(f.realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: packageJournalID)).generation, committedPackage)
-            XCTAssertEqual(f.manager.files?.map(\.compoundKey), [])
+            XCTAssertFalse(f.manager.files?.contains {
+                f.manager.canonicalReaderBackingURL(for: $0.url) == backingURL
+            } ?? false)
+            XCTAssertEqual(try Data(contentsOf: sibling), Data("unrelated bytes".utf8))
         }
     }
 
@@ -549,6 +563,19 @@ extension ReaderFileLibraryBoundaryTests {
 
     func testEbookDirectoryDeleteRemovesPayloadAndJournalsTombstones() async throws {
         try await checkEbookDeletion(isDirectory: true)
+    }
+
+    func testLegacyRemoveFileRejectsDirectoryEpubAndPreservesBytes() async throws {
+        try await withFixture { f in
+            let payload = f.library.appendingPathComponent("Books/legacy.epub/OPS/chapter.xhtml")
+            try self.write("directory book bytes", to: payload)
+            let drive = try XCTUnwrap(f.manager.localDrive)
+            do {
+                try await drive.removeFile(at: RootRelativePath(path: "Books/legacy.epub"))
+                XCTFail("The historical file-only removal API must reject a directory EPUB")
+            } catch SwiftCloudDrive.Error.invalidFileType { }
+            XCTAssertEqual(try Data(contentsOf: payload), Data("directory book bytes".utf8))
+        }
     }
 
     private struct RefreshRecordSnapshot: Equatable {

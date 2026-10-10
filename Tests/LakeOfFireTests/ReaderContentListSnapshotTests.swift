@@ -3,8 +3,74 @@ import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
+@objc(LakeOfFireTestsDeleteCommandContent)
+private final class DeleteCommandContent: Bookmark, DeletableReaderContent {
+    var deleteCalls = 0
+    var deletion: (@MainActor () async throws -> Void)?
+    var deleteActionTitle: String { "Delete" }
+
+    override class func shouldIncludeInDefaultSchema() -> Bool { false }
+
+    @MainActor
+    func delete() async throws {
+        deleteCalls += 1
+        try await deletion?()
+    }
+}
+
 @MainActor
 final class ReaderContentListSnapshotTests: XCTestCase {
+    func testDeleteConfirmationCancelPerformsZeroDeletes() {
+        let item = DeleteCommandContent()
+        let model = ReaderContentListModalsModel()
+        model.presentDeleteConfirmation(for: [item])
+        model.clearDeleteDialog()
+        XCTAssertEqual(item.deleteCalls, 0)
+        XCTAssertNil(model.deleteDialog)
+    }
+
+    func testDeleteConfirmationCommandDeletesExactlyOnce() async {
+        let item = DeleteCommandContent()
+        let model = ReaderContentListModalsModel()
+        model.presentDeleteConfirmation(for: [item])
+        await model.deleteConfirmedItems([item])
+        XCTAssertEqual(item.deleteCalls, 1)
+        XCTAssertNil(model.deleteDialog)
+    }
+
+    func testDeleteConfirmationCommandRetainsError() async {
+        let item = DeleteCommandContent()
+        item.deletion = { throw ReaderFileDeleteError.blockedCloudOnly }
+        let model = ReaderContentListModalsModel()
+        model.presentDeleteConfirmation(for: [item])
+        await model.deleteConfirmedItems([item])
+        XCTAssertEqual(item.deleteCalls, 1)
+        guard case .error? = model.deleteDialog else {
+            return XCTFail("The command error must remain available to the alert presenter")
+        }
+    }
+
+    func testOlderDeleteCompletionDoesNotClearNewerConfirmation() async {
+        let oldItem = DeleteCommandContent()
+        oldItem.compoundKey = "old"
+        let newItem = DeleteCommandContent()
+        newItem.compoundKey = "new"
+        let model = ReaderContentListModalsModel()
+        model.presentDeleteConfirmation(for: [oldItem])
+        oldItem.deletion = {
+            // A newer request arrives while the old command is suspended.
+            await Task.yield()
+            model.presentDeleteConfirmation(for: [newItem])
+        }
+        await model.deleteConfirmedItems([oldItem])
+        XCTAssertEqual(oldItem.deleteCalls, 1)
+        XCTAssertEqual(newItem.deleteCalls, 0)
+        guard case .confirm(let items, _, _, _)? = model.deleteDialog else {
+            return XCTFail("An older completion must preserve the newer confirmation")
+        }
+        XCTAssertEqual(items.map(\.compoundKey), ["new"])
+    }
+
     func testFilteredContentsAndIDsPublishAsOneAlignedSnapshot() async throws {
         let first = contentFile(path: "first.epub")
         let second = contentFile(path: "second.epub")
