@@ -1,5 +1,6 @@
 import XCTest
 import SwiftSoup
+import LakeOfFireContent
 @testable import LakeOfFireReader
 
 private actor ReaderSnippetRecoveryTestRecorder {
@@ -16,6 +17,47 @@ private actor ReaderSnippetRecoveryTestRecorder {
 }
 
 final class ReaderSnippetPipelineDiagnosticsTests: XCTestCase {
+    func testZeroJapaneseSnippetSnapshotDistinguishesRenderMarkerAndFontGate() throws {
+        let url = try XCTUnwrap(URL(string: "internal://local/snippet?key=zero-japanese"))
+        let source = ReaderContentLoader.snippetHTML(fromRawText:
+            "Header lifetime fixture\n\nFresh import body survives the list refresh."
+        )
+        let canonical = try XCTUnwrap(buildSnippetCanonicalReadabilityHTML(
+            html: source, contentURL: url, fallbackTitle: "Header lifetime fixture"
+        ))
+        let document = try SwiftSoup.parse(canonical)
+        let generation = UUID()
+        markReaderRenderReady(in: document, renderGeneration: generation)
+        let root = try XCTUnwrap(document.getElementsByTag("html").first())
+        try root.attr("data-mnb-font-pending", "1")
+
+        let pending = ReaderSnippetFinalDocumentSnapshot.make(htmlBytes: try document.outerHtmlUTF8())
+        XCTAssertTrue(pending.parsedSuccessfully)
+        XCTAssertTrue(pending.readerContentContainerPresent)
+        XCTAssertTrue(pending.readerTextPresent)
+        XCTAssertEqual(pending.segmentCount, 0)
+        XCTAssertTrue(pending.renderReadyMarkerPresent)
+        XCTAssertTrue(pending.renderGenerationPresent)
+        XCTAssertTrue(pending.fontPending)
+        let bodyText = try XCTUnwrap(document.getElementById("reader-content")).text()
+        XCTAssertTrue(bodyText.contains("Fresh import body survives the list refresh."))
+
+        try root.removeAttr("data-mnb-font-pending")
+        let settled = ReaderSnippetFinalDocumentSnapshot.make(htmlBytes: try document.outerHtmlUTF8())
+        XCTAssertFalse(settled.fontPending)
+        XCTAssertTrue(settled.renderReadyMarkerPresent)
+        XCTAssertTrue(settled.renderGenerationPresent)
+        XCTAssertTrue(settled.readerTextPresent)
+
+        try root.attr("data-mnb-reader-render-generation", "invalid")
+        let invalidOwner = ReaderSnippetFinalDocumentSnapshot.make(htmlBytes: try document.outerHtmlUTF8())
+        XCTAssertTrue(invalidOwner.renderReadyMarkerPresent)
+        XCTAssertFalse(invalidOwner.renderGenerationPresent)
+        try root.removeAttr("data-mnb-reader-render-generation")
+        let bodyOwner = ReaderSnippetFinalDocumentSnapshot.make(htmlBytes: try document.outerHtmlUTF8())
+        XCTAssertTrue(bodyOwner.renderGenerationPresent)
+    }
+
     func testPersistedSnippetAuthorityFailureReprocessesCleanSourceThroughInjectedProcessor() async throws {
         let source = """
         <html>

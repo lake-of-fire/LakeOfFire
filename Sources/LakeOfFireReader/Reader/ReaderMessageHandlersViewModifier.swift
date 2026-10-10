@@ -342,6 +342,19 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 let hasReaderRenderReady = body["hasReaderRenderReady"] as? Bool ?? false
                 let renderGeneration = (body["readerRenderGeneration"] as? String)
                     .flatMap(UUID.init(uuidString:))
+                // The user script also posts on every mutation/poll. Limit
+                // negative diagnostics to three finite lifecycle boundaries.
+                if !hasReaderRenderReady,
+                   ["initial", "domcontentloaded", "load"].contains(body["reason"] as? String ?? "") {
+                    ReaderSnippetFinalDocumentDiagnostics.record(
+                        "doc-state.\(body["reason"] as? String ?? "unknown")"
+                            + ".content=\(body["hasReaderContent"] as? Bool ?? false)"
+                            + ".marker=\(body["hasRenderReadyMarker"] as? Bool ?? false)"
+                            + ".fontPending=\(body["fontPending"] as? Bool ?? false).ready=false",
+                        contentURL: pageURL,
+                        generation: renderGeneration
+                    )
+                }
                 guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
                 let currentContentURL = readerContent.content?.url
                 let currentContentOwnsCompletedRender = currentContentURL.map { contentURL in
@@ -356,6 +369,13 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     hasReaderContent: true,
                     renderGeneration: renderGeneration,
                     navigator: navigator
+                )
+                ReaderSnippetFinalDocumentDiagnostics.record(
+                    "doc-ready.accepted=\(accepted)"
+                        + ".owner=\(readerModeViewModel.currentRenderGenerationDescription(for: renderOwnerURL))"
+                        + ".pending=\(readerModeViewModel.isReaderModeLoadPending(for: renderOwnerURL))",
+                    contentURL: pageURL,
+                    generation: renderGeneration
                 )
                 guard accepted else { return }
                 if !readerViewModel.state.hasReaderRenderReady {

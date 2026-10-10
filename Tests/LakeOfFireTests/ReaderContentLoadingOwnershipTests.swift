@@ -605,6 +605,203 @@ final class ReaderContentLoadingOwnershipTests: XCTestCase, @unchecked Sendable 
         XCTAssertTrue(reader.content === a)
     }
 
+    private func expectCancellation(_ task: Task<Void, Error>, file: StaticString = #filePath,
+                                    line: UInt = #line) async {
+        do { try await task.value; XCTFail("Expected cancellation", file: file, line: line) }
+        catch is CancellationError { }
+        catch { XCTFail("Unexpected failure: \(error)", file: file, line: line) }
+    }
+
+    func testCancelledCreatorAllowsLiveJoinedSameURLCallerOneFreshResolution() async throws {
+        let reader = ReaderContent(), old = record("joined-retry"), fresh = record("joined-retry"), gate = Gate()
+        defer { gate.open() }
+        let creator = Task { @MainActor in
+            try await self.load(reader, old.url) { _ in
+                await gate.wait()
+                XCTAssertTrue(Task.isCancelled)
+                return old
+            }
+        }
+        await gate.waitForEntry()
+        let oldID = reader.currentSelectionID
+        let oldFence = reader.makeSelectionCommitFence(requiring: oldID)
+        let entered = expectation(description: "live joined caller entered")
+        var freshCalls = 0
+        let joined = Task { @MainActor in
+            entered.fulfill()
+            try await self.load(reader, old.url) { _ in freshCalls += 1; return fresh }
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        XCTAssertEqual(freshCalls, 0)
+        creator.cancel()
+        XCTAssertFalse(oldFence())
+        XCTAssertEqual(reader.currentSelectionID, oldID)
+        gate.open()
+        await expectCancellation(creator)
+        try await joined.value
+        XCTAssertEqual(freshCalls, 1)
+        XCTAssertNotEqual(reader.currentSelectionID, oldID)
+        XCTAssertTrue(reader.content === fresh)
+        XCTAssertFalse(oldFence(), "A fresh selection cannot reopen withdrawn authority")
+    }
+
+    func testAlreadyCancelledHeldCreatorDoesNotCoalesceNewIntentFreeSameURLRequest() async throws {
+        let reader = ReaderContent(), old = record("held-retry"), fresh = record("held-retry"), gate = Gate()
+        defer { gate.open() }
+        let creator = Task { @MainActor in
+            try await self.load(reader, old.url) { _ in await gate.wait(); return old }
+        }
+        await gate.waitForEntry()
+        let oldID = reader.currentSelectionID
+        let oldFence = reader.makeSelectionCommitFence(requiring: oldID)
+        creator.cancel()
+        XCTAssertFalse(oldFence())
+        var freshCalls = 0
+        // Must finish before the cancellation-ignoring old resolver is released.
+        try await load(reader, old.url) { _ in freshCalls += 1; return fresh }
+        let freshID = reader.currentSelectionID
+        XCTAssertEqual(freshCalls, 1)
+        XCTAssertNotEqual(freshID, oldID)
+        XCTAssertTrue(reader.content === fresh)
+        gate.open()
+        await expectCancellation(creator)
+        XCTAssertEqual(reader.currentSelectionID, freshID)
+        XCTAssertTrue(reader.content === fresh)
+        XCTAssertFalse(oldFence())
+    }
+
+    func testWithdrawnConsumingJoinedIntentCannotRetryCancelledCreator() async throws {
+        let reader = ReaderContent(), a = record("consuming-no-retry"), gate = Gate()
+        defer { gate.open() }
+        let creator = Task { @MainActor in
+            try await self.load(reader, a.url) { _ in await gate.wait(); return a }
+        }
+        await gate.waitForEntry()
+        let oldID = reader.currentSelectionID
+        let intent = try nativeIntent(a.url)
+        let handoff = try XCTUnwrap(reader.receiveSelectionIntent(intent))
+        let entered = expectation(description: "consuming joined caller entered")
+        var retryCalls = 0
+        let joined = Task { @MainActor in
+            entered.fulfill()
+            try await reader.load(url: a.url, consuming: intent) { _ in retryCalls += 1; return a }
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        creator.cancel()
+        XCTAssertFalse(handoff.permitsCapture)
+        gate.open()
+        await expectCancellation(creator)
+        await expectCancellation(joined)
+        XCTAssertEqual(retryCalls, 0)
+        XCTAssertEqual(reader.currentSelectionID, oldID)
+        XCTAssertNil(reader.content)
+        XCTAssertFalse(handoff.permitsCommit)
+        XCTAssertNil(reader.receiveSelectionIntent(intent))
+    }
+
+    func testDifferentURLSuccessorRejectsOldJoinedCallerWithoutFreshAdoption() async throws {
+        let reader = ReaderContent(), a = record("old-joined"), b = record("successor"), gate = Gate()
+        defer { gate.open() }
+        let creator = Task { @MainActor in
+            try await self.load(reader, a.url) { _ in await gate.wait(); return a }
+        }
+        await gate.waitForEntry()
+        let entered = expectation(description: "old joined caller entered")
+        var retryCalls = 0
+        let joined = Task { @MainActor in
+            entered.fulfill()
+            try await self.load(reader, a.url) { _ in retryCalls += 1; return a }
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        creator.cancel()
+        try await load(reader, b.url) { _ in b }
+        let successorID = reader.currentSelectionID
+        let successorFence = reader.makeSelectionCommitFence(requiring: successorID)
+        gate.open()
+        await expectCancellation(creator)
+        await expectCancellation(joined)
+        XCTAssertEqual(retryCalls, 0)
+        XCTAssertEqual(reader.currentSelectionID, successorID)
+        XCTAssertEqual(reader.pageURL, b.url)
+        XCTAssertTrue(reader.content === b)
+        XCTAssertTrue(successorFence())
+    }
+
+    func testCancelledJoinedCallerCannotRestartWithdrawnCreator() async throws {
+        let reader = ReaderContent(), a = record("cancelled-joined"), gate = Gate()
+        defer { gate.open() }
+        let creator = Task { @MainActor in
+            try await self.load(reader, a.url) { _ in await gate.wait(); return a }
+        }
+        await gate.waitForEntry()
+        let oldID = reader.currentSelectionID
+        let entered = expectation(description: "cancelled joined caller entered")
+        var retryCalls = 0
+        let joined = Task { @MainActor in
+            entered.fulfill()
+            try await self.load(reader, a.url) { _ in retryCalls += 1; return a }
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        joined.cancel()
+        creator.cancel()
+        gate.open()
+        await expectCancellation(creator)
+        await expectCancellation(joined)
+        XCTAssertEqual(retryCalls, 0)
+        XCTAssertEqual(reader.currentSelectionID, oldID)
+        XCTAssertNil(reader.content)
+    }
+
+    func testJoinedFreshResolutionCancellationDoesNotRetryAgain() async throws {
+        let reader = ReaderContent(), a = record("bounded-retry"), gate = Gate()
+        defer { gate.open() }
+        let creator = Task { @MainActor in
+            try await self.load(reader, a.url) { _ in await gate.wait(); return a }
+        }
+        await gate.waitForEntry()
+        let oldID = reader.currentSelectionID
+        let entered = expectation(description: "bounded joined caller entered")
+        var retryCalls = 0
+        let joined = Task { @MainActor in
+            entered.fulfill()
+            try await self.load(reader, a.url) { _ in retryCalls += 1; throw CancellationError() }
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        creator.cancel()
+        gate.open()
+        await expectCancellation(creator)
+        await expectCancellation(joined)
+        XCTAssertEqual(retryCalls, 1, "Fresh request failure propagates without looping")
+        XCTAssertNotEqual(reader.currentSelectionID, oldID)
+        XCTAssertNil(reader.content)
+    }
+
+    func testWithdrawnCreatorNonCancellationFailureStillPropagatesToJoinedCaller() async throws {
+        let reader = ReaderContent(), a = record("withdrawn-failure"), gate = Gate()
+        defer { gate.open() }
+        let creator = Task { @MainActor in
+            try await self.load(reader, a.url) { _ in await gate.wait(); throw Failure.expected }
+        }
+        await gate.waitForEntry()
+        let oldID = reader.currentSelectionID
+        let oldFence = reader.makeSelectionCommitFence(requiring: oldID)
+        let entered = expectation(description: "failing joined caller entered")
+        var retryCalls = 0
+        let joined = Task { @MainActor in
+            entered.fulfill()
+            try await self.load(reader, a.url) { _ in retryCalls += 1; return a }
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        creator.cancel()
+        XCTAssertFalse(oldFence())
+        gate.open()
+        await expectFailure(creator)
+        await expectFailure(joined)
+        XCTAssertEqual(retryCalls, 0)
+        XCTAssertEqual(reader.currentSelectionID, oldID)
+        XCTAssertNil(reader.content)
+    }
+
     func testCoalescedFailurePreservesOriginalErrorThenAllowsRetry() async throws {
         let reader = ReaderContent(), a = record("a"), gate = Gate()
         defer { gate.open() }
