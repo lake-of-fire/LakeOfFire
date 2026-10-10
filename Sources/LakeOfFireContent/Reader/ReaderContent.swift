@@ -350,6 +350,7 @@ public class ReaderContent: ObservableObject {
         // never a replacement selection or a coalesced caller's owner.
         try await withTaskCancellationHandler {
             retiredTask?.cancel()
+            @MainActor
             func validatePublication() throws {
                 try Task.checkCancellation()
                 guard selectionID == loadID, nextLifetime.permitsCommit(),
