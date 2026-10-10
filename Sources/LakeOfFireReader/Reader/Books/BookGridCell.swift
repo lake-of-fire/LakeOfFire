@@ -43,14 +43,6 @@ fileprivate struct BookGridCellContent: View {
         .truncationMode(.tail)
     }
 
-    private var importIdentity: BookDownloadImportIdentity {
-        BookDownloadImportIdentity(
-            remoteURL: downloadable.url,
-            localDestination: downloadable.localDestination,
-            name: downloadable.name
-        )
-    }
-
     private func buttonPress() {
         Task { @MainActor in
             onSelected?(true)
@@ -118,6 +110,14 @@ fileprivate struct DownloadableBookGridCell: View {
         } message: {
             Text(presentedError ?? "")
         }
+    }
+
+    private var importIdentity: BookDownloadImportIdentity {
+        BookDownloadImportIdentity(
+            remoteURL: downloadable.url,
+            localDestination: downloadable.localDestination,
+            name: downloadable.name
+        )
     }
 
     private func buttonPress() {
