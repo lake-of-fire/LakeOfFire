@@ -128,6 +128,42 @@ const harness = ({ current = true, postThrows = false } = {}) => {
     }
 }
 
+test('command, status and cancellation retain the captured producer document timestamp', async () => {
+    const h = harness()
+    const producerOwner = Object.freeze({
+        token: 'producer-token-a',
+        frameURL: 'ebook://book/viewer',
+        documentStartedAtMs: 42,
+    })
+    const message = nativeMarkReadCommandMessage({
+        stableIdentityVersion: 1,
+        segments: [{ stableSegmentID: 'segment-a' }],
+        sentenceIdentifiers: [],
+    }, {
+        topWindowURL: 'ebook://book/viewer',
+        documentStartedAtMs: 43,
+        producerOwner,
+    })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message })
+    const posted = h.posted[0]
+    assert.equal(posted.documentStartedAtMs, producerOwner.documentStartedAtMs)
+    assert.deepEqual(posted.readerArticleProducer, producerOwner)
+
+    const slowCallback = [...h.timeouts.values()][0]
+    slowCallback()
+    assert.equal(h.controls[0].manualReadPendingOperation, 'status')
+    assert.equal(h.controls[0].documentStartedAtMs, producerOwner.documentStartedAtMs)
+    h.coordinator.cancel(posted.requestID)
+    assert.equal(h.controls.at(-1).manualReadPendingOperation, 'cancel')
+    assert.equal(h.controls.at(-1).documentStartedAtMs, producerOwner.documentStartedAtMs)
+    assert.equal(h.controls.at(-1).manualReadPendingObservationToken,
+        posted.manualReadPendingObservationToken)
+
+    h.coordinator.settle(terminalFor(posted, { success: false, errorCode: 'cancelled' }))
+    assert.equal((await completion).success, false)
+    assert.equal(h.coordinator.pendingCount, 0)
+})
+
 test('publishes success only after the exact pending-protocol native reply', async () => {
     const h = harness()
     const completion = h.coordinator.request({

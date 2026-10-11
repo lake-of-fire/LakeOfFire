@@ -31,6 +31,12 @@ export const nativeMarkReadCommandMessage = (payload, documentIdentity = {}) => 
             ? { expectedManualSupportRevision: payload.expectedManualSupportRevision }
             : {}),
         ...identity,
+        // Native pending admission and every later observation must name the
+        // same document as the original producer ticket. Do not sample a new
+        // renderer timestamp after capturing that ticket.
+        ...(producerOwner && producerOwner.required !== false
+            ? { documentStartedAtMs: producerOwner.documentStartedAtMs }
+            : {}),
     }
     return producerOwner
         ? carryReaderArticleProducerOwner(message, producerOwner)

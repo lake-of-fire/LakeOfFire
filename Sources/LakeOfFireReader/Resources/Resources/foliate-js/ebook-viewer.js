@@ -6924,11 +6924,11 @@ class Reader {
     async navigateBookReadingAction(target) {
         const runtime = this.bookReadingRuntime;
         if (!runtime) return { status: 'superseded' };
-        const producerOwner = this.#captureProducerEvidence();
         const origin = {
             lifecycleGeneration: this.#lifecycleGeneration,
             renderer: this.view?.renderer,
             accountPresentation: runtime.state.accountPresentation,
+            locationRevision: runtime.state.locationRevision,
             // Native publishes the newly committed pass before dispatching
             // navigation. An end page has no chapter scope to carry forward.
             scope: runtime.state.context?.scope ?? {
@@ -6937,7 +6937,28 @@ class Reader {
                 chapterKey: null, chapterEpochID: null,
             },
         };
-        return await runtime.navigate(target, { onCompleted: isNavigationCurrent => {
+        const ownsOrigin = () => this.bookReadingRuntime === runtime && globalThis.reader === this
+            && this.#isRendererLifecycleCurrent(origin.lifecycleGeneration, origin.renderer)
+            && runtime.state.accountPresentation === origin.accountPresentation
+            && runtime.state.locationRevision === origin.locationRevision;
+        const navigationTarget = Object.freeze({ ...target });
+        const producer = globalThis.manabiArticleProducer;
+        let producerOwner = this.#captureProducerEvidence();
+        if (!ownsOrigin()) return { status: 'superseded' };
+        if (!producerOwner) {
+            // Reset has already committed and published its successor pass.
+            // Join that pass's producer admission before creating the physical
+            // navigation event, never recapture an owner in its later callback.
+            if (!runtime.state.admitsNavigation(navigationTarget)) return { status: 'superseded' };
+            if (typeof producer?.ready !== 'function') return { status: 'failed' };
+            try { producerOwner = await producer.ready(); }
+            catch (_) { return { status: ownsOrigin() ? 'failed' : 'superseded' }; }
+            if (!ownsOrigin() || globalThis.manabiArticleProducer !== producer
+                || !runtime.state.admitsNavigation(navigationTarget)) return { status: 'superseded' };
+            if (!ownsOrigin()) return { status: 'superseded' };
+            if (!readerArticleProducerOwnerIsCurrent(producerOwner)) return { status: 'failed' };
+        }
+        return await runtime.navigate(navigationTarget, { onCompleted: isNavigationCurrent => {
             if (this.bookReadingRuntime !== runtime || globalThis.reader !== this
                 || !this.#isRendererLifecycleCurrent(origin.lifecycleGeneration, origin.renderer)
                 || runtime.state.accountPresentation !== origin.accountPresentation
