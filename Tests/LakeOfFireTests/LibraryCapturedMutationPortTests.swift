@@ -135,7 +135,7 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
         <?xml version="1.0" encoding="UTF-8"?>
         <opml version="2.0"><head><title>Imported scripts</title></head><body>
           <outline text="First" uuid="\(firstID.uuidString)" script="void(0);" allowedDomains="example.org,example.org,%65xample.org" />
-          <outline text="Second" uuid="\(secondID.uuidString)" script="void(1);" />
+          <outline text="Second" uuid="\(secondID.uuidString)" script="void(1);" isArchived="invalid" />
         </body></opml>
         """
         try Data(xml.utf8).write(to: url)
@@ -158,6 +158,8 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
             XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 1)
             XCTAssertTrue(try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: firstID)).isArchived,
                           "An omitted archive flag retains the importer's disabled default")
+            XCTAssertTrue(try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: secondID)).isArchived,
+                          "An invalid archive flag must not silently enable the imported script")
 
             try await LibraryDataManager.shared.importOPML(
                 fileURL: url, realmConfiguration: configuration

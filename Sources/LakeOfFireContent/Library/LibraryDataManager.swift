@@ -182,7 +182,11 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
 extension OPMLEntry {
     func attributeBoolValue(_ name: String) -> Bool? {
         guard let value = attributes?.first(where: { $0.name == name })?.value else { return nil }
-        return value == "true"
+        switch value {
+        case "true": return true
+        case "false": return false
+        default: return nil
+        }
     }
     
     func attributeStringValue(_ name: String) -> String? {
