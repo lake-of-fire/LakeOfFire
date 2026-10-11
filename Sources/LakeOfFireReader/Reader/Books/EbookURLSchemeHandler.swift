@@ -17,30 +17,87 @@ private let ebookPageTurnInteractionDiagnosticsEnabled: Bool = {
 #endif
 }()
 
-fileprivate func ebookRequestBodyData(_ request: URLRequest) -> Data? {
-    if let body = request.httpBody, !body.isEmpty {
-        return body
+let ebookProcessTextMaximumRequestBodyByteCount = 8 * 1_024 * 1_024
+
+enum EbookRequestBodyError: Error, Equatable {
+    case empty
+    case exceedsMaximumByteCount
+    case streamReadFailed
+}
+
+enum EbookRequestBodyStreamChunk {
+    case data(Data)
+    case end
+    case failure
+}
+
+func ebookBoundedRequestBodyData(
+    directBody: Data? = nil,
+    maximumByteCount: Int = ebookProcessTextMaximumRequestBodyByteCount,
+    isCancelled: () -> Bool = { Task.isCancelled },
+    nextStreamChunk: ((Int) -> EbookRequestBodyStreamChunk)? = nil
+) throws -> Data {
+    guard maximumByteCount >= 0 else { throw EbookRequestBodyError.exceedsMaximumByteCount }
+    guard !isCancelled() else { throw CancellationError() }
+
+    if let directBody {
+        guard !directBody.isEmpty else { throw EbookRequestBodyError.empty }
+        guard directBody.count <= maximumByteCount else {
+            throw EbookRequestBodyError.exceedsMaximumByteCount
+        }
+        return directBody
     }
-    guard let stream = request.httpBodyStream else {
-        return nil
+
+    guard let nextStreamChunk else { throw EbookRequestBodyError.empty }
+    var result = Data()
+    while true {
+        guard !isCancelled() else { throw CancellationError() }
+        let remaining = maximumByteCount - result.count
+        let maximumReadCount = remaining == Int.max ? Int.max : remaining + 1
+        switch nextStreamChunk(maximumReadCount) {
+        case .data(let chunk):
+            guard !isCancelled() else { throw CancellationError() }
+            guard chunk.count <= maximumByteCount - result.count else {
+                throw EbookRequestBodyError.exceedsMaximumByteCount
+            }
+            result.append(chunk)
+        case .end:
+            guard !isCancelled() else { throw CancellationError() }
+            guard !result.isEmpty else { throw EbookRequestBodyError.empty }
+            return result
+        case .failure:
+            throw EbookRequestBodyError.streamReadFailed
+        }
     }
+}
+
+func ebookRequestBodyData(
+    _ request: URLRequest,
+    maximumByteCount: Int = ebookProcessTextMaximumRequestBodyByteCount
+) throws -> Data {
+    if let body = request.httpBody {
+        return try ebookBoundedRequestBodyData(
+            directBody: body,
+            maximumByteCount: maximumByteCount
+        )
+    }
+    guard let stream = request.httpBodyStream else { throw EbookRequestBodyError.empty }
     stream.open()
     defer { stream.close() }
+
     let chunkSize = 64 * 1024
     let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: chunkSize)
     defer { buffer.deallocate() }
-    var result = Data()
-    while stream.hasBytesAvailable {
-        let readCount = stream.read(buffer, maxLength: chunkSize)
-        if readCount < 0 {
-            return nil
+
+    return try ebookBoundedRequestBodyData(
+        maximumByteCount: maximumByteCount,
+        nextStreamChunk: {
+            let readCount = stream.read(buffer, maxLength: min(chunkSize, $0))
+            if readCount < 0 { return .failure }
+            if readCount == 0 { return stream.streamStatus == .error ? .failure : .end }
+            return .data(Data(bytes: buffer, count: readCount))
         }
-        if readCount == 0 {
-            break
-        }
-        result.append(buffer, count: readCount)
-    }
-    return result.isEmpty ? nil : result
+    )
 }
 
 private enum EbookBase64URLByte {
@@ -1087,7 +1144,21 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }()
                 }
             } else if url.path == "/process-text" {
-                if urlSchemeTask.request.httpMethod == "POST", let payload = ebookRequestBodyData(urlSchemeTask.request), let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
+                let payload: Data
+                do {
+                    guard urlSchemeTask.request.httpMethod == "POST" else {
+                        throw CustomSchemeHandlerError.fileNotFound
+                    }
+                    payload = try ebookRequestBodyData(urlSchemeTask.request)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    await { @MainActor in
+                        self.failActiveTask(urlSchemeTask, error: error)
+                    }()
+                    return
+                }
+                if let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
                     if let ebookTextProcessor {
                         let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER") == "true"
                         let processingVariant = await ebookProcessingVariantProvider?()
