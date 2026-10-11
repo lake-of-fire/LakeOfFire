@@ -68,3 +68,14 @@ The following paths remain differing after the native-loader and diagnostic-fram
 ## Next bounded work
 
 Finish paired lookup generation/receipt reconciliation and processing completion/cache admission without enabling passive Common compatibility models as active reading authority. Review current opening-producer lifetime before publishing the prepared optional environment wiring. Swift UNCOMPILED; JavaScript and native tests UNRUN. No native launches, builds, project generation, CI dispatches, pins, merges, deployment or production changes.
+
+## Additional behavior-level classification — 10:27 UTC
+
+Re-read the complete following files at retained #50 `11b71f294a530cf38352065bceb05ce10aa88aa7` and composed #138 `afc84d64b4dcbc18b2fc7ddddfb43bb60b48cbcd`:
+
+- `ReaderJavascriptMessages.swift`: active declarations and parsing behavior match. Differences are declaration ordering and a force-cast inside an already commented-out historical block. No executable port is missing in this file.
+- `EPubParser.swift`: keep the composed parser. Both use bounded ReaderPackageEntrySource loading. Composed additionally rejects internal/external XML entity declarations, disables external resolution, handles CDATA, honors EPUB main-title refinements and skips empty creators before selecting the author. The retained parser would remove these protections/features; its whole-file diff is not port work.
+- `ReaderViewModel.swift`: preserve composed captured URL/document-binding admission, final write checks and receipt-bound JavaScript title updates, plus the isolated regression initializer. Retained code reads mutable page state after awaits and evaluates without that binding. No retained-only executable behavior was found in this bounded comparison.
+- `ArticleReadingProgress.swift`: the retained-only persisted `readAuthorityEpochID` is a real schema/authority difference. It is not covered by reordering or the existing native-loader port. Current Core #183 `e71646312b548e694dd878ffc79410f063347f4f` direct-read persistence still chooses progress by URL and does not select an authority epoch. The paired authority/reset/migration ownership must be reconciled before treating a passive field addition as the completed port. Do not change dependency pins or silently activate Common rebasing while carrying it.
+
+No source changes or closures follow from the first three classifications. The last remains open. The earlier forty-path table remains an exact historical comparison, not a current missing-work count. All native qualification remains UNCOMPILED/UNRUN.
