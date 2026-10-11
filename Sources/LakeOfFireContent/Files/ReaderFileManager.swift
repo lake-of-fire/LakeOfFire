@@ -72,7 +72,51 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     nonisolated(unsafe) public static var shared = ReaderFileManager()
 
     /// Keeps isolated import/index tests and callers on one content Realm.
-    var historyRealmConfigurationOverride: Realm.Configuration?
+    var historyRealmConfigurationOverride: Realm.Configuration? {
+        willSet { inventoryOwnership.invalidate() }
+    }
+
+    private final class InventoryOwnership: @unchecked Sendable {
+        private let lock = NSLock()
+        private var generation = UUID()
+
+        func invalidate() {
+            lock.lock()
+            generation = UUID()
+            lock.unlock()
+        }
+
+        func receipt() -> UUID {
+            lock.lock()
+            defer { lock.unlock() }
+            return generation
+        }
+
+        func mutateIfCurrent<Value>(_ receipt: UUID, operation: () throws -> Value) throws -> Value {
+            lock.lock()
+            defer { lock.unlock() }
+            guard generation == receipt else { throw CancellationError() }
+            try Task.checkCancellation()
+            return try operation()
+        }
+    }
+
+    private struct InventorySelection: @unchecked Sendable {
+        let receipt: UUID
+        let localDrive: CloudDrive?
+        let cloudDrive: CloudDrive?
+        let configuration: Realm.Configuration
+    }
+
+    private struct InventoryTask {
+        let id: UUID
+        let task: Task<Void, Error>
+    }
+
+    private let inventoryOwnership = InventoryOwnership()
+    // Instance seams suspend the real scan, without substituting its results.
+    var inventoryBeforeMetadataWrite: (@Sendable () async -> Void)?
+    @MainActor var inventoryBeforePublication: (@MainActor () async -> Void)?
 
     private let defaultLocalRootURLProvider: @Sendable () -> URL
     typealias CloudDriveFactory = @MainActor @Sendable (String) async throws -> CloudDrive
@@ -132,6 +176,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     @MainActor private var initializationID: UUID?
     
     /*@MainActor*/ public var cloudDrive: CloudDrive? {
+        willSet { inventoryOwnership.invalidate() }
         didSet {
             Task { @MainActor in
                 objectWillChange.send()
@@ -140,6 +185,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     }
     //    /*@MainActor*/ @Published public var legacyCloudDrive: CloudDrive?
     /*@MainActor*/ public var localDrive: CloudDrive? {
+        willSet { inventoryOwnership.invalidate() }
         didSet {
             Task { @MainActor in
                 objectWillChange.send()
@@ -157,9 +203,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
     }
     
-    private var refreshAllFilesMetadataTask: Task<Void, any Swift.Error>?
-    @MainActor private var lastRefreshAllFilesMetadataStartedAt: Date?
-    @MainActor private var refreshAllFilesMetadataNeedsFollowUp = false
+    @MainActor private var inventoryTasks: [UUID: InventoryTask] = [:]
+    @MainActor private var lastInventoryPublishedAt: [UUID: Date] = [:]
+    @MainActor private var inventoryNeedsFollowUp = Set<UUID>()
     private static let refreshAllFilesMetadataDebounceInterval: TimeInterval = 2
 
     private static let internalStorageRootPrefixes: Set<String> = [
@@ -215,6 +261,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     @MainActor
     public func initialize(ubiquityContainerIdentifier: String) async throws {
         try Task.checkCancellation()
+        inventoryOwnership.invalidate()
         let identifier = UUID()
         initializationID = identifier
 
@@ -242,8 +289,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         hasInitializedUbiquityContainerIdentifier = true
         NotificationCenter.default.post(name: Self.driveAvailabilityDidChangeNotification, object: self)
         try validateInitialization(identifier)
-        // Inventory still uses the legacy shared refresh task. Preparation
-        // success does not acknowledge a generation-matched inventory scan.
+        // Preparation success does not acknowledge inventory completion.
         Task { [weak self] in
             try await self?.refreshAllFilesMetadata()
         }
@@ -258,7 +304,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     @MainActor
     public func appSuspendedDidChange(isSuspended: Bool) {
         if isSuspended {
-            refreshAllFilesMetadataTask?.cancel()
+            inventoryOwnership.invalidate()
+            for entry in inventoryTasks.values { entry.task.cancel() }
         } else {
             Task { @MainActor in
                 try? await refreshAllFilesMetadata()
@@ -623,94 +670,128 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         )
     }
 
+    @MainActor private var inventoryConfigurationIdentity: String?
+
+    private static func inventoryRealmIdentity(_ configuration: Realm.Configuration) -> String {
+        if let identifier = configuration.inMemoryIdentifier { return "memory:" + identifier }
+        return "file:" + (configuration.fileURL?.standardizedFileURL.absoluteString ?? "default")
+    }
+
+    @MainActor
+    private func captureInventorySelection(configuration: Realm.Configuration) throws -> InventorySelection {
+        try Task.checkCancellation()
+        let identity = Self.inventoryRealmIdentity(configuration)
+        if inventoryConfigurationIdentity != identity {
+            inventoryOwnership.invalidate()
+            inventoryConfigurationIdentity = identity
+        }
+        let selection = InventorySelection(receipt: inventoryOwnership.receipt(),
+            localDrive: localDrive, cloudDrive: cloudDrive, configuration: configuration)
+        try validateInventorySelection(selection)
+        return selection
+    }
+
+    private func validateInventoryStorage(_ selection: InventorySelection) throws {
+        try Task.checkCancellation()
+        guard localDrive === selection.localDrive, cloudDrive === selection.cloudDrive,
+              Self.inventoryRealmIdentity(resolvedHistoryRealmConfiguration)
+                == Self.inventoryRealmIdentity(selection.configuration) else { throw CancellationError() }
+    }
+
+    private func validateInventorySelection(_ selection: InventorySelection) throws {
+        try inventoryOwnership.mutateIfCurrent(selection.receipt) {
+            try validateInventoryStorage(selection)
+        }
+    }
+
     @MainActor
     private func refreshAllFilesMetadata(
         force: Bool,
         realmConfiguration: Realm.Configuration
     ) async throws {
-        if let refreshAllFilesMetadataTask {
-            if force {
-                refreshAllFilesMetadataNeedsFollowUp = true
-            }
-            try await refreshAllFilesMetadataTask.value
+        let selection = try captureInventorySelection(configuration: realmConfiguration)
+        let receipt = selection.receipt
+        if let entry = inventoryTasks[receipt], !entry.task.isCancelled {
+            if force { inventoryNeedsFollowUp.insert(receipt) }
+            try await entry.task.value
+            try validateInventorySelection(selection)
             return
         }
-        if !force,
-           files != nil,
-           let lastRefreshAllFilesMetadataStartedAt,
-           Date().timeIntervalSince(lastRefreshAllFilesMetadataStartedAt)
-                < Self.refreshAllFilesMetadataDebounceInterval {
-            return
-        }
+        if !force, let published = lastInventoryPublishedAt[receipt],
+           Date().timeIntervalSince(published) < Self.refreshAllFilesMetadataDebounceInterval { return }
 
-        refreshAllFilesMetadataNeedsFollowUp = false
-        lastRefreshAllFilesMetadataStartedAt = Date()
-        refreshAllFilesMetadataTask = Task { @MainActor in
+        // A replaced tuple/configuration has its own task and debounce receipt.
+        // An obsolete task's cleanup may never remove its successor's entry.
+        let id = UUID()
+        inventoryNeedsFollowUp.remove(receipt)
+        let task = Task { @MainActor in
             defer {
-                refreshAllFilesMetadataTask = nil
+                if inventoryTasks[receipt]?.id == id {
+                    inventoryTasks.removeValue(forKey: receipt)
+                    inventoryNeedsFollowUp.remove(receipt)
+                }
             }
-            repeat {
-                refreshAllFilesMetadataNeedsFollowUp = false
-                do {
-                    guard localDrive != nil || cloudDrive != nil else { return }
-                    var files = [ThreadSafeReference<ContentFile>]()
-                    for drive in [localDrive, cloudDrive].compactMap({ $0 }) {
-                        try Task.checkCancellation()
-                        if let discovered = try await refreshFilesMetadata(
-                            drive: drive,
-                            realmConfiguration: realmConfiguration
-                        ) {
-                            files.append(contentsOf: discovered)
-                        }
+            do {
+                repeat {
+                    // Once a new pass is admitted, an earlier publication is
+                    // no longer evidence that this requested scan succeeded.
+                    lastInventoryPublishedAt.removeValue(forKey: receipt)
+                    inventoryNeedsFollowUp.remove(receipt)
+                    try validateInventorySelection(selection)
+                    guard selection.localDrive != nil || selection.cloudDrive != nil else { return }
+                    var discovered = [ThreadSafeReference<ContentFile>]()
+                    for drive in [selection.localDrive, selection.cloudDrive].compactMap({ $0 }) {
+                        try validateInventorySelection(selection)
+                        guard let references = try await refreshFilesMetadata(
+                            drive: drive, realmConfiguration: selection.configuration
+                        ) else { throw CocoaError(.fileReadUnknown) }
+                        discovered.append(contentsOf: references)
+                        try validateInventorySelection(selection)
                     }
-
-                    let discoveredFiles = files
-                    try await { @MainActor [weak self] in
-                        try Task.checkCancellation()
-                        guard let self = self else { return }
-                        let realm = try await Realm.open(configuration: realmConfiguration)
-                        let files = try discoveredFiles.compactMap {
-                            try Task.checkCancellation()
-                            return realm.resolve($0)
-                        }
-                        self.files = files
-                        let discoveredURLs = try files.map {
-                            try Task.checkCancellation()
-                            return $0.url
-                        }
-
-                        // Delete orphans (objects with no corresponding file on disk)
-                        try await { @RealmBackgroundActor in
-                            try Task.checkCancellation()
-                            let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                                for: realmConfiguration
-                            )
-                            let existingURLs = try discoveredURLs.map {
-                                try Task.checkCancellation()
-                                return $0.absoluteString
-                            }
-                            let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND NOT (url IN %@)", NSNumber(booleanLiteral: false), existingURLs))
-                            //await realm.asyncRefresh()
-                            try await realm.asyncWrite {
-                                for orphan in orphans {
+                    await inventoryBeforePublication?()
+                    try validateInventorySelection(selection)
+                    let realm = try await Realm.open(configuration: selection.configuration)
+                    try validateInventorySelection(selection)
+                    let resolved = try discovered.compactMap { reference in
+                        try validateInventorySelection(selection)
+                        return realm.resolve(reference)
+                    }
+                    let discoveredURLs = resolved.map { $0.url.absoluteString }
+                    try await { @RealmBackgroundActor in
+                        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: selection.configuration)
+                        try validateInventorySelection(selection)
+                        try await realm.asyncWrite {
+                            // Drive/configuration setters advance this receipt before
+                            // replacing state and wait for an admitted synchronous write.
+                            try inventoryOwnership.mutateIfCurrent(receipt) {
+                                try validateInventoryStorage(selection)
+                                let orphans = realm.objects(ContentFile.self).filter(NSPredicate(
+                                    format: "isDeleted == %@ AND NOT (url IN %@)",
+                                    NSNumber(booleanLiteral: false), discoveredURLs))
+                                for orphan in Array(orphans) {
                                     try Task.checkCancellation()
                                     orphan.isDeleted = true
                                     orphan.refreshChangeMetadata(explicitlyModified: true)
                                 }
                             }
-                        }()
+                        }
                     }()
-                } catch {
-                    if !(error is CancellationError) {
-                        Logger.shared.logger.error("\(error)")
-                    }
-                    throw error
-                }
-            } while refreshAllFilesMetadataNeedsFollowUp && !Task.isCancelled
+                    // Publish only after the captured orphan transaction succeeds.
+                    // There is no suspension between admission and UI publication.
+                    try validateInventorySelection(selection)
+                    self.files = resolved
+                    lastInventoryPublishedAt = [receipt: Date()]
+                } while inventoryNeedsFollowUp.contains(receipt) && !Task.isCancelled
+            } catch {
+                if !(error is CancellationError) { Logger.shared.logger.error("\(error)") }
+                throw error
+            }
         }
-        try await refreshAllFilesMetadataTask?.value
+        inventoryTasks[receipt] = InventoryTask(id: id, task: task)
+        try await task.value
+        try validateInventorySelection(selection)
     }
-    
+
     static let additionalFilePackageSuffixesToAvoidDescendingInto = [
         ".epub",
     ]
@@ -722,6 +803,19 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         realmConfiguration: Realm.Configuration? = nil
     ) async throws -> [ThreadSafeReference<ContentFile>]? {
         let realmConfiguration = realmConfiguration ?? resolvedHistoryRealmConfiguration
+        let selection = try captureInventorySelection(configuration: realmConfiguration)
+        guard drive === selection.localDrive || drive === selection.cloudDrive else { throw CancellationError() }
+        return try await scanInventoryFiles(drive: drive, relativePath: relativePath, selection: selection)
+    }
+
+    @MainActor
+    private func scanInventoryFiles(
+        drive: CloudDrive,
+        relativePath: RootRelativePath?,
+        selection: InventorySelection
+    ) async throws -> [ThreadSafeReference<ContentFile>]? {
+        try validateInventorySelection(selection)
+        let realmConfiguration = selection.configuration
         var files = [ThreadSafeReference<ContentFile>]()
         var filesToUpdate: [(readerFileURL: URL, absoluteFileURL: URL)] = []
         do {
@@ -730,7 +824,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 includingPropertiesForKeys: [.isDirectoryKey],
                 options: [.skipsHiddenFiles, .producesRelativePathURLs]
             ) {
-                try Task.checkCancellation()
+                try validateInventorySelection(selection)
                 var tryRelativePath = RootRelativePath(path: url.relativePath)
                 if let relativePath, !relativePath.path.isEmpty {
                     tryRelativePath.path = relativePath.path + "/" + tryRelativePath.path
@@ -767,12 +861,14 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 if !url.isFilePackage(),
                    !Self.additionalFilePackageSuffixesToAvoidDescendingInto.contains(where: { lastPathComponent.hasSuffix($0) }),
                    isDirectory {
-                    let discoveredFiles = try await refreshFilesMetadata(
+                    let discoveredFiles = try await scanInventoryFiles(
                         drive: drive,
                         relativePath: tryRelativePath,
-                        realmConfiguration: realmConfiguration
+                        selection: selection
                     )
-                    files.append(contentsOf: discoveredFiles ?? [])
+                    try validateInventorySelection(selection)
+                    guard let discoveredFiles else { return nil }
+                    files.append(contentsOf: discoveredFiles)
                 } else {
                     let indexDecision = Self.contentFileIndexDecision(at: absoluteFileURL)
                     switch indexDecision {
@@ -802,6 +898,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         )
                     }
                     if let readerFileURL = try await readerFileURL(for: absoluteFileURL, drive: drive) {
+                        try validateInventorySelection(selection)
                         filesToUpdate.append((readerFileURL, absoluteFileURL))
                     }
                 }
@@ -813,7 +910,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     path: relativePath?.path ?? "",
                     reason: "disappearedDuringRefresh"
                 )
-                return files
+                return nil
             }
             if !(error is CancellationError) {
                 debugPrint("refreshFilesMetadata error:", error)
@@ -822,6 +919,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
 
         if !filesToUpdate.isEmpty {
+            await inventoryBeforeMetadataWrite?()
+            try validateInventorySelection(selection)
             let pendingFilesToUpdate = filesToUpdate
             let updatedFiles = try await { @RealmBackgroundActor in
                 var updatedFiles = [ContentFile]()
@@ -829,44 +928,50 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(
                     for: realmConfiguration
                 )
-
+                try validateInventorySelection(selection)
                 try await realm.asyncWrite {
-                    for (readerFileURL, absoluteFileURL) in pendingFilesToUpdate {
-                        try Task.checkCancellation()
+                    try inventoryOwnership.mutateIfCurrent(selection.receipt) {
+                        try validateInventoryStorage(selection)
+                        for (readerFileURL, absoluteFileURL) in pendingFilesToUpdate {
+                            try Task.checkCancellation()
 
-                        if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
-                            try Task.checkCancellation()
-                            if try setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: existing) {
-                                updatedFiles.append(existing)
+                            if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
+                                try Task.checkCancellation()
+                                if try setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: existing) {
+                                    updatedFiles.append(existing)
+                                }
+                                allFileRefs.append(ThreadSafeReference(to: existing))
+                            } else {
+                                let contentFile = ContentFile()
+                                contentFile.url = readerFileURL
+                                try Task.checkCancellation()
+                                if try setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: contentFile) {
+                                    contentFile.updateCompoundKey()
+                                    contentFile.isReaderModeByDefault = ReaderContentLoader.supportsReaderContent(
+                                        mimeType: contentFile.mimeType,
+                                        pathExtension: readerFileURL.lakePathExtension
+                                    )
+                                    realm.add(contentFile, update: .modified)
+                                    contentFile.refreshChangeMetadata(explicitlyModified: true)
+                                    updatedFiles.append(contentFile)
+                                }
+                                allFileRefs.append(ThreadSafeReference(to: contentFile))
                             }
-                            allFileRefs.append(ThreadSafeReference(to: existing))
-                        } else {
-                            let contentFile = ContentFile()
-                            contentFile.url = readerFileURL
-                            try Task.checkCancellation()
-                            if try setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: contentFile) {
-                                contentFile.updateCompoundKey()
-                                contentFile.isReaderModeByDefault = ReaderContentLoader.supportsReaderContent(
-                                    mimeType: contentFile.mimeType,
-                                    pathExtension: readerFileURL.lakePathExtension
-                                )
-                                realm.add(contentFile, update: .modified)
-                                contentFile.refreshChangeMetadata(explicitlyModified: true)
-                                updatedFiles.append(contentFile)
-                            }
-                            allFileRefs.append(ThreadSafeReference(to: contentFile))
                         }
                     }
                 }
                 for fileProcessor in Self.fileProcessors {
-                    try Task.checkCancellation()
+                    try validateInventorySelection(selection)
                     try await fileProcessor(updatedFiles)
+                    try validateInventorySelection(selection)
                 }
                 return allFileRefs
             }()
+            try validateInventorySelection(selection)
             files.append(contentsOf: updatedFiles)
         }
 
+        try validateInventorySelection(selection)
         return files
     }
 
@@ -1368,7 +1473,11 @@ public extension ReaderFileManager {
 extension ReaderFileManager: CloudDriveObserver {
     nonisolated public func cloudDriveDidChange(_ drive: CloudDrive, rootRelativePaths: [RootRelativePath]) {
         Task { @MainActor [weak self] in
-            try await self?.refreshAllFilesMetadata()
+            guard let self, drive === localDrive || drive === cloudDrive else { return }
+            // A drive observation invalidates both the discovered set and its
+            // orphan authority, including work waiting to enter a Realm write.
+            inventoryOwnership.invalidate()
+            try await refreshAllFilesMetadata(force: true)
         }
     }
 }
