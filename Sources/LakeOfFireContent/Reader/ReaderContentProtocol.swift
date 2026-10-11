@@ -425,30 +425,47 @@ public extension ReaderContentProtocol {
         return String(decoding: data, as: UTF8.self)
     }
 
-    // TODO: Refactor to put on background thread
     @MainActor
     public func htmlToDisplay(readerFileManager: ReaderFileManager) async throws -> String? {
-        // rssContainsFullContent name is out of date; it just means this object contains the full content (RSS or otherwise)
+        try await htmlToDisplay(
+            readFile: { try await readerFileManager.read(fileURL: $0) },
+            resolveMIMEType: { fileURL in
+                guard let key = try await ReaderFileManager.contentFilePrimaryKey(for: fileURL) else {
+                    return nil
+                }
+                return try await ReaderFileManager.mimeType(forContentFilePrimaryKey: key)
+            }
+        )
+    }
+
+    /// Keep managed-property reads on the caller's executor and never read a
+    /// retired row after file/metadata I/O suspends. Closures keep the production
+    /// path directly exercisable without opening global storage in regressions.
+    @MainActor
+    internal func htmlToDisplay(
+        readFile: @MainActor (URL) async throws -> Data?,
+        resolveMIMEType: @MainActor (URL) async throws -> String?
+    ) async throws -> String? {
+        guard !isInvalidated else { return nil }
+        // rssContainsFullContent also covers inline non-RSS content.
         if rssContainsFullContent || isFromClipboard {
             try Task.checkCancellation()
             return html
-        } else if url.isReaderFileURL {
-            guard let data = try? await readerFileManager.read(fileURL: url) else { return nil }
-            try Task.checkCancellation()
-            let text = String(decoding: data, as: UTF8.self)
-            if let contentFilePrimaryKey = try? await ReaderFileManager.contentFilePrimaryKey(for: url),
-               let mimeType = try? await ReaderFileManager.mimeType(forContentFilePrimaryKey: contentFilePrimaryKey) {
-                return ReaderContentLoader.normalizeIngestedText(
-                    text,
-                    mimeType: mimeType,
-                    pathExtension: url.pathExtension,
-                    source: .file
-                ).html
-            } else {
-                return ReaderContentLoader.normalizeIngestedText(text, pathExtension: url.pathExtension, source: .file).html
-            }
         }
-        return nil
+        let contentURL = url
+        guard contentURL.isReaderFileURL else { return nil }
+        guard let data = try? await readFile(contentURL) else { return nil }
+        try Task.checkCancellation()
+        guard !isInvalidated, url == contentURL else { return nil }
+        let mimeType = try? await resolveMIMEType(contentURL)
+        try Task.checkCancellation()
+        guard !isInvalidated, url == contentURL else { return nil }
+        return ReaderContentLoader.normalizeIngestedText(
+            String(decoding: data, as: UTF8.self),
+            mimeType: mimeType,
+            pathExtension: contentURL.pathExtension,
+            source: .file
+        ).html
     }
 
     /// Deprecated, use `content` or `html`.
