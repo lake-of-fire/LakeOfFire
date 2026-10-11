@@ -147,6 +147,90 @@ final class LibraryObserverRealmPortTests: XCTestCase {
         XCTAssertEqual(counts.1, 0)
     }
 
+    func testDisabledScriptObserverSettlesAndAllowsReenable() async throws {
+        let original = LibraryDataManager.realmConfiguration
+        let originallyObservedDownloads = LibraryDataManager.observesDownloadController
+        defer {
+            LibraryDataManager.realmConfiguration = original
+            LibraryDataManager.observesDownloadController = originallyObservedDownloads
+        }
+        LibraryDataManager.observesDownloadController = false
+        let configuration = makeConfiguration()
+        LibraryDataManager.realmConfiguration = configuration
+
+        let ids = try await Task { @RealmBackgroundActor in
+            let realm = try await Realm(
+                configuration: configuration,
+                actor: RealmBackgroundActor.shared
+            )
+            let library = LibraryConfiguration()
+            let script = UserScript()
+            script.script = "window.manabiObserverFixture = true"
+            library.userScriptIDs.append(script.id)
+            try await realm.asyncWrite { realm.add([library, script]) }
+            return (library.id, script.id)
+        }.value
+        let manager = LibraryDataManager()
+        addTeardownBlock {
+            await Task { @RealmBackgroundActor in
+                manager.realmCancellables.forEach { $0.cancel() }
+                manager.realmCancellables.removeAll()
+            }.value
+        }
+        let observersInstalled = try await eventually { @RealmBackgroundActor in
+            manager.realmCancellables.count == 2
+        }
+        XCTAssertTrue(observersInstalled)
+
+        for isDisabled in [true, false] {
+            try await Task { @RealmBackgroundActor in
+                let realm = try await Realm(
+                    configuration: configuration,
+                    actor: RealmBackgroundActor.shared
+                )
+                let script = try XCTUnwrap(realm.object(
+                    ofType: UserScript.self, forPrimaryKey: ids.1
+                ))
+                try await realm.asyncWrite { script.isArchived = isDisabled }
+            }.value
+
+            // Exercise the actual debounced collection observers. Observe a
+            // settled interval longer than two 0.3-second debounce periods.
+            try await Task.sleep(nanoseconds: 700_000_000)
+            let before = try await Task { @RealmBackgroundActor in
+                let realm = try await Realm(
+                    configuration: configuration,
+                    actor: RealmBackgroundActor.shared
+                )
+                let library = try XCTUnwrap(realm.object(
+                    ofType: LibraryConfiguration.self, forPrimaryKey: ids.0
+                ))
+                XCTAssertEqual(Array(library.userScriptIDs), [ids.1])
+                let visible = try XCTUnwrap(library.getUserScripts()?.first)
+                XCTAssertEqual(visible.id, ids.1)
+                XCTAssertEqual(visible.isArchived, isDisabled)
+                XCTAssertEqual(
+                    library.getActiveWebViewUserScriptDescriptors()?.map(\.id),
+                    isDisabled ? [] : [ids.1]
+                )
+                return (library.modifiedAt, library.explicitlyModifiedAt)
+            }.value
+            try await Task.sleep(nanoseconds: 700_000_000)
+            try await Task { @RealmBackgroundActor in
+                let realm = try await Realm(
+                    configuration: configuration,
+                    actor: RealmBackgroundActor.shared
+                )
+                let library = try XCTUnwrap(realm.object(
+                    ofType: LibraryConfiguration.self, forPrimaryKey: ids.0
+                ))
+                XCTAssertEqual(Array(library.userScriptIDs), [ids.1])
+                XCTAssertEqual(library.modifiedAt, before.0)
+                XCTAssertEqual(library.explicitlyModifiedAt, before.1)
+            }.value
+        }
+    }
+
     private func makeConfiguration() -> Realm.Configuration {
         var configuration = Realm.Configuration(
             inMemoryIdentifier: UUID().uuidString
@@ -155,6 +239,7 @@ final class LibraryObserverRealmPortTests: XCTestCase {
             LibraryConfiguration.self,
             FeedCategory.self,
             UserScript.self,
+            UserScriptAllowedDomain.self,
         ]
         configureLakeOfFireMutationTrackingForTesting(&configuration)
         return configuration

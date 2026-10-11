@@ -102,7 +102,9 @@ extension LibraryConfiguration {
                     ) else {
                         return true
                     }
-                    return !script.isDeleted && !script.isArchived
+                    // Archived scripts are disabled, but remain reachable in the library
+                    // so the user can enable them again. refreshScripts uses this policy too.
+                    return !script.isDeleted
                 }
             }
 
@@ -139,7 +141,7 @@ extension LibraryConfiguration {
             let referencedScriptIDs = Set(scriptIDs)
             let orphanScriptIDs = Array(
                 realm.objects(UserScript.self).where {
-                    !$0.isDeleted && !$0.isArchived
+                    !$0.isDeleted
                 }
             ).filter {
                 !referencedScriptIDs.contains($0.id)
