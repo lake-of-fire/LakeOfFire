@@ -15,3 +15,10 @@ Destination reviewed: #138 at 97e1f7b0ec65c4c25ac7d0109e42ae48f659046b.
 - Twenty existing actual-module URL/model cases carried from #50; three redirected-feed/publication/XML cases added.
 - All 23 cases UNRUN. No builds, tests, CI dispatch, dependency pin changes or retired validation systems.
 - #50 remains open: HTTP status/partial-document admission, cancellation/Sendable callback ownership, XML namespace/lexical base boundaries, OpenSearch and catalog view integration still require reconciliation. No claim of full OPDS coverage or supersession.
+
+## XML and OpenSearch continuation — 07:14 UTC
+- Ported the #50 namespace-aware Atom parser, per-element XML base handling, scoped entry/author state, CDATA retention, namespaced counters/facets, exact acquisition classification and catalog-first navigation.
+- Ported OpenSearch root/namespace/direct-child admission, lexical base resolution, template placeholder protection and quoted media-type parsing. Empty media types no longer index an empty array.
+- Existing callback signatures are retained; OpenSearch snapshots the self media type before the network callback and uses the final response URL. Shared HTTP admission and async/cancellation ownership are still pending.
+- Added 33 original actual-module document-boundary cases and the 11 pure search-document cases from the mixed #50 transport/search suite. The seven transport cases are deliberately not declared ported.
+- All 67 URL/redirect/document/search cases are UNRUN. Source review only, no native execution.
