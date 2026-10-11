@@ -31,8 +31,9 @@ final class SystemManagedReaderFontTests: XCTestCase {
             let response = try XCTUnwrap(sharedReaderFontResponse(for: cssURL, asset: asset))
             XCTAssertEqual(response.response.statusCode, 200)
             let css = String(decoding: response.data, as: UTF8.self)
-            XCTAssertTrue(css.contains("local('YuKyo-Medium')"))
-            XCTAssertTrue(css.contains("local('YuKyo_Yoko-Medium')"))
+            XCTAssertTrue(css.hasPrefix("@font-face {\n"), css)
+            XCTAssertTrue(css.contains("local('YuKyo-Medium')"), css)
+            XCTAssertTrue(css.contains("local('YuKyo_Yoko-Medium')"), css)
             XCTAssertTrue(css.contains("system-ui"))
             XCTAssertFalse(css.contains("src: url("))
             let fontURL = URL(string: "\(scheme)/manabi-fonts/system-font")!

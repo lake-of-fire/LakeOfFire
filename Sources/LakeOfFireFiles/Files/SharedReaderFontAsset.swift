@@ -252,7 +252,8 @@ public func sharedReaderFontResponse(
             return SharedReaderFontServedResponse(response: response, data: Data())
         }
 
-        let fontFaces = asset.supportedFamilyNames.map { supportedFamilyName in
+        // Keep CSS literals and joining on String rather than imported SQL overloads.
+        let fontFaces: String = asset.supportedFamilyNames.map { supportedFamilyName -> String in
             let source: String
             if let postScriptName = asset.systemFontNames[supportedFamilyName] {
                 source = "local('\(postScriptName)')"
