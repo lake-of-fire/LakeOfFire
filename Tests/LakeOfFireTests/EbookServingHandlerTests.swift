@@ -155,4 +155,42 @@ final class EbookServingHandlerTests: XCTestCase {
         XCTAssertEqual(task.failures.count, 1)
         XCTAssertTrue(task.responses.isEmpty && task.bytes.isEmpty)
     }
+    @MainActor
+    func testUnprocessedResponseCannotPublishAfterSessionWithdrawal() async throws {
+        let package = try await package("Retained bytes")
+        let store = ReaderEBookServingSessionStore(), lease = try store.install(package)
+        let handler = handler(store), webView = WKWebView()
+        var source = request(route: "process-text", session: lease.id, subpath: nil)
+        source.httpMethod = "POST"
+        source.httpBody = Data("<p>Unprocessed response</p>".utf8)
+        source.setValue(sourceURL.absoluteString, forHTTPHeaderField: "X-Content-Location")
+        source.setValue("OPS/chapter.xhtml", forHTTPHeaderField: "X-Replaced-Text-Location")
+        let task = ServingSchemeTask(source)
+        // No text processor is installed: even the raw response must remain
+        // owned by its receipt, rather than bypassing terminal lease admission.
+        handler.webView(webView, start: task)
+        store.withdraw(lease)
+        await fulfillment(of: [task.completed], timeout: 10)
+        XCTAssertEqual(task.failures.count, 1)
+        XCTAssertEqual(task.finishCount, 0)
+        XCTAssertTrue(task.responses.isEmpty && task.bytes.isEmpty)
+    }
+
+    @MainActor
+    func testReplacingHandlerStoreRejectsCapturedReadWithoutClosingSharedOwner() async throws {
+        let package = try await package("Other owner remains valid")
+        let shared = ReaderEBookServingSessionStore(), lease = try shared.install(package)
+        let handler = handler(shared), webView = WKWebView()
+        let task = ServingSchemeTask(request(session: lease.id))
+        handler.webView(webView, start: task)
+        handler.packageSessions = ReaderEBookServingSessionStore()
+        await fulfillment(of: [task.completed], timeout: 10)
+        XCTAssertEqual(task.failures.count, 1)
+        XCTAssertEqual(task.finishCount, 0)
+        XCTAssertTrue(task.responses.isEmpty && task.bytes.isEmpty)
+        XCTAssertNoThrow(try lease.validate())
+        XCTAssertEqual(try lease.readEntry(subpath: "OPS/chapter.xhtml"),
+                       Data("Other owner remains valid".utf8))
+    }
+
 }

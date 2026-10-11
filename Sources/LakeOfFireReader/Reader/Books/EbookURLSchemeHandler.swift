@@ -1263,6 +1263,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         await { @MainActor in
                             self.finishActiveTask(
                                 urlSchemeTask,
+                                requiring: packageRead,
                                 response: response,
                                 data: responseData
                             )
