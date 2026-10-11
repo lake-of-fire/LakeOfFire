@@ -526,7 +526,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         return try await importFile(
             fileURL: downloadable.localDestination,
             fromDownloadURL: downloadable.url,
-            realmConfiguration: realmConfiguration
+            selection: selection
         )
     }
 
@@ -583,10 +583,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     
     @MainActor
     public func importFile(fileURL: URL, fromDownloadURL downloadURL: URL?) async throws -> URL? {
-        try await importFile(
+        let selection = try captureInventorySelection(configuration: resolvedHistoryRealmConfiguration)
+        return try await importFile(
             fileURL: fileURL,
             fromDownloadURL: downloadURL,
-            realmConfiguration: resolvedHistoryRealmConfiguration
+            selection: selection
         )
     }
 
@@ -594,11 +595,14 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     private func importFile(
         fileURL: URL,
         fromDownloadURL downloadURL: URL?,
-        realmConfiguration: Realm.Configuration
+        selection: InventorySelection
     ) async throws -> URL? {
-        guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
+        try validateInventorySelection(selection)
+        guard let drive = ((selection.cloudDrive?.isConnected ?? false) ? selection.cloudDrive : nil)
+            ?? selection.localDrive else { return nil }
         
         let targetDirectory = try await Self.rootRelativePath(forImportedURL: downloadURL ?? fileURL, drive: drive)
+        try validateInventorySelection(selection)
         var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
         let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
         
@@ -610,6 +614,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
         
         try await drive.createDirectory(at: targetDirectory)
+        try validateInventorySelection(selection)
         
         var targetExists = false
         var distinctTargetExists = false
@@ -622,17 +627,26 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             } else {
                 distinctTargetExists = true
             }
-        } else if try await drive.fileExists(at: targetFilePath) {
-            let coordinatedFileManager = CoordinatedFileManager()
-            originData = try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: fileURL)
-            targetExists = true
-            distinctTargetExists = targetURL != fileURL
-            if !distinctTargetExists {
-                distinctTargetExists = try await drive.readFile(at: targetFilePath) != originData
+        } else {
+            let exists = try await drive.fileExists(at: targetFilePath)
+            try validateInventorySelection(selection)
+            if exists {
+                let coordinatedFileManager = CoordinatedFileManager()
+                originData = try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: fileURL)
+                try validateInventorySelection(selection)
+                targetExists = true
+                distinctTargetExists = targetURL != fileURL
+                if !distinctTargetExists {
+                    let destinationData = try await drive.readFile(at: targetFilePath)
+                    try validateInventorySelection(selection)
+                    distinctTargetExists = destinationData != originData
+                }
             }
         }
         if distinctTargetExists, let originData = originData {
-            if try await drive.readFile(at: targetFilePath) != originData {
+            let destinationData = try await drive.readFile(at: targetFilePath)
+            try validateInventorySelection(selection)
+            if destinationData != originData {
                 // Make a unique filename
                 var ext = fileURL.lakePathExtension
                 if !ext.isEmpty {
@@ -644,30 +658,41 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             }
         }
         // Don't overwrite
+        try validateInventorySelection(selection)
         if distinctTargetExists || !targetExists {
             try await drive.upload(from: fileURL, to: targetFilePath)
+            try validateInventorySelection(selection)
         }
         
         do {
             _ = try await refreshFilesMetadata(
                 drive: drive,
                 relativePath: targetDirectory,
-                realmConfiguration: realmConfiguration
+                realmConfiguration: selection.configuration
             )
-            let realm = try await Realm.open(configuration: realmConfiguration)
+            try validateInventorySelection(selection)
+            let realm = try await Realm.open(configuration: selection.configuration)
+            try validateInventorySelection(selection)
             let importedFileURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
-            guard let importedReaderFileURL = try await readerFileURL(for: importedFileURL, drive: drive) else {
+            let importedReaderFileURL = try await readerFileURL(for: importedFileURL, drive: drive)
+            try validateInventorySelection(selection)
+            guard let importedReaderFileURL else {
                 debugPrint("Warning: Unable to resolve reader file URL for imported file", importedFileURL)
                 return nil
             }
-            guard let content = realm.objects(ContentFile.self)
+            guard let importedContentIdentifier = realm.objects(ContentFile.self)
                 .filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), importedReaderFileURL.absoluteString as CVarArg))
-                .first else {
+                .first?.compoundKey else {
                 debugPrint("Warning: No matching content metadata returned for imported file", importedReaderFileURL)
                 return nil
             }
-            try await refreshAllFilesMetadata(force: true, realmConfiguration: realmConfiguration)
-            return content.url
+            try await refreshAllFilesMetadata(force: true, realmConfiguration: selection.configuration)
+            try validateInventorySelection(selection)
+            let finalRealm = try await Realm.open(configuration: selection.configuration)
+            try validateInventorySelection(selection)
+            guard let finalContent = finalRealm.object(ofType: ContentFile.self, forPrimaryKey: importedContentIdentifier),
+                  !finalContent.isDeleted, finalContent.url == importedReaderFileURL else { return nil }
+            return finalContent.url
         } catch {
             debugPrint("Error importing file:", error)
             throw error

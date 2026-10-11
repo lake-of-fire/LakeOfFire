@@ -3,9 +3,13 @@
 ## Local replacement review — October 10, 2026 (America/Toronto)
 
 The subsequent [upload/import ownership follow-up](20261010-reader-dependencies/import-upload-owner-handoff.md)
-traces the remaining physical-copy and completion gaps at candidate `39567c8f`, compares
-pending #50's stronger storage/final-record behavior, and records the exact Lake/SwiftCloudDrive
-repair boundary. It is source evidence only; no additional production fix or runtime closure is claimed.
+traces physical-copy and completion gaps at candidate `39567c8f`, compares pending #50's
+stronger storage/final-record behavior, and records the exact Lake/SwiftCloudDrive boundary.
+Its subsequent repair carries the original inventory selection through new-copy import
+and re-resolves final records after refresh. Four further regression sources cover early
+drive/configuration replacement, post-indexing replacement and final-row deletion. Physical admission inside
+SwiftCloudDrive, immutable snapshots and #50 storage-helper composition remain open.
+Verification is source/diff review and whitespace checks only; no runtime closure is claimed.
 
 This bounded pass starts from Lake draft #138 `e154c93d4a516650faaaf2c251da838512253018`
 and LakeKit draft #13 `29db685f7145182445324ac0d8aefbd58eb6f3c2`. Fresh isolated-copy

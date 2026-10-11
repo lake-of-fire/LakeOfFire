@@ -12,6 +12,15 @@ private enum InventoryFixtureError: Error {
     case scanFailed
 }
 
+private actor ImportURLResolutionCounter {
+    private var count = 0
+
+    func next() -> Int {
+        count += 1
+        return count
+    }
+}
+
 @MainActor
 private final class InventoryOwnershipGate {
     private let entry = XCTestExpectation(description: "inventory seam entered or producer completed")
@@ -352,6 +361,147 @@ final class ReaderFileInventoryOwnershipTests: XCTestCase, @unchecked Sendable {
         let readerURL = try await manager.ensureImported(downloadable: downloadable)
         XCTAssertEqual(readerURL?.absoluteString, "reader-file://file/load/local/current.txt")
         XCTAssertEqual(manager.files?.map(\.title), ["current"])
+    }
+
+    func testImportRejectsDriveReplacementDuringDestinationSelectionBeforeCreatingDirectory() async throws {
+        try await requireImportDestinationReplacementCancellation(replaceConfiguration: false)
+    }
+
+    func testImportRejectsConfigurationReplacementDuringDestinationSelectionBeforeCreatingDirectory() async throws {
+        try await requireImportDestinationReplacementCancellation(replaceConfiguration: true)
+    }
+
+    private func requireImportDestinationReplacementCancellation(replaceConfiguration: Bool) async throws {
+        let sourceRoot = try root()
+        let oldRoot = try root()
+        let newRoot = try root()
+        let source = sourceRoot.appendingPathComponent("import.txt")
+        let bytes = Data("selected bytes".utf8)
+        try bytes.write(to: source)
+        let manager = ReaderFileManager()
+        let config = configuration()
+        manager.historyRealmConfigurationOverride = config
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: oldRoot))
+        let previousProcessors = ReaderFileManager.fileDestinationProcessors
+        let gate = InventoryOwnershipGate()
+        ReaderFileManager.fileDestinationProcessors = [{ _ in
+            await gate.blockFirst()
+            return RootRelativePath(path: "Imported")
+        }]
+        defer { ReaderFileManager.fileDestinationProcessors = previousProcessors }
+        let original = Task { @MainActor in
+            _ = try await manager.importFile(fileURL: source, fromDownloadURL: nil)
+        }
+        defer { gate.release(); original.cancel() }
+        try await waitForEntry(gate, producer: original)
+        if replaceConfiguration {
+            manager.historyRealmConfigurationOverride = configuration()
+        } else {
+            do { manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: newRoot)) }
+            catch {
+                gate.release()
+                original.cancel()
+                _ = try? await result(of: original)
+                throw error
+            }
+        }
+        gate.release()
+        await requireCancellation(original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldRoot.appendingPathComponent("Imported").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: newRoot.appendingPathComponent("Imported").path))
+        XCTAssertEqual(try Data(contentsOf: source), bytes)
+        let realm = try await Realm.open(configuration: config)
+        XCTAssertTrue(realm.objects(ContentFile.self).isEmpty)
+        XCTAssertNil(manager.files)
+    }
+
+    func testImportRejectsReplacementAfterIndexingWithoutAdoptingSuccessorRefresh() async throws {
+        let sourceRoot = try root()
+        let oldRoot = try root()
+        let newRoot = try root()
+        let source = sourceRoot.appendingPathComponent("import.txt")
+        let bytes = Data("selected bytes".utf8)
+        try bytes.write(to: source)
+        try Data("successor".utf8).write(to: newRoot.appendingPathComponent("successor.txt"))
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = configuration()
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: oldRoot))
+        let previousDestinations = ReaderFileManager.fileDestinationProcessors
+        let previousURLProcessors = ReaderFileManager.readerFileURLProcessors
+        let previousFileProcessors = ReaderFileManager.fileProcessors
+        let gate = InventoryOwnershipGate()
+        let counter = ImportURLResolutionCounter()
+        ReaderFileManager.fileDestinationProcessors = []
+        ReaderFileManager.fileProcessors = []
+        ReaderFileManager.readerFileURLProcessors = [{ _, _ in
+            if await counter.next() == 2 { await gate.blockFirst() }
+            return nil
+        }]
+        defer {
+            ReaderFileManager.fileDestinationProcessors = previousDestinations
+            ReaderFileManager.readerFileURLProcessors = previousURLProcessors
+            ReaderFileManager.fileProcessors = previousFileProcessors
+        }
+        let original = Task { @MainActor in
+            _ = try await manager.importFile(fileURL: source, fromDownloadURL: nil)
+        }
+        defer { gate.release(); original.cancel() }
+        try await waitForEntry(gate, producer: original)
+        do {
+            manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: newRoot))
+            try await refresh(manager)
+        } catch {
+            gate.release()
+            original.cancel()
+            _ = try? await result(of: original)
+            throw error
+        }
+        gate.release()
+        await requireCancellation(original)
+        XCTAssertEqual(manager.files?.map(\.title), ["successor"])
+        XCTAssertEqual(try Data(contentsOf: oldRoot.appendingPathComponent("import.txt")), bytes)
+        XCTAssertEqual(try Data(contentsOf: source), bytes)
+    }
+
+    func testImportDoesNotReturnFinalRowDeletedDuringFullRefresh() async throws {
+        let sourceRoot = try root()
+        let destinationRoot = try root()
+        let source = sourceRoot.appendingPathComponent("import.txt")
+        let bytes = Data("selected bytes".utf8)
+        try bytes.write(to: source)
+        let config = configuration()
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = config
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: destinationRoot))
+        let previousDestinations = ReaderFileManager.fileDestinationProcessors
+        let previousURLProcessors = ReaderFileManager.readerFileURLProcessors
+        let previousFileProcessors = ReaderFileManager.fileProcessors
+        ReaderFileManager.fileDestinationProcessors = []
+        ReaderFileManager.readerFileURLProcessors = []
+        ReaderFileManager.fileProcessors = []
+        defer {
+            ReaderFileManager.fileDestinationProcessors = previousDestinations
+            ReaderFileManager.readerFileURLProcessors = previousURLProcessors
+            ReaderFileManager.fileProcessors = previousFileProcessors
+        }
+        var deletionError: Error?
+        manager.inventoryBeforePublication = {
+            do {
+                try await { @RealmBackgroundActor in
+                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config)
+                    try await realm.asyncWrite {
+                        let file = try XCTUnwrap(realm.objects(ContentFile.self).first)
+                        file.isDeleted = true
+                        file.refreshChangeMetadata(explicitlyModified: true)
+                    }
+                }()
+            } catch { deletionError = error }
+        }
+        let importedURL = try await manager.importFile(fileURL: source, fromDownloadURL: nil)
+        XCTAssertNil(deletionError)
+        XCTAssertNil(importedURL)
+        XCTAssertEqual(try Data(contentsOf: destinationRoot.appendingPathComponent("import.txt")), bytes)
+        XCTAssertEqual(try Data(contentsOf: source), bytes)
     }
 
 }

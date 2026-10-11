@@ -1,5 +1,34 @@
 # Upload/import ownership follow-up — October 10, 2026 (America/Toronto)
 
+## Subsequent Lake-owned repair
+
+The next focused revision carries `InventorySelection` into private `importFile` from
+both the direct picker API and `ensureImported`. It validates that original receipt after
+destination selection, directory creation, collision reads, upload, targeted indexing,
+Realm opening, URL processing and full refresh. Replacement during destination processing
+therefore rejects before directory creation; replacement during a later await prevents
+starting the following stage or acknowledging success. The final record crosses full refresh
+as its compound key and is re-resolved from the captured configuration, rejecting deleted
+or mismatched rows with the existing optional unsuccessful outcome.
+
+Four added runtime regression sources in `ReaderFileInventoryOwnershipTests` cover drive
+replacement during destination selection, configuration-only replacement at the same point,
+drive replacement in URL processing after targeted indexing, and final-row deletion during
+full refresh. They exercise production
+processors, filesystem scans and Realm writes, use bounded gates, preserve source/installed
+bytes and restore temporary processor registrations. All new regression sources are
+uncompiled/unrun by request.
+
+This is partial closure of the two historical findings below. There is still no owner
+admission inside SwiftCloudDrive's queued physical create/copy, so revocation during that
+await may leave already-installed bytes. The patch preserves them rather than rolling back.
+Same-backing account/storage generations, immutable source snapshots, pending #50's storage
+helper composition and stronger final transaction semantics remain open. The collision
+algorithm is retained unchanged; #50's helper was not duplicated. Source/diff inspection
+and `git diff --check` are the only verification for this revision.
+
+## Historical finding boundary
+
 Source-only review of Lake draft #138 at
 `39567c8f3d74838c7d73d64e1e4fd6d8306a50e4`. LakeKit #13 remains
 `f3d14acb8c8410ca4ff6f25f5ade5bbd346429b7`; neither root pin was changed.
