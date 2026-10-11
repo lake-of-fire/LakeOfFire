@@ -19,18 +19,22 @@ final class WebFeedButtonLibraryState: ObservableObject {
 
     nonisolated(unsafe) private var cancellables = Set<AnyCancellable>()
     private var hasStartedObservation = false
+    private let requestedRealmConfiguration: Realm.Configuration?
 
-    private init() { }
+    init(realmConfiguration: Realm.Configuration? = nil) {
+        requestedRealmConfiguration = realmConfiguration
+    }
 
     func startIfNeeded() {
         guard !hasStartedObservation else { return }
         hasStartedObservation = true
+        let realmConfiguration = requestedRealmConfiguration ?? LibraryDataManager.realmConfiguration
         Task { @RealmBackgroundActor [weak self] in
             guard let self else { return }
             do {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                try await self.refreshLibraryConfiguration()
-                try await self.refreshFeeds(from: realm)
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+                try await self.refreshLibraryConfiguration(realmConfiguration: realmConfiguration)
+                try await self.refreshFeeds(from: realm, realmConfiguration: realmConfiguration)
 
                 realm.objects(LibraryConfiguration.self)
                     .collectionPublisher
@@ -39,7 +43,7 @@ final class WebFeedButtonLibraryState: ObservableObject {
                     .debounceLeadingTrailing(for: .seconds(0.3), scheduler: libraryDataQueue)
                     .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                         Task { @RealmBackgroundActor [weak self] in
-                            try await self?.refreshLibraryConfiguration()
+                            try await self?.refreshLibraryConfiguration(realmConfiguration: realmConfiguration)
                         }
                     })
                     .store(in: &self.cancellables)
@@ -53,8 +57,8 @@ final class WebFeedButtonLibraryState: ObservableObject {
                     .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                         Task { @RealmBackgroundActor [weak self] in
                             guard let self else { return }
-                            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                            try await self.refreshFeeds(from: realm)
+                            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+                            try await self.refreshFeeds(from: realm, realmConfiguration: realmConfiguration)
                         }
                     })
                     .store(in: &self.cancellables)
@@ -68,13 +72,15 @@ final class WebFeedButtonLibraryState: ObservableObject {
     }
 
     @RealmBackgroundActor
-    private func refreshLibraryConfiguration() async throws {
-        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+    private func refreshLibraryConfiguration(realmConfiguration: Realm.Configuration) async throws {
+        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: realmConfiguration
+        )
         let libraryConfigurationID = libraryConfiguration.id
 
         try await { @MainActor [weak self] in
             guard let self else { return }
-            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+            let realm = try await Realm.open(configuration: realmConfiguration)
             let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID)
             self.libraryConfiguration = libraryConfiguration
             self.setCategories(from: libraryConfiguration)
@@ -82,7 +88,7 @@ final class WebFeedButtonLibraryState: ObservableObject {
     }
 
     @RealmBackgroundActor
-    private func refreshFeeds(from realm: Realm) async throws {
+    private func refreshFeeds(from realm: Realm, realmConfiguration: Realm.Configuration) async throws {
         var feedIDs: [UUID] = []
         for feed in realm.objects(Feed.self).where({ !$0.isDeleted }) {
             feedIDs.append(feed.id)
@@ -90,7 +96,7 @@ final class WebFeedButtonLibraryState: ObservableObject {
 
         try await { @MainActor [weak self] in
             guard let self else { return }
-            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+            let realm = try await Realm.open(configuration: realmConfiguration)
             var feedsByRSSURL: [URL: Feed] = [:]
             for feedID in feedIDs {
                 guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else {

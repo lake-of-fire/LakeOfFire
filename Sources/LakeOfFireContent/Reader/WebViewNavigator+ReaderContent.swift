@@ -20,8 +20,11 @@ public extension WebViewNavigator {
         content: any ReaderContentProtocol,
         readerFileManager: ReaderFileManager = ReaderFileManager.shared,
         readerModeViewModel: (any ReaderModeLoadHandling)?,
-        forceReaderModeForSnippets: Bool = false
+        forceReaderModeForSnippets: Bool = false,
+        shouldLoad: @escaping @MainActor @Sendable () -> Bool = { true }
     ) async throws {
+        try Task.checkCancellation()
+        guard shouldLoad() else { throw CancellationError() }
         debugPrint("# FLASH WebViewNavigator.load begin", content.url)
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
             let navigationURL: URL
@@ -43,6 +46,8 @@ public extension WebViewNavigator {
                         source: "WebViewNavigator.load.prefetchPrevious"
                     )
                 }
+                try Task.checkCancellation()
+                guard shouldLoad() else { throw CancellationError() }
                 if navigationURL.isHTTP || navigationURL.isFileURL || navigationURL.isSnippetURL || navigationURL.isReaderURLLoaderURL {
                     let trackingContent = (previouslyLoadedContent ?? content)
                     let loaderBaseURL = navigationURL.isReaderURLLoaderURL ? ReaderContentLoader.getContentURL(fromLoaderURL: navigationURL) : nil
@@ -82,6 +87,8 @@ public extension WebViewNavigator {
                     )
                 }
             }
+            try Task.checkCancellation()
+            guard shouldLoad() else { throw CancellationError() }
             load(URLRequest(url: navigationURL))
             debugPrint("# FLASH WebViewNavigator.load request issued", navigationURL)
         } else {

@@ -77,7 +77,9 @@ private struct LibraryFeedMenu: View {
             Button("Copy OPML Entry") {
                 Task { @MainActor in
                     do {
-                        let opml = try await LibraryDataManager.shared.exportUserOPML()
+                        let opml = try await LibraryDataManager.shared.exportUserOPML(
+                            realmConfiguration: feed.realm?.configuration ?? LibraryDataManager.realmConfiguration
+                        )
                         guard let entry = findEntry(uuid: feed.id.uuidString, in: opml.entries) else {
                             print("No matching OPML entry found for feed with UUID: \(feed.id) out of OPML entry IDs: \(opml.entries.map { $0.attributeUUIDValue("uuid") })")
                             return
@@ -105,6 +107,7 @@ private struct LibraryFeedMenu: View {
 @MainActor
 class LibraryFeedFormSectionsViewModel: ObservableObject {
     let feed: Feed
+    fileprivate let realmConfiguration: Realm.Configuration
     
     @Published var feedTitle = ""
     @Published var feedDescription = ""
@@ -135,12 +138,14 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     private var objectNotificationToken: NotificationToken?
     
     init(feed: Feed) {
+        let realmConfiguration = feed.realm?.configuration ?? LibraryDataManager.realmConfiguration
+        self.realmConfiguration = realmConfiguration
         self.feed = feed
         // TODO: only resolve this once instead of repeatedly below...
         let feedID = feed.id
         Task { @RealmBackgroundActor [weak self] in
             guard let self else { return }
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
             objectNotificationToken = feed
                 .observe { [weak self] change in
@@ -166,7 +171,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
-                        let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                        let realm = try await Realm.open(configuration: realmConfiguration)
                         self.feedEntries = realm.objects(FeedEntry.self).where { $0.feedID == feedID } .map { $0 }
                     }
                 })
@@ -301,8 +306,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     func writeFeedAsync(_ block: @escaping @Sendable (Feed) -> Void) {
         let feedID = feed.id
         let writeBlock = block
+        let realmConfiguration = self.realmConfiguration
         Task { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
             await realm.asyncRefresh()
             try await realm.asyncWrite {
@@ -329,7 +335,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     func pasteRSSURL(strings: [String]) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: feed), configuration: LibraryDataManager.realmConfiguration) { _, feed in
+            try await Realm.asyncWrite(ThreadSafeReference(to: feed), configuration: realmConfiguration) { _, feed in
                 feed.rssUrl = URL(string: strings.first ?? "") ?? URL(string: "about:blank")!
                 feed.refreshChangeMetadata(explicitlyModified: true)
             }
