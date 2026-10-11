@@ -2,6 +2,23 @@ import XCTest
 @testable import LakeOfFire
 
 final class SystemManagedReaderFontTests: XCTestCase {
+    func testFontAssetIdentityDistinguishesSystemNamesWithoutAFileURL() {
+        let asset = SharedReaderFontAsset(
+            systemFontNames: ["YuKyokasho": "YuKyo-Medium", "YuKyokasho Yoko": "YuKyo_Yoko-Medium"],
+            horizontalFamilyName: "YuKyokasho",
+            verticalFamilyName: "YuKyokasho Yoko"
+        )
+        let replacement = SharedReaderFontAsset(
+            systemFontNames: ["YuKyokasho": "Other-Face", "YuKyokasho Yoko": "YuKyo_Yoko-Medium"],
+            horizontalFamilyName: "YuKyokasho",
+            verticalFamilyName: "YuKyokasho Yoko"
+        )
+        let identities: Set<SharedReaderFontAsset?> = [nil, asset, asset, replacement]
+        XCTAssertEqual(identities.count, 3)
+        XCTAssertNil(asset.localFileURL)
+        XCTAssertNil(replacement.localFileURL)
+    }
+
     func testSystemFontStylesheetUsesDistinctLocalFacesAndNoFontPayloadRoute() throws {
         let asset = SharedReaderFontAsset(
             systemFontNames: ["YuKyokasho": "YuKyo-Medium", "YuKyokasho Yoko": "YuKyo_Yoko-Medium"],

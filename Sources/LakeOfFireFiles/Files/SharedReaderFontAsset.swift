@@ -2,7 +2,7 @@ import Foundation
 import LakeOfFireContent
 import LakeOfFireCore
 
-public struct SharedReaderFontAsset: Equatable, Sendable {
+public struct SharedReaderFontAsset: Hashable, Sendable {
     public let localFileURL: URL?
     public let systemFontNames: [String: String]
     public let mimeType: String
