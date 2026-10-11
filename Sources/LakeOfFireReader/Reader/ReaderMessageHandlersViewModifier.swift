@@ -356,6 +356,25 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     )
                 }
                 guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
+                if pageURL.isEBookURL {
+                    // EPUB is rendered by its viewer, not a synthetic Reader
+                    // task. Its immutable WebKit receipt owns this publication.
+                    guard ReaderDocumentMutationAdmission.acceptsEBookReadiness(
+                        claimedURL: pageURL,
+                        frameMainDocumentURL: message.mainDocumentURL ?? message.requestURL,
+                        currentPageURL: readerViewModel.state.pageURL,
+                        selectedContentURL: readerContent.pageURL,
+                        isMainFrame: message.isMainFrame,
+                        receiptBinding: message.javaScriptBindingToken,
+                        currentBinding: scriptCaller.currentJavaScriptBindingToken
+                    ) else { return }
+                    if !readerViewModel.state.hasReaderRenderReady {
+                        var newState = readerViewModel.state
+                        newState.markReaderRenderReady()
+                        readerViewModel.state = newState
+                    }
+                    return
+                }
                 let currentContentURL = readerContent.content?.url
                 let currentContentOwnsCompletedRender = currentContentURL.map { contentURL in
                     self.readerContent.pageURL.matchesReaderURL(contentURL)

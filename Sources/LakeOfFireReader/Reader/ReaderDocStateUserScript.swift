@@ -103,6 +103,9 @@ struct ReaderDocStateUserScript {
                     attributeFilter: ["data-mnb-font-pending"]
                 });
             }
+            // A renderer can finish before this document-end script installs
+            // its callback. Replay the explicit state without polling.
+            postState("initial");
             return;
         }
         function scheduleNextTick() {
