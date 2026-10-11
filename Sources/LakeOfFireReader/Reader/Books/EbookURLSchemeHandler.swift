@@ -653,6 +653,7 @@ actor EBookProcessingActor {
         sectionHref: String,
         source: ReaderPackageEntrySource
     ) async throws -> EBookNativeSectionPrewarmResult {
+        try Task.checkCancellation()
         let entryData = try source.readEntry(subpath: sectionHref)
         let entryText = ReaderPackageEntrySource.decodeText(entryData)
         let processedPayload = try await process(
@@ -676,6 +677,7 @@ actor EBookProcessingActor {
         isCacheWarmer: Bool,
         shouldReadProcessedCache: Bool = true
     ) async throws -> EbookProcessedSectionPayload {
+        try Task.checkCancellation()
         let resolvedContentFingerprint = contentFingerprint ?? EBookProcessTextRequestKey(
             contentURL: contentURL,
             location: location,
@@ -683,12 +685,14 @@ actor EBookProcessingActor {
             text: text
         ).textFingerprint
         if !isCacheWarmer, shouldReadProcessedCache, let ebookProcessedTextCacheReader {
-            if let cachedResult = try await ebookProcessedTextCacheReader(
+            let cachedResult = try await ebookProcessedTextCacheReader(
                 contentURL,
                 location,
                 text,
                 resolvedContentFingerprint
-            ), ebookProcessedSectionPayloadHasDurableSegmentIdentities(cachedResult) {
+            )
+            try Task.checkCancellation()
+            if let cachedResult, ebookProcessedSectionPayloadHasDurableSegmentIdentities(cachedResult) {
                 return cachedResult
             }
         }
@@ -711,10 +715,12 @@ actor EBookProcessingActor {
             processHTMLBytes,
             processHTML
         )
+        try Task.checkCancellation()
         if !isCacheWarmer,
            ebookProcessedSectionPayloadHasDurableSegmentIdentities(result),
            let ebookProcessedTextCacheWriter {
             await ebookProcessedTextCacheWriter(contentURL, location, text, resolvedContentFingerprint, result)
+            try Task.checkCancellation()
         }
         return result
     }
