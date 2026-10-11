@@ -2,6 +2,38 @@
 
 ## Local replacement review — October 10, 2026 (America/Toronto)
 
+### Hotfix port: physically invalidated reader rows
+
+Hotfix `50dffbec4228a791f519b78c12c070d9843fae84` adds invalidation guards across
+ReaderContent reuse, preload, title refresh, resolver publication and access; subsequent
+`cf64f5eb326b6ad56e2d4f6528c586253abcd7d6` adds valid cached model/title accessors.
+These are present at the separately inventoried hotfix-tail endpoint `6e492b3e` and absent
+from upstream draft `65631f91` and pending #50 `0b91431f`. This tranche adapts those
+specific contracts to current upstream selection ownership and diagnostic logging.
+It retains the display URL and last admitted contentTitle when the cached Realm row is
+removed, rejects that row for reuse/publication/access, and permits a fresh resolver retry.
+Diagnostic reads also validate old/new/local rows so logging does not bypass admission.
+The resolver checks again after synchronous publication callbacks.
+
+Five regression methods cover both matching/moved display reloads, removal before/after
+preloading, live cached title versus retained projection and deleted cached access, a
+deleted resolver result with a pending accessor and successful retry, and synchronous
+Realm invalidation by a title subscriber. All storage fixtures are private in-memory
+Realms, mutations use RealmBackgroundActor, and creation/title edits retain explicit
+metadata refreshes. Physical removal simulates acknowledged cleanup, not production
+deletion policy. The package test target includes the directory and required products.
+Sources remain uncompiled/unrun; only source/API/history review and whitespace checks ran.
+
+Fresh Lake hotfix observation `64f65fbb39238d126700ab3f9d4df59fd76a701c` is an ancestor
+continuation of `6e492b3e`: three additional commits change only
+`ReaderContentSelectionHandoff.swift`; ReaderContent and its storage regression file are
+unchanged. That new handoff tail is observed, not semantically closed here. Main remains
+`8985bf92`. Selected Reader hotfix root/pins and the original checkouts were not edited.
+Full selection handoff/cancellation, mounted callers of the new cached accessors,
+soft-tombstone display policy and root/platform qualification remain open. The previously
+proposed generic consumer-cancellation checks are deferred under the updated hotfix-port
+objective; they are not part of this commit.
+
 The [feed-preview navigation handoff](20261010-reader-dependencies/feed-preview-navigation-handoff.md)
 at candidate `7867feb3` identifies the remaining queued-task/native-request lifetime and
 rechecks pending #50's existing `shouldLoad` API. That mechanism is already pending source;
