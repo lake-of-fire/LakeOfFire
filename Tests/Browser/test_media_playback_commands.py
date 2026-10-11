@@ -18,17 +18,16 @@ class MediaPlaybackCommandTests(unittest.TestCase):
         source = SOURCE.read_text()
         cls.command = source.split('private static let commandScript = #"""', 1)[1].split('"""#', 1)[0]
         cls.playwright = sync_playwright().start()
+        cls.addClassCleanup(cls.playwright.stop)
         cls.browser = cls.playwright.chromium.launch(
-            executable_path=os.environ.get("CHROMIUM_PATH"), headless=True)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.browser.close()
-        cls.playwright.stop()
+            executable_path=os.environ.get("CHROMIUM_PATH"), headless=True,
+            args=["--disable-features=MacAppCodeSignClone"])
+        cls.addClassCleanup(cls.browser.close)
 
     def setUp(self):
-        self.page = self.browser.new_page()
-        self.addCleanup(self.page.close)
+        self.context = self.browser.new_context()
+        self.addCleanup(self.context.close)
+        self.page = self.context.new_page()
         self.page.set_content('<audio preload="none" src="https://example.test/audio.mp3"></audio>')
         self.page.evaluate("""script => {
             window.__manabiReaderMediaDocumentID = 'document-A';
