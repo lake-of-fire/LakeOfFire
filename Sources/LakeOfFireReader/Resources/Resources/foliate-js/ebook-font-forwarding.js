@@ -1,3 +1,5 @@
+import { getCurrentRendererDocument } from './renderer-content.js'
+
 const fontGeometryStates = new WeakMap()
 
 export const copyCustomReaderFontStyleToDocument = (
@@ -5,6 +7,7 @@ export const copyCustomReaderFontStyleToDocument = (
     doc,
     reason = 'unknown',
     fontFamilies = globalThis,
+    geometryOwner = null,
 ) => {
     if (!doc || !sourceFontStyle) return false
 
@@ -94,13 +97,24 @@ export const copyCustomReaderFontStyleToDocument = (
         const text = fontStyle.textContent
         const state = { fontStyle }
         fontGeometryStates.set(doc, state)
-        const refreshGeometry = () => {
+        const isCurrent = () => {
             if (fontGeometryStates.get(doc) !== state
                 || doc.documentElement !== root || doc.defaultView !== view
                 || doc.getElementById('mnb-custom-fonts-inline') !== fontStyle
-                || (desiredTag === 'link' ? fontStyle.href !== href : fontStyle.textContent !== text)) return
-            try { if (view.document && view.document !== doc) return } catch (_) { return }
+                || (desiredTag === 'link' ? fontStyle.href !== href : fontStyle.textContent !== text)) return false
+            try {
+                if (view.document && view.document !== doc) return false
+                if (root?.isConnected === false || view.frameElement?.isConnected === false) return false
+                return !geometryOwner || geometryOwner.isCurrent(doc)
+            } catch (_) { return false }
+        }
+        const refreshGeometry = () => {
+            if (!isCurrent()) return
             view.dispatchEvent(new view.Event('resize'))
+            // Chapter resize events do not reach the outer viewer. Its snapshot may
+            // already have been rebuilt while this replacement sheet was loading.
+            // Recheck after dispatch, which can synchronously retire this document.
+            if (isCurrent()) geometryOwner?.invalidate()
         }
         const refreshAfterFontsReady = () => {
             if (fontGeometryStates.get(doc) !== state) return
@@ -117,4 +131,36 @@ export const copyCustomReaderFontStyleToDocument = (
         refreshAfterFontsReady()
     }
     return changed
+}
+
+// Capture the existing viewer binding rather than look up a successor owner when
+// delayed stylesheet/font callbacks run. Reader teardown removes this binding.
+export const forwardCustomReaderFontStyleToDocuments = (
+    sourceFontStyle,
+    docs,
+    reason = 'unknown',
+    viewer = globalThis,
+) => {
+    const reader = viewer.reader
+    const renderer = reader?.view?.renderer
+    const invalidate = viewer.manabiInvalidateVisiblePageSegmentSnapshot
+    const ownsViewer = () => viewer.reader === reader
+        && reader.isClosed !== true
+        && reader.view?.renderer === renderer
+        && viewer.manabiInvalidateVisiblePageSegmentSnapshot === invalidate
+    const geometryOwner = reader && renderer && typeof invalidate === 'function' ? {
+        isCurrent: doc => {
+            if (!ownsViewer()) return false
+            const currentDocument = getCurrentRendererDocument(renderer, doc)
+            return currentDocument === doc && ownsViewer()
+        },
+        invalidate: () => invalidate.call(viewer, 'font-family-change-child'),
+    } : null
+    let forwardedCount = 0
+    for (const doc of docs) {
+        if (copyCustomReaderFontStyleToDocument(sourceFontStyle, doc, reason, viewer, geometryOwner)) {
+            forwardedCount++
+        }
+    }
+    return forwardedCount
 }
