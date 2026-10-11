@@ -1,0 +1,36 @@
+name: Qualify retained hotfix import and MIME regressions
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regressions:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.2.1'
+      - name: Toolchain
+        run: swift --version
+      - name: Directory and symlink import regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for configuration in debug release; do
+            python3 Tools/test-import-storage-port.py --native --configuration "$configuration"
+          done
+      - name: Canonical raster MIME regressions
+        env:
+          PACKAGE_RESOURCE_ZIP_REFERENCE: released
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Tools/test-package-resources.sh -c debug \
+            --filter ReaderPackageEntrySourceTests/testCommonRasterImageMIMETypesAreCanonical
+          bash Tools/test-package-resources.sh -c release \
+            --filter ReaderPackageEntrySourceTests/testCommonRasterImageMIMETypesAreCanonical

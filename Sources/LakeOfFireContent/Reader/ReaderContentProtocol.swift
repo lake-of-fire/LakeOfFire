@@ -31,16 +31,6 @@ public actor ReaderContentReadingProgressLoader {
     nonisolated(unsafe) public static var ebookInitialRestoreLoader: ((URL) async throws -> ReaderContentEbookInitialRestore?)?
 }
 
-public struct ReaderContentEbookInitialRestore: Sendable {
-    public let cfi: String
-    public let fractionalCompletion: Float?
-
-    public init(cfi: String, fractionalCompletion: Float?) {
-        self.cfi = cfi
-        self.fractionalCompletion = fractionalCompletion
-    }
-}
-
 @globalActor
 public actor ReaderContentSyncStatusLoader {
     public static let shared = ReaderContentSyncStatusLoader()

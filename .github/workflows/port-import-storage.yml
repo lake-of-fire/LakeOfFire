@@ -1,0 +1,60 @@
+name: Port import storage qualification
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Sources/LakeOfFireContent/Files/ReaderFileImport*.swift'
+      - 'Sources/LakeOfFireContent/Files/ReaderFileManager.swift'
+      - 'Tests/LakeOfFireTests/ReaderFileImportCollisionResolverTests.swift'
+      - 'Tests/LakeOfFireTests/ReaderFileImportStorageNativeTests.swift'
+      - 'Tools/test-import-storage-port.py'
+      - '.github/workflows/port-import-storage.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: import-storage-port-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  storage:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.2.1'
+      - name: Retain exact committed inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/current
+          git rev-parse HEAD > evidence/tested-commit.txt
+          git ls-tree -r HEAD > evidence/source-manifest.txt
+          swift --version > evidence/toolchain.txt
+          git archive HEAD Sources/LakeOfFireContent/Files/ReaderFileImportCollisionResolver.swift Sources/LakeOfFireContent/Files/ReaderFileImportStorage.swift Sources/LakeOfFireContent/Files/ReaderFileImportPackageManifest.swift Sources/LakeOfFireContent/Files/ReaderFileManager.swift Tests/LakeOfFireTests/ReaderFileImportCollisionResolverTests.swift Tests/LakeOfFireTests/ReaderFileImportStorageNativeTests.swift Tools/test-import-storage-port.py .github/workflows/port-import-storage.yml | tar -x -C evidence/current
+          # Parse the complete hook; this is not a full Realm/Reader build.
+          swiftc -frontend -parse Sources/LakeOfFireContent/Files/ReaderFileManager.swift
+      - name: Execute storage tests in Swift 6
+        shell: bash
+        run: |
+          set -euo pipefail
+          export IMPORT_STORAGE_EVIDENCE_DIRECTORY="$PWD/evidence/executed"
+          mode=()
+          if [[ "$(uname -s)" == Darwin ]]; then mode+=(--native); fi
+          for configuration in debug release; do
+            python3 Tools/test-import-storage-port.py "${mode[@]}" --configuration "$configuration" 2>&1 | tee "evidence/$configuration.log"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: import-storage-${{ matrix.os }}-${{ github.run_attempt }}
+          path: evidence
+          retention-days: 7
+          if-no-files-found: error
