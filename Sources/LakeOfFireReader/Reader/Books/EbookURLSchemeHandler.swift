@@ -1049,6 +1049,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             guard let self, !Task.isCancelled else { return }
             if url.path == "/processed-section" {
                 guard let request = ebookDirectSectionRequest(from: url),
+                      ebookPackageCapabilitySourceURL(
+                          for: urlSchemeTask.request,
+                          route: "/processed-section",
+                          expectedSourceURL: request.sourceURL,
+                          allowsMissingMainDocument: true
+                      ) == ebookCanonicalPackageURL(request.sourceURL),
                       let ebookTextProcessor else {
                     await { @MainActor in
                         self.failActiveTask(
@@ -1158,7 +1164,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }()
                     return
                 }
-                if let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
+                if let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURL = ebookProcessTextContentURL(for: urlSchemeTask.request) {
                     if let ebookTextProcessor {
                         let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER") == "true"
                         let processingVariant = await ebookProcessingVariantProvider?()
@@ -1356,6 +1362,17 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     return
                 }
 
+                guard ebookPackageCapabilitySourceURL(
+                    for: urlSchemeTask.request,
+                    route: url.path.hasPrefix("/entry-source/") ? "/entry-source" : "/entry",
+                    expectedSourceURL: entryRequest.sourceURL
+                ) == ebookCanonicalPackageURL(entryRequest.sourceURL) else {
+                    await { @MainActor in
+                        self.failActiveTask(urlSchemeTask, error: CustomSchemeHandlerError.fileNotFound)
+                    }()
+                    return
+                }
+
                 do {
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
                         forPackageURL: entryRequest.sourceURL,
@@ -1515,42 +1532,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
 
     @EbookURLSchemeActor
     private func validatedMainDocumentURL(for request: URLRequest, route: String) -> URL? {
-        let requestedSourceURL = request.value(forHTTPHeaderField: "X-Ebook-Source-URL")
-        let requestSourceURL = URLComponents(url: request.url ?? URL(fileURLWithPath: "/"), resolvingAgainstBaseURL: false)?
-            .queryItems?
-            .first(where: { $0.name == "sourceURL" })?
-            .value
-
-        let candidateStrings = [
-            requestedSourceURL,
-            requestSourceURL,
-            request.mainDocumentURL?.absoluteString,
-        ].compactMap { $0 }
-
-        guard let resolvedSourceURLString = candidateStrings.first,
-              let mainDocumentURL = URL(string: resolvedSourceURLString) else {
-            print(
-                "# EBOOKFIX1 missing source URL for \(route)",
-                "requestURL:",
-                request.url?.absoluteString ?? "nil",
-                "requestedSourceURL:",
-                requestedSourceURL ?? "nil",
-                "querySourceURL:",
-                requestSourceURL ?? "nil"
-            )
-            return nil
-        }
-        guard mainDocumentURL.scheme == "ebook",
-              mainDocumentURL.host == "ebook",
-              mainDocumentURL.pathComponents.starts(with: ["/", "load"]) else {
-            print(
-                "# EBOOKFIX1 unexpected source URL for \(route)",
-                "mainDocumentURL:",
-                mainDocumentURL.absoluteString
-            )
-            return nil
-        }
-        return mainDocumentURL
+        ebookPackageCapabilitySourceURL(for: request, route: route)
     }
 
     nonisolated private static func mimeType(ofFileAtUrl url: URL) -> String? {
