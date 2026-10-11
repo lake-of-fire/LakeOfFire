@@ -2162,10 +2162,8 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             };
             const replaceFontBlob = (css, fontHash, desiredFamily) => {
                 if (!css) return null;
-                const resolvedCSS = desiredFamily
-                    ? css.replace(/font-family:\\s*['"][^'"]+['"]\\s*;/g, "font-family: '" + desiredFamily + "';")
-                    : css;
-                const blob = new Blob([resolvedCSS], { type: 'text/css' });
+                // Preserve each face's name; directional styles select the family.
+                const blob = new Blob([css], { type: 'text/css' });
                 const nextBlobURL = URL.createObjectURL(blob);
                 const previousBlobURL = globalThis.manabiReaderFontCSSBlobURL || null;
                 globalThis.manabiReaderFontCSSBlobURL = nextBlobURL;
