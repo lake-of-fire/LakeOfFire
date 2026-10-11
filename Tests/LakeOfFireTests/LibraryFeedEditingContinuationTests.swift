@@ -395,6 +395,52 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         XCTAssertEqual(feed.markdownDescription, "Independent description")
     }
 
+    func testFinishAwaitsSuccessfulFieldAlongsideEarlierFailureAndRetainsRetry() async throws {
+        let realm = try await Realm(configuration: configuration())
+        let feed = try installFeed(in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let failedStarted = expectation(description: "Earlier title attempt suspended")
+        let successfulStarted = expectation(description: "Newer description attempt suspended")
+        let failedGate = LibraryFeedContinuationGate()
+        let successfulGate = LibraryFeedContinuationGate()
+        let failed = model.writeFeedAsync(field: .title, beforeWrite: {
+            failedStarted.fulfill()
+            await failedGate.wait()
+            throw InjectedFailure.admission
+        }) { $0.title = "Retained mixed-finish draft"; return true }
+        defer { failed.cancel(); Task { await failedGate.release() } }
+        await fulfillment(of: [failedStarted], timeout: 5)
+        let successful = model.writeFeedAsync(field: .description, beforeWrite: {
+            successfulStarted.fulfill()
+            await successfulGate.wait()
+        }) { $0.markdownDescription = "Settled newer field"; return true }
+        defer { successful.cancel(); Task { await successfulGate.release() } }
+        await fulfillment(of: [successfulStarted], timeout: 5)
+        let finish = model.finishEditing()
+        let finishSettled = expectation(description: "Finish awaits all captured attempts")
+        finishSettled.isInverted = true
+        let observedFinish = Task { @MainActor in
+            do { try await finish.value; XCTFail("Mixed finish lost admission error") }
+            catch InjectedFailure.admission {}
+            finishSettled.fulfill()
+        }
+        await failedGate.release()
+        do { try await failed.value; XCTFail("Earlier attempt succeeded") }
+        catch InjectedFailure.admission {}
+        await fulfillment(of: [finishSettled], timeout: 0.1)
+        finishSettled.isInverted = false
+        await successfulGate.release()
+        try await successful.value
+        try await observedFinish.value
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Original")
+        XCTAssertEqual(feed.markdownDescription, "Settled newer field")
+        try await model.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Retained mixed-finish draft")
+        XCTAssertEqual(feed.markdownDescription, "Settled newer field")
+    }
+
     func testOlderFailureCannotClearNewerPendingInput() async throws {
         let realm = try await Realm(configuration: configuration())
         let feed = try installFeed(in: realm)
