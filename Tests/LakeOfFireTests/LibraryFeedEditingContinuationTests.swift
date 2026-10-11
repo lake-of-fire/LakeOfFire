@@ -1,6 +1,6 @@
 import BigSyncKit
 import RealmSwift
-import RealmSwiftGaps
+@testable import RealmSwiftGaps
 import XCTest
 import LakeOfFireCore
 @testable import LakeOfFireContent
@@ -259,6 +259,224 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
     }
 
+    // Regression sources only: execution remains on hold.
+    private enum InjectedFailure: Error { case admission }
+
+    func testBufferedFailureRetainsDraftAndFinishRetriesWithoutDuplicateActiveWrites() async throws {
+        let realm = try await Realm(configuration: configuration())
+        let feed = try installFeed(in: realm)
+        let started = expectation(description: "Buffered attempt suspended")
+        let gate = LibraryFeedContinuationGate()
+        defer { Task { await gate.release() } }
+        let attempts = LibraryFeedWriteAttempts()
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false, beforeFieldWrite: {
+            if await attempts.record() == 1 {
+                started.fulfill()
+                await gate.wait()
+                throw InjectedFailure.admission
+            }
+        })
+        model.feedTitle = "Retained buffered draft"
+        await fulfillment(of: [started], timeout: 5)
+        let finish = model.finishEditing()
+        let repeatedFinish = model.finishEditing()
+        let submittedAttempts = await attempts.count
+        XCTAssertEqual(submittedAttempts, 1)
+        await gate.release()
+        for completion in [finish, repeatedFinish] {
+            do { try await completion.value; XCTFail("Admission failure succeeded") }
+            catch InjectedFailure.admission {}
+        }
+        model.refresh()
+        XCTAssertEqual(model.feedTitle, "Retained buffered draft")
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Original")
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+        try await model.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Retained buffered draft")
+        let retriedAttempts = await attempts.count
+        XCTAssertEqual(retriedAttempts, 2)
+    }
+
+    func testFinishDoesNotReplaySettledTrailingDebounce() async throws {
+        let realm = try await Realm(configuration: configuration())
+        let feed = try installFeed(in: realm)
+        let attempts = LibraryFeedWriteAttempts()
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false, beforeFieldWrite: {
+            _ = await attempts.record()
+        })
+        model.feedTitle = "Intermediate"
+        model.feedTitle = "Finished draft"
+        try await model.finishEditing().value
+        let finishedAttempts = await attempts.count
+        // Allow the publisher's trailing emission to arrive after durable settlement.
+        try await Task.sleep(nanoseconds: 500_000_000)
+        try await model.finishEditing().value
+        let afterTrailingAttempts = await attempts.count
+        XCTAssertEqual(afterTrailingAttempts, finishedAttempts)
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Finished draft")
+    }
+
+    func testImmediateAdmissionFailureRetainsCommandForFinishRetry() async throws {
+        let realm = try await Realm(configuration: configuration())
+        let feed = try installFeed(in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        do {
+            try await model.writeFeedAsync(field: .title, beforeWrite: { throw InjectedFailure.admission }) {
+                $0.title = "Retried immediate draft"
+                return true
+            }.value
+            XCTFail("Admission failure succeeded")
+        } catch InjectedFailure.admission {}
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Original")
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+        try await model.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Retried immediate draft")
+    }
+
+    func testPreAdmissionCancellationRetainsDraftForRetry() async throws {
+        let realm = try await Realm(configuration: configuration())
+        let feed = try installFeed(in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let started = expectation(description: "Cancellable writer suspended")
+        let gate = LibraryFeedContinuationGate()
+        let writer = model.writeFeedAsync(field: .title, beforeWrite: {
+            started.fulfill()
+            await gate.wait()
+        }) {
+            $0.title = "Retry cancelled draft"
+            return true
+        }
+        defer { writer.cancel(); Task { await gate.release() } }
+        await fulfillment(of: [started], timeout: 5)
+        writer.cancel()
+        await gate.release()
+        do { try await writer.value; XCTFail("Cancelled attempt succeeded") }
+        catch is CancellationError {}
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Original")
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+        try await model.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Retry cancelled draft")
+    }
+
+    func testCancellingOneFieldAttemptDoesNotCancelAnotherField() async throws {
+        let realm = try await Realm(configuration: configuration())
+        let feed = try installFeed(in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let started = expectation(description: "Title attempt suspended")
+        let gate = LibraryFeedContinuationGate()
+        let title = model.writeFeedAsync(field: .title, beforeWrite: {
+            started.fulfill()
+            await gate.wait()
+        }) { $0.title = "Retained title"; return true }
+        defer { title.cancel(); Task { await gate.release() } }
+        await fulfillment(of: [started], timeout: 5)
+        title.cancel()
+        let description = model.writeFeedAsync(field: .description) {
+            $0.markdownDescription = "Independent description"
+            return true
+        }
+        try await description.value
+        await gate.release()
+        do { try await title.value; XCTFail("Cancelled title attempt succeeded") }
+        catch is CancellationError {}
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Original")
+        XCTAssertEqual(feed.markdownDescription, "Independent description")
+        try await model.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Retained title")
+        XCTAssertEqual(feed.markdownDescription, "Independent description")
+    }
+
+    func testOlderFailureCannotClearNewerPendingInput() async throws {
+        let realm = try await Realm(configuration: configuration())
+        let feed = try installFeed(in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let olderStarted = expectation(description: "Older failing writer suspended")
+        let newerStarted = expectation(description: "Newer writer suspended")
+        let olderGate = LibraryFeedContinuationGate()
+        let newerGate = LibraryFeedContinuationGate()
+        let older = model.writeFeedAsync(field: .title, beforeWrite: {
+            olderStarted.fulfill()
+            await olderGate.wait()
+            throw InjectedFailure.admission
+        }) { $0.title = "Obsolete"; return true }
+        defer { older.cancel(); Task { await olderGate.release() } }
+        await fulfillment(of: [olderStarted], timeout: 5)
+        let newer = model.writeFeedAsync(field: .title, beforeWrite: {
+            newerStarted.fulfill()
+            await newerGate.wait()
+        }) { $0.title = "Newest"; return true }
+        defer { newer.cancel(); Task { await newerGate.release() } }
+        await fulfillment(of: [newerStarted], timeout: 5)
+        await olderGate.release()
+        do { try await older.value; XCTFail("Older failure succeeded") }
+        catch InjectedFailure.admission {}
+        // Cancelling the newer attempt then finishing proves the old settlement
+        // did not remove its pending command or resurrect the older command.
+        newer.cancel()
+        await newerGate.release()
+        do { try await newer.value; XCTFail("Cancelled newer attempt succeeded") }
+        catch is CancellationError {}
+        try await model.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Newest")
+    }
+
+    func testFailedOldEditorRetryCannotOutrankNewEditorsNoOpInput() async throws {
+        let realm = try await Realm(configuration: configuration())
+        let feed = try installFeed(in: realm)
+        let oldEditor = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        do {
+            try await oldEditor.writeFeedAsync(field: .title, beforeWrite: { throw InjectedFailure.admission }) {
+                $0.title = "Obsolete retained draft"
+                return true
+            }.value
+            XCTFail("Admission failure succeeded")
+        } catch InjectedFailure.admission {}
+        let newEditor = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        newEditor.feedTitle = "Original"
+        try await newEditor.finishEditing().value
+        try await oldEditor.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Original")
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    func testPostCommitSubmissionCancellationSettlesDurableDraft() async throws {
+        let realm = try await Realm(configuration: configuration())
+        let feed = try installFeed(in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let write = RealmWriteCommitObservation.$didSubmit.withValue({
+            withUnsafeCurrentTask { $0?.cancel() }
+        }) {
+            model.writeFeedAsync(field: .title) {
+                $0.title = "Durable cancelled draft"
+                return true
+            }
+        }
+        try await write.value
+        XCTAssertTrue(write.isCancelled)
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Durable cancelled draft")
+        XCTAssertEqual(model.feedTitle, "Durable cancelled draft")
+        let generations = Dictionary(uniqueKeysWithValues:
+            realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }
+        )
+        try await model.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues:
+            realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }
+        ), generations)
+    }
+
     private func configuration() -> Realm.Configuration {
         var value = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         value.objectTypes = [
@@ -296,4 +514,9 @@ private actor LibraryFeedContinuationGate {
         continuation?.resume()
         continuation = nil
     }
+}
+
+private actor LibraryFeedWriteAttempts {
+    private(set) var count = 0
+    func record() -> Int { count += 1; return count }
 }
