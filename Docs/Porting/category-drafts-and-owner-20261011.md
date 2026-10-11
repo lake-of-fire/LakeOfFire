@@ -26,3 +26,7 @@ Source review includes the complete main field-command/owner helpers, category m
 
 Physical file replacement at an unchanged path, account epochs, exact configuration equivalence and same-ID/same-createdAt recreation remain unproved. Category archive/feed commands have their own broader owner-admission gaps; this PR only scopes field writes and view ownership. Durable feed-receipt URL provenance and mirror final admission remain separate.
 Next: compile/run this nine-method suite with the #152/#153/#154 category suites and real navigation once the native hold is lifted; preserve unrun status until exact-head evidence exists.
+
+## Source follow-through, 2026-10-11 18:46 UTC
+
+Two additional behavioral methods exercise the actual model entry: cancellation before transaction admission must retain the draft and allow an explicit finish retry; cancellation injected by existing RealmWriteCommitObservation after commit submission must settle durable success without a second journal generation. The latter requires composed RealmSwiftGaps #7 `d718c99064ae16d1d0fdd675224494d6ee8c8ff9` and inherits its task-local seam into the field writer. Eleven methods now exist, all UNCOMPILED/UNRUN. The earlier nine-method count above is the initial candidate's historical checkpoint. No production code or pins change in this test-only follow-through.

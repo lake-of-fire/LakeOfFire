@@ -1,6 +1,6 @@
 import BigSyncKit
 import RealmSwift
-import RealmSwiftGaps
+@testable import RealmSwiftGaps
 import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireLibrary
@@ -213,6 +213,55 @@ final class LibraryCategoryFieldOwnershipTests: XCTestCase, @unchecked Sendable 
         try await editor.finishEditing().value
         realm.refresh()
         XCTAssertEqual(category.title, "User value")
+    }
+
+    func testCancellationBeforeAdmissionPreservesDraftForExplicitRetry() async throws {
+        let (realm, category, library) = try await fixture()
+        let before = generations(realm)
+        let editor = model(category, library)
+        let gate = CategoryFieldWriteGate()
+        let started = expectation(description: "write waiting before admission")
+        let write = editor.writeFieldAsync(.title("Retry this draft"), beforeWrite: {
+            started.fulfill()
+            await gate.wait()
+        })
+        defer { write.cancel(); Task { await gate.release() } }
+        await fulfillment(of: [started], timeout: 5)
+        write.cancel()
+        await gate.release()
+        do {
+            try await write.value
+            XCTFail("Cancelled uncommitted write must not report success")
+        } catch is CancellationError {
+        }
+        realm.refresh()
+        XCTAssertEqual(category.title, "Original")
+        XCTAssertEqual(editor.categoryTitle, "Retry this draft")
+        XCTAssertEqual(generations(realm), before)
+
+        try await editor.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(category.title, "Retry this draft")
+        XCTAssertNotEqual(generations(realm), before)
+    }
+
+    func testPostSubmissionCancellationSettlesDurableFieldWithoutRejournaling() async throws {
+        let (realm, category, library) = try await fixture()
+        let editor = model(category, library)
+        let write = RealmWriteCommitObservation.$didSubmit.withValue({
+            withUnsafeCurrentTask { $0?.cancel() }
+        }) {
+            editor.writeFieldAsync(.title("Durable draft"))
+        }
+        try await write.value
+        XCTAssertTrue(write.isCancelled)
+        realm.refresh()
+        XCTAssertEqual(category.title, "Durable draft")
+        XCTAssertEqual(editor.categoryTitle, "Durable draft")
+        let afterCommit = generations(realm)
+        try await editor.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(generations(realm), afterCommit)
     }
 
     func testQueuedWriteRejectsSameIDNewIncarnation() async throws {
