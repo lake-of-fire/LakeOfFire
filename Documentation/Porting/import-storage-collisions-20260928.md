@@ -39,3 +39,12 @@ Keep draft for the full ReaderFileManager/Realm/SwiftUI graph, metadata publicat
 The comparison is not an atomic snapshot against adversarial/concurrent source replacement. Streaming checks detect size changes, not every possible same-size mutation or symlink race. Regular-file collision comparisons still hold complete Data as in the source; no measured performance, whole-app memory bound, directory resource quota or new filesystem security certification is claimed.
 
 Compose with #41/#50 by taking the narrow import hook plus helper/tests, preserving their newer native read/serving methods; do not replace the whole manager with this main-based file. This PR does not modify those branches, root pins, schemas, historical identities, original user books, signing, shared downloader policy, rollout settings or production CloudKit. Nothing merged.
+
+
+## October 11, 06:24 UTC composition checkpoint
+
+The standalone #51 head `547b1e88a836c8c4b53c24c98294700e9066a745` contains a later storage-parent/leaf-symlink correction and four real-drive regressions that were missing from #50 `0b91431f0fe04c45b24b08b427a5df66e87661b9`. The older #51 implementation ancestor was present, but ancestry did not include these later fixes.
+
+This increment carries only the complete corrected ReaderFileImportStorage.swift and ReaderFileImportStorageNativeTests.swift into #50, alongside this dated record. Its newer ReaderFileManager and the full catalog/restore/serving architecture are retained byte-for-byte. The existing manager already creates the target directory before calling the unchanged storage API. Parent components are checked at entry and before candidate inspection/copy; occupied leaf symlinks are handled lexically as collisions before strict resolution. The four added cases cover two occupied symlink suffixes, a symlinked parent, parent traversal, and a valid nested directory.
+
+No native tests/builds were run. The current 39-method standalone roster and larger composition tests remain unqualified at the new head; historical 35-method passes above do not apply to this adapter. This is not a race-free filesystem sandbox or a full iCloud/provider guarantee. No dependency selection, whole-manager replacement, validation-system restoration or main merge occurred.
