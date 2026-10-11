@@ -7,3 +7,11 @@ Carried the retained incomplete-inventory rejection for this specific branch. It
 Added an instance-only item-inspection fault seam, following the existing ownership-test seams; production leaves it nil. Two regressions run the actual local-drive scan and temporary Realm, inject the provider disappearance at inspection, and assert retained rows/UI publication, no success debounce, and nested-subtree failure propagation. No original files or live accounts are used by the authored fixtures. The owning suite now contains 16 methods.
 
 Source analysis only; runtime reproduction has NOT been executed. All Swift and tests remain UNCOMPILED/UNRUN. No native launches, tests, builds, project generation, CI, pins, deployment or production changes. Reader source registration must include the owning suite and its existing MutationTrackingTestSupport dependency before future qualification. Keep #50 open for the separately documented remaining producer/processing/cache ports.
+
+## Follow-through source corroboration — 10:25 UTC
+
+Reviewed the actual SwiftCloudDrive main dependency at `c5ef6ad68b62c9d418cca73378d3a7ae0e834eac`, specifically CloudDrive.directoryExists and CoordinatedFileManager.fileExists. The fallback can return false for both a regular file and an absent path. ReaderFileManager.isDiscoveredDirectory also uses cached resource values and suppresses the first two resource-read errors before that fallback.
+
+Consequently this repair covers a missing-file error that reaches the item-inspection catch. The two injected-error fixtures establish that branch's intended response only; they do not establish that every real provider disappearance reaches it. A true local disappearance fixture and a coordinated existence/type observation remain needed before claiming end-to-end disappearance detection. Do not substitute a separate uncoordinated fileExists check and claim an atomic filesystem snapshot.
+
+The already-existing full-refresh loop removes the prior success timestamp as soon as a new pass is admitted, so a failed pass cannot borrow the earlier success for debounce. The newly authored retry assertion is consistent with that implementation. No tests were run for this corroboration.
