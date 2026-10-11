@@ -1,3 +1,4 @@
+import { cryptographicUUID } from './cryptographic-uuid.js'
 // An ordered native projection, never an epoch writer or a DOM-derived read model.
 const clone = value => JSON.parse(JSON.stringify(value))
 const accountPresentationValue = value => {
@@ -28,7 +29,7 @@ export class BookReadingStateController {
     #closed = false; #lastSnapshotSequence = 0; #accountPresentation = null
     constructor({ postMessage, documentStartedAtMs, topWindowURL,
         onState = () => {}, onInvalidate = () => {}, onAccountChange = () => {},
-        requiresAccountPresentation = false, isLocationCurrent = () => true, makeRequestID = () => globalThis.crypto.randomUUID().toLowerCase() }) {
+        requiresAccountPresentation = false, isLocationCurrent = () => true, makeRequestID = cryptographicUUID }) {
         Object.assign(this, { postMessage, documentStartedAtMs, topWindowURL, onState, onInvalidate, onAccountChange,
             requiresAccountPresentation, isLocationCurrent, makeRequestID })
     }

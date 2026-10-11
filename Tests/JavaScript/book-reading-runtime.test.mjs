@@ -330,3 +330,55 @@ test('an old invalidation cannot disable a reentrantly recovered end page', t =>
     assert.equal(f.runtime.state.ready, true);
     assert.equal(f.runtime.endcap.button.disabled, false);
 });
+
+// Keep the actual runtime and its receipt fences; only the host's Crypto API
+// capability and renderer completion are controlled by this fixture.
+async function withUUIDCrypto(crypto, body) {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+    Object.defineProperty(globalThis, 'crypto', {configurable:true,value:crypto});
+    try { await body(); } finally {
+        if (descriptor) Object.defineProperty(globalThis, 'crypto', descriptor);
+        else delete globalThis.crypto;
+    }
+}
+test('portable relocation UUID keeps completed position receipt fenced', async()=>{
+    const {webcrypto} = await import('node:crypto');
+    await withUUIDCrypto({getRandomValues:bytes=>webcrypto.getRandomValues(bytes)}, async()=>{
+        const f=fixture();
+        try {
+            assert.equal(f.publish(1),true);
+            let receipt=null, relocationID=null;
+            f.renderer.goTo=async (target, options)=>{
+                relocationID=options.relocationID;
+                f.moves.push(target);f.renderer.displayedIndex=target.index;
+                f.view.lastLocation={relocationID};return true;
+            };
+            const target={accountPresentation:'0:1',action:'startBookOver',articleProgressID:'book',articleEpochID:'E1',
+                locationRevision:f.runtime.state.locationRevision};
+            assert.deepEqual(await f.runtime.navigate(target,{onCompleted:check=>{receipt=check;}}),{status:'completed'});
+            assert.match(relocationID,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+            assert.equal(receipt(),true);
+            f.view.lastLocation={relocationID};
+            assert.equal(receipt(),false,'Equal UUID cannot adopt a replaced location');
+        } finally { f.runtime.close(); }
+    });
+});
+for (const [name,crypto] of [['missing entropy',{}],['throwing entropy',{getRandomValues(){throw new Error('entropy failure');}}]]) {
+    test('relocation '+name+' cannot move or issue a position receipt',async()=>{
+        const {webcrypto}=await import('node:crypto');
+        await withUUIDCrypto(webcrypto,async()=>{
+            const f=fixture();
+            try {
+                assert.equal(f.publish(1),true);
+                const target={accountPresentation:'0:1',action:'startBookOver',articleProgressID:'book',articleEpochID:'E1',
+                    locationRevision:f.runtime.state.locationRevision};
+                let completions=0;
+                await withUUIDCrypto(crypto,async()=>{
+                    await assert.rejects(f.runtime.navigate(target,{onCompleted:()=>{completions++;}}));
+                });
+                assert.equal(completions,0);assert.deepEqual(f.moves,[]);
+                assert.equal(f.runtime.state.ready,true);
+            } finally { f.runtime.close(); }
+        });
+    });
+}
