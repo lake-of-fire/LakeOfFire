@@ -139,7 +139,7 @@ struct OPDSCatalogsView: View {
                 }
                 .sheet(item: $showingCatalogDetail) { catalog in
                     NavigationStack {
-                        OPDSCatalogDetailView(catalog: catalog)
+                        OPDSCatalogDetailView(catalogURL: catalog.url)
                     }
                 }
             }
@@ -153,39 +153,6 @@ struct OPDSCatalogsView: View {
 
     private func deleteCatalogs(at offsets: IndexSet) {
         viewModel.deleteCatalogs(at: offsets)
-    }
-}
-
-struct OPDSCatalogDetailView: View {
-    let catalog: OPDSCatalogSnapshot
-    @State private var publications: [Publication] = []
-    @State private var errorMessage: String?
-
-    var body: some View {
-        List(publications) { publication in
-            Text(publication.title)
-        }
-        .navigationTitle("Catalog Details")
-        .onAppear {
-            fetchCatalog()
-        }
-    }
-
-    private func fetchCatalog() {
-        guard let url = URL(string: catalog.url) else {
-            errorMessage = "Invalid catalog URL"
-            return
-        }
-
-        OPDSParser.parseURL(url: url) { parseData, error in
-            DispatchQueue.main.async {
-                if let feed = parseData?.feed {
-                    self.publications = feed.publications.map { Publication(title: $0.metadata.title) }
-                } else if let error = error {
-                    self.errorMessage = "Failed to fetch catalog data: \(error.localizedDescription)"
-                }
-            }
-        }
     }
 }
 
