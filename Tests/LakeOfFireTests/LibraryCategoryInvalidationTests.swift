@@ -28,7 +28,7 @@ final class LibraryCategoryInvalidationTests: XCTestCase {
         let config = configuration()
         try await Task { @RealmBackgroundActor in
             let manager = LibraryDataManager(observesChanges: false)
-            let realm = try await Realm.open(configuration: config, actor: RealmBackgroundActor.shared)
+            let realm = try await Realm(configuration: config, actor: RealmBackgroundActor.shared)
             let category = FeedCategory()
             try realm.write { realm.add(category) }
             try realm.write { realm.delete(category) }
@@ -41,7 +41,7 @@ final class LibraryCategoryInvalidationTests: XCTestCase {
 
     func testListCommandsIgnoreInvalidCategoryWithoutJournaling() async throws {
         let config = configuration()
-        let realm = try Realm(configuration: config)
+        let realm = try await Realm(configuration: config, actor: MainActor.shared)
         let category = FeedCategory()
         try realm.write { realm.add(category) }
         try realm.write { realm.delete(category) }
@@ -57,7 +57,7 @@ final class LibraryCategoryInvalidationTests: XCTestCase {
 
     func testEditorUICommandsIgnoreRetiredCategoryAndKeepStableTaskIdentity() async throws {
         let config = configuration()
-        let realm = try Realm(configuration: config)
+        let realm = try await Realm(configuration: config, actor: MainActor.shared)
         let category = FeedCategory()
         let library = LibraryConfiguration()
         let id = category.id
@@ -82,7 +82,7 @@ final class LibraryCategoryInvalidationTests: XCTestCase {
 
     func testOffsetDeletionDoesNotShiftPastInvalidSnapshotMember() async throws {
         let config = configuration()
-        let realm = try Realm(configuration: config)
+        let realm = try await Realm(configuration: config, actor: MainActor.shared)
         let stale = FeedCategory()
         let live = FeedCategory()
         let library = LibraryConfiguration()
@@ -105,7 +105,7 @@ final class LibraryCategoryInvalidationTests: XCTestCase {
 
     func testReorderRejectsInvalidCategoryOrConfigurationWithoutJournaling() async throws {
         let config = configuration()
-        let realm = try Realm(configuration: config)
+        let realm = try await Realm(configuration: config, actor: MainActor.shared)
         let stale = FeedCategory()
         let live = FeedCategory()
         let library = LibraryConfiguration()
@@ -135,7 +135,7 @@ final class LibraryCategoryInvalidationTests: XCTestCase {
 
     func testLiveArchiveRestoreAndRepeatedRestorePreserveJournalSemantics() async throws {
         let config = configuration()
-        let realm = try Realm(configuration: config)
+        let realm = try await Realm(configuration: config, actor: MainActor.shared)
         let category = FeedCategory()
         let library = LibraryConfiguration()
         library.categoryIDs.append(category.id)
