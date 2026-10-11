@@ -1,0 +1,39 @@
+commit	committer_date	subject
+00dcfa75f3f65337450089b2df15ed2be779bb79	2026-10-10T18:37:01-04:00	Merge pull request #136 from lake-of-fire/fix/reader-same-url-owner-retry-20261010
+13f6fc39be9617ed4e7639a7573c6abbf82ac228	2026-10-10T18:21:56-04:00	Let live Reader requests replace cancelled same-URL load owners
+220e378637dff4d6fcae187fb7d31bdc557e071d	2026-10-10T16:52:06-04:00	Merge pull request #135 from lake-of-fire/test/books-ebook-delete-20261010
+4f4620e46c0575af59cc8738727c97909983fe24	2026-10-10T16:02:50-04:00	fix: complete Lake book deletion confirmation behavior
+fd4faeba9ee9ae6be40d8975cb3c2bd81b626d33	2026-10-10T15:09:49-04:00	Exercise delete confirmation command and allow unrelated inventory
+ebfa2b016aeee41ef55357fe112d579724c9f82b	2026-10-10T14:56:47-04:00	Cover ebook archive and directory deletion through ContentFile command
+8cc5e301e4167a4313255226ae858761092a0b7d	2026-10-10T02:37:37-04:00	Harden reader file inventory admission
+0ede7182135da5682bf9d7ed00321479360c853c	2026-10-09T21:28:26-04:00	Await owning actor cache cleanup in library test teardown
+e50f512c648c5cdfbe8dce35a83d09e0b77f05f9	2026-10-09T20:42:15-04:00	Keep selection publication validation on its owning main actor
+cf64f5eb326b6ad56e2d4f6528c586253abcd7d6	2026-10-09T18:06:23-04:00	Guard cached reader title and model access after row deletion
+50dffbec4228a791f519b78c12c070d9843fae84	2026-10-09T17:49:39-04:00	Preserve exact ebook content identity
+0d2d54dff63ac95766a723b5ec8af99151e954d8	2026-10-09T16:43:25-04:00	Merge live hotfix target preserving reviewed source and regressions
+c96b47db77a9c91f385d72f9e330c06907c45ba3	2026-10-09T15:28:45-04:00	Compose exact native selection and original mutation ownership
+f42117c018374c7861c6118c65440b1aa5c5d482	2026-10-09T11:23:44-04:00	Recover EPUB display and progress publication (#133)
+679f1ca2b7ccbc1ca7e7af9b7022b92735eb0c8c	2026-10-09T10:35:30-04:00	Compose reviewed October 9 ownership and display recovery followups
+0af61a779e98276daad67c6868cb21f8384c80fe	2026-10-09T08:49:38-04:00	Compose shared EPUB restore and font-completion readiness repair
+e8e5cd8e7a46a86cfe2dff59c0c2058ff60a02c1	2026-10-09T07:44:06-04:00	Fix ebook article producer replacement recovery
+ec6c572b12fc71880fd1c083d0636c67f75f1e56	2026-10-09T06:53:30-04:00	Finish reviewed Lake ownership and committed-outcome source batch
+7082e5abd43c82ab6f820b784778c336afc24683	2026-10-09T05:59:51-04:00	Close reviewed Lake source batch without transferring runtime evidence
+90233d821cb17fd1be4fbda6bf4b7b94084c8381	2026-10-09T01:08:32-04:00	Compose reviewed Reader hotfix and landed EPUB continuity
+6ffd395769c8c0d81bb4d83e5158eccae26b31a2	2026-10-09T00:38:07-04:00	Compose coordinated EPUB serving and idempotent startup snippet retry
+0cfb288a429c41e303f157b154b85efeb4cac9f9	2026-10-08T18:08:35-04:00	Complete assembled iOS source and reviewed control refinements
+e045a775059c5747c848dd9da536556dfd3990ec	2026-10-08T15:51:47-04:00	Complete reviewed owned publication and original-operation boundaries
+62e36cc15ece537b55b45f257914cfc28f5c5963	2026-10-08T13:46:14-04:00	Merge commit 'refs/codex/oct8-latest/126' into HEAD
+ee4797cd169dabbec66bfe16f9ffa9aaa38f16a6	2026-10-08T13:46:14-04:00	Merge commit 'refs/codex/oct8-latest/125' into HEAD
+3182d4f1a721d2db3d76810405fba45795316341	2026-10-08T13:46:14-04:00	Merge commit 'refs/codex/oct8-latest/124' into HEAD
+527bd068c7b245fc2c406126971c08e32e692a6b	2026-10-08T13:40:05-04:00	Install the parser required by migration qualification
+98d39a5330df5ab5e8176acdd0feb430d1b3bf4d	2026-10-08T13:38:27-04:00	Canonicalize migration and logical cloud aliases through existing ancestors
+4dfe7759021a3287d76fe2474fee50f485ee1bde	2026-10-08T13:36:58-04:00	Make library consolidation and import relationship publication ownership-safe
+b18d37887c254ce95a41ad73e319d436da5c63a1	2026-10-08T13:34:04-04:00	Preserve migration qualification inputs and filter build output
+128bb1cbd4f2dae94701b52cae9ca4d9bc44cedf	2026-10-08T13:33:09-04:00	Normalize existing container aliases for cloud-only inventory
+2957a163aada1e32515156a58961d0685e38bf11	2026-10-08T13:25:46-04:00	Preserve complete legacy iCloud items and require a fresh metadata scan
+98a1b665453900611cc2b428912ca4d166c053cb	2026-10-08T13:18:21-04:00	Withdraw delayed reader work when the native content selection changes
+ca4265c30982071ba3d59ab5dfc8cabde64934d8	2026-10-08T13:14:49-04:00	Merge commit '9e30f3fb684ff1bde59ef11dfbc127b4feb2aa42' into HEAD
+8280285312613addc54caa26a7248fc1fdbad6ed	2026-10-08T13:04:32-04:00	Show destination category titles in feed duplication menu
+9e30f3fb684ff1bde59ef11dfbc127b4feb2aa42	2026-10-08T12:50:19-04:00	Place category keyboard Done control in bottom inset
+044e11b5a0e2d7c7d279019a08ba26d7a56aed17	2026-10-08T11:35:08-04:00	Keep category keyboard toolbar stable while dismissing focus
+d2e3d65cdf224ac0c7d118108f762314ea6c116f	2026-10-08T10:58:06-04:00	Expose category sidebar routing and cover durable archive deletion

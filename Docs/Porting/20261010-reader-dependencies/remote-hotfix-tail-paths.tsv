@@ -1,0 +1,89 @@
+dated_path	status	remaining_boundary
+.github/workflows/ebook-fingerprint.yml	intentionally divergent/retired	Do not restore historical validation; no execution
+.github/workflows/legacy-documents-migration.yml	intentionally divergent/retired	Do not restore historical validation; no execution
+Documentation/epub-identity-namespace-20260925.md	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Documentation/epub-initialization-ownership-20260928.md	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Documentation/epub-package-fingerprint-20260925.md	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Documentation/epub-serving-integration-20260926.md	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Package.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Files/Archive+Data.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Files/ReaderEBookDirectorySnapshotArchive.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Files/ReaderEBookInitialRestorePolicy.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Files/ReaderEBookLocalAvailability.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Files/ReaderEBookPackageFingerprint.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Files/ReaderEBookPackageNamespace.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Files/ReaderEBookPackageSnapshot.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Files/ReaderEBookRenditionSelection.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Files/ReaderEBookServingSession.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Files/ReaderEBookSnapshotFingerprint.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Files/ReaderEBookZIPDirectory.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Files/ReaderFileManager.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Files/ReaderLegacyDocumentsMigration.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Library/LibraryDataManager.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Reader/ReaderContent.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Reader/ReaderContentLoader.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireContent/Reader/ReaderContentSelectionHandoff.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireLibrary/Library/LibraryCategoriesView.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireLibrary/Library/LibraryCategoryView.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Reader Content/ReaderContentList.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Reader/Books/EbookEntryPathTransport.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Reader/Books/EbookPackageSessionEnvironment.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Reader/Books/EbookURLSchemeHandler.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Reader/Books/ReaderEBookInitialization.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Reader/NavigationTaskManager.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Reader/ReaderDocStateUserScript.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Reader/ReaderMessageHandlersViewModifier.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Reader/ReaderWebView.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-direct-section.js	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-native-source-request.js	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-package-media.js	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-restore-coordination.js	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer.js	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Sources/LakeOfFireReader/Resources/Resources/foliate-js/epub.js	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/Browser/test_book_article_producer.py	intentionally divergent/retired	Do not restore historical validation; no execution
+Tests/Browser/test_book_endcap_shell.py	intentionally divergent/retired	Do not restore historical validation; no execution
+Tests/Browser/test_initial_display_geometry.py	intentionally divergent/retired	Do not restore historical validation; no execution
+Tests/JavaScript/ebook-native-source-request.test.mjs	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/JavaScript/ebook-package-media.test.mjs	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/JavaScript/ebook-restore-coordination.test.mjs	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/EBookRenderReadyNativeIntegrationTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/EbookEntryPathTransportTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/EbookServingHandlerTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/LibraryCategoryPresentationTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/LibraryConfigurationConsolidationTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/LibraryRegressionTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderContentListSnapshotTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderContentLoaderAdditionalProviderTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderContentLoadingOwnershipTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderContentLoadingStorageTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderContentSelectionHandoffTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookCoordinatedSnapshotTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookFingerprintValidationTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookInitialRestorePolicyTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookInitializationTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookLocalAvailabilityTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookNamespaceIntegrationTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookPackageFingerprintTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookPackageNamespaceTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookPackageSnapshotTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookRenditionSelectionTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookServingSessionTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookZIPDirectoryTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookZIPPathFingerprintTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderEBookZIPPathMetadataTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderFileInventoryAdmissionTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderFileLibraryBoundaryTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderLegacyDocumentsMigrationTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderSnippetPipelineDiagnosticsTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReaderSnippetTitleTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tools/EBookEntryPathTests/Package.swift	intentionally divergent/retired	Do not restore historical validation; no execution
+Tools/EBookFingerprintTests/Package.swift	intentionally divergent/retired	Do not restore historical validation; no execution
+Tools/EBookNamespaceTests/Package.swift	intentionally divergent/retired	Do not restore historical validation; no execution
+Tools/LegacyDocumentsTests/Package.swift	intentionally divergent/retired	Do not restore historical validation; no execution
+Tools/test-ebook-entry-path.sh	intentionally divergent/retired	Do not restore historical validation; no execution
+Tools/test-ebook-fingerprint.sh	intentionally divergent/retired	Do not restore historical validation; no execution
+Tools/test-ebook-initialization.sh	intentionally divergent/retired	Do not restore historical validation; no execution
+Tools/test-ebook-namespace.sh	intentionally divergent/retired	Do not restore historical validation; no execution
+Tools/test-ebook-zip-directory.sh	intentionally divergent/retired	Do not restore historical validation; no execution
+Tools/test-legacy-documents-migration.sh	intentionally divergent/retired	Do not restore historical validation; no execution
