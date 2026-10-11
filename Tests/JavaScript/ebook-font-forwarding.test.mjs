@@ -14,9 +14,25 @@ const makeStyle = () => {
         setProperty: (name, value) => values.set(name, value),
     }
 }
-const makeElement = tagName => ({
-    tagName: tagName.toUpperCase(), dataset: {}, style: makeStyle(), textContent: '', rel: '', href: '', remove() {},
-})
+const makeElement = tagName => {
+    const listeners = new Map()
+    return {
+        tagName: tagName.toUpperCase(), dataset: {}, style: makeStyle(), textContent: '', rel: '', href: '', remove() {},
+        addEventListener(type, callback, options) {
+            const callbacks = listeners.get(type) || []
+            callbacks.push({ callback, once: options?.once })
+            listeners.set(type, callbacks)
+        },
+        removeEventListener(type, callback) {
+            listeners.set(type, (listeners.get(type) || []).filter(entry => entry.callback !== callback))
+        },
+        dispatchEvent(event) {
+            const callbacks = listeners.get(event.type) || []
+            listeners.set(event.type, callbacks.filter(entry => !entry.once))
+            for (const entry of callbacks) entry.callback(event)
+        },
+    }
+}
 const makeDocument = direction => {
     const elements = new Map()
     const documentElement = makeElement('html')
@@ -37,6 +53,103 @@ const sourceFontStyle = () => ({
     rel: 'stylesheet',
     href: 'internal://local/manabi-fonts.css?family=YuKyokasho',
     dataset: { mnbInjectedFontFamily: 'Fallback Family', assetRevision: '7' },
+})
+
+test('late stylesheet and font readiness resize the current chapter without another forwarding call', () => {
+    const doc = makeDocument('horizontal')
+    let resizeCount = 0
+    doc.defaultView = {
+        document: doc,
+        Event: class { constructor(type) { this.type = type } },
+        dispatchEvent: event => { assert.equal(event.type, 'resize'); resizeCount++ },
+    }
+    const fontReadyCallbacks = []
+    doc.fonts = { ready: { then: callback => {
+        fontReadyCallbacks.push(callback)
+        return { catch() {} }
+    } } }
+    const source = sourceFontStyle()
+    assert.equal(copyCustomReaderFontStyleToDocument(source, doc, 'downloaded', families), true)
+    assert.equal(resizeCount, 1)
+    const style = doc.getElementById('mnb-custom-fonts-inline')
+    style.dispatchEvent({ type: 'load' })
+    assert.equal(resizeCount, 2)
+    assert.equal(fontReadyCallbacks.length, 2)
+    for (const callback of fontReadyCallbacks) callback()
+    assert.equal(resizeCount, 4)
+    style.dispatchEvent({ type: 'load' })
+    assert.equal(resizeCount, 4)
+    assert.equal(copyCustomReaderFontStyleToDocument(source, doc, 'repeat', families), false)
+})
+
+test('late readiness discards replaced stylesheet revisions and navigated chapter windows', () => {
+    const doc = makeDocument('horizontal')
+    let resizeCount = 0
+    doc.defaultView = {
+        document: doc,
+        Event: class { constructor(type) { this.type = type } },
+        dispatchEvent: () => { resizeCount++ },
+    }
+    const fontReadyCallbacks = []
+    doc.fonts = { ready: { then: callback => {
+        fontReadyCallbacks.push(callback)
+        return { catch() {} }
+    } } }
+    const source = sourceFontStyle()
+    copyCustomReaderFontStyleToDocument(source, doc, 'initial', families)
+    source.href += '&revision=2'
+    copyCustomReaderFontStyleToDocument(source, doc, 'replacement', families)
+    assert.equal(resizeCount, 2)
+    fontReadyCallbacks[0]()
+    assert.equal(resizeCount, 2)
+    doc.getElementById('mnb-custom-fonts-inline').dispatchEvent({ type: 'load' })
+    assert.equal(resizeCount, 3)
+    doc.defaultView.document = makeDocument('vertical')
+    for (const callback of fontReadyCallbacks) callback()
+    assert.equal(resizeCount, 3)
+})
+
+test('a later direction change with the same stylesheet replaces pending chapter readiness callbacks', () => {
+    const doc = makeDocument('horizontal')
+    let resizeCount = 0
+    doc.defaultView = {
+        document: doc,
+        Event: class { constructor(type) { this.type = type } },
+        dispatchEvent: () => { resizeCount++ },
+    }
+    const fontReadyCallbacks = []
+    doc.fonts = { ready: { then: callback => {
+        fontReadyCallbacks.push(callback)
+        return { catch() {} }
+    } } }
+    const source = sourceFontStyle()
+    copyCustomReaderFontStyleToDocument(source, doc, 'initial', families)
+    doc.body.dataset.mnbWritingDirection = 'vertical'
+    copyCustomReaderFontStyleToDocument(source, doc, 'direction', families)
+    assert.equal(resizeCount, 2)
+    fontReadyCallbacks[0]()
+    assert.equal(resizeCount, 2)
+    doc.getElementById('mnb-custom-fonts-inline').dispatchEvent({ type: 'load' })
+    assert.equal(resizeCount, 3)
+    assert.equal(fontReadyCallbacks.length, 3)
+    fontReadyCallbacks[1]()
+    fontReadyCallbacks[2]()
+    assert.equal(resizeCount, 5)
+})
+
+test('replacing a linked stylesheet with an empty inline style still refreshes geometry', () => {
+    const doc = makeDocument('horizontal')
+    let resizeCount = 0
+    doc.defaultView = {
+        Event: class { constructor(type) { this.type = type } },
+        dispatchEvent: () => { resizeCount++ },
+    }
+    copyCustomReaderFontStyleToDocument(sourceFontStyle(), doc, 'initial', {})
+    const inlineStyle = { tagName: 'STYLE', textContent: '', dataset: {} }
+    assert.equal(copyCustomReaderFontStyleToDocument(inlineStyle, doc, 'inline', {}), true)
+    assert.equal(doc.getElementById('mnb-custom-fonts-inline').tagName, 'STYLE')
+    assert.equal(resizeCount, 2)
+    assert.equal(copyCustomReaderFontStyleToDocument(inlineStyle, doc, 'repeat', {}), false)
 })
 
 test('selects directional families while retaining one stylesheet URL', () => {

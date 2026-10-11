@@ -1,3 +1,5 @@
+const fontGeometryStates = new WeakMap()
+
 export const copyCustomReaderFontStyleToDocument = (
     sourceFontStyle,
     doc,
@@ -6,20 +8,22 @@ export const copyCustomReaderFontStyleToDocument = (
 ) => {
     if (!doc || !sourceFontStyle) return false
 
+    let changed = false
     let targetFontStyle = doc.getElementById('mnb-custom-fonts-inline')
     const sourceTag = sourceFontStyle.tagName?.toLowerCase()
     const desiredTag = sourceTag === 'link' ? 'link' : 'style'
     if (targetFontStyle && targetFontStyle.tagName?.toLowerCase() !== desiredTag) {
         targetFontStyle.remove()
         targetFontStyle = null
+        changed = true
     }
     if (!targetFontStyle) {
         targetFontStyle = doc.createElement(desiredTag)
         targetFontStyle.id = 'mnb-custom-fonts-inline'
         ;(doc.head || doc.documentElement).appendChild(targetFontStyle)
+        changed = true
     }
 
-    let changed = false
     const writingDirection = doc.body?.dataset?.mnbWritingDirection
         || doc.body?.dataset?.mnbFoliateWritingDirection
         || null
@@ -81,7 +85,36 @@ export const copyCustomReaderFontStyleToDocument = (
         }
     }
     if (changed && doc.defaultView) {
-        doc.defaultView.dispatchEvent(new doc.defaultView.Event('resize'))
+        const previousState = fontGeometryStates.get(doc)
+        previousState?.fontStyle.removeEventListener?.('load', previousState.onLoad)
+        const fontStyle = targetFontStyle
+        const root = doc.documentElement
+        const view = doc.defaultView
+        const href = fontStyle.href
+        const text = fontStyle.textContent
+        const state = { fontStyle }
+        fontGeometryStates.set(doc, state)
+        const refreshGeometry = () => {
+            if (fontGeometryStates.get(doc) !== state
+                || doc.documentElement !== root || doc.defaultView !== view
+                || doc.getElementById('mnb-custom-fonts-inline') !== fontStyle
+                || (desiredTag === 'link' ? fontStyle.href !== href : fontStyle.textContent !== text)) return
+            try { if (view.document && view.document !== doc) return } catch (_) { return }
+            view.dispatchEvent(new view.Event('resize'))
+        }
+        const refreshAfterFontsReady = () => {
+            if (fontGeometryStates.get(doc) !== state) return
+            const ready = doc.fonts?.ready
+            if (ready?.then) ready.then(refreshGeometry).catch(() => {})
+        }
+        // The new sheet may apply after the first resize and the current font-ready promise.
+        state.onLoad = () => {
+            refreshGeometry()
+            refreshAfterFontsReady()
+        }
+        if (desiredTag === 'link') fontStyle.addEventListener?.('load', state.onLoad, { once: true })
+        refreshGeometry()
+        refreshAfterFontsReady()
     }
     return changed
 }
