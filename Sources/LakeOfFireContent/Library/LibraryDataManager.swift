@@ -1060,9 +1060,6 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         if script.isDeleted {
             return true
         }
-        if script.isArchived {
-            return true
-        }
         return false
     }
     
@@ -1112,10 +1109,6 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         
         if script.isDeleted {
             script.isDeleted = false
-            didChange = true
-        }
-        if script.isArchived {
-            script.isArchived = false
             didChange = true
         }
         

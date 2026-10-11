@@ -150,12 +150,73 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
                            "Unrelated references must not suppress new imported scripts")
             XCTAssertEqual(realm.objects(UserScript.self).count, 3)
             XCTAssertEqual(library.getUserScripts()?.count, 3)
+            XCTAssertTrue(try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: firstID)).isArchived,
+                          "An omitted archive flag retains the importer\'s disabled default")
 
             try await LibraryDataManager.shared.importOPML(
                 fileURL: url, realmConfiguration: configuration
             )
             XCTAssertEqual(Array(library.userScriptIDs), [existingID, firstID, secondID])
             XCTAssertEqual(realm.objects(UserScript.self).count, 3)
+        }.value
+    }
+
+
+    func testOPMLRoundTripPreservesDisabledScriptsAndRepeatedImportIsStable() async throws {
+        let sourceConfiguration = makeConfiguration()
+        let destinationConfiguration = makeConfiguration()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("round-trip.opml")
+
+        try await Task { @RealmBackgroundActor in
+            let disabledID = try await LibraryDataManager.shared.createEmptyScript(
+                addToLibrary: true, realmConfiguration: sourceConfiguration
+            )
+            let enabledID = try await LibraryDataManager.shared.createEmptyScript(
+                addToLibrary: true, realmConfiguration: sourceConfiguration
+            )
+            let sourceRealm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: sourceConfiguration
+            )
+            let disabled = try XCTUnwrap(sourceRealm.object(ofType: UserScript.self, forPrimaryKey: disabledID))
+            let enabled = try XCTUnwrap(sourceRealm.object(ofType: UserScript.self, forPrimaryKey: enabledID))
+            try await sourceRealm.asyncWrite {
+                disabled.title = "Disabled"
+                disabled.script = "void(0);"
+                disabled.isArchived = true
+                enabled.title = "Enabled"
+                enabled.script = "void(1);"
+                enabled.isArchived = false
+            }
+            let exported = try await LibraryDataManager.shared.exportUserOPML(
+                realmConfiguration: sourceConfiguration
+            )
+            try Data(exported.xml.utf8).write(to: url)
+            try await LibraryDataManager.shared.importOPML(
+                fileURL: url, realmConfiguration: destinationConfiguration
+            )
+            let destinationRealm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: destinationConfiguration
+            )
+            let importedDisabled = try XCTUnwrap(destinationRealm.object(ofType: UserScript.self, forPrimaryKey: disabledID))
+            let importedEnabled = try XCTUnwrap(destinationRealm.object(ofType: UserScript.self, forPrimaryKey: enabledID))
+            XCTAssertTrue(importedDisabled.isArchived)
+            XCTAssertFalse(importedEnabled.isArchived)
+            let modifiedAt = importedDisabled.modifiedAt
+            let library = try XCTUnwrap(destinationRealm.objects(LibraryConfiguration.self).first)
+            XCTAssertEqual(Set(library.userScriptIDs), Set([disabledID, enabledID]))
+
+            try await LibraryDataManager.shared.importOPML(
+                fileURL: url, realmConfiguration: destinationConfiguration
+            )
+            XCTAssertTrue(importedDisabled.isArchived)
+            XCTAssertFalse(importedEnabled.isArchived)
+            XCTAssertEqual(importedDisabled.modifiedAt, modifiedAt,
+                           "Reimporting an unchanged disabled script must not journal it again")
+            XCTAssertEqual(destinationRealm.objects(UserScript.self).count, 2)
         }.value
     }
 
