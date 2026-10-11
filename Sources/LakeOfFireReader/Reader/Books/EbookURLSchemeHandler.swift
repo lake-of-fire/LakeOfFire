@@ -157,19 +157,22 @@ struct EbookDirectSectionRequest: Equatable, Sendable {
 }
 
 func ebookDirectSectionRequest(from url: URL) -> EbookDirectSectionRequest? {
-    guard url.path == "/processed-section",
+    guard url.scheme == "ebook", url.host == "ebook",
+          url.path == "/processed-section",
           let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
         return nil
     }
-    let sourceValues = components.queryItems?.filter { $0.name == "sourceURL" }.compactMap(\.value) ?? []
-    let subpathValues = components.queryItems?.filter { $0.name == "subpath" }.compactMap(\.value) ?? []
+    let sourceValues = components.queryItems?.filter { $0.name == "sourceURL" } ?? []
+    let subpathValues = components.queryItems?.filter { $0.name == "subpath" } ?? []
     guard sourceValues.count == 1,
           subpathValues.count == 1,
-          let sourceURL = URL(string: sourceValues[0]),
+          let rawSource = sourceValues[0].value,
+          let rawSubpath = subpathValues[0].value,
+          let sourceURL = URL(string: rawSource),
           sourceURL.scheme == "ebook",
           sourceURL.host == "ebook",
           sourceURL.pathComponents.starts(with: ["/", "load"]),
-          let subpath = normalizedEbookEntrySubpath(subpathValues[0]) else {
+          let subpath = normalizedEbookEntrySubpath(rawSubpath) else {
         return nil
     }
     return EbookDirectSectionRequest(sourceURL: sourceURL, subpath: subpath)
@@ -183,8 +186,10 @@ struct EbookPathBackedEntryRequest: Equatable, Sendable {
 
 func ebookPathBackedEntryRequest(from url: URL, mainDocumentURL: URL?) -> EbookPathBackedEntryRequest? {
     let prefix = "/entry-source/"
-    guard url.path.hasPrefix(prefix) else { return nil }
-    let path = String(url.path.dropFirst(prefix.count))
+    guard url.scheme == "ebook", url.host == "ebook",
+          let encodedPath = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath,
+          encodedPath.hasPrefix(prefix) else { return nil }
+    let path = String(encodedPath.dropFirst(prefix.count))
     guard let separator = path.firstIndex(of: "/") else { return nil }
     let token = String(path[..<separator])
     let generationAndSubpath = String(path[path.index(after: separator)...])
@@ -204,12 +209,12 @@ func ebookPathBackedEntryRequest(from url: URL, mainDocumentURL: URL?) -> EbookP
           generationDigest.allSatisfy({
               $0.isASCII && ($0.isNumber || ("a"..."f").contains($0))
           }),
-          let subpath = normalizedEbookEntrySubpath(rawSubpath.removingPercentEncoding ?? rawSubpath) else {
+          let subpath = decodedEbookEntrySubpath(fromPercentEncodedPath: rawSubpath) else {
         return nil
     }
     guard let mainDocumentURL,
           let owner = ebookDirectSectionRequest(from: mainDocumentURL),
-          owner.sourceURL == sourceURL else {
+          owner.sourceURL.absoluteString.utf8.elementsEqual(sourceURL.absoluteString.utf8) else {
         return nil
     }
     return EbookPathBackedEntryRequest(
@@ -224,11 +229,6 @@ private func ebookDirectorySubpath(for sectionHref: String) -> String {
     return String(sectionHref[..<sectionHref.index(after: slashIndex)])
 }
 
-private func ebookPathEscaped(_ path: String) -> String {
-    path.split(separator: "/", omittingEmptySubsequences: false)
-        .map { String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0) }
-        .joined(separator: "/")
-}
 
 func ebookProcessedSectionBaseURL(
     sourceURL: URL,
@@ -242,7 +242,7 @@ func ebookProcessedSectionBaseURL(
         "/",
         generationID,
         "/",
-        ebookPathEscaped(ebookDirectorySubpath(for: sectionHref)),
+        percentEncodedEbookEntrySubpath(ebookDirectorySubpath(for: sectionHref)),
     ].joined()
 }
 
@@ -1337,11 +1337,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 let queryBackedRequest: EbookPathBackedEntryRequest? = {
                     guard url.path == "/entry",
                           let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entry"),
-                          let subpath = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-                            .queryItems?
-                            .first(where: { $0.name == "subpath" })?
-                            .value,
-                          let normalizedSubpath = normalizedEbookEntrySubpath(subpath) else {
+                          let normalizedSubpath = ebookEntryQuerySubpath(in: url) else {
                         return nil
                     }
                     return EbookPathBackedEntryRequest(
