@@ -2,6 +2,12 @@
 
 ## Local replacement review — October 10, 2026 (America/Toronto)
 
+The [feed-preview navigation handoff](20261010-reader-dependencies/feed-preview-navigation-handoff.md)
+at candidate `7867feb3` identifies the remaining queued-task/native-request lifetime and
+rechecks pending #50's existing `shouldLoad` API. That mechanism is already pending source;
+the current preview caller needs request/incarnation/disappearance admission when composing
+it. No duplicate navigator mechanism, production navigation patch or runtime claim is added.
+
 ### Caller-resolved ReaderContent selection
 
 Source review at `a738497d303aadc97c90af43e0396beab88c32fb` confirms the three production
