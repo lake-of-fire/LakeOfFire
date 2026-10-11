@@ -11,3 +11,7 @@ Four regression methods cover buffered/pasted replacement, unchanged URLs, non-e
 Scope is editor commands only. Imports, OPML and sync-driven URL replacement remain to be audited and are not declared solved. Existing metadata on a URL that was already changed before this patch cannot be retroactively attributed or cleared without an additional policy. The sibling #160 ETag-precedence fix is still separate and must be composed for qualification.
 
 No native execution, CI dispatch, dependency pins, schema, deployment or production change.
+
+## OPML follow-through
+
+A subsequent source trace found the same URL mutation in LibraryDataManager.applyAttributes, reached by importOPMLEntry for an existing feed UUID. The follow-up clears the three resource-specific fields alongside that URL assignment. Two real OPML-import regression sources cover changed and unchanged URLs (including an unrelated title edit). All six added regression methods across the editor and import lanes remain UNCOMPILED/UNRUN. This supersedes the earlier editor-only scope for OPML imports; sync-driven mutation and pre-existing stale values remain unresolved. No import ownership, category matching or schema semantics were changed.

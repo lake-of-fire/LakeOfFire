@@ -1445,6 +1445,10 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         }
         if feed.rssUrl != feedURL {
             feed.rssUrl = feedURL
+            // HTTP validators and freshness belong to the previous resource.
+            feed.lastFetchedETag = nil
+            feed.lastFetchedModifiedAt = nil
+            feed.lastRefreshedEntriesAt = nil
             didChange = true
         }
         if let newIconURL = newIconURL, feed.iconUrl != newIconURL {
