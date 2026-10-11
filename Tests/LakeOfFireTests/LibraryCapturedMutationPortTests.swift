@@ -1,3 +1,4 @@
+import Foundation
 import RealmSwift
 import RealmSwiftGaps
 import XCTest
@@ -116,6 +117,46 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
         XCTAssertTrue(result.1)
         XCTAssertEqual(result.2, 0)
         XCTAssertEqual(result.3, 0)
+    }
+
+
+    func testOPMLImportAppendsAllScriptsWithoutDuplicatingExistingReferences() async throws {
+        let configuration = makeConfiguration()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let firstID = UUID()
+        let secondID = UUID()
+        let url = directory.appendingPathComponent("scripts.opml")
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <opml version="2.0"><head><title>Imported scripts</title></head><body>
+          <outline text="First" uuid="\(firstID.uuidString)" script="void(0);" />
+          <outline text="Second" uuid="\(secondID.uuidString)" script="void(1);" />
+        </body></opml>
+        """
+        try Data(xml.utf8).write(to: url)
+        try await Task { @RealmBackgroundActor in
+            let existingID = try await LibraryDataManager.shared.createEmptyScript(
+                addToLibrary: true, realmConfiguration: configuration
+            )
+            try await LibraryDataManager.shared.importOPML(
+                fileURL: url, realmConfiguration: configuration
+            )
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
+            XCTAssertEqual(Array(library.userScriptIDs), [existingID, firstID, secondID],
+                           "Unrelated references must not suppress new imported scripts")
+            XCTAssertEqual(realm.objects(UserScript.self).count, 3)
+            XCTAssertEqual(library.getUserScripts()?.count, 3)
+
+            try await LibraryDataManager.shared.importOPML(
+                fileURL: url, realmConfiguration: configuration
+            )
+            XCTAssertEqual(Array(library.userScriptIDs), [existingID, firstID, secondID])
+            XCTAssertEqual(realm.objects(UserScript.self).count, 3)
+        }.value
     }
 
     private func makeConfiguration() -> Realm.Configuration {

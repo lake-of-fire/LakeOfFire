@@ -589,7 +589,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         // Add new scripts
         try Task.checkCancellation()
         for script in allImportedScripts {
-            if !configuration.userScriptIDs.contains(where: { $0 != script.id }) {
+            if !configuration.userScriptIDs.contains(script.id) {
                 var lastNeighborIdx = configuration.userScriptIDs.count - 1
                 if let downloadURL = download?.url, let userScripts = configuration.getUserScripts() {
                     lastNeighborIdx = userScripts.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
