@@ -2,6 +2,53 @@
 
 ## Local replacement review — October 10, 2026 (America/Toronto)
 
+### Hotfix port: script allowed-domain commands
+
+At draft `d41118fb`, domain text hydration/editing selects the global Realm configuration
+after delay and does not admit script membership, deletion or editability in the final
+transaction. Script form deletion computes IDs from then-current offsets; add/context-menu
+delete also obtain their owner after enqueueing work. Hotfix
+`3d9791093686f75aeb2e091d3c9a06c44d7bb9cf` introduces the captured allowed-domain editor
+and rendered-ID commands, retained at exact tail `64f65fbb39238d126700ab3f9d4df59fd76a701c`.
+The hotfix cell/helper moved into `LibraryManagerView.swift`; this adaptation preserves
+main's separate cell and current library composition. Pending #95 `21c42ff0` still has the
+old domain/model paths; #50 `0b91431f` has no captured domain editor. No pending owner is
+duplicated by this tranche.
+
+The new `LibraryScriptDomainCommands.swift` captures storage, script ID/createdAt and
+domain ID/createdAt at rendering/input. Every text/add/delete mutation resolves its live
+owner on RealmBackgroundActor and checks deletion, editability, membership where relevant
+and captured incarnation in the final transaction. Rendered deletion selects stable IDs
+and dates before queueing, survives reorder and excludes recreated rows with the same ID.
+It retains synchronized tombstones, shared batch timestamps, add-before-refresh metadata
+and no-op journal suppression. It does not implement the hotfix dependency's unavailable
+ownership-preserving transaction API or a global account/storage-generation fence.
+
+The cell initializes State from the captured row without sending hydration into its write
+binding. User input reserves a shared transient intent before debounce; pending writes and
+reopened editors share ordering for the domain row, including two admitted script owners.
+Latest unchanged input retires older work without a journal mutation. Disappearance flushes
+the latest captured command; row identity includes storage and both incarnations. UI list
+tasks observe errors through the stable `# LIBRARYSCRIPTDOMAIN` prefix. These are authored
+source paths, not mounted UI qualification.
+
+Nine regression methods exercise captured storage after replacement, six retirement/
+replacement cases during a suspended writer, newer no-op input before commit, rendered
+list deletion after reorder/storage replacement with repeated/out-of-range deletion,
+shared-domain ordering across script owners, recreated selected-domain exclusion, add
+journaling plus managed-owner rejection, pre-cancel rejection and cancellation of suspended
+text/add commands. Fixtures are private
+in-memory Realms; all fixture mutations use RealmBackgroundActor. Test/source directories
+belong to the existing package targets, but compilation, test discovery and execution remain
+unverified. Only source/API/history review and whitespace checks ran. Root pins and original
+checkouts remain unchanged.
+
+This closes the focused domain mutation gap in candidate source only. Script title/text/
+options/preview-URL field ordering, retirement, observation and preview navigation still
+require the distinct remaining hotfix adaptation. Same-backing storage/account reset with
+preserved createdAt, cross-script domain-deletion ownership policy, restart and both-platform
+mounted qualification remain separate gates; this is not closure of the entire script form.
+
 ### Hotfix port: physically invalidated reader rows
 
 Hotfix `50dffbec4228a791f519b78c12c070d9843fae84` adds invalidation guards across

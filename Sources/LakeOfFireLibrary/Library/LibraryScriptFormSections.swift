@@ -180,36 +180,34 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     }
     
     @MainActor
-    func onDeleteOfAllowedDomains(at offsets: IndexSet) {
-        Task { @MainActor [weak self] in
-            guard let self = self, let script else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { realm, script in
-                let deletedDomainIDs = offsets.compactMap { offset in
-                    script.allowedDomainIDs.indices.contains(offset) ? script.allowedDomainIDs[offset] : nil
-                }
-                for domainID in deletedDomainIDs {
-                    if let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID), !domain.isDeleted {
-                        domain.isDeleted = true
-                        domain.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
-                guard !deletedDomainIDs.isEmpty else { return }
-                script.allowedDomainIDs.remove(atOffsets: offsets)
-                script.refreshChangeMetadata(explicitlyModified: true)
-            }
+    @discardableResult
+    func onDeleteOfAllowedDomains(
+        at offsets: IndexSet, displayedDomains: [UserScriptAllowedDomainEditor], owner: LibraryScriptDomainOwner,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil
+    ) -> Task<Void, Error> {
+        let selections = offsets.compactMap {
+            displayedDomains.indices.contains($0) ? displayedDomains[$0].selection : nil
+        }
+        return deleteAllowedDomains(selections, owner: owner, beforeWrite: beforeWrite)
+    }
+
+    @discardableResult
+    func deleteAllowedDomains(
+        _ selections: [LibraryScriptDomainSelection], owner: LibraryScriptDomainOwner,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil
+    ) -> Task<Void, Error> {
+        Task { @RealmBackgroundActor in
+            try await owner.write(.delete(selections), beforeWrite: beforeWrite)
         }
     }
-    
-    func addEmptyDomain() {
-        Task { @MainActor [weak self] in
-            guard let self = self, let script else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { realm, script in
-                let allowedDomain = UserScriptAllowedDomain()
-                realm.add(allowedDomain, update: .modified)
-                allowedDomain.refreshChangeMetadata(explicitlyModified: true)
-                script.allowedDomainIDs.append(allowedDomain.id)
-                script.refreshChangeMetadata(explicitlyModified: true)
-            }
+
+    @discardableResult
+    func addEmptyDomain(
+        owner: LibraryScriptDomainOwner,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil
+    ) -> Task<Void, Error> {
+        Task { @RealmBackgroundActor in
+            try await owner.write(.add, beforeWrite: beforeWrite)
         }
     }
     
@@ -308,45 +306,42 @@ struct LibraryScriptFormSections: View {
             }
         }
         Section(header: Text("Allowed Domains"), footer: Text("Top-level hostnames of domains this script is allowed to run on. No support for wildcards or subdomains. All subdomains are matched against their top-level parent domain. Leave empty for access to all domains.").font(.footnote).foregroundColor(.secondary)) {
-            // TODO: Cache allowedDomains in a subview struct
-            ForEach(viewModel.allowedDomainIDs ?? [], id: \.self) { (domainID: UUID) in
-                UserScriptAllowedDomainCell(domainID: domainID)
-                    .disabled(!script.isUserEditable)
-                    .deleteDisabled(!script.isUserEditable)
-                    .contextMenu {
-                        if script.isUserEditable {
-                            Button(role: .destructive) {
-                                Task { @MainActor in
-                                    try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { realm, script in
-                                        if let idx = script.allowedDomainIDs.index(of: domainID) {
-                                            script.allowedDomainIDs.remove(at: idx)
-                                            if let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID), !domain.isDeleted {
-                                                domain.isDeleted = true
-                                                domain.refreshChangeMetadata(explicitlyModified: true)
-                                            }
-                                            script.refreshChangeMetadata(explicitlyModified: true)
-                                        }
-                                    }
+            if let owner = LibraryScriptDomainOwner(script: script) {
+                let domainEditors = (viewModel.allowedDomainIDs ?? []).compactMap {
+                    UserScriptAllowedDomainEditor(script: script, domainID: $0)
+                }
+                ForEach(domainEditors, id: \.identity) { editor in
+                    UserScriptAllowedDomainCell(editor: editor)
+                        .id(editor.identity)
+                        .disabled(!script.isUserEditable)
+                        .deleteDisabled(!script.isUserEditable)
+                        .contextMenu {
+                            if script.isUserEditable {
+                                Button(role: .destructive) {
+                                    observeDomainChange(viewModel.deleteAllowedDomains([editor.selection], owner: owner))
+                                } label: {
+                                    Text("Delete")
                                 }
-                            } label: {
-                                Text("Delete")
+                                .tint(.red)
                             }
-                            .tint(.red)
                         }
-                    }
-            }
-            .onDelete { offsets in
-                viewModel.onDeleteOfAllowedDomains(at: offsets)
-            }
-            
-            Button {
-                viewModel.addEmptyDomain()
-            } label: {
-                Label("Add Domain", systemImage: "plus.circle")
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if viewModel.allowedDomainIDs?.isEmpty ?? false {
-                Label("Granted access to all web domains", systemImage: "exclamationmark.triangle.fill")
+                }
+                .onDelete { offsets in
+                    observeDomainChange(viewModel.onDeleteOfAllowedDomains(
+                        at: offsets, displayedDomains: domainEditors, owner: owner
+                    ))
+                }
+
+                Button {
+                    observeDomainChange(viewModel.addEmptyDomain(owner: owner))
+                } label: {
+                    Label("Add Domain", systemImage: "plus.circle")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .disabled(!script.isUserEditable)
+                if viewModel.allowedDomainIDs != nil && domainEditors.isEmpty {
+                    Label("Granted access to all web domains", systemImage: "exclamationmark.triangle.fill")
+                }
             }
         }
         
@@ -435,6 +430,13 @@ struct LibraryScriptFormSections: View {
         }
     }
     
+    private func observeDomainChange(_ task: Task<Void, Error>) {
+        Task { @MainActor in
+            do { try await task.value }
+            catch { print("# LIBRARYSCRIPTDOMAIN list change failed: \(error)") }
+        }
+    }
+
     private func refresh(url: URL? = nil, forceRefresh: Bool = false) {
         Task { @MainActor in
             guard let url = url ?? script.previewURL else { return }
