@@ -261,46 +261,87 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     }
     
     @RealmBackgroundActor
-    func add(rssURL: URL, title: String?, toCategory categoryRef: ThreadSafeReference<FeedCategory>? = nil) async throws {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+    func add(
+        rssURL: URL,
+        title: String?,
+        toCategory categoryRef: ThreadSafeReference<FeedCategory>? = nil,
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+    ) async throws {
+        try Task.checkCancellation()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         var category: FeedCategory?
         if let categoryRef = categoryRef {
-            category = realm.resolve(categoryRef)
+            guard let resolvedCategory = realm.resolve(categoryRef),
+                  !resolvedCategory.isDeleted, resolvedCategory.isUserEditable else {
+                throw RealmBackgroundActorError.unableToResolveObject
+            }
+            category = resolvedCategory
         }
         if category == nil {
-            let categoryID = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
+            let categoryID = try await LibraryDataManager.shared.createEmptyCategory(
+                addToLibrary: true,
+                realmConfiguration: realmConfiguration
+            )
             category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID)
             
             if let category {
+                let categoryCreatedAt = category.createdAt
                 try await realm.asyncWrite {
+                    try Task.checkCancellation()
+                    guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                          category.createdAt == categoryCreatedAt,
+                          !category.isDeleted, category.isUserEditable else {
+                        throw RealmBackgroundActorError.unableToResolveObject
+                    }
                     category.title = "My Library"
                     category.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
         }
-        guard let category = category else { return }
+        guard let category = category else {
+            throw RealmBackgroundActorError.unableToResolveObject
+        }
+        let categoryID = category.id
+        let categoryCreatedAt = category.createdAt
 //        await realm.asyncRefresh()
-        guard let feedID = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ThreadSafeReference(to: category)) else { return }
+        guard let feedID = try await LibraryDataManager.shared.createEmptyFeed(
+            categoryID: categoryID,
+            categoryCreatedAt: categoryCreatedAt,
+            realmConfiguration: realmConfiguration
+        ) else {
+            throw RealmBackgroundActorError.unableToResolveObject
+        }
 //        await realm.asyncRefresh()
-        guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
+        guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else {
+            throw RealmBackgroundActorError.unableToResolveObject
+        }
+        let feedCreatedAt = feed.createdAt
         try await realm.asyncWrite {
+            try Task.checkCancellation()
+            guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                  category.createdAt == categoryCreatedAt, !category.isDeleted, category.isUserEditable,
+                  let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
+                  feed.createdAt == feedCreatedAt, !feed.isDeleted, feed.categoryID == categoryID else {
+                throw RealmBackgroundActorError.unableToResolveObject
+            }
             feed.rssUrl = rssURL
             if let title = title {
                 feed.title = title
             }
             feed.refreshChangeMetadata(explicitlyModified: true)
         }
-        let assignRef = ThreadSafeReference(to: category)
         try await { @MainActor in
-            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+            let realm = try await Realm.open(configuration: realmConfiguration)
             await realm.asyncRefresh()
-            if let category = realm.resolve(assignRef) {
-                navigationPath.removeLast(navigationPath.count)
-                navigationPath.append(category)
-                if let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) {
-                    selectedFeed = feed
-                }
+            guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                  category.createdAt == categoryCreatedAt, !category.isDeleted,
+                  let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
+                  feed.createdAt == feedCreatedAt, !feed.isDeleted, feed.categoryID == categoryID else {
+                throw RealmBackgroundActorError.unableToResolveObject
             }
+            navigationPath.removeLast(navigationPath.count)
+            navigationPath.append(category)
+            selectedFeed = feed
         }()
     }
     

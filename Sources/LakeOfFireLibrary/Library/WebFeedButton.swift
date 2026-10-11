@@ -138,8 +138,15 @@ struct WebFeedMenuAddButtons: View {
             Group {
                 ForEach(userCategories) { category in
                     Button {
+                        let realmConfiguration = category.realm?.configuration ?? LibraryDataManager.realmConfiguration
+                        let categoryReference = ThreadSafeReference(to: category)
                         Task { @MainActor in
-                            try await libraryViewModel.add(rssURL: url, title: title, toCategory: ThreadSafeReference(to: category))
+                            try await libraryViewModel.add(
+                                rssURL: url,
+                                title: title,
+                                toCategory: categoryReference,
+                                realmConfiguration: realmConfiguration
+                            )
 #if os(macOS)
                             openWindow(id: "user-library")
 #else
@@ -153,8 +160,13 @@ struct WebFeedMenuAddButtons: View {
             }
         } else {
             Button {
+                let realmConfiguration = LibraryDataManager.realmConfiguration
                 Task { @MainActor in
-                    try await libraryViewModel.add(rssURL: url, title: title)
+                    try await libraryViewModel.add(
+                        rssURL: url,
+                        title: title,
+                        realmConfiguration: realmConfiguration
+                    )
 #if os(macOS)
                     openWindow(id: "user-library")
 #else
