@@ -167,6 +167,44 @@ final class LibraryViewCapturedRealmPortTests: XCTestCase {
         XCTAssertTrue(replacementRealm.objects(FeedCategory.self).isEmpty)
     }
 
+
+    func testMainActorManagedCategoryArchiveAndRestoreUseCapturedRealm() async throws {
+        let captured = makeConfiguration()
+        let replacement = makeConfiguration()
+        let realm = try Realm(configuration: captured)
+        let configuration = LibraryConfiguration()
+        let category = FeedCategory()
+        category.title = "My category"
+        try realm.write {
+            realm.add([configuration, category])
+            configuration.categoryIDs.append(category.id)
+        }
+        let model = LibraryCategoriesViewModel(
+            observesRealm: false,
+            realmConfiguration: captured
+        )
+        model.libraryConfiguration = configuration
+        model.userLibraryCategories = [category]
+        LibraryDataManager.realmConfiguration = replacement
+
+        // Pass a main-actor-managed row through the real public commands.
+        // The background task may receive its ID, never read the managed row.
+        try await model.deleteCategory(category)
+        _ = realm.refresh()
+        XCTAssertTrue(category.isArchived)
+        XCTAssertFalse(configuration.categoryIDs.contains(category.id))
+
+        try await model.restoreCategory(category)
+        _ = realm.refresh()
+        XCTAssertFalse(category.isArchived)
+        XCTAssertFalse(category.isDeleted)
+        XCTAssertTrue(configuration.categoryIDs.contains(category.id))
+
+        let replacementRealm = try Realm(configuration: replacement)
+        XCTAssertTrue(replacementRealm.objects(FeedCategory.self).isEmpty)
+        XCTAssertTrue(replacementRealm.objects(LibraryConfiguration.self).isEmpty)
+    }
+
     private func makeConfiguration() -> Realm.Configuration {
         var configuration = DefaultRealmConfiguration.configuration
         configuration.fileURL = nil
