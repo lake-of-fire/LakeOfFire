@@ -2,6 +2,25 @@
 
 ## Local replacement review — October 10, 2026 (America/Toronto)
 
+### Consolidation tie-policy review
+
+At draft `c6ab8816c0846fab2162a0ad34e434d15134e30a`, source review of
+`LibraryConfiguration.getConsolidatedOrCreate` confirms survivor selection, relationship
+admission, duplicate tombstones and metadata refreshes occur in one final transaction.
+Existing unresolved primary relationships survive; resolved retired targets are excluded;
+new candidates use immutable created-at and source-configuration/ordinal keys. Repeated
+unchanged consolidation does not refresh primary metadata. No new production defect was
+found in this bounded slice.
+
+One added runtime regression source tests unresolved candidate ties with opposite duplicate
+arrival order, resolved/unresolved equal-date precedence, preserved unresolved primary
+placement, duplicate-ID deduplication, retired-target exclusion and unchanged journal
+generations on rerun. It invokes actual consolidation and reads Realm state; it does not
+assert implementation text. Regression compilation/execution remains unverified.
+Source/diff review and whitespace checks only; no build, test, CI or native launch ran.
+Late CloudKit delivery-order convergence, script-specific unresolved ties, account/storage
+admission and mounted integration remain open. This does not close the entire library ledger.
+
 ### Final inventory row admission follow-up
 
 Source review at `56ae27b6d5a443c3f9aa94815ce08b0342f977ae` found that full inventory

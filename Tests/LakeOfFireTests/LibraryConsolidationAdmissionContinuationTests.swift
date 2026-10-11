@@ -9,6 +9,67 @@ final class LibraryConsolidationAdmissionContinuationTests: XCTestCase {
         try await verifyImmutableAdmission()
     }
 
+    func testUnresolvedRelationshipTiesPreserveSourceOrderAndExcludeRetiredTargets() async throws {
+        try await verifyUnresolvedRelationshipAdmission()
+    }
+
+    @RealmBackgroundActor
+    private func verifyUnresolvedRelationshipAdmission() async throws {
+        let existingMissingID = UUID()
+        let firstMissingID = UUID()
+        let secondMissingID = UUID()
+        let thirdMissingID = UUID()
+        let resolvedID = UUID()
+        for reverseArrival in [false, true] {
+            var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+            configuration.objectTypes = [
+                LibraryConfiguration.self, FeedCategory.self, Feed.self, FeedEntry.self,
+                FeedDirectory.self, UserScript.self, UserScriptAllowedDomain.self,
+            ]
+            configureLakeOfFireMutationTrackingForTesting(&configuration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            let primary = LibraryConfiguration()
+            primary.createdAt = Date(timeIntervalSinceReferenceDate: 0)
+            primary.categoryIDs.append(existingMissingID)
+            let firstDuplicate = LibraryConfiguration()
+            firstDuplicate.id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+            firstDuplicate.createdAt = Date(timeIntervalSinceReferenceDate: 100)
+            let secondDuplicate = LibraryConfiguration()
+            secondDuplicate.id = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+            secondDuplicate.createdAt = firstDuplicate.createdAt
+            let resolved = FeedCategory()
+            resolved.id = resolvedID
+            resolved.createdAt = firstDuplicate.createdAt
+            let deleted = FeedCategory()
+            deleted.isDeleted = true
+            let archived = FeedCategory()
+            archived.isArchived = true
+            firstDuplicate.categoryIDs.append(objectsIn: [firstMissingID, secondMissingID, deleted.id])
+            secondDuplicate.categoryIDs.append(objectsIn: [thirdMissingID, secondMissingID, resolvedID, archived.id])
+            try realm.write {
+                realm.add([resolved, deleted, archived])
+                realm.add(reverseArrival ? [secondDuplicate, firstDuplicate, primary]
+                                         : [primary, firstDuplicate, secondDuplicate])
+            }
+            let consolidated = try await LibraryConfiguration.getConsolidatedOrCreate(
+                realmConfiguration: configuration
+            )
+            XCTAssertEqual(consolidated.id, primary.id)
+            XCTAssertEqual(Array(consolidated.categoryIDs),
+                           [existingMissingID, resolvedID, firstMissingID, secondMissingID, thirdMissingID])
+            XCTAssertTrue(firstDuplicate.isDeleted)
+            XCTAssertTrue(secondDuplicate.isDeleted)
+            let generations = Dictionary(uniqueKeysWithValues:
+                realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }
+            )
+            _ = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+            XCTAssertEqual(Dictionary(uniqueKeysWithValues:
+                realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }
+            ), generations)
+            await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+    }
+
     @RealmBackgroundActor
     private func verifyImmutableAdmission() async throws {
         let existingID = UUID()
