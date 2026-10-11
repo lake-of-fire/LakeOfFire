@@ -66,6 +66,10 @@ private struct LibraryCategoryEditorRequest: Sendable {
     let generation: UInt64
 }
 
+typealias LibraryCategoryFeedDeletionOperation = @Sendable (
+    UUID, Date, [LibraryFeedDeletionTarget], Realm.Configuration
+) async throws -> LibraryFeedDeletionReceipt
+
 @MainActor
 class LibraryCategoryViewModel: ObservableObject {
     let category: FeedCategory
@@ -126,17 +130,48 @@ class LibraryCategoryViewModel: ObservableObject {
         return isUserEditable && category.isArchived
     }
     
+    @Published private(set) var isDeletingFeeds = false
+    @Published private(set) var feedDeletionErrorMessage: String?
+    @Published private(set) var lastFeedDeletionReceipt: LibraryFeedDeletionReceipt?
+
+    private struct FeedDeletionRequest: Sendable {
+        let categoryID: UUID
+        let categoryCreatedAt: Date
+        let targets: [LibraryFeedDeletionTarget]
+        let configuration: Realm.Configuration
+    }
+
+    private let feedDeletionOperation: LibraryCategoryFeedDeletionOperation
+    private var feedDeletionTask: Task<Void, Never>?
+    private var failedFeedDeletionRequest: FeedDeletionRequest?
+    private var feedDeletionGeneration: UInt64 = 0
+
+    var canRetryFeedDeletion: Bool {
+        failedFeedDeletionRequest != nil
+    }
+
     var fieldSaveErrorMessage: String? {
         titleSaveErrorMessage ?? backgroundImageSaveErrorMessage ?? observationErrorMessage
     }
 
-    init(category: FeedCategory, libraryConfiguration: LibraryConfiguration, selectedFeed: Binding<Feed?>) {
+    init(
+        category: FeedCategory,
+        libraryConfiguration: LibraryConfiguration,
+        selectedFeed: Binding<Feed?>,
+        feedDeletionOperation: @escaping LibraryCategoryFeedDeletionOperation = { categoryID, createdAt, targets, configuration in
+            try await LibraryFeedDeletionCommand.perform(
+                categoryID: categoryID, categoryCreatedAt: createdAt,
+                targets: targets, configuration: configuration
+            )
+        }
+    ) {
         let configuration = category.realm?.configuration
             ?? libraryConfiguration.realm?.configuration
             ?? LibraryDataManager.realmConfiguration
         realmConfiguration = configuration
         self.category = category
         self.libraryConfiguration = libraryConfiguration
+        self.feedDeletionOperation = feedDeletionOperation
         categoryID = category.id
         categoryCreatedAt = category.createdAt
         _selectedFeed = selectedFeed
@@ -372,29 +407,111 @@ class LibraryCategoryViewModel: ObservableObject {
     }
 
     @MainActor
-    func deleteFeed(_ feed: Feed) async throws {
-        guard feed.isUserEditable() else { return }
-        try await Realm.asyncWrite(ThreadSafeReference(to: feed), configuration: ReaderContentLoader.feedEntryRealmConfiguration) { _, feed in
-            feed.isDeleted = true
-            feed.refreshChangeMetadata(explicitlyModified: true)
-        }
+    @discardableResult
+    func deleteFeed(_ feed: Feed) -> Task<Void, Never>? {
+        guard !feed.isInvalidated, !feed.isDeleted,
+              feed.realm?.configuration == realmConfiguration,
+              feed.categoryID == categoryID, feed.isUserEditable() else { return nil }
+        return submitFeedDeletion(targets: [LibraryFeedDeletionTarget(feedID: feed.id, createdAt: feed.createdAt)])
     }
-    
+
     @MainActor
-    func deleteFeed(at offsets: IndexSet) {
-        if category.opmlURL != nil {
-            return
+    @discardableResult
+    func deleteFeed(at offsets: IndexSet) -> Task<Void, Never>? {
+        guard !category.isInvalidated else { return nil }
+        let targets = (category.getFeeds() ?? []).map {
+            LibraryFeedDeletionTarget(feedID: $0.id, createdAt: $0.createdAt)
         }
-        
-        for offset in offsets {
-            let feed = category.getFeeds()?[offset]
-            guard let feed, feed.isUserEditable() else { continue }
-            Task { @MainActor in
-                try await deleteFeed(feed)
+        return deleteFeed(at: offsets, from: targets)
+    }
+
+    @MainActor
+    @discardableResult
+    func deleteFeed(
+        at offsets: IndexSet,
+        from displayedTargets: [LibraryFeedDeletionTarget]
+    ) -> Task<Void, Never>? {
+        let targets = offsets.compactMap { offset in
+            displayedTargets.indices.contains(offset) ? displayedTargets[offset] : nil
+        }
+        return submitFeedDeletion(targets: targets)
+    }
+
+    @MainActor
+    @discardableResult
+    func retryFeedDeletion() -> Task<Void, Never>? {
+        guard feedDeletionTask == nil, let request = failedFeedDeletionRequest else { return nil }
+        return executeFeedDeletion(request)
+    }
+
+    @MainActor
+    func dismissFeedDeletionFailure() {
+        feedDeletionGeneration &+= 1
+        feedDeletionErrorMessage = nil
+        failedFeedDeletionRequest = nil
+    }
+
+    @MainActor
+    private func submitFeedDeletion(targets: [LibraryFeedDeletionTarget]) -> Task<Void, Never>? {
+        guard isUserEditable, feedDeletionTask == nil else { return nil }
+        var seenTargets = Set<LibraryFeedDeletionTarget>()
+        let targets = targets.filter { seenTargets.insert($0).inserted }
+        guard !targets.isEmpty else { return nil }
+        return executeFeedDeletion(FeedDeletionRequest(
+            categoryID: categoryID,
+            categoryCreatedAt: categoryCreatedAt,
+            targets: targets,
+            configuration: realmConfiguration
+        ))
+    }
+
+    @MainActor
+    private func executeFeedDeletion(_ request: FeedDeletionRequest) -> Task<Void, Never> {
+        feedDeletionGeneration &+= 1
+        let generation = feedDeletionGeneration
+        isDeletingFeeds = true
+        feedDeletionErrorMessage = nil
+        failedFeedDeletionRequest = nil
+        lastFeedDeletionReceipt = nil
+        // An admitted user action survives retirement of its mounted category editor.
+        let task = Task { @MainActor [self] in
+            defer {
+                isDeletingFeeds = false
+                feedDeletionTask = nil
+            }
+            do {
+                let receipt = try await feedDeletionOperation(
+                    request.categoryID, request.categoryCreatedAt, request.targets, request.configuration
+                )
+                clearDeletedSelection(receipt: receipt, request: request)
+                guard feedDeletionGeneration == generation else { return }
+                lastFeedDeletionReceipt = receipt
+                if !receipt.unavailableFeedIDs.isEmpty {
+                    feedDeletionErrorMessage = "Some selected feeds are no longer available in this category. "
+                        + "Refresh the list and try again."
+                }
+            } catch is CancellationError {
+                // Cancellation before transaction admission leaves the batch untouched.
+            } catch {
+                guard feedDeletionGeneration == generation else { return }
+                failedFeedDeletionRequest = request
+                feedDeletionErrorMessage = error.localizedDescription
             }
         }
+        feedDeletionTask = task
+        return task
     }
-    
+
+    private func clearDeletedSelection(receipt: LibraryFeedDeletionReceipt, request: FeedDeletionRequest) {
+        guard let selectedFeed, !selectedFeed.isInvalidated,
+              selectedFeed.realm?.configuration == request.configuration,
+              receipt.deletedFeedIDs.contains(selectedFeed.id),
+              request.targets.contains(where: {
+                  $0.feedID == selectedFeed.id && $0.createdAt == selectedFeed.createdAt
+              }) else { return }
+        self.selectedFeed = nil
+    }
+
     @MainActor
     func createFeed() async throws -> UUID? {
         let categoryID = category.id
@@ -600,30 +717,38 @@ private struct LibraryCategoryViewContent: View {
                     }
 
                     Section("Feeds") {
-                        // TODO: Cache feeds in subview structs
-                        ForEach(libraryCategoryViewModel.category.getFeeds() ?? []) { feed in
+                        let visibleFeeds = libraryCategoryViewModel.category.getFeeds() ?? []
+                        let displayedTargets = visibleFeeds.map {
+                            LibraryFeedDeletionTarget(feedID: $0.id, createdAt: $0.createdAt)
+                        }
+                        if libraryCategoryViewModel.isDeletingFeeds {
+                            HStack {
+                                ProgressView()
+                                Text("Deleting feeds…").foregroundStyle(.secondary)
+                            }
+                        }
+                        ForEach(visibleFeeds) { feed in
                             let isFeedUserEditable = feed.isUserEditable()
                             NavigationLink(value: feed) {
                                 FeedCell(feed: feed, includesDescription: false, horizontalSpacing: 5)
                             }
-                            .deleteDisabled(!isFeedUserEditable)
+                            .deleteDisabled(!isFeedUserEditable || libraryCategoryViewModel.isDeletingFeeds)
                             .contextMenu {
                                 duplicationMenu(feed: feed)
                                 if isFeedUserEditable {
                                     Divider()
                                     Button(role: .destructive) {
-                                        Task {
-                                            try await libraryCategoryViewModel.deleteFeed(feed)
-                                        }
+                                        libraryCategoryViewModel.deleteFeed(feed)
                                     } label: {
                                         Text("Delete Feed")
                                     }
                                     .tint(.red)
+                                    .disabled(libraryCategoryViewModel.isDeletingFeeds)
                                 }
                             }
                         }
                         .onDelete {
-                            libraryCategoryViewModel.deleteFeed(at: $0)
+                            libraryCategoryViewModel.deleteFeed(at: $0, from: displayedTargets)
                         }
                     }
                 }
@@ -669,6 +794,20 @@ private struct LibraryCategoryViewContent: View {
                     Button("Done") { focusedField = nil }
                 }
             }
+            .alert("Unable to Delete Feeds", isPresented: Binding(
+                get: { libraryCategoryViewModel.feedDeletionErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented { libraryCategoryViewModel.dismissFeedDeletionFailure() }
+                }
+            )) {
+                if libraryCategoryViewModel.canRetryFeedDeletion {
+                    Button("Retry") { libraryCategoryViewModel.retryFeedDeletion() }
+                }
+                Button("Cancel", role: .cancel) { libraryCategoryViewModel.dismissFeedDeletionFailure() }
+            } message: {
+                Text(libraryCategoryViewModel.feedDeletionErrorMessage ?? "The feeds could not be deleted.")
+            }
+
         }
         .task { @MainActor in
             libraryCategoryViewModel.beginEditing()
