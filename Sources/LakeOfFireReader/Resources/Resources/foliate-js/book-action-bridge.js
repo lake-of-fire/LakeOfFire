@@ -1,3 +1,4 @@
+import { cryptographicUUID } from './cryptographic-uuid.js'
 // Transport attempts are distinct from the one immutable semantic operation.
 // Recovery NEVER issues another epoch mutation.
 import {
@@ -22,7 +23,7 @@ export class BookActionUnacknowledgedError extends Error {
     }
 }
 export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWindowURL,
-    captureContext, makeRequestID = () => globalThis.crypto.randomUUID().toLowerCase(),
+    captureContext, makeRequestID = cryptographicUUID,
     timeoutMilliseconds = 15_000, setTimer = globalThis.setTimeout, clearTimer = globalThis.clearTimeout,
     captureProducerOwner = captureReaderArticleProducerOwner,
     carryProducerOwner = carryReaderArticleProducerOwner,

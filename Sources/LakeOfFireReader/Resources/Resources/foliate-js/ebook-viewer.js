@@ -6922,7 +6922,45 @@ class Reader {
         }
     }
     async navigateBookReadingAction(target) {
-        return await this.bookReadingRuntime?.navigate(target) ?? { status: 'superseded' };
+        const runtime = this.bookReadingRuntime;
+        if (!runtime) return { status: 'superseded' };
+        const producerOwner = this.#captureProducerEvidence();
+        const origin = {
+            lifecycleGeneration: this.#lifecycleGeneration,
+            renderer: this.view?.renderer,
+            accountPresentation: runtime.state.accountPresentation,
+            // Native publishes the newly committed pass before dispatching
+            // navigation. An end page has no chapter scope to carry forward.
+            scope: runtime.state.context?.scope ?? {
+                articleProgressID: target.articleProgressID,
+                articleEpochID: target.articleEpochID,
+                chapterKey: null, chapterEpochID: null,
+            },
+        };
+        return await runtime.navigate(target, { onCompleted: isNavigationCurrent => {
+            if (this.bookReadingRuntime !== runtime || globalThis.reader !== this
+                || !this.#isRendererLifecycleCurrent(origin.lifecycleGeneration, origin.renderer)
+                || runtime.state.accountPresentation !== origin.accountPresentation
+                || !readerArticleProducerOwnerIsCurrent(producerOwner)
+                || this.hasLoadedLastPosition !== true
+                || globalThis.__manabiRestoreInProgress === true
+                || !isNavigationCurrent()) return;
+            const content = getPrimaryRendererContent(this.view?.renderer);
+            const doc = content?.doc ?? content?.document ?? null;
+            const bookEvent = runtime.captureEvent(doc);
+            const scope = bookEvent?.scope;
+            if (scope && (scope.articleProgressID !== origin.scope.articleProgressID
+                || scope.articleEpochID !== origin.scope.articleEpochID
+                || (scope.chapterKey === origin.scope.chapterKey
+                    && scope.chapterEpochID !== origin.scope.chapterEpochID))) return;
+            if (!isNavigationCurrent() || !readerArticleProducerOwnerIsCurrent(producerOwner)) return;
+            markRestorePositionSaveUserInput('book-action-navigation-completed');
+            if (!isNavigationCurrent()) return;
+            // Resample through the normal publication path. No relocation is
+            // fabricated and delayed chapter admission retains this authority.
+            if (bookEvent) this.#publishConfirmedPageTurnProgress({ bookEvent, producerOwner });
+            else this.#postConfirmedPageTurnProgress(producerOwner, origin);
+        } });
     }
     #currentSectionReadState() {
         const currentPageNumber = typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
@@ -10555,7 +10593,10 @@ class Reader {
             const sameIndex = typeof targetIndex === 'number'
                 && typeof currentIndex === 'number'
                 && targetIndex === currentIndex;
+            // A synthetic restore carries localPage rather than anchor.
+            // Let the renderer reposition it and return an owned receipt.
             const sameVisiblePage = sameIndex
+                && !Number.isFinite(target?.localPage)
                 && (
                     targetAnchor === null
                     || (

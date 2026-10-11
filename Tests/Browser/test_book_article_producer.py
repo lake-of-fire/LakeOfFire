@@ -13,7 +13,7 @@ class BookArticleProducerTests(unittest.TestCase):
     setUpClass = classmethod(shell.BookEndcapShellTests.setUpClass.__func__)
     tearDownClass = classmethod(shell.BookEndcapShellTests.tearDownClass.__func__)
 
-    def open_book(self, initial_token='article-A', section_index=None, multipage=False):
+    def open_book(self, initial_token='article-A', section_index=None, multipage=False, saved_position=None):
         page = self.browser.new_page(viewport={'width': 390, 'height': 844})
         self.addCleanup(page.close)
         self.errors = []
@@ -66,13 +66,167 @@ class BookArticleProducerTests(unittest.TestCase):
             self.addCleanup(self.server.epub_fixtures.pop, fixture_path, None)
         page.evaluate('(path) => loadEBook({url:location.origin+path,layoutMode:"paginated"})', fixture_path)
         wait_for_reader(page, 'globalThis.reader?.view?.renderer?.getContents?.().length > 0 && reader.bookEndcap')
-        if section_index is None:
+        if saved_position is not None:
+            page.evaluate('(position) => loadLastPosition(position)', saved_position)
+        elif section_index is None:
             page.evaluate('loadLastPosition({})')
         else:
             page.evaluate('(index) => loadLastPosition({cfi:reader.view.book.sections[index].cfi})', section_index)
         page.locator('#loading-indicator').wait_for(state='hidden', timeout=15000)
         wait_for_reader(page, 'reader.bookReadingRuntime.state.ready && reader.buildMarkAllSectionsAsReadPayload()?.segments?.length > 0')
         return page
+
+    def install_position_receipts(self, page):
+        # This endpoint models receipt admission, not Realm or its journal.
+        # All navigation, locator generation and publication are bundled code.
+        page.evaluate('''() => {
+            nativeMessages.length = 0;
+            window.positionReceipts = [];
+            const endpoint = webkit.messageHandlers.updateReadingProgress;
+            const originalPost = endpoint.postMessage.bind(endpoint);
+            endpoint.postMessage = payload => {
+                originalPost(payload);
+                if (payload.ebookLocationObservationOnly === true) return;
+                const scope = reader.bookReadingRuntime.state.context?.scope;
+                if (!scope || scope.articleEpochID !== payload.bookReadingScope?.articleEpochID
+                    || scope.articleEpochID !== bookEpoch
+                    || payload.readerArticleProducer?.token !== articleProducerToken) return;
+                positionReceipts.push(JSON.parse(JSON.stringify(payload)));
+            };
+        }''')
+
+    def test_saved_chapter_start_over_publishes_new_beginning_and_reopens(self):
+        page = self.open_book(section_index=1)
+        self.assertEqual(page.evaluate('reader.view.renderer.displayedIndex'), 1)
+        self.assertTrue(page.evaluate('__manabiRequireUserInputBeforePositionSave'))
+        self.install_position_receipts(page)
+        result = page.evaluate('''async () => {
+            // The native Book Actions menu invokes the actual bridge without
+            // a shell pointer event that would independently clear the guard.
+            const pending = reader.bookActionBridge.perform('startBookOver');
+            const request = bookActionRequests.at(-1);
+            await replyToBookAction(request, true);
+            return { result: await pending, epoch: request.requestID };
+        }''')
+        self.assertEqual(result['result']['navigation']['status'], 'completed')
+        self.wait_for_durable_progress(page)
+        wait_for_reader(page, 'positionReceipts.length > 0')
+        receipts = page.evaluate('positionReceipts')
+        self.assertTrue(all(x['sectionIndex'] == 0 for x in receipts))
+        self.assertTrue(all(x['bookReadingScope']['articleEpochID'] == result['epoch'] for x in receipts))
+        self.assertTrue(all(x['readerArticleProducer']['token'] == 'article-A' for x in receipts))
+        self.assertTrue(all(x['reason'] == 'navigation' for x in receipts))
+        self.assertFalse(page.evaluate('__manabiRequireUserInputBeforePositionSave'))
+        self.assertEqual(self.errors, [])
+        saved = receipts[-1]
+        reopened = self.open_book(saved_position={
+            'cfi': saved['cfi'], 'fractionalCompletion': saved['fractionalCompletion']})
+        self.assertEqual(reopened.evaluate('reader.view.renderer.displayedIndex'), 0)
+        self.assertEqual(reopened.evaluate('reader.navHUD.rendererPageSnapshot.current'), 1)
+        self.assertTrue(reopened.evaluate('__manabiRequireUserInputBeforePositionSave'))
+        self.assertEqual(self.errors, [])
+
+    def test_rejected_start_over_does_not_admit_position_save(self):
+        page = self.open_book(section_index=1)
+        self.install_position_receipts(page)
+        result = page.evaluate('''async () => {
+            const pending = reader.bookActionBridge.perform('startBookOver');
+            await replyToBookAction(bookActionRequests.at(-1), false);
+            return await pending;
+        }''')
+        self.assertFalse(result['committed'])
+        page.wait_for_timeout(500)
+        self.assertEqual(page.evaluate('positionReceipts'), [])
+        self.assertEqual(page.evaluate("nativeMessages.filter(x => x.name === 'updateReadingProgress' && !x.payload.ebookLocationObservationOnly).length"), 0)
+        self.assertEqual(page.evaluate('reader.view.renderer.displayedIndex'), 1)
+        self.assertTrue(page.evaluate('__manabiRequireUserInputBeforePositionSave'))
+        self.assertEqual(self.errors, [])
+
+    def test_start_over_waits_for_destination_chapter_admission(self):
+        page = self.open_book(section_index=1)
+        self.install_position_receipts(page)
+        self.hold_chapter_replies(page)
+        result = page.evaluate('''async () => {
+            const pending = reader.bookActionBridge.perform('startBookOver');
+            const request = bookActionRequests.at(-1);
+            await replyToBookAction(request, true);
+            return { result: await pending, epoch: request.requestID };
+        }''')
+        self.assertEqual(result['result']['navigation']['status'], 'completed')
+        self.assertEqual(page.evaluate('reader.view.renderer.displayedIndex'), 0)
+        page.wait_for_timeout(500)
+        self.assertEqual(page.evaluate('positionReceipts'), [])
+        page.evaluate('releaseChapterReplies()')
+        self.wait_for_durable_progress(page)
+        wait_for_reader(page, 'positionReceipts.length > 0')
+        receipts = page.evaluate('positionReceipts')
+        self.assertTrue(all(x['sectionIndex'] == 0 for x in receipts))
+        self.assertTrue(all(x['bookReadingScope']['articleEpochID'] == result['epoch'] for x in receipts))
+        self.assertEqual(self.errors, [])
+
+    def test_unsuccessful_or_stale_real_navigation_does_not_admit_position_save(self):
+        for mode in ['cancelled', 'rejected', 'stale-producer', 'stale-location']:
+            with self.subTest(mode=mode):
+                page = self.open_book(section_index=1)
+                self.install_position_receipts(page)
+                page.evaluate('''mode => {
+                    const context = reader.bookReadingRuntime.state.captureContext();
+                    bookEpoch = 'committed-restart';
+                    publishState(lastNativeBookStateRequest, true);
+                    const renderer = reader.view.renderer;
+                    const originalGoTo = renderer.goTo.bind(renderer);
+                    window.originalBookGoTo = originalGoTo;
+                    renderer.goTo = async (target, options) => {
+                        if (mode === 'stale-producer' || mode === 'stale-location') {
+                            // Hold a REAL successful renderer result. Retiring
+                            // its producer must not let this predecessor save.
+                            const result = await originalGoTo(target, options);
+                            await new Promise(resolve => { window.releaseBookNavigation = resolve; });
+                            return result;
+                        }
+                        // The actual paginator owns cancellation/rejection of
+                        // its awaited target; no completed renderer is stubbed.
+                        return await originalGoTo(new Promise((resolve, reject) => {
+                            window.releaseBookNavigation = () => resolve(target);
+                            window.rejectBookNavigation = () => reject(new Error('rejected target'));
+                        }), options);
+                    };
+                    window.pendingBookNavigation = reader.navigateBookReadingAction({
+                        action:'startBookOver', accountPresentation, articleProgressID:'book',
+                        articleEpochID:bookEpoch, chapterEpochID:null,
+                        sectionLocation:context.sectionLocation, locationRevision:context.locationRevision,
+                    }).then(result => ({result}), error => ({error:error.message}));
+                }''', mode)
+                wait_for_reader(page, 'typeof releaseBookNavigation === "function"')
+                result = page.evaluate('''async mode => {
+                    try {
+                        if (mode === 'cancelled') {
+                            await originalBookGoTo({index:1, anchor:0, bookAction:true});
+                            releaseBookNavigation();
+                        } else if (mode === 'rejected') rejectBookNavigation();
+                        else if (mode === 'stale-producer') {
+                            articleProducerToken = 'article-successor';
+                            releaseBookNavigation();
+                        } else {
+                            // A newer real navigation within the same chapter
+                            // cannot donate its location to the older success.
+                            await originalBookGoTo({index:0, anchor:1, bookAction:true});
+                            releaseBookNavigation();
+                        }
+                        return await pendingBookNavigation;
+                    } finally { reader.view.renderer.goTo = originalBookGoTo; }
+                }''', mode)
+                if mode == 'cancelled':
+                    self.assertEqual(result['result']['status'], 'superseded')
+                elif mode == 'rejected':
+                    self.assertEqual(result['error'], 'rejected target')
+                else:
+                    self.assertEqual(result['result']['status'], 'completed')
+                page.wait_for_timeout(500)
+                self.assertEqual(page.evaluate('positionReceipts'), [])
+                self.assertEqual(page.evaluate("nativeMessages.filter(x => x.name === 'updateReadingProgress' && !x.payload.ebookLocationObservationOnly).length"), 0)
+                self.assertTrue(page.evaluate('__manabiRequireUserInputBeforePositionSave'))
+                self.assertEqual(self.errors, [])
 
     def test_native_mark_keeps_article_and_chapter_ownership(self):
         page = self.open_book()

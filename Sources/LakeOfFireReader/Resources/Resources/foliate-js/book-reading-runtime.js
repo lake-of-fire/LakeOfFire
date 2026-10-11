@@ -1,3 +1,4 @@
+import { cryptographicUUID } from './cryptographic-uuid.js'
 import { BookEndcap } from './book-endcap.js'
 import { createBookActionBridge } from './book-action-bridge.js'
 import { BookReadingStateController, bookScopeKey } from './book-reading-state.js'
@@ -214,7 +215,7 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
                 && event.locationRevision === state.locationRevision
             return ownsLocation() && isScopeCurrent(event.scope, event.document) && ownsLocation()
         },
-        async navigate(target) {
+        async navigate(target, { onCompleted = null } = {}) {
             const accountPresentation = state.accountPresentation
             if (accountPresentation === null) return { status: 'failed' }
             const renderer = view.renderer, book = view.book
@@ -238,7 +239,11 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
             if (!mayDispatch()) return { status: 'superseded' }
             if (typeof goTo !== 'function' || !state.admitsNavigation(target)) return { status: 'failed' }
             if (!mayDispatch()) return { status: 'superseded' }
-            const result = await Reflect.apply(goTo, renderer, [{ index, anchor: 0, bookAction: true }])
+            const relocationID = onCompleted ? cryptographicUUID() : null
+            if (!mayDispatch()) return { status: 'superseded' }
+            const result = await Reflect.apply(goTo, renderer, [
+                { index, anchor: 0, bookAction: true }, { relocationID },
+            ])
             if (!ownsHost()) return { status: 'superseded' }
             // The renderer can explicitly report that another navigation owns
             // the movement. That is not a retryable failure of this old action.
@@ -246,6 +251,19 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
             const displayedIndex = getPrimaryRendererContentIndex(renderer)
             if (!ownsHost() || disposition === 'not-owned') return { status: 'superseded' }
             if (result !== true || displayedIndex !== index) return { status: 'failed' }
+            // Only a proven renderer completion can admit an explicit user
+            // action's position save. Capture the destination, not its outgoing
+            // chapter event, and retire this capability on any later relocation.
+            const locationRevision = state.locationRevision
+            const doc = primaryDocument(renderer)
+            const location = view.lastLocation
+            const isCurrent = () => ownsHost() && state.locationRevision === locationRevision
+                && view.lastLocation === location && location?.relocationID === relocationID
+                && primaryDocument(renderer) === doc && !endcap.visible
+                && getPrimaryRendererContentIndex(renderer) === index
+                && ownsHost() && state.locationRevision === locationRevision
+                && view.lastLocation === location
+            if (onCompleted && doc && isCurrent()) onCompleted(isCurrent)
             return { status: 'completed' }
         },
         close() {
