@@ -274,7 +274,15 @@ private struct LibraryFeedFieldCommand: Sendable {
                   category.createdAt == categoryCreatedAt, !category.isDeleted,
                   !category.isArchived, category.opmlURL == nil else { return }
             let applyChange = {
+                let previousRSSURL = feed.rssUrl
                 guard apply(feed) else { return }
+                if feed.rssUrl != previousRSSURL {
+                    // These values describe the old resource. Invalidate them
+                    // atomically with the admitted URL edit, never beforehand.
+                    feed.lastFetchedETag = nil
+                    feed.lastFetchedModifiedAt = nil
+                    feed.lastRefreshedEntriesAt = nil
+                }
                 feed.refreshChangeMetadata(explicitlyModified: true)
             }
             if let metadataIntent {

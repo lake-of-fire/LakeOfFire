@@ -523,6 +523,111 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         ), generations)
     }
 
+
+    func testChangedEditorURLInvalidatesOldRefreshMetadata() async throws {
+        for paste in [false, true] {
+            let realm = try await Realm(configuration: configuration())
+            let feed = try installFeed(in: realm)
+            try seedRefreshMetadata(feed, in: realm)
+            let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+            let replacement = "https://other.example/new.xml"
+            if paste {
+                try await model.pasteRSSURL(strings: [replacement]).value
+            } else {
+                model.feedURL = replacement
+            }
+            try await model.finishEditing().value
+            realm.refresh()
+            XCTAssertEqual(feed.rssUrl.absoluteString, replacement)
+            XCTAssertNil(feed.lastFetchedETag)
+            XCTAssertNil(feed.lastFetchedModifiedAt)
+            XCTAssertNil(feed.lastRefreshedEntriesAt)
+        }
+    }
+
+    func testSameEditorURLPreservesRefreshMetadata() async throws {
+        for paste in [false, true] {
+            let realm = try await Realm(configuration: configuration())
+            let feed = try installFeed(in: realm)
+            try seedRefreshMetadata(feed, in: realm)
+            let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+            let original = feed.rssUrl.absoluteString
+            if paste {
+                try await model.pasteRSSURL(strings: [original]).value
+            } else {
+                model.feedURL = original
+            }
+            try await model.finishEditing().value
+            realm.refresh()
+            XCTAssertEqual(feed.rssUrl.absoluteString, original)
+            assertSeededRefreshMetadata(feed)
+        }
+    }
+
+    func testRejectedEditorURLPreservesRefreshMetadata() async throws {
+        for paste in [false, true] {
+            let realm = try await Realm(configuration: configuration())
+            let feed = try installFeed(in: realm)
+            try seedRefreshMetadata(feed, in: realm)
+            let original = feed.rssUrl
+            let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+            let category = try XCTUnwrap(feed.getCategory())
+            try realm.write { category.opmlURL = URL(string: "https://example.com/managed.opml") }
+            if paste {
+                try await model.pasteRSSURL(strings: ["https://other.example/new.xml"]).value
+            } else {
+                model.feedURL = "https://other.example/new.xml"
+            }
+            try await model.finishEditing().value
+            realm.refresh()
+            XCTAssertEqual(feed.rssUrl, original)
+            assertSeededRefreshMetadata(feed)
+        }
+    }
+
+    func testSupersededURLWriterDoesNotInvalidateWinningMetadata() async throws {
+        let realm = try await Realm(configuration: configuration())
+        let feed = try installFeed(in: realm)
+        try seedRefreshMetadata(feed, in: realm)
+        let original = feed.rssUrl
+        let oldEditor = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let started = expectation(description: "URL writer suspended")
+        let gate = LibraryFeedContinuationGate()
+        let older = oldEditor.writeFeedAsync(field: .url, beforeWrite: {
+            started.fulfill()
+            await gate.wait()
+        }) { feed in
+            feed.rssUrl = URL(string: "https://obsolete.example/feed.xml")!
+            return true
+        }
+        defer { older.cancel(); Task { await gate.release() } }
+        await fulfillment(of: [started], timeout: 5)
+        let newEditor = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        newEditor.feedURL = original.absoluteString
+        await gate.release()
+        try await older.value
+        try await newEditor.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(feed.rssUrl, original)
+        assertSeededRefreshMetadata(feed)
+    }
+
+    private func seedRefreshMetadata(_ feed: Feed, in realm: Realm) throws {
+        try realm.write {
+            feed.lastFetchedETag = "\"old-resource\""
+            feed.lastFetchedModifiedAt = Date(timeIntervalSince1970: 100)
+            feed.lastRefreshedEntriesAt = Date(timeIntervalSince1970: 200)
+        }
+    }
+
+    private func assertSeededRefreshMetadata(
+        _ feed: Feed, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        XCTAssertEqual(feed.lastFetchedETag, "\"old-resource\"", file: file, line: line)
+        XCTAssertEqual(feed.lastFetchedModifiedAt, Date(timeIntervalSince1970: 100), file: file, line: line)
+        XCTAssertEqual(feed.lastRefreshedEntriesAt, Date(timeIntervalSince1970: 200), file: file, line: line)
+    }
+
     private func configuration() -> Realm.Configuration {
         var value = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         value.objectTypes = [
