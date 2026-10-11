@@ -690,7 +690,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     let isLast: Bool
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
-    let onContentAppear: ((C) -> Void)?
+    let onContentAppear: (@MainActor @Sendable (C) -> Void)?
     
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
@@ -858,7 +858,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             }
         }
         .environmentObject(cloudDriveSyncStatusModel)
-        .task { @MainActor in
+        .task { @MainActor @Sendable in
             onContentAppear?(content)
             if let item = content as? ContentFile {
                 await cloudDriveSyncStatusModel.refreshAsync(item: item)
@@ -885,7 +885,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
-    let onContentAppear: ((C) -> Void)?
+    let onContentAppear: (@MainActor @Sendable (C) -> Void)?
     
     var body: some View {
         let contents = viewModel.filteredContents
@@ -921,7 +921,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
         viewModel: ReaderContentListViewModel<C>,
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
-        onContentAppear: ((C) -> Void)? = nil
+        onContentAppear: (@MainActor @Sendable (C) -> Void)? = nil
     ) {
         _entrySelection = entrySelection
         self.includeSource = includeSource
@@ -959,7 +959,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @ViewBuilder let emptyStateView: () -> EmptyState
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
-    let onContentAppear: ((C) -> Void)?
+    let onContentAppear: (@MainActor @Sendable (C) -> Void)?
     let scrollTargetID: String?
     
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
@@ -1519,7 +1519,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
-        onContentAppear: ((C) -> Void)? = nil,
+        onContentAppear: (@MainActor @Sendable (C) -> Void)? = nil,
         scrollTargetID: String? = nil,
         postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])? = nil,
         @ViewBuilder supplementarySections: @escaping () -> SupplementarySections,
@@ -1576,7 +1576,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
-        onContentAppear: ((C) -> Void)? = nil,
+        onContentAppear: (@MainActor @Sendable (C) -> Void)? = nil,
         scrollTargetID: String? = nil,
         postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
@@ -1621,7 +1621,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
-    let onContentAppear: ((C) -> Void)?
+    let onContentAppear: (@MainActor @Sendable (C) -> Void)?
     
     public var body: some View {
         ReaderContentInnerListItems(
@@ -1655,7 +1655,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
-        onContentAppear: ((C) -> Void)? = nil,
+        onContentAppear: (@MainActor @Sendable (C) -> Void)? = nil,
         showSeparators: Bool = false,
         useCardBackground: Bool = false,
         clearRowBackground: Bool = false,

@@ -1322,6 +1322,9 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
     public var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil {
         willSet { processingDependencyWillChange() }
     }
+    public var ebookProcessedPayloadAdmission: EbookProcessedPayloadAdmission? = nil {
+        willSet { processingDependencyWillChange() }
+    }
     public var ebookProcessingVariantProvider: EbookProcessingVariantProvider? = nil {
         willSet { processingDependencyWillChange() }
     }
