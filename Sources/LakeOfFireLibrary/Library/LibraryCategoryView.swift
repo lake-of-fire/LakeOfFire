@@ -51,6 +51,7 @@ private struct LibraryCategoryFieldCommand: Sendable {
 @MainActor
 class LibraryCategoryViewModel: ObservableObject {
     let category: FeedCategory
+    let categoryID: UUID
     let libraryConfiguration: LibraryConfiguration
     let realmConfiguration: Realm.Configuration
     @Binding var selectedFeed: Feed?
@@ -66,18 +67,18 @@ class LibraryCategoryViewModel: ObservableObject {
     private let writeOrdering: LibraryEditorWriteOrdering
     
     var isUserEditable: Bool {
-        return category.opmlURL == nil
+        return !category.isInvalidated && category.opmlURL == nil
     }
     
     var deleteButtonTitle: String {
-        if category.isArchived {
+        if !category.isInvalidated && category.isArchived {
             return "Delete"
         }
         return "Archive"
     }
     
     var deleteButtonImageName: String {
-        if category.isArchived {
+        if !category.isInvalidated && category.isArchived {
             return "trash"
         }
         return "archivebox"
@@ -100,6 +101,7 @@ class LibraryCategoryViewModel: ObservableObject {
             ?? libraryConfiguration.realm?.configuration
             ?? LibraryDataManager.realmConfiguration
         writeOrdering = .shared(configuration: realmConfiguration, recordKind: "category")
+        categoryID = category.id
         self.category = category.isFrozen ? (category.thaw() ?? category) : category
         // The StateObject survives parent snapshots; keep its menu source live.
         self.libraryConfiguration = libraryConfiguration.isFrozen
@@ -207,14 +209,14 @@ class LibraryCategoryViewModel: ObservableObject {
     @MainActor
     @discardableResult
     func deleteFeed(at offsets: IndexSet) -> Task<Void, Error> {
-        deleteFeed(at: offsets, fromFeedIDs: (category.getFeeds() ?? []).map(\.id))
+        deleteFeed(at: offsets, fromFeedIDs: (category.isInvalidated ? [] : category.getFeeds() ?? []).map(\.id))
     }
 
     @MainActor
     @discardableResult
     func deleteFeed(at offsets: IndexSet, fromFeedIDs displayedFeedIDs: [UUID]) -> Task<Void, Error> {
         let feedIDs = offsets.compactMap { offset -> UUID? in
-            guard category.opmlURL == nil,
+            guard !category.isInvalidated, category.opmlURL == nil,
                   displayedFeedIDs.indices.contains(offset) else { return nil }
             return displayedFeedIDs[offset]
         }
@@ -241,6 +243,7 @@ class LibraryCategoryViewModel: ObservableObject {
 
     @MainActor
     func createFeed() async throws -> UUID? {
+        guard !category.isInvalidated else { return nil }
         let categoryID = category.id
         let feedID: UUID? = try await Task { @RealmBackgroundActor [realmConfiguration] in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
@@ -259,6 +262,7 @@ class LibraryCategoryViewModel: ObservableObject {
     
     @MainActor
     func deleteCategory() async throws {
+        guard !category.isInvalidated else { return }
         let categoryID = category.id
         try await Task { @RealmBackgroundActor [realmConfiguration] in
             try await LibraryDataManager.shared.deleteCategory(
@@ -270,6 +274,7 @@ class LibraryCategoryViewModel: ObservableObject {
     
     @MainActor
     func restoreCategory() async throws {
+        guard !category.isInvalidated else { return }
         let categoryID = category.id
         try await Task { @RealmBackgroundActor [realmConfiguration] in
             try await LibraryDataManager.shared.restoreCategory(
@@ -321,12 +326,12 @@ struct LibraryCategoryView: View {
     }
 
     private var visibleFeeds: [Feed] {
-        libraryCategoryViewModel.category.getFeeds() ?? []
+        libraryCategoryViewModel.category.isInvalidated ? [] : libraryCategoryViewModel.category.getFeeds() ?? []
     }
     
     @ViewBuilder func duplicationMenu(feed: Feed) -> some View {
         Menu("Duplicate In…") {
-            ForEach((libraryCategoryViewModel.libraryConfiguration.getCategories() ?? []).filter({ $0.isUserEditable })) { (category: FeedCategory) in
+            ForEach((libraryCategoryViewModel.libraryConfiguration.isInvalidated ? [] : libraryCategoryViewModel.libraryConfiguration.getCategories() ?? []).filter({ $0.isUserEditable })) { (category: FeedCategory) in
                 if matchingDistinctFeed(category: category, feed: feed) != nil {
                     Menu(category.title) {
                         Button("Overwrite Existing Feed") {
@@ -356,7 +361,8 @@ struct LibraryCategoryView: View {
     @ViewBuilder private var categoryLabel: some View {
         FeedCategoryButtonLabel(
             title: libraryCategoryViewModel.categoryTitle,
-            backgroundImageURL: libraryCategoryViewModel.category.backgroundImageUrl,
+            backgroundImageURL: libraryCategoryViewModel.category.isInvalidated
+                ? URL(string: "about:blank")! : libraryCategoryViewModel.category.backgroundImageUrl,
             isCompact: true
         )
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -371,7 +377,7 @@ struct LibraryCategoryView: View {
                 List(selection: $libraryCategoryViewModel.selectedFeed) {
                     categoryLabel
                     
-                    if let opmlURL = libraryCategoryViewModel.category.opmlURL {
+                    if !libraryCategoryViewModel.category.isInvalidated, let opmlURL = libraryCategoryViewModel.category.opmlURL {
                         Section(header: Label("Managed", systemImage: "lock.fill")) {
                             if LibraryConfiguration.opmlURLs.contains(opmlURL) {
                                 Text("Official Manabi Reader categories cannot be edited.")
@@ -504,7 +510,7 @@ struct LibraryCategoryView: View {
                 .background(.bar)
             }
         }
-        .task(id: libraryCategoryViewModel.category.id) { @MainActor in
+        .task(id: libraryCategoryViewModel.categoryID) { @MainActor in
             libraryCategoryViewModel.refresh()
             onEditorAppear?(libraryCategoryViewModel)
         }
@@ -527,7 +533,7 @@ struct LibraryCategoryView: View {
         .font(.footnote)
         .fontWeight(.semibold)
         .foregroundStyle(.primary)
-        .disabled(libraryCategoryViewModel.category.opmlURL != nil)
+        .disabled(!libraryCategoryViewModel.isUserEditable)
         .keyboardShortcut("n", modifiers: [.command])
     }
 

@@ -94,6 +94,7 @@ class LibraryCategoriesViewModel: ObservableObject {
     }
     
     func deletionTitle(category: FeedCategory) -> String {
+        guard !category.isInvalidated else { return "Archive" }
         if category.isArchived {
             return "Delete"
         }
@@ -101,15 +102,16 @@ class LibraryCategoriesViewModel: ObservableObject {
     }
 
     func showDeleteButton(category: FeedCategory) -> Bool {
-        return category.isUserEditable && !category.isDeleted
+        return !category.isInvalidated && category.isUserEditable && !category.isDeleted
     }
     
     func showRestoreButton(category: FeedCategory) -> Bool {
-        return category.isUserEditable && category.isArchived
+        return !category.isInvalidated && category.isUserEditable && category.isArchived
     }
 
     @MainActor
     func deleteCategory(_ category: FeedCategory) async throws {
+        guard !category.isInvalidated else { return }
         let categoryID = category.id
         try await Task { @RealmBackgroundActor [realmConfiguration] in
             try await LibraryDataManager.shared.deleteCategory(
@@ -121,6 +123,7 @@ class LibraryCategoriesViewModel: ObservableObject {
     
     @MainActor
     func restoreCategory(_ category: FeedCategory) async throws {
+        guard !category.isInvalidated else { return }
         let categoryID = category.id
         try await Task { @RealmBackgroundActor [realmConfiguration] in
             try await LibraryDataManager.shared.restoreCategory(
@@ -149,7 +152,15 @@ class LibraryCategoriesViewModel: ObservableObject {
     @MainActor
     @discardableResult
     func deleteCategory(at offsets: IndexSet, from categories: [FeedCategory]?) -> Task<Void, Error> {
-        deleteCategory(at: offsets, fromCategoryIDs: categories?.map(\.id) ?? [])
+        let categories = categories ?? []
+        // Resolve selected positions before skipping stale rows, so a removal
+        // cannot shift an offset onto its live successor.
+        let selectedIDs = offsets.compactMap { offset -> UUID? in
+            guard categories.indices.contains(offset),
+                  !categories[offset].isInvalidated else { return nil }
+            return categories[offset].id
+        }
+        return deleteCategory(at: IndexSet(selectedIDs.indices), fromCategoryIDs: selectedIDs)
     }
 
     @MainActor
@@ -178,7 +189,9 @@ class LibraryCategoriesViewModel: ObservableObject {
         toOffset: Int,
         displayedCategoryIDs: [UUID]? = nil
     ) -> Task<Void, Error>? {
-        guard let libraryConfiguration else { return nil }
+        guard let libraryConfiguration, !libraryConfiguration.isInvalidated else { return nil }
+        if displayedCategoryIDs == nil,
+           userLibraryCategories?.contains(where: { $0.isInvalidated }) == true { return nil }
         let originalIDs = Array(libraryConfiguration.categoryIDs)
         let visibleIDs = displayedCategoryIDs ?? userLibraryCategories?.map(\.id) ?? []
         guard !visibleIDs.isEmpty,
@@ -339,7 +352,7 @@ struct LibraryCategoriesView: View {
     }
     
     @ViewBuilder var userLibraryView: some View {
-        let categories = viewModel.userLibraryCategories ?? []
+        let categories = (viewModel.userLibraryCategories ?? []).filter { !$0.isInvalidated }
         let displayedCategoryIDs = categories.map(\.id)
         ForEach(categories) { category in
             NavigationLink(value: LibrarySidebarDestination.category(category.id)) {
@@ -391,7 +404,7 @@ struct LibraryCategoriesView: View {
     }
 
     @ViewBuilder var editorsPicksLibraryView: some View {
-        ForEach(viewModel.editorsPicksLibraryCategories ?? []) { category in
+        ForEach((viewModel.editorsPicksLibraryCategories ?? []).filter { !$0.isInvalidated }) { category in
             NavigationLink(value: LibrarySidebarDestination.category(category.id)) {
                 FeedCategoryButtonLabel(
                     title: category.title,
@@ -409,7 +422,7 @@ struct LibraryCategoriesView: View {
     }
     
     @ViewBuilder var archiveView: some View {
-        let categories = viewModel.archivedCategories ?? []
+        let categories = (viewModel.archivedCategories ?? []).filter { !$0.isInvalidated }
         let displayedCategoryIDs = categories.map(\.id)
         ForEach(categories) { category in
             NavigationLink(value: LibrarySidebarDestination.category(category.id)) {

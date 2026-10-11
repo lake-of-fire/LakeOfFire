@@ -11,6 +11,7 @@ import RealmSwiftGaps
 public extension LibraryDataManager {
     @RealmBackgroundActor
     func deleteCategory(_ category: FeedCategory) async throws {
+        guard !category.isInvalidated else { return }
         let realmConfiguration = category.realm?.configuration ?? LibraryDataManager.realmConfiguration
         try await deleteCategory(categoryID: category.id, realmConfiguration: realmConfiguration)
     }
@@ -53,6 +54,7 @@ public extension LibraryDataManager {
     
     @RealmBackgroundActor
     func restoreCategory(_ category: FeedCategory) async throws {
+        guard !category.isInvalidated else { return }
         let realmConfiguration = category.realm?.configuration ?? LibraryDataManager.realmConfiguration
         try await restoreCategory(categoryID: category.id, realmConfiguration: realmConfiguration)
     }
