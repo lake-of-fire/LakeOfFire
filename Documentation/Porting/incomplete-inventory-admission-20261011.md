@@ -1,0 +1,9 @@
+# Incomplete file inventory admission — 2026-10-11
+
+Compared retained #50 `11b71f294a530cf38352065bceb05ce10aa88aa7` against current #138 `7c4595c95692bc862d9208439729f62bcf40401d`. Current main has stronger drive/configuration ownership, initialization and final Realm-write fences, which are preserved. However its discovered-item inspection catch still skipped a listed item on a missing-file error. The outer full refresh could then regard the reduced set as complete and tombstone the missing item's existing ContentFile row.
+
+Carried the retained incomplete-inventory rejection for this specific branch. It now throws ReaderFileManagerError.incompleteFileInventory, leaving last published inventory and orphan reconciliation untouched. Existing complete inventory deletion behavior is unchanged. Existing missing-directory nil propagation already makes the full refresh fail closed and is not replaced with older scan architecture.
+
+Added an instance-only item-inspection fault seam, following the existing ownership-test seams; production leaves it nil. Two regressions run the actual local-drive scan and temporary Realm, inject the provider disappearance at inspection, and assert retained rows/UI publication, no success debounce, and nested-subtree failure propagation. No original files or live accounts are used by the authored fixtures. The owning suite now contains 16 methods.
+
+Source analysis only; runtime reproduction has NOT been executed. All Swift and tests remain UNCOMPILED/UNRUN. No native launches, tests, builds, project generation, CI, pins, deployment or production changes. Reader source registration must include the owning suite and its existing MutationTrackingTestSupport dependency before future qualification. Keep #50 open for the separately documented remaining producer/processing/cache ports.

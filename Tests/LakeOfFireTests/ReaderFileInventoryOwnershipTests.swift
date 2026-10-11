@@ -543,4 +543,92 @@ final class ReaderFileInventoryOwnershipTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try Data(contentsOf: fileURL), bytes)
     }
 
+    func testListedItemInspectionFailureDoesNotTombstonePreviousInventory() async throws {
+        let directory = try root()
+        let fileURL = directory.appendingPathComponent("retained.txt")
+        let bytes = Data("retained bytes".utf8)
+        try bytes.write(to: fileURL)
+        let config = configuration()
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = config
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: directory))
+        let previousURLProcessors = ReaderFileManager.readerFileURLProcessors
+        let previousFileProcessors = ReaderFileManager.fileProcessors
+        ReaderFileManager.readerFileURLProcessors = []
+        ReaderFileManager.fileProcessors = []
+        defer {
+            ReaderFileManager.readerFileURLProcessors = previousURLProcessors
+            ReaderFileManager.fileProcessors = previousFileProcessors
+        }
+        try await refresh(manager, force: true)
+        XCTAssertEqual(manager.files?.map(\.title), ["retained"])
+        var inspections = 0
+        manager.inventoryBeforeItemInspection = { inspectedURL in
+            XCTAssertEqual(inspectedURL.lastPathComponent, "retained.txt")
+            inspections += 1
+            // Deterministic provider disappearance at the real item-inspection
+            // boundary, without deleting any fixture bytes or replacing a scan.
+            throw CocoaError(.fileReadNoSuchFile)
+        }
+        do {
+            try await refresh(manager, force: true)
+            XCTFail("A listed-but-unavailable item must invalidate the scan")
+        } catch ReaderFileManagerError.incompleteFileInventory {
+        }
+        XCTAssertEqual(inspections, 1)
+        let realm = try await Realm.open(configuration: config)
+        realm.refresh()
+        let row = try XCTUnwrap(realm.objects(ContentFile.self).first)
+        XCTAssertFalse(row.isDeleted)
+        XCTAssertEqual(manager.files?.map(\.title), ["retained"])
+        XCTAssertEqual(try Data(contentsOf: fileURL), bytes)
+
+        // The failed pass must not establish the debounce success timestamp.
+        manager.inventoryBeforeItemInspection = { _ in inspections += 1 }
+        try await refresh(manager)
+        XCTAssertEqual(inspections, 2)
+        XCTAssertFalse(row.isDeleted)
+        XCTAssertEqual(manager.files?.map(\.title), ["retained"])
+    }
+
+    func testNestedListedItemFailureCannotPublishPartialRootInventory() async throws {
+        let directory = try root()
+        let nested = directory.appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try Data("kept".utf8).write(to: nested.appendingPathComponent("book.txt"))
+        let config = configuration()
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = config
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: directory))
+        let previousURLProcessors = ReaderFileManager.readerFileURLProcessors
+        let previousFileProcessors = ReaderFileManager.fileProcessors
+        ReaderFileManager.readerFileURLProcessors = []
+        ReaderFileManager.fileProcessors = []
+        defer {
+            ReaderFileManager.readerFileURLProcessors = previousURLProcessors
+            ReaderFileManager.fileProcessors = previousFileProcessors
+        }
+        try await refresh(manager, force: true)
+        let before = manager.files?.map(\.compoundKey)
+        XCTAssertEqual(before?.count, 1)
+        var reachedBook = false
+        manager.inventoryBeforeItemInspection = { url in
+            if url.lastPathComponent == "book.txt" {
+                reachedBook = true
+                throw CocoaError(.fileReadNoSuchFile)
+            }
+        }
+        do {
+            try await refresh(manager, force: true)
+            XCTFail("A partial subtree must not authorize a complete root scan")
+        } catch ReaderFileManagerError.incompleteFileInventory {
+        }
+        XCTAssertTrue(reachedBook)
+        XCTAssertEqual(manager.files?.map(\.compoundKey), before)
+        let realm = try await Realm.open(configuration: config)
+        realm.refresh()
+        XCTAssertEqual(realm.objects(ContentFile.self).count, 1)
+        XCTAssertFalse(try XCTUnwrap(realm.objects(ContentFile.self).first).isDeleted)
+    }
+
 }

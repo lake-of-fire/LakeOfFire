@@ -14,6 +14,9 @@ import LakeOfFireAdblock
 public enum ReaderFileManagerError: Swift.Error {
     case invalidFileURL
     case driveMissing
+    /// A listed item became unavailable during inspection; this scan cannot
+    /// authorize orphan tombstones or replace the last complete inventory.
+    case incompleteFileInventory
 }
 
 //public extension RootRelativePath {
@@ -115,6 +118,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
     private let inventoryOwnership = InventoryOwnership()
     // Instance seams suspend the real scan, without substituting its results.
+    @MainActor var inventoryBeforeItemInspection: (@MainActor (URL) async throws -> Void)?
     var inventoryBeforeMetadataWrite: (@Sendable () async -> Void)?
     @MainActor var inventoryBeforePublication: (@MainActor () async -> Void)?
     @MainActor var inventoryBeforePartialPublication: (@MainActor () async -> Void)?
@@ -851,6 +855,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 let absoluteFileURL = try tryRelativePath.fileURL(forRoot: drive.rootDirectory)
                 let isDirectory: Bool
                 do {
+                    try await inventoryBeforeItemInspection?(absoluteFileURL)
+                    try validateInventorySelection(selection)
                     isDirectory = try await Self.isDiscoveredDirectory(
                         url,
                         absoluteFileURL: absoluteFileURL,
@@ -860,11 +866,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 } catch {
                     if Self.isMissingFileError(error) {
                         Self.logContentFileDecision(
-                            stage: "discovery.skipMissing",
+                            stage: "discovery.incompleteMissing",
                             path: tryRelativePath.path,
                             reason: "disappearedDuringRefresh"
                         )
-                        continue
+                        throw ReaderFileManagerError.incompleteFileInventory
                     }
                     throw error
                 }
