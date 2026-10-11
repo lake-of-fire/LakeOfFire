@@ -52,7 +52,8 @@ func ebookBoundedRequestBodyData(
     var result = Data()
     while true {
         guard !isCancelled() else { throw CancellationError() }
-        let maximumReadCount = maximumByteCount - result.count + 1
+        let remaining = maximumByteCount - result.count
+        let maximumReadCount = remaining == Int.max ? Int.max : remaining + 1
         switch nextStreamChunk(maximumReadCount) {
         case .data(let chunk):
             guard !isCancelled() else { throw CancellationError() }
@@ -61,6 +62,7 @@ func ebookBoundedRequestBodyData(
             }
             result.append(chunk)
         case .end:
+            guard !isCancelled() else { throw CancellationError() }
             guard !result.isEmpty else { throw EbookRequestBodyError.empty }
             return result
         case .failure:
