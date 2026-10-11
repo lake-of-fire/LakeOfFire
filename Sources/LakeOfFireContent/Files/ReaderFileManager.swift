@@ -75,13 +75,33 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     var historyRealmConfigurationOverride: Realm.Configuration?
 
     private let defaultLocalRootURLProvider: @Sendable () -> URL
+    typealias CloudDriveFactory = @MainActor @Sendable (String) async throws -> CloudDrive
+    typealias LocalDriveFactory = @MainActor @Sendable () async throws -> CloudDrive
+    private let cloudDriveFactory: CloudDriveFactory
+    private let localDriveFactory: LocalDriveFactory
 
     public init() {
         defaultLocalRootURLProvider = { Self.getDocumentsDirectory() }
+        cloudDriveFactory = { identifier in
+            try await CloudDrive(ubiquityContainerIdentifier: identifier, relativePathToRootInContainer: "Documents")
+        }
+        localDriveFactory = {
+            try await CloudDrive(storage: .localDirectory(rootURL: Self.getDocumentsDirectory()))
+        }
     }
 
-    init(defaultLocalRootURLProvider: @escaping @Sendable () -> URL) {
+    init(
+        defaultLocalRootURLProvider: @escaping @Sendable () -> URL,
+        cloudDriveFactory: @escaping CloudDriveFactory = { identifier in
+            try await CloudDrive(ubiquityContainerIdentifier: identifier, relativePathToRootInContainer: "Documents")
+        },
+        localDriveFactory: LocalDriveFactory? = nil
+    ) {
         self.defaultLocalRootURLProvider = defaultLocalRootURLProvider
+        self.cloudDriveFactory = cloudDriveFactory
+        self.localDriveFactory = localDriveFactory ?? {
+            try await CloudDrive(storage: .localDirectory(rootURL: defaultLocalRootURLProvider()))
+        }
     }
 
     private var resolvedHistoryRealmConfiguration: Realm.Configuration {
@@ -109,6 +129,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     }
     
     private var hasInitializedUbiquityContainerIdentifier = false
+    @MainActor private var initializationID: UUID?
     
     /*@MainActor*/ public var cloudDrive: CloudDrive? {
         didSet {
@@ -193,17 +214,45 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     
     @MainActor
     public func initialize(ubiquityContainerIdentifier: String) async throws {
+        try Task.checkCancellation()
+        let identifier = UUID()
+        initializationID = identifier
+
+        // Prepare both drives before replacing the usable tuple. A cancelled or
+        // superseded SwiftUI task must not publish partially prepared storage.
+        let nextCloudDrive: CloudDrive?
+        do {
+            nextCloudDrive = try await cloudDriveFactory(ubiquityContainerIdentifier)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // iCloud is optional; local-drive failures still propagate.
+            nextCloudDrive = nil
+        }
+        try validateInitialization(identifier)
+        let nextLocalDrive = try await localDriveFactory()
+        try validateInitialization(identifier)
+
+        nextCloudDrive?.observer = self
+        nextLocalDrive.observer = self
+        hasInitializedUbiquityContainerIdentifier = false
         self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
+        cloudDrive = nextCloudDrive
+        localDrive = nextLocalDrive
         hasInitializedUbiquityContainerIdentifier = true
-        cloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "Documents")
-        cloudDrive?.observer = self
-        //        legacyCloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "")
-        localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: defaultLocalRootURLProvider()))
-        localDrive?.observer = self
         NotificationCenter.default.post(name: Self.driveAvailabilityDidChangeNotification, object: self)
+        try validateInitialization(identifier)
+        // Inventory still uses the legacy shared refresh task. Preparation
+        // success does not acknowledge a generation-matched inventory scan.
         Task { [weak self] in
             try await self?.refreshAllFilesMetadata()
         }
+    }
+
+    @MainActor
+    private func validateInitialization(_ identifier: UUID) throws {
+        try Task.checkCancellation()
+        guard initializationID == identifier else { throw CancellationError() }
     }
     
     @MainActor
