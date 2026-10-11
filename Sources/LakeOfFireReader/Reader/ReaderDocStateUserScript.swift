@@ -59,6 +59,8 @@ struct ReaderDocStateUserScript {
                 readyState: document.readyState,
                 hasBody: !!body,
                 hasReaderContent,
+                hasRenderReadyMarker,
+                fontPending: (html?.dataset?.mnbFontPending ?? null) === '1',
                 hasReaderRenderReady: hasRenderReadyMarker
                     && hasReaderContent
                     && (html?.dataset?.mnbFontPending ?? null) !== '1',

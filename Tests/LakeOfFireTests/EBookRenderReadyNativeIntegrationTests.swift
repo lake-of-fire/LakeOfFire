@@ -11,6 +11,7 @@ final class EBookRenderReadyNativeIntegrationTests: XCTestCase {
         let pending: XCTestExpectation
         let ready: XCTestExpectation
         private(set) var readyBody: [String: Any]?
+        private var didReportPending = false
         private var didReportReady = false
 
         init(loaded: XCTestExpectation, pending: XCTestExpectation, ready: XCTestExpectation) {
@@ -41,7 +42,8 @@ final class EBookRenderReadyNativeIntegrationTests: XCTestCase {
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard let body = message.body as? [String: Any] else { return }
-            if body["reason"] as? String == "font-pending" {
+            if body["reason"] as? String == "font-pending", !didReportPending {
+                didReportPending = true
                 pending.fulfill()
             }
             guard body["hasReaderRenderReady"] as? Bool == true else { return }

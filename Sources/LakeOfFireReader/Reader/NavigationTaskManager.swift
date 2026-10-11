@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftUIWebView
 import LakeOfFireWeb
 import LakeOfFireFiles
 import LakeOfFireContentUI
@@ -19,7 +20,7 @@ import LakeOfFireCore
 ///   commit/finish operation because WebKit will not send another `didFinish`.
 @MainActor
 internal final class NavigationTaskManager: Identifiable {
-    internal typealias NavigationOperation = @MainActor () async throws -> Void
+    internal typealias NavigationOperation = @MainActor @Sendable () async throws -> Void
 
     private enum DocumentPhase {
         case idle
@@ -38,9 +39,30 @@ internal final class NavigationTaskManager: Identifiable {
     private var documentGeneration: UInt64 = 0
     private var urlChangedGeneration: UInt64 = 0
     private var documentPhase: DocumentPhase = .idle
-    private var pendingURLChangedOperation: NavigationOperation?
+    private struct URLChangedOperation: Sendable {
+        let run: NavigationOperation
+        let discard: @MainActor @Sendable () -> Void
+        var intentID: UUID? = nil
+    }
+    private var pendingURLChangedOperation: URLChangedOperation?
+    private var activeURLChangedOperation: URLChangedOperation?
+
+    private func discardPendingURLChange() {
+        let discarded = pendingURLChangedOperation
+        pendingURLChangedOperation = nil
+        discarded?.discard()
+    }
+
+    private func failDocumentWork(ifGeneration generation: UInt64) {
+        guard documentGeneration == generation else { return }
+        documentPhase = .failed
+        discardPendingURLChange()
+    }
 
     private func cancelOutstandingTasks() {
+        let active = activeURLChangedOperation
+        activeURLChangedOperation = nil
+        active?.discard()
         onNavigationCommittedTask?.cancel()
         onNavigationFinishedTask?.cancel()
         onNavigationFailedTask?.cancel()
@@ -65,6 +87,7 @@ internal final class NavigationTaskManager: Identifiable {
     func startOnNavigationCommitted(
         task operation: @escaping NavigationOperation
     ) {
+        discardPendingURLChange()
         cancelOutstandingTasks()
         documentGeneration &+= 1
         urlChangedGeneration &+= 1
@@ -76,13 +99,18 @@ internal final class NavigationTaskManager: Identifiable {
             guard let self else { throw CancellationError() }
             do {
                 try Task.checkCancellation()
-                try await operation()
+                try await withTaskCancellationHandler {
+                    try await operation()
+                } onCancel: {
+                    Task { @MainActor [weak self] in
+                        self?.failDocumentWork(ifGeneration: generation)
+                    }
+                }
                 try Task.checkCancellation()
                 try self.validateDocumentGeneration(generation)
             } catch {
                 if self.documentGeneration == generation {
-                    self.documentPhase = .failed
-                    self.pendingURLChangedOperation = nil
+                    self.failDocumentWork(ifGeneration: generation)
                 }
                 self.logFailure(error, stage: "onNavigationCommitted")
                 throw error
@@ -104,10 +132,22 @@ internal final class NavigationTaskManager: Identifiable {
         let finishedTask = Task { @MainActor [weak self] in
             guard let self else { throw CancellationError() }
             do {
-                try await committedTask.value
+                try await withTaskCancellationHandler {
+                    try await committedTask.value
+                } onCancel: {
+                    Task { @MainActor [weak self] in
+                        self?.failDocumentWork(ifGeneration: generation)
+                    }
+                }
                 try Task.checkCancellation()
                 try self.validateDocumentGeneration(generation)
-                try await operation()
+                try await withTaskCancellationHandler {
+                    try await operation()
+                } onCancel: {
+                    Task { @MainActor [weak self] in
+                        self?.failDocumentWork(ifGeneration: generation)
+                    }
+                }
                 try Task.checkCancellation()
                 try self.validateDocumentGeneration(generation)
 
@@ -119,8 +159,7 @@ internal final class NavigationTaskManager: Identifiable {
                 }
             } catch {
                 if self.documentGeneration == generation {
-                    self.documentPhase = .failed
-                    self.pendingURLChangedOperation = nil
+                    self.failDocumentWork(ifGeneration: generation)
                 }
                 self.logFailure(error, stage: "onNavigationFinished")
                 throw error
@@ -164,7 +203,7 @@ internal final class NavigationTaskManager: Identifiable {
         documentGeneration &+= 1
         urlChangedGeneration &+= 1
         documentPhase = .invalidated
-        pendingURLChangedOperation = nil
+        discardPendingURLChange()
         cancelOutstandingTasks()
     }
 
@@ -173,27 +212,47 @@ internal final class NavigationTaskManager: Identifiable {
     /// run its complete refresh after semantic finish succeeds. This matters when
     /// a page calls `replaceState` during load: the original commit may own the old
     /// content URL even though WebKit's eventual state already exposes the new one.
-    func startOnURLChanged(
-        task operation: @escaping NavigationOperation
-    ) {
+    @discardableResult
+    func startOnURLChanged(task operation: @escaping NavigationOperation) -> Bool {
+        startOnURLChanged(URLChangedOperation(run: operation, discard: {}))
+    }
+
+    /// Reserve native ownership synchronously, before this manager can defer.
+    /// Every failed, replaced or cancelled operation withdraws its exact handoff.
+    @discardableResult
+    func startOnURLChanged(state: WebViewState, readerContent: ReaderContent,
+                           task operation: @escaping NavigationOperation) -> Bool {
+        let intent = state.urlTransitionIntent
+        if let intent {
+            guard readerContent.receiveSelectionIntent(intent) != nil else { return false }
+            if pendingURLChangedOperation?.intentID == intent.id || activeURLChangedOperation?.intentID == intent.id {
+                return true
+            }
+        }
+        return startOnURLChanged(URLChangedOperation(run: operation, discard: {
+            if let intent { readerContent.withdrawSelectionIntent(intent) }
+        }, intentID: intent?.id))
+    }
+
+    private func startOnURLChanged(_ operation: URLChangedOperation) -> Bool {
         switch documentPhase {
         case .awaitingFinish, .finishing:
+            discardPendingURLChange()
             pendingURLChangedOperation = operation
         case .settled:
             startURLChangedOperation(operation)
         case .idle, .failed, .invalidated:
-            // A URL notification received before the first successful commit has
-            // no semantic document baseline. It can be a delayed message from a
-            // detached/replaced WebView or a document-start mutation racing the
-            // main-frame commit. The commit's current URL will establish the next
-            // valid owner; do not synthesize an independent commit/finish cycle.
-            break
+            operation.discard()
+            return false
         }
+        return true
     }
 
     private func startURLChangedOperation(
-        _ operation: @escaping NavigationOperation
+        _ operation: URLChangedOperation
     ) {
+        activeURLChangedOperation?.discard()
+        activeURLChangedOperation = operation
         onURLChangedTask?.cancel()
         urlChangedGeneration &+= 1
         let urlGeneration = urlChangedGeneration
@@ -207,13 +266,20 @@ internal final class NavigationTaskManager: Identifiable {
                 guard self.urlChangedGeneration == urlGeneration else {
                     throw CancellationError()
                 }
-                try await operation()
+                try await withTaskCancellationHandler {
+                    try await operation.run()
+                } onCancel: {
+                    Task { @MainActor in operation.discard() }
+                }
                 try Task.checkCancellation()
                 try self.validateDocumentGeneration(generation)
                 guard self.urlChangedGeneration == urlGeneration else {
                     throw CancellationError()
                 }
+                if self.urlChangedGeneration == urlGeneration { self.activeURLChangedOperation = nil }
             } catch {
+                operation.discard()
+                if self.urlChangedGeneration == urlGeneration { self.activeURLChangedOperation = nil }
                 self.logFailure(error, stage: "onURLChanged")
                 throw error
             }

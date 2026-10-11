@@ -111,10 +111,12 @@ private extension Optional where Wrapped == ReaderContentListDeleteDialog {
 @MainActor
 public class ReaderContentListModalsModel: ObservableObject {
     @Published var deleteDialog: ReaderContentListDeleteDialog?
+    private(set) var deleteDialogGeneration = UUID()
 
     public init() { }
 
     public func presentDeleteConfirmation(for items: [any DeletableReaderContent]) {
+        deleteDialogGeneration = UUID()
         guard let first = items.first else {
             deleteDialog = nil
             return
@@ -128,13 +130,35 @@ public class ReaderContentListModalsModel: ObservableObject {
     }
 
     func presentDeleteError(for error: Error) {
+        deleteDialogGeneration = UUID()
         let alert = ReaderFileOperationMessageMapper.deleteAlert(for: error)
             ?? ("Delete Failed", error.localizedDescription)
         deleteDialog = .error(title: alert.title, message: alert.message)
     }
 
     func clearDeleteDialog() {
+        deleteDialogGeneration = UUID()
         deleteDialog = nil
+    }
+
+    func deleteConfirmedItems(
+        _ items: [any DeletableReaderContent],
+        generation: UUID? = nil
+    ) async {
+        let generation = generation ?? deleteDialogGeneration
+        do {
+            try await preflightDeleteBatch(items)
+            for item in items {
+                try await item.delete()
+            }
+            if generation == deleteDialogGeneration {
+                clearDeleteDialog()
+            }
+        } catch {
+            if generation == deleteDialogGeneration {
+                presentDeleteError(for: error)
+            }
+        }
     }
 }
 
@@ -149,20 +173,16 @@ struct ReaderContentListSheetsModifier: ViewModifier {
             .alert(item: $readerContentListModalsModel.deleteDialog[presentedWhen: isActive]) { dialog in
                 switch dialog {
                 case .confirm(let items, let title, let message, let actionTitle):
+                    // Capture before the task can yield or a same-item request
+                    // can replace this presentation. SwiftUI may dismiss the
+                    // alert binding before the confirmed command starts.
+                    let generation = readerContentListModalsModel.deleteDialogGeneration
                     return Alert(
                         title: Text(title),
                         message: Text(message),
                         primaryButton: .destructive(Text(actionTitle)) {
                             Task { @MainActor in
-                                do {
-                                    try await preflightDeleteBatch(items)
-                                    for item in items {
-                                        try await item.delete()
-                                    }
-                                    readerContentListModalsModel.clearDeleteDialog()
-                                } catch {
-                                    readerContentListModalsModel.presentDeleteError(for: error)
-                                }
+                                await readerContentListModalsModel.deleteConfirmedItems(items, generation: generation)
                             }
                         },
                         secondaryButton: .cancel {

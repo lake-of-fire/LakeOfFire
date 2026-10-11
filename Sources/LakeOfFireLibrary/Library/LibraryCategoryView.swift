@@ -346,7 +346,7 @@ struct LibraryCategoryView: View {
                             try await libraryManagerViewModel.duplicate(feed: ThreadSafeReference(to: feed), inCategory: ThreadSafeReference(to: category), overwriteExisting: false)
                         }
                     } label: {
-                        Text(libraryCategoryViewModel.category.title)
+                        Text(category.title)
                     }
                 }
             }
@@ -490,13 +490,18 @@ struct LibraryCategoryView: View {
                     }
                 }
 #endif
-                ToolbarItemGroup(placement: .keyboard) {
-                    if focusedField != nil {
-                        Spacer()
-                        Button("Done") { focusedField = nil }
-                            .accessibilityIdentifier("Library.CategoryKeyboardDone")
-                    }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if focusedField != nil {
+                HStack {
+                    Spacer()
+                    Button("Done") { focusedField = nil }
+                        .accessibilityIdentifier("Library.CategoryKeyboardDone")
                 }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.bar)
             }
         }
         .task(id: libraryCategoryViewModel.category.id) { @MainActor in

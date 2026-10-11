@@ -731,12 +731,20 @@ public struct ReaderContentLoader {
     @MainActor
     public static func load(
         html: String,
-        allowContentMatch: Bool = true
+        allowContentMatch: Bool = true,
+        snippetIdentifier: UUID? = nil
     ) async throws -> (any ReaderContentProtocol)? {
-        try await load(
+        // A transient startup host can lose cancellation ownership after the
+        // import commits. Its retry must retain that import's identity rather
+        // than create another snippet. Ordinary imports still receive fresh IDs.
+        guard snippetIdentifier == nil || !allowContentMatch else {
+            throw CancellationError()
+        }
+        return try await load(
             html: html,
             allowContentMatch: allowContentMatch,
-            storage: DiscoveryStorage()
+            storage: DiscoveryStorage(),
+            snippetIdentifier: snippetIdentifier
         )
     }
 
@@ -744,7 +752,8 @@ public struct ReaderContentLoader {
     private static func load(
         html: String,
         allowContentMatch: Bool,
-        storage: DiscoveryStorage
+        storage: DiscoveryStorage,
+        snippetIdentifier: UUID? = nil
     ) async throws -> (any ReaderContentProtocol)? {
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(
@@ -787,7 +796,7 @@ public struct ReaderContentLoader {
             
             let historyRecord = HistoryRecord()
             if !allowContentMatch {
-                let freshSnippetKey = UUID().uuidString.uppercased()
+                let freshSnippetKey = (snippetIdentifier ?? UUID()).uuidString.uppercased()
                 historyRecord.compoundKey = freshSnippetKey
                 historyRecord.url = snippetURL(key: freshSnippetKey) ?? historyRecord.url
             }
@@ -807,15 +816,25 @@ public struct ReaderContentLoader {
             // The cached actor-bound Realm may still be committing an earlier
             // async write when another startup load enters this actor. Queue
             // this transaction instead of synchronously beginning a second one.
-            try await historyRealm.asyncWritePreservingOwnership {
+            let committedRecord = try await historyRealm.asyncWritePreservingOwnership {
                 try Task.checkCancellation()
                 try storage.validate()
+                if snippetIdentifier != nil,
+                   let existing = historyRealm.object(ofType: HistoryRecord.self,
+                       forPrimaryKey: historyRecord.compoundKey) {
+                    // Replay cannot revive a deletion or overwrite a later edit.
+                    // Successful reuse performs no metadata refresh or journal write.
+                    guard !existing.isDeleted, existing.url == historyRecord.url,
+                          existing.content == data else { throw CancellationError() }
+                    return existing
+                }
                 historyRealm.add(historyRecord, update: .modified)
                 historyRecord.refreshChangeMetadata(explicitlyModified: true)
+                return historyRecord
             }
 
             
-            return storage.reference(for: historyRecord)
+            return storage.reference(for: committedRecord)
         }()
         
         let result = try await contentRef?.resolveOnMainActor()

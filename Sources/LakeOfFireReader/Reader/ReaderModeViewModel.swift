@@ -888,6 +888,10 @@ internal struct ReaderSnippetFinalDocumentSnapshot: Equatable, Sendable {
     let segmentCount: Int
     let inlineSidecarPresent: Bool
     let externalSidecarDescriptorPresent: Bool
+    let renderReadyMarkerPresent: Bool
+    let renderGenerationPresent: Bool
+    let fontPending: Bool
+    let readerTextPresent: Bool
 
     static func make(htmlBytes: [UInt8]) -> ReaderSnippetFinalDocumentSnapshot {
         guard let html = String(bytes: htmlBytes, encoding: .utf8),
@@ -897,9 +901,19 @@ internal struct ReaderSnippetFinalDocumentSnapshot: Equatable, Sendable {
                 readerContentContainerPresent: false,
                 segmentCount: 0,
                 inlineSidecarPresent: false,
-                externalSidecarDescriptorPresent: false
+                externalSidecarDescriptorPresent: false,
+                renderReadyMarkerPresent: false,
+                renderGenerationPresent: false,
+                fontPending: false,
+                readerTextPresent: false
             )
         }
+        let root = try? document.getElementsByTag("html").first()
+        // Match the user script's root-before-body nullish fallback. An invalid
+        // root value must not be masked by an older valid body generation.
+        let generationText = (try? root?.hasAttr("data-mnb-reader-render-generation")) == true
+            ? (try? root?.attr("data-mnb-reader-render-generation"))
+            : (try? document.body()?.attr("data-mnb-reader-render-generation"))
         return ReaderSnippetFinalDocumentSnapshot(
             parsedSuccessfully: true,
             readerContentContainerPresent: (try? document.getElementById("reader-content")) != nil,
@@ -907,28 +921,51 @@ internal struct ReaderSnippetFinalDocumentSnapshot: Equatable, Sendable {
             inlineSidecarPresent: (try? document.getElementById("mnb-segment-metadata")) != nil,
             externalSidecarDescriptorPresent: !((try? document.select(
                 "meta[name=mnb-segment-sidecar]"
-            ).array()) ?? []).isEmpty
+            ).array()) ?? []).isEmpty,
+            renderReadyMarkerPresent: (try? document.select(
+                "html[data-mnb-reader-render-ready=1], body[data-mnb-reader-render-ready=1]"
+            ).isEmpty()) == false,
+            renderGenerationPresent: generationText.flatMap(UUID.init(uuidString:)) != nil,
+            fontPending: (try? root?.attr("data-mnb-font-pending")) == "1",
+            readerTextPresent: !((try? document.getElementById("reader-content")?.text()) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         )
     }
 }
 
-private enum ReaderSnippetFinalDocumentDiagnostics {
+internal enum ReaderSnippetFinalDocumentDiagnostics {
     static let logPrefix = "ReaderSnippetProcessingDiagnostics"
+
+    /// Call only at finite native phases or document lifecycle events, never
+    /// for the DOM observer/poll stream. No clipboard or document text is logged.
+    static func record(_ phase: String, contentURL: URL, generation: UUID? = nil) {
+#if DEBUG
+        guard contentURL.canonicalReaderContentURLForHotfix().isSnippetURL,
+              ProcessInfo.processInfo.arguments.contains("--ui-test-enable-presentation-routing-diagnostics")
+                || ProcessInfo.processInfo.arguments.contains("--ui-test-enable-lookup-probe") else { return }
+        NSLog("ReaderSnippetProcessingDiagnostics phase=%@ generation=%@ cancelled=%@",
+              phase, generation?.uuidString ?? "nil", String(Task.isCancelled))
+#endif
+    }
 
     static func emitIfEnabled(htmlBytes: [UInt8], contentURL: URL) {
 #if DEBUG
         guard contentURL.isSnippetURL,
-              ProcessInfo.processInfo.arguments.contains("--ui-test-enable-lookup-probe") else {
+              ProcessInfo.processInfo.arguments.contains("--ui-test-enable-lookup-probe")
+                || ProcessInfo.processInfo.arguments.contains("--ui-test-enable-presentation-routing-diagnostics") else {
             return
         }
         let snapshot = ReaderSnippetFinalDocumentSnapshot.make(htmlBytes: htmlBytes)
-        print(
+        NSLog("%@",
             "\(logPrefix) stage=finalDocument isSnippet=true contentURL=\(contentURL.absoluteString) "
                 + "parsedSuccessfully=\(snapshot.parsedSuccessfully) "
                 + "readerContentContainerPresent=\(snapshot.readerContentContainerPresent) "
                 + "segmentCount=\(snapshot.segmentCount) "
                 + "inlineSidecarPresent=\(snapshot.inlineSidecarPresent) "
-                + "externalSidecarDescriptorPresent=\(snapshot.externalSidecarDescriptorPresent)"
+                + "externalSidecarDescriptorPresent=\(snapshot.externalSidecarDescriptorPresent) "
+                + "renderReadyMarkerPresent=\(snapshot.renderReadyMarkerPresent) "
+                + "renderGenerationPresent=\(snapshot.renderGenerationPresent) "
+                + "fontPending=\(snapshot.fontPending) readerTextPresent=\(snapshot.readerTextPresent)"
         )
 #endif
     }
@@ -2207,6 +2244,7 @@ public class ReaderModeViewModel: ObservableObject {
         readerContent: ReaderContent
     ) {
         guard ownsRender(for: url, generation: generation) else { return }
+        ReaderSnippetFinalDocumentDiagnostics.record("render-cancel", contentURL: url, generation: generation)
         cancelReaderModeLoad(for: url, readerContent: readerContent)
     }
 
@@ -2278,6 +2316,7 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         let generation = UUID()
+        ReaderSnippetFinalDocumentDiagnostics.record("render-start", contentURL: canonicalURL, generation: generation)
         activeRenderGenerationByURL[key] = generation
         completedRenderOwner = nil
         let task = Task { @ReaderViewModelActor [weak self] in
@@ -2421,6 +2460,7 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
             let routeDecision = await self.resolveReaderModeRouteDecision(readerContent: readerContent)
+            ReaderSnippetFinalDocumentDiagnostics.record("route.\(routeDecision.route.rawValue)", contentURL: contentURL, generation: generation)
             guard await self.isCurrentRender(for: contentURL, generation: generation) else {
                 return
             }
@@ -2668,6 +2708,7 @@ public class ReaderModeViewModel: ObservableObject {
         renderGeneration: UUID
     ) async throws {
         let requestedURL = renderURL
+        ReaderSnippetFinalDocumentDiagnostics.record("readability-start", contentURL: requestedURL, generation: renderGeneration)
         guard isCurrentRender(for: requestedURL, generation: renderGeneration) else {
             return
         }
@@ -2833,6 +2874,7 @@ public class ReaderModeViewModel: ObservableObject {
                 )
                 return
             }
+            ReaderSnippetFinalDocumentDiagnostics.record("readability-returned", contentURL: requestedURL, generation: renderGeneration)
             if prefersDirectSnippetReadabilityParse {
                 doc = try await processPersistedSnippetWithCurrentReadabilityProcessor(
                     document: doc,
@@ -3120,6 +3162,7 @@ public class ReaderModeViewModel: ObservableObject {
                         return
                     }
                     expectSyntheticReaderLoaderCommit(for: renderBaseURL)
+                    ReaderSnippetFinalDocumentDiagnostics.record("html-dispatch", contentURL: requestedURL, generation: renderGeneration)
                     navigator.load(
                         transformedHTMLData,
                         mimeType: "text/html",
@@ -3202,6 +3245,7 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller,
         navigator: WebViewNavigator
     ) async throws {
+        ReaderSnippetFinalDocumentDiagnostics.record("commit-start", contentURL: newState.pageURL)
         readabilityContainerFrameInfo = nil
         readabilityContent = nil
         readabilityContainerSelector = nil
@@ -3230,6 +3274,7 @@ public class ReaderModeViewModel: ObservableObject {
         try Task.checkCancellation()
 
         let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
+        ReaderSnippetFinalDocumentDiagnostics.record("font-injection-start", contentURL: newState.pageURL)
         await injectSharedFontIfNeeded(
             scriptCaller: scriptCaller,
             pageURL: committedURL,
@@ -3242,6 +3287,7 @@ public class ReaderModeViewModel: ObservableObject {
         ) else {
             throw CancellationError()
         }
+        ReaderSnippetFinalDocumentDiagnostics.record("font-injection-returned", contentURL: newState.pageURL)
         if !scriptCaller.hasAsyncCaller {
         } else {
             do {
