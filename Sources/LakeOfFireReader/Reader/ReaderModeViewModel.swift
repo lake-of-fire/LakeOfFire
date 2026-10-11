@@ -1890,7 +1890,50 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         return sharedReaderFontUsesLocalScheme(for: pageURL)
     }
 
+    private func ownsReaderDocumentBinding(
+        _ bindingToken: WebViewScriptCaller.JavaScriptBindingToken?,
+        scriptCaller: WebViewScriptCaller
+    ) -> Bool {
+        guard let bindingToken else {
+            return !scriptCaller.canEvaluateJavaScript
+        }
+        return scriptCaller.currentJavaScriptBindingToken == bindingToken
+    }
+
+    private func evaluateReaderDocumentJavaScript(
+        _ javaScript: String,
+        arguments: [String: any Sendable]? = nil,
+        duplicateInMultiTargetFrames: Bool = false,
+        scriptCaller: WebViewScriptCaller,
+        requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken?
+    ) async throws -> Any? {
+        try Task.checkCancellation()
+        guard let bindingToken else { throw CancellationError() }
+        return try await scriptCaller.evaluateJavaScript(
+            javaScript,
+            arguments: arguments,
+            duplicateInMultiTargetFrames: duplicateInMultiTargetFrames,
+            requiring: bindingToken
+        )
+    }
+
     func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
+        let bindingToken = scriptCaller.currentJavaScriptBindingToken
+        await injectSharedFontIfNeeded(
+            scriptCaller: scriptCaller,
+            pageURL: pageURL,
+            requiring: bindingToken
+        )
+    }
+
+    func injectSharedFontIfNeeded(
+        scriptCaller: WebViewScriptCaller,
+        pageURL: URL,
+        requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken?
+    ) async {
+        guard !Task.isCancelled,
+              let bindingToken,
+              ownsReaderDocumentBinding(bindingToken, scriptCaller: scriptCaller) else { return }
         guard pageURL.absoluteString != "about:blank" else {
             logSharedReaderFontInjectionDecision(
                 mode: sharedReaderFontInjectionMode(for: pageURL),
@@ -2058,10 +2101,12 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 });
             })();
             """
-            try? await scriptCaller.evaluateJavaScript(
+            try? await evaluateReaderDocumentJavaScript(
                 js,
                 arguments: ["stylesheetURLTemplate": stylesheetURLTemplate],
-                duplicateInMultiTargetFrames: true
+                duplicateInMultiTargetFrames: true,
+                scriptCaller: scriptCaller,
+                requiring: bindingToken
             )
             return
         }
@@ -2241,13 +2286,15 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             });
         })();
         """
-        try? await scriptCaller.evaluateJavaScript(
+        try? await evaluateReaderDocumentJavaScript(
             js,
             arguments: [
                 "fontCSSBase64": blobPayload.base64CSS,
                 "fontHash": blobPayload.identity,
             ],
-            duplicateInMultiTargetFrames: true
+            duplicateInMultiTargetFrames: true,
+            scriptCaller: scriptCaller,
+            requiring: bindingToken
         )
     }
 
@@ -3970,23 +4017,39 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         }
         try Task.checkCancellation()
 
-        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: committedURL)
+        let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
+        await injectSharedFontIfNeeded(
+            scriptCaller: scriptCaller,
+            pageURL: committedURL,
+            requiring: navigationBindingToken
+        )
+        try Task.checkCancellation()
+        guard ownsReaderDocumentBinding(navigationBindingToken, scriptCaller: scriptCaller) else {
+            throw CancellationError()
+        }
         logTrace(.navCommitted, url: committedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         logStateSnapshot("navCommitted", url: committedURL)
         if !scriptCaller.hasAsyncCaller {
             debugPrint("# EPUB  paginationBookKey.set.skip", "reason=asyncCallerNil", "url=\(newState.pageURL.absoluteString)")
         } else {
             do {
-                try await scriptCaller.evaluateJavaScript(
+                _ = try await evaluateReaderDocumentJavaScript(
                     "window.paginationTrackingBookKey = bookKey;",
                     arguments: ["bookKey": newState.pageURL.absoluteString],
-                    in: nil,
-                    duplicateInMultiTargetFrames: true
+                    duplicateInMultiTargetFrames: true,
+                    scriptCaller: scriptCaller,
+                    requiring: navigationBindingToken
                 )
                 debugPrint("# EPUB  paginationBookKey.set", "key=\(newState.pageURL.absoluteString.prefix(72))…")
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 debugPrint("# EPUB  paginationBookKey.set.error", error.localizedDescription)
             }
+        }
+        try Task.checkCancellation()
+        guard ownsReaderDocumentBinding(navigationBindingToken, scriptCaller: scriptCaller) else {
+            throw CancellationError()
         }
 
         if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
@@ -4104,7 +4167,14 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller
     ) async {
-        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: newState.pageURL)
+        let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
+        await injectSharedFontIfNeeded(
+            scriptCaller: scriptCaller,
+            pageURL: newState.pageURL,
+            requiring: navigationBindingToken
+        )
+        guard !Task.isCancelled,
+              ownsReaderDocumentBinding(navigationBindingToken, scriptCaller: scriptCaller) else { return }
         if let trackedURL = pendingReaderModeURL {
             logTrace(.navFinished, url: trackedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         } else if loadTraceRecords[traceKey(for: newState.pageURL)] != nil {
@@ -4155,11 +4225,21 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         }
         if !newState.pageURL.isReaderURLLoaderURL {
             do {
-                let isNextReaderMode = try await scriptCaller.evaluateJavaScript("return document.body?.dataset.isNextLoadInReaderMode === 'true'") as? Bool ?? false
+                let isNextReaderMode = try await evaluateReaderDocumentJavaScript(
+                    "return document.body?.dataset.isNextLoadInReaderMode === 'true'",
+                    scriptCaller: scriptCaller,
+                    requiring: navigationBindingToken
+                ) as? Bool ?? false
+                guard !Task.isCancelled,
+                      ownsReaderDocumentBinding(navigationBindingToken, scriptCaller: scriptCaller) else { return }
                 if !isNextReaderMode {
                     readerModeLoading(false)
                 }
+            } catch is CancellationError {
+                return
             } catch {
+                guard !Task.isCancelled,
+                      ownsReaderDocumentBinding(navigationBindingToken, scriptCaller: scriptCaller) else { return }
                 readerModeLoading(false)
             }
         }
