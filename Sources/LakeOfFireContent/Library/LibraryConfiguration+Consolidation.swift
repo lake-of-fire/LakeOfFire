@@ -118,7 +118,8 @@ extension LibraryConfiguration {
                     ) else {
                         return true
                     }
-                    return !script.isDeleted && !script.isArchived
+                    // Disabled scripts remain reachable for re-enabling; execution filters them separately.
+                    return !script.isDeleted
                 }
             }
 
@@ -187,7 +188,7 @@ extension LibraryConfiguration {
                         ofType: UserScript.self,
                         forPrimaryKey: id
                     ) {
-                        guard !script.isDeleted, !script.isArchived else { continue }
+                        guard !script.isDeleted else { continue }
                         register(
                             id: id,
                             key: LibraryAdmissionKey(
@@ -234,7 +235,7 @@ extension LibraryConfiguration {
                 )
             }
             for script in realm.objects(UserScript.self).where({
-                !$0.isDeleted && !$0.isArchived
+                !$0.isDeleted
             }) where !existingScriptIDs.contains(script.id) {
                 register(
                     id: script.id,

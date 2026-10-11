@@ -135,4 +135,61 @@ final class LibraryConsolidationAdmissionContinuationTests: XCTestCase {
         }
         XCTAssertEqual(results[0], results[1])
     }
+    func testDisabledDuplicateScriptRetainsImmutableAdmissionAndSettles() async throws {
+        try await verifyDisabledDuplicateAdmission()
+    }
+
+    @RealmBackgroundActor
+    private func verifyDisabledDuplicateAdmission() async throws {
+        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        configuration.objectTypes = [
+            LibraryConfiguration.self, FeedCategory.self, Feed.self, FeedEntry.self,
+            FeedDirectory.self, UserScript.self, UserScriptAllowedDomain.self,
+        ]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        let retained = UserScript()
+        retained.isArchived = true
+        let disabled = UserScript()
+        disabled.isArchived = true
+        disabled.createdAt = Date(timeIntervalSinceReferenceDate: 10)
+        let active = UserScript()
+        active.createdAt = Date(timeIntervalSinceReferenceDate: 20)
+        let deleted = UserScript()
+        deleted.isDeleted = true
+        let primary = LibraryConfiguration()
+        primary.createdAt = Date(timeIntervalSinceReferenceDate: 100)
+        primary.userScriptIDs.append(objectsIn: [retained.id, deleted.id])
+        let duplicate = LibraryConfiguration()
+        duplicate.createdAt = Date(timeIntervalSinceReferenceDate: 200)
+        // Reverse the immutable arrival order, including a retired target.
+        duplicate.userScriptIDs.append(objectsIn: [active.id, deleted.id, disabled.id])
+        try realm.write {
+            realm.add([retained, disabled, active, deleted])
+            realm.add([primary, duplicate])
+        }
+        let result = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: configuration
+        )
+        XCTAssertEqual(Array(result.userScriptIDs), [retained.id, disabled.id, active.id])
+        XCTAssertTrue(duplicate.isDeleted)
+        let generations = Dictionary(uniqueKeysWithValues:
+            realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }
+        )
+        _ = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues:
+            realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }
+        ), generations)
+        try realm.write { disabled.isArchived = false }
+        let afterEnableGenerations = Dictionary(uniqueKeysWithValues:
+            realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }
+        )
+        _ = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+        XCTAssertEqual(Array(result.userScriptIDs), [retained.id, disabled.id, active.id])
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues:
+            realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }
+        ), afterEnableGenerations)
+        await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+    }
+
 }
