@@ -1450,6 +1450,8 @@ public extension Feed {
     @MainActor
     private func persistFetchMetadata(
         _ metadata: FeedFetchMetadata,
+        expectedRSSURL: URL,
+        refreshLease: FeedRefreshLease,
         realmConfiguration: Realm.Configuration
     ) async throws {
         let feedID = id
@@ -1460,10 +1462,12 @@ public extension Feed {
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
+                try checkFeedRefreshIsCurrent(
+                    in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease
+                )
                 guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else {
-                    logRSS("stage=metadata.persist.missingFeed feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
-                    return
+                    throw CancellationError()
                 }
                 feed.lastRefreshedEntriesAt = Date()
                 feed.lastFetchedETag = metadata.etag ?? feed.lastFetchedETag
@@ -1474,7 +1478,13 @@ public extension Feed {
     }
 
     @MainActor
-    private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
+    private func persist(
+        rssItems: [RSSFeedItem],
+        expectedRSSURL: URL,
+        refreshLease: FeedRefreshLease,
+        realmConfiguration: Realm.Configuration,
+        deleteOrphans: Bool
+    ) async throws {
         let feedID = id
         let iconUrl = iconUrl
         let rssUrl = rssUrl
@@ -1571,9 +1581,14 @@ public extension Feed {
                 existingEntryIDs: existingEntryIDs,
                 incomingIDs: incomingIDs,
                 deleteOrphans: deleteOrphans,
-                containsFullContent: containsFullContent
+                containsFullContent: containsFullContent,
+                expectedRSSURL: expectedRSSURL,
+                refreshLease: refreshLease
             )
             for payload in payloads {
+                try checkFeedRefreshIsCurrent(
+                    in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease
+                )
                 try await syncRelatedReaderContent(with: payload)
             }
             logRSS(
@@ -1586,6 +1601,8 @@ public extension Feed {
     private func persist(
         atomItems: [AtomFeedEntry],
         collections: [ParsedFeedEntryCollection],
+        expectedRSSURL: URL,
+        refreshLease: FeedRefreshLease,
         realmConfiguration: Realm.Configuration,
         deleteOrphans: Bool
     ) async throws {
@@ -1726,7 +1743,10 @@ public extension Feed {
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             if !collectionObjects.isEmpty {
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
+                    try checkFeedRefreshIsCurrent(
+                        in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease
+                    )
                     for collection in collectionObjects {
                         if let existing = realm.object(ofType: FeedEntryCollection.self, forPrimaryKey: collection.compoundKey) {
                             collection.createdAt = existing.createdAt
@@ -1760,9 +1780,14 @@ public extension Feed {
                 existingEntryIDs: existingEntryIDs,
                 incomingIDs: incomingIDs,
                 deleteOrphans: deleteOrphans,
-                containsFullContent: containsFullContent
+                containsFullContent: containsFullContent,
+                expectedRSSURL: expectedRSSURL,
+                refreshLease: refreshLease
             )
             for payload in payloads {
+                try checkFeedRefreshIsCurrent(
+                    in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease
+                )
                 try await syncRelatedReaderContent(with: payload)
             }
             logRSS(
@@ -1773,12 +1798,23 @@ public extension Feed {
     
     @MainActor
     func fetch(realmConfiguration: Realm.Configuration) async throws {
+        try Task.checkCancellation()
+        guard !isInvalidated, !isDeleted else { throw CancellationError() }
         let feedID = id
         let feedTitle = title
         let rssUrl = rssUrl
         let lastFetchedETag = lastFetchedETag
         let lastFetchedModifiedAt = lastFetchedModifiedAt
         let lastRefreshedEntriesAt = lastRefreshedEntriesAt
+        let refreshLease = FeedRefreshRegistry.shared.begin(feedID: feedID)
+        defer { FeedRefreshRegistry.shared.end(refreshLease) }
+        func checkRequestIsCurrent() throws {
+            try Task.checkCancellation()
+            guard !isInvalidated, !isDeleted, self.rssUrl == rssUrl,
+                  FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
+                throw CancellationError()
+            }
+        }
         logRSS(
             "stage=fetch.start feedID=\(feedID.uuidString) title=\(feedTitle) url=\(rssUrl.absoluteString) lastRefresh=\(lastRefreshedEntriesAt?.description ?? "nil") etag=\(lastFetchedETag ?? "nil") lastModified=\(lastFetchedModifiedAt?.description ?? "nil") deleteOrphans=\(deleteOrphans)"
         )
@@ -1793,6 +1829,7 @@ public extension Feed {
             logRSS("stage=fetch.download.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) error=\(error)")
             throw error
         }
+        try checkRequestIsCurrent()
         if case .notModified = fetchResult,
            getEntries()?.isEmpty != false {
             fetchResult = try await getRssData(
@@ -1801,11 +1838,16 @@ public extension Feed {
                 lastFetchedModifiedAt: nil,
                 allowNotModified: false
             )
+            try checkRequestIsCurrent()
         }
         switch fetchResult {
         case .notModified(let metadata):
             logRSS("stage=fetch.notModified feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
-            try await persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+            try checkRequestIsCurrent()
+            try await persistFetchMetadata(
+                metadata, expectedRSSURL: rssUrl, refreshLease: refreshLease,
+                realmConfiguration: realmConfiguration
+            )
             logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=notModified")
             return
         case .fetched(var rssData, let metadata):
@@ -1823,8 +1865,16 @@ public extension Feed {
                             throw FeedError.parserFailed
                         }
                         logRSS("stage=parse.rss.success feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) items=\(items.count)")
-                        try await persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
-                        try await persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+                        try checkRequestIsCurrent()
+                        try await persist(
+                            rssItems: items, expectedRSSURL: rssUrl, refreshLease: refreshLease,
+                            realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans
+                        )
+                        try checkRequestIsCurrent()
+                        try await persistFetchMetadata(
+                            metadata, expectedRSSURL: rssUrl, refreshLease: refreshLease,
+                            realmConfiguration: realmConfiguration
+                        )
                         logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=rss")
                     case .atom(let atomFeed):
                         guard let items = atomFeed.entries else {
@@ -1832,13 +1882,20 @@ public extension Feed {
                             throw FeedError.parserFailed
                         }
                         logRSS("stage=parse.atom.success feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) entries=\(items.count)")
+                        try checkRequestIsCurrent()
                         try await persist(
                             atomItems: items,
                             collections: parseManabiAtomCollections(from: rssData),
+                            expectedRSSURL: rssUrl,
+                            refreshLease: refreshLease,
                             realmConfiguration: realmConfiguration,
                             deleteOrphans: deleteOrphans
                         )
-                        try await persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+                        try checkRequestIsCurrent()
+                        try await persistFetchMetadata(
+                            metadata, expectedRSSURL: rssUrl, refreshLease: refreshLease,
+                            realmConfiguration: realmConfiguration
+                        )
                         logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=atom")
                     case .json:
                         logRSS("stage=parse.json.unsupported feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
@@ -1928,8 +1985,13 @@ fileprivate func upsertFeedEntries(
     existingEntryIDs: [String],
     incomingIDs: [String],
     deleteOrphans: Bool,
-    containsFullContent: Bool
+    containsFullContent: Bool,
+    expectedRSSURL: URL,
+    refreshLease: FeedRefreshLease
 ) async throws -> [FeedEntryPayload] {
+    try checkFeedRefreshIsCurrent(
+        in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease
+    )
     let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: entries)
     let feedIDDescription = entries.first?.feedID?.uuidString ?? "nil"
     logRSS(
@@ -1964,7 +2026,10 @@ fileprivate func upsertFeedEntries(
     }
 
     await realm.asyncRefresh()
-    try await realm.asyncWrite {
+    try await realm.asyncWritePreservingOwnership {
+        try checkFeedRefreshIsCurrent(
+            in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease
+        )
         var orphanCount = 0
         if deleteOrphans {
             let orphans = realm.objects(FeedEntry.self)
