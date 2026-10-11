@@ -6,6 +6,7 @@ import RealmSwiftGaps
 
 @objc(LakeOfFireTestsExternalBookContent)
 private final class ExternalBookContent: Bookmark {
+    override class func shouldIncludeInDefaultSchema() -> Bool { false }
     @Persisted var externalHTML: String?
 
     override var locationBarTitle: String? {
@@ -34,7 +35,8 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         }
     }
 
-    private func makeConfiguration() throws -> (Realm.Configuration, () -> Void) {
+    @MainActor
+    private func makeConfiguration() throws -> Realm.Configuration {
         let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
         let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
         let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
@@ -63,17 +65,27 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         ReaderContentLoader.feedEntryRealmConfiguration = configuration
         ReaderContentLoader.additionalContentProviders = []
 
-        return (
-            configuration,
-            {
-                ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
-                ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
-                ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
-                ReaderContentLoader.additionalContentProviders = originalAdditionalProviders
-                ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer = originalInlineHTMLAnalysisEnqueuer
-                try? FileManager.default.removeItem(at: directoryURL)
-            }
-        )
+        let capturedConfiguration = configuration
+        addTeardownBlock { @MainActor in
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            ReaderContentLoader.additionalContentProviders = originalAdditionalProviders
+            ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer = originalInlineHTMLAnalysisEnqueuer
+            // Test operations have completed and method-local managed values
+            // have left scope before async teardown releases the actor cache.
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            let cacheReleased = await { @RealmBackgroundActor in
+                _ = RealmBackgroundActor.shared.removeCachedRealm(for: capturedConfiguration)
+                return await RealmBackgroundActor.shared.existingCachedRealm(
+                    for: capturedConfiguration
+                ) == nil
+            }()
+            XCTAssertTrue(cacheReleased, "Do not remove a file while its cached Realm is still owned")
+            guard cacheReleased else { return }
+            try FileManager.default.removeItem(at: directoryURL)
+        }
+        return configuration
     }
 
     private actor InlineHTMLAnalysisRecorder {
@@ -93,8 +105,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
 
     @MainActor
     func testAdditionalProviderParticipatesInLookupAndLoaderRouting() async throws {
-        let (configuration, restore) = try makeConfiguration()
-        defer { restore() }
+        let configuration = try makeConfiguration()
         await ReaderContentLoader.resetTransientCachesForTesting()
 
         let contentURL = try XCTUnwrap(URL(string: "ttsu:///book/provider-test"))
@@ -145,8 +156,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
 
     @MainActor
     func testReaderBookRoutingDoesNotRequireEagerHTMLProbe() async throws {
-        let (configuration, restore) = try makeConfiguration()
-        defer { restore() }
+        let configuration = try makeConfiguration()
         await ReaderContentLoader.resetTransientCachesForTesting()
 
         let contentURL = try XCTUnwrap(URL(string: "ttsu:///book/provider-test-no-cache"))
@@ -186,8 +196,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
 
     @MainActor
     func testCustomPayloadHooksKeepBookmarksAndHistoryLightweight() async throws {
-        let (configuration, restore) = try makeConfiguration()
-        defer { restore() }
+        let configuration = try makeConfiguration()
         await ReaderContentLoader.resetTransientCachesForTesting()
 
         let contentURL = try XCTUnwrap(URL(string: "ttsu:///book/lightweight"))
@@ -218,8 +227,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
 
     @MainActor
     func testBookmarkAndHistoryCreationEnqueueInlineHTMLAnalysis() async throws {
-        let (configuration, restore) = try makeConfiguration()
-        defer { restore() }
+        let configuration = try makeConfiguration()
         await ReaderContentLoader.resetTransientCachesForTesting()
 
         let recorder = InlineHTMLAnalysisRecorder()
