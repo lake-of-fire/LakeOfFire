@@ -234,6 +234,62 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
         }.value
     }
 
+
+    func testMalformedImportedDomainsCannotRemoveRestrictionsOrCreateUnrestrictedScript() async throws {
+        let configuration = makeConfiguration()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let existingID = UUID()
+        let newID = UUID()
+        let validURL = directory.appendingPathComponent("valid.opml")
+        let validXML = """
+        <opml version="2.0"><head><title>Scripts</title></head><body>
+          <outline text="Restricted" uuid="\(existingID.uuidString)" script="void(0);"
+                   allowedDomains="example.org" isArchived="false" />
+        </body></opml>
+        """
+        try Data(validXML.utf8).write(to: validURL)
+        let invalidURLs = try [existingID, newID].map { id in
+            let url = directory.appendingPathComponent("\(id.uuidString).opml")
+            let xml = """
+            <opml version="2.0"><head><title>Scripts</title></head><body>
+              <outline text="Changed" uuid="\(id.uuidString)" script="void(1);"
+                       allowedDomains="%ZZ" isArchived="false" />
+            </body></opml>
+            """
+            try Data(xml.utf8).write(to: url)
+            return url
+        }
+        try await Task { @RealmBackgroundActor in
+            try await LibraryDataManager.shared.importOPML(
+                fileURL: validURL, realmConfiguration: configuration
+            )
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            let existing = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: existingID))
+            let originalModifiedAt = existing.modifiedAt
+            for url in invalidURLs {
+                do {
+                    try await LibraryDataManager.shared.importOPML(
+                        fileURL: url, realmConfiguration: configuration
+                    )
+                    XCTFail("Malformed domain encoding must reject the imported script")
+                } catch let error as CocoaError {
+                    XCTAssertEqual(error.code, .fileReadCorruptFile)
+                }
+                XCTAssertEqual(existing.title, "Restricted")
+                XCTAssertEqual(existing.script, "void(0);")
+                XCTAssertFalse(existing.isArchived)
+                XCTAssertEqual(existing.getAllowedDomains()?.map(\.domain), ["example.org"])
+                XCTAssertEqual(existing.modifiedAt, originalModifiedAt)
+                XCTAssertNil(realm.object(ofType: UserScript.self, forPrimaryKey: newID))
+                XCTAssertEqual(realm.objects(UserScript.self).count, 1)
+                XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 1)
+            }
+        }.value
+    }
+
     private func makeConfiguration() -> Realm.Configuration {
         var configuration = Realm.Configuration(
             inMemoryIdentifier: UUID().uuidString
