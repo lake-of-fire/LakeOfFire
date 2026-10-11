@@ -535,6 +535,7 @@ struct LibraryCategoriesView: View {
                         .foregroundStyle(.primary)
                 }
             }
+            .accessibilityIdentifier("Library.CategoriesList")
             .headerProminence(.increased)
             .listStyle(.sidebar)
 #if os(iOS)

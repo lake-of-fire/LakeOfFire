@@ -6,6 +6,8 @@ import XCTest
 @testable import LakeOfFireReader
 #if os(macOS)
 import AppKit
+#elseif os(iOS)
+import UIKit
 #endif
 
 private actor ReviewStatusWaitGate {
@@ -27,6 +29,97 @@ private actor ReviewStatusWaitGate {
 
 @MainActor
 final class ReviewStatusRefreshViewLifetimeTests: XCTestCase {
+    func testFileInventoryPublicationInvalidatesObservers() {
+        let manager = ReaderFileManager()
+        var changes = 0
+        let subscription = manager.objectWillChange.sink { changes += 1 }
+        let item = ContentFile()
+        item.url = URL(string: "reader-file://file/load/local/Books/\(UUID().uuidString).epub")!
+        item.updateCompoundKey()
+        manager.files = []
+        manager.files = [item]
+        XCTAssertEqual(manager.files?.map(\.compoundKey), [item.compoundKey])
+        manager.files = []
+        XCTAssertEqual(changes, 3, "Initial inventory, imports and deletions must invalidate library consumers")
+        withExtendedLifetime(subscription) { }
+    }
+
+    func testRefreshPublishesAnObservableObjectChange() async {
+        let model = CloudDriveSyncStatusModel(statusLoader: { _ in .localOnly })
+        var changes = 0
+        let subscription = model.objectWillChange.sink { changes += 1 }
+        await model.refreshAsync(item: ContentFile())
+        XCTAssertEqual(model.status, .localOnly)
+        XCTAssertEqual(changes, 1, "A successful status read must invalidate the observing row")
+        withExtendedLifetime(subscription) { }
+    }
+
+#if os(iOS)
+    private struct StatusRow: View {
+        @StateObject private var status: CloudDriveSyncStatusModel
+        let item: ContentFile
+        let enabled: () -> Void
+
+        init(status: CloudDriveSyncStatusModel, item: ContentFile, enabled: @escaping () -> Void) {
+            _status = StateObject(wrappedValue: status)
+            self.item = item
+            self.enabled = enabled
+        }
+
+        var body: some View {
+            let blocked = status.status == .loadingStatus || status.status == .cloudOnly
+            Text(blocked ? "Delete unavailable" : "Delete available")
+                .swipeActions {
+                    Button("Delete") { }
+                        .disabled(blocked)
+                }
+                .onChange(of: blocked) { blocked in
+                    if !blocked { enabled() }
+                }
+                .modifier(ReaderFileStatusRefreshModifier(item: item, statusModel: status))
+        }
+    }
+
+    @available(iOS 16.0, *)
+    func testIOSListRowEnablesDeleteAfterItsStatusRefresh() async {
+        let entered = expectation(description: "visible row starts its status read")
+        let enabled = expectation(description: "published status enables the rendered swipe action")
+        let gate = ReviewStatusWaitGate()
+        let model = CloudDriveSyncStatusModel(statusLoader: { _ in
+            entered.fulfill()
+            await gate.wait()
+            return .localOnly
+        })
+        let item = ContentFile()
+        item.url = URL(string: "reader-file://file/load/local/Books/\(UUID().uuidString).epub")!
+        item.updateCompoundKey()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = UIHostingController(rootView:
+            NavigationStack {
+                List {
+                    Section("My Books") {
+                        ForEach([item.compoundKey], id: \.self) { _ in
+                            StatusRow(status: model, item: item) { enabled.fulfill() }
+                        }
+                    }
+                }
+                .listStyle(.sidebar)
+            }
+        )
+        window.isHidden = false
+        window.rootViewController?.view.layoutIfNeeded()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+        await fulfillment(of: [entered], timeout: 3)
+        XCTAssertEqual(model.status, .loadingStatus)
+        await gate.release()
+        await fulfillment(of: [enabled], timeout: 3)
+        XCTAssertEqual(model.status, .localOnly)
+    }
+#endif
+
     func testAlreadyCancelledCallerCannotSupersedeAnActiveRefresh() async {
         let item = ContentFile()
         let readGate = ReviewStatusWaitGate()

@@ -7,4 +7,3 @@ public struct TranscriptReaderProtocol: ReaderProtocol {
         url.isTranscriptURL
     }
 }
-

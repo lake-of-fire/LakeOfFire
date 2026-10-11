@@ -28,9 +28,11 @@ extension HistoryRecord: DeletableReaderContent {
         }
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                for: contentReference.realmConfiguration
+                for: contentReference.realmConfiguration, storageAdmission: contentReference.storageAdmission
             )
             try await realm.asyncWritePreservingOwnership {
+                try Task.checkCancellation()
+                try contentReference.validateStorage()
                 HistoryRecord.markOpenedRecordsDeleted(
                     matching: historyURL,
                     in: realm
@@ -45,10 +47,13 @@ extension DeletableReaderContent {
     public func delete() async throws {
         guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
         try await { @RealmBackgroundActor in
-            guard let content = try await contentRef.resolveOnBackgroundActor() else { return }
-//            await content.realm?.asyncRefresh()
-            try await content.realm?.asyncWritePreservingOwnership {
-                //            for videoStatus in realm.objects(VideoS)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: contentRef.realmConfiguration, storageAdmission: contentRef.storageAdmission)
+            try await realm.asyncWritePreservingOwnership {
+                try Task.checkCancellation()
+                try contentRef.validateStorage()
+                guard let content = realm.object(ofType: contentRef.contentType,
+                    forPrimaryKey: contentRef.contentKey) as? any ReaderContentProtocol else { return }
+                guard !content.isDeleted else { return }
                 content.isDeleted = true
                 content.refreshChangeMetadata(explicitlyModified: true)
             }
@@ -121,7 +126,12 @@ public extension HistoryRecord {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
             for: ReaderContentLoader.historyRealmConfiguration
         )
-        return openedRecords(matching: url, in: realm)
+        return getOpenedRecord(forURL: url, in: realm)
+    }
+
+    @RealmBackgroundActor
+    static func getOpenedRecord(forURL url: URL, in realm: Realm) -> HistoryRecord? {
+        openedRecords(matching: url, in: realm)
             .sorted(by: [
                 SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
                 SortDescriptor(keyPath: "compoundKey", ascending: true),
@@ -139,37 +149,131 @@ public extension HistoryRecord {
             .max()
     }
 
+    /// Demotion has already been requested by a loader/readability callback.
+    /// Prefer committed opened identity so a provisional deletion cannot drop
+    /// that request. Live selection is only a fallback for creation/revival;
+    /// the existing owned writer decides whether that identity survives.
     @RealmBackgroundActor
-    func refreshDemotedStatus(skipPreviouslyDemoted: Bool = true) async throws {
-        guard isDemoted != false || !skipPreviouslyDemoted else {
-            return
+    static func refreshDemotedStatus(
+        forURL url: URL,
+        historyRealmConfiguration: Realm.Configuration = ReaderContentLoader.historyRealmConfiguration,
+        historyStorageAdmission: RealmStorageAdmission? = nil,
+        bookmarkRealmConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
+        bookmarkStorageAdmission: RealmStorageAdmission? = nil,
+        skipPreviouslyDemoted: Bool = true
+    ) async throws {
+        let actor = RealmBackgroundActor.shared
+        let historyAdmission = historyStorageAdmission ?? actor.captureStorageAdmission(for: historyRealmConfiguration)
+        let bookmarkAdmission = bookmarkStorageAdmission ?? (actor.realmCacheKey(for: bookmarkRealmConfiguration) == actor.realmCacheKey(for: historyRealmConfiguration)
+            ? historyAdmission : actor.captureStorageAdmission(for: bookmarkRealmConfiguration))
+        let realm = try await actor.cachedRealm(for: historyRealmConfiguration, storageAdmission: historyAdmission)
+        if !realm.isFrozen && !realm.isInWriteTransaction { await realm.asyncRefresh() }
+        try Task.checkCancellation()
+        guard historyAdmission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: historyRealmConfiguration) }),
+              bookmarkAdmission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: bookmarkRealmConfiguration) }) else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
         }
-        guard let realm else {
-            print("Cannot refresh demoted status: no realm")
-            return
-        }
-        let demoted = try await { @RealmBackgroundActor in
-            if isReaderModeByDefault || isReaderModeAvailable {
-                return false
-            }
-            if rssContainsFullContent {
-                return false
-            }
-            if isFromClipboard || isPhysicalMedia {
-                return false
-            }
-            
-            if let bookmark = try await Bookmark.get(forURL: url), !bookmark.isDeleted {
-                return false
-            }
-            
-            return true
+        let reference: ReaderContentLoader.ContentReference? = {
+            let committed = realm.freeze()
+            let record = getOpenedRecord(forURL: url, in: committed)
+                ?? getOpenedRecord(forURL: url, in: realm)
+            return record.flatMap { ReaderContentLoader.ContentReference(content: $0, storageAdmission: historyAdmission) }
         }()
-        if demoted != isDemoted {
-            try await realm.asyncWritePreservingOwnership {
-                isDemoted = demoted
-                refreshChangeMetadata(explicitlyModified: true)
+        guard let reference else { return }
+        try await refreshDemotedStatus(for: reference,
+            bookmarkRealmConfiguration: bookmarkRealmConfiguration,
+            bookmarkStorageAdmission: bookmarkAdmission,
+            skipPreviouslyDemoted: skipPreviouslyDemoted)
+    }
+
+    @RealmBackgroundActor
+    func refreshDemotedStatus(
+        bookmarkRealmConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
+        bookmarkStorageAdmission: RealmStorageAdmission? = nil,
+        skipPreviouslyDemoted: Bool = true
+    ) async throws {
+        guard !isInvalidated,
+              let reference = ReaderContentLoader.ContentReference(content: self) else { return }
+        try await Self.refreshDemotedStatus(for: reference,
+            bookmarkRealmConfiguration: bookmarkRealmConfiguration,
+            bookmarkStorageAdmission: bookmarkStorageAdmission,
+            skipPreviouslyDemoted: skipPreviouslyDemoted)
+    }
+
+    /// Exact loader identity and its original storage admission survive live
+    /// deletion filtering. No object wrapper crosses native write admission.
+    @RealmBackgroundActor
+    static func refreshDemotedStatus(
+        for reference: ReaderContentLoader.ContentReference,
+        bookmarkRealmConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
+        bookmarkStorageAdmission: RealmStorageAdmission? = nil,
+        skipPreviouslyDemoted: Bool = true
+    ) async throws {
+        guard reference.contentType == HistoryRecord.self else { return }
+        let actor = RealmBackgroundActor.shared
+        let bookmarkAdmission = bookmarkStorageAdmission ?? (actor.realmCacheKey(for: bookmarkRealmConfiguration) == actor.realmCacheKey(for: reference.realmConfiguration)
+            ? reference.storageAdmission : actor.captureStorageAdmission(for: bookmarkRealmConfiguration))
+        nonisolated func validateAdmission() throws {
+            try Task.checkCancellation()
+            try reference.validateStorage()
+            // An explicit bookmark configuration belongs to this operation;
+            // do not replace it with the loader's later global configuration.
+            guard bookmarkAdmission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: bookmarkRealmConfiguration) }) else {
+                throw RealmBackgroundActorError.realmFileChangedDuringOpen
             }
+        }
+        try validateAdmission()
+        let realm = try await actor.cachedRealm(for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
+        if !realm.isFrozen && !realm.isInWriteTransaction { await realm.asyncRefresh() }
+        try validateAdmission()
+        let needsRefresh: Bool = {
+            // Live caller selection can deliver a provisionally revived row,
+            // or a row whose committed visibility is about to change. A
+            // committed no-op cannot settle that owner's pending transaction.
+            // Let native admission wait, then evaluate the settled row below.
+            if realm.isInWriteTransaction { return true }
+            // A different owner's provisional deletion or visibility value must
+            // not suppress this request. Keep the cheap committed no-op path,
+            // but carry no frozen object across write admission.
+            let committed = realm.freeze()
+            guard let record = committed.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey) else {
+                // The supplied managed row may belong to an uncommitted
+                // creation. Absence is not a no-op receipt: let write admission
+                // settle its owner, then resolve the row without recreating it.
+                return true
+            }
+            return !record.isDeleted && (record.isDemoted != false || !skipPreviouslyDemoted)
+        }()
+        try validateAdmission()
+        guard needsRefresh else { return }
+        let bookmarkRealm = try await actor.cachedRealm(for: bookmarkRealmConfiguration, storageAdmission: bookmarkAdmission)
+        await ReaderContentLoader.contentWriteGateForTesting?(.demotion)
+        try await realm.asyncWritePreservingOwnership {
+            try validateAdmission()
+            let admittedBookmarks: Realm
+            if bookmarkRealm == realm {
+                // The owning write already contains both models. Its current
+                // bookmark state commits or rolls back with this history row.
+                admittedBookmarks = realm
+            } else {
+                if !bookmarkRealm.isFrozen && !bookmarkRealm.isInWriteTransaction { bookmarkRealm.refresh() }
+                admittedBookmarks = bookmarkRealm.freeze()
+            }
+            // Refresh may notify a writer, retire a store, or cancel this task.
+            // Resolve the history row only after that synchronous callout.
+            try validateAdmission()
+            guard let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey),
+                  !record.isDeleted, record.isDemoted != false || !skipPreviouslyDemoted else { return }
+            let bookmarked = admittedBookmarks.objects(Bookmark.self)
+                .filter(NSPredicate(format: "isDeleted == false AND url == %@", record.url.absoluteString)).first != nil
+            let demoted = !(record.isReaderModeByDefault || record.isReaderModeAvailable
+                || record.rssContainsFullContent || record.isFromClipboard || record.isPhysicalMedia || bookmarked)
+            guard demoted != record.isDemoted else { return }
+            record.isDemoted = demoted
+            record.refreshChangeMetadata(explicitlyModified: true)
+            // Metadata providers may withdraw storage admission too. A failed
+            // final fence rolls back only this operation's fields and journal.
+            try validateAdmission()
         }
     }
 }

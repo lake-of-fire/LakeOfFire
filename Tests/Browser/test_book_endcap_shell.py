@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from threading import Thread
 import os
+import sys
 import unittest
 import zipfile
 from playwright.sync_api import sync_playwright
@@ -114,12 +115,18 @@ class BookEndcapShellTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.server = ViewerAssetServer(('127.0.0.1', 0), partial(Handler, directory=str(ROOT)))
+        cls.addClassCleanup(cls.server.server_close)
         Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.addClassCleanup(cls.server.shutdown)
         cls.pw = sync_playwright().start()
-        cls.browser = cls.pw.chromium.launch(executable_path=os.environ.get('CHROMIUM_PATH'), headless=True)
-    @classmethod
-    def tearDownClass(cls):
-        cls.browser.close(); cls.pw.stop(); cls.server.shutdown(); cls.server.server_close()
+        cls.addClassCleanup(cls.pw.stop)
+        launch_args = ['--disable-features=MacAppCodeSignClone'] if sys.platform == 'darwin' else []
+        cls.browser = cls.pw.chromium.launch(
+            executable_path=os.environ.get('CHROMIUM_PATH'), headless=True,
+            args=launch_args)
+        # unittest runs class cleanups even if setup or an earlier cleanup fails.
+        # Reverse registration closes the browser before its Playwright runtime.
+        cls.addClassCleanup(cls.browser.close)
 
     def test_actual_viewer_end_page_does_not_mark_skipped_content(self):
         page = self.browser.new_page(viewport={'width':390, 'height':844})

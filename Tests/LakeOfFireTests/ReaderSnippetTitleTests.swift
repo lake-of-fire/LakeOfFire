@@ -96,6 +96,96 @@ final class ReaderSnippetTitleTests: XCTestCase {
     }
 
     @MainActor
+    func testStartupImportRetryReusesCommittedRecordWithoutAdvancingJournal() async throws {
+        try await withSnippetRealm { configuration in
+            let ingestionID = UUID()
+            let html = self.snippetHTML(token: "startup-retry")
+            let loaded = try await ReaderContentLoader.load(
+                html: html, allowContentMatch: false, snippetIdentifier: ingestionID)
+            let first = try XCTUnwrap(loaded)
+            let realm = try await Realm(configuration: configuration)
+            try await realm.asyncRefresh()
+            let name = first.objectSchema.className + "." + first.compoundKey
+            let generation = try XCTUnwrap(realm.object(ofType: BigSyncPendingMutation.self,
+                forPrimaryKey: name)?.generation)
+            let retried = try await ReaderContentLoader.load(
+                html: html, allowContentMatch: false, snippetIdentifier: ingestionID)
+            let second = try XCTUnwrap(retried)
+            try await realm.asyncRefresh()
+            XCTAssertEqual(second.compoundKey, first.compoundKey)
+            XCTAssertEqual(realm.objects(HistoryRecord.self).count, 1)
+            XCTAssertEqual(realm.object(ofType: BigSyncPendingMutation.self,
+                forPrimaryKey: name)?.generation, generation)
+        }
+    }
+
+    @MainActor
+    func testConcurrentStartupImportRetriesProduceOneRecordAndDurableJournal() async throws {
+        try await withSnippetRealm { configuration in
+            let ingestionID = UUID()
+            let html = self.snippetHTML(token: "startup-concurrent-retry")
+            let imports = (0..<6).map { _ in Task { @MainActor in
+                let loaded = try await ReaderContentLoader.load(
+                    html: html, allowContentMatch: false, snippetIdentifier: ingestionID)
+                return try XCTUnwrap(loaded).compoundKey
+            } }
+            defer { imports.forEach { $0.cancel() } }
+            var keys = [String]()
+            var firstError: Error?
+            for operation in imports {
+                do { keys.append(try await operation.value) }
+                catch { if firstError == nil { firstError = error } }
+            }
+            // Join every writer before fixture teardown, including on failure.
+            if let firstError { throw firstError }
+            XCTAssertEqual(Set(keys).count, 1)
+            let realm = try await Realm(configuration: configuration)
+            try await realm.asyncRefresh()
+            let record = try XCTUnwrap(realm.objects(HistoryRecord.self).first)
+            XCTAssertEqual(realm.objects(HistoryRecord.self).count, 1)
+            let name = record.objectSchema.className + "." + record.compoundKey
+            XCTAssertNotNil(realm.object(ofType: BigSyncPendingMutation.self,
+                forPrimaryKey: name))
+        }
+    }
+
+    @MainActor
+    func testStartupImportReplayCannotOverwriteEditedOrDeletedRecord() async throws {
+        for deletesRecord in [false, true] {
+            try await withSnippetRealm { configuration in
+                let ingestionID = UUID()
+                let html = self.snippetHTML(token: "startup-retired-replay")
+                let loaded = try await ReaderContentLoader.load(
+                    html: html, allowContentMatch: false, snippetIdentifier: ingestionID)
+                let first = try XCTUnwrap(loaded)
+                let realm = try await Realm(configuration: configuration)
+                let record = try XCTUnwrap(realm.object(ofType: HistoryRecord.self,
+                    forPrimaryKey: first.compoundKey))
+                try await realm.asyncWritePreservingOwnership {
+                    if deletesRecord { record.isDeleted = true }
+                    else { record.html = self.updatedSnippetHTML(token: "successor-edit") }
+                    record.refreshChangeMetadata(explicitlyModified: true)
+                }
+                let retainedContent = record.content
+                let name = record.objectSchema.className + "." + record.compoundKey
+                let generation = try XCTUnwrap(realm.object(ofType: BigSyncPendingMutation.self,
+                    forPrimaryKey: name)?.generation)
+                do {
+                    _ = try await ReaderContentLoader.load(
+                        html: html, allowContentMatch: false, snippetIdentifier: ingestionID)
+                    XCTFail("A retry must not overwrite a successor edit or revive deletion")
+                } catch is CancellationError { }
+                try await realm.asyncRefresh()
+                XCTAssertEqual(record.isDeleted, deletesRecord)
+                XCTAssertEqual(record.content, retainedContent)
+                XCTAssertEqual(realm.objects(HistoryRecord.self).count, 1)
+                XCTAssertEqual(realm.object(ofType: BigSyncPendingMutation.self,
+                    forPrimaryKey: name)?.generation, generation)
+            }
+        }
+    }
+
+    @MainActor
     func testSuspendedOldSnippetLoadCannotChangeSuccessorReaderMode() async throws {
         let navigator = WebViewNavigator()
         let mode = ReaderModeViewModel()

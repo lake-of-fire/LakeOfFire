@@ -53,7 +53,7 @@ export const coerceRestoreFraction = (...values) => {
 // position correction for a CFI or the native synthetic page locator.
 export const resolveRestoreLocator = (saved = {}) => {
     const fraction = coerceRestoreFraction(saved?.fractionalCompletion)
-    const hasFraction = fraction != null && fraction > 0
+    const hasFraction = fraction != null && fraction >= 0
     const synthetic = parseSyntheticRestoreLocator(saved?.cfi)
     const spineSectionIndex = synthetic ? null : parseSpineOnlyEpubCFI(saved?.cfi)
     const cfi = !synthetic && !Number.isInteger(spineSectionIndex) && typeof saved?.cfi === 'string'
@@ -298,3 +298,72 @@ export class PendingInitialRestoreMailbox {
         return true
     }
 }
+
+export const restoreLocatorKind = ({ cfi, fractionalCompletion }) => {
+    if (parseSyntheticRestoreLocator(cfi)) return 'synthetic'
+    if (typeof cfi === 'string' && cfi.length > 0) return 'cfi'
+    return Number.isFinite(fractionalCompletion)
+        && fractionalCompletion >= 0
+        && fractionalCompletion <= 1
+        ? 'fraction'
+        : 'none'
+}
+
+export const normalizeInitialRestoreRequest = value => {
+    if (!value || typeof value !== 'object') return null
+
+    const requestID = typeof value.requestID === 'string' ? value.requestID.trim() : ''
+    const cfi = typeof value.cfi === 'string' ? value.cfi : ''
+    const hasFractionalCompletion = value.fractionalCompletion !== null
+        && value.fractionalCompletion !== undefined
+    if (hasFractionalCompletion
+        && (!Number.isFinite(value.fractionalCompletion)
+            || value.fractionalCompletion < 0
+            || value.fractionalCompletion > 1)) {
+        return null
+    }
+    const fractionalCompletion = hasFractionalCompletion
+        ? value.fractionalCompletion
+        : null
+    const requestedLocator = cfi.length > 0 ? 'cfi' : (fractionalCompletion != null ? 'fraction' : 'none')
+
+    if (requestID.length === 0 || requestedLocator === 'none') return null
+    return {
+        requestID,
+        requestedLocator,
+        cfi,
+        fractionalCompletion,
+    }
+}
+
+export const makeInitialRestoreTerminalResult = ({ request, snapshot, error = null }) => {
+    const navigationOk = error == null
+    const currentFractionalCompletion = Number.isFinite(snapshot?.currentFractionalCompletion)
+        ? snapshot.currentFractionalCompletion
+        : null
+    const handledFractionalCompletion = Number.isFinite(snapshot?.handledFractionalCompletion)
+        ? snapshot.handledFractionalCompletion
+        : null
+    const handledCFI = typeof snapshot?.handledCFI === 'string' && snapshot.handledCFI.length > 0
+        ? snapshot.handledCFI
+        : null
+
+    return {
+        requestID: request?.requestID ?? null,
+        requestedLocator: request?.requestedLocator ?? 'none',
+        terminalState: request ? (navigationOk ? 'satisfied' : 'failed') : 'noTarget',
+        navigationOk,
+        restoreSatisfied: request != null && navigationOk,
+        handledFractionalCompletion,
+        currentFractionalCompletion,
+        handledCFI,
+        error: error == null ? null : String(error?.message ?? error),
+    }
+}
+
+export const shouldSkipScheduledReaderFractionGoTo = ({
+    requiresUserInputBeforePositionSave,
+    restoreSettlingMs,
+}) => requiresUserInputBeforePositionSave === true
+    && Number.isFinite(restoreSettlingMs)
+    && restoreSettlingMs > 0

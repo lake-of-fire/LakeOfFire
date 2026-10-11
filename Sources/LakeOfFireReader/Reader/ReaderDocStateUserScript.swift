@@ -59,6 +59,8 @@ struct ReaderDocStateUserScript {
                 readyState: document.readyState,
                 hasBody: !!body,
                 hasReaderContent,
+                hasRenderReadyMarker,
+                fontPending: (html?.dataset?.mnbFontPending ?? null) === '1',
                 hasReaderRenderReady: hasRenderReadyMarker
                     && hasReaderContent
                     && (html?.dataset?.mnbFontPending ?? null) !== '1',
@@ -89,7 +91,20 @@ struct ReaderDocStateUserScript {
         window.__manabiPostReaderDocStateEvent = function(reason) {
             return postState(reason || "event");
         };
-        if (isEbookDocument) { return; }
+        if (isEbookDocument) {
+            // Renderer events can report readiness while a native-injected font
+            // is still pending. Font completion clears only this root flag and
+            // may have no later renderer event. Observe that small contract,
+            // without polling or watching the EPUB document subtree.
+            observer = new MutationObserver(() => { postState("font-state"); });
+            if (document.documentElement) {
+                observer.observe(document.documentElement, {
+                    attributes: true,
+                    attributeFilter: ["data-mnb-font-pending"]
+                });
+            }
+            return;
+        }
         function scheduleNextTick() {
             if (stateMachine.stopped || stateMachine.attempts >= 80) { return; }
             stateMachine.attempts += 1;

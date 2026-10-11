@@ -226,4 +226,127 @@ final class ReaderCapturedMediaMutationTests: XCTestCase {
         XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, journalCount + 1)
     }
 
+    @MainActor
+    func testCurrentMutationKeepsEarlierCommitWhenLaterMutationCancels() async throws {
+        let configuration = configuration()
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let url = URL(string: "https://example.com/" + UUID().uuidString)!
+        let history = try seed(realm, url: url)
+        let bookmark = Bookmark()
+        bookmark.url = url
+        bookmark.updateCompoundKey()
+        bookmark.title = "original"
+        try realm.write { realm.add(bookmark) }
+        let journalCount = realm.objects(BigSyncPendingMutation.self).count
+        let previous = (ReaderContentLoader.bookmarkRealmConfiguration,
+            ReaderContentLoader.historyRealmConfiguration, ReaderContentLoader.feedEntryRealmConfiguration)
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previous.0
+            ReaderContentLoader.historyRealmConfiguration = previous.1
+            ReaderContentLoader.feedEntryRealmConfiguration = previous.2
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        let mutation = Task { @RealmBackgroundActor in
+            await ReaderContentLoader.updateContentWithOutcome(url: url) { object in
+                object.title = "selected media"
+                if object is HistoryRecord {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+                return true
+            }
+        }
+        let outcome = await mutation.value
+        await realm.asyncRefresh()
+        XCTAssertEqual(outcome.matchedObjectCount, 2)
+        XCTAssertEqual(outcome.committedObjectCount, 1)
+        XCTAssertEqual(outcome.mutatedObjectCount, 1)
+        XCTAssertTrue(outcome.cancelledBeforeCommit)
+        XCTAssertEqual(bookmark.title, "selected media")
+        XCTAssertEqual(history.title, "original")
+        XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, journalCount + 1)
+    }
+
+    @MainActor
+    func testCapturedMutationRoutesFilesToHistoryWithSeparateSchemas() async throws {
+        try await exerciseSeparateStorageMutation(captured: true)
+    }
+
+    @MainActor
+    func testCurrentMutationReportsDurableOutcomesWithSeparateSchemas() async throws {
+        try await exerciseSeparateStorageMutation(captured: false)
+    }
+
+    @MainActor
+    private func exerciseSeparateStorageMutation(captured: Bool) async throws {
+        var bookmarks = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        bookmarks.objectTypes = [Bookmark.self]
+        configureLakeOfFireMutationTrackingForTesting(&bookmarks)
+        var history = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        history.objectTypes = [HistoryRecord.self, ContentFile.self]
+        configureLakeOfFireMutationTrackingForTesting(&history)
+        var feeds = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        feeds.objectTypes = [FeedEntry.self]
+        configureLakeOfFireMutationTrackingForTesting(&feeds)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: bookmarks)
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: history)
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: feeds)
+        }
+        let bookmarkRealm = try await Realm(configuration: bookmarks, actor: MainActor.shared)
+        let historyRealm = try await Realm(configuration: history, actor: MainActor.shared)
+        let feedRealm = try await Realm(configuration: feeds, actor: MainActor.shared)
+        let url = URL(string: "https://example.com/media-file/" + UUID().uuidString)!
+        let bookmark = Bookmark()
+        bookmark.url = url
+        bookmark.title = "original bookmark"
+        bookmark.updateCompoundKey()
+        try bookmarkRealm.write { bookmarkRealm.add(bookmark) }
+        let record = try seed(historyRealm, url: url)
+        let file = ContentFile()
+        file.url = url
+        file.title = "original file"
+        file.updateCompoundKey()
+        try historyRealm.write { historyRealm.add(file) }
+        let previous = (ReaderContentLoader.bookmarkRealmConfiguration,
+            ReaderContentLoader.historyRealmConfiguration, ReaderContentLoader.feedEntryRealmConfiguration)
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previous.0
+            ReaderContentLoader.historyRealmConfiguration = previous.1
+            ReaderContentLoader.feedEntryRealmConfiguration = previous.2
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = bookmarks
+        ReaderContentLoader.historyRealmConfiguration = history
+        ReaderContentLoader.feedEntryRealmConfiguration = feeds
+        let outcome: ReaderContentMutationOutcome
+        if captured {
+            outcome = await ReaderContentLoader.updateContentWithOutcome(url: url,
+                storage: .init(bookmarkConfiguration: bookmarks, historyConfiguration: history,
+                    feedConfiguration: feeds), validateAuthority: {}) { object in
+                object.title = "selected media"
+                return true
+            }
+        } else {
+            outcome = await ReaderContentLoader.updateContentWithOutcome(url: url) { object in
+                object.title = "selected media"
+                return true
+            }
+        }
+        await bookmarkRealm.asyncRefresh()
+        await historyRealm.asyncRefresh()
+        await feedRealm.asyncRefresh()
+        XCTAssertNil(outcome.errorMessage)
+        XCTAssertFalse(outcome.cancelledBeforeCommit)
+        XCTAssertEqual(outcome.matchedObjectCount, 3)
+        XCTAssertEqual(outcome.committedObjectCount, 3)
+        XCTAssertEqual(outcome.mutatedObjectCount, 3)
+        XCTAssertEqual(bookmark.title, "selected media")
+        XCTAssertEqual(record.title, "selected media")
+        XCTAssertEqual(file.title, "selected media")
+        XCTAssertEqual(bookmarkRealm.objects(BigSyncPendingMutation.self).count, 1)
+        XCTAssertEqual(historyRealm.objects(BigSyncPendingMutation.self).count, 2)
+        XCTAssertEqual(feedRealm.objects(BigSyncPendingMutation.self).count, 0)
+    }
+
 }

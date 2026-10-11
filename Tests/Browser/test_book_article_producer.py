@@ -50,7 +50,7 @@ class BookArticleProducerTests(unittest.TestCase):
         wait_for_reader(page, 'typeof window.loadEBook === "function"')
         page.evaluate('loadEBook({url:location.origin+"/fixture.epub",layoutMode:"paginated"})')
         wait_for_reader(page, 'globalThis.reader?.view?.renderer?.getContents?.().length > 0 && reader.bookEndcap')
-        page.evaluate('loadLastPosition({cfi:"",fractionalCompletion:0})')
+        page.evaluate('loadLastPosition({})')
         page.locator('#loading-indicator').wait_for(state='hidden', timeout=15000)
         wait_for_reader(page, 'reader.bookReadingRuntime.state.ready && reader.buildMarkAllSectionsAsReadPayload()?.segments?.length > 0')
         return page
@@ -126,6 +126,32 @@ class BookArticleProducerTests(unittest.TestCase):
         self.assertFalse(result['blocked'])
         self.assertEqual(result['blockedRequests'], 0)
         self.assertEqual(result['tokens'], ['article-B'])
+        self.assertEqual(self.errors, [])
+
+    def test_replacement_producer_observes_current_position_without_replaying_old_event(self):
+        page = self.open_book()
+        page.evaluate("nativeMessages.length = 0; articleProducerToken = null;")
+        page.evaluate('reader.handlePhysicalArrowKey("right")')
+        wait_for_reader(page, "reader.view.lastLocation?.sectionIndex === 1 && reader.bookReadingRuntime.state.ready")
+        # The unavailable producer cannot retain this relocation for later.
+        page.wait_for_timeout(100)
+        blocked = page.evaluate("nativeMessages.filter(x => x.name === 'updateReadingProgress').length")
+        self.assertEqual(blocked, 0)
+        page.evaluate("articleProducerToken = 'article-B'; window.dispatchEvent(new CustomEvent('manabi-article-producer-ready'));")
+        wait_for_reader(page, "nativeMessages.some(x => x.name === 'updateReadingProgress')")
+        messages = page.evaluate("nativeMessages.filter(x => x.name === 'updateReadingProgress').map(x => x.payload)")
+        self.assertTrue(messages)
+        for message in messages:
+            self.assertEqual(message['readerArticleProducer']['token'], 'article-B')
+            self.assertEqual(message['sectionIndex'], 1)
+            self.assertEqual(message['bookReadingScope']['articleEpochID'], 'initial')
+        self.assertEqual(self.errors, [])
+
+    def test_closed_reader_does_not_publish_on_replacement_producer_ready(self):
+        page = self.open_book()
+        page.evaluate("reader.close(); nativeMessages.length = 0; articleProducerToken = 'article-B'; window.dispatchEvent(new CustomEvent('manabi-article-producer-ready'));")
+        page.wait_for_timeout(100)
+        self.assertEqual(page.evaluate("nativeMessages.filter(x => x.name === 'updateReadingProgress').length"), 0)
         self.assertEqual(self.errors, [])
 
 

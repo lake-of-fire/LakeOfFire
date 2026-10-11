@@ -35,4 +35,3 @@ public class ReaderProtocolRegistry {
         return readerProtocols.first { $0.urlScheme == scheme }
     }
 }
-
