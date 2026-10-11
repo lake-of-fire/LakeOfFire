@@ -604,8 +604,6 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         
         let targetDirectory = try await Self.rootRelativePath(forImportedURL: downloadURL ?? fileURL, drive: drive)
         try validateInventorySelection(selection)
-        var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
-        let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
         
         let shouldStopAccessingFile = fileURL.startAccessingSecurityScopedResource()
         defer {
@@ -617,53 +615,17 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         try await drive.createDirectory(at: targetDirectory)
         try validateInventorySelection(selection)
         
-        var targetExists = false
-        var distinctTargetExists = false
-        var originData: Data?
-        if targetURL.isFilePackage() {
-            targetExists = true
-            if fileURL.isFilePackage() {
-                originData = try fileURL.concatenateDataInDirectory()
-                distinctTargetExists = try targetURL != fileURL && targetURL.concatenateDataInDirectory() != originData
-            } else {
-                distinctTargetExists = true
-            }
-        } else {
-            let exists = try await drive.fileExists(at: targetFilePath)
-            try validateInventorySelection(selection)
-            if exists {
-                let coordinatedFileManager = CoordinatedFileManager()
-                originData = try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: fileURL)
-                try validateInventorySelection(selection)
-                targetExists = true
-                distinctTargetExists = targetURL != fileURL
-                if !distinctTargetExists {
-                    let destinationData = try await drive.readFile(at: targetFilePath)
-                    try validateInventorySelection(selection)
-                    distinctTargetExists = destinationData != originData
-                }
-            }
-        }
-        if distinctTargetExists, let originData = originData {
-            let destinationData = try await drive.readFile(at: targetFilePath)
-            try validateInventorySelection(selection)
-            if destinationData != originData {
-                // Make a unique filename
-                var ext = fileURL.lakePathExtension
-                if !ext.isEmpty {
-                    ext = "." + ext
-                }
-                let hash = String(format: "%02X", stableHash(data: originData)).prefix(6).uppercased()
-                let newFileName = fileURL.deletingPathExtension().lastPathComponent + " (\(hash))" + ext
-                targetFilePath = targetDirectory.appending(newFileName)
-            }
-        }
-        // Don't overwrite
+        let targetFilePath = try await ReaderFileImportStorage.install(
+            fileURL: fileURL,
+            targetDirectory: targetDirectory,
+            drive: drive,
+            pathExtension: fileURL.lakePathExtension,
+            collisionTag: { String(format: "%02X", stableHash(data: $0)).prefix(6).uppercased() },
+            validateAdmission: { try self.validateInventorySelection(selection) }
+        )
+        // The physical copy may already be committed. Reject stale indexing
+        // without deleting bytes or redirecting publication to another owner.
         try validateInventorySelection(selection)
-        if distinctTargetExists || !targetExists {
-            try await drive.upload(from: fileURL, to: targetFilePath)
-            try validateInventorySelection(selection)
-        }
         
         do {
             _ = try await refreshFilesMetadata(
