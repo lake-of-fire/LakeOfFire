@@ -209,7 +209,11 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
 
     nonisolated(unsafe) public static var observesDownloadController = true
 
-    private static let attributeCharacterSet: CharacterSet = .alphanumerics.union(.punctuationCharacters.union(.symbols.union(.whitespaces)))
+    // The importer percent-decodes these attributes exactly once. Escape
+    // literal percent signs too, so JavaScript strings/operators survive export.
+    private static let attributeCharacterSet: CharacterSet = CharacterSet.alphanumerics
+        .union(.punctuationCharacters.union(.symbols.union(.whitespaces)))
+        .subtracting(CharacterSet(charactersIn: "%"))
 
     @MainActor
     private static var downloadController: DownloadController {

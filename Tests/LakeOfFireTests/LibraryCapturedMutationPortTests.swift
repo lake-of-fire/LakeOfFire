@@ -151,7 +151,7 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
             XCTAssertEqual(realm.objects(UserScript.self).count, 3)
             XCTAssertEqual(library.getUserScripts()?.count, 3)
             XCTAssertTrue(try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: firstID)).isArchived,
-                          "An omitted archive flag retains the importer\'s disabled default")
+                          "An omitted archive flag retains the importer's disabled default")
 
             try await LibraryDataManager.shared.importOPML(
                 fileURL: url, realmConfiguration: configuration
@@ -170,6 +170,8 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("round-trip.opml")
+        let disabledSource = #"const escaped = "%20";"#
+        let enabledSource = #"const label = "100% 日本"; const remainder = 5 % 2;"#
 
         try await Task { @RealmBackgroundActor in
             let disabledID = try await LibraryDataManager.shared.createEmptyScript(
@@ -185,10 +187,10 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
             let enabled = try XCTUnwrap(sourceRealm.object(ofType: UserScript.self, forPrimaryKey: enabledID))
             try await sourceRealm.asyncWrite {
                 disabled.title = "Disabled"
-                disabled.script = "void(0);"
+                disabled.script = disabledSource
                 disabled.isArchived = true
                 enabled.title = "Enabled"
-                enabled.script = "void(1);"
+                enabled.script = enabledSource
                 enabled.isArchived = false
             }
             let exported = try await LibraryDataManager.shared.exportUserOPML(
@@ -205,6 +207,8 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
             let importedEnabled = try XCTUnwrap(destinationRealm.object(ofType: UserScript.self, forPrimaryKey: enabledID))
             XCTAssertTrue(importedDisabled.isArchived)
             XCTAssertFalse(importedEnabled.isArchived)
+            XCTAssertEqual(Data(importedDisabled.script.utf8), Data(disabledSource.utf8))
+            XCTAssertEqual(Data(importedEnabled.script.utf8), Data(enabledSource.utf8))
             let modifiedAt = importedDisabled.modifiedAt
             let library = try XCTUnwrap(destinationRealm.objects(LibraryConfiguration.self).first)
             XCTAssertEqual(Set(library.userScriptIDs), Set([disabledID, enabledID]))
@@ -214,6 +218,8 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
             )
             XCTAssertTrue(importedDisabled.isArchived)
             XCTAssertFalse(importedEnabled.isArchived)
+            XCTAssertEqual(Data(importedDisabled.script.utf8), Data(disabledSource.utf8))
+            XCTAssertEqual(Data(importedEnabled.script.utf8), Data(enabledSource.utf8))
             XCTAssertEqual(importedDisabled.modifiedAt, modifiedAt,
                            "Reimporting an unchanged disabled script must not journal it again")
             XCTAssertEqual(destinationRealm.objects(UserScript.self).count, 2)
