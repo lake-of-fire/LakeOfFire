@@ -122,7 +122,10 @@ public extension HistoryRecord {
     }
 
     @RealmBackgroundActor
-    func refreshDemotedStatus(skipPreviouslyDemoted: Bool = true) async throws {
+    func refreshDemotedStatus(
+        skipPreviouslyDemoted: Bool = true,
+        admittingMutation: (@Sendable () -> Bool)? = nil
+    ) async throws {
         guard isDemoted != false || !skipPreviouslyDemoted else {
             return
         }
@@ -152,6 +155,8 @@ public extension HistoryRecord {
         }()
         if demoted != isDemoted {
             try await realm.asyncWrite {
+                try Task.checkCancellation()
+                guard admittingMutation?() ?? true else { throw CancellationError() }
                 isDemoted = demoted
                 refreshChangeMetadata(explicitlyModified: true)
             }

@@ -901,12 +901,32 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 do {
                     guard let result = RSSURLsMessage(fromMessage: message) else { return }
                     guard let windowURL = result.windowURL,
-                          !windowURL.isNativeReaderView,
-                          let _ = try await contentForWindowURL(windowURL, source: "rssURLs") else { return }
+                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                            claimedURL: windowURL,
+                            frameMainDocumentURL: message.mainDocumentURL,
+                            currentPageURL: readerViewModel.state.pageURL,
+                            requiresMainFrame: true,
+                            isMainFrame: message.isMainFrame
+                          ),
+                          let admission = ReaderDocumentMutationAdmission.capture(
+                            targetURL: windowURL,
+                            requiring: message.javaScriptBindingToken,
+                            scriptCaller: scriptCaller
+                          ) else { return }
+                    // Early discovery can precede navigation's stored content.
+                    // Its fallback creation belongs to this exact receipt;
+                    // never lend it to a URL-coalesced getContent operation.
+                    guard let _ = try await ReaderContentLoader.getContent(
+                        forURL: admission.targetURL,
+                        source: "rssURLs",
+                        admittingMutation: { admission.permitsMutation }
+                    ),
+                          admission.permitsMutation else { return }
                     let pairs = result.rssURLs.prefix(10)
                     let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
                     let titles = pairs.map { $0.last ?? $0.first ?? "" }
-                    try await ReaderContentLoader.updateContent(url: windowURL) { object in
+                    try await ReaderContentLoader.updateContent(url: admission.targetURL) { object in
+                        guard admission.permitsMutation else { return false }
                         let existingURLs = Array(object.rssURLs)
                         let existingTitles = Array(object.rssTitles)
                         let isRSSAvailable = !urls.isEmpty
@@ -930,28 +950,49 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let self else { return }
                 do {
                     guard let result = PageMetadataUpdatedMessage(fromMessage: message) else { return }
-                    guard urlsMatchWithoutHash(result.url, readerViewModel.state.pageURL) else { return }
+                    guard let url = result.url,
+                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                            claimedURL: url,
+                            frameMainDocumentURL: message.mainDocumentURL,
+                            currentPageURL: readerViewModel.state.pageURL,
+                            requiresMainFrame: true,
+                            isMainFrame: message.isMainFrame
+                          ), let admission = ReaderDocumentMutationAdmission.capture(
+                            targetURL: url,
+                            requiring: message.javaScriptBindingToken,
+                            scriptCaller: scriptCaller
+                          ) else { return }
                     try await readerViewModel.pageMetadataUpdated(
                         title: result.title,
-                        author: result.author
+                        author: result.author,
+                        admission: admission
                     )
                 } catch {
                     print(error)
                 }
             }),
-            ("imageUpdated", { @RealmBackgroundActor [weak self] message in
+            ("imageUpdated", { @MainActor [weak self] message in
                 guard let self else { return }
                 do {
                     guard let result = ImageUpdatedMessage(fromMessage: message) else { return }
-                    guard let url = result.mainDocumentURL, !url.isNativeReaderView else { return }
-                    let contents = try await ReaderContentLoader.loadAll(url: url)
-                    for content in contents {
-                        guard content.imageUrl != result.newImageURL else { continue }
-                        //                        await content.realm?.asyncRefresh()
-                        try await content.realm?.asyncWrite {
-                            content.imageUrl = result.newImageURL
-                            content.refreshChangeMetadata(explicitlyModified: true)
-                        }
+                    guard let url = result.mainDocumentURL,
+                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                            claimedURL: url,
+                            frameMainDocumentURL: message.mainDocumentURL,
+                            currentPageURL: readerViewModel.state.pageURL,
+                            requiresMainFrame: false,
+                            isMainFrame: message.isMainFrame
+                          ), let admission = ReaderDocumentMutationAdmission.capture(
+                            targetURL: url,
+                            requiring: message.javaScriptBindingToken,
+                            scriptCaller: scriptCaller
+                          ) else { return }
+                    let newImageURL = result.newImageURL
+                    try await ReaderContentLoader.updateContent(url: admission.targetURL) { content in
+                        guard admission.permitsMutation,
+                              content.imageUrl != newImageURL else { return false }
+                        content.imageUrl = newImageURL
+                        return true
                     }
                 } catch {
                     print(error)

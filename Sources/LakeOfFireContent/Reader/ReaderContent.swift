@@ -373,11 +373,55 @@ public class ReaderContent: ObservableObject {
         return resolvedContent
     }
 
+    /// Rename the snippet captured by the caller without adopting a later display.
+    /// A thrown write/refresh error is observable by explicit-target callers.
+    @MainActor
+    @discardableResult
+    public func updateContentTitle(_ newTitle: String, for targetURL: URL) async throws -> Bool {
+        guard targetURL.isSnippetURL,
+              !newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let observedContent = content
+        let observedSelectionID = selectionID
+        let reference: ReaderContentLoader.ContentReference?
+        if let observedContent, !observedContent.isInvalidated,
+           observedContent.url == targetURL {
+            reference = ReaderContentLoader.ContentReference(content: observedContent)
+        } else {
+            reference = nil
+        }
+        let didChange = try await ReaderContentLoader.updateSnippetTitle(
+            contentURL: targetURL,
+            title: newTitle
+        )
+        // Publication follows the durable write and belongs to the captured display.
+        guard let observedContent, let reference,
+              content === observedContent, selectionID == observedSelectionID,
+              !observedContent.isInvalidated, observedContent.url == targetURL,
+              pageURL.matchesReaderURL(targetURL),
+              let refreshedContent = try await reference.resolveOnMainActor(),
+              !refreshedContent.isInvalidated, !refreshedContent.isDeleted,
+              refreshedContent.url == targetURL,
+              content === observedContent, selectionID == observedSelectionID,
+              !observedContent.isInvalidated, observedContent.url == targetURL,
+              pageURL.matchesReaderURL(targetURL) else { return didChange }
+        content = refreshedContent
+        refreshObservedContentState()
+        return didChange
+    }
+
     @MainActor
     public func updateContentTitle(_ newTitle: String) async {
         let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard let content else { return }
+        guard let content, !content.isInvalidated else { return }
+        if content.url.isSnippetURL {
+            do {
+                try await updateContentTitle(newTitle, for: content.url)
+            } catch {
+                debugPrint("# EPUB  contentTitle.update.failed", error.localizedDescription)
+            }
+            return
+        }
         guard trimmed != content.title else { return }
         logTitleTrace(
             "stage=readerContent.updateContentTitle begin pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) oldTitle=\(content.title.debugTitleFragment) requestedTitle=\(newTitle.debugTitleFragment) trimmedTitle=\(trimmed.debugTitleFragment)"
