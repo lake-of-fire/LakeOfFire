@@ -990,7 +990,7 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         lock.unlock()
         guard acquiredLease else { return nil }
         let fileURL = directoryURL.appendingPathComponent(token, isDirectory: false)
-        guard let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]),
+        guard let data = boundedStoredData(at: fileURL),
               Self.contentToken(for: data) == token else {
             lock.lock()
             revokeLease(for: token)
@@ -1010,9 +1010,34 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         return entry
     }
 
+
+    /// Apply the same byte ceiling to persisted entries as to new insertions.
+    /// Read in bounded chunks rather than mapping a legacy or replaced file
+    /// before checking its size. The content-address check remains at each caller.
+    private func boundedStoredData(at fileURL: URL) -> Data? {
+        guard let stream = InputStream(url: fileURL) else { return nil }
+        stream.open()
+        defer { stream.close() }
+        let chunkSize = 64 * 1024
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: chunkSize)
+        defer { buffer.deallocate() }
+        var data = Data()
+        while true {
+            let remaining = maximumEntryByteCount - data.count
+            let count = stream.read(buffer, maxLength: min(chunkSize, remaining + 1))
+            guard count >= 0 else { return nil }
+            if count == 0 {
+                guard stream.streamStatus != .error, !data.isEmpty else { return nil }
+                return data
+            }
+            guard count <= remaining else { return nil }
+            data.append(buffer, count: count)
+        }
+    }
+
     private func persistIfNeeded(_ data: Data, token: String) -> Bool {
         let fileURL = directoryURL.appendingPathComponent(token, isDirectory: false)
-        if let storedData = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]),
+        if let storedData = boundedStoredData(at: fileURL),
            Self.contentToken(for: storedData) == token {
             return true
         }
