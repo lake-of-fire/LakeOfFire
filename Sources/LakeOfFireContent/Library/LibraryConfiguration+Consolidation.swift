@@ -72,7 +72,7 @@ extension LibraryConfiguration {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
             for: realmConfiguration
         )
-        let resolvedPrimaryID = try await realm.asyncWrite {
+        let resolvedPrimaryID = try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             // Select the survivor and admit immutable relationship keys in
             // the final transaction, preserving the primary's existing order.
