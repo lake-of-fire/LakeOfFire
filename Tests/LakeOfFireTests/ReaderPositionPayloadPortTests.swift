@@ -79,13 +79,44 @@ final class ReaderPositionPayloadPortTests: XCTestCase {
                 false,
                 "10",
                 "not-an-integer",
-                NSNull(),
             ] {
                 XCTAssertNil(
                     FractionalCompletionMessage(body: position([key: value])),
                     "Expected \(key)=\(value) to be rejected"
                 )
             }
+        }
+    }
+
+    func testOptionalNullIntegerFieldsPreserveViewerAbsence() throws {
+        let keys = ["sectionIndex", "currentPageNumber", "totalPages", "visibleSegmentCount", "observedSegmentCount"]
+        let body = position(Dictionary(uniqueKeysWithValues: keys.map { ($0, NSNull() as Any) }))
+        let wireBody = try JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: body))
+        let message = try XCTUnwrap(FractionalCompletionMessage(body: wireBody))
+        XCTAssertEqual(message.fractionalCompletion, 0.25)
+        XCTAssertNil(message.sectionIndex)
+        XCTAssertNil(message.currentPageNumber)
+        XCTAssertNil(message.totalPages)
+        XCTAssertNil(message.visibleSegmentCount)
+        XCTAssertNil(message.observedSegmentCount)
+    }
+
+    func testNullPageSnapshotPreservesBlankViewportAndStillRejectsMalformedCounts() throws {
+        let body = position([
+            "currentPageNumber": NSNull(),
+            "totalPages": NSNull(),
+            "sectionIndex": 0,
+            "visibleSegmentCount": 0,
+            "observedSegmentCount": 12,
+            "hasVisibleJapaneseText": false,
+        ])
+        let message = try XCTUnwrap(FractionalCompletionMessage(body: body))
+        XCTAssertTrue(message.representsKnownBlankViewport)
+        XCTAssertEqual(message.sectionIndex, 0)
+        for invalid: Any in [-1, 1.5, true, "12"] {
+            var changed = body
+            changed["observedSegmentCount"] = invalid
+            XCTAssertNil(FractionalCompletionMessage(body: changed))
         }
     }
 

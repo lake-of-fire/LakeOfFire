@@ -122,7 +122,9 @@ public struct FractionalCompletionMessage: Sendable {
         _ body: [String: Any],
         key: String
     ) -> Bool {
-        guard let value = body[key] else { return true }
+        // The viewer explicitly sends null when a page snapshot is unavailable.
+        // Preserve that absence; reject malformed present numeric values.
+        guard let value = body[key], !(value is NSNull) else { return true }
         return ReaderMessagePayloadValue.nonnegativeInteger(value) != nil
     }
 }
