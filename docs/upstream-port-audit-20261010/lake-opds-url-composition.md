@@ -22,3 +22,9 @@ Destination reviewed: #138 at 97e1f7b0ec65c4c25ac7d0109e42ae48f659046b.
 - Existing callback signatures are retained; OpenSearch snapshots the self media type before the network callback and uses the final response URL. Shared HTTP admission and async/cancellation ownership are still pending.
 - Added 33 original actual-module document-boundary cases and the 11 pure search-document cases from the mixed #50 transport/search suite. The seven transport cases are deliberately not declared ported.
 - All 67 URL/redirect/document/search cases are UNRUN. Source review only, no native execution.
+
+## Transport admission continuation — 07:17 UTC
+- Composed #50's common HTTP validator into all four existing callback fetch paths (generic, XML, JSON and OpenSearch), retaining their existing signatures and executor behavior.
+- Reject non-2xx and unsolicited 206 partial documents before parsing, propagate transport errors even alongside data, and preserve the original HTTP error for OpenSearch.
+- Five actual-module validator cases ported, all UNRUN. Total 72 focused cases are present across this OPDS composition.
+- Async cancellation and Sendable/sending callback ownership are still pending along with URLSession-injected fetch regressions and catalog UI integration. No claim of current native or network qualification.

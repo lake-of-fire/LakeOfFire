@@ -33,12 +33,10 @@ private struct MimeTypeParameters {
 enum OPDS1Parser {
     static func parseURL(url: URL, completion: @escaping (ParseData?, Error?) -> Void) {
         URLSession.shared.dataTask(with: url) { data, response, error in
-            guard let data, let response else {
-                completion(nil, error ?? OPDSParserError.documentNotFound)
-                return
-            }
-
             do {
+                let (data, response) = try OPDSParser.validateDocument(
+                    data: data, response: response, error: error
+                )
                 completion(try parse(xmlData: data, url: url, response: response), nil)
             } catch {
                 completion(nil, error)
@@ -74,13 +72,17 @@ enum OPDS1Parser {
         }
         let selfType = feed.links.first(withRel: .self)?.type
         URLSession.shared.dataTask(with: url) { data, response, error in
-            guard let data else {
-                completion(nil, error ?? OPDSParserOpenSearchHelperError.searchDocumentIsInvalid)
+            let document: (Data, URLResponse)
+            do {
+                document = try OPDSParser.validateDocument(data: data, response: response, error: error)
+            } catch {
+                completion(nil, error)
                 return
             }
+            let (data, response) = document
             do {
                 completion(try parseOpenSearchTemplate(
-                    data: data, selfType: selfType, baseURL: response?.url ?? url
+                    data: data, selfType: selfType, baseURL: response.url ?? url
                 ), nil)
             } catch {
                 completion(nil, OPDSParserOpenSearchHelperError.searchDocumentIsInvalid)
