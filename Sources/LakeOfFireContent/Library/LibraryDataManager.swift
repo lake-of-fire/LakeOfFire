@@ -546,10 +546,11 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     @RealmBackgroundActor
     public func restoreCategory(
         categoryID: UUID,
-        at timestamp: Date = Date()
+        at timestamp: Date = Date(),
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
     ) async throws -> LibraryCategoryRestoreResult {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
-            for: LibraryDataManager.realmConfiguration
+            for: realmConfiguration
         )
         guard let initialCategory = realm.object(
             ofType: FeedCategory.self,
@@ -561,6 +562,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             throw LibraryMutationError.managedCategoryCannotBeRestored
         }
         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: realmConfiguration,
             preservingCategoryID: categoryID,
             at: timestamp
         )
