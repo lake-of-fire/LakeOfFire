@@ -251,7 +251,7 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         XCTAssertEqual(invocationCount, 1)
     }
 
-    func testSchemaNineRequiresExplicitSentenceIdentityAndExactRuntimeMapping() {
+    func testCurrentSchemaRequiresExplicitSentenceIdentityAndExactRuntimeMapping() {
         let validCloneSidecar = sidecarData(
             runtimeIDTokens: ["!runtime-0", "!runtime-1"],
             segmentHashIndexes: [0, 0],
@@ -291,6 +291,25 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         ))
     }
 
+    func testLegacySchemaNineCannotSupplyDurableSegmentIdentities() throws {
+        let currentSidecar = validSidecarData(runtimeIDToken: "!runtime-0")
+        var legacyPayload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: currentSidecar) as? [String: Any]
+        )
+        legacyPayload["v"] = 9
+        let legacySidecar = try JSONSerialization.data(
+            withJSONObject: legacyPayload,
+            options: [.sortedKeys]
+        )
+
+        XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities(
+            inlineHTML(sidecarData: currentSidecar)
+        ))
+        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(
+            inlineHTML(sidecarData: legacySidecar)
+        ))
+    }
+
     private func temporaryDirectoryURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("reader-sidecar-\(UUID().uuidString)", isDirectory: true)
@@ -321,13 +340,13 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
             return [
                 runtimeIDToken,
                 segmentHashIndex,
-                NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), NSNull(),
+                NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), 0,
                 sentenceIdentifierIndex,
                 paragraphIdentifierIndex,
             ]
         }
         return try! JSONSerialization.data(withJSONObject: [
-            "v": 9,
+            "v": ReaderCompactSegmentSidecarSchema.currentVersion,
             "t": [
                 "j": [],
                 "n": [],
@@ -335,6 +354,7 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
                 "ns": [],
                 "p": [],
                 "h": ["segment-hash"],
+                "x": ["猫"],
                 "sid": ["sentence-id"],
                 "pid": ["paragraph-id"],
             ],
