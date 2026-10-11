@@ -21,3 +21,9 @@ Reviewed 2026-10-11 07:59 UTC. Source: Lake #50 at ce8200d810d35b6ff18e0da2fe333
 - Navigator load accepts an optional admission callback and checks it before work, after both suspension boundaries, before reader-mode effects and before issuing the request. Existing default callers retain their prior behavior.
 - Four suites carry 12 coordinator, 15 passive owner, 17 import-state and 8 actual view-model stage cases (52 methods), all UNCOMPILED/UNRUN. These are source regression fixtures, not proof of mounted UI or actual native navigation execution.
 - BookGridCell download/import identity and serving/storage/restore remain open #50 reconciliation. Current primitive bounds/import suite adds 27 methods separately; no whole-stack closure claimed.
+
+## Download grid continuation — 08:03 UTC
+- Composed #50 BookGridCell after full file comparison. The grid now distinguishes downloaded bytes from successful import, keeps failures retryable, revokes row work on disappearance/rebinding, and suppresses stale lookup results after cancellation.
+- Its state/owner fixtures are the 17 import-state and 15 operation methods already carried above, not 32 newly authored cases. Native rendering and callback integration remain UNRUN.
+- This closes the bounded BookGridCell source delta against #50 ce8200d. Cross-cell navigation begun by external synchronous onSelected callbacks remains outside the row-local lifetime contract; no global selection guarantee is asserted for arbitrary grid consumers.
+- Next bounded action: reconcile metadata-specific limits and remaining EPUB serving/storage/restore prerequisites against current #138 architecture. External application file-picker consumers remain separately tracked.
