@@ -5,6 +5,8 @@ import {
     captureReaderArticleProducerOwner,
     carryReaderArticleProducerOwner,
     readerArticleProducerOwnersMatch,
+    observeReaderArticleProducerReadiness,
+    readerArticleProducerOwnerIsCurrent,
 } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/reader-producer-evidence.js'
 
 const owner = (token, frameURL = 'ebook://book/chapter.xhtml', documentStartedAtMs = 42) =>
@@ -19,6 +21,123 @@ test('generic LakeOfFire host keeps the historical unfenced message path', () =>
         message
     )
     assert.equal(Object.hasOwn(message, 'readerArticleProducer'), false)
+})
+
+const readinessFixture = () => {
+    const target = new EventTarget()
+    let selected = null, setupRequests = 0
+    const observers = new Map(), retained = []
+    const producer = {
+        capture() { if (!selected) throw new Error('cold'); return selected },
+        captureIfReady() { ++setupRequests; return selected },
+        isCurrent(value) { return value === selected && value !== null },
+        onInvalidated(value, callback) {
+            observers.set(callback, value)
+            retained.push(callback)
+            if (!this.isCurrent(value)) callback()
+            return () => observers.delete(callback)
+        },
+    }
+    const invalidate = () => {
+        selected = null
+        for (const [callback, value] of [...observers]) {
+            if (!producer.isCurrent(value)) callback()
+        }
+    }
+    const install = token => {
+        selected = owner(token)
+        target.dispatchEvent(new Event('manabi-article-producer-ready'))
+        return selected
+    }
+    return { target, producer, observers, retained, invalidate, install,
+        get setupRequests() { return setupRequests } }
+}
+
+test('readiness is cold without starting setup, then follows exact installation', () => {
+    const fixture = readinessFixture(), changes = []
+    const observation = observeReaderArticleProducerReadiness({
+        target: fixture.target, getProducer: () => fixture.producer,
+        onChange: ready => changes.push(ready),
+    })
+    assert.equal(observation.ready, false)
+    assert.equal(fixture.setupRequests, 0)
+    const first = fixture.install('first')
+    assert.equal(observation.ready, true)
+    fixture.invalidate()
+    assert.equal(observation.ready, false)
+    assert.equal(readerArticleProducerOwnerIsCurrent(first, { producer: fixture.producer }), false)
+    fixture.install('second')
+    fixture.retained[0]() // An already retired installation cannot clear second.
+    assert.equal(observation.ready, true)
+    assert.deepEqual(changes, [false, true, false, true])
+    observation.close()
+    assert.equal(fixture.observers.size, 0)
+    fixture.install('after-close')
+    fixture.retained.at(-1)()
+    assert.equal(observation.ready, false)
+    assert.deepEqual(changes, [false, true, false, true])
+})
+
+test('readiness invalidation reentry cannot clear a synchronously installed successor', () => {
+    const fixture = readinessFixture()
+    fixture.install('first')
+    let replaceOnWithdrawal = false
+    const changes = []
+    const observation = observeReaderArticleProducerReadiness({
+        target: fixture.target, getProducer: () => fixture.producer,
+        onChange: ready => {
+            changes.push(ready)
+            if (!ready && replaceOnWithdrawal) {
+                replaceOnWithdrawal = false
+                fixture.install('successor')
+            }
+        },
+    })
+    replaceOnWithdrawal = true
+    fixture.invalidate()
+    assert.equal(observation.ready, true)
+    assert.deepEqual(changes, [true, false, true])
+    assert.equal(fixture.observers.size, 1)
+    observation.close()
+})
+
+test('an observation retired during subscription releases its late cleanup', () => {
+    const fixture = readinessFixture()
+    fixture.install('first')
+    const subscribe = fixture.producer.onInvalidated
+    let reenter = true
+    fixture.producer.onInvalidated = function(value, callback) {
+        const cleanup = subscribe.call(this, value, callback)
+        if (reenter) {
+            reenter = false
+            fixture.install('successor')
+        }
+        return cleanup
+    }
+    const observation = observeReaderArticleProducerReadiness({
+        target: fixture.target, getProducer: () => fixture.producer,
+    })
+    assert.equal(observation.ready, true)
+    assert.equal(fixture.observers.size, 1)
+    fixture.retained[0]()
+    assert.equal(observation.ready, true)
+    observation.close()
+    assert.equal(fixture.observers.size, 0)
+})
+
+test('non-Manabi readiness stays compatible and an outgoing host cannot notify', () => {
+    const target = new EventTarget(), changes = []
+    let current = true
+    const observation = observeReaderArticleProducerReadiness({
+        target, getProducer: () => null, isCurrent: () => current,
+        onChange: ready => changes.push(ready),
+    })
+    assert.equal(observation.ready, true)
+    current = false
+    target.dispatchEvent(new Event('manabi-article-producer-ready'))
+    assert.equal(observation.ready, false)
+    assert.deepEqual(changes, [true])
+    observation.close()
 })
 
 test('installed but malformed producer contract fails closed', () => {
