@@ -28,3 +28,9 @@ Destination reviewed: #138 at 97e1f7b0ec65c4c25ac7d0109e42ae48f659046b.
 - Reject non-2xx and unsolicited 206 partial documents before parsing, propagate transport errors even alongside data, and preserve the original HTTP error for OpenSearch.
 - Five actual-module validator cases ported, all UNRUN. Total 72 focused cases are present across this OPDS composition.
 - Async cancellation and Sendable/sending callback ownership are still pending along with URLSession-injected fetch regressions and catalog UI integration. No claim of current native or network qualification.
+
+## Async API and callback transfer continuation — 07:19 UTC
+- Completed the remaining #50 OPDS parser API composition: async URLSession cancellation, pre/post cancellation gates, sending ownership of fresh mutable results, Sendable callbacks, session-injected fetch paths, and final document URL access.
+- Existing default-branch consumers located in BookLibraryView and OPDSCatalogsView. Their catalog lifetime integration remains the next bounded change; no claim that adding the parser API alone repairs the old recursive/uncancelled UI flow.
+- Added 9 async, 6 ownership and 2 concrete fetch-admission cases. Updated existing parser/OpenSearch transport tests to isolated session protocols, retaining current copyright notices; carried the extra redirect/XHTML/subject cases from #50.
+- All tests remain UNRUN. Mutable feed models have NOT been marked unchecked Sendable. No package/platform changes.

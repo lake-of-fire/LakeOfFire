@@ -22,17 +22,19 @@ enum OPDS2ParserError: Error {
 }
 
 enum OPDS2Parser {
-    static func parseURL(url: URL, completion: @escaping (ParseData?, Error?) -> Void) {
-        URLSession.shared.dataTask(with: url) { data, response, error in
+    static func parseURL(url: URL, session: URLSession = .shared, completion: @escaping @Sendable (sending ParseData?, Error?) -> Void) {
+        OPDSParser.loadDocument(url: url, session: session) { data, response, error in
+            guard let data, let response else {
+                completion(nil, error ?? OPDSParserError.documentNotFound)
+                return
+            }
+
             do {
-                let (data, response) = try OPDSParser.validateDocument(
-                    data: data, response: response, error: error
-                )
                 completion(try parse(jsonData: data, url: url, response: response), nil)
             } catch {
                 completion(nil, error)
             }
-        }.resume()
+        }
     }
 
     static func parse(jsonData: Data, url: URL, response: URLResponse) throws -> ParseData {

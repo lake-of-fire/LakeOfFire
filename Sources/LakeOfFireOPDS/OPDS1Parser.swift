@@ -31,17 +31,19 @@ private struct MimeTypeParameters {
 }
 
 enum OPDS1Parser {
-    static func parseURL(url: URL, completion: @escaping (ParseData?, Error?) -> Void) {
-        URLSession.shared.dataTask(with: url) { data, response, error in
+    static func parseURL(url: URL, session: URLSession = .shared, completion: @escaping @Sendable (sending ParseData?, Error?) -> Void) {
+        OPDSParser.loadDocument(url: url, session: session) { data, response, error in
+            guard let data, let response else {
+                completion(nil, error ?? OPDSParserError.documentNotFound)
+                return
+            }
+
             do {
-                let (data, response) = try OPDSParser.validateDocument(
-                    data: data, response: response, error: error
-                )
                 completion(try parse(xmlData: data, url: url, response: response), nil)
             } catch {
                 completion(nil, error)
             }
-        }.resume()
+        }
     }
 
     static func parse(xmlData: Data, url: URL, response: URLResponse) throws -> ParseData {
@@ -60,34 +62,36 @@ enum OPDS1Parser {
         return parseData
     }
 
-    static func fetchOpenSearchTemplate(feed: Feed, completion: @escaping (String?, Error?) -> Void) {
+    static func fetchOpenSearchTemplate(feed: Feed, session: URLSession = .shared, completion: @escaping @Sendable (String?, Error?) -> Void) {
         guard let href = feed.links.first(withRel: .search)?.href else {
             completion(nil, OPDSParserOpenSearchHelperError.searchLinkNotFound)
             return
         }
         let feedBaseURL = feed.links.first(withRel: .self).flatMap { URL(string: $0.href) }
-        guard let url = URLHelper.resolve(href: href, base: feedBaseURL) else {
+        guard let url = URLHelper.resolve(href: href, base: feedBaseURL)
+        else {
             completion(nil, OPDSParserOpenSearchHelperError.searchLinkNotFound)
             return
         }
+
+        // Snapshot caller-owned mutable metadata before crossing the network boundary.
         let selfType = feed.links.first(withRel: .self)?.type
-        URLSession.shared.dataTask(with: url) { data, response, error in
-            let document: (Data, URLResponse)
-            do {
-                document = try OPDSParser.validateDocument(data: data, response: response, error: error)
-            } catch {
-                completion(nil, error)
+        OPDSParser.loadDocument(url: url, session: session) { data, response, error in
+            guard let data else {
+                completion(nil, error ?? OPDSParserOpenSearchHelperError.searchDocumentIsInvalid)
                 return
             }
-            let (data, response) = document
+
             do {
                 completion(try parseOpenSearchTemplate(
-                    data: data, selfType: selfType, baseURL: response.url ?? url
+                    data: data,
+                    selfType: selfType,
+                    baseURL: response?.url ?? url
                 ), nil)
             } catch {
                 completion(nil, OPDSParserOpenSearchHelperError.searchDocumentIsInvalid)
             }
-        }.resume()
+        }
     }
 
     static func parseOpenSearchTemplate(data: Data, selfType: String?, baseURL: URL?) throws -> String {
