@@ -46,7 +46,7 @@ enum OPDS1Parser {
     }
 
     static func parse(xmlData: Data, url: URL, response: URLResponse) throws -> ParseData {
-        let builder = OPDS1XMLParser(baseURL: url)
+        let builder = OPDS1XMLParser(baseURL: response.url ?? url)
         try builder.parse(data: xmlData)
 
         var parseData = ParseData(url: url, response: response, version: .OPDS1)

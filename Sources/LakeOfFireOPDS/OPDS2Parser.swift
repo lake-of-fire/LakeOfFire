@@ -39,6 +39,7 @@ enum OPDS2Parser {
 
     static func parse(jsonData: Data, url: URL, response: URLResponse) throws -> ParseData {
         var parseData = ParseData(url: url, response: response, version: .OPDS2)
+        let baseURL = response.url ?? url
 
         guard let root = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
             throw OPDS2ParserError.invalidJSON
@@ -49,9 +50,9 @@ enum OPDS2Parser {
            root["publications"] == nil,
            root["facets"] == nil
         {
-            parseData.publication = try Publication(json: root)
+            parseData.publication = try Publication(json: root, normalizeHREF: hrefNormalizer(baseURL))
         } else {
-            parseData.feed = try parse(jsonDict: root, baseURL: url)
+            parseData.feed = try parse(jsonDict: root, baseURL: baseURL)
         }
 
         return parseData
