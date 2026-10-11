@@ -17,6 +17,16 @@ public final class ReaderContentSelectionHandoff: @unchecked Sendable {
     private var state = State.pending
     private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
+#if DEBUG
+    /// Observe actual waiter registration without changing admission or
+    /// settlement. Hosted regressions must not infer entry from Task.yield().
+    internal var hasWaitingSelectionForTesting: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !waiters.isEmpty
+    }
+#endif
+
     internal init(intent: WebViewURLTransitionIntent, predecessorSelectionID: UUID?,
                   predecessorIsCurrent: @escaping @Sendable () -> Bool) {
         self.intent = intent
