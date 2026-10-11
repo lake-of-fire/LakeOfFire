@@ -335,9 +335,9 @@ export class FixedLayout extends HTMLElement {
         }
     }
     async goToSpread(index, side, reason) {
-        if (this.#isDestroyed) return
+        if (this.#isDestroyed) return null
         this.#targetResolutionGeneration += 1
-        if (index < 0 || index > this.#spreads.length - 1) return
+        if (!Number.isInteger(index) || index < 0 || index >= this.#spreads.length) return null
         if (index === this.#index) {
             const generation = ++this.#contentGeneration
             this.#cancelPendingFrameLoads()
@@ -348,7 +348,7 @@ export class FixedLayout extends HTMLElement {
             this.#side = side
             this.#render(side)
             if (this.index !== previousSectionIndex) this.#reportLocation(reason)
-            return
+            return true
         }
         const generation = ++this.#contentGeneration
         this.#cancelPendingFrameLoads()
@@ -360,10 +360,10 @@ export class FixedLayout extends HTMLElement {
             try {
                 src = await spread.center?.load?.()
             } catch (error) {
-                if (generation !== this.#contentGeneration) return
+                if (generation !== this.#contentGeneration) return null
                 throw error
             }
-            if (generation !== this.#contentGeneration) return
+            if (generation !== this.#contentGeneration) return null
             didShowSpread = await this.#showSpread({ center: { index, src } }, generation)
         } else {
             const indexL = this.book.sections.indexOf(spread.left)
@@ -376,10 +376,10 @@ export class FixedLayout extends HTMLElement {
                     spread.right?.load?.(),
                 ])
             } catch (error) {
-                if (generation !== this.#contentGeneration) return
+                if (generation !== this.#contentGeneration) return null
                 throw error
             }
-            if (generation !== this.#contentGeneration) return
+            if (generation !== this.#contentGeneration) return null
             const left = { index: indexL, src: srcL }
             const right = { index: indexR, src: srcR }
             didShowSpread = await this.#showSpread({ left, right, side }, generation)
@@ -387,14 +387,16 @@ export class FixedLayout extends HTMLElement {
         if (didShowSpread && generation === this.#contentGeneration) {
             this.#index = index
             this.#reportLocation(reason)
+            return true
         }
+        return null
     }
     async select(target) {
-        await this.goTo(target)
-        // TODO
+        // Selection rendering is not implemented; preserve navigation's result.
+        return await this.goTo(target)
     }
     async goTo(target) {
-        if (this.#isDestroyed) return
+        if (this.#isDestroyed) return null
         const { book } = this
         const targetResolutionGeneration = ++this.#targetResolutionGeneration
         let resolved
@@ -404,19 +406,20 @@ export class FixedLayout extends HTMLElement {
             if (
                 book !== this.book
                 || targetResolutionGeneration !== this.#targetResolutionGeneration
-            ) return
+            ) return null
             throw error
         }
         if (
             book !== this.book
             || targetResolutionGeneration !== this.#targetResolutionGeneration
-        ) return
-        const section = book.sections[resolved?.index]
-        if (!section) return
+        ) return null
+        if (!Number.isInteger(resolved?.index)) return null
+        const section = book.sections[resolved.index]
+        if (!section) return null
         const spread = this.getSpreadOf(section)
-        if (!spread) return
+        if (!spread) return null
         const { index, side } = spread
-        await this.goToSpread(index, side)
+        return await this.goToSpread(index, side)
     }
     async next() {
         if (this.#isDestroyed) return
