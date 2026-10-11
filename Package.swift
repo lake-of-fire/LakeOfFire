@@ -284,6 +284,7 @@ let package = Package(
             name: "LakeOfFireTests",
             dependencies: [
                 "LakeOfFireLibrary",
+                .product(name: "OPML", package: "swift-opml"),
                 .product(name: "BigSyncKit", package: "BigSyncKit"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
