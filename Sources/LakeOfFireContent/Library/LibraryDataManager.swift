@@ -1008,9 +1008,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                 existingDomain.refreshChangeMetadata(explicitlyModified: true)
             }
         }
-        let existingDomains = script.getAllowedDomains()?.map { $0.domain } ?? []
+        var existingDomains = Set(script.getAllowedDomains()?.map { $0.domain } ?? [])
         for domain in domains {
-            if !existingDomains.contains(domain) {
+            if existingDomains.insert(domain).inserted {
                 let newDomain = UserScriptAllowedDomain()
                 newDomain.domain = domain
                 realm.add(newDomain, update: .modified)

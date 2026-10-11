@@ -132,7 +132,7 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
         let xml = """
         <?xml version="1.0" encoding="UTF-8"?>
         <opml version="2.0"><head><title>Imported scripts</title></head><body>
-          <outline text="First" uuid="\(firstID.uuidString)" script="void(0);" />
+          <outline text="First" uuid="\(firstID.uuidString)" script="void(0);" allowedDomains="example.org,example.org,%65xample.org" />
           <outline text="Second" uuid="\(secondID.uuidString)" script="void(1);" />
         </body></opml>
         """
@@ -150,6 +150,10 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
                            "Unrelated references must not suppress new imported scripts")
             XCTAssertEqual(realm.objects(UserScript.self).count, 3)
             XCTAssertEqual(library.getUserScripts()?.count, 3)
+            let firstImported = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: firstID))
+            XCTAssertEqual(firstImported.getAllowedDomains()?.map(\.domain), ["example.org"])
+            XCTAssertEqual(firstImported.allowedDomainIDs.count, 1)
+            XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 1)
             XCTAssertTrue(try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: firstID)).isArchived,
                           "An omitted archive flag retains the importer's disabled default")
 
@@ -158,6 +162,8 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
             )
             XCTAssertEqual(Array(library.userScriptIDs), [existingID, firstID, secondID])
             XCTAssertEqual(realm.objects(UserScript.self).count, 3)
+            XCTAssertEqual(firstImported.allowedDomainIDs.count, 1)
+            XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 1)
         }.value
     }
 
