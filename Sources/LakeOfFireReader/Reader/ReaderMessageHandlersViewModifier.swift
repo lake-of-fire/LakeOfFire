@@ -324,7 +324,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         || logMessage.contains("\"loadEBook:delayed-state:1s\"")
                         || logMessage.contains("\"loadEBook:delayed-state:3s\"")
                         || logMessage.contains("\"loadEBook:delayed-state:8s\"") {
-                        registerEbookViewerFrame(message.frameInfo)
+                        if message.isMainFrame,
+                           let binding = message.javaScriptBindingToken,
+                           scriptCaller.currentJavaScriptBindingToken == binding {
+                            registerEbookViewerFrame(message.frameInfo)
+                        }
                     }
                     if logMessage.hasPrefix("# EBOOKFIX1")
                         || logMessage.hasPrefix("# BOOKBUG1")
