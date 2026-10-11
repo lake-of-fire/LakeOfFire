@@ -146,3 +146,25 @@ export const runRequiredRestoreNavigation = async operation => {
         }
     }
 }
+
+export const shouldSkipVisibleRendererGoTo = ({ target, currentIndex, currentPage, totalPages }) => {
+    // Synthetic locators carry localPage rather than a fractional anchor.
+    // The renderer must consume it, even when the section is already visible.
+    if (Number.isFinite(target?.localPage)) return false
+    const targetIndex = typeof target?.index === 'number' ? Math.max(0, Math.round(target.index)) : null
+    const targetAnchor = typeof target?.anchor === 'number' && Number.isFinite(target.anchor)
+        ? Math.max(0, Math.min(1, target.anchor))
+        : null
+    const targetPage = typeof targetAnchor === 'number'
+        && typeof totalPages === 'number'
+        && totalPages > 1
+        ? Math.max(1, Math.min(totalPages, Math.round(targetAnchor * (totalPages - 1)) + 1))
+        : null
+    const sameIndex = typeof targetIndex === 'number'
+        && typeof currentIndex === 'number'
+        && targetIndex === currentIndex
+    return sameIndex && (
+        targetAnchor === null
+        || (typeof targetPage === 'number' && typeof currentPage === 'number' && targetPage === currentPage)
+    )
+}
