@@ -269,12 +269,13 @@ public extension ReaderContentProtocol {
     
     @MainActor
     func asyncWrite(_ block: @escaping ((Realm, any ReaderContentProtocol) -> Void)) async throws {
-        guard !isInvalidated, !isDeleted else { return }
-        let owningRealm = realm
-        let config = owningRealm?.configuration ?? .defaultConfiguration
-        let compoundKey = compoundKey
+        guard !isInvalidated, !isDeleted, let owningRealm = realm else { return }
+        let config = owningRealm.configuration
+        // Preserve the physical row, including when nominated by a frozen
+        // snapshot. A primary-key lookup could select a recreated successor.
+        let reference = ThreadSafeReference(to: self)
+        let sourceURL = url
         let admission = RealmBackgroundActor.shared.captureStorageAdmission(for: config)
-        let cls = type(of: self)
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config, storageAdmission: admission)
             try await realm.asyncWritePreservingOwnership {
@@ -282,12 +283,15 @@ public extension ReaderContentProtocol {
                 guard admission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: config) }) else {
                     throw RealmBackgroundActorError.realmFileChangedDuringOpen
                 }
-                guard let content = realm.object(ofType: cls, forPrimaryKey: compoundKey),
-                      !content.isDeleted else { return }
+                guard let content = realm.resolve(reference),
+                      !content.isInvalidated, !content.isDeleted,
+                      content.url == sourceURL else { return }
                 block(realm, content)
             }
         }()
-        await owningRealm?.asyncRefresh()
+        if !owningRealm.isFrozen {
+            await owningRealm.asyncRefresh()
+        }
     }
 }
 
@@ -382,31 +386,68 @@ public extension ReaderContentProtocol {
         return String(decoding: data, as: UTF8.self)
     }
     
-    // TODO: Refactor to put on background thread
     @MainActor
     public func htmlToDisplay(readerFileManager: ReaderFileManager) async throws -> String? {
-        // rssContainsFullContent name is out of date; it just means this object contains the full content (RSS or otherwise)
+        // Select metadata storage once; a suspended read must not follow a new
+        // account's process-global configuration.
+        let configuration = ReaderContentLoader.historyRealmConfiguration
+        let admission = RealmBackgroundActor.shared.captureStorageAdmission(for: configuration)
+        let result = try await htmlToDisplay(
+            readFile: { try await readerFileManager.read(fileURL: $0) },
+            resolveMIMEType: { fileURL in
+                try await RealmBackgroundActor.shared.prepareStorage(
+                    for: configuration, storageAdmission: admission
+                )
+                let realm = try await Realm.open(configuration: configuration)
+                guard admission.matchesCurrentStorageIdentity({
+                    RealmBackgroundActor.shared.realmCacheKey(for: configuration)
+                }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+                return realm.objects(ContentFile.self)
+                    .filter(NSPredicate(format: "isDeleted == %@ AND url == %@",
+                        NSNumber(booleanLiteral: false), fileURL.absoluteString))
+                    .first?.mimeType
+            }
+        )
+        guard admission.matchesCurrentStorageIdentity({
+            RealmBackgroundActor.shared.realmCacheKey(for: configuration)
+        }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+        return result
+    }
+
+    /// Dependencies return detached values; managed fields stay on MainActor.
+    @MainActor
+    internal func htmlToDisplay(
+        readFile: @MainActor (URL) async throws -> Data?,
+        resolveMIMEType: @MainActor (URL) async throws -> String?
+    ) async throws -> String? {
+        guard !isInvalidated else { return nil }
         if rssContainsFullContent || isFromClipboard {
             try Task.checkCancellation()
             return html
-        } else if url.isReaderFileURL {
-            guard let data = try? await readerFileManager.read(fileURL: url) else { return nil }
-            try Task.checkCancellation()
-            let text = String(decoding: data, as: UTF8.self)
-            if let resolvedContentFile = try? await ReaderFileManager.get(fileURL: url) {
-                return ReaderContentLoader.normalizeIngestedText(
-                    text,
-                    mimeType: resolvedContentFile.mimeType,
-                    pathExtension: url.pathExtension,
-                    source: .file
-                ).html
-            } else {
-                return ReaderContentLoader.normalizeIngestedText(text, pathExtension: url.pathExtension, source: .file).html
-            }
         }
-        return nil
+        let contentURL = url
+        let contentKey = compoundKey
+        let reference = ReaderContentLoader.ContentReference(content: self)
+        guard contentURL.isReaderFileURL else { return nil }
+        guard let data = try? await readFile(contentURL) else {
+            try Task.checkCancellation()
+            return nil
+        }
+        try Task.checkCancellation()
+        try reference?.validateStorage()
+        guard !isInvalidated, compoundKey == contentKey, url == contentURL else { return nil }
+        let mimeType = try? await resolveMIMEType(contentURL)
+        try Task.checkCancellation()
+        try reference?.validateStorage()
+        guard !isInvalidated, compoundKey == contentKey, url == contentURL else { return nil }
+        return ReaderContentLoader.normalizeIngestedText(
+            String(decoding: data, as: UTF8.self),
+            mimeType: mimeType,
+            pathExtension: contentURL.pathExtension,
+            source: .file
+        ).html
     }
-    
+
     /// Deprecated, use `content` or `html`.
     var htmlContent: String? {
         get {

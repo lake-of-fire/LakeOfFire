@@ -563,9 +563,15 @@ public class LibraryDataManager: NSObject {
 
     private static let attributeCharacterSet: CharacterSet = .alphanumerics.union(.punctuationCharacters.union(.symbols.union(.whitespaces)))
     
-    public override init() {
+    public override convenience init() {
+        self.init(observesChanges: true)
+    }
+
+    /// Allows explicit operations without subscribing to process-global services.
+    public init(observesChanges: Bool) {
         super.init()
-        
+        guard observesChanges else { return }
+
         // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
         Task { @MainActor in
             DownloadController.shared.$finishedDownloads

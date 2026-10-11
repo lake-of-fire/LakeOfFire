@@ -439,6 +439,7 @@ public actor EBookProcessingActor {
         sectionHref: String,
         source: ReaderPackageEntrySource
     ) async throws -> EBookNativeSectionPrewarmResult {
+        try Task.checkCancellation()
         let entryData = try source.readEntry(subpath: sectionHref)
         let entryText = String(decoding: entryData, as: UTF8.self)
         let processedPayload = try await process(
@@ -462,6 +463,7 @@ public actor EBookProcessingActor {
         contentFingerprint: String? = nil,
         isCacheWarmer: Bool
     ) async throws -> EbookProcessedSectionPayload {
+        try Task.checkCancellation()
         let resolvedContentFingerprint = contentFingerprint ?? ebookProcessTextFingerprint(text)
         guard let ebookTextProcessor else {
             return EbookProcessedSectionPayload(
@@ -481,6 +483,7 @@ public actor EBookProcessingActor {
             processHTMLBytes,
             processHTML
         )
+        try Task.checkCancellation()
         if !isCacheWarmer,
            ebookProcessedSectionPayloadHasDurableSegmentIdentities(result),
            let ebookProcessedTextCacheWriter {
@@ -490,6 +493,7 @@ public actor EBookProcessingActor {
             // without putting disk I/O on the visible processing path.
             await ebookProcessedTextCacheWriter(contentURL, location, resolvedContentFingerprint, result)
         }
+        try Task.checkCancellation()
         return result
     }
 }

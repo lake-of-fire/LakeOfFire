@@ -22,6 +22,7 @@ extension HistoryRecord: DeletableReaderContent {
 
     @MainActor
     public func delete() async throws {
+        guard !isInvalidated else { return }
         let historyURL = url
         guard let contentReference = ReaderContentLoader.ContentReference(content: self) else {
             return
