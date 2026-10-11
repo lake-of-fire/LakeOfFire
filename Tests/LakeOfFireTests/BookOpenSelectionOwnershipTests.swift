@@ -336,4 +336,27 @@ final class BookOpenSelectionOwnershipTests: XCTestCase {
             ]
         )
     }
+    @MainActor
+    func testExplicitSelectionRevokesLatePassiveImportPublication() async throws {
+        let viewModel = BookLibraryViewModel()
+        let passive = BookDownloadOperation()
+        let gate = BookOpenSelectionGate()
+        var publications: [String] = []
+        let refresh = Task { @MainActor in
+            await passive.refresh(operation: {
+                await gate.suspendIgnoringCancellation()
+                return "stale passive failure"
+            }, publish: { publications.append($0) })
+        }
+        await gate.waitUntilSuspended()
+        let selection = try XCTUnwrap(viewModel.startOpenSelection(
+            cancellingPassiveOperation: passive
+        ) { _ in
+            publications.append("explicit import success")
+        })
+        await selection.value
+        await gate.release()
+        await refresh.value
+        XCTAssertEqual(publications, ["explicit import success"])
+    }
 }

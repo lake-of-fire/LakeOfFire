@@ -341,10 +341,14 @@ public class BookLibraryViewModel: ObservableObject {
 
     @discardableResult
     func startOpenSelection(
+        cancellingPassiveOperation passiveOperation: BookDownloadOperation? = nil,
         onStart: (@MainActor (OpenSelection) -> Void)? = nil,
         _ operation: @escaping @MainActor (OpenSelection) async -> Void
     ) -> Task<Void, Never>? {
-        openSelectionCoordinator.start(onStart: onStart, operation)
+        openSelectionCoordinator.start(onStart: { selection in
+            passiveOperation?.cancel()
+            onStart?(selection)
+        }, operation)
     }
 
     func isCurrentOpenSelection(_ selection: OpenSelection) -> Bool {

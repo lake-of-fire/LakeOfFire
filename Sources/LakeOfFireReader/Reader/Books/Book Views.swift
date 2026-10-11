@@ -234,6 +234,7 @@ fileprivate struct DownloadableBookListRow: View {
 
     private func buttonPress() {
         selectionOwner.startOpenSelection(
+            cancellingPassiveOperation: importOperation,
             onStart: { activeSelection = $0 }
         ) { selection in
             defer {
@@ -264,6 +265,7 @@ fileprivate struct DownloadableBookListRow: View {
     }
 
     private func refreshDownloadable() async {
+        if let activeSelection, selectionOwner.isCurrentOpenSelection(activeSelection) { return }
         await importOperation.refresh(operation: {
             guard !importState.isImported,
                   await downloadable.existsLocally(), !Task.isCancelled else { return nil }
@@ -285,6 +287,7 @@ fileprivate struct DownloadableBookListRow: View {
 
     private func topTap() {
         selectionOwner.startOpenSelection(
+            cancellingPassiveOperation: importOperation,
             onStart: { activeSelection = $0 }
         ) { selection in
             defer {
