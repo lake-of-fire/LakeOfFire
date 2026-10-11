@@ -1,4 +1,5 @@
 commit	committer_date	subject
+8b9d8381ce7561625452545b99260b29aaf81f37	2026-10-10T19:30:58-04:00	Fix library inventory and file status observation
 00dcfa75f3f65337450089b2df15ed2be779bb79	2026-10-10T18:37:01-04:00	Merge pull request #136 from lake-of-fire/fix/reader-same-url-owner-retry-20261010
 13f6fc39be9617ed4e7639a7573c6abbf82ac228	2026-10-10T18:21:56-04:00	Let live Reader requests replace cancelled same-URL load owners
 220e378637dff4d6fcae187fb7d31bdc557e071d	2026-10-10T16:52:06-04:00	Merge pull request #135 from lake-of-fire/test/books-ebook-delete-20261010

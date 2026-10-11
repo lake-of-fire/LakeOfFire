@@ -77,6 +77,7 @@ Tests/LakeOfFireTests/ReaderFileLibraryBoundaryTests.swift	unresolved	Separate r
 Tests/LakeOfFireTests/ReaderLegacyDocumentsMigrationTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
 Tests/LakeOfFireTests/ReaderSnippetPipelineDiagnosticsTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
 Tests/LakeOfFireTests/ReaderSnippetTitleTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
+Tests/LakeOfFireTests/ReviewStatusRefreshViewLifetimeTests.swift	unresolved	Separate remote dependency branch tail; not selected by either frozen committed Reader root; semantic review required
 Tools/EBookEntryPathTests/Package.swift	intentionally divergent/retired	Do not restore historical validation; no execution
 Tools/EBookFingerprintTests/Package.swift	intentionally divergent/retired	Do not restore historical validation; no execution
 Tools/EBookNamespaceTests/Package.swift	intentionally divergent/retired	Do not restore historical validation; no execution
