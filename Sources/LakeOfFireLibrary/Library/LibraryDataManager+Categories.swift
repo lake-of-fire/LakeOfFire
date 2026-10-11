@@ -40,7 +40,7 @@ public extension LibraryDataManager {
         let configurationID = libraryConfiguration.id
 
         await realm.asyncRefresh()
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             guard let category = realm.object(
                 ofType: FeedCategory.self,
                 forPrimaryKey: categoryID
@@ -113,7 +113,7 @@ public extension LibraryDataManager {
         let configurationID = libraryConfiguration.id
 
         await realm.asyncRefresh()
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             guard let category = realm.object(
                 ofType: FeedCategory.self,
                 forPrimaryKey: categoryID
