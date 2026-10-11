@@ -309,4 +309,46 @@ final class BookOpenSelectionCoordinatorTests: XCTestCase {
             ["older-navigator-admitted", "newer-navigate", "newer-publish", "older-navigator-returned"]
         )
     }
+
+    @MainActor
+    func testReentrantStartDoesNotOverwriteReplacementTaskHandle() async throws {
+        let owner = BookOpenSelectionCoordinator()
+        var replacement: Task<Void, Never>?
+        let outer = owner.start(onStart: { _ in
+            replacement = owner.start { _ in XCTFail("Cancelled replacement ran") }
+        }) { _ in XCTFail("Superseded outer operation ran") }
+        XCTAssertNil(outer)
+        let replacementTask = try XCTUnwrap(replacement)
+        owner.cancel()
+        XCTAssertTrue(replacementTask.isCancelled)
+        await replacementTask.value
+    }
+
+    @MainActor
+    func testCancellationInsideStartCallbackDoesNotCreateAProducer() {
+        let owner = BookOpenSelectionCoordinator()
+        let task = owner.start(onStart: { _ in owner.cancel() }) { _ in
+            XCTFail("Revoked selection ran")
+        }
+        XCTAssertNil(task)
+    }
+
+    @MainActor
+    func testSuspendedOperationDoesNotRetainItsOwner() async throws {
+        var owner: BookOpenSelectionCoordinator? = BookOpenSelectionCoordinator()
+        weak var weakOwner = owner
+        let gate = BookOpenSelectionCoordinatorGate()
+        var observedCancellation = false
+        let task = try XCTUnwrap(owner?.start { _ in
+            await gate.suspendIgnoringCancellation()
+            observedCancellation = Task.isCancelled
+        })
+        await gate.waitUntilSuspended()
+        owner = nil
+        XCTAssertNil(weakOwner)
+        XCTAssertTrue(task.isCancelled)
+        await gate.release()
+        await task.value
+        XCTAssertTrue(observedCancellation)
+    }
 }

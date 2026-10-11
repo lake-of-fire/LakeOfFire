@@ -40,12 +40,17 @@ final class BookOpenSelectionCoordinator {
         generation &+= 1
         let selection = Selection(generation: generation)
         onStart?(selection)
+        // The callback may synchronously replace or cancel this selection.
+        // Never overwrite a replacement's task handle after returning from it.
+        guard isCurrent(selection) else { return nil }
         let started = Task { @MainActor [weak self] in
-            guard let self, self.isCurrent(selection) else { return }
-            await operation(selection)
-            if self.isCurrent(selection) {
-                self.task = nil
+            defer {
+                if self?.generation == selection.generation {
+                    self?.task = nil
+                }
             }
+            guard self?.isCurrent(selection) == true else { return }
+            await operation(selection)
         }
         task = started
         return started
