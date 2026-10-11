@@ -118,6 +118,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     var inventoryBeforeMetadataWrite: (@Sendable () async -> Void)?
     @MainActor var inventoryBeforePublication: (@MainActor () async -> Void)?
     @MainActor var inventoryBeforePartialPublication: (@MainActor () async -> Void)?
+    @MainActor var inventoryBeforeOrphanReconciliation: (@MainActor () async -> Void)?
 
     private let defaultLocalRootURLProvider: @Sendable () -> URL
     typealias CloudDriveFactory = @MainActor @Sendable (String) async throws -> CloudDrive
@@ -689,6 +690,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             try await refreshAllFilesMetadata(force: true, realmConfiguration: selection.configuration)
             try validateInventorySelection(selection)
             let finalRealm = try await Realm.open(configuration: selection.configuration)
+            finalRealm.refresh()
             try validateInventorySelection(selection)
             guard let finalContent = finalRealm.object(ofType: ContentFile.self, forPrimaryKey: importedContentIdentifier),
                   !finalContent.isDeleted, finalContent.url == importedReaderFileURL else { return nil }
@@ -789,11 +791,14 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     try validateInventorySelection(selection)
                     let realm = try await Realm.open(configuration: selection.configuration)
                     try validateInventorySelection(selection)
-                    let resolved = try discovered.compactMap { reference in
+                    let discoveredIdentities = try discovered.compactMap { reference -> (identifier: String, url: URL)? in
                         try validateInventorySelection(selection)
-                        return realm.resolve(reference)
+                        guard let file = realm.resolve(reference), !file.isInvalidated else { return nil }
+                        return (file.compoundKey, file.url)
                     }
-                    let discoveredURLs = resolved.map { $0.url.absoluteString }
+                    let discoveredURLs = discoveredIdentities.map { $0.url.absoluteString }
+                    await inventoryBeforeOrphanReconciliation?()
+                    try validateInventorySelection(selection)
                     try await { @RealmBackgroundActor in
                         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: selection.configuration)
                         try validateInventorySelection(selection)
@@ -816,7 +821,13 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     // Publish only after the captured orphan transaction succeeds.
                     // There is no suspension between admission and UI publication.
                     try validateInventorySelection(selection)
-                    self.files = resolved
+                    realm.refresh()
+                    try validateInventorySelection(selection)
+                    self.files = discoveredIdentities.compactMap { identity in
+                        guard let file = realm.object(ofType: ContentFile.self, forPrimaryKey: identity.identifier),
+                              !file.isInvalidated, !file.isDeleted, file.url == identity.url else { return nil }
+                        return file
+                    }
                     lastInventoryPublishedAt = [receipt: Date()]
                 } while inventoryNeedsFollowUp.contains(receipt) && !Task.isCancelled
             } catch {

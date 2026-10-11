@@ -500,8 +500,47 @@ final class ReaderFileInventoryOwnershipTests: XCTestCase, @unchecked Sendable {
         let importedURL = try await manager.importFile(fileURL: source, fromDownloadURL: nil)
         XCTAssertNil(deletionError)
         XCTAssertNil(importedURL)
+        XCTAssertEqual(manager.files?.count, 0)
         XCTAssertEqual(try Data(contentsOf: destinationRoot.appendingPathComponent("import.txt")), bytes)
         XCTAssertEqual(try Data(contentsOf: source), bytes)
+    }
+
+    func testRefreshDoesNotPublishRowDeletedAfterDiscoveryResolution() async throws {
+        let directory = try root()
+        let fileURL = directory.appendingPathComponent("deleted.txt")
+        let bytes = Data("retained bytes".utf8)
+        try bytes.write(to: fileURL)
+        let config = configuration()
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = config
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: directory))
+        let previousURLProcessors = ReaderFileManager.readerFileURLProcessors
+        let previousFileProcessors = ReaderFileManager.fileProcessors
+        ReaderFileManager.readerFileURLProcessors = []
+        ReaderFileManager.fileProcessors = []
+        defer {
+            ReaderFileManager.readerFileURLProcessors = previousURLProcessors
+            ReaderFileManager.fileProcessors = previousFileProcessors
+        }
+        var deletionError: Error?
+        manager.inventoryBeforeOrphanReconciliation = {
+            do {
+                try await { @RealmBackgroundActor in
+                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config)
+                    try await realm.asyncWrite {
+                        let file = try XCTUnwrap(realm.objects(ContentFile.self).first)
+                        file.isDeleted = true
+                        file.refreshChangeMetadata(explicitlyModified: true)
+                    }
+                }()
+            } catch { deletionError = error }
+        }
+        try await refresh(manager)
+        XCTAssertNil(deletionError)
+        XCTAssertEqual(manager.files?.count, 0)
+        let realm = try await Realm.open(configuration: config)
+        XCTAssertEqual(realm.objects(ContentFile.self).first?.isDeleted, true)
+        XCTAssertEqual(try Data(contentsOf: fileURL), bytes)
     }
 
 }

@@ -2,6 +2,25 @@
 
 ## Local replacement review — October 10, 2026 (America/Toronto)
 
+### Final inventory row admission follow-up
+
+Source review at `56ae27b6d5a443c3f9aa94815ce08b0342f977ae` found that full inventory
+retained resolved Realm objects across orphan reconciliation and published them without
+checking their final live state. The typed `files(ofTypes:)` accessor filters deletion,
+so this is a public inventory consistency defect, not proof that a typed book list displays
+deleted rows. The repair retains compound keys and captured URLs across the await, refreshes
+the captured Realm after reconciliation, checks the receipt again, and re-resolves only
+present, undeleted, matching rows immediately before `files` publication. Import's final
+row lookup also explicitly refreshes before admission. Existing orphan tombstones and
+their metadata refreshes are unchanged; no deletion is undone.
+
+The import-deletion regression now also requires an empty published inventory. One additional
+production-owner regression tombstones a discovered row after reference resolution and
+before orphan reconciliation, then checks empty publication, preserved tombstone and
+unchanged physical bytes. Both sources are uncompiled/unrun. Source/diff review and
+`git diff --check` are the only verification. Same-key deletion/recreation incarnation,
+later deletions after publication and account/storage ownership remain separate open gates.
+
 The subsequent [upload/import ownership follow-up](20261010-reader-dependencies/import-upload-owner-handoff.md)
 traces physical-copy and completion gaps at candidate `39567c8f`, compares pending #50's
 stronger storage/final-record behavior, and records the exact Lake/SwiftCloudDrive boundary.
