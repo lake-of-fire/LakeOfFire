@@ -2702,6 +2702,13 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         const rect = rects[0] ?? null;
         rectMeasureCount += 1;
         rectMeasureElapsedMs += performance.now() - rectStartedAt;
+        // The bounded DOM fallback was not found by a viewport hit test.
+        // A broad Range can intersect an offscreen/hidden node, so it cannot
+        // replace positive visible geometry for this readiness-only candidate.
+        if (viewportSampleSource === 'minimal-anchor-probe' && !rect) {
+            outOfViewportCount += 1;
+            continue;
+        }
         const isInVisibleRange = useVisibleRange
             ? (() => {
                 const rangeStartedAt = performance.now();
