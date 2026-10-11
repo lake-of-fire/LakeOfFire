@@ -115,8 +115,10 @@ struct LibraryCategoriesView: View {
     }
     
     @ViewBuilder var userLibraryView: some View {
-        if let categories = viewModel.userLibraryCategories {
-            ForEach(Array(categories), id: \.id) { category in
+        if let currentCategories = viewModel.userLibraryCategories {
+            let categories = currentCategories.filter { !$0.isInvalidated }
+            let displayedCategoryIDs = categories.map(\.id)
+            ForEach(categories, id: \.id) { category in
                 NavigationLink(value: ContentPaneRoute.contentCategory(category.id)) {
                     FeedCategoryButtonLabel(
                         title: category.title,
@@ -155,17 +157,20 @@ struct LibraryCategoriesView: View {
                 }
             }
             .onMove {
-                viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
+                viewModel.moveCategories(
+                    fromOffsets: $0, toOffset: $1, displayedCategoryIDs: displayedCategoryIDs
+                )
             }
             .onDelete {
-                viewModel.deleteCategory(at: $0)
+                viewModel.deleteCategory(at: $0, fromCategoryIDs: displayedCategoryIDs)
             }
         }
     }
     
     @ViewBuilder var editorsPicksLibraryView: some View {
-        if let categories = viewModel.editorsPicksLibraryCategories {
-            ForEach(Array(categories), id: \.id) { category in
+        if let currentCategories = viewModel.editorsPicksLibraryCategories {
+            let categories = currentCategories.filter { !$0.isInvalidated }
+            ForEach(categories, id: \.id) { category in
                 NavigationLink(value: ContentPaneRoute.contentCategory(category.id)) {
                     FeedCategoryButtonLabel(
                         title: category.title,
@@ -180,18 +185,13 @@ struct LibraryCategoriesView: View {
                 .deleteDisabled(true)
                 .moveDisabled(true)
             }
-            .onMove {
-                viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
-            }
-            .onDelete {
-                viewModel.deleteCategory(at: $0)
-            }
         }
     }
     
     @ViewBuilder var archiveView: some View {
-        if let categories = viewModel.archivedCategories {
-            ForEach(Array(categories), id: \.id) { category in
+        if let currentCategories = viewModel.archivedCategories {
+            let categories = currentCategories.filter { !$0.isInvalidated }
+            ForEach(categories, id: \.id) { category in
                 NavigationLink(value: ContentPaneRoute.contentCategory(category.id)) {
                     FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, isCompact: true)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -292,7 +292,7 @@ struct LibraryCategoriesView: View {
 #if os(iOS)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    if viewModel.userLibraryCategories?.contains(where: { $0.isUserEditable }) ?? false {
+                    if viewModel.userLibraryCategories?.contains(where: { !$0.isInvalidated && $0.isUserEditable }) ?? false {
                         EditButton()
                     }
                 }
@@ -312,9 +312,10 @@ struct LibraryCategoriesView: View {
                     ofType: FeedCategory.self,
                     forPrimaryKey: categoryID
                 ) else { return }
-                categoryIDNeedsScrollTo = category.id.uuidString
+                categoryIDNeedsScrollTo = categoryID.uuidString
                 try await Task.sleep(nanoseconds: 100_000_000)
-                contentRoute = .contentCategory(category.id)
+                guard !category.isInvalidated, !category.isDeleted else { return }
+                contentRoute = .contentCategory(categoryID)
             }
         } label: {
             Label("Add Category", systemImage: "plus")

@@ -116,15 +116,15 @@ class LibraryCategoriesViewModel: ObservableObject {
     }
 
     func deletionTitle(category: FeedCategory) -> String {
-        category.isArchived ? "Delete" : "Archive"
+        !category.isInvalidated && category.isArchived ? "Delete" : "Archive"
     }
 
     func showDeleteButton(category: FeedCategory) -> Bool {
-        category.isUserEditable && !category.isDeleted
+        !category.isInvalidated && category.isUserEditable && !category.isDeleted
     }
 
     func showRestoreButton(category: FeedCategory) -> Bool {
-        category.isUserEditable && category.isArchived
+        !category.isInvalidated && category.isUserEditable && category.isArchived
     }
 
     @MainActor
@@ -173,6 +173,15 @@ class LibraryCategoriesViewModel: ObservableObject {
             }
             return categories[index].id
         }
+        return deleteCategory(at: IndexSet(ids.indices), fromCategoryIDs: ids)
+    }
+
+    @MainActor
+    @discardableResult
+    func deleteCategory(at offsets: IndexSet, fromCategoryIDs displayedCategoryIDs: [UUID]) -> Task<Void, Error> {
+        let ids = offsets.compactMap { index in
+            displayedCategoryIDs.indices.contains(index) ? displayedCategoryIDs[index] : nil
+        }
         return Task { @MainActor in
             for categoryID in ids {
                 try await Task { @RealmBackgroundActor [realmConfiguration] in
@@ -189,21 +198,25 @@ class LibraryCategoriesViewModel: ObservableObject {
     @discardableResult
     func moveCategories(
         fromOffsets: IndexSet,
-        toOffset: Int
+        toOffset: Int,
+        displayedCategoryIDs: [UUID]? = nil
     ) -> Task<Void, Error>? {
         guard let libraryConfiguration,
               !libraryConfiguration.isInvalidated,
-              let visibleCategories = userLibraryCategories,
-              visibleCategories.allSatisfy({ !$0.isInvalidated }) else {
+              let currentCategories = userLibraryCategories else {
             return nil
         }
+        if displayedCategoryIDs == nil,
+           currentCategories.contains(where: { $0.isInvalidated }) { return nil }
+        let liveCategories = currentCategories.filter { !$0.isInvalidated }
         let originalIDs = Array(libraryConfiguration.categoryIDs)
-        let visibleIDs = visibleCategories.map(\.id)
+        let visibleIDs = displayedCategoryIDs ?? liveCategories.map(\.id)
+        let editableIDs = Set(liveCategories.filter { $0.isUserEditable && !$0.isDeleted }.map(\.id))
         guard !visibleIDs.isEmpty,
               Set(visibleIDs).count == visibleIDs.count,
               fromOffsets.allSatisfy(visibleIDs.indices.contains),
               fromOffsets.allSatisfy {
-                  visibleCategories[$0].isUserEditable
+                  editableIDs.contains(visibleIDs[$0])
               },
               visibleIDs.indices.contains(toOffset)
                 || toOffset == visibleIDs.endIndex else {
@@ -222,7 +235,7 @@ class LibraryCategoriesViewModel: ObservableObject {
                     try await RealmBackgroundActor.shared.cachedRealm(
                         for: realmConfiguration
                     )
-                try await realm.asyncWrite {
+                try await realm.asyncWritePreservingOwnership {
                     guard let currentConfiguration = realm.object(
                         ofType: LibraryConfiguration.self,
                         forPrimaryKey: configurationID
