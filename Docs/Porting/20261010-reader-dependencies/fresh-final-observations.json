@@ -1,0 +1,230 @@
+[
+  {
+    "name": "LakeOfFire",
+    "frozen": "8985bf92b9504d53e00025e4054b3aa97f876e45",
+    "fresh": "8985bf92b9504d53e00025e4054b3aa97f876e45",
+    "error": null,
+    "pr_error": null,
+    "prs": [
+      {
+        "number": 138,
+        "url": "https://github.com/lake-of-fire/LakeOfFire/pull/138",
+        "sha": "338acd87af421120a523bfb884b5ece9c7247a10",
+        "branch": "audit/reader-dependencies-20261010-task18",
+        "base": "main",
+        "draft": true
+      },
+      {
+        "number": 113,
+        "url": "https://github.com/lake-of-fire/LakeOfFire/pull/113",
+        "sha": "9ef23abaecf93eb24dfbe55cbf02e9598f4f935f",
+        "branch": "fix/reader-media-boundaries-v3-hotfix-20261007",
+        "base": "v3-hotfix",
+        "draft": true
+      },
+      {
+        "number": 95,
+        "url": "https://github.com/lake-of-fire/LakeOfFire/pull/95",
+        "sha": "21c42ff0138c0b5b934956cbcccd107e5c577cf6",
+        "branch": "port/v3-hotfix-library-view-ownership-20261001",
+        "base": "main",
+        "draft": true
+      },
+      {
+        "number": 74,
+        "url": "https://github.com/lake-of-fire/LakeOfFire/pull/74",
+        "sha": "ad19065bd567f09f64a7f321feb2087fd60701fa",
+        "branch": "port/v3-hotfix-sparse-renderability-main-20260930",
+        "base": "port/epub-serving-safety-integration-20260928",
+        "draft": true
+      },
+      {
+        "number": 61,
+        "url": "https://github.com/lake-of-fire/LakeOfFire/pull/61",
+        "sha": "0dc1e429fc8e2d2b7e7f2a176fe2f72fabc7ab9e",
+        "branch": "qualify/canonical-swiftui-downloads-consumer-20260929",
+        "base": "port/epub-serving-safety-integration-20260928",
+        "draft": true
+      },
+      {
+        "number": 59,
+        "url": "https://github.com/lake-of-fire/LakeOfFire/pull/59",
+        "sha": "0dd0b07afac69c6d02512a7b02ff2acb27bf7bb0",
+        "branch": "qualify/reader-main-lake-tuple-20260929",
+        "base": "port/epub-serving-safety-integration-20260928",
+        "draft": true
+      },
+      {
+        "number": 54,
+        "url": "https://github.com/lake-of-fire/LakeOfFire/pull/54",
+        "sha": "28c6911ada2221bc9a390de65f31b79bfba84bd4",
+        "branch": "port/v3-hotfix-annotation-stream-20260928",
+        "base": "main",
+        "draft": true
+      },
+      {
+        "number": 53,
+        "url": "https://github.com/lake-of-fire/LakeOfFire/pull/53",
+        "sha": "35e0a7e65ce63365a9923a92fac832ad087c549b",
+        "branch": "port/reader-selected-lifecycle-20260928",
+        "base": "main",
+        "draft": true
+      },
+      {
+        "number": 51,
+        "url": "https://github.com/lake-of-fire/LakeOfFire/pull/51",
+        "sha": "547b1e88a836c8c4b53c24c98294700e9066a745",
+        "branch": "port/v3-hotfix-import-storage-20260928",
+        "base": "main",
+        "draft": true
+      },
+      {
+        "number": 50,
+        "url": "https://github.com/lake-of-fire/LakeOfFire/pull/50",
+        "sha": "0b91431f0fe04c45b24b08b427a5df66e87661b9",
+        "branch": "port/epub-serving-safety-integration-20260928",
+        "base": "main",
+        "draft": true
+      },
+      {
+        "number": 48,
+        "url": "https://github.com/lake-of-fire/LakeOfFire/pull/48",
+        "sha": "2f3a63733583e179bddc8025a7320141fc1ddade",
+        "branch": "port/hotfix-opds-url-main-20260928",
+        "base": "main",
+        "draft": true
+      },
+      {
+        "number": 41,
+        "url": "https://github.com/lake-of-fire/LakeOfFire/pull/41",
+        "sha": "af14b895d9d3e1a1fe8c3a00e52c158d6eae211e",
+        "branch": "port/v3-hotfix-to-main-20260928",
+        "base": "main",
+        "draft": true
+      }
+    ]
+  },
+  {
+    "name": "swiftui-webview",
+    "frozen": "da0ec9394a3a89734768768ad7b8cb6082ac9d80",
+    "fresh": "da0ec9394a3a89734768768ad7b8cb6082ac9d80",
+    "error": null,
+    "pr_error": null,
+    "prs": [
+      {
+        "number": 23,
+        "url": "https://github.com/lake-of-fire/swiftui-webview/pull/23",
+        "sha": "c13e5da5b343f56631234d6d9957655dd91d5d04",
+        "branch": "fix/restoration-receipt-frame-20261008",
+        "base": "main",
+        "draft": true
+      }
+    ]
+  },
+  {
+    "name": "LakeImage",
+    "frozen": "3270761611fa85b4b6129227b4adf2bbda4be5a0",
+    "fresh": "3270761611fa85b4b6129227b4adf2bbda4be5a0",
+    "error": null,
+    "pr_error": null,
+    "prs": []
+  },
+  {
+    "name": "LakeKit",
+    "frozen": "ce5732052d1480329b4b1c47f1440877dedf0e41",
+    "fresh": "ce5732052d1480329b4b1c47f1440877dedf0e41",
+    "error": null,
+    "pr_error": null,
+    "prs": [
+      {
+        "number": 13,
+        "url": "https://github.com/lake-of-fire/LakeKit/pull/13",
+        "sha": "29db685f7145182445324ac0d8aefbd58eb6f3c2",
+        "branch": "audit/reader-dependencies-20261010-task18",
+        "base": "main",
+        "draft": true
+      }
+    ]
+  },
+  {
+    "name": "SwiftUIDownloads",
+    "frozen": "18077d0cd9506c40dccafeb754f58b6599987337",
+    "fresh": "18077d0cd9506c40dccafeb754f58b6599987337",
+    "error": null,
+    "pr_error": null,
+    "prs": []
+  },
+  {
+    "name": "FaviconFinder",
+    "frozen": "27f81e1b66d3934890f7e7858c803cf0d27a6113",
+    "fresh": "27f81e1b66d3934890f7e7858c803cf0d27a6113",
+    "error": null,
+    "pr_error": null,
+    "prs": []
+  },
+  {
+    "name": "SwiftUtilities",
+    "frozen": "9df24a7809f5b681c8480ba7ef681335977f0fc5",
+    "fresh": "9df24a7809f5b681c8480ba7ef681335977f0fc5",
+    "error": null,
+    "pr_error": null,
+    "prs": []
+  },
+  {
+    "name": "SwiftSoup",
+    "frozen": "c4e4fa991232ba4861f44b2d1a26113b31dfe142",
+    "fresh": "c4e4fa991232ba4861f44b2d1a26113b31dfe142",
+    "error": null,
+    "pr_error": null,
+    "prs": []
+  },
+  {
+    "name": "Cache",
+    "frozen": "bc0cb5bdc2c4a55fe4b156639ed9e16ed86b99c2",
+    "fresh": "bc0cb5bdc2c4a55fe4b156639ed9e16ed86b99c2",
+    "error": null,
+    "pr_error": null,
+    "prs": []
+  },
+  {
+    "name": "swift-tiptap",
+    "frozen": "2e09ca86cdc66cf6b058763fbdbd868b671c310b",
+    "fresh": "2e09ca86cdc66cf6b058763fbdbd868b671c310b",
+    "error": null,
+    "pr_error": null,
+    "prs": [
+      {
+        "number": 4,
+        "url": "https://github.com/lake-of-fire/swift-tiptap/pull/4",
+        "sha": "5d8c78560db7b20ea602f7d50a1a35a2173d25d9",
+        "branch": "qualification-reader-main-20260929",
+        "base": "main",
+        "draft": true
+      }
+    ]
+  },
+  {
+    "name": "markdown-webview",
+    "frozen": "f2e42f5f2ddeecc960c6390d1acfc59e1b5ba42a",
+    "fresh": "f2e42f5f2ddeecc960c6390d1acfc59e1b5ba42a",
+    "error": null,
+    "pr_error": null,
+    "prs": []
+  },
+  {
+    "name": "swift-readability",
+    "frozen": "438724ab13e428a01ba4bb10ff6fbc8fa6c7330b",
+    "fresh": "438724ab13e428a01ba4bb10ff6fbc8fa6c7330b",
+    "error": null,
+    "pr_error": null,
+    "prs": []
+  },
+  {
+    "name": "Portal",
+    "frozen": "424c0dc1b7bb327491b573d74f1ca8253df834e8",
+    "fresh": "424c0dc1b7bb327491b573d74f1ca8253df834e8",
+    "error": null,
+    "pr_error": null,
+    "prs": []
+  }
+]
