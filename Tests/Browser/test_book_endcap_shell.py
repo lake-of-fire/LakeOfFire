@@ -16,7 +16,7 @@ from prepared_book_fixture import prepared_chapter
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = ROOT / 'Sources/LakeOfFireReader/Resources/Resources/foliate-js'
 
-def make_epub():
+def make_epub(chapter_factory=prepared_chapter):
     output = BytesIO()
     with zipfile.ZipFile(output, 'w') as archive:
         archive.writestr('mimetype', 'application/epub+zip')
@@ -28,7 +28,7 @@ def make_epub():
 <manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>''')
         archive.writestr('OPS/nav.xhtml', '''<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="one.xhtml">First Chapter</a></li><li><a href="two.xhtml">Last Chapter</a></li></ol></nav></body></html>''')
         for name in ['one', 'two']:
-            archive.writestr('OPS/' + name + '.xhtml', prepared_chapter(name))
+            archive.writestr('OPS/' + name + '.xhtml', chapter_factory(name))
     return output.getvalue()
 
 class Handler(SimpleHTTPRequestHandler):
@@ -41,8 +41,9 @@ class Handler(SimpleHTTPRequestHandler):
             if '..' not in relative.parts: return str(ASSETS / relative)
         return super().translate_path(path)
     def do_GET(self):
-        if self.path == '/fixture.epub':
-            data = make_epub(); self.send_response(200)
+        fixture = getattr(self.server, 'epub_fixtures', {}).get(self.path)
+        if self.path == '/fixture.epub' or fixture is not None:
+            data = fixture if fixture is not None else make_epub(); self.send_response(200)
             self.send_header('Content-Type', 'application/epub+zip')
             self.send_header('Content-Length', str(len(data)))
             self.end_headers(); self.wfile.write(data); return

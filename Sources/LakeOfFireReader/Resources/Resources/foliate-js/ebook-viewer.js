@@ -44,6 +44,8 @@ import { createOwnedAsyncCache } from './owned-async-cache.js'
 import {
     captureReaderArticleProducerOwner,
     carryReaderArticleProducerOwner,
+    observeReaderArticleProducerReadiness,
+    readerArticleProducerOwnerIsCurrent,
 } from './reader-producer-evidence.js'
 import { resetReaderTransientState } from './reader-transient-state.js'
 import {
@@ -5491,6 +5493,9 @@ const navSpinnerMaximumMs = 1200;
 
 class Reader {
     #closed = false;
+    #markReadProducerReadiness = null;
+    #markReadDiagnosticGeneration = 0;
+    #markReadBusyOwners = new Map();
     #lifecycleGeneration = 0;
     #initialDisplayGeneration = 0;
     #didDisplaySequence = 0;
@@ -5508,6 +5513,7 @@ class Reader {
     bookActionBridge = null;
     bookReadingRuntime = null;
     #bookPositionRefreshNeeded = false;
+    #confirmedTurnAwaitingChapter = null;
     get isClosed() {
         return this.#closed;
     }
@@ -5729,6 +5735,11 @@ class Reader {
     close(reason = 'unspecified') {
         if (this.#closed) return false;
         this.#closed = true;
+        this.#markReadProducerReadiness?.close();
+        this.#markReadProducerReadiness = null;
+        ++this.#markReadDiagnosticGeneration;
+        this.#markReadBusyOwners.clear();
+        this.#renderPageTrackingButtons('reader-closed');
         this.#lifecycleGeneration += 1;
         this.#relocateSequence += 1;
         this.visiblePageCollectionGeneration += 1;
@@ -5748,6 +5759,7 @@ class Reader {
         this.#publishConfirmedPageTurnProgress?.cancel?.();
         this.#postUpdateReadingProgressMessage?.cancel?.();
         this.#bookPositionRefreshNeeded = false;
+        this.#confirmedTurnAwaitingChapter = null;
         clearTimeout(this.loadingVisualTimer);
         this.loadingVisualTimer = null;
         clearTimeout(this.#postInitialOpenWorkHandle);
@@ -7133,6 +7145,7 @@ class Reader {
         animateStateID = null,
         producerOwner = null,
         originAccountPresentation = null,
+        diagnosticGeneration = null,
     }) {
         const validatedPayload = this.#validatedMarkReadPayload(payload);
         if (!validatedPayload) {
@@ -7147,6 +7160,7 @@ class Reader {
             return false;
         }
         if (this.bookReadingRuntime && !this.bookReadingRuntime.isScopeCurrent(owner?.bookReadingScope, owner?.document)) {
+            this.lastNativeMarkReadRequestOutcome = 'failed';
             this.lastNativeMarkReadRequestErrorCode = 'staleChapterPass';
             return false;
         }
@@ -7173,6 +7187,12 @@ class Reader {
                 producerOwner,
             }),
         });
+        // A committed write can itself retire its producer. Preserve the native
+        // outcome while preventing an old delivery from replacing a newer tap
+        // or another reader's diagnostics; the coordinator still fences display.
+        if (diagnosticGeneration !== null && (diagnosticGeneration !== this.#markReadDiagnosticGeneration
+            || !this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
+            || globalThis.reader !== this)) return false;
         this.lastNativeMarkReadRequestOutcome = outcome.success === true
             ? 'committed'
             : 'failed';
@@ -7290,30 +7310,34 @@ class Reader {
     }
     async #markPageClusterAsRead(
         stateID, producerOwner = null, bookEvent = null,
-        originAccountPresentation = null
+        originAccountPresentation = null,
+        diagnosticGeneration = this.#markReadDiagnosticGeneration
     ) {
         producerOwner ??= this.#captureProducerEvidence();
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
         if (!pageTrackingState) {
-            return false;
+            return this.#rejectNativeMarkRead('visiblePageUnavailable', diagnosticGeneration);
         }
         if (pageTrackingState.payload.segments.length === 0
             && pageTrackingState.payload.sentenceIdentifiers.length === 0) {
-            return false;
+            return this.#rejectNativeMarkRead('emptyPayload', diagnosticGeneration);
         }
         if (pageTrackingState.isRead) {
             return true;
         }
         const doc = this.#currentPageTrackingDocument();
-        if (!isDocumentLike(doc)) return false;
+        if (!isDocumentLike(doc)) return this.#rejectNativeMarkRead('visiblePageUnavailable', diagnosticGeneration);
         bookEvent ??= this.bookReadingRuntime?.captureEvent(doc) ?? null;
-        if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) return false;
+        if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) return this.#rejectNativeMarkRead('staleChapterPass', diagnosticGeneration);
         const advanceOwner = {
             lifecycleGeneration: this.#lifecycleGeneration,
             renderer: this.view?.renderer ?? null,
             visiblePageCollectionGeneration: this.visiblePageCollectionGeneration,
         };
         this.lastNativeMarkReadRequestOutcome = 'pending';
+        this.lastNativeMarkReadRequestErrorCode = '';
+        const busyOwner = {};
+        this.#markReadBusyOwners.set(stateID, busyOwner);
         this.pageTrackingBusyStateIDs.add(stateID);
         this.#renderPageTrackingButtons('mark-read-busy');
         try {
@@ -7328,46 +7352,59 @@ class Reader {
                 animateStateID: stateID,
                 producerOwner,
                 originAccountPresentation,
+                diagnosticGeneration,
             });
             if (!success) return false;
             await this.#advanceAfterMarkRead(advanceOwner);
             return true;
         } finally {
-            this.pageTrackingBusyStateIDs.delete(stateID);
-            this.#renderPageTrackingButtons('mark-read-finished');
+            if (this.#markReadBusyOwners.get(stateID) === busyOwner) {
+                this.#markReadBusyOwners.delete(stateID);
+                this.pageTrackingBusyStateIDs.delete(stateID);
+                if (!this.#closed && globalThis.reader === this) this.#renderPageTrackingButtons('mark-read-finished');
+            }
         }
     }
     async markVisiblePageAsRead(
         source = 'native', originAccountPresentation = null
     ) {
-        if (this.bookEndcap?.visible || (this.bookReadingRuntime && !this.bookReadingRuntime.state.ready)) return false;
+        const diagnosticGeneration = ++this.#markReadDiagnosticGeneration;
+        const reject = code => this.#rejectNativeMarkRead(code, diagnosticGeneration);
+        if (this.#closed || globalThis.reader !== this) return false;
+        if (this.bookEndcap?.visible || (this.bookReadingRuntime && !this.bookReadingRuntime.state.ready)) return reject('chapterStateUnavailable');
         if (originAccountPresentation !== null) {
             if (typeof originAccountPresentation !== 'string'
                 || this.bookReadingRuntime?.state?.accountPresentation
                     !== originAccountPresentation) {
-                return false;
+                return reject('staleAccount');
             }
         }
         // Capture before any demand-hydration await. A command admitted under A
         // must never acquire B's grant after a same-document lifetime rotation.
         const producerOwner = this.#captureProducerEvidence();
-        if (!producerOwner) return false;
+        if (!producerOwner) return reject('producerUnavailable');
         const bookEvent = this.bookReadingRuntime?.captureEvent(
             this.#currentPageTrackingDocument()
         ) ?? null;
-        if (this.bookReadingRuntime && !bookEvent) return false;
+        if (this.bookReadingRuntime && !bookEvent) return reject('staleChapterPass');
+        const lifecycleGeneration = this.#lifecycleGeneration;
+        const renderer = this.view?.renderer;
         const stateID = 'visible-screen';
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID)
             ?? await this.#ensureVisiblePageTrackingState(`native-demand:${source}`);
         if (!pageTrackingState) {
-            return false;
+            return reject('visiblePageUnavailable');
         }
+        if (!this.#isRendererLifecycleCurrent(lifecycleGeneration, renderer)
+            || diagnosticGeneration !== this.#markReadDiagnosticGeneration
+            || globalThis.reader !== this) return false;
+        if (!readerArticleProducerOwnerIsCurrent(producerOwner)) return reject('producerUnavailable');
         if (originAccountPresentation !== null
             && this.bookReadingRuntime?.state?.accountPresentation
                 !== originAccountPresentation) {
-            return false;
+            return reject('staleAccount');
         }
-        if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) return false;
+        if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) return reject('staleChapterPass');
         const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
         if (wasHidden) {
             globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = true;
@@ -7380,8 +7417,16 @@ class Reader {
             ignoreNextIncomingHideNavigation('native-page-tracking-button');
         }
         return await this.#markPageClusterAsRead(
-            stateID, producerOwner, bookEvent, originAccountPresentation
+            stateID, producerOwner, bookEvent, originAccountPresentation, diagnosticGeneration
         );
+    }
+    #rejectNativeMarkRead(errorCode, generation) {
+        if (generation !== this.#markReadDiagnosticGeneration || this.#closed || globalThis.reader !== this) return false;
+        this.lastNativeMarkReadRequestOutcome = 'failed';
+        this.lastNativeMarkReadRequestErrorCode = errorCode;
+        console.debug('# READER ebook-native-mark', 'phase=rejected', `errorCode=${errorCode}`);
+        this.#renderPageTrackingButtons('mark-read-rejected');
+        return false;
     }
     async #ensureVisiblePageTrackingState(reason = 'native-demand', explicitDoc = null) {
         const doc = this.#currentPageTrackingDocument(explicitDoc);
@@ -7470,6 +7515,7 @@ class Reader {
         return states.find((state) => state.id === 'visible-screen') ?? null;
     }
     #renderPageTrackingButtons(reason = 'unspecified') {
+        if (globalThis.reader !== this) return;
         const container = document.getElementById('page-tracking-container');
         const buttonHost = document.getElementById('page-tracking-buttons');
         const postNativeMarkReadState = (available, state = null, isBusy = false) => {
@@ -7489,7 +7535,9 @@ class Reader {
         const pageTrackingStates = this.pageTrackingStates || [];
         const hasStates = pageTrackingStates.length > 0;
         const completionAction = this.completionAction;
-        const markReadButtonsVisible = !this.bookEndcap?.visible && (!this.bookReadingRuntime || this.bookReadingRuntime.state.ready) && document.body?.dataset?.mnbMarkReadButtonsVisible !== 'false';
+        const producerReady = this.#markReadProducerReadiness?.ready
+            ?? (globalThis.manabiArticleProducer == null);
+        const markReadButtonsVisible = !this.#closed && producerReady && !this.bookEndcap?.visible && (!this.bookReadingRuntime || this.bookReadingRuntime.state.ready) && document.body?.dataset?.mnbMarkReadButtonsVisible !== 'false';
         const visibleState = pageTrackingStates.find((state) => state.id === 'visible-screen') ?? null;
         const nativeMarkReadState = completionAction
             ? {
@@ -7680,6 +7728,13 @@ class Reader {
         if (typeof move !== 'function') {
             return { ignored: true, reason: 'missingMoveHandler' };
         }
+        const turnOriginScope = this.bookReadingRuntime?.state.state?.scope;
+        const turnOrigin = turnOriginScope ? {
+            lifecycleGeneration: this.#lifecycleGeneration,
+            renderer: this.view?.renderer,
+            accountPresentation: this.bookReadingRuntime.state.accountPresentation,
+            scope: { ...turnOriginScope },
+        } : null;
         if (this.#pageTurnInFlight && !serializedContinuation) {
             if (ignoreIfPageTurnInFlight) {
                 return { ignored: true, reason: 'pageTurnInFlight' };
@@ -7821,7 +7876,7 @@ class Reader {
             if (shouldRequestConfirmedPageTurnProgress(movementDisposition)) {
                 // Capture both immutable authorities before the debounce.
                 // The callback may run after a frame or chapter-pass change.
-                this.#postConfirmedPageTurnProgress(producerOwner);
+                this.#postConfirmedPageTurnProgress(producerOwner, turnOrigin);
             }
             if (
                 movementDisposition === PAGE_TURN_MOVEMENT_DISPOSITION.noMove
@@ -8511,6 +8566,7 @@ class Reader {
     completeLastPositionLoad(reason = 'unspecified') {
         this.hasLoadedLastPosition = true;
         this.completeLastPositionLoadAttempt(reason);
+        this.#refreshBookPositionObservation();
     }
     refreshNativeLookupHitTargets(reason = 'manual') {
         if (this.#shouldDeferNativeLookupHitTargetRefresh(reason)) {
@@ -8863,6 +8919,12 @@ class Reader {
     async open(file, options = {}) {
         if (this.#closed) throw readerOpenSupersededError()
         const lifecycleGeneration = ++this.#lifecycleGeneration
+        this.#confirmedTurnAwaitingChapter = null;
+        this.#markReadProducerReadiness?.close();
+        this.#markReadProducerReadiness = null;
+        ++this.#markReadDiagnosticGeneration;
+        this.#markReadBusyOwners.clear();
+        this.#renderPageTrackingButtons('producer-observation-retired');
         const isCurrent = () => this.#isLifecycleCurrent(lifecycleGeneration)
         this.setLoadingIndicator(true, 'reader.open');
         installReaderPresentationState(options?.readerPresentationState ?? globalThis.__manabiReaderPresentationState, 'reader.open');
@@ -8907,11 +8969,9 @@ class Reader {
                 }
                 applyBookReadingProjection(this, state, progress =>
                     this.applyBookReadingProgress(progress, 'native-chapter-publication', true));
+                this.#resumeConfirmedTurnAfterChapterAdmission();
                 if (this.#bookPositionRefreshNeeded && state.scope) {
-                    this.#bookPositionRefreshNeeded = false;
-                    // Produce a NEW observation of the current admitted location.
-                    // Do not attach a new pass to an old queued relocate payload.
-                    this.#postConfirmedPageTurnProgress();
+                    this.#refreshBookPositionObservation();
                 }
                 this.refreshNativeLookupHitTargets?.('chapter-pass-publication');
             },
@@ -8927,6 +8987,9 @@ class Reader {
             if (!isCurrent() || this.view !== view) return;
             const producerOwner = this.#captureProducerEvidence();
             if (!producerOwner) return;
+            // Resample the actual shell; readiness reported before native frame
+            // admission may have been discarded. This does not set a marker.
+            globalThis.__manabiPostReaderDocStateEvent?.('producer-ready.current-state');
             if (this.bookReadingRuntime) {
                 this.#bookPositionRefreshNeeded = true;
                 // A replacement can also follow a peer lifetime transition.
@@ -8940,6 +9003,15 @@ class Reader {
             // The normal restore, document, chapter and position guards apply.
             this.#postConfirmedPageTurnProgress(producerOwner);
         });
+        this.#markReadProducerReadiness = observeReaderArticleProducerReadiness({
+            target: window,
+            isCurrent: () => isCurrent() && this.view === view && globalThis.reader === this,
+            onChange: ready => {
+                this.#renderPageTrackingButtons(ready ? 'producer-ready' : 'producer-unavailable');
+                if (ready) this.#scheduleNativeMarkReadStateRefresh('producer-ready');
+            },
+        });
+        this.#renderPageTrackingButtons('producer-observation-installed');
         const initialRestore = options?.initialRestore ?? null;
         globalThis.__manabiPostReaderDocStateEvent?.('reader.open.viewAssigned');
         // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
@@ -11166,15 +11238,81 @@ class Reader {
         });
     }
 
-    #postConfirmedPageTurnProgress = (
-        producerOwner = this.#captureProducerEvidence()
-    ) => {
+    #refreshBookPositionObservation() {
+        if (!this.#bookPositionRefreshNeeded || this.#closed
+            || globalThis.reader !== this || this.hasLoadedLastPosition !== true
+            || globalThis.__manabiRestoreInProgress === true) return;
+        const producerOwner = this.#captureProducerEvidence();
         const content = getPrimaryRendererContent(this.view?.renderer);
         const doc = content?.doc ?? content?.document ?? null;
         const bookEvent = this.bookReadingRuntime?.captureEvent(doc) ?? null;
+        if (!producerOwner || !bookEvent) return;
+        this.#bookPositionRefreshNeeded = false;
+        // Capture a new observation, never a withheld relocation. Restore's
+        // user-input guard still prevents all saved-position writes.
+        // Readiness must not replace a user turn in either debounce slot.
+        this.#dispatchConfirmedPageTurnProgress({ bookEvent, producerOwner, observationOnly: true });
+    }
+    #resumeConfirmedTurnAfterChapterAdmission() {
+        const pending = this.#confirmedTurnAwaitingChapter;
+        if (!pending) return;
+        const runtime = this.bookReadingRuntime;
+        const content = getPrimaryRendererContent(this.view?.renderer);
+        const doc = content?.doc ?? content?.document ?? null;
+        if (!this.#isRendererLifecycleCurrent(pending.lifecycleGeneration, pending.renderer)
+            || globalThis.reader !== this || doc !== pending.document
+            || runtime?.state.locationRevision !== pending.locationRevision
+            || runtime?.state.accountPresentation !== pending.origin.accountPresentation
+            || !readerArticleProducerOwnerIsCurrent(pending.producerOwner)
+            || this.hasLoadedLastPosition !== true
+            || globalThis.__manabiRestoreInProgress === true
+            || globalThis.__manabiRequireUserInputBeforePositionSave === true) {
+            this.#confirmedTurnAwaitingChapter = null;
+            return;
+        }
+        const bookEvent = runtime.captureEvent(doc);
+        if (!bookEvent) return;
+        this.#confirmedTurnAwaitingChapter = null;
+        const scope = bookEvent.scope, origin = pending.origin.scope;
+        if (scope.articleProgressID !== origin.articleProgressID
+            || scope.articleEpochID !== origin.articleEpochID
+            || (scope.chapterKey === origin.chapterKey
+                && scope.chapterEpochID !== origin.chapterEpochID)) return;
+        // The continuation owns only the exact selection and original authority.
+        // Read current location now; never grant or replay a withheld payload.
+        this.#publishConfirmedPageTurnProgress({
+            bookEvent, producerOwner: pending.producerOwner,
+        });
+    }
+    #postConfirmedPageTurnProgress = (
+        producerOwner = this.#captureProducerEvidence(), turnOrigin = null
+    ) => {
+        if (turnOrigin && (!this.#isRendererLifecycleCurrent(
+                turnOrigin.lifecycleGeneration, turnOrigin.renderer)
+            || this.bookReadingRuntime?.state.accountPresentation !== turnOrigin.accountPresentation
+            || !readerArticleProducerOwnerIsCurrent(producerOwner))) return;
+        const content = getPrimaryRendererContent(this.view?.renderer);
+        const doc = content?.doc ?? content?.document ?? null;
+        const bookEvent = this.bookReadingRuntime?.captureEvent(doc) ?? null;
+        if (!bookEvent && this.bookReadingRuntime && turnOrigin
+            && readerArticleProducerOwnerIsCurrent(producerOwner)
+            && this.hasLoadedLastPosition === true
+            && globalThis.__manabiRestoreInProgress !== true
+            && globalThis.__manabiRequireUserInputBeforePositionSave !== true) {
+            this.#confirmedTurnAwaitingChapter = {
+                producerOwner, origin: turnOrigin,
+                lifecycleGeneration: this.#lifecycleGeneration,
+                renderer: this.view?.renderer, document: doc,
+                locationRevision: this.bookReadingRuntime.state.locationRevision,
+            };
+            return;
+        }
         this.#publishConfirmedPageTurnProgress({ bookEvent, producerOwner });
     }
-    #publishConfirmedPageTurnProgress = debounce(({ bookEvent, producerOwner }) => {
+    #publishConfirmedPageTurnProgress = debounce(message => {
+        this.#dispatchConfirmedPageTurnProgress(message);
+    }, 0)
+    #dispatchConfirmedPageTurnProgress = ({ bookEvent, producerOwner, observationOnly = false }) => {
         if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) {
             globalThis.__manabiRestoreDebugLog?.('ebook.confirmedProgress.rejected', {
                 reason: 'book-event', hasBookScope: !!bookEvent?.scope,
@@ -11206,9 +11344,10 @@ class Reader {
             closed: this.#closed,
             hasLoadedLastPosition: this.hasLoadedLastPosition === true,
             restoreInProgress: globalThis.__manabiRestoreInProgress === true,
-            requiresUserInput:
-                globalThis.__manabiRequireUserInputBeforePositionSave === true,
-            location,
+            requiresUserInput: !observationOnly
+                && globalThis.__manabiRequireUserInputBeforePositionSave === true,
+            location: observationOnly && location
+                ? { ...location, reason: 'current-location-observation' } : location,
             currentDocumentURL,
             currentSectionIndex,
             sectionBaseCFI,
@@ -11227,9 +11366,15 @@ class Reader {
             });
             return;
         }
-        this.#postUpdateReadingProgressMessage({
+        // A readiness observation must not replace a pending durable page-turn
+        // delivery in that path's debounce slot.
+        const postProgress = observationOnly
+            ? this.#dispatchUpdateReadingProgressMessage
+            : this.#postUpdateReadingProgressMessage;
+        postProgress({
             bookEvent,
             producerOwner,
+            observationOnly,
             fraction: decision.fraction,
             cfi: decision.persistedLocator,
             reason: decision.progressReason,
@@ -11247,11 +11392,16 @@ class Reader {
             expectedLocationCFI: decision.cfi,
             expectedLocationFraction: decision.fraction,
         });
-        if (decision.markCFIUnstable) this.unstableCFIs.add(decision.cfi);
-        this.lastCFIPersistenceObservation = decision.nextObservation;
-    }, 0)
+        if (!observationOnly) {
+            if (decision.markCFIUnstable) this.unstableCFIs.add(decision.cfi);
+            this.lastCFIPersistenceObservation = decision.nextObservation;
+        }
+    }
 
-    #postUpdateReadingProgressMessage = debounce(({
+    #postUpdateReadingProgressMessage = debounce(message => {
+        this.#dispatchUpdateReadingProgressMessage(message);
+    }, 400)
+    #dispatchUpdateReadingProgressMessage = ({
         fraction,
         cfi,
         reason,
@@ -11264,13 +11414,14 @@ class Reader {
         expectedLocationFraction = null,
         bookEvent = null,
         producerOwner = null,
+        observationOnly = false,
     }) => {
         if (
             this.#closed
             || this.hasLoadedLastPosition !== true
             || globalThis.__manabiRestoreInProgress === true
-            || globalThis.__manabiSuppressNextRestoreRelocateSave === true
-            || globalThis.__manabiRequireUserInputBeforePositionSave === true
+            || (!observationOnly && (globalThis.__manabiSuppressNextRestoreRelocateSave === true
+                || globalThis.__manabiRequireUserInputBeforePositionSave === true))
         ) {
             globalThis.__manabiRestoreDebugLog?.('ebook.updateReadingProgress.rejected', {
                 stage: 'restore-save-admission',
@@ -11360,6 +11511,7 @@ class Reader {
             return;
         }
         const progressMessage = carryReaderArticleProducerOwner({
+            ebookLocationObservationOnly: observationOnly,
             bookReadingScope: bookEvent?.scope ?? null,
             pageURL: currentDocumentURL,
             fractionalCompletion: fraction,
@@ -11386,12 +11538,13 @@ class Reader {
             locationRevision: bookEvent?.locationRevision ?? null, sectionIndex,
         });
         window.webkit.messageHandlers.updateReadingProgress.postMessage(progressMessage)
-    }, 400)
+    }
 
     async #onRelocate({
         detail
     }) {
         if (this.#closed) return;
+        this.#confirmedTurnAwaitingChapter = null;
         const producerOwner = this.#captureProducerEvidence();
         this.bookReadingRuntime?.updateLocation(true);
         const eventContent = getPrimaryRendererContent(this.view?.renderer);
@@ -11864,7 +12017,10 @@ class Reader {
             const shouldPersistRelocatePosition =
                 normalizedRelocateReason !== 'anchor'
                 && !shouldSuppressRestoreSettleSave
-                && !requiresUserInputBeforePositionSave;
+                && !requiresUserInputBeforePositionSave
+                // An unadmitted relocate must not overwrite the confirmed
+                // turn's freshly admitted delivery in the durable debounce.
+                && (!this.bookReadingRuntime || bookEvent !== null);
             if (shouldPersistRelocatePosition) {
                 this.#postUpdateReadingProgressMessage({
                     bookEvent,
