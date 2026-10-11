@@ -42,7 +42,7 @@ struct LibraryScriptDomainOwner: Sendable {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         await beforeWrite?()
         try Task.checkCancellation()
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             guard let script = resolve(in: realm) else { return }
             let now = Date()
@@ -149,7 +149,7 @@ struct UserScriptAllowedDomainEdit: Sendable {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: owner.realmConfiguration)
         await beforeWrite?()
         try Task.checkCancellation()
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             guard let script = owner.resolve(in: realm), script.allowedDomainIDs.contains(domainID),
                   let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID),

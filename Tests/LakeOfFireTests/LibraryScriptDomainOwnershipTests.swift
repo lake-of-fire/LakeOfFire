@@ -1,6 +1,6 @@
 import BigSyncKit
 import RealmSwift
-import RealmSwiftGaps
+@testable import RealmSwiftGaps
 import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireLibrary
@@ -383,4 +383,91 @@ final class LibraryScriptDomainOwnershipTests: XCTestCase, @unchecked Sendable {
             XCTAssertEqual(generations(realm), before)
         }
     }
+    func testPostSubmissionCancellationReturnsDurableDomainEdit() async throws {
+        let (realm, script, domains) = try await fixture()
+        let editor = try XCTUnwrap(UserScriptAllowedDomainEditor(script: script, domainID: domains[0].id))
+        let command = editor.makeEdit("durable.example")
+        let write = Task { @RealmBackgroundActor in
+            try await RealmWriteCommitObservation.$didSubmit.withValue({
+                withUnsafeCurrentTask { $0?.cancel() }
+            }) {
+                try await command.write()
+            }
+        }
+        try await write.value
+        XCTAssertTrue(write.isCancelled)
+        realm.refresh()
+        XCTAssertEqual(domains[0].domain, "durable.example")
+        let afterCommit = generations(realm)
+        try await command.write()
+        realm.refresh()
+        XCTAssertEqual(generations(realm), afterCommit)
+    }
+
+    func testPostSubmissionCancellationReturnsDurableDomainAddition() async throws {
+        let (realm, script, domains) = try await fixture()
+        let owner = try XCTUnwrap(LibraryScriptDomainOwner(script: script))
+        let originalIDs = Set(domains.map(\.id))
+        let write = Task { @RealmBackgroundActor in
+            try await RealmWriteCommitObservation.$didSubmit.withValue({
+                withUnsafeCurrentTask { $0?.cancel() }
+            }) {
+                try await owner.write(.add)
+            }
+        }
+        try await write.value
+        XCTAssertTrue(write.isCancelled)
+        realm.refresh()
+        let addedIDs = Set(script.allowedDomainIDs).subtracting(originalIDs)
+        XCTAssertEqual(addedIDs.count, 1)
+        let addedID = try XCTUnwrap(addedIDs.first)
+        let added = try XCTUnwrap(realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: addedID))
+        XCTAssertNotNil(journal(for: added, in: realm))
+        XCTAssertEqual(added.explicitlyModifiedAt, script.explicitlyModifiedAt)
+    }
+
+    func testPostSubmissionCancellationReturnsDurableDomainDeletion() async throws {
+        let (realm, script, domains) = try await fixture()
+        let editor = try XCTUnwrap(UserScriptAllowedDomainEditor(script: script, domainID: domains[0].id))
+        let owner = editor.owner
+        let selection = editor.selection
+        let write = Task { @RealmBackgroundActor in
+            try await RealmWriteCommitObservation.$didSubmit.withValue({
+                withUnsafeCurrentTask { $0?.cancel() }
+            }) {
+                try await owner.write(.delete([selection]))
+            }
+        }
+        try await write.value
+        XCTAssertTrue(write.isCancelled)
+        realm.refresh()
+        XCTAssertFalse(script.allowedDomainIDs.contains(selection.id))
+        XCTAssertTrue(domains[0].isDeleted)
+        XCTAssertFalse(domains[1].isDeleted)
+        XCTAssertEqual(domains[0].explicitlyModifiedAt, script.explicitlyModifiedAt)
+        let afterCommit = generations(realm)
+        try await owner.write(.delete([selection]))
+        realm.refresh()
+        XCTAssertEqual(generations(realm), afterCommit)
+    }
+
+    func testPreCancelledDomainDeletionPreservesMembershipAndJournal() async throws {
+        let (realm, script, domains) = try await fixture()
+        let editor = try XCTUnwrap(UserScriptAllowedDomainEditor(script: script, domainID: domains[0].id))
+        let owner = editor.owner
+        let selection = editor.selection
+        let before = generations(realm)
+        let ids = Array(script.allowedDomainIDs)
+        let write = Task { @RealmBackgroundActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await owner.write(.delete([selection]))
+        }
+        do { try await write.value; XCTFail("Cancelled deletion succeeded") }
+        catch is CancellationError {}
+        realm.refresh()
+        XCTAssertEqual(Array(script.allowedDomainIDs), ids)
+        XCTAssertFalse(domains[0].isDeleted)
+        XCTAssertEqual(generations(realm), before)
+    }
+
 }

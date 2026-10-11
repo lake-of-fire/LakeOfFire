@@ -1,6 +1,6 @@
 import BigSyncKit
 import RealmSwift
-import RealmSwiftGaps
+@testable import RealmSwiftGaps
 import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireLibrary
@@ -459,4 +459,23 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
         XCTAssertNotEqual(generations(original), originalGenerations)
         XCTAssertEqual(script.title, "Retired observation")
     }
+    func testPostSubmissionCancellationSettlesDurableFieldDraft() async throws {
+        let (realm, script) = try await fixture()
+        let editor = model(script)
+        let write = RealmWriteCommitObservation.$didSubmit.withValue({
+            withUnsafeCurrentTask { $0?.cancel() }
+        }) {
+            editor.writeFieldAsync(.title("Durable script title"))
+        }
+        try await write.value
+        XCTAssertTrue(write.isCancelled)
+        realm.refresh()
+        XCTAssertEqual(script.title, "Durable script title")
+        XCTAssertEqual(editor.scriptTitle, "Durable script title")
+        let afterCommit = generations(realm)
+        try await editor.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(generations(realm), afterCommit)
+    }
+
 }

@@ -127,7 +127,7 @@ struct LibraryScriptFieldCommand: Sendable {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: owner.realmConfiguration)
         try await beforeWrite?()
         try Task.checkCancellation()
-        try await realm.asyncWrite {
+        try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             guard let script = owner.resolve(in: realm) else { return }
             ordering.withAdmission(field: edit.field, intent: intent) {
