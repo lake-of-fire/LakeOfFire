@@ -27,3 +27,9 @@ Reviewed 2026-10-11 07:59 UTC. Source: Lake #50 at ce8200d810d35b6ff18e0da2fe333
 - Its state/owner fixtures are the 17 import-state and 15 operation methods already carried above, not 32 newly authored cases. Native rendering and callback integration remain UNRUN.
 - This closes the bounded BookGridCell source delta against #50 ce8200d. Cross-cell navigation begun by external synchronous onSelected callbacks remains outside the row-local lifetime contract; no global selection guarantee is asserted for arbitrary grid consumers.
 - Next bounded action: reconcile metadata-specific limits and remaining EPUB serving/storage/restore prerequisites against current #138 architecture. External application file-picker consumers remain separately tracked.
+
+## Metadata composition — 08:04 UTC
+- Full EPubParser comparison found that copying #50 wholesale would regress current main-title refinement, CDATA, first nonempty creator selection and entity rejection.
+- Carried only its missing limits parameter and pre-parse catalog admission into the newer parser. Both container and OPF now use metadata-specific byte limits; unrelated media is accounted in the catalog total without being read under the metadata per-entry cap.
+- Nine original resource-limit cases plus two composition regressions cover retained title/CDATA/creator semantics and entity rejection across packed/unpacked fixtures. All 11 UNCOMPILED/UNRUN; existing metadata-selection tests are unchanged.
+- EPub.swift is byte-identical across these two heads and needs no port. Remaining work is native EPUB serving/storage/restore and paired schema/dependency contracts.
