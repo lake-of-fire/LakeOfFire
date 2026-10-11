@@ -77,15 +77,24 @@ struct LibraryCategoriesView: View {
         .disabled(libraryManagerViewModel.exportedOPML == nil)
 #endif
         FilePicker(types: [UTType(exportedAs: "public.opml"), .xml], allowMultiple: true, afterPresented: nil, onPicked: { urls in
-            Task.detached {
-                await LibraryDataManager.shared.importOPML(fileURLs: urls)
-            }
+            libraryManagerViewModel.importOPML(fileURLs: urls)
         }, label: {
-            Label("Import My Library…", systemImage: "square.and.arrow.down")
+            Label(
+                libraryManagerViewModel.isImportingOPML
+                    ? "Importing My Library…"
+                    : "Import My Library…",
+                systemImage: "square.and.arrow.down"
+            )
 #if os(macOS)
                 .frame(maxWidth: .infinity)
 #endif
         })
+        .disabled(libraryManagerViewModel.isImportingOPML)
+        if let errorMessage = libraryManagerViewModel.importOPMLErrorMessage {
+            Text(errorMessage)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
     
     @ViewBuilder var userLibraryView: some View {

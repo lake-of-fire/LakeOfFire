@@ -110,12 +110,15 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     @Published var exportedOPML: OPML?
     @Published var exportedOPMLFileURL: URL?
+    @Published var importOPMLErrorMessage: String?
+    @Published var isImportingOPML = false
     
 //    @AppStorage("LibraryManagerViewModel.presentedCategories") var presentedCategories = [LibraryRoute]()
     @Published var selectedFeed: Feed?
     
     private var exportOPMLTask: Task<Void, Never>?
     private var exportOPMLGeneration = 0
+    private var importOPMLTask: Task<Void, Never>?
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
@@ -260,6 +263,82 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         }
     }
     
+    @MainActor
+    func importOPML(fileURLs: [URL]) {
+        guard !fileURLs.isEmpty, importOPMLTask == nil else { return }
+        let configuration = libraryConfiguration?.realm?.configuration ?? LibraryDataManager.realmConfiguration
+        let storeIdentity = Self.importStoreIdentity(configuration)
+        isImportingOPML = true
+        importOPMLErrorMessage = nil
+        importOPMLTask = Task { @MainActor [weak self] in
+            let result = await LibraryDataManager.shared.importOPML(
+                fileURLs: fileURLs,
+                realmConfiguration: configuration
+            )
+            guard let self else { return }
+            self.importOPMLTask = nil
+            self.isImportingOPML = false
+            guard !Task.isCancelled,
+                  Self.importStoreIdentity(LibraryDataManager.realmConfiguration) == storeIdentity,
+                  Self.importStoreIdentity(
+                    self.libraryConfiguration?.realm?.configuration ?? LibraryDataManager.realmConfiguration
+                  ) == storeIdentity else { return }
+            self.importOPMLErrorMessage = Self.importOPMLFailureMessage(for: result)
+        }
+    }
+
+    static func importOPMLFailureMessage(
+        for result: LibraryDataManager.LocalOPMLImportResult
+    ) -> String? {
+        let unfinishedCount = result.outcomes.reduce(into: 0) { count, outcome in
+            switch outcome {
+            case .cancelled, .superseded, .notStarted:
+                count += 1
+            case .committed, .failed:
+                break
+            }
+        }
+        guard !result.failedFiles.isEmpty || unfinishedCount > 0 else { return nil }
+
+        var sentences = [String]()
+        if !result.failedFiles.isEmpty {
+            let failedNames = result.failedFiles
+                .map { $0.fileURL.lastPathComponent }
+                .joined(separator: ", ")
+            sentences.append("Couldn’t import \(failedNames).")
+        }
+        if unfinishedCount > 0 {
+            let wasSuperseded = result.outcomes.contains { outcome in
+                guard case .superseded = outcome else { return false }
+                return true
+            }
+            let fileDescription = "\(unfinishedCount) file\(unfinishedCount == 1 ? "" : "s")"
+            if wasSuperseded {
+                sentences.append(
+                    "A newer import replaced this request before \(fileDescription) finished."
+                )
+            } else {
+                sentences.append("Import stopped before \(fileDescription) finished.")
+            }
+        }
+        if result.succeededFileURLs.isEmpty {
+            sentences.append("No files were imported.")
+        } else {
+            let successCount = result.succeededFileURLs.count
+            sentences.append(
+                "Imported \(successCount) other file\(successCount == 1 ? "" : "s")."
+            )
+        }
+        return sentences.joined(separator: " ")
+    }
+    
+    private static func importStoreIdentity(_ configuration: Realm.Configuration) -> String {
+        if let identifier = configuration.inMemoryIdentifier {
+            return "memory:\(identifier)"
+        }
+        return "file:\(configuration.fileURL?.standardizedFileURL.resolvingSymlinksInPath().path ?? "default")"
+    }
+
     @RealmBackgroundActor
     func add(
         rssURL: URL,
