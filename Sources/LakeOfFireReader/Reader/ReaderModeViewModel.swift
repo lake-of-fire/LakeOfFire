@@ -4092,6 +4092,10 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             }
             if let readerFileManager {
                 let html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
+                try Task.checkCancellation()
+                guard ownsReaderDocumentBinding(navigationBindingToken, scriptCaller: scriptCaller) else {
+                    throw CancellationError()
+                }
                 if let html {
                     try Task.checkCancellation()
 
@@ -4103,12 +4107,25 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                     }
                     let usedSnippetCanonical: Bool
                     let usedCanonicalMarkup: Bool
+                    let snippetPublicationDate: String?
+                    if committedURL.isSnippetURL {
+                        snippetPublicationDate = await readerContentPublicationDateFallback(for: committedURL)
+                        try Task.checkCancellation()
+                        guard ownsReaderDocumentBinding(navigationBindingToken, scriptCaller: scriptCaller) else {
+                            throw CancellationError()
+                        }
+                        guard committedURL.matchesReaderURL(readerContent.pageURL) else {
+                            throw CancellationError()
+                        }
+                    } else {
+                        snippetPublicationDate = nil
+                    }
                     if committedURL.isSnippetURL,
                        let snippetHTML = buildSnippetCanonicalReadabilityHTML(
                         html: html,
                         contentURL: committedURL,
                         fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
-                        publishedTime: await readerContentPublicationDateFallback(for: committedURL),
+                        publishedTime: snippetPublicationDate,
                         preferredTitle: content.title,
                         hideReaderTitleOverride: content.isTitlePrefixOfContent
                        ) {
