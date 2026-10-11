@@ -203,7 +203,7 @@ func ebookDirectSectionRequest(from url: URL) -> EbookDirectSectionRequest? {
 /// Returns the package identity owned by an admitted ebook document.  The identity never
 /// includes a fragment or query: those decorate a section request, not the package that
 /// owns its resources.
-func ebookCanonicalPackageURL(_ url: URL) -> URL? {
+public func ebookCanonicalPackageURL(_ url: URL) -> URL? {
     guard url.scheme == "ebook",
           url.host == "ebook",
           url.pathComponents.starts(with: ["/", "load"]) else {
