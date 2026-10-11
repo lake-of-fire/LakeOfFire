@@ -374,12 +374,28 @@ func applyReaderTheme(
                 const applyTheme = (doc) => {
                     const body = doc?.body;
                     if (!body) { return false; }
-                    body.dataset.mnbColorScheme = colorScheme;
-                    body.dataset.mnbLightTheme = lightModeTheme;
-                    body.dataset.mnbDarkTheme = darkModeTheme;
-                    doc.documentElement?.style?.setProperty?.('color-scheme', colorScheme);
-                    body.style?.setProperty?.('color-scheme', colorScheme);
-                    return true;
+                    let changed = false;
+                    if (body.dataset.mnbColorScheme !== colorScheme) {
+                        body.dataset.mnbColorScheme = colorScheme;
+                        changed = true;
+                    }
+                    if (body.dataset.mnbLightTheme !== lightModeTheme) {
+                        body.dataset.mnbLightTheme = lightModeTheme;
+                        changed = true;
+                    }
+                    if (body.dataset.mnbDarkTheme !== darkModeTheme) {
+                        body.dataset.mnbDarkTheme = darkModeTheme;
+                        changed = true;
+                    }
+                    if (doc.documentElement?.style?.getPropertyValue?.('color-scheme') !== colorScheme) {
+                        doc.documentElement?.style?.setProperty?.('color-scheme', colorScheme);
+                        changed = true;
+                    }
+                    if (body.style?.getPropertyValue?.('color-scheme') !== colorScheme) {
+                        body.style?.setProperty?.('color-scheme', colorScheme);
+                        changed = true;
+                    }
+                    return changed;
                 };
                 globalThis.manabiReaderColorScheme = colorScheme;
                 globalThis.manabiReaderLightModeTheme = lightModeTheme;
