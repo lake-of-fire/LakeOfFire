@@ -616,7 +616,7 @@ fileprivate struct ReaderWebViewInternal: View {
         }
         .onDisappear {
         }
-        .task(id: sharedReaderFontAsset?.localFileURL?.path ?? "system-fonts") { @MainActor in
+        .task(id: sharedReaderFontAsset) { @MainActor in
             internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
         }
     }
