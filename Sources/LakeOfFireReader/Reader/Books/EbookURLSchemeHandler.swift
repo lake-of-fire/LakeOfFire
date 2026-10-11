@@ -1076,8 +1076,50 @@ fileprivate actor EBookLoadingActor {
     }
 }
 
+private struct EbookServingEntrySource: Sendable {
+    let access: ReaderEBookServingAccess?
+    let legacy: ReaderPackageEntrySourceCache.CachedSource?
+
+    static func capture(
+        access: ReaderEBookServingAccess?, cache: ReaderPackageEntrySourceCache,
+        forPackageURL: URL, readerFileManager: ReaderFileManager
+    ) async throws -> Self {
+        try access?.validate()
+        if access?.lease != nil { return Self(access: access, legacy: nil) }
+        let legacy = try await cache.cachedSource(
+            forPackageURL: forPackageURL, readerFileManager: readerFileManager
+        )
+        try access?.validate()
+        return Self(access: access, legacy: legacy)
+    }
+
+    var entries: [ReaderPackageEntryMetadata] { access?.lease?.package.entries ?? legacy?.entries ?? [] }
+    var generationID: String { access?.lease?.generationID ?? legacy?.generationID ?? "" }
+
+    func readEntry(subpath: String) throws -> Data {
+        try access?.validate()
+        let data: Data
+        if let lease = access?.lease { data = try lease.readEntry(subpath: subpath) }
+        else if let legacy { data = try legacy.source.readEntry(subpath: subpath) }
+        else { throw ReaderEBookServingError.unavailableSession }
+        try access?.validate()
+        return data
+    }
+
+    func metadata(subpath: String, data: Data) throws -> ReaderPackageEntryResponseMetadata {
+        try access?.validate()
+        let metadata: ReaderPackageEntryResponseMetadata
+        if let lease = access?.lease { metadata = try lease.metadata(subpath: subpath, data: data) }
+        else if let legacy { metadata = try legacy.source.mimeType(subpath: subpath, data: data) }
+        else { throw ReaderEBookServingError.unavailableSession }
+        try access?.validate()
+        return metadata
+    }
+}
+
 fileprivate struct EBookEntriesResponse: Codable, Sendable {
     let entries: [ReaderPackageEntryMetadata]
+    let packageDocumentPath: String?
 }
 
 @globalActor
@@ -1127,6 +1169,21 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) var ebookProcessingVariantProvider: EbookProcessingVariantProvider?
     nonisolated(unsafe) var ebookSectionPresentationProvider: EbookSectionPresentationProvider?
     public var readerFileManager: ReaderFileManager?
+    private let packageSessionBinding = ReaderEBookServingSessionBinding()
+    public var packageSessions: ReaderEBookServingSessionStore? {
+        didSet {
+            if let packageSessions {
+                packageSessionBinding.replace(with: packageSessions)
+            } else if oldValue != nil {
+                // Removing the environment revokes this reader's registration
+                // without closing a store retained by another window. It cannot
+                // reopen the old pathname as an unbound legacy request.
+                let unavailable = ReaderEBookServingSessionStore()
+                unavailable.close()
+                packageSessionBinding.replace(with: unavailable)
+            }
+        }
+    }
     nonisolated(unsafe) var processReadabilityContent: EbookReadabilityContentProcessor?
     nonisolated(unsafe) var processHTMLDocument: EbookHTMLDocumentProcessor?
     nonisolated(unsafe) var processHTMLBytes: EbookHTMLBytesProcessor?
@@ -1149,9 +1206,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     @discardableResult
     private func finishActiveTask(
         _ urlSchemeTask: WKURLSchemeTask,
+        servingAccess: ReaderEBookServingAccess? = nil,
         response: URLResponse,
         data: Data? = nil
     ) -> Bool {
+        do { try servingAccess?.validate() }
+        catch { return failActiveTask(urlSchemeTask, error: error) }
         guard schemeTaskCompletionOwnership.claimCompletion(urlSchemeTask as AnyObject) else {
             return false
         }
@@ -1225,6 +1285,16 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let sharedFontCSSBase64 = self.sharedFontCSSBase64
         let sharedFontCSSBase64Provider = self.sharedFontCSSBase64Provider
 
+        let servingAccess: ReaderEBookServingAccess?
+        do {
+            servingAccess = try EbookServingRequest.capture(
+                urlSchemeTask.request, binding: packageSessionBinding
+            )
+        } catch {
+            failActiveTask(urlSchemeTask, error: error)
+            return
+        }
+
         let workTask = Task.detached(priority: ebookURLSchemeTaskPriority(for: url)) { @EbookURLSchemeActor [weak self] in
             guard let self, !Task.isCancelled else { return }
             if url.path == "/processed-section" {
@@ -1247,11 +1317,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 do {
                     let processingVariant = await ebookProcessingVariantProvider?()
                     try Task.checkCancellation()
-                    let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
+                    let cachedSource = try await EbookServingEntrySource.capture(
+                        access: servingAccess, cache: ReaderPackageEntrySourceCache.shared,
                         forPackageURL: request.sourceURL,
                         readerFileManager: readerFileManager
                     )
-                    let sourceData = try cachedSource.source.readEntry(subpath: request.subpath)
+                    let sourceData = try cachedSource.readEntry(subpath: request.subpath)
                     let sourceText = ReaderPackageEntrySource.decodeText(sourceData)
                     let processRequestKey = EBookProcessTextRequestKey(
                         contentURL: request.sourceURL,
@@ -1325,6 +1396,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     await { @MainActor in
                         self.finishActiveTask(
                             urlSchemeTask,
+                            servingAccess: servingAccess,
                             response: response,
                             data: responseData
                         )
@@ -1378,6 +1450,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         await { @MainActor in
                             self.finishActiveTask(
                                 urlSchemeTask,
+                                servingAccess: servingAccess,
                                 response: response,
                                 data: responseData
                             )
@@ -1440,6 +1513,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             await { @MainActor in
                                 self.finishActiveTask(
                                     urlSchemeTask,
+                                    servingAccess: servingAccess,
                                     response: resp,
                                     data: cachedData
                                 )
@@ -1502,6 +1576,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         await { @MainActor in
                             self.finishActiveTask(
                                 urlSchemeTask,
+                                servingAccess: servingAccess,
                                 response: response,
                                 data: responseData
                             )
@@ -1519,11 +1594,15 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
 
                 do {
-                    let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
+                    let cachedSource = try await EbookServingEntrySource.capture(
+                        access: servingAccess, cache: ReaderPackageEntrySourceCache.shared,
                         forPackageURL: mainDocumentURL,
                         readerFileManager: readerFileManager
                     )
-                    let responseBody = EBookEntriesResponse(entries: cachedSource.entries)
+                    let responseBody = EBookEntriesResponse(
+                        entries: cachedSource.entries,
+                        packageDocumentPath: servingAccess?.lease?.package.fingerprint.packageDocumentPath
+                    )
                     let data = try JSONEncoder().encode(responseBody)
                     let response = HTTPURLResponse(
                         url: url,
@@ -1534,6 +1613,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     await { @MainActor in
                         self.finishActiveTask(
                             urlSchemeTask,
+                            servingAccess: servingAccess,
                             response: response,
                             data: data
                         )
@@ -1588,7 +1668,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
 
                 do {
-                    let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
+                    let cachedSource = try await EbookServingEntrySource.capture(
+                        access: servingAccess, cache: ReaderPackageEntrySourceCache.shared,
                         forPackageURL: entryRequest.sourceURL,
                         readerFileManager: readerFileManager
                     )
@@ -1597,8 +1678,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }) != false else {
                         throw ReaderPackageEntrySourceError.entryNotFound
                     }
-                    let data = try cachedSource.source.readEntry(subpath: entryRequest.subpath)
-                    let metadata = try cachedSource.source.mimeType(
+                    let data = try cachedSource.readEntry(subpath: entryRequest.subpath)
+                    let metadata = try cachedSource.metadata(
                         subpath: entryRequest.subpath,
                         data: data
                     )
@@ -1606,11 +1687,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         url: url,
                         metadata: metadata,
                         byteCount: data.count,
-                        isGenerationBacked: entryRequest.generationID != nil
+                        isGenerationBacked: entryRequest.generationID != nil && servingAccess?.lease == nil
                     )
                     await { @MainActor in
                         self.finishActiveTask(
                             urlSchemeTask,
+                            servingAccess: servingAccess,
                             response: response,
                             data: data
                         )
@@ -1627,6 +1709,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         await { @MainActor in
                             self.finishActiveTask(
                                 urlSchemeTask,
+                                servingAccess: servingAccess,
                                 response: response
                             )
                         }()
@@ -1658,6 +1741,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     await { @MainActor in
                         self.finishActiveTask(
                             urlSchemeTask,
+                            servingAccess: servingAccess,
                             response: response,
                             data: data
                         )
@@ -1666,6 +1750,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     await { @MainActor in
                         self.finishActiveTask(
                             urlSchemeTask,
+                            servingAccess: servingAccess,
                             response: missingAssetResponse
                         )
                     }()
@@ -1685,6 +1770,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             await { @MainActor in
                                 self.finishActiveTask(
                                     urlSchemeTask,
+                                    servingAccess: servingAccess,
                                     response: response,
                                     data: data
                                 )

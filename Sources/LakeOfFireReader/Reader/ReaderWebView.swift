@@ -421,6 +421,7 @@ public struct ReaderWebView: View {
     @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject internal var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
+    @Environment(\.readerEBookPackageSessions) private var ebookPackageSessions
     @Environment(\.readerWebViewDataStore) private var readerWebViewDataStore
 
     private var ebookSchemeBindingState: String {
@@ -558,9 +559,13 @@ public struct ReaderWebView: View {
             readerFileURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
             print("# EPUB", "readerWebView.schemeHandlerBindings", ebookSchemeBindingState)
         }
+        .task(id: ebookPackageSessions.map { ObjectIdentifier($0) }) {
+            ebookURLSchemeHandler.packageSessions = ebookPackageSessions
+        }
         .readerFileManagerSetup { readerFileManager in
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
             ebookURLSchemeHandler.readerFileManager = readerFileManager
+            ebookURLSchemeHandler.packageSessions = ebookPackageSessions
         }
         .onDisappear {
             callbackRelay.cancelWork(for: callbackBinding)

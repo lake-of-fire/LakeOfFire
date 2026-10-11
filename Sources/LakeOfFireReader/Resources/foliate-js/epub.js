@@ -961,7 +961,7 @@ export class EPUB {
 ${doc.querySelector('parsererror').innerText}`)
         return doc
     }
-    async init() {
+    async init({ packageDocumentPath = null } = {}) {
         const $container = await this.#loadXML('META-INF/container.xml')
         if (!$container) throw new Error('Failed to load container file')
 
@@ -971,7 +971,9 @@ ${doc.querySelector('parsererror').innerText}`)
             .filter(file => file.mediaType === 'application/oebps-package+xml')
 
         if (!opfs.length) throw new Error('No package document defined in container')
-        const opfPath = opfs[0].fullPath
+        const opfPath = packageDocumentPath ?? opfs[0].fullPath
+        if (!opfs.some(file => file.fullPath === opfPath))
+            throw new Error('Native package document is absent from container')
         const opf = await this.#loadXML(opfPath)
         if (!opf) throw new Error('Failed to load package document')
 

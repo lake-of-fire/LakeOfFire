@@ -194,6 +194,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?
     var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
     var colorScheme: ColorScheme
+    var ebookOpeningPreparer: ReaderEBookOpeningPreparer?
+    private var ebookOpeningRequestID: UUID?
 
     private struct NavigationVisibilityEvent {
         let timestamp: Date
@@ -958,78 +960,106 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
             }),
             ("ebookViewerInitialized", { @MainActor [weak self] message in
-                guard let self else { return }
-                registerEbookViewerFrame(message.frameInfo)
+                guard let self, message.frameInfo.isMainFrame,
+                      let bindingToken = message.javaScriptBindingToken,
+                      scriptCaller.currentJavaScriptBindingToken == bindingToken else { return }
                 let stateURL = readerViewModel.state.pageURL
                 let url = stateURL.isEBookURL ? stateURL : readerContent.pageURL
-                if let scheme = url.scheme,
-                   (scheme == "ebook" || scheme == "ebook-url"),
-                   url.absoluteString.hasPrefix("\(scheme)://"),
-                   url.isEBookURL,
-                   let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))") {
-                    debugPrint(
-                        "# EPUB  ebookViewerInitialized",
-                        "page=\(url.absoluteString)",
-                        "frame=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")"
-                    )
-                    _ = try? await scriptCaller.evaluateJavaScript(
-                        "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
-                        in: message.frameInfo
-                    )
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        do {
-                            let initialRestore = try await ReaderContentReadingProgressLoader
-                                .ebookInitialRestoreLoader?(url)
-                            let defaults = UserDefaults.standard
-                            let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16
-                            let rawWritingDirection = defaults.string(
-                                forKey: "bookWritingDirectionSetting"
-                            ) ?? "original"
-                            let writingDirection = ["original", "horizontal", "vertical"]
-                                .contains(rawWritingDirection)
-                                ? rawWritingDirection
-                                : "original"
-                            let readerPresentationState: [String: any Sendable] = [
-                                "colorScheme": colorScheme == .dark ? "dark" : "light",
-                                "lightModeTheme": defaults.string(forKey: "lightModeTheme") ?? "white",
-                                "darkModeTheme": defaults.string(forKey: "darkModeTheme") ?? "black",
-                                "readerFontSize": readerFontSize,
-                                "readerContentRTSize": readerFontSize * 0.46,
-                                "readerBoldText": defaults.object(forKey: "readerBoldText") as? Bool ?? false,
-                                "maxWidthOverride": readerAdaptiveMaxWidthOverrideCSSValue(
-                                    readerFontSize: readerFontSize
-                                ),
-                                "writingDirection": writingDirection,
-                            ]
-                            var loadArguments: [String: any Sendable] = [
-                                "url": loaderURL.absoluteString,
-                                "layoutMode": defaults.string(forKey: "ebookViewerLayout") ?? "paginated",
-                                "readerPresentationState": readerPresentationState,
-                            ]
-                            let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(
-                                restore: initialRestore
-                            )
-                            loadArguments["initialRestore"] =
-                                initialRestoreRequest?.javaScriptArgument ?? NSNull()
-                            try await scriptCaller.evaluateJavaScript(
-                                """
-                                window.loadEBook({
-                                    url,
-                                    layoutMode,
-                                    initialRestore,
-                                    readerPresentationState
-                                });
-                                """,
-                                arguments: loadArguments,
-                                in: message.frameInfo
-                            )
-                        } catch {
-                            Logger.shared.logger.error(
-                                "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
-                            )
-                        }
+                guard let scheme = url.scheme, scheme == "ebook" || scheme == "ebook-url",
+                      url.isEBookURL,
+                      let frameURL = message.frameInfo.request.url,
+                      urlsMatchIgnoringFragment(frameURL, url),
+                      let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))") else {
+                    return
+                }
+                let requestID = UUID()
+                ebookOpeningRequestID = requestID
+                func validateOpening() throws {
+                    try Task.checkCancellation()
+                    guard self.ebookOpeningRequestID == requestID,
+                          self.scriptCaller.currentJavaScriptBindingToken == bindingToken,
+                          self.urlsMatchIgnoringFragment(self.readerViewModel.state.pageURL, url) else {
+                        throw CancellationError()
                     }
+                }
+                // Stay in the coordinator-owned document callback task. Its
+                // generation invalidation cancels this task on same-URL reloads;
+                // an unstructured child task would discard that native fence.
+                do {
+                    try validateOpening()
+                    registerEbookViewerFrame(message.frameInfo)
+                    try validateOpening()
+                    _ = try await scriptCaller.evaluateJavaScript(
+                        "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
+                        in: message.frameInfo, requiring: bindingToken
+                    )
+                    try validateOpening()
+                    let openingPreparer = ebookOpeningPreparer
+                    let (preparedOpen, initialRestore) = try await ReaderEBookInitialization.prepareAndRestore(
+                        receiptBinding: bindingToken,
+                        currentBinding: {
+                            self.ebookOpeningRequestID == requestID
+                                ? self.scriptCaller.currentJavaScriptBindingToken : nil
+                        },
+                        prepare: { token in try await openingPreparer?(url, token) },
+                        restore: { token in
+                            try await ReaderEBookOpeningDocumentContext.$javaScriptBindingToken.withValue(token) {
+                                try await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
+                            }
+                        }
+                    )
+                    try validateOpening()
+                    let defaults = UserDefaults.standard
+                    let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16
+                    let rawWritingDirection = defaults.string(
+                        forKey: "bookWritingDirectionSetting"
+                    ) ?? "original"
+                    let writingDirection = ["original", "horizontal", "vertical"]
+                        .contains(rawWritingDirection)
+                        ? rawWritingDirection
+                        : "original"
+                    let readerPresentationState: [String: any Sendable] = [
+                        "colorScheme": colorScheme == .dark ? "dark" : "light",
+                        "lightModeTheme": defaults.string(forKey: "lightModeTheme") ?? "white",
+                        "darkModeTheme": defaults.string(forKey: "darkModeTheme") ?? "black",
+                        "readerFontSize": readerFontSize,
+                        "readerContentRTSize": readerFontSize * 0.46,
+                        "readerBoldText": defaults.object(forKey: "readerBoldText") as? Bool ?? false,
+                        "maxWidthOverride": readerAdaptiveMaxWidthOverrideCSSValue(
+                            readerFontSize: readerFontSize
+                        ),
+                        "writingDirection": writingDirection,
+                    ]
+                    var loadArguments: [String: any Sendable] = [
+                        "url": loaderURL.absoluteString,
+                        "layoutMode": defaults.string(forKey: "ebookViewerLayout") ?? "paginated",
+                        "readerPresentationState": readerPresentationState,
+                    ]
+                    if let sessionID = preparedOpen?.packageSessionID {
+                        loadArguments["packageSessionID"] = sessionID
+                    } else {
+                        loadArguments["packageSessionID"] = NSNull()
+                    }
+                    let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(
+                        restore: initialRestore
+                    )
+                    loadArguments["initialRestore"] =
+                        initialRestoreRequest?.javaScriptArgument ?? NSNull()
+                    try validateOpening()
+                    try await scriptCaller.evaluateJavaScript(
+                        """
+                        window.loadEBook({
+                            url, layoutMode, initialRestore, readerPresentationState, packageSessionID
+                        });
+                        """,
+                        arguments: loadArguments,
+                        in: message.frameInfo, requiring: bindingToken
+                    )
+                } catch is CancellationError {
+                } catch {
+                    Logger.shared.logger.error(
+                        "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
+                    )
                 }
             }),
             ("updateReadingProgress", { @MainActor [weak self] message in
@@ -1225,6 +1255,8 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
     @Environment(\.readerShowOriginalWillBeginHandler) internal var showOriginalWillBeginHandler
     @Environment(\.readerNavigationVisibilityWillChangeHandler) internal var navigationVisibilityWillChangeHandler
+    @Environment(\.readerEBookOpeningPreparer) private var ebookOpeningPreparer
+    @Environment(\.readerEBookOpeningPreparerID) private var ebookOpeningPreparerID
     @Environment(\.colorScheme) internal var colorScheme
 
     @State private var readerMessageHandlers: ReaderMessageHandlers?
@@ -1259,6 +1291,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
                     readerMessageHandlers.colorScheme = colorScheme
                 }
+                readerMessageHandlers?.ebookOpeningPreparer = ebookOpeningPreparer
             }
             .task(id: webViewMessageHandlers.handlers.keys) {
                 let handlerKeys = Array(webViewMessageHandlers.handlers.keys).sorted()
