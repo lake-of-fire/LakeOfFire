@@ -1,0 +1,126 @@
+name: Qualify canonical SwiftUIDownloads consumer
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: canonical-swiftui-downloads-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: LakeOfFire
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: lake-of-fire/swiftui-webview
+          ref: bb4b8d682b2befdf3bcf4285e3dae08771be2679
+          path: swiftui-webview
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: lake-of-fire/swift-brave
+          ref: 84f2ba37df3992db73f62b99a3389cee886cbce5
+          path: swift-brave
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: lake-of-fire/RealmSwiftGaps
+          ref: 3c0ccf00d734cae997bd34654a4f2efd01397531
+          path: RealmSwiftGaps
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: lake-of-fire/BigSyncKit
+          ref: e31100998ed6d5c0a515eebc29ddb9acab3090ee
+          path: BigSyncKit
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: lake-of-fire/SwiftUIDownloads
+          ref: 669fd0240f7af043e9161277f551177c671aa8b1
+          path: SwiftUIDownloads
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: lake-of-fire/JapaneseLanguageTools
+          ref: 6cffbb79f95eb1a8f07766e0bafee8410a98f7b7
+          path: JapaneseLanguageTools
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: lake-of-fire/SwiftUtilities
+          ref: 475973026ca1e953d016ff78e65c0be5bb4885d5
+          path: SwiftUtilities
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: lake-of-fire/FaviconFinder
+          ref: dba1692ad10917e5501f7da61c5d53290ac10e7e
+          path: FaviconFinder
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: lake-of-fire/SwiftSoup
+          ref: e870c5ff5efacfce3aa423356fa918e6614f0e50
+          path: SwiftSoup
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: lake-of-fire/swift-readability
+          ref: 438724ab13e428a01ba4bb10ff6fbc8fa6c7330b
+          path: swift-readability
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: lake-of-fire/LakeKit
+          ref: 4a60f068b20e2fb25055aad12f40fb1b7fd5c770
+          path: LakeKit
+          persist-credentials: false
+
+      - name: Select an installed Swift 6.2+ Apple toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=""
+          for candidate in /Applications/Xcode*.app; do
+            [ -d "$candidate/Contents/Developer" ] || continue
+            version="$(DEVELOPER_DIR="$candidate/Contents/Developer" xcrun swift --version 2>&1 | head -n 1)"
+            printf '%s: %s\n' "$candidate" "$version"
+            if printf '%s\n' "$version" | grep -Eq 'Swift version (6\.[2-9]|[7-9]\.)|Apple Swift version (6\.[2-9]|[7-9]\.)'; then
+              selected="$candidate/Contents/Developer"
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "No installed Xcode exposes Swift 6.2 or newer" >&2
+            exit 1
+          fi
+          echo "DEVELOPER_DIR=$selected" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$selected" xcodebuild -version
+          DEVELOPER_DIR="$selected" xcrun swift --version
+
+      - name: Record exact sibling tuple
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in LakeOfFire swiftui-webview swift-brave RealmSwiftGaps BigSyncKit SwiftUIDownloads JapaneseLanguageTools SwiftUtilities FaviconFinder SwiftSoup swift-readability LakeKit; do
+            printf '%s ' "$path"
+            git -C "$path" rev-parse HEAD
+          done
+          xcodebuild -version
+          xcrun swift --version
+
+      - name: Resolve Lake graph
+        run: xcrun swift package --package-path LakeOfFire resolve
+
+      - name: Build LakeOfFireReader debug
+        run: xcrun swift build --package-path LakeOfFire -c debug --target LakeOfFireReader
+
+      - name: Build LakeOfFireReader release
+        run: xcrun swift build --package-path LakeOfFire -c release --target LakeOfFireReader
