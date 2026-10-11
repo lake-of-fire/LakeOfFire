@@ -156,6 +156,47 @@ final class ReaderPackageResourceLimitTests: XCTestCase {
         XCTAssertTrue(accumulator.data.isEmpty)
     }
 
+    func testPresetReadCapsRemainIndependentFromCatalogAdmission() throws {
+        XCTAssertEqual(ReaderPackageResourceLimits.default.maxEntryBytes, 64 * 1024 * 1024)
+        XCTAssertEqual(ReaderPackageResourceLimits.metadata.maxEntryBytes, 8 * 1024 * 1024)
+        XCTAssertEqual(ReaderPackageResourceLimits.image.maxEntryBytes, 128 * 1024 * 1024)
+        var budget = ReaderPackageCatalogBudget(limits: .init(
+            maxEntryBytes: 1, maxAggregateUncompressedBytes: 8))
+        try budget.include(path: "unrequested-media", uncompressedSize: 8)
+        XCTAssertEqual(budget.uncompressedBytes, 8)
+    }
+
+    func testExactCatalogLimitStillAllowsEmptyEntriesWithoutConsumingFailedBudget() throws {
+        var budget = ReaderPackageCatalogBudget(limits: .init(maxAggregateUncompressedBytes: 7))
+        try budget.include(path: "a", uncompressedSize: 3)
+        try budget.include(path: "b", uncompressedSize: 4)
+        XCTAssertThrowsError(try budget.include(path: "rejected", uncompressedSize: 1)) {
+            XCTAssertEqual($0 as? ReaderPackageEntrySourceError, .aggregateSizeExceeded(limit: 7))
+        }
+        XCTAssertEqual(budget.entryCount, 2)
+        XCTAssertEqual(budget.pathUTF8Bytes, 2)
+        XCTAssertEqual(budget.uncompressedBytes, 7)
+        try budget.include(path: "empty", uncompressedSize: 0)
+        XCTAssertEqual(budget.entryCount, 3)
+        XCTAssertEqual(budget.pathUTF8Bytes, 7)
+        XCTAssertEqual(budget.uncompressedBytes, 7)
+    }
+
+    func testRejectedUTF8PathDoesNotConsumeRemainingCatalogBudget() throws {
+        var budget = ReaderPackageCatalogBudget(limits: .init(
+            maxPathUTF8Bytes: 3, maxAggregatePathUTF8Bytes: 4))
+        try budget.include(path: "日", uncompressedSize: 0)
+        XCTAssertThrowsError(try budget.include(path: "日本", uncompressedSize: 0)) {
+            XCTAssertEqual($0 as? ReaderPackageEntrySourceError, .entryPathSizeExceeded(limit: 3))
+        }
+        try budget.include(path: "a", uncompressedSize: 0)
+        XCTAssertThrowsError(try budget.include(path: "b", uncompressedSize: 0)) {
+            XCTAssertEqual($0 as? ReaderPackageEntrySourceError, .aggregatePathSizeExceeded(limit: 4))
+        }
+        XCTAssertEqual(budget.entryCount, 2)
+        XCTAssertEqual(budget.pathUTF8Bytes, 4)
+    }
+
 }
 
 /// Synthetic files in a unique temporary directory; never opens a user's library.
