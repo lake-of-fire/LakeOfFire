@@ -197,6 +197,32 @@ final class ReaderPackageResourceLimitTests: XCTestCase {
         XCTAssertEqual(budget.pathUTF8Bytes, 4)
     }
 
+
+    // Retained from older Lake #50; these direct admission assertions are
+    // independent of the ZIP/directory fixtures and their advertised metadata.
+    func testCatalogCountRejectionDoesNotConsumeAnyBudgetCounter() throws {
+        var budget = ReaderPackageCatalogBudget(limits: .init(maxEntryCount: 2))
+        try budget.include(path: "dir/", uncompressedSize: 0)
+        try budget.include(path: "empty", uncompressedSize: 0)
+        XCTAssertThrowsError(try budget.include(path: "extra", uncompressedSize: 0)) {
+            XCTAssertEqual($0 as? ReaderPackageEntrySourceError, .entryCountExceeded(limit: 2))
+        }
+        XCTAssertEqual(budget.entryCount, 2)
+        XCTAssertEqual(budget.uncompressedBytes, 0)
+        XCTAssertEqual(budget.pathUTF8Bytes, 9)
+    }
+
+    func testAdvertisedReadAdmissionRejectsUnrepresentableAndOversizedValues() throws {
+        let limits = ReaderPackageResourceLimits(maxEntryBytes: 4)
+        try limits.validateAdvertisedEntrySize(4, path: "a")
+        XCTAssertThrowsError(try limits.validateAdvertisedEntrySize(5, path: "a")) {
+            XCTAssertEqual($0 as? ReaderPackageEntrySourceError, .entrySizeExceeded(path: "a", size: 5, limit: 4))
+        }
+        XCTAssertThrowsError(try limits.validateAdvertisedEntrySize(UInt64.max, path: "a")) {
+            XCTAssertEqual($0 as? ReaderPackageEntrySourceError, .entrySizeExceeded(path: "a", size: Int64.max, limit: 4))
+        }
+    }
+
 }
 
 /// Synthetic files in a unique temporary directory; never opens a user's library.
