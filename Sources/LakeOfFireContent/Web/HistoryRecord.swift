@@ -33,6 +33,7 @@ public class HistoryRecord: Bookmark {
 
     @MainActor
     public override func delete() async throws {
+        guard !isInvalidated else { return }
         let historyURL = url
         guard let contentReference = ReaderContentLoader.ContentReference(content: self) else {
             return
@@ -126,6 +127,7 @@ public extension HistoryRecord {
         skipPreviouslyDemoted: Bool = true,
         admittingMutation: (@Sendable () -> Bool)? = nil
     ) async throws {
+        guard !isInvalidated else { return }
         guard isDemoted != false || !skipPreviouslyDemoted else {
             return
         }
@@ -133,7 +135,9 @@ public extension HistoryRecord {
             print("Cannot refresh demoted status: no realm")
             return
         }
-        let demoted = try await { @RealmBackgroundActor in
+        // These predicates are synchronous on the owning actor. Avoid an
+        // unnecessary suspension while retaining this managed accessor.
+        let demoted: Bool = {
             if isGoogleSearchURL(url) {
                 return true
             }
@@ -157,6 +161,9 @@ public extension HistoryRecord {
             try await realm.asyncWrite {
                 try Task.checkCancellation()
                 guard admittingMutation?() ?? true else { throw CancellationError() }
+                // Queued write admission can advance the Realm and retire
+                // this accessor. Never read or mutate it after that happens.
+                guard !isInvalidated else { return }
                 isDemoted = demoted
                 refreshChangeMetadata(explicitlyModified: true)
             }

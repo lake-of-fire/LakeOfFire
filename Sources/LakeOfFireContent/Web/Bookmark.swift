@@ -169,6 +169,7 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
 
     @MainActor
     open func delete() async throws {
+        guard !isInvalidated else { return }
         let url = url
         guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
         try await { @RealmBackgroundActor in
