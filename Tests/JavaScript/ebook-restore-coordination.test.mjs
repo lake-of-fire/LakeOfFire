@@ -121,7 +121,7 @@ test('restore routing gives explicit locators priority over fractional completio
     assert.equal(restoreLocatorKind({ cfi: 'mnb-loc-v1:7:2:5', fractionalCompletion: 0.7 }), 'synthetic')
     assert.equal(restoreLocatorKind({ cfi: 'epubcfi(/6/14!)', fractionalCompletion: 0.7 }), 'cfi')
     assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0.7 }), 'fraction')
-    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0 }), 'none')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0 }), 'fraction')
 })
 
 test('scheduled fractional navigation waits for restore settling until user input', () => {
@@ -159,4 +159,29 @@ test('required restore navigation returns the successful terminal value', async 
         value,
         error: null,
     })
+})
+
+
+test('explicit beginning restore survives request normalization and terminal correlation', () => {
+    const request = normalizeInitialRestoreRequest({
+        requestID: 'beginning', cfi: '', fractionalCompletion: 0,
+    })
+    assert.deepEqual(request, {
+        requestID: 'beginning', requestedLocator: 'fraction', cfi: '', fractionalCompletion: 0,
+    })
+    const result = makeInitialRestoreTerminalResult({
+        request, snapshot: { handledFractionalCompletion: 0, currentFractionalCompletion: 0 },
+    })
+    assert.equal(result.requestID, 'beginning')
+    assert.equal(result.requestedLocator, 'fraction')
+    assert.equal(result.restoreSatisfied, true)
+})
+
+test('invalid fraction cannot be discarded to accept a CFI-only request', () => {
+    for (const fraction of [NaN, Infinity, -Infinity, -0.01, 1.01, true, '0']) {
+        assert.equal(normalizeInitialRestoreRequest({
+            requestID: 'invalid', cfi: 'epubcfi(/6/14!)', fractionalCompletion: fraction,
+        }), null)
+    }
+    assert.equal(normalizeInitialRestoreRequest({ requestID: 'absent', cfi: '' }), null)
 })

@@ -381,18 +381,40 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     }
     
     @RealmBackgroundActor
-    public func createEmptyFeed(inCategory category: ThreadSafeReference<FeedCategory>) async throws -> UUID? {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration)
+    public func createEmptyFeed(
+        inCategory category: ThreadSafeReference<FeedCategory>,
+        realmConfiguration: Realm.Configuration = ReaderContentLoader.feedEntryRealmConfiguration
+    ) async throws -> UUID? {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         guard let category = realm.resolve(category) else { return nil }
-        let feed = Feed()
-        feed.categoryID = category.id
-        feed.meaningfulContentMinLength = 0
-//        await realm.asyncRefresh()
-        try await realm.asyncWrite {
-            realm.add(feed, update: .modified)
+        return try await createEmptyFeed(
+            categoryID: category.id,
+            categoryCreatedAt: category.createdAt,
+            realmConfiguration: realmConfiguration
+        )
+    }
+
+    @RealmBackgroundActor
+    public func createEmptyFeed(
+        categoryID: UUID,
+        categoryCreatedAt: Date,
+        realmConfiguration: Realm.Configuration
+    ) async throws -> UUID? {
+        try Task.checkCancellation()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        return try await realm.asyncWrite {
+            try Task.checkCancellation()
+            guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                  category.createdAt == categoryCreatedAt,
+                  !category.isDeleted,
+                  category.isUserEditable else { return nil }
+            let feed = Feed()
+            feed.categoryID = category.id
+            feed.meaningfulContentMinLength = 0
+            realm.add(feed)
             feed.refreshChangeMetadata(explicitlyModified: true)
+            return feed.id
         }
-        return feed.id
     }
     
     @RealmBackgroundActor

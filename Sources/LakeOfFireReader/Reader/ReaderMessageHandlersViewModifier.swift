@@ -19,7 +19,7 @@ private struct ReaderEBookInitialRestoreBridgeRequest {
         cfi = restore.cfi
         fractionalCompletion = restore.fractionalCompletion.map(Double.init)
         let hasCFI = !cfi.isEmpty
-        let hasFraction = (fractionalCompletion ?? 0) > 0
+        let hasFraction = fractionalCompletion != nil
         guard hasCFI || hasFraction else { return nil }
         requestedLocator = hasCFI ? "cfi" : "fraction"
     }
@@ -979,7 +979,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         do {
-                            let initialRestore = try? await ReaderContentReadingProgressLoader
+                            let initialRestore = try await ReaderContentReadingProgressLoader
                                 .ebookInitialRestoreLoader?(url)
                             let defaults = UserDefaults.standard
                             let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16

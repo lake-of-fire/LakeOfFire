@@ -176,6 +176,28 @@ class LibraryCategoryViewModel: ObservableObject {
     }
     
     @MainActor
+    func createFeed() async throws -> UUID? {
+        let categoryID = category.id
+        let categoryCreatedAt = category.createdAt
+        let realmConfiguration = category.realm?.configuration
+            ?? libraryConfiguration.realm?.configuration
+            ?? LibraryDataManager.realmConfiguration
+        let feedID = try await LibraryDataManager.shared.createEmptyFeed(
+            categoryID: categoryID,
+            categoryCreatedAt: categoryCreatedAt,
+            realmConfiguration: realmConfiguration
+        )
+        guard let feedID else { return nil }
+        let realm = try await Realm.open(configuration: realmConfiguration)
+        guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+              category.createdAt == categoryCreatedAt, !category.isDeleted, category.isUserEditable,
+              let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
+              !feed.isDeleted, feed.categoryID == categoryID else { return nil }
+        selectedFeed = feed
+        return feedID
+    }
+
+    @MainActor
     func deleteCategory() async throws {
         let ref = ThreadSafeReference(to: category)
         try await Task { @RealmBackgroundActor in
@@ -407,16 +429,8 @@ struct LibraryCategoryView: View {
     @ViewBuilder private func addFeedButton(scrollProxy: ScrollViewProxy) -> some View {
         let button = Button {
             Task { @MainActor in
-                let ref = ThreadSafeReference(to: libraryCategoryViewModel.category)
-                let createdFeedID: UUID? = try await { @RealmBackgroundActor in
-                    try await LibraryDataManager.shared.createEmptyFeed(inCategory: ref)
-                }()
-                guard let feedID = createdFeedID else { return }
+                guard let feedID = try await libraryCategoryViewModel.createFeed() else { return }
                 scrollProxy.scrollTo("library-sidebar-\(feedID.uuidString)")
-                let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                if let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) {
-                    libraryCategoryViewModel.selectedFeed = feed
-                }
             }
         } label: {
             Label("Add Feed", systemImage: "plus.circle")

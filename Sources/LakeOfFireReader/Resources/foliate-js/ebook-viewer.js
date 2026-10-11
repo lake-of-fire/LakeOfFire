@@ -8862,7 +8862,8 @@ window.loadLastPosition = async ({
             sectionIndex,
         };
     };
-    const hasFractionalCompletion = Number.isFinite(fractionalCompletion) && fractionalCompletion > 0;
+    const hasFractionalCompletion = Number.isFinite(fractionalCompletion)
+        && fractionalCompletion >= 0 && fractionalCompletion <= 1;
     const syntheticRestoreLocator = parseSyntheticRestoreLocator(cfi);
     const restoreLocatorKind = classifyRestoreLocator({ cfi, fractionalCompletion });
     let handledCFI = null;

@@ -79,6 +79,11 @@ public struct ReaderContentEbookInitialRestoreResult: Sendable, Equatable {
               let restoreSatisfied = payload["restoreSatisfied"] as? Bool else {
             return nil
         }
+        for key in ["handledFractionalCompletion", "currentFractionalCompletion"] {
+            if let value = payload[key], !(value is NSNull), Self.finiteDouble(value) == nil {
+                return nil
+            }
+        }
         requestID = payload["requestID"] as? String
         self.requestedLocator = requestedLocator
         self.terminalState = terminalState
@@ -91,9 +96,10 @@ public struct ReaderContentEbookInitialRestoreResult: Sendable, Equatable {
     }
 
     private static func finiteDouble(_ value: Any?) -> Double? {
-        guard let number = value as? NSNumber, !(value is Bool) else { return nil }
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
         let result = number.doubleValue
-        return result.isFinite ? result : nil
+        return result.isFinite && (0...1).contains(result) ? result : nil
     }
 }
 
