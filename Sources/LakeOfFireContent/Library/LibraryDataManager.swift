@@ -224,8 +224,15 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         DownloadController.shared
     }
     
-    public override init() {
+    public override convenience init() {
+        self.init(observesChanges: true)
+    }
+
+    /// A non-observing instance performs only explicitly requested operations.
+    /// Useful for isolated import tools and fixtures without background services.
+    public init(observesChanges: Bool) {
         super.init()
+        guard observesChanges else { return }
 
         if Self.observesDownloadController {
             // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.

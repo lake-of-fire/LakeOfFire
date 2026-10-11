@@ -8,6 +8,7 @@ import LakeOfFireContent
 public extension LibraryDataManager {
     @RealmBackgroundActor
     func deleteCategory(_ category: FeedCategory) async throws {
+        guard !category.isInvalidated else { return }
         let realmConfiguration =
             category.realm?.configuration ?? LibraryDataManager.realmConfiguration
         try await deleteCategory(
@@ -81,6 +82,7 @@ public extension LibraryDataManager {
 
     @RealmBackgroundActor
     func restoreCategory(_ category: FeedCategory) async throws {
+        guard !category.isInvalidated else { return }
         let realmConfiguration =
             category.realm?.configuration ?? LibraryDataManager.realmConfiguration
         try await restoreCategory(

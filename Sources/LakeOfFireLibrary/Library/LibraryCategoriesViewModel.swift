@@ -129,6 +129,7 @@ class LibraryCategoriesViewModel: ObservableObject {
 
     @MainActor
     func deleteCategory(_ category: FeedCategory) async throws {
+        guard !category.isInvalidated else { return }
         let categoryID = category.id
         try await Task { @RealmBackgroundActor [realmConfiguration, categoryID] in
             try await LibraryDataManager.shared.deleteCategory(
@@ -140,6 +141,7 @@ class LibraryCategoriesViewModel: ObservableObject {
 
     @MainActor
     func restoreCategory(_ category: FeedCategory) async throws {
+        guard !category.isInvalidated else { return }
         let categoryID = category.id
         try await Task { @RealmBackgroundActor [realmConfiguration, categoryID] in
             try await LibraryDataManager.shared.restoreCategory(
@@ -165,6 +167,7 @@ class LibraryCategoriesViewModel: ObservableObject {
         let categories = userLibraryCategories ?? []
         let ids = offsets.compactMap { index -> UUID? in
             guard categories.indices.contains(index),
+                  !categories[index].isInvalidated,
                   categories[index].isUserEditable else {
                 return nil
             }
@@ -189,7 +192,9 @@ class LibraryCategoriesViewModel: ObservableObject {
         toOffset: Int
     ) -> Task<Void, Error>? {
         guard let libraryConfiguration,
-              let visibleCategories = userLibraryCategories else {
+              !libraryConfiguration.isInvalidated,
+              let visibleCategories = userLibraryCategories,
+              visibleCategories.allSatisfy({ !$0.isInvalidated }) else {
             return nil
         }
         let originalIDs = Array(libraryConfiguration.categoryIDs)
