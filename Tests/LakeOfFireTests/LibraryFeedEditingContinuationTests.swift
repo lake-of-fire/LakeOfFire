@@ -213,8 +213,7 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         let gate = LibraryFeedContinuationGate()
         let metadata = Task { @MainActor in
             await oldEditor.refreshFromOpenGraph(expectedRSSURL: source, expectedGeneration: generation) { _ in
-                started.fulfill()
-                await gate.wait()
+                await gate.wait(onFirstWait: { started.fulfill() })
                 return LibraryFeedOpenGraphMetadata(url: source.domainURL, title: "Obsolete", description: nil)
             }
         }
@@ -287,8 +286,9 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
 private actor LibraryFeedContinuationGate {
     private var continuation: CheckedContinuation<Void, Never>?
     private var released = false
-    func wait() async {
+    func wait(onFirstWait: (@Sendable () -> Void)? = nil) async {
         guard !released else { return }
+        onFirstWait?()
         await withCheckedContinuation { continuation = $0 }
     }
     func release() {
