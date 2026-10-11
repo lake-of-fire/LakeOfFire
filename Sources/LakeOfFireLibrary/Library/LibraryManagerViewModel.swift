@@ -486,10 +486,17 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             ) else { return }
             try await { @MainActor in
                 let realm = try await Realm(configuration: realmConfiguration)
-                guard let category = realm.resolve(category),
-                      let newFeed = realm.object(
+                // duplicateFeed already consumed the category reference.
+                // Re-query the committed relationship instead of resolving a
+                // one-shot ThreadSafeReference for a second time.
+                guard let newFeed = realm.object(
                         ofType: Feed.self,
                         forPrimaryKey: newFeedID
+                      ),
+                      let categoryID = newFeed.categoryID,
+                      let category = realm.object(
+                        ofType: FeedCategory.self,
+                        forPrimaryKey: categoryID
                       ) else { return }
                 navigationPath.removeLast(navigationPath.count)
                 navigationPath.append(category)

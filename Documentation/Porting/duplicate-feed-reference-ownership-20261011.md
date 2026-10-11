@@ -1,0 +1,11 @@
+# Duplicate-feed selection reference ownership — 2026-10-11
+
+Reviewed Lake #138 `25b3ad2b1dc9d17fd35675483cb0fe141e19b3f1` against retained #50 `11b71f294a530cf38352065bceb05ce10aa88aa7`.
+
+Both versions passed the category ThreadSafeReference into LibraryDataManager.duplicateFeed, whose first guard resolves it, then attempted to resolve that same reference again when updating the main-actor selection. Realm's [ThreadSafeReference contract](https://github.com/realm/realm-swift/blob/master/RealmSwift/ThreadSafeReference.swift) permits at most one resolution. This can invalidate selection delivery after the duplicate has already been committed; source inspection establishes the contract violation, but no runtime reproduction has been executed.
+
+The selection path now fetches the newly committed feed by its returned primary key and resolves its category relationship by primary key in the same captured Realm. It does not consume the original category reference again. The newer captured-Realm behavior and caller-supplied overwriteExisting flag are preserved. This is a surgical correction to the composed implementation, not a copy of the older view model, which would remove prepared OPML file ownership and other newer safeguards.
+
+Strengthened the existing real-command test in LibraryCapturedMutationPortTests: it retains the original reference, checks the writer consumed it, verifies a single category navigation entry and still checks selection changes to the duplicate, two feeds in the captured Realm, and no writes to the replacement Realm. The suite remains two test methods; source registration already includes it. All Swift remains UNCOMPILED/UNRUN. No builds, native launches, generators, CI, pins, deployment, merge or closure.
+
+Remaining independent concern from the same source review: importOPML's new-script membership predicate uses inequality in contains(where:). It can omit a new script when an unrelated script is already referenced. That path requires a focused regression and correction; this duplicate-selection commit does not claim to repair it.

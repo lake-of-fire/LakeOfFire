@@ -39,11 +39,15 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
         )
         let firstID = first.id
 
+        let categoryReference = ThreadSafeReference(to: category)
         try await manager.duplicate(
             feed: ThreadSafeReference(to: first),
-            inCategory: ThreadSafeReference(to: category),
+            inCategory: categoryReference,
             overwriteExisting: false
         )
+        XCTAssertTrue(categoryReference.isInvalidated,
+                      "The writer consumes the one-shot category reference")
+        XCTAssertEqual(manager.navigationPath.count, 1)
         let duplicate = try XCTUnwrap(manager.selectedFeed)
         XCTAssertNotEqual(duplicate.id, firstID)
         XCTAssertEqual(duplicate.categoryID, categoryID)
