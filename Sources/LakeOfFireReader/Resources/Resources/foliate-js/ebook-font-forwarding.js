@@ -66,5 +66,22 @@ export const copyCustomReaderFontStyleToDocument = (
             changed = true
         }
     }
+    // The native selection resolves unavailable system faces to a temporary fallback.
+    // Carry those CSS values into already loaded and newly opened EPUB documents.
+    for (const [key, property] of [
+        ['mnbHorizontalFontCSSValue', '--mnb-content-font'],
+        ['mnbVerticalFontCSSValue', '--mnb-content-vertical-font'],
+    ]) {
+        const value = sourceFontStyle.dataset?.[key]
+        if (!value) continue
+        for (const element of [doc.documentElement, doc.body]) {
+            if (!element?.style || element.style.getPropertyValue(property) === value) continue
+            element.style.setProperty(property, value)
+            changed = true
+        }
+    }
+    if (changed && doc.defaultView) {
+        doc.defaultView.dispatchEvent(new doc.defaultView.Event('resize'))
+    }
     return changed
 }

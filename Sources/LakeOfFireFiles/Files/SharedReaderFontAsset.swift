@@ -3,7 +3,8 @@ import LakeOfFireContent
 import LakeOfFireCore
 
 public struct SharedReaderFontAsset: Equatable, Sendable {
-    public let localFileURL: URL
+    public let localFileURL: URL?
+    public let systemFontNames: [String: String]
     public let mimeType: String
     public let format: String
     public let horizontalFamilyName: String
@@ -18,12 +19,28 @@ public struct SharedReaderFontAsset: Equatable, Sendable {
         verticalFamilyName: String,
         publicFilenameBase: String = "YuKyokasho"
     ) {
+        self.systemFontNames = [:]
         self.localFileURL = localFileURL
         self.mimeType = mimeType
         self.format = format
         self.horizontalFamilyName = horizontalFamilyName
         self.verticalFamilyName = verticalFamilyName
         self.publicFilenameBase = publicFilenameBase
+    }
+
+    /// System-managed fonts expose names, never their files or bytes.
+    public init(
+        systemFontNames: [String: String],
+        horizontalFamilyName: String,
+        verticalFamilyName: String
+    ) {
+        self.localFileURL = nil
+        self.systemFontNames = systemFontNames
+        self.mimeType = "text/css"
+        self.format = ""
+        self.horizontalFamilyName = horizontalFamilyName
+        self.verticalFamilyName = verticalFamilyName
+        self.publicFilenameBase = "system-font"
     }
 
     public var supportedFamilyNames: [String] {
@@ -33,7 +50,7 @@ public struct SharedReaderFontAsset: Equatable, Sendable {
     }
 
     public var publicFilename: String {
-        let fileExtension = localFileURL.pathExtension
+        let fileExtension = localFileURL?.pathExtension ?? ""
         if fileExtension.isEmpty {
             return publicFilenameBase
         }
@@ -236,12 +253,18 @@ public func sharedReaderFontResponse(
         }
 
         let fontFaces = asset.supportedFamilyNames.map { supportedFamilyName in
-            """
+            let source: String
+            if let postScriptName = asset.systemFontNames[supportedFamilyName] {
+                source = "local('\(postScriptName)')"
+            } else {
+                source = "url(\"\(fontURL.absoluteString)\") format(\"\(asset.format)\")"
+            }
+            return """
             @font-face {
               font-family: '\(supportedFamilyName)';
-              font-weight: 500;
+              font-weight: 400 700;
               font-style: normal;
-              src: url("\(fontURL.absoluteString)") format("\(asset.format)");
+              src: \(source);
               font-display: swap;
             }
             """
@@ -255,11 +278,11 @@ public func sharedReaderFontResponse(
         html,
         body,
         body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt) {
-          font-family: var(--mnb-content-font, '\(asset.horizontalFamilyName)') !important;
+          font-family: var(--mnb-content-font, '\(asset.horizontalFamilyName)'), system-ui !important;
         }
         body.reader-vertical-writing,
         body.reader-vertical-writing *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt) {
-          font-family: var(--mnb-content-vertical-font, '\(asset.verticalFamilyName)') !important;
+          font-family: var(--mnb-content-vertical-font, '\(asset.verticalFamilyName)'), system-ui !important;
         }
         rt {
           font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', system-ui, sans-serif !important;
@@ -275,7 +298,8 @@ public func sharedReaderFontResponse(
         return SharedReaderFontServedResponse(response: response, data: data)
 
     case .font:
-        guard let data = try? Data(contentsOf: asset.localFileURL) else {
+        guard let fileURL = asset.localFileURL,
+              let data = try? Data(contentsOf: fileURL) else {
             let response = sharedReaderFontHTTPResponse(
                 url: requestURL,
                 statusCode: 404,
