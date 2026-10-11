@@ -9,3 +9,9 @@ The selection path now fetches the newly committed feed by its returned primary 
 Strengthened the existing real-command test in LibraryCapturedMutationPortTests: it retains the original reference, checks the writer consumed it, verifies a single category navigation entry and still checks selection changes to the duplicate, two feeds in the captured Realm, and no writes to the replacement Realm. At this checkpoint the suite has two methods. The package test target includes it, but Reader #384's explicit Tuist source list does not yet include it; root source registration must be added before root qualification. All Swift remains UNCOMPILED/UNRUN. No builds, native launches, generators, CI, pins, deployment, merge or closure.
 
 Remaining independent concern from the same source review: importOPML's new-script membership predicate uses inequality in contains(where:). It can omit a new script when an unrelated script is already referenced. That path requires a focused regression and correction; this duplicate-selection commit does not claim to repair it.
+
+## Delivery snapshot follow-through — 10:45 UTC
+
+The main-actor selection now awaits asyncRefresh before fetching the newly committed duplicate. Realm's [refresh contract](https://github.com/realm/realm-swift/blob/master/RealmSwift/Realm.swift) explains that automatic refresh occurs on a later run-loop cycle and must be explicit when disabled. The same real-command regression now disables autorefresh on the retained main Realm before the background duplicate, then requires the newly selected duplicate. This removes reliance on an incidental run-loop refresh without reusing the consumed reference. Tests remain UNCOMPILED/UNRUN.
+
+The earlier root registration gap was closed by Reader #384 `90a668a63b9549a11c4d7f1f70cef1f236f5848e`. The subsequent OPML membership and activation fixes expanded this registered file to four methods. No extra method is added by this snapshot refinement.

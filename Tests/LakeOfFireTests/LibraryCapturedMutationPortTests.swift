@@ -32,6 +32,8 @@ final class LibraryCapturedMutationPortTests: XCTestCase {
         let categoryID = try XCTUnwrap(first.categoryID)
 
         let capturedRealm = try await Realm.open(configuration: captured)
+        capturedRealm.autorefresh = false
+        defer { capturedRealm.autorefresh = true }
         let category = try XCTUnwrap(
             capturedRealm.object(
                 ofType: FeedCategory.self,

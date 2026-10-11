@@ -486,6 +486,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             ) else { return }
             try await { @MainActor in
                 let realm = try await Realm(configuration: realmConfiguration)
+                await realm.asyncRefresh()
                 // duplicateFeed already consumed the category reference.
                 // Re-query the committed relationship instead of resolving a
                 // one-shot ThreadSafeReference for a second time.
