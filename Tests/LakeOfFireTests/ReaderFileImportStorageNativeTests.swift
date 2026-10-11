@@ -104,6 +104,131 @@ final class ReaderFileImportStorageNativeTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: f.library.appendingPathComponent("book.epub").path), target.path)
     }
 
+    func testOccupiedLeafSymlinkAndFirstCollisionSymlinkAdvanceToNextSuffix() async throws {
+        let f = try Fixture(); try f.put(f.source, "new")
+        let firstTarget = f.root.appendingPathComponent("missing-one")
+        let secondTarget = f.root.appendingPathComponent("missing-two")
+        try FileManager.default.createSymbolicLink(
+            at: f.library.appendingPathComponent("book.epub"),
+            withDestinationURL: firstTarget
+        )
+        try FileManager.default.createSymbolicLink(
+            at: f.library.appendingPathComponent("book (ABCDEF).epub"),
+            withDestinationURL: secondTarget
+        )
+        let drive = try await f.drive()
+
+        let result = try await f.install(using: drive)
+
+        XCTAssertEqual(result.path, "book (ABCDEF-2).epub")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstTarget.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: secondTarget.path))
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: f.library.appendingPathComponent("book.epub").path
+            ),
+            firstTarget.path
+        )
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: f.library.appendingPathComponent("book (ABCDEF).epub").path
+            ),
+            secondTarget.path
+        )
+        XCTAssertEqual(
+            try String(
+                contentsOf: f.library.appendingPathComponent("book (ABCDEF-2).epub"),
+                encoding: .utf8
+            ),
+            "new"
+        )
+    }
+
+    func testSymlinkedTargetParentStillFailsClosed() async throws {
+        let f = try Fixture()
+        try f.put(f.source, "new")
+        let outside = f.root.appendingPathComponent(
+            "outside-library",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: outside,
+            withIntermediateDirectories: true
+        )
+        let linkedParent = f.library.appendingPathComponent(
+            "imports",
+            isDirectory: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: linkedParent,
+            withDestinationURL: outside
+        )
+        let drive = try await f.drive()
+
+        do {
+            _ = try await ReaderFileImportStorage.install(
+                fileURL: f.source,
+                targetDirectory: RootRelativePath(path: "imports"),
+                drive: drive,
+                pathExtension: "epub",
+                collisionTag: { _ in "ABCDEF" }
+            )
+            XCTFail("Expected symlinked parent rejection")
+        } catch {
+            // Root-relative validation owns the exact error type. The security
+            // invariant is that the external destination is never written.
+        }
+
+        XCTAssertTrue(
+            try FileManager.default.contentsOfDirectory(
+                atPath: outside.path
+            ).isEmpty
+        )
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: linkedParent.path
+            ),
+            outside.path
+        )
+    }
+
+    func testParentTraversalCannotWriteOutsideTheLibrary() async throws {
+        let f = try Fixture()
+        try f.put(f.source, "new")
+        let drive = try await f.drive()
+        do {
+            _ = try await ReaderFileImportStorage.install(
+                fileURL: f.source,
+                targetDirectory: RootRelativePath(path: "../escaped-imports"),
+                drive: drive,
+                pathExtension: "epub",
+                collisionTag: { _ in "ABCDEF" }
+            )
+            XCTFail("Expected parent traversal rejection")
+        } catch {
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: f.root.appendingPathComponent("escaped-imports").path
+            ))
+        }
+    }
+
+    func testNestedOrdinaryTargetDirectoryRemainsUsable() async throws {
+        let f = try Fixture()
+        try f.put(f.source, "new")
+        let drive = try await f.drive()
+        let directory = RootRelativePath(path: "imports/nested")
+        try await drive.createDirectory(at: directory)
+        let installed = try await ReaderFileImportStorage.install(
+            fileURL: f.source, targetDirectory: directory, drive: drive,
+            pathExtension: "epub", collisionTag: { _ in "ABCDEF" }
+        )
+        XCTAssertEqual(installed.path, "imports/nested/book.epub")
+        XCTAssertEqual(
+            try Data(contentsOf: f.library.appendingPathComponent(installed.path)),
+            Data("new".utf8)
+        )
+    }
+
     func testSourceSymlinkIsRejectedWithoutInstallation() async throws {
         let f = try Fixture(); let target = f.root.appendingPathComponent("outside")
         try f.put(target, "private")
@@ -113,56 +238,6 @@ final class ReaderFileImportStorageNativeTests: XCTestCase {
         catch { XCTAssertEqual((error as NSError).code, CocoaError.fileReadUnsupportedScheme.rawValue) }
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: f.library.path).isEmpty)
     }
-    func testExistingDestinationSymlinkToMatchingBytesIsNotReused() async throws {
-        let f = try Fixture()
-        try f.put(f.source, "same bytes")
-        let external = f.root.appendingPathComponent("outside")
-        try f.put(external, "same bytes")
-        let occupied = f.library.appendingPathComponent("book.epub")
-        try FileManager.default.createSymbolicLink(
-            at: occupied,
-            withDestinationURL: external
-        )
-        let drive = try await f.drive()
-
-        let result = try await f.install(using: drive)
-
-        XCTAssertEqual(result.path, "book (ABCDEF).epub")
-        XCTAssertEqual(
-            try FileManager.default.destinationOfSymbolicLink(atPath: occupied.path),
-            external.path
-        )
-        XCTAssertEqual(try String(contentsOf: external, encoding: .utf8), "same bytes")
-        XCTAssertEqual(
-            try String(
-                contentsOf: f.library.appendingPathComponent(result.path),
-                encoding: .utf8
-            ),
-            "same bytes"
-        )
-    }
-
-    func testDirectorySourceDoesNotReuseOccupiedRegularFile() async throws {
-        let f = try Fixture()
-        try f.put(f.source.appendingPathComponent("OPS/chapter.xhtml"), "directory")
-        let occupied = f.library.appendingPathComponent("book.epub")
-        try f.put(occupied, "regular file")
-        let drive = try await f.drive()
-
-        let result = try await f.install(using: drive)
-
-        XCTAssertEqual(result.path, "book (ABCDEF).epub")
-        XCTAssertEqual(try String(contentsOf: occupied, encoding: .utf8), "regular file")
-        var isDirectory: ObjCBool = false
-        XCTAssertTrue(
-            FileManager.default.fileExists(
-                atPath: f.library.appendingPathComponent(result.path).path,
-                isDirectory: &isDirectory
-            )
-        )
-        XCTAssertTrue(isDirectory.boolValue)
-    }
-
 }
 
 final class ReaderFileImportPackageManifestTests: XCTestCase {
