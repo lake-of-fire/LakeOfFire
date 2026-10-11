@@ -8,115 +8,291 @@ import LakeOfFireAdblock
 import LakeOfFireContent
 
 @MainActor
-fileprivate class LibraryScriptsListViewModel: ObservableObject {
+class LibraryScriptsListViewModel: ObservableObject {
+    let realmConfiguration: Realm.Configuration
+
     @Published var libraryConfiguration: LibraryConfiguration?
     @Published var userScripts: [UserScript]? = nil
-    
-    nonisolated(unsafe) private var cancellables = Set<AnyCancellable>()
-    
-    init() {
+
+    @RealmBackgroundActor
+    private var cancellables = Set<AnyCancellable>()
+
+    init(
+        observesRealm: Bool = true,
+        realmConfiguration: Realm.Configuration =
+            LibraryDataManager.realmConfiguration
+    ) {
+        self.realmConfiguration = realmConfiguration
+        guard observesRealm else { return }
+
         Task { @RealmBackgroundActor [weak self] in
             guard let self else { return }
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-            
+            let realm =
+                try await RealmBackgroundActor.shared.cachedRealm(
+                    for: realmConfiguration
+                )
+
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
                 .map { @Sendable _ in }
-                .debounceLeadingTrailing(for: .seconds(0.3), scheduler: libraryDataQueue)
-                .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
-                    Task { @RealmBackgroundActor [weak self] in
-                        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-                        let libraryConfigurationID = libraryConfiguration.id
-                        let userScriptIDs = Array(libraryConfiguration.getUserScripts() ?? []).map { $0.id }
-                        
-                        try await { @MainActor [weak self] in
-                            guard let self else { return }
-                            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                            self.userScripts = userScriptIDs.compactMap { realm.object(ofType: UserScript.self, forPrimaryKey: $0) }
-                            self.libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID)
-                        }()
+                .debounceLeadingTrailing(
+                    for: .seconds(0.3),
+                    scheduler: libraryDataQueue
+                )
+                .sink(
+                    receiveCompletion: { @Sendable _ in },
+                    receiveValue: { @Sendable [weak self] _ in
+                        Task { @MainActor [weak self] in
+                            self?.refreshData()
+                        }
                     }
-                })
-                .store(in: &self.cancellables)
+                )
+                .store(in: &cancellables)
         }
     }
-    
+
+    @discardableResult
+    func refreshData() -> Task<Void, Error> {
+        Task { @RealmBackgroundActor [realmConfiguration] in
+            let libraryConfiguration =
+                try await LibraryConfiguration.getConsolidatedOrCreate(
+                    realmConfiguration: realmConfiguration
+                )
+            let configurationID = libraryConfiguration.id
+            let userScriptIDs = Array(
+                libraryConfiguration.getUserScripts() ?? []
+            ).map(\.id)
+
+            try await { @MainActor [weak self] in
+                guard let self else { return }
+                let realm = try await Realm.open(
+                    configuration: realmConfiguration
+                )
+                self.userScripts = userScriptIDs.compactMap {
+                    realm.object(
+                        ofType: UserScript.self,
+                        forPrimaryKey: $0
+                    )
+                }
+                self.libraryConfiguration = realm.object(
+                    ofType: LibraryConfiguration.self,
+                    forPrimaryKey: configurationID
+                )
+            }()
+        }
+    }
+
     @MainActor
     func deleteScript(_ script: UserScript) async throws {
-        guard let libraryConfiguration = libraryConfiguration else { return }
-        
-        if !script.isUserEditable || (script.isArchived && script.opmlURL != nil) {
-            return
+        guard let libraryConfiguration else { return }
+        try await deleteScript(
+            scriptID: script.id,
+            configurationID: libraryConfiguration.id,
+            configurationCreatedAt: libraryConfiguration.createdAt
+        )
+    }
+
+    @MainActor
+    @discardableResult
+    func deleteScript(at offsets: IndexSet) -> Task<Void, Error> {
+        let scripts = userScripts ?? []
+        let scriptIDs = offsets.compactMap { offset -> UUID? in
+            guard scripts.indices.contains(offset),
+                  scripts[offset].isUserEditable else {
+                return nil
+            }
+            return scripts[offset].id
         }
-        
-        let scriptID = script.id
-        try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { realm, libraryConfiguration in
-            if let idx = libraryConfiguration.userScriptIDs.firstIndex(where: { $0 == scriptID }) {
-                libraryConfiguration.userScriptIDs.remove(at: idx)
-                libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
+        let configurationID = libraryConfiguration?.id
+        let configurationCreatedAt = libraryConfiguration?.createdAt
+
+        return Task { @MainActor in
+            guard let configurationID,
+                  let configurationCreatedAt else {
+                return
+            }
+            for scriptID in scriptIDs {
+                try await deleteScript(
+                    scriptID: scriptID,
+                    configurationID: configurationID,
+                    configurationCreatedAt: configurationCreatedAt
+                )
             }
         }
-        
-        try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
-            var didChange = false
-            if script.isArchived,
-               let opmlURL = script.opmlURL,
-               !LibraryConfiguration.opmlURLs.contains(opmlURL),
-               !script.isDeleted {
-                script.isDeleted = true
-                didChange = true
-            } else if script.isArchived, script.opmlURL == nil, !script.isDeleted {
-                script.isDeleted = true
-                didChange = true
-            } else if !script.isArchived {
-                script.isArchived = true
-                didChange = true
-            }
-            if didChange {
+    }
+
+    @MainActor
+    @discardableResult
+    func moveScripts(
+        fromOffsets: IndexSet,
+        toOffset: Int
+    ) -> Task<Void, Error>? {
+        guard let libraryConfiguration,
+              let userScripts else {
+            return nil
+        }
+
+        let originalIDs = Array(libraryConfiguration.userScriptIDs)
+        let visibleIDs = userScripts.map(\.id)
+        guard !visibleIDs.isEmpty,
+              Set(visibleIDs).count == visibleIDs.count,
+              fromOffsets.allSatisfy(visibleIDs.indices.contains),
+              fromOffsets.allSatisfy {
+                  userScripts[$0].isUserEditable
+              },
+              visibleIDs.indices.contains(toOffset)
+                || toOffset == visibleIDs.endIndex else {
+            return nil
+        }
+
+        let editableIDs = Set(
+            userScripts.filter(\.isUserEditable).map(\.id)
+        )
+        var reorderedVisibleIDs = visibleIDs
+        reorderedVisibleIDs.move(
+            fromOffsets: fromOffsets,
+            toOffset: toOffset
+        )
+        let originalEditableIDs = visibleIDs.filter(editableIDs.contains)
+        let reorderedIDs = reorderedVisibleIDs.filter(editableIDs.contains)
+        guard reorderedIDs != originalEditableIDs else { return nil }
+
+        let configurationID = libraryConfiguration.id
+        let configurationCreatedAt = libraryConfiguration.createdAt
+
+        return Task { @MainActor in
+            try await Task { @RealmBackgroundActor [realmConfiguration] in
+                let realm =
+                    try await RealmBackgroundActor.shared.cachedRealm(
+                        for: realmConfiguration
+                    )
+                try await realm.asyncWrite {
+                    guard let currentConfiguration = realm.object(
+                        ofType: LibraryConfiguration.self,
+                        forPrimaryKey: configurationID
+                    ),
+                    !currentConfiguration.isDeleted,
+                    currentConfiguration.createdAt
+                        == configurationCreatedAt,
+                    Array(currentConfiguration.userScriptIDs)
+                        == originalIDs else {
+                        return
+                    }
+
+                    let visibleIDSet = Set(visibleIDs)
+                    let currentVisibleIDs = originalIDs.compactMap {
+                        scriptID -> UUID? in
+                        guard visibleIDSet.contains(scriptID),
+                              let script = realm.object(
+                                ofType: UserScript.self,
+                                forPrimaryKey: scriptID
+                              ),
+                              !script.isDeleted else {
+                            return nil
+                        }
+                        return scriptID
+                    }
+                    let currentEditableIDs = Set(
+                        currentVisibleIDs.filter {
+                            realm.object(
+                                ofType: UserScript.self,
+                                forPrimaryKey: $0
+                            )?.isUserEditable == true
+                        }
+                    )
+
+                    guard currentVisibleIDs == visibleIDs,
+                          currentEditableIDs == editableIDs,
+                          reorderedIDs.count
+                            == originalEditableIDs.count,
+                          Set(reorderedIDs) == editableIDs else {
+                        return
+                    }
+
+                    var nextRawIDs = originalIDs
+                    var reorderedIndex = 0
+                    for index in nextRawIDs.indices
+                        where editableIDs.contains(nextRawIDs[index]) {
+                        guard reorderedIndex < reorderedIDs.count else {
+                            return
+                        }
+                        nextRawIDs[index] = reorderedIDs[reorderedIndex]
+                        reorderedIndex += 1
+                    }
+                    guard reorderedIndex == reorderedIDs.count,
+                          nextRawIDs != originalIDs else {
+                        return
+                    }
+
+                    currentConfiguration.userScriptIDs.removeAll()
+                    currentConfiguration.userScriptIDs.append(
+                        objectsIn: nextRawIDs
+                    )
+                    currentConfiguration.refreshChangeMetadata(
+                        explicitlyModified: true
+                    )
+                }
+            }.value
+        }
+    }
+
+    @MainActor
+    func createScript() async throws -> UUID {
+        try await Task { @RealmBackgroundActor [realmConfiguration] in
+            try await LibraryDataManager.shared.createEmptyScript(
+                addToLibrary: true,
+                realmConfiguration: realmConfiguration
+            )
+        }.value
+    }
+
+    @MainActor
+    private func deleteScript(
+        scriptID: UUID,
+        configurationID: UUID,
+        configurationCreatedAt: Date
+    ) async throws {
+        try await Task { @RealmBackgroundActor [realmConfiguration] in
+            let realm =
+                try await RealmBackgroundActor.shared.cachedRealm(
+                    for: realmConfiguration
+                )
+            try await realm.asyncWrite {
+                guard let currentConfiguration = realm.object(
+                    ofType: LibraryConfiguration.self,
+                    forPrimaryKey: configurationID
+                ),
+                !currentConfiguration.isDeleted,
+                currentConfiguration.createdAt
+                    == configurationCreatedAt,
+                let script = realm.object(
+                    ofType: UserScript.self,
+                    forPrimaryKey: scriptID
+                ),
+                script.isUserEditable,
+                !script.isDeleted else {
+                    return
+                }
+
+                if let index =
+                    currentConfiguration.userScriptIDs.firstIndex(
+                        of: scriptID
+                    ) {
+                    currentConfiguration.userScriptIDs.remove(at: index)
+                    currentConfiguration.refreshChangeMetadata(
+                        explicitlyModified: true
+                    )
+                }
+
+                if script.isArchived {
+                    script.isDeleted = true
+                } else {
+                    script.isArchived = true
+                }
                 script.refreshChangeMetadata(explicitlyModified: true)
             }
-        }
-    }
-    
-    #warning("TODO: add script restoration")
-    //    func restoreScript(_ script: UserScript) {
-//        guard script.isUserEditable else { return }
-//        safeWrite(script) { _, script in
-//            script.isArchived = false
-//        }
-//        safeWrite(libraryConfiguration) { realm, libraryConfiguration in
-//            guard let script = realm?.object(ofType: UserScript.self, forPrimaryKey: script.id) else { return }
-//            if !libraryConfiguration.userScripts.contains(script) {
-//                libraryConfiguration.userScripts.append(script)
-//            }
-//        }
-//    }
-    
-    @MainActor
-    func deleteScript(at offsets: IndexSet) {
-        Task { @MainActor in
-            for offset in offsets {
-                guard let script = userScripts?[offset] else { return }
-                guard script.isUserEditable else { continue }
-                try await deleteScript(script)
-            }
-        }
-    }
-    
-    @MainActor
-    func moveScripts(fromOffsets: IndexSet, toOffset: Int) {
-        Task { @MainActor in
-            guard let libraryConfiguration = libraryConfiguration else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { _, libraryConfiguration in
-                let originalIDs = Array(libraryConfiguration.userScriptIDs)
-                var reorderedIDs = originalIDs
-                reorderedIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
-                guard originalIDs != reorderedIDs else { return }
-                libraryConfiguration.userScriptIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
-                libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
-            }
-        }
+        }.value
     }
 }
 
@@ -226,10 +402,10 @@ struct LibraryScriptsListView: View {
     func addScriptButton(scrollProxy: ScrollViewProxy) -> some View {
         let button = Button {
             Task { @MainActor in
-                let scriptID = try await { @RealmBackgroundActor in
-                    try await LibraryDataManager.shared.createEmptyScript(addToLibrary: true)
-                }()
-                scrollProxy.scrollTo("library-sidebar-\(scriptID.uuidString)")
+                let scriptID = try await viewModel.createScript()
+                scrollProxy.scrollTo(
+                    "library-sidebar-\(scriptID.uuidString)"
+                )
             }
         } label: {
             Label("Add Script", systemImage: "plus.circle")

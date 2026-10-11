@@ -18,3 +18,9 @@ The cell's existing display-state loading, menu behavior, sync status, Realm loo
 Qualification: a read-only macOS/Linux workflow runs six Debug and six Release Swift 6 observation cases with warnings as errors. macOS also frontend-parses the actual SwiftUI environment and cell integration. Full Lake target and host producer composition remain separate gates.
 
 No schema, Realm observer policy, persisted annotation format, root Reader pin, signing or CloudKit change.
+
+## October 11, 06:07 UTC reconciliation
+
+Composed onto Lake #95 `67a76c535b1086828aeac4a304163a075517ec9a`, preserving its captured-Realm commands/observers, OPML test repairs and disabled-script convergence fix. ReaderContentCell.swift in that destination is byte-identical to this PR's original base, and the observation/provider/test files are absent. The exact three production blobs and six-test native fixture therefore remain relevant; the existing LakeOfFireTests target already directly depends on LakeOfFireContentUI.
+
+Retired extracted-source Tools validation and its workflow are not restored. Their historical result remains above and in prior commits; no new tests or builds were run. Current paired adapter is Core #205 `160961df3c785274fa2e7f6e2f4f39b3f8963e86`; Core #206's host wiring must be reconciled separately. These stacks still require newer-audit composition and later owning-target/root qualification before Reader selection. No schema, package/root pins or production changes.
