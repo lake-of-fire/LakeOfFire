@@ -939,3 +939,35 @@ test('successful fixed-layout navigation and an already displayed target report 
     assert.equal(await layout.goTo({ index: 0 }), true)
     layout.destroy()
 })
+
+test('returning to the previous spread during replacement frame load reloads actual content', async () => {
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: { spread: 'none', viewport: { width: 600, height: 800 } },
+        sections: [
+            { load: async () => 'return-during-frame-original.xhtml' },
+            { load: async () => 'return-during-frame-replacement.xhtml' },
+        ],
+    })
+    const initial = layout.goTo({ index: 0 })
+    const firstFrame = await nextPendingIframe('return-during-frame-original.xhtml')
+    firstFrame.finishLoading(fixedLayoutDocument('original'))
+    assert.equal(await initial, true)
+
+    const replacement = layout.goTo({ index: 1 })
+    const abandonedFrame = await nextPendingIframe('return-during-frame-replacement.xhtml')
+    assert.deepEqual(layout.getContents(), [])
+
+    const returned = layout.goTo({ index: 0 })
+    const restoredFrame = await nextPendingIframe('return-during-frame-original.xhtml')
+    restoredFrame.finishLoading(fixedLayoutDocument('restored original'))
+    assert.equal(await returned, true)
+    assert.equal(await replacement, null)
+
+    // The cancelled iframe's late load must not replace the restored content.
+    abandonedFrame.finishLoading(fixedLayoutDocument('obsolete replacement'))
+    assert.equal(layout.index, 0)
+    assert.deepEqual(layout.getContents().map(content => content.doc.title), ['restored original'])
+    layout.destroy()
+})

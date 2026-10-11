@@ -338,7 +338,7 @@ export class FixedLayout extends HTMLElement {
         if (this.#isDestroyed) return null
         this.#targetResolutionGeneration += 1
         if (!Number.isInteger(index) || index < 0 || index >= this.#spreads.length) return null
-        if (index === this.#index) {
+        if (index === this.#index && (this.#center || this.#left || this.#right)) {
             const generation = ++this.#contentGeneration
             this.#cancelPendingFrameLoads()
             for (const frame of [this.#center, this.#left, this.#right]) {
