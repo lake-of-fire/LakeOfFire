@@ -1787,9 +1787,6 @@ public class ReaderModeViewModel: ObservableObject {
         guard pageURL.absoluteString != "about:blank" else {
             return
         }
-        guard #available(iOS 16.4, macOS 14, *) else {
-            return
-        }
         let fontValues = readerFontCSSValues(horizontalFamily: readerFontFamilyName)
         if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
             let js = """
@@ -1972,9 +1969,7 @@ public class ReaderModeViewModel: ObservableObject {
             };
             const replaceFontBlob = (css, fontHash, desiredFamily) => {
                 if (!css) return null;
-                const resolvedCSS = desiredFamily
-                    ? css.replace(/font-family:\\s*['"][^'"]+['"]\\s*;/g, "font-family: '" + desiredFamily + "';")
-                    : css;
+                const resolvedCSS = css;
                 const blob = new Blob([resolvedCSS], { type: 'text/css' });
                 const nextBlobURL = URL.createObjectURL(blob);
                 const previousBlobURL = globalThis.manabiReaderFontCSSBlobURL || null;
