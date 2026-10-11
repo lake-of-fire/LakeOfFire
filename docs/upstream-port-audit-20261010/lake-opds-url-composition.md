@@ -34,3 +34,10 @@ Destination reviewed: #138 at 97e1f7b0ec65c4c25ac7d0109e42ae48f659046b.
 - Existing default-branch consumers located in BookLibraryView and OPDSCatalogsView. Their catalog lifetime integration remains the next bounded change; no claim that adding the parser API alone repairs the old recursive/uncancelled UI flow.
 - Added 9 async, 6 ownership and 2 concrete fetch-admission cases. Updated existing parser/OpenSearch transport tests to isolated session protocols, retaining current copyright notices; carried the extra redirect/XHTML/subject cases from #50.
 - All tests remain UNRUN. Mutable feed models have NOT been marked unchecked Sendable. No package/platform changes.
+
+## Catalog consumers continuation — 07:22 UTC
+- Integrated bounded, cancellable BookCatalogLoading and request-owned BookCatalogRefresh into the existing BookLibraryViewModel. Retained all current import/open/delete/layout behavior and the existing Publication declaration.
+- Catalog detail now uses the extracted #50 view with task-owned fetch, retry, refresh and disappearance cancellation; unchanged catalog observer/editor code retained.
+- Catalog navigation is capped at 16 documents with requested/final response identity cycle detection, and preserves open-access/full-book semantics without treating purchase/sample links as downloads.
+- Ported 16 loader and 11 owner cases, plus three new tests that invoke the actual BookLibraryViewModel (latest request wins, awaiting fetchAllData waits for publication, and cancellation suppresses a late result). All UNRUN.
+- This completes the reviewed OPDS parser/catalog subset, not the entire #50 stack. Book selection/import/navigation, EPUB serving/storage and restore ownership remain separate reconciliation work. Native module and UI verification are still required.
