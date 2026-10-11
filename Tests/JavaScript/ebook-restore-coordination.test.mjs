@@ -9,6 +9,7 @@ import {
     restoreLocatorKind,
     runRequiredRestoreNavigation,
     shouldSkipScheduledReaderFractionGoTo,
+    shouldSkipVisibleRendererGoTo,
 } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-restore-coordination.js'
 
 test('initial restore requests derive locator identity from validated content', () => {
@@ -182,4 +183,33 @@ test('required restore navigation returns the successful terminal value', async 
         value,
         error: null,
     })
+})
+
+test('same-section synthetic restore must reach the renderer for every finite local page', () => {
+    for (const localPage of [0, 1, 3, -1, 1.5]) {
+        assert.equal(shouldSkipVisibleRendererGoTo({
+            target: {index: 2, localPage}, currentIndex: 2, currentPage: 1, totalPages: 5,
+        }), false)
+    }
+    // Explicit page intent must win even if an anchor happens to match the HUD.
+    assert.equal(shouldSkipVisibleRendererGoTo({
+        target: {index: 2, localPage: 3, anchor: 0}, currentIndex: 2, currentPage: 1, totalPages: 5,
+    }), false)
+})
+
+test('ordinary same-visible-page and section navigation retain existing decisions', () => {
+    const current = {currentIndex: 2, currentPage: 3, totalPages: 5}
+    assert.equal(shouldSkipVisibleRendererGoTo({...current, target: {index: 2, anchor: 0.5}}), true)
+    assert.equal(shouldSkipVisibleRendererGoTo({...current, target: {index: 2, anchor: 0}}), false)
+    assert.equal(shouldSkipVisibleRendererGoTo({...current, target: {index: 3, anchor: 0.5}}), false)
+    assert.equal(shouldSkipVisibleRendererGoTo({...current, target: {index: 2}}), true)
+    assert.equal(shouldSkipVisibleRendererGoTo({...current, target: null}), false)
+})
+
+test('nonfinite and absent local pages do not invent a synthetic restore intent', () => {
+    for (const localPage of [undefined, null, NaN, Infinity, -Infinity, '3']) {
+        assert.equal(shouldSkipVisibleRendererGoTo({
+            target: {index: 2, localPage}, currentIndex: 2, currentPage: 1, totalPages: 5,
+        }), true)
+    }
 })

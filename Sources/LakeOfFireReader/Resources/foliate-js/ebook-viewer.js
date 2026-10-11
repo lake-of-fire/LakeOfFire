@@ -40,6 +40,7 @@ import {
 import {
     makeSyntheticRestoreLocator,
     shouldSkipScheduledReaderFractionGoTo,
+    shouldSkipVisibleRendererGoTo,
 } from './ebook-restore-coordination.js'
 import { CacheWarmerOpenIntent } from './cache-warmer-open-intent.js'
 import { CacheWarmerPrecedingSections } from './cache-warmer-preceding-sections.js'
@@ -7321,30 +7322,12 @@ class Reader {
         if (typeof originalGoTo !== 'function') return;
         const reader = this;
         renderer.goTo = function guardedVisibleRendererGoTo(target, ...args) {
-            const targetIndex = typeof target?.index === 'number' ? Math.max(0, Math.round(target.index)) : null;
-            const currentIndex = getPrimaryRendererContentIndex(renderer);
-            const currentPage = reader.navHUD?.rendererPageSnapshot?.current ?? null;
-            const totalPages = reader.navHUD?.rendererPageSnapshot?.total ?? null;
-            const targetAnchor = typeof target?.anchor === 'number' && Number.isFinite(target.anchor)
-                ? Math.max(0, Math.min(1, target.anchor))
-                : null;
-            const targetPage = typeof targetAnchor === 'number'
-                && typeof totalPages === 'number'
-                && totalPages > 1
-                ? Math.max(1, Math.min(totalPages, Math.round(targetAnchor * (totalPages - 1)) + 1))
-                : null;
-            const sameIndex = typeof targetIndex === 'number'
-                && typeof currentIndex === 'number'
-                && targetIndex === currentIndex;
-            const sameVisiblePage = sameIndex
-                && (
-                    targetAnchor === null
-                    || (
-                        typeof targetPage === 'number'
-                        && typeof currentPage === 'number'
-                        && targetPage === currentPage
-                    )
-                );
+            const sameVisiblePage = shouldSkipVisibleRendererGoTo({
+                target,
+                currentIndex: getPrimaryRendererContentIndex(renderer),
+                currentPage: reader.navHUD?.rendererPageSnapshot?.current ?? null,
+                totalPages: reader.navHUD?.rendererPageSnapshot?.total ?? null,
+            });
             if (sameVisiblePage) {
                 return Promise.resolve();
             }
