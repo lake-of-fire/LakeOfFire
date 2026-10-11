@@ -69,6 +69,7 @@ import {
     parseSpineOnlyEpubCFI,
     coerceRestoreFraction,
     resolveRestoreLocator,
+    fractionRestoreLocationSatisfied,
     runLocatorWithFractionFallback,
     runAcceptedRestoreNavigation,
     commitAfterMatchingRestoreTransactionsSettle,
@@ -9892,7 +9893,7 @@ class Reader {
                         spineSectionIndex: spineOnlyInitialRestoreSectionIndex,
                         fraction: initialRestoreFraction,
                     };
-                    operation = () => this.view.goToFraction(initialRestoreFraction);
+                    operation = () => this.view.goToFraction(initialRestoreFraction, { requireNavigationReceipt: true });
                 } else {
                     intent = {
                         source: `${reason}.initialRestoreSpineCFI`,
@@ -9916,7 +9917,7 @@ class Reader {
                     target: 'view.goToFraction',
                     fraction: initialRestoreFraction,
                 };
-                operation = () => this.view.goToFraction(initialRestoreFraction);
+                operation = () => this.view.goToFraction(initialRestoreFraction, { requireNavigationReceipt: true });
             } else {
                 intent = {
                     source: reason,
@@ -9941,7 +9942,7 @@ class Reader {
             if ((hasInitialRestoreCFI || syntheticInitialRestore) && hasInitialRestoreFraction) {
                 operation = () => runLocatorWithFractionFallback({
                     navigateLocator: locatorOperation,
-                    navigateFraction: () => this.view.goToFraction(initialRestoreFraction),
+                    navigateFraction: () => this.view.goToFraction(initialRestoreFraction, { requireNavigationReceipt: true }),
                     isCurrent: isCurrentInitialDisplay,
                     onFallback: () => {
                         initialRestoreUsesFraction = true;
@@ -9950,13 +9951,15 @@ class Reader {
                 });
             }
             const navigationResult = await runInitialDisplayNavigation(intent, operation);
-            if (hasInitialRestoreCFI || syntheticInitialRestore) {
+            if (hasInitialRestoreTarget) {
                 // The previous document can still be visible while goTo resolves.
                 // A precise locator is satisfied by its accepted navigation,
                 // never by an unrelated visible page or its completion fraction.
                 const receipt = await navigationResult?.result;
                 if (!isCurrentInitialDisplay()) return false;
-                navigationResult.ok = receipt != null && receipt !== false;
+                navigationResult.ok = hasInitialRestoreCFI
+                    ? receipt != null && receipt !== false
+                    : receipt === true;
                 navigationResult.pending = false;
             }
             if (!isCurrentInitialDisplay() || navigationResult?.superseded === true) {
@@ -9982,10 +9985,14 @@ class Reader {
                 ? displaySettled?.settled === true
                 : true;
             const initialRestoreFractionSatisfied = initialRestoreUsesFraction
-                ? (
-                    typeof settledFraction === 'number'
-                    && Math.abs(settledFraction - initialRestoreFraction) <= initialRestoreFractionTolerance
-                )
+                ? navigationResult?.ok === true && fractionRestoreLocationSatisfied({
+                    requestedFraction: initialRestoreFraction,
+                    target: this.view.resolveNavigation({ fraction: initialRestoreFraction }),
+                    location,
+                    paginated: this.view.renderer.localName === 'foliate-paginator'
+                        && !this.view.renderer.scrolled,
+                    tolerance: initialRestoreFractionTolerance,
+                })
                 : (navigationResult?.ok === true && pendingNavigationHasVisibleContent);
             const spineOnlyRestoreIsPreciseEnough =
                 !hasSpineOnlyInitialRestore || hasInitialRestoreFraction;
@@ -10626,7 +10633,8 @@ class Reader {
                         && targetPage === currentPage
                     )
                 );
-            if (sameVisiblePage && target?.bookAction !== true) {
+            if (sameVisiblePage && target?.bookAction !== true
+                && args[0]?.requireNavigationReceipt !== true) {
                 return Promise.resolve();
             }
             return originalGoTo.call(this, target, ...args);
@@ -12956,10 +12964,13 @@ window.loadLastPosition = async ({
                 || typeof state.locationCurrent === 'number';
         };
         const restoreStateFractionSatisfied = (state) => !restoreUsesFraction
-            || (
-                typeof state?.currentFraction === 'number'
-                && Math.abs(state.currentFraction - fractionalCompletion) <= 0.003
-            );
+            || fractionRestoreLocationSatisfied({
+                requestedFraction: fractionalCompletion,
+                target: restoreReader.view.resolveNavigation({ fraction: fractionalCompletion }),
+                location: state?.detail,
+                paginated: restoreReader.view.renderer.localName === 'foliate-paginator'
+                    && !restoreReader.view.renderer.scrolled,
+            });
         const waitForRestoreStateIfNeeded = async (
             state,
             reason,
@@ -13114,7 +13125,7 @@ window.loadLastPosition = async ({
                 target: 'view.goToFraction',
                 fraction: fractionalCompletion,
                 stageOnReconcile,
-            }, () => restoreReader.view.goToFraction(fractionalCompletion), {
+            }, () => restoreReader.view.goToFraction(fractionalCompletion, { requireNavigationReceipt: true }), {
                 throwOnError: false,
             });
             await waitForFrames(2);
@@ -13238,7 +13249,7 @@ window.loadLastPosition = async ({
                     localPage: syntheticRestoreLocator.localSectionIndex,
                 }),
                 navigateFraction: hasFractionalCompletion
-                    ? () => restoreReader.view.goToFraction(fractionalCompletion)
+                    ? () => restoreReader.view.goToFraction(fractionalCompletion, { requireNavigationReceipt: true })
                     : null,
                 isCurrent: () => {
                     assertCurrentRestore('synthetic-fraction-fallback');
@@ -13288,7 +13299,7 @@ window.loadLastPosition = async ({
                 fraction: hasFractionalCompletion ? fractionalCompletion : null,
             }, async () => {
                 if (hasFractionalCompletion) {
-                    return restoreReader.view.goToFraction(fractionalCompletion);
+                    return restoreReader.view.goToFraction(fractionalCompletion, { requireNavigationReceipt: true });
                 }
                 return restoreReader.view.renderer.goTo?.({
                     index: spineOnlyRestoreSectionIndex,
@@ -13339,7 +13350,7 @@ window.loadLastPosition = async ({
             }, () => runLocatorWithFractionFallback({
                 navigateLocator: () => restoreReader.view.goTo(locator.cfi),
                 navigateFraction: hasFractionalCompletion
-                    ? () => restoreReader.view.goToFraction(fractionalCompletion)
+                    ? () => restoreReader.view.goToFraction(fractionalCompletion, { requireNavigationReceipt: true })
                     : null,
                 isCurrent: () => {
                     assertCurrentRestore('cfi-fraction-fallback');
@@ -13399,7 +13410,7 @@ window.loadLastPosition = async ({
                     source: 'restore.fraction',
                     target: 'view.goToFraction',
                     fraction: fractionalCompletion,
-                }, () => restoreReader.view.goToFraction(fractionalCompletion));
+                }, () => restoreReader.view.goToFraction(fractionalCompletion, { requireNavigationReceipt: true }));
                 await waitForPaintAfterNavigation();
                 const fractionState = await waitForRestoreStateIfNeeded(
                     captureRestoreState('after-fraction'),

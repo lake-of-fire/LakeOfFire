@@ -423,6 +423,8 @@ export class View extends HTMLElement {
         const cfi = this.getCFI(index, range)
         this.lastLocation = {
             ...progress,
+            fractionInSection: fraction,
+            pageFraction: size,
             index,
             sectionIndex: index,
             tocItem,

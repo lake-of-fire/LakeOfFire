@@ -12,6 +12,7 @@ import {
     makeSyntheticRestoreLocator,
     parseSyntheticRestoreLocator,
     resolveRestoreLocator,
+    fractionRestoreLocationSatisfied,
     runLocatorWithFractionFallback,
     runAcceptedRestoreNavigation,
     runRequiredRestoreNavigation,
@@ -376,4 +377,41 @@ test('save and reopen retains the locator when progress records the visible page
         assert.equal(selected.usesFraction, false)
         assert.equal(fractionNavigations, 0)
     }
+})
+
+test('fraction restores match the renderer page rather than its completion fraction', () => {
+    const progress = new SectionProgress([{ size: 100, linear: 'yes' }, { size: 100, linear: 'yes' }], 10, 10)
+    for (const requestedFraction of [0, 0.01, 0.085, 0.25, 0.49, 0.5, 0.585, 0.75, 1]) {
+        const [index, anchor] = progress.getSection(requestedFraction)
+        const textPages = 4
+        const fractionInSection = Math.round(anchor * (textPages - 1)) / textPages
+        const location = {
+            ...progress.getProgress(index, fractionInSection, 1 / textPages),
+            fractionInSection,
+            pageFraction: 1 / textPages,
+        }
+        const state = { requestedFraction, target: { index, anchor }, location, paginated: true }
+        assert.equal(fractionRestoreLocationSatisfied(state), true)
+        assert.equal(fractionRestoreLocationSatisfied({
+            ...state, location: { ...location, section: { current: 1 - index } },
+        }), false)
+        assert.equal(fractionRestoreLocationSatisfied({
+            ...state, location: { ...location, fractionInSection: (fractionInSection + 0.25) % 1 },
+        }), false)
+    }
+    const firstPage = progress.getProgress(0, 0, 1 / 4)
+    assert.equal(firstPage.fraction, 0.125)
+    assert.ok(Math.abs(firstPage.fraction) > 0.003)
+})
+
+test('fraction restore matching rejects absent geometry and retains scrolled tolerance', () => {
+    const state = { requestedFraction: 0, target: { index: 0, anchor: 0 },
+        location: { sectionIndex: 0, fraction: 0.5 }, paginated: true }
+    assert.equal(fractionRestoreLocationSatisfied(state), false)
+    assert.equal(fractionRestoreLocationSatisfied({ ...state,
+        location: { ...state.location, fractionInSection: 0, pageFraction: 1 } }), true)
+    assert.equal(fractionRestoreLocationSatisfied({ ...state,
+        paginated: false, location: { sectionIndex: 0, fraction: 0.002 } }), true)
+    assert.equal(fractionRestoreLocationSatisfied({ ...state,
+        paginated: false, location: { sectionIndex: 0, fraction: 0.01 } }), false)
 })
