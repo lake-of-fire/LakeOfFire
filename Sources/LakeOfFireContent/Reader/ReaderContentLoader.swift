@@ -86,7 +86,8 @@ public struct ReaderContentLoader {
         public let realmConfiguration: Realm.Configuration
 
         public init?(content: any ReaderContentProtocol) {
-            guard let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type,
+            guard !content.isInvalidated,
+                  let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type,
                   var config = content.realm?.configuration else { return nil }
             if var objectTypes = config.objectTypes,
                !objectTypes.contains(where: { $0 == contentType }) {

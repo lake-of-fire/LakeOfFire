@@ -85,6 +85,46 @@ final class ReaderContentInvalidatedRowTests: XCTestCase, @unchecked Sendable {
         return record
     }
 
+    func testContentReferenceRejectsPhysicallyDeletedRow() async throws {
+        let configuration = makeConfiguration()
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let url = URL(string: "https://example.com/deleted-reference")!
+        let original = try await record(
+            in: realm, configuration: configuration, url: url, title: "Original"
+        )
+        let key = original.compoundKey
+        let admitted = try XCTUnwrap(ReaderContentLoader.ContentReference(content: original))
+        XCTAssertEqual(admitted.contentKey, key)
+
+        try await remove(original, in: realm, configuration: configuration)
+
+        // Must reject before reading persisted identity from the retired row.
+        XCTAssertNil(ReaderContentLoader.ContentReference(content: original))
+        let successor = try await record(
+            in: realm, configuration: configuration, url: url, title: "Replacement"
+        )
+        XCTAssertEqual(
+            ReaderContentLoader.ContentReference(content: successor)?.contentKey,
+            key
+        )
+    }
+
+    func testContentReferenceRejectsInvalidatedRealmAndUnmanagedRow() async throws {
+        let configuration = makeConfiguration()
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let url = URL(string: "https://example.com/invalidated-reference")!
+        let original = try await record(
+            in: realm, configuration: configuration, url: url, title: "Original"
+        )
+        XCTAssertNotNil(ReaderContentLoader.ContentReference(content: original))
+        realm.invalidate()
+        XCTAssertTrue(original.isInvalidated)
+        XCTAssertNil(ReaderContentLoader.ContentReference(content: original))
+        XCTAssertNil(ReaderContentLoader.ContentReference(
+            content: unmanagedRecord(url: url, title: "Unmanaged")
+        ))
+    }
+
     func testReloadAfterPhysicalDeletionResolvesFreshContentForBothDisplayStates() async throws {
         let originalResolver = ReaderContent.contentResolver
         defer { ReaderContent.contentResolver = originalResolver }
