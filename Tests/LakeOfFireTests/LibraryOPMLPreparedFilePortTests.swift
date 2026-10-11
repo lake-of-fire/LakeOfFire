@@ -101,9 +101,12 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
         defer { LibraryDataManager.realmConfiguration = previous }
 
         func makeConfiguration(_ name: String) -> Realm.Configuration {
-            var configuration = DefaultRealmConfiguration.configuration
-            configuration.fileURL = nil
-            configuration.inMemoryIdentifier = name
+            var configuration = Realm.Configuration(inMemoryIdentifier: name)
+            configuration.objectTypes = [
+                LibraryConfiguration.self, FeedCategory.self, Feed.self,
+                FeedDirectory.self, UserScript.self, UserScriptAllowedDomain.self,
+            ]
+            configureLakeOfFireMutationTrackingForTesting(&configuration)
             return configuration
         }
 
