@@ -65,7 +65,10 @@ final class ReaderEBookNativeRestoreAdmissionTests: XCTestCase {
         XCTAssertNotEqual(first.requestID, second.requestID)
         XCTAssertNotNil(UUID(uuidString: first.requestID))
         XCTAssertEqual(first.javaScriptArgument["requestID"] as? String, first.requestID)
-        XCTAssertEqual(first.javaScriptArgument["requestID"] as? String, first.javaScriptArgument["requestID"] as? String)
+        XCTAssertNotNil(UUID(uuidString: second.requestID))
+        XCTAssertEqual(second.javaScriptArgument["requestID"] as? String, second.requestID)
+        XCTAssertNotEqual(first.javaScriptArgument["requestID"] as? String,
+                          second.javaScriptArgument["requestID"] as? String)
     }
 
     func testBridgeSerializationContainsNumericNotBooleanZeroAndOne() throws {
