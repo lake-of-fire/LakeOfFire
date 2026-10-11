@@ -29,8 +29,7 @@ public enum ReaderFileManagerError: Swift.Error {
 
 @MainActor
 public class CloudDriveSyncStatusModel: ObservableObject {
-    public let objectWillChange = ObservableObjectPublisher()
-    
+    // Use ObservableObject's publisher so @Published status invalidates rows.
     @Published public var status: CloudDriveSyncStatus = .loadingStatus
     private var refreshTask: Task<Void, Never>? = nil
     private var refreshID: UUID?
@@ -111,8 +110,7 @@ public enum CloudDriveSyncStatus: Sendable {
 }
 
 public class ReaderFileManager: ObservableObject {
-    public let objectWillChange = ObservableObjectPublisher()
-    
+    // Inventory publication must invalidate Books and Documents consumers.
     public static let readerBackingStatusRefreshRequestedNotification = Notification.Name("ReaderFileManager.readerBackingStatusRefreshRequested")
     public static let driveAvailabilityDidChangeNotification = Notification.Name("ReaderFileManager.driveAvailabilityDidChange")
 
