@@ -86,6 +86,81 @@ final class ReaderContentSelectionOwnershipTests: XCTestCase, @unchecked Sendabl
         XCTAssertTrue(current === b)
     }
 
+    func testCallerResolvedSelectionRejectsOldResolverBeforeNavigationStarts() async throws {
+        let originalResolver = ReaderContent.contentResolver
+        defer { ReaderContent.contentResolver = originalResolver }
+        let reader = ReaderContent(), a = record("a"), b = record("b"), gate = Gate()
+        var wasCancelled = false
+        let old = Task { @MainActor in
+            try await self.load(reader, a.url) { _ in
+                await gate.wait()
+                wasCancelled = Task.isCancelled
+                return a
+            }
+        }
+        defer { gate.open(); old.cancel() }
+        await gate.waitForEntry()
+        reader.replaceSelection(with: b)
+        gate.open()
+        try await old.value
+        XCTAssertTrue(wasCancelled)
+        XCTAssertTrue(reader.content === b)
+        XCTAssertEqual(reader.contentTitle, "b")
+        let current = try await reader.getContent()
+        XCTAssertTrue(current === b)
+    }
+
+    func testClearingCallerSelectionRejectsOldResolver() async throws {
+        let originalResolver = ReaderContent.contentResolver
+        defer { ReaderContent.contentResolver = originalResolver }
+        let reader = ReaderContent(), a = record("a"), gate = Gate()
+        let old = Task { @MainActor in
+            try await self.load(reader, a.url) { _ in await gate.wait(); return a }
+        }
+        defer { gate.open(); old.cancel() }
+        await gate.waitForEntry()
+        reader.replaceSelection(with: nil)
+        gate.open()
+        try await old.value
+        XCTAssertNil(reader.content)
+        let current = try await reader.getContent()
+        XCTAssertNil(current)
+    }
+
+    func testPendingAccessorRejectsExplicitSameObjectSelectionRoundTrip() async throws {
+        let originalResolver = ReaderContent.contentResolver
+        defer { ReaderContent.contentResolver = originalResolver }
+        let reader = ReaderContent(), a = record("a"), b = record("b"), gate = Gate()
+        var replaced = false
+        let observation = reader.contentTitleSubject.sink { title in
+            guard title == "a", !replaced else { return }
+            replaced = true
+            reader.replaceSelection(with: b)
+            reader.replaceSelection(with: a)
+        }
+        defer { observation.cancel() }
+        let producer = Task { @MainActor in
+            try await self.load(reader, a.url) { _ in await gate.wait(); return a }
+        }
+        defer { gate.open(); producer.cancel() }
+        await gate.waitForEntry()
+        let entered = XCTestExpectation(description: "accessor captured original selection")
+        let accessor = Task { @MainActor in
+            entered.fulfill()
+            return try await reader.getContent()
+        }
+        defer { accessor.cancel() }
+        await fulfillment(of: [entered], timeout: 5)
+        gate.open()
+        try await producer.value
+        let obsoleteResult = try await accessor.value
+        XCTAssertTrue(replaced)
+        XCTAssertTrue(reader.content === a)
+        XCTAssertNil(obsoleteResult)
+        let current = try await reader.getContent()
+        XCTAssertTrue(current === a)
+    }
+
     func testExistingContentFastPathRetiresUnrelatedLoad() async throws {
         let originalResolver = ReaderContent.contentResolver
         defer { ReaderContent.contentResolver = originalResolver }

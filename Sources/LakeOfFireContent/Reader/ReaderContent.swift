@@ -58,6 +58,17 @@ public class ReaderContent: ObservableObject {
     public init() {
     }
 
+    /// Selects caller-resolved content and retires any earlier asynchronous resolver.
+    /// The caller retains responsibility for its navigation/display URL.
+    public func replaceSelection(with content: (any ReaderContentProtocol)?) {
+        let retiredTask = loadingTask
+        selectionID = UUID()
+        loadingTask = nil
+        loadingResolvedContentURL = nil
+        retiredTask?.cancel()
+        self.content = content
+    }
+
     @MainActor
     public func refreshObservedContentState() {
         syncLocationBarTitle()

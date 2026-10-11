@@ -2,6 +2,28 @@
 
 ## Local replacement review — October 10, 2026 (America/Toronto)
 
+### Caller-resolved ReaderContent selection
+
+Source review at `a738497d303aadc97c90af43e0396beab88c32fb` confirms the three production
+feed-preview assignments in `LibraryFeedView.refresh` bypassed asynchronous selection
+retirement. An older resolver could publish during the navigator's loader/prefetch awaits.
+The focused repair exposes `ReaderContent.replaceSelection(with:)`, retiring the previous
+receipt and resolver before installing caller-resolved content or clearing it. Those three
+preview paths now use the explicit method; internal resolver publication and title refresh
+remain unchanged. Display URL/navigation stays with its existing owner.
+
+Three runtime regression sources cover a noncooperative old resolver after caller selection,
+clearing the selection, and a pending accessor during a synchronous A→B→same-object-A
+replacement. The round-trip occurs through production title publication before the original
+producer returns, so the accessor must reject its retired receipt even when object identity
+matches again; subsequent access accepts the new selection. This improves the earlier
+missing same-object oracle for this explicit replacement path, not every legacy setter.
+
+Source/diff review and whitespace checks only; no tests/builds/CI/native launch ran. Other
+external direct property setters remain legacy paths, and queued preview tasks, native
+navigation ownership/cancellation and mounted feed switching still require reconciliation.
+The new API does not claim to fence those separate continuations or account/storage writes.
+
 ### Consolidation tie-policy review
 
 At draft `c6ab8816c0846fab2162a0ad34e434d15134e30a`, source review of

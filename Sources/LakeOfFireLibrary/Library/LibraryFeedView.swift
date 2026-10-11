@@ -1106,7 +1106,7 @@ struct LibraryFeedFormSections: View {
         }
         guard let resolvedEntries else {
             readerFeedEntry = nil
-            readerContent.content = nil
+            readerContent.replaceSelection(with: nil)
             readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
             return
         }
@@ -1117,7 +1117,7 @@ struct LibraryFeedFormSections: View {
                 if forceRefresh || (entry.url != readerViewModel.state.pageURL && !readerViewModel.state.isProvisionallyNavigating) {
                     readerFeedEntry = entry
                     if readerContent.content?.url != entry.url {
-                        readerContent.content = entry
+                        readerContent.replaceSelection(with: entry)
                         try await readerViewModel.navigator?.load(
                             content: entry,
                             readerModeViewModel: readerModeViewModel
@@ -1126,7 +1126,7 @@ struct LibraryFeedFormSections: View {
                 }
             } else {
                 readerFeedEntry = nil
-                readerContent.content = nil
+                readerContent.replaceSelection(with: nil)
                 readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
             }
         }
