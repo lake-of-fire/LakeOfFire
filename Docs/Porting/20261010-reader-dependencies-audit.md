@@ -2,6 +2,62 @@
 
 ## Local replacement review — October 10, 2026 (America/Toronto)
 
+### Hotfix port: script field input and editor retirement — October 11, 2026
+
+This continuation starts at candidate `74154572c5c31e85cc38eaec0a4bc99c4b2cf07b`.
+Hotfix `3d9791093686f75aeb2e091d3c9a06c44d7bb9cf` captures script field input and
+editor identity; `6c61199059dcc2f828e60b745399ef189442bff9` adds retirement flushing
+and shared input ordering. Both are retained in inspected Lake hotfix endpoint
+`64f65fbb39238d126700ab3f9d4df59fd76a701c`. Pending #95 `21c42ff0` retains the old
+script-field model, so this adaptation adds no competing pending implementation.
+
+`LibraryScriptFieldCommands.swift` captures the actual script Realm configuration, UUID,
+createdAt and field intent synchronously at input, before debounce. Its final background
+transaction resolves the live row and rejects deleted, externally managed or recreated
+owners. Transient ordering is shared across editors and pending commands for the same
+storage/incarnation and scoped independently per field. A newer intentional no-op retires
+older input before either write commits; no-op field assignments never refresh metadata
+or advance the journal. Every admitted mutation refreshes explicit metadata in the same
+transaction. Entry, post-suspension and final-transaction cancellation checks retain retryable
+drafts in a live editor without applying cancelled commands.
+
+`LibraryScriptFormSectionsViewModel` suppresses hydration publishers, retains pending
+drafts during refresh, flushes before script replacement and on disappearance/release,
+and settles only the matching intent. Explicit writes and paste publish the captured draft
+through that same path. A failed write remains pending for `finishEditing()` to retry;
+throwing tasks are observed through `# LIBRARYSCRIPTEDITOR`. Object observation uses
+Combine on the live object's MainActor and rotates a callback identity on replacement.
+The form's StateObjects receive the captured storage configuration and its SwiftUI identity
+includes storage and incarnation. Main's modular/domain-cell composition is preserved.
+
+Fourteen new runtime regression methods are authored in
+`LibraryScriptFieldOwnershipTests.swift`: captured storage after default replacement;
+buffered title/text/preview replacement flushing; old completion versus replacement draft;
+all seven fields, repeated no-op journaling and preview clearing; hydration without intent
+reservation/journaling; reopened-editor no-op before its commit; four final-writer retirement
+cases; published unchanged input before debounce; injected failure plus retry; suspended
+cancellation plus retry; paste superseding buffered input across replacement; model release
+and final draft flush; independent fields; live observer replacement and physical deletion.
+Fixtures use private in-memory Realms and RealmBackgroundActor for all mutations. Both new
+source directories belong to existing package targets with the required direct dependencies.
+These sources are uncompiled/unrun; no test discovery, builds, native launch, generators,
+package resolution, benchmarks or CI ran. Validation is source/API/history inspection and
+`git diff --check` only.
+
+This is a published-candidate source adaptation, not root integration or runtime closure.
+The hotfix ownership-preserving transaction API from `a0d0e896` belongs to the excluded
+dependency scope and is not reproduced or claimed by ordinary `asyncWrite`. Preserved-
+incarnation same-storage/account replacement, restart recovery, native script-preview
+request lifetime and both-platform mounted qualification remain open. Failed retirement
+after the editor is released is logged; no durable draft retry journal is introduced.
+Upstream root remains `3c10696d33c294e6657945d66353212ce4b76c43` with Lake pin
+`808dbaf3721af9903aa4cba827b791c17581e4e3`; observed hotfix root remains
+`1da64556cb01276c26be393ce0ae09f79ee0de2a` with pin/checkout `036d4193` and 766 dirty
+entries. Those dirty changes are WIP evidence only and were not touched. Original Lake
+and LakeKit checkouts retain `e154c93d` and `29db685f`. No root pin changes are included.
+The next concrete script-family gap is captured native preview navigation admission after
+enqueue/disappearance, composed with pending #50's existing `shouldLoad` mechanism.
+
 ### Hotfix port: script allowed-domain commands
 
 At draft `d41118fb`, domain text hydration/editing selects the global Realm configuration
@@ -43,9 +99,9 @@ belong to the existing package targets, but compilation, test discovery and exec
 unverified. Only source/API/history review and whitespace checks ran. Root pins and original
 checkouts remain unchanged.
 
-This closes the focused domain mutation gap in candidate source only. Script title/text/
-options/preview-URL field ordering, retirement, observation and preview navigation still
-require the distinct remaining hotfix adaptation. Same-backing storage/account reset with
+This closes the focused domain mutation gap in candidate source only. The subsequent
+October 11 continuation above adapts script field ordering, retirement and observation;
+native preview navigation remains open. Same-backing storage/account reset with
 preserved createdAt, cross-script domain-deletion ownership policy, restart and both-platform
 mounted qualification remain separate gates; this is not closure of the entire script form.
 

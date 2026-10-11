@@ -17,6 +17,7 @@ struct LibraryScriptForm: View {
     var body: some View {
         Form {
             LibraryScriptFormSections(script: script)
+                .id(LibraryScriptEditorIdentity(script: script))
                 .disabled(!script.isUserEditable)
         }
         .formStyle(.grouped)
