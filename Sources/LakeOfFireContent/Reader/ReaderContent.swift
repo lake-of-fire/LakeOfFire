@@ -48,7 +48,8 @@ public class ReaderContent: ObservableObject {
     public private(set) var snippetTitleIsGeneratedFromPrefix = false
 
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
-    private var loadingRequestID: UUID?
+    // Selection ownership outlives its resolver task and queued result delivery.
+    private var selectionID: UUID?
     private var loadingResolvedContentURL: URL?
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
@@ -200,6 +201,7 @@ public class ReaderContent: ObservableObject {
 
     @MainActor
     public func load(url: URL) async throws {
+        try Task.checkCancellation()
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
         let displayURL = resolvedContentURL
         logReaderLoad(
@@ -230,6 +232,7 @@ public class ReaderContent: ObservableObject {
         }
 
         if let loadingTask,
+           !loadingTask.isCancelled,
            let loadingResolvedContentURL,
            matchesResolvedContentURL(loadingResolvedContentURL, resolvedContentURL: resolvedContentURL) {
             let startedAt = CFAbsoluteTimeGetCurrent()
@@ -242,6 +245,24 @@ public class ReaderContent: ObservableObject {
             )
             return
         }
+
+        // Reusing an accepted display without pending work is not a new selection.
+        // Keep readers of its completed resolver valid.
+        if loadingTask == nil, let existingContent = content,
+           matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL),
+           matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
+            consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
+            return
+        }
+
+        // Retire the previous selection before cached or preloaded content can publish.
+        let retiredTask = loadingTask
+        let requestID = UUID()
+        selectionID = requestID
+        loadingTask = nil
+        loadingResolvedContentURL = nil
+        defer { finishLoading(ifOwnedBy: requestID) }
+        retiredTask?.cancel()
 
         if let existingContent = content,
            matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL) {
@@ -285,18 +306,17 @@ public class ReaderContent: ObservableObject {
         currentSectionIndex = nil
         pageURL = displayURL
 
-        loadingTask?.cancel()
-        let requestID = UUID()
-        loadingRequestID = requestID
         loadingResolvedContentURL = resolvedContentURL
-        loadingTask = Task { @MainActor [weak self] in
+        let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor [weak self] in
+            // Release the owned slot before coalesced waiters observe completion.
+            defer { self?.finishLoading(ifOwnedBy: requestID) }
             try Task.checkCancellation()
             let content = try await Self.contentResolver?(
                 url,
                 true,
                 "ReaderContent.load"
             ) ?? ReaderContentLoader.unsavedHome
-            guard self?.loadingRequestID == requestID else {
+            guard self?.selectionID == requestID else {
                 logReaderLoad(
                     "stage=readerContent.load.discardStaleContent requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) returnedContentURL=\(content.url.absoluteString)"
                 )
@@ -316,18 +336,18 @@ public class ReaderContent: ObservableObject {
             )
             return content
         }
-        defer {
-            if loadingRequestID == requestID {
-                loadingTask = nil
-                loadingRequestID = nil
-                loadingResolvedContentURL = nil
-            }
-        }
-        let loadedContent = try await loadingTask?.value
-        let finalContentURL = loadedContent.flatMap { $0 }?.url.absoluteString ?? content?.url.absoluteString ?? "nil"
+        loadingTask = task
+        let loadedContent = try await task.value
+        let finalContentURL = loadedContent?.url.absoluteString ?? content?.url.absoluteString ?? "nil"
         logReaderLoad(
             "stage=readerContent.load.finish requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString) contentURL=\(finalContentURL)"
         )
+    }
+
+    private func finishLoading(ifOwnedBy requestID: UUID) {
+        guard selectionID == requestID else { return }
+        loadingTask = nil
+        loadingResolvedContentURL = nil
     }
 
     @MainActor
@@ -341,12 +361,16 @@ public class ReaderContent: ObservableObject {
         if let content {
             return content
         }
-        let content = try await loadingTask?.value
-        let contentURL = content?.url.absoluteString ?? "nil"
+        let expectedSelectionID = selectionID
+        let resolvedContent = try await loadingTask?.value
+        // A completed task value is valid only in the selection that admitted it.
+        guard selectionID == expectedSelectionID,
+              let resolvedContent, content === resolvedContent else { return nil }
+        let contentURL = resolvedContent.url.absoluteString
         logReaderLoad(
             "stage=readerContent.getContent source=loadingTask contentURL=\(contentURL) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
         )
-        return content
+        return resolvedContent
     }
 
     @MainActor
