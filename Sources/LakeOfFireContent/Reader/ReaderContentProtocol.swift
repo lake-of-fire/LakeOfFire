@@ -722,10 +722,7 @@ public extension ReaderContentProtocol {
             record.imageUrl = imageURL
             record.sourceIconURL = sourceIconURL
             record.isFromClipboard = isFromClipboard
-            record.rssContainsFullContent = rssContainsFullContent
-            if rssContainsFullContent {
-                record.content = content
-            }
+            applyFeedBody(content, containsFullContent: rssContainsFullContent, to: record)
             record.voiceFrameUrl = voiceFrameUrl
             record.voiceAudioURL = resolvedVoiceAudioURLList.first
             record.voiceAudioURLs.removeAll()

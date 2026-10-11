@@ -612,13 +612,33 @@ public struct ReaderContentLoader {
                     let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
 //                    await historyRealm.asyncRefresh()
                     try await historyRealm.asyncWrite {
-                        historyRealm.add(historyRecord, update: .modified)
-                        historyRecord.isDeleted = false
-                        historyRecord.refreshChangeMetadata(explicitlyModified: true)
+                        try Task.checkCancellation()
+                        // A cached miss or suspended lookup may predate a committed capture.
+                        // Resolve canonical aliases again at the write boundary before creating defaults.
+                        if let existing = HistoryRecord.getOpenedRecord(forURL: url, in: historyRealm)
+                            ?? HistoryRecord.records(matching: url, in: historyRealm)
+                                .sorted(by: [
+                                    SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
+                                    SortDescriptor(keyPath: "compoundKey", ascending: true),
+                                ]).first {
+                            if countsAsHistoryVisit {
+                                let timestamp = Date()
+                                existing.lastVisitedAt = timestamp
+                                existing.isDeleted = false
+                                existing.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                            }
+                            match = existing
+                        } else {
+                            if countsAsHistoryVisit { historyRecord.lastVisitedAt = Date() }
+                            historyRealm.add(historyRecord)
+                            historyRecord.refreshChangeMetadata(explicitlyModified: true)
+                            match = historyRecord
+                        }
                     }
                     invalidateCachedContent(for: url)
+                } else {
+                    match = historyRecord
                 }
-                match = historyRecord
                 logReaderLoad(
                     "stage=contentLoader.load.createdHistory url=\(url.absoluteString) persist=\(persist)"
                 )

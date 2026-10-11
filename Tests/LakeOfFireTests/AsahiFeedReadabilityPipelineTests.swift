@@ -108,6 +108,104 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         return configuration
     }
 
+    @MainActor
+    func testAtomSecondaryAudioChangeReachesEntryAndCapturedMirror() async throws {
+        let configuration = makeRealmConfiguration()
+        let originalBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalSession = makeFeedSessionOverrideForTesting
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmark
+            ReaderContentLoader.historyRealmConfiguration = originalHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeed
+            makeFeedSessionOverrideForTesting = originalSession
+            FeedURLProtocol.responses.removeAll()
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        let feedURL = URL(string: "https://example.com/audio.atom")!
+        let articleURL = URL(string: "https://example.com/audio-article")!
+        let first = URL(string: "https://example.com/first.mp3")!
+        let second = URL(string: "https://example.com/second.mp3")!
+        let replacement = URL(string: "https://example.com/replacement.mp3")!
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = feedURL
+        let bookmark = Bookmark()
+        bookmark.url = articleURL
+        bookmark.content = Data("captured body".utf8)
+        bookmark.rssContainsFullContent = true
+        bookmark.updateCompoundKey()
+        let history = HistoryRecord()
+        history.url = articleURL
+        history.content = Data("captured history body".utf8)
+        history.rssContainsFullContent = true
+        history.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(feed)
+            realm.add(bookmark)
+            realm.add(history)
+        }
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        for secondary in [second, replacement] {
+            FeedURLProtocol.responses[feedURL] = Data("""
+                <feed xmlns="http://www.w3.org/2005/Atom">
+                  <title>Audio</title><id>audio-feed</id><updated>2026-10-01T00:00:00Z</updated>
+                  <entry><id>audio-article</id><title>Audio article</title><updated>2026-10-01T00:00:00Z</updated>
+                    <link rel="alternate" href="\(articleURL.absoluteString)"/>
+                    <link rel="voice-audio" href="\(first.absoluteString)"/>
+                    <link rel="voice-audio" href="\(secondary.absoluteString)"/>
+                    <content type="html">summary</content>
+                  </entry>
+                </feed>
+                """.utf8)
+            try await feed.fetch(realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let entry = try XCTUnwrap(realm.objects(FeedEntry.self).first)
+            XCTAssertEqual(Array(entry.voiceAudioURLs), [first, secondary])
+            XCTAssertEqual(Array(bookmark.voiceAudioURLs), [first, secondary])
+            XCTAssertEqual(bookmark.content, Data("captured body".utf8))
+            XCTAssertTrue(bookmark.rssContainsFullContent)
+            XCTAssertEqual(Array(history.voiceAudioURLs), [first, secondary])
+            XCTAssertEqual(history.content, Data("captured history body".utf8))
+            XCTAssertTrue(history.rssContainsFullContent)
+            let visitedBody = try await { @RealmBackgroundActor in
+                let owner = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                let source = try XCTUnwrap(owner.objects(FeedEntry.self).first)
+                let visited = try await source.addHistoryRecord(realmConfiguration: configuration, pageURL: articleURL)
+                return visited.content
+            }()
+            XCTAssertEqual(visitedBody, Data("captured history body".utf8))
+        }
+        let entry = try XCTUnwrap(realm.objects(FeedEntry.self).first)
+        let entryMutation = entry.explicitlyModifiedAt
+        try await realm.asyncWrite {
+            bookmark.content = entry.content
+            bookmark.rssContainsFullContent = false
+            bookmark.primaryMediaIdentity = "reader-owned-media"
+            feed.rssContainsFullContent = true
+        }
+        // Identical stored fields still require the newly full source authority
+        // to reach mirrors, without replaying reader-owned metadata defaults.
+        try await feed.fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertTrue(bookmark.rssContainsFullContent)
+        XCTAssertEqual(bookmark.primaryMediaIdentity, "reader-owned-media")
+        XCTAssertEqual(entry.explicitlyModifiedAt, entryMutation)
+        let promotedMutation = bookmark.explicitlyModifiedAt
+        try await feed.fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(bookmark.explicitlyModifiedAt, promotedMutation)
+        XCTAssertEqual(entry.explicitlyModifiedAt, entryMutation)
+    }
+
     private func fixtureURL(_ fileName: String) throws -> URL {
         #if SWIFT_PACKAGE
         let bundle = Bundle.module
