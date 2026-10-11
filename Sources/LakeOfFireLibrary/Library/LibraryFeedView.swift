@@ -260,11 +260,12 @@ private struct LibraryFeedFieldCommand: Sendable {
     let apply: @RealmBackgroundActor @Sendable (Feed) -> Bool
 
     @RealmBackgroundActor
-    func write(beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil) async throws {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        await beforeWrite?()
+    func write(beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil) async throws {
         try Task.checkCancellation()
-        try await realm.asyncWrite {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        try await beforeWrite?()
+        try Task.checkCancellation()
+        try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
                   feed.createdAt == feedCreatedAt, feed.categoryID == categoryID,
@@ -320,6 +321,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     var hasInitializedValues = false
     private var isRefreshing = false
     private var pendingFieldCommands: [LibraryFeedEditorField: LibraryFeedFieldCommand] = [:]
+    private var activeWrites: [UInt64: Task<Void, Error>] = [:]
+    // Instance-scoped admission seam for deterministic buffered-write regression sources.
+    private let beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)?
     private let writeOrdering: LibraryFeedWriteOrdering
     private let metadataAdmission = LibraryFeedMetadataAdmission()
     private var metadataRequest: LibraryFeedMetadataRequest?
@@ -331,7 +335,11 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     @RealmBackgroundActor
     private var objectNotificationToken: NotificationToken?
     
-    init(feed: Feed, observesRealm: Bool = true) {
+    init(
+        feed: Feed, observesRealm: Bool = true,
+        beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil
+    ) {
+        self.beforeFieldWrite = beforeFieldWrite
         editorIdentity = LibraryFeedFormIdentity(feed: feed)
         realmConfiguration = feed.realm?.configuration ?? LibraryDataManager.realmConfiguration
         writeOrdering = .shared(configuration: realmConfiguration, feedID: feed.id, createdAt: feed.createdAt)
@@ -504,34 +512,80 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 return command
             }
             .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { [weak self] command in self?.submit(command) }
+            .sink { [weak self] command in
+                guard let self else { return }
+                self.observeCompletion(self.submit(command))
+            }
             .store(in: &cancellables)
     }
 
-    private func submit(_ command: LibraryFeedFieldCommand) {
-        Task { @RealmBackgroundActor [weak self] in
-            do { try await command.write() }
-            catch { print("LibraryFeedEditor field write failed: \(error)") }
-            await self?.settle(command)
+    private func submit(
+        _ command: LibraryFeedFieldCommand,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil
+    ) -> Task<Void, Error> {
+        if let active = activeWrites[command.sequence] { return active }
+        // A trailing debounce may arrive after settlement or newer input.
+        guard pendingFieldCommands[command.field]?.sequence == command.sequence else {
+            return Task<Void, Error> {}
         }
+        let beforeWrite = beforeWrite ?? beforeFieldWrite
+        let task = Task<Void, Error> { @RealmBackgroundActor [weak self] in
+            do {
+                try await command.write(beforeWrite: beforeWrite)
+                await self?.settle(command, succeeded: true)
+            } catch {
+                await self?.settle(command, succeeded: false)
+                throw error
+            }
+        }
+        activeWrites[command.sequence] = task
+        return task
     }
 
-    private func settle(_ command: LibraryFeedFieldCommand) {
-        guard pendingFieldCommands[command.field]?.sequence == command.sequence else { return }
+    private func settle(_ command: LibraryFeedFieldCommand, succeeded: Bool) {
+        activeWrites[command.sequence] = nil
+        // Failed attempts retain the newest draft for finish/retirement retry.
+        // Durable success remains success even when cancellation followed commit submission.
+        guard succeeded, pendingFieldCommands[command.field]?.sequence == command.sequence else { return }
         pendingFieldCommands[command.field] = nil
         if !isEditing { refresh() }
     }
 
-    func finishEditing() {
+    private func observeCompletion(_ task: Task<Void, Error>) {
+        Task { @MainActor in
+            do { try await task.value }
+            catch { print("LibraryFeedEditor field write failed: \(error)") }
+        }
+    }
+
+    @discardableResult
+    func finishEditing() -> Task<Void, Error> {
         isEditing = false
-        for command in pendingFieldCommands.values { submit(command) }
+        for command in pendingFieldCommands.values { _ = submit(command) }
+        let writes = Array(activeWrites.values)
         refresh()
+        let completion = Task<Void, Error> { @RealmBackgroundActor in
+            var firstError: Error?
+            for write in writes {
+                do { try await write.value }
+                catch { if firstError == nil { firstError = error } }
+            }
+            if let firstError { throw firstError }
+        }
+        observeCompletion(completion)
+        return completion
     }
 
     deinit {
         let commands = Array(pendingFieldCommands.values)
+        let writes = activeWrites
         Task { @RealmBackgroundActor in
             for command in commands {
+                // Join a submitted attempt before deciding whether retirement needs a retry.
+                if let active = writes[command.sequence] {
+                    do { try await active.value; continue }
+                    catch { /* Retry the retained command below. */ }
+                }
                 do { try await command.write() }
                 catch { print("LibraryFeedEditor retirement write failed: \(error)") }
             }
@@ -540,11 +594,11 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             objectNotificationToken?.invalidate()
         }
     }
-    
+
     @discardableResult
     func writeFeedAsync(
         field: LibraryFeedEditorField = .other,
-        beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
         _ block: @escaping @RealmBackgroundActor @Sendable (Feed) -> Bool
     ) -> Task<Void, Error> {
         let sequence = writeOrdering.issueSequence(field: field)
@@ -555,15 +609,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             sequence: sequence, metadataIntent: nil, writeOrdering: writeOrdering, apply: block
         )
         pendingFieldCommands[field] = command
-        return Task { @RealmBackgroundActor [weak self] in
-            do {
-                try await command.write(beforeWrite: beforeWrite)
-                await self?.settle(command)
-            } catch {
-                await self?.settle(command)
-                throw error
-            }
-        }
+        return submit(command, beforeWrite: beforeWrite)
     }
     
 
