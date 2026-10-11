@@ -129,9 +129,10 @@ class LibraryCategoriesViewModel: ObservableObject {
 
     @MainActor
     func deleteCategory(_ category: FeedCategory) async throws {
-        try await Task { @RealmBackgroundActor [realmConfiguration] in
+        let categoryID = category.id
+        try await Task { @RealmBackgroundActor [realmConfiguration, categoryID] in
             try await LibraryDataManager.shared.deleteCategory(
-                categoryID: category.id,
+                categoryID: categoryID,
                 realmConfiguration: realmConfiguration
             )
         }.value
@@ -139,9 +140,10 @@ class LibraryCategoriesViewModel: ObservableObject {
 
     @MainActor
     func restoreCategory(_ category: FeedCategory) async throws {
-        try await Task { @RealmBackgroundActor [realmConfiguration] in
+        let categoryID = category.id
+        try await Task { @RealmBackgroundActor [realmConfiguration, categoryID] in
             try await LibraryDataManager.shared.restoreCategory(
-                categoryID: category.id,
+                categoryID: categoryID,
                 realmConfiguration: realmConfiguration
             )
         }.value
