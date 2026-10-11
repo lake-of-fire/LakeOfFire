@@ -1,5 +1,58 @@
 # Reader dependency forward-port audit — 2026-10-10 boundary
 
+## Local replacement review — October 10, 2026 (America/Toronto)
+
+This bounded pass starts from Lake draft #138 `e154c93d4a516650faaaf2c251da838512253018`
+and LakeKit draft #13 `29db685f7145182445324ac0d8aefbd58eb6f3c2`. Fresh isolated-copy
+fetches confirm main remains Lake `8985bf92b9504d53e00025e4054b3aa97f876e45` and
+LakeKit `ce5732052d1480329b4b1c47f1440877dedf0e41`. Original task-18 checkouts remain
+preserved at their starting heads. The local parent context is clean at
+`3c10696d33c294e6657945d66353212ce4b76c43`, selecting Lake `808dbaf3721af9903aa4cba827b791c17581e4e3`;
+it does not select this candidate. Hotfix root is still `1da64556cb01276c26be393ce0ae09f79ee0de2a`,
+dirty, selecting Lake `036d4193078016db0becdf91b86dd34fb1d579e0`; no original checkout was edited.
+
+**P1 repaired in source:** `ensureImported(downloadable:)` could scan an existing library
+file under receipt A, suspend in `publishDiscoveredFiles` while opening Realm, then merge A's
+rows into receipt B's current visible list. The method now captures selection before its
+first await and carries it through existing-file scan and partial publication. Admission
+after URL lookup, scan, Realm opening and final refresh prevents stale success or visible
+merge; the final merge has no intervening suspension after admission. The scan's existing
+durable mutation admission and journaling remain unchanged. No rollback of an already
+admitted scan write is claimed.
+
+Three new production-owner regression sources in `ReaderFileInventoryOwnershipTests`
+cover replacement drive retaining only successor files, configuration-only replacement
+rejecting old publication, and successful current-receipt import. The instance partial
+publication seam pauses after Realm opening without replacing scan results. Existing
+bounded entry/result helpers release and cancel the producer on failure. Source inspection
+confirms the pre-repair publication has no receipt argument or check; the new tests were
+not executed and no failing/passing runtime result is claimed.
+
+**P2 LakeKit fixture repair:** its cancellation regression waited indefinitely for a sleep
+that a broken helper might never enter. Draft #13 replaces that entry wait with a bounded
+XCTest expectation and guarantees cancellation/continuation release on exit. Production
+progress cancellation and purchase layout are unchanged. Native layout remains unverified.
+
+Scope remains the assigned 13-name partition: LakeOfFire, swiftui-webview, LakeImage,
+LakeKit, SwiftUIDownloads, FaviconFinder, SwiftUtilities, SwiftSoup, Cache, swift-tiptap,
+markdown-webview, Portal and Popovers. Popovers has no preserved task-18 checkout and no
+gitlink at the observed hotfix root; it was not initialized or audited as available source.
+Historical swift-readability inventory is not added to this pass's ownership. Only the two
+draft repositories' current remote heads were refreshed, not all historical inventory refs.
+
+Remaining: the new-copy/upload branch of `importFile`, opaque processor side effects,
+account/same-backing storage generations, persistent suspension and lossless waiter policy;
+broader Reader/EPUB and feed durable admission remain open. The prior frozen Core handoff
+at `d50a8c2c` still identifies modal-open and debounce edit-origin capture and the fresh-main
+completion-proof adapter; it was not refreshed or edited in this pass. Realm ownership APIs
+and schema12 producer/transport integration remain with their owners. This pass does not
+close whole-file or historical finite inventories.
+
+Actual verification: source/API/caller and diff inspection, fresh draft/main refs, and
+`git diff --check`. No builds, tests, benchmarks, package resolution, generators, native
+launch/capture or CI dispatch. All new commits use `[skip ci]`. Root pins, settings,
+original dirty work and idle/native workers are unchanged.
+
 This is a **bounded progress report, not comprehensive completion**. Source review found and implemented focused missing ports in LakeOfFire and LakeKit. Remaining source families and test comparisons are explicitly unresolved below and in the linked path ledgers. Builds, tests, benchmarks, native apps, package installs, project/test generators and CI dispatch were **not run by request**. No test-pass claim is made. Source work continued into 2026-10-11 UTC; the audit window remains 2025-10-10 through 2026-10-10 inclusive.
 
 ## Boundary and evidence tiers

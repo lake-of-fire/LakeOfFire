@@ -3,6 +3,7 @@ import XCTest
 import RealmSwift
 import RealmSwiftGaps
 import SwiftCloudDrive
+import SwiftUIDownloads
 @testable import LakeOfFireContent
 
 private enum InventoryFixtureError: Error {
@@ -285,6 +286,72 @@ final class ReaderFileInventoryOwnershipTests: XCTestCase, @unchecked Sendable {
         try await refresh(manager)
         XCTAssertEqual(manager.scanCount, 3)
         XCTAssertEqual(Set(manager.files?.map(\.title) ?? []), Set(["first", "second"]))
+    }
+
+    func testExistingImportRejectsDriveReplacementBeforePartialPublication() async throws {
+        try await requireExistingImportReplacementCancellation(replaceConfiguration: false)
+    }
+
+    func testExistingImportRejectsConfigurationReplacementBeforePartialPublication() async throws {
+        try await requireExistingImportReplacementCancellation(replaceConfiguration: true)
+    }
+
+    private func requireExistingImportReplacementCancellation(replaceConfiguration: Bool) async throws {
+        let oldRoot = try root()
+        let newRoot = try root()
+        let oldFile = oldRoot.appendingPathComponent("old.txt")
+        try Data("old".utf8).write(to: oldFile)
+        try Data("successor".utf8).write(to: newRoot.appendingPathComponent("successor.txt"))
+        let oldConfiguration = configuration()
+        let replacementConfiguration = configuration()
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = oldConfiguration
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: oldRoot))
+        let downloadable = Downloadable(url: URL(string: "https://example.com/old.txt")!,
+                                        name: "Old", localDestination: oldFile)
+        let gate = InventoryOwnershipGate()
+        manager.inventoryBeforePartialPublication = { await gate.blockFirst() }
+        let original = Task { @MainActor in
+            _ = try await manager.ensureImported(downloadable: downloadable)
+        }
+        defer { gate.release(); original.cancel() }
+        try await waitForEntry(gate, producer: original)
+        do {
+            if replaceConfiguration {
+                manager.historyRealmConfigurationOverride = replacementConfiguration
+            } else {
+                manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: newRoot))
+                try await refresh(manager)
+            }
+        } catch {
+            gate.release()
+            original.cancel()
+            _ = try? await result(of: original)
+            throw error
+        }
+        gate.release()
+        await requireCancellation(original)
+        if replaceConfiguration {
+            XCTAssertNil(manager.files)
+            let realm = try await Realm.open(configuration: replacementConfiguration)
+            XCTAssertTrue(realm.objects(ContentFile.self).isEmpty)
+        } else {
+            XCTAssertEqual(manager.files?.map(\.title), ["successor"])
+        }
+    }
+
+    func testExistingImportPublishesCurrentReceipt() async throws {
+        let directory = try root()
+        let file = directory.appendingPathComponent("current.txt")
+        try Data("current".utf8).write(to: file)
+        let manager = ReaderFileManager()
+        manager.historyRealmConfigurationOverride = configuration()
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: directory))
+        let downloadable = Downloadable(url: URL(string: "https://example.com/current.txt")!,
+                                        name: "Current", localDestination: file)
+        let readerURL = try await manager.ensureImported(downloadable: downloadable)
+        XCTAssertEqual(readerURL?.absoluteString, "reader-file://file/load/local/current.txt")
+        XCTAssertEqual(manager.files?.map(\.title), ["current"])
     }
 
 }

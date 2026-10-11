@@ -117,6 +117,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     // Instance seams suspend the real scan, without substituting its results.
     var inventoryBeforeMetadataWrite: (@Sendable () async -> Void)?
     @MainActor var inventoryBeforePublication: (@MainActor () async -> Void)?
+    @MainActor var inventoryBeforePartialPublication: (@MainActor () async -> Void)?
 
     private let defaultLocalRootURLProvider: @Sendable () -> URL
     typealias CloudDriveFactory = @MainActor @Sendable (String) async throws -> CloudDrive
@@ -509,14 +510,19 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     @MainActor
     public func ensureImported(downloadable: Downloadable) async throws -> URL? {
         let realmConfiguration = resolvedHistoryRealmConfiguration
+        let selection = try captureInventorySelection(configuration: realmConfiguration)
         guard await downloadable.existsLocally() else { return nil }
+        try validateInventorySelection(selection)
         if let existingReaderURL = try await readerFileURL(for: downloadable) {
+            try validateInventorySelection(selection)
             try await refreshMetadataForExistingLibraryFile(
                 downloadable.localDestination,
-                realmConfiguration: realmConfiguration
+                selection: selection
             )
+            try validateInventorySelection(selection)
             return existingReaderURL
         }
+        try validateInventorySelection(selection)
         return try await importFile(
             fileURL: downloadable.localDestination,
             fromDownloadURL: downloadable.url,
@@ -527,9 +533,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     @MainActor
     private func refreshMetadataForExistingLibraryFile(
         _ fileURL: URL,
-        realmConfiguration: Realm.Configuration
+        selection: InventorySelection
     ) async throws {
-        let drives = [cloudDrive, localDrive].compactMap { drive in
+        try validateInventorySelection(selection)
+        let drives = [selection.cloudDrive, selection.localDrive].compactMap { drive in
             drive?.isConnected == true ? drive : nil
         }
         for drive in drives {
@@ -539,13 +546,15 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             let discoveredReferences = try await refreshFilesMetadata(
                 drive: drive,
                 relativePath: parent,
-                realmConfiguration: realmConfiguration
+                realmConfiguration: selection.configuration
             ) ?? []
+            try validateInventorySelection(selection)
             try await publishDiscoveredFiles(
                 discoveredReferences,
-                realmConfiguration: realmConfiguration
+                selection: selection
             )
-            try await refreshAllFilesMetadata(force: true, realmConfiguration: realmConfiguration)
+            try await refreshAllFilesMetadata(force: true, realmConfiguration: selection.configuration)
+            try validateInventorySelection(selection)
             return
         }
     }
@@ -553,10 +562,13 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     @MainActor
     private func publishDiscoveredFiles(
         _ references: [ThreadSafeReference<ContentFile>],
-        realmConfiguration: Realm.Configuration
+        selection: InventorySelection
     ) async throws {
+        try validateInventorySelection(selection)
         guard !references.isEmpty else { return }
-        let realm = try await Realm.open(configuration: realmConfiguration)
+        let realm = try await Realm.open(configuration: selection.configuration)
+        await inventoryBeforePartialPublication?()
+        try validateInventorySelection(selection)
         var mergedFiles = files ?? []
         for reference in references {
             guard let discoveredFile = realm.resolve(reference), !discoveredFile.isDeleted else { continue }
