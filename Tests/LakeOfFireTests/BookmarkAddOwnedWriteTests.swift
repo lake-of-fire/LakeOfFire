@@ -72,6 +72,26 @@ final class BookmarkAddOwnedWriteTests: XCTestCase {
         try await verifyHTMLIdentity(url: URL(string: "about:blank")!)
     }
 
+    func testAddPersistsAndUpdatesReaderModeOfferHidden() async throws {
+        let (configuration, realm) = try await makeRealm()
+        let url = URL(string: "https://example.com/reader-mode-offer")!
+        func save(hidden: Bool) async throws -> Bookmark {
+            try await Bookmark.add(
+                url: url, title: "Reader mode preference",
+                isFromClipboard: false, rssContainsFullContent: false,
+                isReaderModeByDefault: false, isReaderModeAvailable: true,
+                isReaderModeOfferHidden: hidden,
+                realmConfiguration: configuration
+            )
+        }
+        let created = try await save(hidden: true)
+        XCTAssertTrue(created.isReaderModeOfferHidden,
+                      "First-time saving must preserve the supplied hidden-offer preference")
+        let updated = try await save(hidden: false)
+        XCTAssertFalse(updated.isReaderModeOfferHidden)
+        XCTAssertEqual(realm.objects(Bookmark.self).count, 1)
+    }
+
     private func verifyHTMLIdentity(url: URL?) async throws {
         let (configuration, realm) = try await makeRealm()
         let html = "<p>A stable snippet</p>"

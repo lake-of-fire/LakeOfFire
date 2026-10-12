@@ -305,6 +305,7 @@ public extension Bookmark {
                 bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
                 bookmark.rssContainsFullContent = rssContainsFullContent
                 bookmark.isReaderModeAvailable = isReaderModeAvailable
+                bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
                 bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
                 bookmark.readerContentKind = readerContentKind
                 bookmark.feedEntryCollectionKey = feedEntryCollectionKey
