@@ -7394,6 +7394,7 @@ class Reader {
             lifecycleGeneration: this.#lifecycleGeneration,
             renderer: this.view?.renderer ?? null,
             visiblePageCollectionGeneration: this.visiblePageCollectionGeneration,
+            bookEvent,
         };
         this.lastNativeMarkReadRequestOutcome = 'pending';
         this.lastNativeMarkReadRequestErrorCode = '';
@@ -8724,6 +8725,7 @@ class Reader {
             !owner
             || !this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
             || this.visiblePageCollectionGeneration !== owner.visiblePageCollectionGeneration
+            || (owner.bookEvent && this.bookReadingRuntime?.isEventCurrent(owner.bookEvent) !== true)
         ) {
             return false;
         }
