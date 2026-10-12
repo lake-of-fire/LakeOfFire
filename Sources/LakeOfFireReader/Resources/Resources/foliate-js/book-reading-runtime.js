@@ -110,7 +110,11 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
                 // projection and scope independent from shell/native state.
                 const frameProjection = { ...projection, scope: projection.scope ? { ...projection.scope } : null,
                     readSegmentIdentifiers: [...projection.readSegmentIdentifiers],
-                    sentenceIdentifiersRead: [...projection.sentenceIdentifiersRead] }
+                    sentenceIdentifiersRead: [...projection.sentenceIdentifiersRead],
+                    ...(Array.isArray(projection.ownedManualSegmentIDs)
+                        ? { ownedManualSegmentIDs: [...projection.ownedManualSegmentIDs] } : {}),
+                    ...(Array.isArray(projection.ownedManualSentenceIDs)
+                        ? { ownedManualSentenceIDs: [...projection.ownedManualSentenceIDs] } : {}) }
                 if (!isCurrent()) return
                 frame.manabi_bookReadingScope = projection.scope ? { ...projection.scope } : null
                 if (!isCurrent()) return
