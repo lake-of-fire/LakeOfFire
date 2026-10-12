@@ -278,6 +278,99 @@ test('mismatched section cannot settle the real request and duplicate terminal r
     assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), false)
 })
 
+test('a departed chapter cannot cancel its original Mark or Unmark', async t => {
+    for (const desiredState of ['read', 'unread']) {
+        await t.test(desiredState, async () => {
+            const h = harness({ onRecovery: () => true })
+            const completion = h.coordinator.request({ sectionID: 'section-a',
+                message: { desiredState, topWindowURL: 'file:///book.epub', documentStartedAtMs: 42 } })
+            const original = h.posted[0]
+            h.setCurrent(false)
+            assert.equal(h.coordinator.cancel(original.requestID), false)
+            assert.equal(h.coordinator.pendingCount, 1)
+            assert.equal(h.controls.at(-1).manualReadPendingOperation, 'status')
+            assert.equal(h.controls.at(-1).manualReadPendingHistoryRecovery, true)
+            assert.equal(h.controls.at(-1).manualReadPendingObservationToken,
+                original.manualReadPendingObservationToken)
+            assert.equal(h.controls.at(-1).documentStartedAtMs, 42)
+            assert.equal(h.pendingStates.at(-1).recoveryOnly, true)
+            h.setCurrent(true)
+            assert.equal(h.coordinator.cancel(original.requestID), false,
+                'Returning cannot restore a retired Cancel capability')
+            assert.equal(h.coordinator.settle(terminalFor(original)), true)
+            const outcome = await completion
+            assert.equal(outcome.success, true)
+            assert.equal(outcome.presentationAllowed, false)
+            assert.equal(h.posted.length, 1)
+            assert.equal(h.controls.some(packet => packet.manualReadPendingOperation === 'cancel'), false)
+        })
+    }
+})
+
+test('queued cancellation becomes status-only when its chapter owner departs', async () => {
+    const h = harness({ onRecovery: () => true })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: { desiredState: 'unread' } })
+    const original = h.posted[0]
+    assert.equal(h.coordinator.cancel(original.requestID), true)
+    assert.equal(h.controls.at(-1).manualReadPendingOperation, 'cancel')
+    h.setCurrent(false)
+    ;[...h.timeouts.values()][0]()
+    assert.equal(h.controls.at(-1).manualReadPendingOperation, 'status')
+    assert.equal(h.controls.at(-1).manualReadPendingHistoryRecovery, true)
+    assert.equal(h.pendingStates.at(-1).recoveryOnly, true)
+    assert.equal(h.coordinator.settle(terminalFor(original, { success: false, errorCode: 'cancelled' })), true)
+    assert.equal((await completion).errorCode, 'cancelled')
+    assert.equal(h.controls.filter(packet => packet.manualReadPendingOperation === 'cancel').length, 1)
+    assert.equal(h.posted.length, 1)
+})
+
+test('malformed history flags cannot settle an intent or change its cancellation ownership', async t => {
+    const invalidFlags = [
+        { manualReadPendingHistoryRecovery: 'true' },
+        { manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: false,
+            manualReadPendingPresentationAllowed: false },
+        { manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: true,
+            manualReadPendingPresentationAllowed: true },
+        { manualReadPendingOutcomeOnly: 'true' },
+        { manualReadPendingPresentationAllowed: 'false' },
+    ]
+    for (const phase of ['pending', 'cancelling', 'unknown', 'finished']) {
+        await t.test(phase, async () => {
+            for (const flags of invalidFlags) {
+                const h = harness()
+                const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+                const original = h.posted[0]
+                assert.equal(h.coordinator.settle(terminalFor(original, {
+                    manualReadPendingState: phase, ...flags,
+                })), false)
+                assert.equal(h.coordinator.pendingCount, 1)
+                assert.equal(h.coordinator.cancel(original.requestID), true)
+                assert.equal(h.controls.at(-1).manualReadPendingOperation, 'cancel')
+                assert.equal(h.controls.at(-1).manualReadPendingHistoryRecovery, undefined)
+                assert.equal(h.coordinator.settle(terminalFor(original)), true)
+                assert.equal((await completion).success, true)
+            }
+        })
+    }
+})
+
+test('a valid nonterminal history receipt withdraws Cancel before another observation', async () => {
+    const h = harness({ onRecovery: () => true })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const original = h.posted[0]
+    assert.equal(h.coordinator.settle(terminalFor(original, {
+        manualReadPendingState: 'pending', manualReadPendingHistoryRecovery: true,
+        manualReadPendingOutcomeOnly: true, manualReadPendingPresentationAllowed: false,
+    })), false)
+    assert.equal(h.coordinator.cancel(original.requestID), false)
+    ;[...h.timeouts.values()][0]()
+    assert.equal(h.controls.at(-1).manualReadPendingOperation, 'status')
+    assert.equal(h.controls.at(-1).manualReadPendingHistoryRecovery, true)
+    assert.equal(h.coordinator.settle(terminalFor(original)), true)
+    assert.equal((await completion).presentationAllowed, false)
+    assert.equal(h.posted.length, 1)
+})
+
 test('synchronous bridge failure is terminal because native never received the mutation', async () => {
     const h = harness({ postThrows: true })
     const result = await h.coordinator.request({
