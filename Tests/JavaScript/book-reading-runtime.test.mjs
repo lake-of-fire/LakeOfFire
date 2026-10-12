@@ -47,6 +47,8 @@ function fixture({ onInvalidate = () => {} } = {}) {
         const scope=end?null:{articleProgressID:'book',articleEpochID:parent,
             chapterKey:(renderer.displayedIndex===0?'a':'b').repeat(64),chapterEpochID:null};
         return runtime.state.apply(request.requestID,{ok:true,accountPresentation,
+            location:{sectionURL:request.sectionURL,isEndPage:request.isEndPage,locationRevision:request.locationRevision},
+            ...(request.historyRecoveryObservation ? { historyRecoveryObservation: request.historyRecoveryObservation } : {}),
             state:{revision,articleProgressID:'book',articleEpochID:parent,scope,finished:false,
                 bookReadPresence:'present',chapterReadPresence:end?'empty':'present',
                 readSegmentIdentifiers:end?[]:readIDs,sentenceIdentifiersRead:[]},
@@ -59,116 +61,129 @@ function fixture({ onInvalidate = () => {} } = {}) {
 }
 
 function nativeRecoveryHarness(f) {
-    const posted=[],controls=[],timers=new Map();let timer=0
-    f.reader.bookReadingRuntime=f.runtime
+    const posted=[],controls=[],timers=new Map(),nativeAcknowledgements=[];let timer=0;
+    f.reader.bookReadingRuntime=f.runtime;
     const coordinator=createNativeMarkReadRequestCoordinator({
         postMessage:message=>posted.push(message),postControlMessage:message=>controls.push(message),
         makeRequestID:()=> 'runtime-recovery',
         scheduleTimeout:callback=>{timers.set(++timer,callback);return timer;},
         cancelTimeout:handle=>timers.delete(handle),lifecycleTarget:null,
         isOwnerCurrent:owner=>f.runtime.isScopeCurrent(owner.scope,owner.document),
-        onRecovery:({owner,context,isCurrent})=>refreshNativeMarkReadBookStateForRecovery(f.runtime,owner.scope,()=>
+        onRecovery:({owner,context,isCurrent,observation})=>refreshNativeMarkReadBookStateForRecovery(f.runtime,owner.scope,()=>
             isCurrent() && f.reader.bookReadingRuntime===f.runtime && f.reader.view===f.view
             && f.renderer.displayedIndex===0 && owner.document===f.a
-            && context.accountPresentation===f.runtime.state.accountPresentation),
-    })
+            && context.accountPresentation===f.runtime.state.accountPresentation,observation),
+        onRecoveryQuery:proof=>f.runtime.state.recoverHistoryReadingStatus(proof),
+    });
     const request=sectionID=>coordinator.request({sectionID,message:{},
         owner:{scope:f.runtime.captureScope(f.a),document:f.a},
-        context:{accountPresentation:f.runtime.state.accountPresentation}})
-    const finish=(index,revision,history=true)=>coordinator.settle({
+        context:{accountPresentation:f.runtime.state.accountPresentation}});
+    const finish=(index,revision,history=true)=>{
+        const accepted=coordinator.settle({
         requestID:posted[index].requestID,manualReadPendingProtocol:1,
         manualReadPendingObservationToken:posted[index].manualReadPendingObservationToken,
         manualReadPendingState:'finished',sectionId:posted[index].sectionId,success:true,
         stateSnapshotSequence:revision,
         ...(history?{manualReadPendingHistoryRecovery:true,manualReadPendingOutcomeOnly:true,
             manualReadPendingPresentationAllowed:false}:{}),
-    })
-    return {coordinator,posted,controls,timers,request,finish}
+        });
+        if(accepted) nativeAcknowledgements.push(coordinator.recoverHistoryReadingStatus({requestID:posted[index].requestID,
+            observationToken:posted[index].manualReadPendingObservationToken}));
+        return accepted;
+    };
+    return {coordinator,posted,controls,timers,request,finish,nativeAcknowledgements};
 }
 
 for (const firstSample of ['accepted','still-pending']) {
     test(`sibling recovered commands refresh the actual same-pass runtime after its first sample is ${firstSample}`,async()=>{
-        const {webcrypto}=await import('node:crypto')
+        const {webcrypto}=await import('node:crypto');
         await withUUIDCrypto(webcrypto,async()=>{
-            const f=fixture()
+            const f=fixture();
             try {
-                assert.equal(f.publish(10,'E1','0:1',[]),true)
-                const aScope=f.runtime.captureScope(f.a),bScope=f.runtime.captureScope(f.a)
-                const h=nativeRecoveryHarness(f),a=h.request('page'),b=h.request('mark-all')
-                h.coordinator.pause();h.coordinator.resume()
-                assert.equal(h.finish(0,11),true)
-                assert.equal((await a).success,true)
-                assert.equal(f.runtime.state.ready,false)
-                assert.equal(f.runtime.isScopeCurrent(aScope,f.a),false)
-                assert.equal(f.runtime.isScopeCurrent(bScope,f.a),false,'First recovery revokes every old authoring receipt')
-                const firstQuery=f.requests.at(-1)
-                if (firstSample==='accepted') assert.equal(f.publish(11,'E1','0:1',['page']),true)
-                assert.equal(h.finish(1,12),true)
-                assert.equal((await b).success,true)
-                assert.equal(f.requests.length,3,'The later native commit needs its own fresh query despite revoked receipts')
-                assert.equal(f.runtime.state.ready,false)
+                assert.equal(f.publish(10,'E1','0:1',[]),true);
+                const aScope=f.runtime.captureScope(f.a),bScope=f.runtime.captureScope(f.a);
+                const h=nativeRecoveryHarness(f),a=h.request('page'),b=h.request('mark-all');
+                h.coordinator.pause();h.coordinator.resume();
+                assert.equal(h.finish(0,11),true);
+                assert.equal((await a).success,true);
+                assert.equal(f.runtime.state.ready,false);
+                assert.equal(f.runtime.isScopeCurrent(aScope,f.a),false);
+                assert.equal(f.runtime.isScopeCurrent(bScope,f.a),false,'First recovery revokes every old authoring receipt');
+                const firstQuery=f.requests.at(-1);
+                if (firstSample==='accepted') assert.equal(f.publish(11,'E1','0:1',['page']),true);
+                assert.equal(h.finish(1,12),true);
+                assert.equal((await b).success,true);
                 if (firstSample==='still-pending') {
-                    assert.equal(f.publish(11,'E1','0:1',['page'],firstQuery),false,'Superseded sample cannot release the current query')
+                    assert.equal(f.requests.length,2,'Concurrent recovered commands serialize their native samples');
+                    assert.equal(f.publish(11,'E1','0:1',['page'],firstQuery),true,'The first sample retains its own acknowledgement');
                 }
-                assert.equal(f.publish(12,'E1','0:1',['page','mark-all']),true)
-                assert.equal(f.runtime.state.ready,true)
-                assert.deepEqual(f.runtime.state.state.readSegmentIdentifiers,['page','mark-all'])
-                assert.equal(h.posted.length,2,'Fresh queries never replay native mutations')
-                assert.equal(h.coordinator.pendingCount,0);assert.equal(h.timers.size,0)
+                assert.equal(await h.nativeAcknowledgements[0],true);
+                await new Promise(resolve=>setImmediate(resolve));
+                assert.equal(f.requests.length,3,'The later native commit needs its own fresh query despite revoked receipts');
+                assert.equal(f.runtime.state.ready,false);
+                assert.equal(f.publish(12,'E1','0:1',['page','mark-all']),true);
+                assert.equal(await h.nativeAcknowledgements[1],true);
+                assert.equal(f.runtime.state.ready,true);
+                assert.deepEqual(f.runtime.state.state.readSegmentIdentifiers,['page','mark-all']);
+                assert.equal(h.posted.length,2,'Fresh queries never replay native mutations');
+                assert.equal(h.coordinator.pendingCount,0);assert.equal(h.timers.size,0);
             } finally { f.runtime.close(); }
-        })
-    })
+        });
+    });
 }
 
 test('a recovered sibling preserves an ordinary successor until its joined outcome requests fresh state',async()=>{
-    const {webcrypto}=await import('node:crypto')
+    const {webcrypto}=await import('node:crypto');
     await withUUIDCrypto(webcrypto,async()=>{
-        let h
-        const f=fixture({onInvalidate:()=>h?.coordinator.cancelAll()})
+        let h;
+        const f=fixture({onInvalidate:()=>h?.coordinator.cancelAll()});
         try {
-            assert.equal(f.publish(10),true)
-            h=nativeRecoveryHarness(f)
-            const a=h.request('page'),b=h.request('mark-all')
-            h.coordinator.pause();h.coordinator.resume()
-            assert.equal(h.finish(0,11),true);await a
-            assert.equal(f.publish(11),true)
-            const successor=h.request('independent-page')
-            assert.equal(h.finish(1,12),true);await b
-            assert.equal(f.requests.length,2,'Old recovery must not invalidate a live ordinary successor')
-            assert.equal(f.runtime.state.ready,true);assert.equal(h.coordinator.pendingCount,1)
-            assert.equal(h.controls.length,0,'Recovery must not cancel the newer native command')
-            assert.equal(h.finish(2,13,false),true)
-            const outcome=await successor
-            assert.equal(outcome.success,true);assert.equal(outcome.presentationAllowed,false)
-            assert.equal(f.requests.length,3);assert.equal(f.runtime.state.ready,false)
-            assert.equal(f.publish(13),true);assert.equal(f.runtime.state.ready,true)
-            assert.equal(h.controls.length,0);assert.equal(h.posted.length,3)
+            assert.equal(f.publish(10),true);
+            h=nativeRecoveryHarness(f);
+            const a=h.request('page'),b=h.request('mark-all');
+            h.coordinator.pause();h.coordinator.resume();
+            assert.equal(h.finish(0,11),true);await a;
+            assert.equal(f.publish(11),true);
+            assert.equal(await h.nativeAcknowledgements[0],true);
+            const successor=h.request('independent-page');
+            assert.equal(h.finish(1,12),true);await b;
+            assert.equal(f.requests.length,2,'Old recovery must not invalidate a live ordinary successor');
+            assert.equal(f.runtime.state.ready,true);assert.equal(h.coordinator.pendingCount,1);
+            assert.equal(h.controls.length,0,'Recovery must not cancel the newer native command');
+            assert.equal(h.finish(2,13,false),true);
+            const outcome=await successor;
+            await new Promise(resolve=>setImmediate(resolve));
+            assert.equal(outcome.success,true);assert.equal(outcome.presentationAllowed,false);
+            assert.equal(f.requests.length,3);assert.equal(f.runtime.state.ready,false);
+            assert.equal(f.publish(13),true);assert.equal(f.runtime.state.ready,true);
+            assert.equal(await h.nativeAcknowledgements[1],true);
+            assert.equal(h.controls.length,0);assert.equal(h.posted.length,3);
         } finally { f.runtime.close(); }
-    })
-})
+    });
+});
 
 for (const boundary of ['new-pass','new-account','new-primary-document','new-runtime']) {
     test(`recovered command cannot refresh ${boundary} through an old runtime owner`,async()=>{
-        const {webcrypto}=await import('node:crypto')
+        const {webcrypto}=await import('node:crypto');
         await withUUIDCrypto(webcrypto,async()=>{
-            const f=fixture()
+            const f=fixture();
             try {
-                assert.equal(f.publish(10),true)
-                const h=nativeRecoveryHarness(f),completion=h.request('old-page')
-                h.coordinator.pause();h.coordinator.resume()
+                assert.equal(f.publish(10),true);
+                const h=nativeRecoveryHarness(f),completion=h.request('old-page');
+                h.coordinator.pause();h.coordinator.resume();
                 if (boundary==='new-pass' || boundary==='new-account') {
-                    f.runtime.state.refresh()
-                    assert.equal(f.publish(11,boundary==='new-pass'?'E2':'E1',boundary==='new-account'?'1:1':'0:1'),true)
+                    f.runtime.state.refresh();
+                    assert.equal(f.publish(11,boundary==='new-pass'?'E2':'E1',boundary==='new-account'?'1:1':'0:1'),true);
                 } else if (boundary==='new-primary-document') {
-                    f.renderer.displayedIndex=1;f.runtime.updateLocation(true)
-                } else f.reader.bookReadingRuntime={}
-                const queries=f.requests.length
-                assert.equal(h.finish(0,12),true);assert.equal((await completion).success,true)
-                assert.equal(f.requests.length,queries,'The original owner must not supersede the replacement sample')
-                assert.equal(h.coordinator.pendingCount,0)
+                    f.renderer.displayedIndex=1;f.runtime.updateLocation(true);
+                } else f.reader.bookReadingRuntime={};
+                const queries=f.requests.length;
+                assert.equal(h.finish(0,12),true);assert.equal((await completion).success,true);
+                assert.equal(f.requests.length,queries,'The original owner must not supersede the replacement sample');
+                assert.equal(h.coordinator.pendingCount,0);
             } finally { f.runtime.close(); }
-        })
-    })
+        });
+    });
 }
 
 test('ordinary publication does not transiently invalidate the active frame',()=>{
