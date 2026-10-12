@@ -452,13 +452,20 @@ for (const timing of ['synchronous', 'retained']) {
             p.readSegmentIdentifiers.length = 0
             p.sentenceIdentifiersRead.push('not-native')
             p.scope.articleProgressID = 'not-the-book'
+            p.ownedManualSegmentIDs.length = 0
+            p.ownedManualSentenceIDs.push('not-native-owned')
         }
         f.a.defaultView.manabi_applyBookReadingPresentation = p => {
             received = p
             if (timing === 'synchronous') mutate(p)
             return true
         }
-        assert.equal(f.publish(1), true)
+        const response = f.response(1)
+        Object.assign(response.state, {
+            ownedManualSegmentIDs: ['owned-segment'], ownedManualSentenceIDs: ['owned-sentence'],
+            manualSupportRevision: 'native-support', manualOverlayUnmarkEnabled: true,
+        })
+        assert.equal(f.runtime.state.apply(f.requests.at(-1).requestID, response), true)
         if (timing === 'retained') mutate(received)
         assert.equal(f.runtime.endcap.finished, false)
         assert.equal(f.projections.at(-1).finished, false)
@@ -467,5 +474,21 @@ for (const timing of ['synchronous', 'retained']) {
         assert.equal(f.projections.at(-1).scope.articleProgressID, 'book')
         assert.equal(f.a.defaultView.manabi_bookReadingScope.articleProgressID, 'book')
         assert.equal(f.runtime.state.state.finished, false)
+        assert.deepEqual(f.projections.at(-1).ownedManualSegmentIDs, ['owned-segment'])
+        assert.deepEqual(f.projections.at(-1).ownedManualSentenceIDs, ['owned-sentence'])
+        assert.deepEqual(f.runtime.state.state.ownedManualSegmentIDs, ['owned-segment'])
+        assert.deepEqual(f.runtime.state.state.ownedManualSentenceIDs, ['owned-sentence'])
     })
 }
+
+test('legacy coverage-only projection does not manufacture owned support arrays', t => {
+    const f = fixture(t)
+    let received
+    f.a.defaultView.manabi_applyBookReadingPresentation = p => { received = p; return true }
+    assert.equal(f.publish(1), true)
+    for (const value of [received, f.projections.at(-1), f.runtime.state.state]) {
+        for (const key of ['ownedManualSegmentIDs', 'ownedManualSentenceIDs']) {
+            assert.equal(Object.hasOwn(value, key), false)
+        }
+    }
+})
