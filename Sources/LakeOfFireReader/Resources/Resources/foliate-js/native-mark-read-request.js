@@ -298,6 +298,14 @@ export const createNativeMarkReadRequestCoordinator = ({
     }
     const pause = () => {
         observing = false
+        // Settled outcomes are already retained by native and their original
+        // promises. A second departure withdraws only this display's unfinished
+        // reconciliation; an in-flight command still retains status recovery.
+        const retired = [...historyRecoveries.keys()]
+        historyRecoveries.clear()
+        for (const requestID of retired) {
+            try { onPending({ requestID, phase: 'finished' }) } catch (_) {}
+        }
         for (const pending of pendingByRequestID.values()) {
             if (pending.timeoutHandle != null) cancelTimeout?.(pending.timeoutHandle)
             pending.timeoutHandle = null

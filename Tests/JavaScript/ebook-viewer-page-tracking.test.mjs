@@ -602,6 +602,10 @@ for (const replacement of ['account', 'chapter document', 'context', 'observatio
         if (replacement === 'observation token') observation.observationToken = 'foreign'
         if (replacement === 'page lifetime') f.lifecycle.dispatchEvent(new Event('pagehide'))
         assert.equal(f.reader.applyHistoryReadingStatus(book.response(3).state, observation, receipt), false)
+        if (replacement === 'account' || replacement === 'page lifetime') {
+            assert.equal(f.reader.nativeMarkReadRequestCoordinator.hasPendingHistoryRecoveryObservation(
+                recoveryObservation(message)), false, 'Stale optional gates are retired')
+        }
         assert.equal(f.requests.length, 1)
         assert.deepEqual(f.moves, [])
     })
