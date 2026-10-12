@@ -20,6 +20,9 @@ const defaultRequestID = () => {
     }
     return `mark-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
+const readerClosedError = requestID => Object.assign(new Error('Reader closed before the reading change was acknowledged.'), {
+    code: 'readerClosed', outcomeUnknown: true, requestID,
+})
 
 /**
  * Projects renderer-owned semantic facts onto the lightweight native command
@@ -91,6 +94,7 @@ export const createNativeMarkReadRequestCoordinator = ({
     }
     if (!requestNamespace) throw new Error('Could not allocate a native request namespace')
     let requestSequence = 0
+    let closed = false
     let observing = true
     let listening = false
     const attachLifecycle = () => {
@@ -180,6 +184,12 @@ export const createNativeMarkReadRequestCoordinator = ({
         try {
             present(pending, detachLifecycle)
             if (timer != null) present(pending, () => cancelTimeout?.(timer))
+            if (closed) {
+                outcome.presentationAllowed = false
+                present(pending, () => onPending({ requestID: pending.requestID,
+                    phase: 'finished', context: pending.context }))
+                return true
+            }
             // Join before recovery callbacks. They can invalidate the current
             // chapter and issue its existing read-only state query, never replay
             // this mutation or consume a successor request's outcome.
@@ -213,9 +223,16 @@ export const createNativeMarkReadRequestCoordinator = ({
                     for (const recovery of recoveryByRequestID.values()) recovery.join?.()
                 }
             }
-            const displaysRecovery = pending.recoveryOnly && present(pending, () => onRecoveryIsCurrent({
+            if (closed) {
+                outcome.presentationAllowed = false
+                present(pending, () => onPending({ requestID: pending.requestID,
+                    phase: 'finished', context: pending.context }))
+                return true
+            }
+            const displaysRecovery = !closed && pending.recoveryOnly && present(pending, () => onRecoveryIsCurrent({
                 owner: pending.owner, context: pending.context, message: pending.message,
-            })) === true
+            })) === true && !closed
+            if (closed) outcome.presentationAllowed = false
             present(pending, () => onPending({ requestID: pending.requestID,
                 phase: displaysRecovery
                     ? (recoveryByRequestID.get(pending.requestID)?.prepared
@@ -240,18 +257,23 @@ export const createNativeMarkReadRequestCoordinator = ({
             if (recoveryByRequestID.get(proof.requestID) !== recovery) return false
             activeRecoveryQuery = true
             prepareRecovery(recovery, true)
-            if (!recovery.ready) { activeRecoveryQuery = false; return false }
+            if (closed || recoveryByRequestID.get(proof.requestID) !== recovery || !recovery.ready) {
+                activeRecoveryQuery = false
+                return false
+            }
             let accepted = false
             try { accepted = await onRecoveryQuery(recovery.proof) === true } catch (_) {}
             activeRecoveryQuery = false
-            if (recoveryByRequestID.get(proof.requestID) !== recovery) return false
+            if (closed || recoveryByRequestID.get(proof.requestID) !== recovery) return false
             const ownsRecovery = present(recovery.pending, () => onRecoveryIsCurrent({
                 owner: recovery.pending.owner, context: recovery.pending.context, message: recovery.pending.message,
             })) === true
+            if (closed || recoveryByRequestID.get(proof.requestID) !== recovery) return false
             present(recovery.pending, () => onPending({ requestID: proof.requestID,
                 phase: accepted || !ownsRecovery ? 'finished' : 'recovery-failed', recoveryOnly: true,
                 context: recovery.pending.context, outcomeKnown: recovery.outcome.outcomeKnown,
                 success: recovery.outcome.success }))
+            if (closed || recoveryByRequestID.get(proof.requestID) !== recovery) return false
             if (accepted) {
                 recoveryByRequestID.delete(proof.requestID)
                 completedRecovery = recovery
@@ -277,15 +299,18 @@ export const createNativeMarkReadRequestCoordinator = ({
         const recovery = recoveryByRequestID.get(proof.requestID)
             ?? (completedRecovery?.proof.requestID === proof.requestID ? completedRecovery : null)
         if (!recovery || proof.observationToken !== recovery.proof.observationToken || !recovery.ready) return false
+        const ownsRecovery = () => !closed && (recoveryByRequestID.get(proof.requestID) === recovery
+            || completedRecovery === recovery)
+        if (!ownsRecovery()) return false
         if (present(recovery.pending, () => onRecoveryIsCurrent({
             owner: recovery.pending.owner, context: recovery.pending.context, message: recovery.pending.message,
-        })) !== true) return false
+        })) !== true || !ownsRecovery()) return false
         if (completedRecovery === recovery) completedRecovery = null
         recoveryByRequestID.set(proof.requestID, recovery)
         present(recovery.pending, () => onPending({ requestID: proof.requestID,
             phase: 'recovery-failed', recoveryOnly: true, context: recovery.pending.context,
             outcomeKnown: recovery.outcome.outcomeKnown, success: recovery.outcome.success }))
-        return true
+        return !closed && recoveryByRequestID.get(proof.requestID) === recovery
     }
     const ownsHistoryReadingStatusRecovery = observation => {
         let proof
@@ -293,9 +318,12 @@ export const createNativeMarkReadRequestCoordinator = ({
         if (!proof || Object.keys(proof).length !== 2 || ordinaryRequests().length > 0) return false
         const recovery = recoveryByRequestID.get(proof.requestID)
             ?? (completedRecovery?.proof.requestID === proof.requestID ? completedRecovery : null)
-        return !!recovery && proof.observationToken === recovery.proof.observationToken
+        const ownsRecovery = () => !closed && ordinaryRequests().length === 0 && !!recovery
+            && (recoveryByRequestID.get(proof.requestID) === recovery || completedRecovery === recovery)
+        return ownsRecovery() && proof.observationToken === recovery.proof.observationToken
             && present(recovery.pending, () => onRecoveryIsCurrent({ owner: recovery.pending.owner,
                 context: recovery.pending.context, message: recovery.pending.message })) === true
+            && ownsRecovery()
     }
     const cancel = requestID => {
         const pending = pendingByRequestID.get(requestID)
@@ -307,6 +335,11 @@ export const createNativeMarkReadRequestCoordinator = ({
         return true
     }
     const request = ({ sectionID, message, owner = null, context = null }) => {
+        if (closed) {
+            const completion = Promise.reject(readerClosedError(null))
+            completion.catch(() => {})
+            return completion
+        }
         for (const [requestID, recovery] of recoveryByRequestID) {
             if (present(recovery.pending, () => onRecoveryIsCurrent({ owner: recovery.pending.owner,
                 context: recovery.pending.context, message: recovery.pending.message })) === true) continue
@@ -356,10 +389,13 @@ export const createNativeMarkReadRequestCoordinator = ({
             }
         }
         freeze(frozenMessage)
-        let resolve
-        const completion = new Promise(done => { resolve = done })
+        let resolve, reject
+        const completion = new Promise((done, fail) => { resolve = done; reject = fail })
+        // Disposal can reject an ignored local waiter without asserting any
+        // native outcome. Keep the original Promise observable by its caller.
+        completion.catch(() => {})
         const pending = { requestID, sectionID, message: frozenMessage, fingerprint,
-            owner, context, resolve, completion, timeoutHandle: null,
+            owner, context, resolve, reject, completion, timeoutHandle: null,
             cancelling: false, slow: false, recoveryOnly: false }
         pendingByRequestID.set(requestID, pending)
         attachLifecycle()
@@ -380,7 +416,28 @@ export const createNativeMarkReadRequestCoordinator = ({
     }
     const settle = result => {
         const pending = pendingByRequestID.get(result?.requestID)
-        if (!pending) return false
+        if (!pending) {
+            // An ordinary terminal can arrive after pagehide and consume the
+            // pending slot before native answers our history status request.
+            // Acknowledge only that retained exact outcome so native can start
+            // its single recovery attempt. Do not settle or prepare it twice,
+            // and never recreate a completed/retired recovery barrier.
+            const recovery = recoveryByRequestID.get(result?.requestID)
+            if (!recovery || recovery.outcome.outcomeKnown !== true
+                || result.manualReadPendingProtocol !== 1
+                || result.manualReadPendingObservationToken !== recovery.proof.observationToken
+                || result.manualReadPendingHistoryRecovery !== true
+                || result.manualReadPendingOutcomeOnly !== true
+                || result.manualReadPendingPresentationAllowed !== false
+                || result.manualReadPendingState !== 'finished'
+                || typeof result.success !== 'boolean'
+                || result.success !== recovery.outcome.success
+                || (!result.success && (result.errorCode || 'nativeCommitFailed') !== recovery.outcome.errorCode)) return false
+            return present(recovery.pending, () => onRecoveryIsCurrent({
+                owner: recovery.pending.owner, context: recovery.pending.context,
+                message: recovery.pending.message,
+            })) === true && recoveryByRequestID.get(result.requestID) === recovery
+        }
         if (result.manualReadPendingProtocol !== 1
             || result.manualReadPendingObservationToken !== pending.message.manualReadPendingObservationToken) return false
         if (['pending', 'cancelling', 'unknown'].includes(result?.manualReadPendingState)) {
@@ -425,6 +482,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         for (const requestID of pendingByRequestID.keys()) cancel(requestID)
     }
     const pause = () => {
+        if (closed) return
         observing = false
         // Pagehide proves departure. Ordinary unknown does not: the original
         // command may still be waiting for native admission.
@@ -439,11 +497,58 @@ export const createNativeMarkReadRequestCoordinator = ({
         }
     }
     const resume = () => {
+        if (closed) return
         observing = true
         for (const pending of pendingByRequestID.values()) observe(pending, 0)
         detachLifecycle()
     }
-    return { request, settle, cancel, cancelAll, pause, resume, recoverHistoryReadingStatus,
+    const close = () => {
+        if (closed) return false
+        const pending = [...pendingByRequestID.values()]
+        const recoveries = [...recoveryByRequestID.values()]
+        // Capture only the original request's cancellation capability before
+        // retiring ownership. History observations cannot cancel a mutation.
+        const cancellations = pending.filter(value => !value.recoveryOnly).map(value => ({
+            pending: value,
+            packet: { requestID: value.requestID, manualReadPendingProtocol: 1,
+                manualReadPendingObservationToken: value.message.manualReadPendingObservationToken,
+                manualReadPendingOperation: 'cancel', manualReadPendingKind: 'section',
+                topWindowURL: value.message.topWindowURL,
+                documentStartedAtMs: value.message.documentStartedAtMs },
+        }))
+        // Native callbacks and optional cleanup can reenter. Withdraw every
+        // local index before calling them, so no old waiter or timer can adopt
+        // a reopened Reader's presentation or recreate observation traffic.
+        closed = true; observing = false
+        pendingByRequestID.clear(); recoveryByRequestID.clear(); completedRecovery = null
+        const wasListening = listening
+        listening = false
+        for (const recovery of recoveries) recovery.join?.()
+        for (const { pending: value, packet } of cancellations) {
+            present(value, () => postControlMessage(packet))
+        }
+        if (wasListening) {
+            for (const name of ['pagehide', 'pageshow']) {
+                try { lifecycleTarget.removeEventListener?.(name, name === 'pagehide' ? pause : resume) } catch (_) {}
+            }
+        }
+        for (const value of pending) {
+            const timer = value.timeoutHandle
+            value.timeoutHandle = null
+            if (timer != null) present(value, () => cancelTimeout?.(timer))
+            present(value, () => onPending({ requestID: value.requestID,
+                phase: 'finished', context: value.context }))
+            value.owner = null; value.context = null
+            value.reject(readerClosedError(value.requestID))
+        }
+        for (const recovery of recoveries) {
+            present(recovery.pending, () => onPending({ requestID: recovery.proof.requestID,
+                phase: 'finished', context: recovery.pending.context }))
+            recovery.pending.owner = null; recovery.pending.context = null
+        }
+        return true
+    }
+    return { request, settle, cancel, cancelAll, pause, resume, close, recoverHistoryReadingStatus,
         failHistoryReadingStatusRecovery, retireHistoryRecoveries,
         ownsHistoryReadingStatusRecovery,
         get hasOrdinaryPendingRequests() { return ordinaryRequests().length > 0 },

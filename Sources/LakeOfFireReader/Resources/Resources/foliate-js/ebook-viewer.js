@@ -5801,8 +5801,7 @@ class Reader {
         );
         this.#pageTurnInFlight = false;
 
-        this.nativeMarkReadRequestCoordinator?.cancelAll?.(`readerClosed:${reason}`);
-        this.nativeMarkReadRequestCoordinator?.retireHistoryRecoveries?.();
+        this.nativeMarkReadRequestCoordinator?.close?.();
         this.#resolveInitialDisplaySettled(`reader-closed:${reason}`);
         this.#resolveDisplaySettledWaiters(`reader-closed:${reason}`);
         this.#finishNavButtonOperations();
