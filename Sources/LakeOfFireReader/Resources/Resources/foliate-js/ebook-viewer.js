@@ -7417,7 +7417,12 @@ class Reader {
                 diagnosticGeneration,
             });
             if (!success) return false;
-            await this.#advanceAfterMarkRead(advanceOwner);
+            try {
+                await this.#advanceAfterMarkRead(advanceOwner);
+            } catch (_error) {
+                // Navigation is optional after the native Mark committed.
+                // A failed page turn cannot replace that successful outcome.
+            }
             return true;
         } finally {
             if (this.#markReadBusyOwners.get(stateID) === busyOwner) {

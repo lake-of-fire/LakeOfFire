@@ -287,3 +287,20 @@ for (const transition of ['account invalidation', 'unavailable chapter scope', '
         assert.deepEqual(f.moves, [])
     })
 }
+
+for (const failure of ['synchronous LTR', 'rejected LTR', 'rejected RTL']) {
+    test(`a ${failure} optional page turn cannot reject an already committed Mark`, async t => {
+        const f = fixture(), book = bookRuntimeFixture(f)
+        t.after(() => book.runtime.close())
+        f.reader.isRTL = failure.endsWith('RTL')
+        const method = f.reader.isRTL ? 'goLeft' : 'goRight'
+        f.reader.view[method] = failure.startsWith('synchronous')
+            ? () => { throw new Error('renderer navigation failed') }
+            : async () => { throw new Error('renderer navigation failed') }
+        const { operation, advance } = await successfulMarkAwaitingAdvance(f)
+        advance.callback()
+        assert.equal(await operation, true)
+        assert.equal(f.reader.lastNativeMarkReadRequestOutcome, 'committed')
+        assert.equal(f.requests.length, 1)
+    })
+}
