@@ -896,5 +896,3 @@ test('pause suppresses observation and resume observes the same request identity
     h.coordinator.settle(terminalFor(h.posted[0]))
     assert.equal((await completion).success, true)
 })
-
-

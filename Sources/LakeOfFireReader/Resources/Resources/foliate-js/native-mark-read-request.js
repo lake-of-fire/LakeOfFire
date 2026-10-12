@@ -511,5 +511,3 @@ export const presentNativeMarkReadPending = state => {
     notice.lastElementChild.hidden = state.recoveryOnly === true
     notice.lastElementChild.disabled = state.recoveryOnly === true || state.phase === 'cancelling'
 }
-
-
