@@ -1,3 +1,4 @@
+import { readerDocumentStartedAtMs } from './reader-document-clock.js'
 import { makeNativeEbookSource, nativeEbookRequest, normalizeEbookPackageSessionID } from './ebook-native-source-request.js'
 import './view.js'
 import {
@@ -613,10 +614,6 @@ const ignoredWindowErrorMessages = new Set([
 
 const shouldIgnoreWindowError = message => ignoredWindowErrorMessages.has(String(message ?? ''));
 
-const readerDocumentStartedAtMs = () => Number.isFinite(globalThis.performance?.timeOrigin)
-    ? globalThis.performance.timeOrigin
-    : null;
-
 window.onerror = function(msg, source, lineno, colno, error) {
     if (shouldIgnoreWindowError(msg)) return true;
     window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
@@ -806,9 +803,7 @@ const requestNativeVisibleTrackedWordsPrime = (doc, index, reason = 'visible-pri
             force: false,
             uuid,
             visiblePrimeOnly: true,
-            documentStartedAtMs: Number.isFinite(view.performance?.timeOrigin)
-                ? view.performance.timeOrigin
-                : null,
+            documentStartedAtMs: readerDocumentStartedAtMs(view),
             visibleElementIDs,
             entryIDs,
         });
@@ -7236,9 +7231,8 @@ class Reader {
                 topWindowURL: window.top.location.href,
                 pageURL: owner?.document?.location?.href ?? null,
                 bookReadingScope: owner?.bookReadingScope ?? null,
-                documentStartedAtMs: Number.isFinite(window.top?.performance?.timeOrigin)
-                    ? window.top.performance.timeOrigin
-                    : readerDocumentStartedAtMs(),
+                documentStartedAtMs: readerDocumentStartedAtMs(window.top)
+                    ?? readerDocumentStartedAtMs(),
                 ...(typeof originAccountPresentation === 'string'
                     && originAccountPresentation.length > 0
                     ? { manualReadOriginAccountPresentation:
@@ -12701,9 +12695,8 @@ window.loadEBook = ({
                         initialRestoreHandled: initialRestoreResult?.restoreSatisfied ?? false,
                         initialRestoreCurrentFractionalCompletion: initialRestoreCurrentFraction,
                         initialRestoreFractionalCompletion: initialRestoreHandledFraction,
-                        documentStartedAtMs: Number.isFinite(window.top?.performance?.timeOrigin)
-                            ? window.top.performance.timeOrigin
-                            : readerDocumentStartedAtMs(),
+                        documentStartedAtMs: readerDocumentStartedAtMs(window.top)
+                            ?? readerDocumentStartedAtMs(),
                     });
                     return true;
                 },
