@@ -68,6 +68,21 @@ final class BookmarkRemoveOwnedWriteTests: XCTestCase {
         XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 1)
     }
 
+    func testInvalidatedSourceCannotBeAddedOrToggled() async throws {
+        let (configuration, realm, source) = try makeRealm()
+        try realm.write { realm.delete(source) }
+        do {
+            try await source.addBookmark(realmConfiguration: configuration)
+            XCTFail("Adding an invalidated source must be rejected before property access")
+        } catch is CancellationError { }
+        do {
+            _ = try await source.toggleBookmark(realmConfiguration: configuration)
+            XCTFail("Toggling an invalidated source must be rejected")
+        } catch is CancellationError { }
+        XCTAssertTrue(realm.objects(Bookmark.self).isEmpty)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
     private func makeRealm() throws -> (Realm.Configuration, Realm, Bookmark) {
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         configuration.objectTypes = [Bookmark.self]

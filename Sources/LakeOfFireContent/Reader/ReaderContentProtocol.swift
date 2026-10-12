@@ -564,6 +564,8 @@ public extension ReaderContentProtocol {
 
     @MainActor
     func addBookmark(realmConfiguration: Realm.Configuration) async throws {
+        guard !isInvalidated else { throw CancellationError() }
+        try Task.checkCancellation()
         let compoundKey = compoundKey
         let url = url
         let title = title
