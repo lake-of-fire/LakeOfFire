@@ -894,15 +894,21 @@ test('pause suppresses observation and resume observes the same request identity
     assert.equal(h.controls[0].manualReadPendingOperation, 'status')
 
     assert.equal(h.controls[0].manualReadPendingHistoryRecovery, true)
-    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), false,
-        'A delayed initial reply cannot acknowledge history reconciliation')
-    h.coordinator.settle(terminalFor(h.posted[0], {
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true,
+        'A delayed initial reply settles its private outcome without acknowledging restored presentation')
+    const proof = { requestID, observationToken: token }
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), true)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0], {
         manualReadPendingHistoryRecovery: true,
         manualReadPendingOutcomeOnly: true,
         manualReadPendingPresentationAllowed: false,
-    }))
-    assert.equal((await completion).success, true)
-    h.coordinator.acknowledgeHistoryReadingStatus({ requestID, observationToken: token })
+    })), true)
+    const result = await completion
+    assert.equal(result.success, true)
+    assert.equal(result.presentationAllowed, false)
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), true)
+    h.coordinator.retireHistoryRecoveries()
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), false)
 })
 
 
