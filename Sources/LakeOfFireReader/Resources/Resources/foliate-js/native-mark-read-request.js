@@ -201,6 +201,12 @@ export const createNativeMarkReadRequestCoordinator = ({
         const timer = pending.timeoutHandle
         pending.timeoutHandle = null
         try {
+            // Claim the terminal before consulting renderer ownership. That
+            // callback can close the Reader, but cannot reject an acknowledged
+            // native outcome or send Cancel for this already-finished request.
+            const ownerIsCurrent = ownerCurrent(pending)
+            outcome.stale = !ownerIsCurrent
+            outcome.presentationAllowed = outcome.presentationAllowed === true && ownerIsCurrent && !closed
             present(pending, detachLifecycle)
             if (timer != null) present(pending, () => cancelTimeout?.(timer))
             if (closed) {
@@ -445,7 +451,6 @@ export const createNativeMarkReadRequestCoordinator = ({
             // handed to native, so this outcome is not ambiguous/pending.
             finish(pending, {
                 success: false,
-                stale: !ownerCurrent(pending),
                 presentationAllowed: false,
                 errorCode: String(error?.message || error || 'nativePostFailed'),
             })
@@ -503,7 +508,7 @@ export const createNativeMarkReadRequestCoordinator = ({
             if (!isHistoryOutcome || result.errorCode !== 'outcomeUnavailable'
                 || !Object.keys(result).every(key => allowedKeys.has(key))) return false
             pending.recoveryOnly = true
-            return finish(pending, { outcomeKnown: false, stale: !ownerCurrent(pending),
+            return finish(pending, { outcomeKnown: false,
                 presentationAllowed: false, errorCode: 'outcomeUnavailable', nativeResult: result })
         }
         if (result.manualReadPendingState !== 'finished' || typeof result?.success !== 'boolean') return false
@@ -511,13 +516,11 @@ export const createNativeMarkReadRequestCoordinator = ({
             || result.sectionId === pending.sectionID
         if (!sectionMatches) return false
         if (isHistoryOutcome) pending.recoveryOnly = true
-        const ownerIsCurrent = ownerCurrent(pending)
         const success = result.success === true
         return finish(pending, {
             success,
             outcomeKnown: true,
-            stale: !ownerIsCurrent,
-            presentationAllowed: !pending.recoveryOnly && ownerIsCurrent && sectionMatches
+            presentationAllowed: !pending.recoveryOnly && sectionMatches
                 && result.manualReadPendingOutcomeOnly !== true
                 && result.manualReadPendingPresentationAllowed !== false,
             errorCode: success ? null : (!sectionMatches ? 'sectionMismatch' : result.errorCode || 'nativeCommitFailed'),

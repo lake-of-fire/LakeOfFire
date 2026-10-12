@@ -57,6 +57,40 @@ test('close during terminal cleanup preserves native success without recreating 
     assert.equal(h.pendingStates.at(-1).phase, 'finished')
 })
 
+for (const terminal of ['success', 'failure', 'unavailable']) {
+test(`close during terminal owner validation preserves the accepted native ${terminal} outcome without Cancel`, async () => {
+    let closes = false
+    const h = harness({ onOwnerCurrent: () => {
+        if (!closes) return
+        closes = false
+        h.coordinator.close()
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const original = h.posted[0]
+    closes = true
+    const result = terminal === 'unavailable' ? {
+        requestID: original.requestID, manualReadPendingProtocol: 1,
+        manualReadPendingObservationToken: original.manualReadPendingObservationToken,
+        manualReadPendingState: 'unavailable', manualReadPendingHistoryRecovery: true,
+        manualReadPendingOutcomeOnly: true, manualReadPendingPresentationAllowed: false,
+        errorCode: 'outcomeUnavailable',
+    } : terminalFor(original, { success: terminal === 'success',
+        ...(terminal === 'failure' ? { errorCode: 'nativeCommitFailed' } : {}) })
+    assert.equal(h.coordinator.settle(result), true)
+    const outcome = await completion
+    assert.equal(outcome.success, terminal === 'unavailable' ? undefined : terminal === 'success')
+    assert.equal(outcome.outcomeKnown, terminal !== 'unavailable')
+    assert.equal(outcome.errorCode, terminal === 'success' ? null
+        : terminal === 'failure' ? 'nativeCommitFailed' : 'outcomeUnavailable')
+    assert.equal(outcome.nativeResult, result)
+    assert.equal(outcome.presentationAllowed, false)
+    assert.equal(h.controls.length, 0, 'An accepted terminal cannot require an unresolved Cancel')
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.timeouts.size, 0)
+    assert.equal(h.pendingStates.at(-1).phase, 'finished')
+})
+}
+
 test('closing during authorized recovery preparation cannot start its retired native query', async () => {
     let preparations = 0, queries = 0
     const h = harness({ onRecovery: () => {
@@ -208,7 +242,7 @@ function terminalFor(message, result = {}) {
     }
 }
 
-function harness({ current = true, postThrows = false, lifecycleTarget, onRecovery, onRecoveryQuery, onRecoveryIsCurrent, onTimerCancelled, onTimerScheduled, onPendingEffect } = {}) {
+function harness({ current = true, postThrows = false, lifecycleTarget, onRecovery, onRecoveryQuery, onRecoveryIsCurrent, onTimerCancelled, onTimerScheduled, onPendingEffect, onOwnerCurrent } = {}) {
     const posted = []
     const controls = []
     const pendingStates = []
@@ -230,7 +264,10 @@ function harness({ current = true, postThrows = false, lifecycleTarget, onRecove
         onRecovery,
         onRecoveryQuery,
         onRecoveryIsCurrent,
-        isOwnerCurrent: () => current,
+        isOwnerCurrent: () => {
+            onOwnerCurrent?.()
+            return current
+        },
         makeRequestID: () => 'request',
         scheduleTimeout: (callback, delay) => {
             const id = ++timeoutSequence
