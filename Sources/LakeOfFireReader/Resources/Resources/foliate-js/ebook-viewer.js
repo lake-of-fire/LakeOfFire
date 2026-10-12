@@ -14,6 +14,7 @@ import {
     createNativeMarkReadRequestCoordinator,
     presentNativeMarkReadPending,
     nativeMarkReadCommandMessage,
+    refreshNativeMarkReadBookStateForRecovery,
 } from './native-mark-read-request.js'
 import {
     compactEbookSegmentMetadataPayloadIsCurrent,
@@ -6336,6 +6337,23 @@ class Reader {
                 handler.postMessage(packet)
             },
             onPending: presentNativeMarkReadPending,
+            onRecovery: ({ owner, context, isCurrent }) => {
+                // The viewer owns a separate native chapter-state query. A
+                // frame-local Core history projection cannot renew its context.
+                // Retire only the original displayed intent before busy cleanup;
+                // its existing state query admits controls after fresh publication.
+                const runtime = this.bookReadingRuntime;
+                const ownsOriginal = () => !!owner && globalThis.reader === this
+                    && isCurrent()
+                    && runtime === this.bookReadingRuntime
+                    && context?.accountPresentation === runtime?.state.accountPresentation
+                    && this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
+                    && (!owner.document || this.#currentPageTrackingDocument(owner.document) === owner.document)
+                    && context?.accountPresentation === runtime?.state.accountPresentation
+                    && isCurrent();
+                if (!ownsOriginal()) return;
+                refreshNativeMarkReadBookStateForRecovery(runtime, owner.bookReadingScope, ownsOriginal);
+            },
             postMessage: message => {
                 window.webkit.messageHandlers.markSectionAsRead.postMessage(message);
             },
@@ -7229,6 +7247,7 @@ class Reader {
                 payload: validatedPayload,
                 reason,
                 animateStateID,
+                accountPresentation: this.bookReadingRuntime?.state.accountPresentation ?? null,
             },
             message: nativeMarkReadCommandMessage(validatedPayload, {
                 topWindowURL: window.top.location.href,
@@ -7251,7 +7270,9 @@ class Reader {
         if (diagnosticGeneration !== null && (diagnosticGeneration !== this.#markReadDiagnosticGeneration
             || !this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
             || globalThis.reader !== this)) return completed;
-        this.lastNativeMarkReadRequestOutcome = outcome.success === true
+        this.lastNativeMarkReadRequestOutcome = outcome.outcomeKnown === false
+            ? 'unavailable'
+            : outcome.success === true
             ? 'committed'
             : 'failed';
         this.lastNativeMarkReadRequestErrorCode = outcome.errorCode ?? '';
