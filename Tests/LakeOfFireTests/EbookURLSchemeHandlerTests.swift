@@ -134,6 +134,8 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             encodedEbookProcessedSectionCacheValue(payload)))
         XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(restored))
         XCTAssertEqual(restored.segmentSidecar, payload.segmentSidecar)
+        let absent = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull(), 0, NSNull()])
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(absent))
         let invalidReferences: [Any] = [true, 0.5, -1, "0", 2]
         for reference in invalidReferences {
             let invalid = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull(), 0, reference])

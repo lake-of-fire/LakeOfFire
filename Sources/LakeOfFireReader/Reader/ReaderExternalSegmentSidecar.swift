@@ -821,6 +821,7 @@ private func validatedReaderSegmentSidecarIdentityProjections(
                 || tuple[12] is NSNull
                 || (tableValue("x", tuple: tuple, index: 12) as? String)?.isEmpty == false),
               (tuple.count < 14
+                || tuple[13] is NSNull
                 || (tableValue("x", tuple: tuple, index: 13) as? String)?.isEmpty == false) else {
             return nil
         }
