@@ -228,7 +228,10 @@ public extension Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         return try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
-            let pk = Bookmark.makePrimaryKey(url: url, html: html)
+            // Creation derives HTML identity from either accepted payload form.
+            // Match that precedence before selecting the existing-row path.
+            let identityHTML = html ?? Bookmark.contentToHTML(content: content)
+            let pk = Bookmark.makePrimaryKey(url: url, html: identityHTML)
             let shouldStripClipboardIndicator = isFromClipboard || (url?.isSnippetURL ?? false)
             let sanitizedTitle = title.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
             if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
@@ -342,3 +345,4 @@ public extension Bookmark {
         }
     }
 }
+
