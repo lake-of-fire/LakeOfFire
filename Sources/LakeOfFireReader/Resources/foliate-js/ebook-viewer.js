@@ -3865,6 +3865,8 @@ const navSpinnerMaximumMs = 1200;
 
 class Reader {
     #closed = false
+    #markReadPresentationOwner = null
+    #markReadBusyOwners = new Map()
     #ownedEventBindings = new OwnedEventBindings()
     #documentEventBindings = new OwnedEventBindingScopes()
     #navButtonOperations = new Set()
@@ -5171,11 +5173,15 @@ class Reader {
         reason,
         animateStateID = null,
     }) {
+        const presentationOwner = {};
+        this.#markReadPresentationOwner = presentationOwner;
+        const presentationIsCurrent = () => this.#markReadPresentationOwner === presentationOwner
+            && this.#markReadOwnerIsCurrent(owner);
         const validatedPayload = this.#validatedMarkReadPayload(payload, owner?.document);
         if (!validatedPayload) {
             this.lastNativeMarkReadRequestOutcome = 'failed';
             this.lastNativeMarkReadRequestErrorCode = 'invalidPayload';
-            return false;
+            return { success: false, presentationApplied: false };
         }
         this.lastNativeMarkReadRequestOutcome = 'pending';
         this.lastNativeMarkReadRequestErrorCode = '';
@@ -5190,15 +5196,25 @@ class Reader {
                 sidecarRevision: owner.sidecarRevision,
             },
         });
-        this.lastNativeMarkReadRequestOutcome = outcome.success ? 'committed' : 'failed';
+        const completed = { success: outcome.success === true, presentationApplied: false, presentationOwner };
+        // Settlement and this awaiting continuation are separate turns. A newer
+        // command or document can retire presentation after native success.
+        if (!presentationIsCurrent()) return completed;
+        this.lastNativeMarkReadRequestOutcome = completed.success ? 'committed' : 'failed';
         this.lastNativeMarkReadRequestErrorCode = outcome.errorCode ?? '';
-        if (!outcome.success) return false;
-        this.#applyCommittedMarkReadPayload(
-            outcome.context.payload,
-            outcome.context.reason,
-            outcome.context.animateStateID
-        );
-        return true;
+        if (!completed.success) return completed;
+        try {
+            this.#applyCommittedMarkReadPayload(
+                outcome.context.payload,
+                outcome.context.reason,
+                outcome.context.animateStateID
+            );
+            completed.presentationApplied = presentationIsCurrent();
+        } catch (error) {
+            // Optional projection cannot replace an already successful reply.
+            console.error('# MARKSECTION javascript.projectionFailed', error);
+        }
+        return completed;
     }
     applyMarkSectionAsReadResult(result) {
         return this.nativeMarkReadRequestCoordinator?.settle?.(result) ?? false;
@@ -5261,12 +5277,12 @@ class Reader {
         const payload = this.buildMarkAllSectionsAsReadPayload();
         const doc = getPrimaryRendererContent(this.view?.renderer)?.doc ?? null;
         if (!payload || !isDocumentLike(doc)) return 0;
-        const success = await this.#submitMarkReadPayload(payload, {
+        const result = await this.#submitMarkReadPayload(payload, {
             sectionID: `ebook-mark-all:${this.visiblePageCollectionGeneration}`,
             owner: this.#markReadOwner({ document: doc }),
             reason: 'native-mark-all-read-committed',
         });
-        return success ? (payload.segments.length || payload.sentenceIdentifiers.length) : 0;
+        return result.success ? (payload.segments.length || payload.sentenceIdentifiers.length) : 0;
     }
     async #markPageClusterAsRead(stateID) {
         const pageTrackingState = this.pageTrackingStates.find(state => state.id === stateID);
@@ -5281,21 +5297,40 @@ class Reader {
             document: doc,
             requireVisibleGeneration: true,
         });
+        const busyOwner = {};
+        this.#markReadBusyOwners.set(stateID, busyOwner);
         this.pageTrackingBusyStateIDs.add(stateID);
-        this.#renderPageTrackingButtons('mark-read-busy');
         try {
-            const success = await this.#submitMarkReadPayload(pageTrackingState.payload, {
+            this.#renderPageTrackingButtons('mark-read-busy');
+            const result = await this.#submitMarkReadPayload(pageTrackingState.payload, {
                 sectionID: `ebook-page:${stateID}:${this.visiblePageCollectionGeneration}`,
                 owner,
                 reason: 'native-mark-read-committed',
                 animateStateID: stateID,
             });
-            if (!success || !this.#markReadOwnerIsCurrent(owner)) return false;
-            await this.#advanceAfterMarkRead(owner);
+            if (!result.success) return false;
+            if (result.presentationApplied && this.#markReadOwnerIsCurrent(owner)) {
+                try {
+                    await this.#advanceAfterMarkRead(owner, result.presentationOwner);
+                } catch (error) {
+                    // A failed optional page turn does not undo native success.
+                    console.error('# MARKSECTION javascript.navigationFailed', error);
+                }
+            }
             return true;
         } finally {
-            this.pageTrackingBusyStateIDs.delete(stateID);
-            this.#renderPageTrackingButtons('mark-read-finished');
+            if (this.#markReadBusyOwners.get(stateID) === busyOwner) {
+                this.#markReadBusyOwners.delete(stateID);
+                this.pageTrackingBusyStateIDs.delete(stateID);
+                if (this.#markReadOwnerIsCurrent(owner)) {
+                    try {
+                        this.#renderPageTrackingButtons('mark-read-finished');
+                    } catch (error) {
+                        // Terminal chrome is optional; keep the command outcome.
+                        console.error('# MARKSECTION javascript.chromeFailed', error);
+                    }
+                }
+            }
         }
     }
     async markVisiblePageAsRead(source = 'native') {
@@ -5824,15 +5859,17 @@ class Reader {
             await this.#settleInitialPaginatorLayout(reason);
         });
     }
-    async #advanceAfterMarkRead(owner) {
-        if (!this.#markReadOwnerIsCurrent(owner)) return false;
+    async #advanceAfterMarkRead(owner, presentationOwner) {
+        const isCurrent = () => this.#markReadPresentationOwner === presentationOwner
+            && this.#markReadOwnerIsCurrent(owner);
+        if (!isCurrent()) return false;
         await new Promise((resolve) => setTimeout(resolve, 430));
-        if (!this.#markReadOwnerIsCurrent(owner)) return false;
+        if (!isCurrent()) return false;
         if (this.isRTL) {
-            if (!this.#markReadOwnerIsCurrent(owner)) return false;
+            if (!isCurrent()) return false;
             return await this.view?.goLeft?.() === true;
         } else {
-            if (!this.#markReadOwnerIsCurrent(owner)) return false;
+            if (!isCurrent()) return false;
             return await this.view?.goRight?.() === true;
         }
     }
