@@ -906,6 +906,8 @@ test('pause suppresses observation and resume observes the same request identity
     assert.equal(outcome.outcomeKnown, true)
     assert.equal(outcome.presentationAllowed, false)
     assert.equal(queries, 0, 'Receiving the original outcome cannot authorize a new query')
+    const proof = { requestID, observationToken: token }
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), true)
     const history = terminalFor(h.posted[0], {
         manualReadPendingHistoryRecovery: true,
         manualReadPendingOutcomeOnly: true,
@@ -914,12 +916,15 @@ test('pause suppresses observation and resume observes the same request identity
     assert.equal(h.coordinator.settle(history), true)
     assert.equal(preparations, 1)
     assert.equal(queries, 0, 'An exact history receipt still waits for native query delegation')
-    const proof = { requestID, observationToken: token }
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), true)
     assert.equal(await h.coordinator.recoverHistoryReadingStatus(proof), true)
     assert.equal(queries, 1)
     assert.equal(h.coordinator.settle(history), false)
     assert.equal(h.coordinator.pendingCount, 0)
     assert.equal(h.posted.length, 1, 'Recovery observes state without replaying the mutation')
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), true)
+    h.coordinator.retireHistoryRecoveries()
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), false)
 })
 
 
