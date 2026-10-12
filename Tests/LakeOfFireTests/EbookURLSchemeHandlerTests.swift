@@ -61,6 +61,83 @@ private let ebookTestProcessingVariant = EbookProcessingVariant(
 )
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
+    private func schema13Payload(tuple: [Any], version: Int = 13) throws -> EbookProcessedSectionPayload {
+        let html = Data("<m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">本文</m-m></m-s></m-c>".utf8)
+        let sidecar = try JSONSerialization.data(withJSONObject: [
+            "v": version,
+            "t": [
+                "j": [], "n": [], "s": [], "ns": [], "p": [],
+                "h": ["h"], "x": ["本文", " 本文 "], "sid": ["s"], "pid": ["p"],
+                "res": [[String: Any]()],
+            ] as [String: Any],
+            "s": [tuple],
+        ])
+        return EbookReaderProcessingCompletionProof.forTesting(
+            sourceHTML: String(decoding: html, as: UTF8.self)
+        ).complete(documentHTML: html, segmentSidecar: sidecar)
+    }
+
+    private var schema13BaseTuple: [Any] {
+        ["!m", 0, NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), 0, 0, 0]
+    }
+
+    func testSchema13SidecarAcceptsScopeTextAndOptionalResolution() throws {
+        let suffixes: [[Any]] = [[NSNull(), 1], [0, 1], [0, NSNull()], [NSNull(), NSNull()]]
+        for suffix in suffixes {
+            let payload = try schema13Payload(tuple: schema13BaseTuple + suffix)
+            XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+            let encoded = encodedEbookProcessedSectionCacheValue(payload)
+            let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(encoded))
+            XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(restored))
+            XCTAssertEqual(restored.segmentSidecar, payload.segmentSidecar)
+        }
+    }
+
+    func testSchema13SidecarAcceptsShorterTuplesWithoutScopeText() throws {
+        let suffixes: [[Any]] = [[], [0]]
+        for suffix in suffixes {
+            let payload = try schema13Payload(tuple: schema13BaseTuple + suffix)
+            XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+            let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
+                encodedEbookProcessedSectionCacheValue(payload)))
+            XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(restored))
+        }
+    }
+
+    func testSchema13SidecarRejectsInvalidScopeTextReferences() throws {
+        let references: [Any] = [true, 0.5, -1, "0", 2, [String: Any]()]
+        for reference in references {
+            let payload = try schema13Payload(tuple: schema13BaseTuple + [NSNull(), reference])
+            XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+            let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
+                encodedEbookProcessedSectionCacheValue(payload)))
+            XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(restored))
+        }
+    }
+
+    func testSchema13SidecarPreservesResolutionBoundsAndTupleLength() throws {
+        let references: [Any] = [true, 0.5, -1, "0", 1]
+        for reference in references {
+            let payload = try schema13Payload(tuple: schema13BaseTuple + [reference, 1])
+            XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+        }
+        let nullResolutionOnly = try schema13Payload(tuple: schema13BaseTuple + [NSNull()])
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(nullResolutionOnly))
+        let extraField = try schema13Payload(tuple: schema13BaseTuple + [NSNull(), 1, NSNull()])
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(extraField))
+    }
+
+    func testPriorSchema12SidecarCannotClaimCurrentProcessingAuthority() throws {
+        let suffixes: [[Any]] = [[], [NSNull(), 1]]
+        for suffix in suffixes {
+            let payload = try schema13Payload(tuple: schema13BaseTuple + suffix, version: 12)
+            XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+            let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
+                encodedEbookProcessedSectionCacheValue(payload)))
+            XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(restored))
+        }
+    }
+
     func testEbookEndpointSourceRequiresTheRequestMainDocumentPackage() throws {
         let manager = ReaderFileManager()
         let bookURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/one.epub"))
@@ -631,73 +708,6 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         legacyEncoded.replaceSubrange(0..<7, with: Array("MNBPSC4".utf8))
 
         XCTAssertNil(decodedEbookProcessedSectionCacheValue(legacyEncoded))
-    }
-
-    private func scopeSidecarPayload(
-        trailingFields: [Any],
-        schemaVersion: Int = ReaderCompactSegmentSidecarSchema.currentVersion
-    ) throws -> EbookProcessedSectionPayload {
-        let absent = NSNull()
-        let tuple: [Any] = ["!runtime", 0, absent, absent, absent, absent,
-                            absent, absent, 0, 0, 0] + trailingFields
-        let sidecar: [String: Any] = [
-            "v": schemaVersion,
-            "t": ["j": [], "n": [], "s": [], "ns": [], "p": [],
-                  "h": ["hash"], "x": ["本文", "前 本文 後"],
-                  "sid": ["sentence"], "pid": ["paragraph"], "res": [[:]]] as [String: Any],
-            "s": [tuple],
-        ]
-        return .successfulReaderProcessing(
-            documentHTML: Data("<m-c pid=\"paragraph\"><m-s sid=\"sentence\" o=\"true\"><m-m id=\"runtime\">本文</m-m></m-s></m-c>".utf8),
-            segmentSidecar: try JSONSerialization.data(withJSONObject: sidecar)
-        )
-    }
-
-    func testCurrentSidecarSchemaPreservesNoScopeTupleForms() throws {
-        XCTAssertEqual(ReaderCompactSegmentSidecarSchema.currentVersion, 13)
-        let forms: [[Any]] = [[], [0]]
-        for trailingFields in forms {
-            let payload = try scopeSidecarPayload(trailingFields: trailingFields)
-            XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
-            let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
-                encodedEbookProcessedSectionCacheValue(payload)))
-            XCTAssertEqual(restored.segmentSidecar, payload.segmentSidecar)
-        }
-        let malformedResolution = try scopeSidecarPayload(trailingFields: [NSNull()])
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(malformedResolution),
-                       "The existing twelve-field form still requires its resolution reference")
-    }
-
-    func testScopeTextSidecarRoundTripsWithAndWithoutResolution() throws {
-        let resolutions: [Any] = [NSNull(), 0]
-        for resolution in resolutions {
-            let payload = try scopeSidecarPayload(trailingFields: [resolution, 1])
-            XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
-            let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
-                encodedEbookProcessedSectionCacheValue(payload)))
-            XCTAssertEqual(restored.segmentSidecar, payload.segmentSidecar)
-            XCTAssertEqual(restored.documentHTML, payload.documentHTML)
-        }
-        let absentScope = try scopeSidecarPayload(trailingFields: [NSNull(), NSNull()])
-        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(absentScope))
-    }
-
-    func testScopeTextSidecarRejectsInvalidReferencesAndPreviousSchema() throws {
-        let invalidReferences: [Any] = [true, 0.5, -1, 2, "1"]
-        for invalidReference in invalidReferences {
-            let payload = try scopeSidecarPayload(trailingFields: [NSNull(), invalidReference])
-            XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
-            let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
-                encodedEbookProcessedSectionCacheValue(payload)))
-            XCTAssertFalse(restored.isAuthoritativelyProcessed)
-        }
-        let invalidResolution = try scopeSidecarPayload(trailingFields: [1, 1])
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(invalidResolution))
-        let previousSchema = try scopeSidecarPayload(trailingFields: [], schemaVersion: 12)
-        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(previousSchema))
-        let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
-            encodedEbookProcessedSectionCacheValue(previousSchema)))
-        XCTAssertFalse(restored.isAuthoritativelyProcessed)
     }
 
     func testProcessedSidecarCacheRequiresDurableIdentityForEverySegment() {
