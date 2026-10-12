@@ -7117,7 +7117,16 @@ class Reader {
             || this.view?.renderer !== owner.renderer) return false;
         if (owner.requireVisibleGeneration === true
             && owner.visiblePageCollectionGeneration !== this.visiblePageCollectionGeneration) return false;
-        if (owner.document && this.#currentPageTrackingDocument(owner.document) !== owner.document) return false;
+        if (owner.document) {
+            // Compare the exact committed document without the ordinary
+            // UI-live scope predicate: close has already withdrawn UI work,
+            // while the coordinator still disposes this original transport.
+            const doc = getCurrentRendererDocument(owner.renderer, owner.document);
+            if (doc !== owner.document || !isDocumentLike(doc)) return false;
+            const scope = this.#documentScopes.get(doc);
+            if (scope && (scope.doc !== doc || scope.lifecycleGeneration !== owner.lifecycleGeneration
+                || scope.committed !== true || getPrimaryRendererContent(owner.renderer)?.doc !== doc)) return false;
+        }
         return true;
     }
     #validatedMarkReadPayload(payload) {

@@ -66,6 +66,7 @@ function fixture({ realCoordinator = false, onControl } = {}) {
         ignoreNextIncomingHideNavigation() {},
         ignoreNextIncomingRevealNavigation() {},
         isDocumentLike: value => value === doc,
+        isCacheWarmerDocument: () => false,
         getCurrentRendererDocument: renderer => renderer?.getContents?.()[0]?.doc ?? null,
         getPrimaryRendererContent: renderer => renderer?.getContents?.()[0] ?? null,
         visibleRangeForNavigationHUDDocument: () => visibleRange,
@@ -96,6 +97,9 @@ function fixture({ realCoordinator = false, onControl } = {}) {
         testRender(reason) { this.#renderPageTrackingButtons(reason) }
         testInvalidate() { this.#invalidateVisiblePageSegmentSnapshot('renderer.relocate') }
         testMarkCluster() { return this.#markPageClusterAsRead('visible-screen') }
+        testCommitDocumentScope(doc) {
+            return this.#commitDocumentScope(this.#beginDocumentScope({ doc, index: 0 }), 'fixture-document-committed')
+        }
     }; Reader`, context)
     const reader = new Reader()
     context.reader = reader
@@ -189,6 +193,8 @@ test('closing the shipping Reader retires unresolved Mark transport before reope
         onControl: () => { reentrantClose = f.reader.close('fixture-reentrant-close') } })
     const book = bookRuntimeFixture(f)
     f.seedPage('closing-page')
+    assert.equal(f.reader.testCommitDocumentScope(f.doc), true,
+        'Closing must retain transport ownership for an actual committed chapter scope')
     const oldReader = f.reader, view = oldReader.view
     const page = oldReader.visiblePageSegmentSnapshot, states = oldReader.pageTrackingStates
     const completion = oldReader.markVisiblePageAsRead()
