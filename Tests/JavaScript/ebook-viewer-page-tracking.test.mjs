@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
+import { installBookReadingRuntime } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-runtime.js'
+import { applyBookReadingProjection } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-projection.js'
+import { createNativeMarkReadRequestCoordinator } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
 
 // Evaluate the complete shipping Reader class. Only the module/startup adapter
 // and DOM/native collaborators are replaced; no command or render method is
@@ -13,8 +16,9 @@ const classStart = source.indexOf('class Reader {')
 const classEnd = source.indexOf('\n}\n', classStart)
 const readerClass = source.slice(classStart, classEnd)
 
-function fixture() {
-    const packets = [], requests = [], attributes = new Map()
+function fixture({ realCoordinator = false } = {}) {
+    const packets = [], requests = [], attributes = new Map(), timers = new Map(), moves = []
+    const lifecycle = new EventTarget()
     const doc = { location: { href: 'ebook://fixture/chapter.xhtml' }, defaultView: {}, body: {} }
     const visibleRange = { collapsed: false }
     const producerOwner = { required: false }
@@ -29,14 +33,26 @@ function fixture() {
         },
         screen: { orientation: {} },
         $: () => null,
-        normalizeArticleReadingProgress: value => value ?? {},
+        normalizeArticleReadingProgress: value => ({ readSegmentIdentifiers: [], sentenceIdentifiersRead: [], ...value }),
         debounce: callback => callback,
         applyStoredChromeInsets() {},
         NavigationHUD: class { refreshAuxiliaryLayout() {} },
-        createNativeMarkReadRequestCoordinator: () => ({ request: async request => {
-            requests.push(request)
-            return { success: false, errorCode: 'fixture-rejection' }
-        } }),
+        createNativeMarkReadRequestCoordinator: options => realCoordinator
+            ? createNativeMarkReadRequestCoordinator({ ...options, lifecycleTarget: lifecycle,
+                makeRequestID: () => 'viewer-fixture',
+                postMessage: message => requests.push({ message }),
+                postControlMessage() {},
+                scheduleTimeout: (callback, delay) => {
+                    const id = timers.size + 1
+                    timers.set(id, { callback, delay })
+                    return id
+                },
+                cancelTimeout: id => timers.delete(id),
+            })
+            : ({ request: async request => {
+                requests.push(request)
+                return { success: false, errorCode: 'fixture-rejection' }
+            } }),
         presentNativeMarkReadPending() {},
         nativeMarkReadCommandMessage: (payload, identity) => ({ ...identity,
             stableSegmentIDs: payload.segments.map(segment => segment.stableSegmentID),
@@ -59,8 +75,12 @@ function fixture() {
         shouldInvalidateVisibleSegmentGeometryForReason: () => true,
         MANABI_ENABLE_EBOOK_PAGE_TRACKING_BUTTONS: false,
         manabiTimelineMeasure() {}, cancelAnimationFrame() {}, clearTimeout() {},
+        requestAnimationFrame: () => 1,
+        setTimeout: (callback, delay) => { const id = timers.size + 1; timers.set(id, { callback, delay }); return id },
     })
     context.window = context
+    context.addEventListener = lifecycle.addEventListener.bind(lifecycle)
+    context.removeEventListener = lifecycle.removeEventListener.bind(lifecycle)
     context.top = context
     context.location = { href: 'ebook://fixture/book.epub' }
     context.webkit = { messageHandlers: {
@@ -74,7 +94,9 @@ function fixture() {
     }; Reader`, context)
     const reader = new Reader()
     context.reader = reader
-    reader.view = { renderer: { getContents: () => [{ doc }] } }
+    reader.view = { renderer: { displayedIndex: 0, getContents: () => [{ index: 0, doc }] },
+        goRight: async () => { moves.push('right'); return true },
+        goLeft: async () => { moves.push('left'); return true } }
     const state = (sentence, isRead = false) => ({ id: 'visible-screen', isRead,
         payload: { stableIdentityVersion: 1, segments: [], sentenceIdentifiers: [sentence] } })
     const installPage = (sentence, isRead = false) => {
@@ -91,7 +113,64 @@ function fixture() {
         reader.pageTrackingStatesGeneration = reader.visiblePageCollectionGeneration
         reader.testRender('fixture-current-page')
     }
-    return { reader, packets, requests, attributes, seedPage, installPage, visibleRange }
+    return { reader, packets, requests, attributes, seedPage, installPage, visibleRange,
+        context, doc, timers, moves, lifecycle }
+}
+
+function bookRuntimeFixture(f) {
+    class Element extends EventTarget {
+        attributes = new Map()
+        classList = { add() {}, remove() {} }
+        isConnected = true
+        hidden = false
+        append() {}
+        setAttribute(key, value) { this.attributes.set(key, value) }
+        getAttribute(key) { return this.attributes.get(key) ?? null }
+        removeAttribute(key) { this.attributes.delete(key) }
+        querySelector(key) {
+            this.nodes ??= new Map()
+            if (!this.nodes.has(key)) this.nodes.set(key, new Element())
+            return this.nodes.get(key)
+        }
+        focus() {}
+        remove() { this.isConnected = false }
+    }
+    const requests = [], host = new Element()
+    f.doc.defaultView.manabi_applyBookReadingPresentation = () => true
+    f.doc.defaultView.manabi_invalidateBookReadingScope = () => {
+        f.doc.defaultView.manabi_bookReadingScope = null
+    }
+    f.context.webkit.messageHandlers.ebookBookAction = { postMessage() {} }
+    f.context.webkit.messageHandlers.ebookBookReadingState = { postMessage: request => requests.push(request) }
+    const runtime = installBookReadingRuntime({ reader: f.reader, view: f.reader.view,
+        document: { createElement: () => new Element(), getElementById: () => host },
+        window: f.context, documentStartedAtMs: 1,
+        applyProjection: state => applyBookReadingProjection(f.reader, state,
+            progress => f.reader.applyBookReadingProgress(progress, 'native-chapter-publication', true)),
+        invalidateProjection: () => {
+            f.reader.optimisticReadSegmentIdentifiers.clear()
+            f.reader.optimisticSentenceIdentifiersRead.clear()
+            f.reader.applyBookReadingProgress({}, 'chapter-state-unavailable', true)
+        },
+        onVisibility() {},
+    })
+    f.reader.bookReadingRuntime = runtime
+    runtime.updateLocation()
+    const response = (revision = 1, accountPresentation = runtime.state.accountPresentation ?? '1:1') => {
+        const scope = { articleProgressID: 'book', articleEpochID: 'pass',
+            chapterKey: 'a'.repeat(64), chapterEpochID: null }
+        return { ok: true, accountPresentation,
+            state: { revision, articleProgressID: 'book', articleEpochID: 'pass', scope,
+                finished: false, readSegmentIdentifiers: [], sentenceIdentifiersRead: [],
+                bookReadPresence: 'empty', chapterReadPresence: 'empty' },
+            context: { contextID: `context-${revision}`, articleProgressID: 'book', articleEpochID: 'pass', scope,
+                isEndPage: false, sectionLocation: 'chapter.xhtml' } }
+    }
+    const publish = (revision = 1) => runtime.state.apply(requests.at(-1).requestID, response(revision))
+    const native = (revision = 2) => runtime.state.apply('native', { ...response(revision), nativeRefresh: true,
+        location: { ...runtime.state.location, locationRevision: runtime.state.locationRevision } })
+    assert.equal(publish(), true)
+    return { runtime, requests, publish, native, response }
 }
 
 test('invalidating a read page immediately withdraws native read controls and marker', () => {
@@ -166,3 +245,262 @@ test('a current page and independent completion action retain their presentation
     assert.equal(f.packets.at(-1).stateID, 'completion-action:finish')
     assert.equal(f.packets.at(-1).isBusy, true)
 })
+
+async function successfulMarkAwaitingAdvance(f) {
+    f.seedPage('current-page')
+    f.reader.nativeMarkReadRequestCoordinator.request = async request => {
+        f.requests.push(request)
+        f.nextMarkSequence = (f.nextMarkSequence ?? 1) + 1
+        return { success: true, stale: false, presentationAllowed: true,
+            nativeResult: { stateSnapshotSequence: f.nextMarkSequence }, context: request.context }
+    }
+    const operation = f.reader.markVisiblePageAsRead()
+    // Let the VM's async command cross its Promise realm and reach the held
+    // timer without firing that timer or introducing a wall-clock delay.
+    await new Promise(resolve => setImmediate(resolve))
+    const advance = [...f.timers.values()].filter(timer => timer.delay === 430).at(-1)
+    assert.ok(advance, 'Successful Mark must reach its existing delayed advance')
+    return { operation, advance }
+}
+
+for (const continuation of ['unchanged scope', 'same-scope progress', 'producer retirement']) {
+    test(`successful Mark retains automatic advance after ${continuation}`, async t => {
+        const f = fixture(), book = bookRuntimeFixture(f)
+        t.after(() => book.runtime.close())
+        const event = book.runtime.captureEvent(f.doc)
+        assert.ok(event)
+        const { operation, advance } = await successfulMarkAwaitingAdvance(f)
+        if (continuation === 'same-scope progress') assert.equal(book.native(2), true)
+        if (continuation === 'producer retirement') {
+            f.context.readerArticleProducerOwnerIsCurrent = () => false
+        }
+        assert.equal(book.runtime.isEventCurrent(event), true)
+        advance.callback()
+        assert.equal(await operation, true, 'The durable Mark outcome remains successful')
+        assert.deepEqual(f.moves, ['right'])
+    })
+}
+
+for (const transition of ['account invalidation', 'unavailable chapter scope', 'runtime replacement']) {
+    test(`successful Mark suppresses delayed automatic advance after ${transition}`, async t => {
+        const f = fixture(), book = bookRuntimeFixture(f)
+        t.after(() => book.runtime.close())
+        const event = book.runtime.captureEvent(f.doc)
+        assert.ok(event)
+        const { operation, advance } = await successfulMarkAwaitingAdvance(f)
+        if (transition === 'account invalidation') {
+            assert.equal(book.runtime.accountDidChange('2:1'), true)
+        } else if (transition === 'unavailable chapter scope') {
+            assert.equal(book.runtime.state.apply('native', {
+                ...book.response(2), ok: false, nativeRefresh: true,
+                location: { ...book.runtime.state.location,
+                    locationRevision: book.runtime.state.locationRevision },
+            }), false)
+        } else {
+            const replacement = bookRuntimeFixture(f)
+            t.after(() => replacement.runtime.close())
+        }
+        assert.equal(f.reader.bookReadingRuntime.isEventCurrent(event), false)
+        advance.callback()
+        assert.equal(await operation, true, 'Blocked optional navigation must not discard committed success')
+        assert.deepEqual(f.moves, [])
+    })
+}
+
+for (const failure of ['synchronous LTR', 'rejected LTR', 'rejected RTL']) {
+    test(`a ${failure} optional page turn cannot reject an already committed Mark`, async t => {
+        const f = fixture(), book = bookRuntimeFixture(f)
+        t.after(() => book.runtime.close())
+        f.reader.isRTL = failure.endsWith('RTL')
+        const method = f.reader.isRTL ? 'goLeft' : 'goRight'
+        f.reader.view[method] = failure.startsWith('synchronous')
+            ? () => { throw new Error('renderer navigation failed') }
+            : async () => { throw new Error('renderer navigation failed') }
+        const { operation, advance } = await successfulMarkAwaitingAdvance(f)
+        advance.callback()
+        assert.equal(await operation, true)
+        assert.equal(f.reader.lastNativeMarkReadRequestOutcome, 'committed')
+        assert.equal(f.requests.length, 1)
+    })
+}
+
+for (const restored of [false, true]) {
+    test(`an older Mark cannot automatically advance after pagehide${restored ? ' and pageshow' : ''}`, async t => {
+        const f = fixture(), book = bookRuntimeFixture(f)
+        t.after(() => book.runtime.close())
+        const event = book.runtime.captureEvent(f.doc)
+        const { operation, advance } = await successfulMarkAwaitingAdvance(f)
+        f.lifecycle.dispatchEvent(new Event('pagehide'))
+        f.context.readerArticleProducerOwnerIsCurrent = () => false
+        if (restored) f.lifecycle.dispatchEvent(new Event('pageshow'))
+        assert.equal(book.runtime.isEventCurrent(event), true,
+            'A retained same-account chapter may keep its book scope despite the navigation lifetime changing')
+        advance.callback()
+        assert.equal(await operation, true)
+        assert.equal(f.reader.lastNativeMarkReadRequestOutcome, 'committed')
+        assert.deepEqual(f.moves, [])
+    })
+}
+
+test('a fresh Mark after restoration can advance in its own page lifetime', async t => {
+    const f = fixture(), book = bookRuntimeFixture(f)
+    t.after(() => book.runtime.close())
+    const original = await successfulMarkAwaitingAdvance(f)
+    f.lifecycle.dispatchEvent(new Event('pagehide'))
+    f.lifecycle.dispatchEvent(new Event('pageshow'))
+    original.advance.callback()
+    assert.equal(await original.operation, true)
+    const restored = await successfulMarkAwaitingAdvance(f)
+    restored.advance.callback()
+    assert.equal(await restored.operation, true)
+    assert.deepEqual(f.moves, ['right'])
+    assert.equal(f.requests.length, 2)
+})
+
+function pendingNativeMark(t) {
+    const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+    t.after(() => book.runtime.close())
+    f.seedPage('current-page')
+    const operation = f.reader.markVisiblePageAsRead()
+    // Observe rejection immediately while the test controls delivery/actor
+    // continuations; the original operation still preserves its own result.
+    const completion = operation.then(value => ({ value }), error => ({ error }))
+    assert.equal(f.requests.length, 1)
+    const command = f.requests[0].message
+    const deliver = (extra = {}) => f.reader.nativeMarkReadRequestCoordinator.settle({
+        requestID: command.requestID, sectionId: command.sectionId,
+        manualReadPendingProtocol: 1,
+        manualReadPendingObservationToken: command.manualReadPendingObservationToken,
+        manualReadPendingState: 'finished', success: true,
+        stateSnapshotSequence: 2, ...extra,
+    })
+    const join = async () => {
+        await new Promise(resolve => setImmediate(resolve))
+        const advance = [...f.timers.values()].filter(timer => timer.delay === 430).at(-1)
+        advance?.callback()
+        return await completion
+    }
+    const withdrawScope = () => book.runtime.state.apply('native', {
+        ...book.response(2), ok: false, nativeRefresh: true,
+        location: { ...book.runtime.state.location,
+            locationRevision: book.runtime.state.locationRevision },
+    })
+    return { ...f, book, deliver, join, withdrawScope }
+}
+
+for (const transition of ['account before delivery', 'scope before delivery',
+    'account after delivery', 'scope after delivery', 'page after delivery',
+    'lifetime after delivery', 'reader after delivery']) {
+    test(`native Mark success survives ${transition} without projecting or advancing`, async t => {
+        const f = pendingNativeMark(t)
+        const replace = () => {
+            if (transition.startsWith('account')) f.book.runtime.accountDidChange('2:1')
+            else if (transition.startsWith('scope')) f.withdrawScope()
+            else if (transition.startsWith('page')) f.reader.testInvalidate()
+            else if (transition.startsWith('lifetime')) {
+                f.lifecycle.dispatchEvent(new Event('pagehide'))
+                f.lifecycle.dispatchEvent(new Event('pageshow'))
+            }
+            else f.context.reader = { isClosed: false }
+        }
+        if (transition.includes('before')) replace()
+        assert.equal(f.deliver(), true)
+        if (transition.includes('after')) replace()
+        const result = await f.join()
+        assert.equal(result.error, undefined)
+        assert.equal(result.value, true)
+        assert.deepEqual(Array.from(f.reader.optimisticSentenceIdentifiersRead), [])
+        assert.deepEqual(Array.from(f.reader.articleReadingProgress.sentenceIdentifiersRead), [])
+        assert.deepEqual(f.moves, [])
+        assert.equal(f.requests.length, 1)
+    })
+}
+
+test('a newer accepted native snapshot suppresses old Mark presentation without discarding its success', async t => {
+    const f = pendingNativeMark(t)
+    assert.equal(f.book.runtime.state.noteManualReadSnapshot(3), true)
+    assert.equal(f.deliver(), true)
+    const result = await f.join()
+    assert.equal(result.value, true)
+    assert.equal(result.error, undefined)
+    assert.deepEqual(Array.from(f.reader.optimisticSentenceIdentifiersRead), [])
+    assert.deepEqual(f.moves, [])
+})
+
+test('an authenticated outcome-only native success resolves without Mark projection or automatic advance', async t => {
+    const f = pendingNativeMark(t)
+    assert.equal(f.deliver({ manualReadPendingOutcomeOnly: true,
+        manualReadPendingPresentationAllowed: false }), true)
+    const result = await f.join()
+    assert.equal(result.value, true)
+    assert.equal(result.error, undefined)
+    assert.deepEqual(Array.from(f.reader.optimisticSentenceIdentifiersRead), [])
+    assert.deepEqual(f.moves, [])
+})
+
+test('a projection exception cannot reject a successfully committed native Mark', async t => {
+    const f = pendingNativeMark(t)
+    f.reader.applyBookReadingProgress = () => { throw new Error('projection unavailable') }
+    assert.equal(f.deliver(), true)
+    const result = await f.join()
+    assert.equal(result.value, true)
+    assert.equal(result.error, undefined)
+    assert.equal(f.reader.lastNativeMarkReadRequestOutcome, 'committed')
+    assert.deepEqual(f.moves, [])
+})
+
+test('an authenticated native failure remains false and never projects or advances', async t => {
+    const f = pendingNativeMark(t)
+    assert.equal(f.deliver({ success: false, errorCode: 'authorityUnavailable' }), true)
+    const result = await f.join()
+    assert.equal(result.value, false)
+    assert.equal(result.error, undefined)
+    assert.deepEqual(Array.from(f.reader.optimisticSentenceIdentifiersRead), [])
+    assert.deepEqual(f.moves, [])
+})
+
+test('a native request exception remains an exception before any committed result', async t => {
+    const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+    t.after(() => book.runtime.close())
+    f.seedPage('current-page')
+    f.reader.nativeMarkReadRequestCoordinator.request = async () => { throw new Error('native request unavailable') }
+    await assert.rejects(f.reader.markVisiblePageAsRead(), /native request unavailable/)
+    assert.equal(f.requests.length, 0)
+    assert.deepEqual(Array.from(f.reader.optimisticSentenceIdentifiersRead), [])
+    assert.deepEqual(f.moves, [])
+})
+
+test('a current authenticated native Mark success still projects and advances once', async t => {
+    const f = pendingNativeMark(t)
+    assert.equal(f.deliver(), true)
+    const result = await f.join()
+    assert.equal(result.value, true)
+    assert.equal(result.error, undefined)
+    assert.deepEqual(Array.from(f.reader.optimisticSentenceIdentifiersRead), ['current-page'])
+    assert.deepEqual(Array.from(f.reader.articleReadingProgress.sentenceIdentifiersRead), ['current-page'])
+    assert.deepEqual(f.moves, ['right'])
+    assert.equal(f.requests.length, 1)
+})
+
+for (const succeeded of [false, true]) {
+    test(`Mark All returns the native ${succeeded ? 'success count' : 'failure count'} with outcome-only delivery`, async t => {
+        const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+        t.after(() => book.runtime.close())
+        f.reader.buildMarkAllSectionsAsReadPayload = () => ({
+            stableIdentityVersion: 1, segments: [], sentenceIdentifiers: ['entire-chapter'],
+        })
+        const operation = f.reader.markAllSectionsAsRead()
+        const command = f.requests[0].message
+        assert.equal(f.reader.nativeMarkReadRequestCoordinator.settle({
+            requestID: command.requestID, sectionId: command.sectionId,
+            manualReadPendingProtocol: 1,
+            manualReadPendingObservationToken: command.manualReadPendingObservationToken,
+            manualReadPendingState: 'finished', success: succeeded,
+            stateSnapshotSequence: 2, manualReadPendingOutcomeOnly: true,
+            manualReadPendingPresentationAllowed: false,
+        }), true)
+        assert.equal(await operation, succeeded ? 1 : 0)
+        assert.deepEqual(Array.from(f.reader.optimisticSentenceIdentifiersRead), [])
+        assert.deepEqual(f.moves, [])
+    })
+}
