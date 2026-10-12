@@ -6697,6 +6697,10 @@ class Reader {
             this.visiblePageSegmentSnapshot = null;
             this.lastPageTrackingStateSignature = null;
             this.lastPageTrackingStateSnapshot = null;
+            // These subjects belong to the invalidated visible page. Keeping
+            // them would let a tap bypass demand hydration or a late command
+            // completion repaint the previous page as the current one.
+            this.pageTrackingStates = [];
             this.pageTrackingStatesGeneration = -1;
             this.hasSettledInitialPaginatorLayout = false;
             if (this.initialPaginatorSettleHandle) {
@@ -6752,6 +6756,9 @@ class Reader {
         this.nativeLookupHitTargetRefreshGeneration += 1;
         if (!shouldResetNativeLookupTargets && this.hasCompletedLastPositionLoadAttempt === true) {
             this.#scheduleNativeLookupHitTargetRefreshSettle(`invalidation:${sourceReason}`);
+        }
+        if (shouldResetVisibleGeometry) {
+            this.#renderPageTrackingButtons(`invalidation:${sourceReason}`);
         }
     }
     async #syncPageTrackingButtons(reason = 'unspecified', explicitDoc = null, retryCount = 0) {
@@ -7443,6 +7450,7 @@ class Reader {
         if (this.bookReadingRuntime && !bookEvent) return reject('staleChapterPass');
         const lifecycleGeneration = this.#lifecycleGeneration;
         const renderer = this.view?.renderer;
+        const visiblePageCollectionGeneration = this.visiblePageCollectionGeneration;
         const stateID = 'visible-screen';
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID)
             ?? await this.#ensureVisiblePageTrackingState(`native-demand:${source}`);
@@ -7450,6 +7458,7 @@ class Reader {
             return reject('visiblePageUnavailable');
         }
         if (!this.#isRendererLifecycleCurrent(lifecycleGeneration, renderer)
+            || visiblePageCollectionGeneration !== this.visiblePageCollectionGeneration
             || diagnosticGeneration !== this.#markReadDiagnosticGeneration
             || globalThis.reader !== this) return false;
         if (!readerArticleProducerOwnerIsCurrent(producerOwner)) return reject('producerUnavailable');
