@@ -61,7 +61,7 @@ private let ebookTestProcessingVariant = EbookProcessingVariant(
 )
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
-    private func schema13Payload(tuple: [Any], version: Int = 13) throws -> EbookProcessedSectionPayload {
+    private func currentSchemaPayload(tuple: [Any], version: Int = ReaderCompactSegmentSidecarSchema.currentVersion) throws -> EbookProcessedSectionPayload {
         let html = Data("<m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">本文</m-m></m-s></m-c>".utf8)
         let sidecar = try JSONSerialization.data(withJSONObject: [
             "v": version,
@@ -77,14 +77,14 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         ).complete(documentHTML: html, segmentSidecar: sidecar)
     }
 
-    private var schema13BaseTuple: [Any] {
+    private var currentSchemaBaseTuple: [Any] {
         ["!m", 0, NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), 0, 0, 0]
     }
 
-    func testSchema13SidecarAcceptsScopeTextAndOptionalResolution() throws {
+    func testCurrentSchemaSidecarAcceptsScopeTextAndOptionalResolution() throws {
         let suffixes: [[Any]] = [[NSNull(), 1], [0, 1], [0, NSNull()], [NSNull(), NSNull()]]
         for suffix in suffixes {
-            let payload = try schema13Payload(tuple: schema13BaseTuple + suffix)
+            let payload = try currentSchemaPayload(tuple: currentSchemaBaseTuple + suffix)
             XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
             let encoded = encodedEbookProcessedSectionCacheValue(payload)
             let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(encoded))
@@ -93,10 +93,10 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         }
     }
 
-    func testSchema13SidecarAcceptsShorterTuplesWithoutScopeText() throws {
+    func testCurrentSchemaSidecarAcceptsShorterTuplesWithoutScopeText() throws {
         let suffixes: [[Any]] = [[], [0]]
         for suffix in suffixes {
-            let payload = try schema13Payload(tuple: schema13BaseTuple + suffix)
+            let payload = try currentSchemaPayload(tuple: currentSchemaBaseTuple + suffix)
             XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
             let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
                 encodedEbookProcessedSectionCacheValue(payload)))
@@ -104,10 +104,10 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         }
     }
 
-    func testSchema13SidecarRejectsInvalidScopeTextReferences() throws {
+    func testCurrentSchemaSidecarRejectsInvalidScopeTextReferences() throws {
         let references: [Any] = [true, 0.5, -1, "0", 2, [String: Any]()]
         for reference in references {
-            let payload = try schema13Payload(tuple: schema13BaseTuple + [NSNull(), reference])
+            let payload = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull(), reference])
             XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
             let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
                 encodedEbookProcessedSectionCacheValue(payload)))
@@ -115,22 +115,38 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         }
     }
 
-    func testSchema13SidecarPreservesResolutionBoundsAndTupleLength() throws {
+    func testCurrentSchemaSidecarPreservesResolutionBoundsAndTupleLength() throws {
         let references: [Any] = [true, 0.5, -1, "0", 1]
         for reference in references {
-            let payload = try schema13Payload(tuple: schema13BaseTuple + [reference, 1])
+            let payload = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [reference, 1])
             XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
         }
-        let nullResolutionOnly = try schema13Payload(tuple: schema13BaseTuple + [NSNull()])
+        let nullResolutionOnly = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull()])
         XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(nullResolutionOnly))
-        let extraField = try schema13Payload(tuple: schema13BaseTuple + [NSNull(), 1, NSNull()])
+        let extraField = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull(), 1, 1, NSNull()])
         XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(extraField))
+    }
+
+    func testCurrentSidecarPreservesCompleteParagraphTextAndRejectsInvalidReferences() throws {
+        let payload = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull(), 0, 1])
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+        let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
+            encodedEbookProcessedSectionCacheValue(payload)))
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(restored))
+        XCTAssertEqual(restored.segmentSidecar, payload.segmentSidecar)
+        let invalidReferences: [Any] = [true, 0.5, -1, "0", 2]
+        for reference in invalidReferences {
+            let invalid = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull(), 0, reference])
+            XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(invalid))
+        }
+        let prior = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull(), 1], version: 13)
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(prior))
     }
 
     func testPriorSchema12SidecarCannotClaimCurrentProcessingAuthority() throws {
         let suffixes: [[Any]] = [[], [NSNull(), 1]]
         for suffix in suffixes {
-            let payload = try schema13Payload(tuple: schema13BaseTuple + suffix, version: 12)
+            let payload = try currentSchemaPayload(tuple: currentSchemaBaseTuple + suffix, version: 12)
             XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
             let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
                 encodedEbookProcessedSectionCacheValue(payload)))
