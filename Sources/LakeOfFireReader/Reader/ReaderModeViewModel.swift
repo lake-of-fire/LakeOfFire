@@ -1447,7 +1447,7 @@ public class ReaderModeViewModel: ObservableObject {
     public var readerModeWillReplaceFrameContent: (@MainActor (
         WebViewScriptCaller, WebViewScriptCaller.JavaScriptBindingToken,
         WKFrameInfo, URL, URL
-    ) async -> (@MainActor () -> Bool)?)?
+    ) async -> ReaderFrameContentReplacementPreparation?)?
     
     @Published public var isReaderMode = false
     public let loadingState = ReaderModeLoadingState()
@@ -3103,6 +3103,7 @@ public class ReaderModeViewModel: ObservableObject {
                         ? (transformedStyleTextForFrameInjection ?? "")
                         : ""
                     var requiredReplacementBinding: WebViewScriptCaller.JavaScriptBindingToken?
+                    var frameReplacementPreparation: ReaderFrameContentReplacementPreparation?
                     if let frameReplacementHook {
                         guard let frameReplacementBinding,
                               scriptCaller.currentJavaScriptBindingToken == frameReplacementBinding,
@@ -3111,7 +3112,7 @@ public class ReaderModeViewModel: ObservableObject {
                                 ifOwnedBy: renderGeneration, readerContent: readerContent)
                             return
                         }
-                        let commitReplacement = await frameReplacementHook(
+                        let preparation = await frameReplacementHook(
                             scriptCaller, frameReplacementBinding, frameInfo, url, frameURL
                         )
                         // The handoff can suspend into WebKit or withdraw this
@@ -3123,14 +3124,17 @@ public class ReaderModeViewModel: ObservableObject {
                         else {
                             cancelReaderModeLoad(for: requestedURL,
                                 ifOwnedBy: renderGeneration, readerContent: readerContent)
+                            await preparation?.discard()
                             return
                         }
-                        guard let commitReplacement, commitReplacement() else {
+                        guard let preparation, preparation.commit() else {
                             cancelReaderModeLoad(for: requestedURL,
                                 ifOwnedBy: renderGeneration, readerContent: readerContent)
+                            await preparation?.discard()
                             return
                         }
                         requiredReplacementBinding = frameReplacementBinding
+                        frameReplacementPreparation = preparation
                     }
                     let replacementScript = """
                         var root = document.body
@@ -3179,7 +3183,7 @@ public class ReaderModeViewModel: ObservableObject {
                             }
                         }
                         """
-                    let replacementArguments: [String: any Sendable] = [
+                    var replacementArguments: [String: any Sendable] = [
                         "renderToSelector": renderToSelector ?? "",
                         "html": transformedContent,
                         "css": transformedStyleText,
@@ -3187,9 +3191,32 @@ public class ReaderModeViewModel: ObservableObject {
                         "readerModeScript": Readability.shared.scripts,
                     ]
                     if let requiredReplacementBinding {
-                        _ = try await scriptCaller.evaluateJavaScript(
-                            replacementScript, arguments: replacementArguments,
-                            in: frameInfo, requiring: requiredReplacementBinding)
+                        guard let preparation = frameReplacementPreparation,
+                              let guardedScript = preparation.guardedScript(replacementScript) else {
+                            cancelReaderModeLoad(for: requestedURL,
+                                ifOwnedBy: renderGeneration, readerContent: readerContent)
+                            await frameReplacementPreparation?.discard()
+                            return
+                        }
+                        replacementArguments["readerFrameReplacementToken"] = preparation.token
+                        let replaced: Bool
+                        do {
+                            replaced = try await scriptCaller.evaluateJavaScript(
+                                guardedScript, arguments: replacementArguments,
+                                in: frameInfo, duplicateInMultiTargetFrames: false,
+                                requiring: requiredReplacementBinding) as? Bool == true
+                        } catch {
+                            cancelReaderModeLoad(for: requestedURL,
+                                ifOwnedBy: renderGeneration, readerContent: readerContent)
+                            await preparation.discard()
+                            throw error
+                        }
+                        guard replaced else {
+                            cancelReaderModeLoad(for: requestedURL,
+                                ifOwnedBy: renderGeneration, readerContent: readerContent)
+                            await preparation.discard()
+                            return
+                        }
                     } else {
                         _ = try await scriptCaller.evaluateJavaScript(
                             replacementScript, arguments: replacementArguments, in: frameInfo)
