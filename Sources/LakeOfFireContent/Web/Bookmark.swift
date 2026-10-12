@@ -226,12 +226,13 @@ public extension Bookmark {
         realmConfiguration: Realm.Configuration
     ) async throws -> Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        let pk = Bookmark.makePrimaryKey(url: url)
-        let shouldStripClipboardIndicator = isFromClipboard || (url?.isSnippetURL ?? false)
-        let sanitizedTitle = title.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
-        if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
-            //            await realm.asyncRefresh()
-            try realm.writeIfNeeded {
+        return try await realm.asyncWritePreservingOwnership {
+            try Task.checkCancellation()
+            let pk = Bookmark.makePrimaryKey(url: url, html: html)
+            let shouldStripClipboardIndicator = isFromClipboard || (url?.isSnippetURL ?? false)
+            let sanitizedTitle = title.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
+            if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
+                //            await realm.asyncRefresh()
                 bookmark.title = sanitizedTitle
                 bookmark.imageUrl = imageUrl
                 bookmark.sourceIconURL = sourceIconURL
@@ -267,56 +268,55 @@ public extension Bookmark {
                 bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
                 bookmark.isDeleted = false
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
-            }
-            return bookmark
-        } else {
-            let bookmark = Bookmark()
-            if let html = html {
-                logReaderParaBookmarkPayload(
-                    stage: "bookmark.persist.create.html",
-                    url: url,
-                    html: html,
-                    content: html.readerContentData
-                )
-                bookmark.html = html
-            } else if let content = content {
-                logReaderParaBookmarkPayload(
-                    stage: "bookmark.persist.create.content",
-                    url: url,
-                    html: Bookmark.contentToHTML(content: content),
-                    content: content
-                )
-                bookmark.content = content
-            }
-            if let url = url {
-                bookmark.url = url
-                bookmark.updateCompoundKey()
+                return bookmark
             } else {
-                bookmark.updateCompoundKey()
-                bookmark.url = ReaderContentLoader.snippetURL(key: bookmark.compoundKey) ?? bookmark.url
-            }
-            bookmark.title = sanitizedTitle
-            bookmark.imageUrl = imageUrl
-            bookmark.sourceIconURL = sourceIconURL
-            bookmark.publicationDate = publicationDate
-            bookmark.isFromClipboard = isFromClipboard
-            bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
-            bookmark.isReaderModeByDefault = isReaderModeByDefault
-            bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
-            bookmark.rssContainsFullContent = rssContainsFullContent
-            bookmark.isReaderModeAvailable = isReaderModeAvailable
-            bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
-            bookmark.readerContentKind = readerContentKind
-            bookmark.feedEntryCollectionKey = feedEntryCollectionKey
-            bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
-            bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
-            bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
-            //            await realm.asyncRefresh()
-            try realm.writeIfNeeded {
+                let bookmark = Bookmark()
+                if let html = html {
+                    logReaderParaBookmarkPayload(
+                        stage: "bookmark.persist.create.html",
+                        url: url,
+                        html: html,
+                        content: html.readerContentData
+                    )
+                    bookmark.html = html
+                } else if let content = content {
+                    logReaderParaBookmarkPayload(
+                        stage: "bookmark.persist.create.content",
+                        url: url,
+                        html: Bookmark.contentToHTML(content: content),
+                        content: content
+                    )
+                    bookmark.content = content
+                }
+                if let url = url {
+                    bookmark.url = url
+                    bookmark.updateCompoundKey()
+                } else {
+                    bookmark.updateCompoundKey()
+                    bookmark.url = ReaderContentLoader.snippetURL(key: bookmark.compoundKey) ?? bookmark.url
+                }
+                bookmark.title = sanitizedTitle
+                bookmark.imageUrl = imageUrl
+                bookmark.sourceIconURL = sourceIconURL
+                bookmark.publicationDate = publicationDate
+                bookmark.isFromClipboard = isFromClipboard
+                bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
+                bookmark.isReaderModeByDefault = isReaderModeByDefault
+                bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
+                bookmark.rssContainsFullContent = rssContainsFullContent
+                bookmark.isReaderModeAvailable = isReaderModeAvailable
+                bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
+                bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
+                bookmark.readerContentKind = readerContentKind
+                bookmark.feedEntryCollectionKey = feedEntryCollectionKey
+                bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
+                bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
+                bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
+                //            await realm.asyncRefresh()
                 realm.add(bookmark, update: .modified)
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
+                return bookmark
             }
-            return bookmark
         }
     }
     

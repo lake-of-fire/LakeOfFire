@@ -564,6 +564,8 @@ public extension ReaderContentProtocol {
 
     @MainActor
     func addBookmark(realmConfiguration: Realm.Configuration) async throws {
+        guard !isInvalidated else { throw CancellationError() }
+        try Task.checkCancellation()
         let compoundKey = compoundKey
         let url = url
         let title = title
@@ -680,19 +682,21 @@ public extension ReaderContentProtocol {
     /// Returns whether a matching bookmark was found and deleted.
     @MainActor
     func removeBookmark(realmConfiguration: Realm.Configuration) async throws -> Bool {
+        guard !isInvalidated else { throw CancellationError() }
         let url = url
         let html = html
         return try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted else {
-                return false
-            }
-//            await realm.asyncRefresh()
-            try realm.writeIfNeeded {
+            return try await realm.asyncWritePreservingOwnership {
+                try Task.checkCancellation()
+                guard let bookmark = realm.object(
+                    ofType: Bookmark.self,
+                    forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)
+                ), !bookmark.isDeleted else { return false }
                 bookmark.isDeleted = true
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
+                return true
             }
-            return true
         }()
     }
 
