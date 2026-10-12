@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { BookReadingStateController } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-state.js'
 
-import {
+import * as nativeMarkReadRuntime from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
+const {
     createNativeMarkReadRequestCoordinator,
     nativeMarkReadCommandMessage,
-} from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
+    presentNativeMarkReadPending,
+    refreshNativeMarkReadBookStateForRecovery,
+} = nativeMarkReadRuntime
 
 test('carries a native tap account presentation stamp into the immutable command', () => {
     const message = nativeMarkReadCommandMessage({
@@ -79,7 +83,7 @@ const terminalFor = (message, result = {}) => ({
     ...result,
 })
 
-const harness = ({ current = true, postThrows = false } = {}) => {
+const harness = ({ current = true, postThrows = false, lifecycleTarget, onRecovery, onTimerCancelled } = {}) => {
     const posted = []
     const controls = []
     const pendingStates = []
@@ -95,7 +99,11 @@ const harness = ({ current = true, postThrows = false } = {}) => {
         onPending: state => pendingStates.push({
             requestID: state.requestID,
             phase: state.phase,
+            recoveryOnly: state.recoveryOnly,
+            cancel: state.cancel,
         }),
+        lifecycleTarget,
+        onRecovery,
         isOwnerCurrent: () => current,
         makeRequestID: () => 'request',
         scheduleTimeout: (callback, delay) => {
@@ -112,7 +120,9 @@ const harness = ({ current = true, postThrows = false } = {}) => {
         },
         cancelTimeout: id => {
             timeoutDelays.delete(id)
-            return timeouts.delete(id)
+            const removed = timeouts.delete(id)
+            onTimerCancelled?.()
+            return removed
         },
     })
     return {
@@ -190,6 +200,7 @@ test('publishes success only after the exact pending-protocol native reply', asy
         requestID: 'request-1',
         context: { stateID: 'visible-screen' },
         success: true,
+        outcomeKnown: true,
         stale: false,
         presentationAllowed: true,
         errorCode: null,
@@ -516,4 +527,279 @@ test('pause suppresses observation and resume observes the same request identity
 
     h.coordinator.settle(terminalFor(h.posted[0]))
     assert.equal((await completion).success, true)
+})
+
+const unavailableFor = message => ({
+    requestID: message.requestID,
+    manualReadPendingProtocol: 1,
+    manualReadPendingObservationToken: message.manualReadPendingObservationToken,
+    manualReadPendingState: 'unavailable',
+    manualReadPendingHistoryRecovery: true,
+    manualReadPendingOutcomeOnly: true,
+    manualReadPendingPresentationAllowed: false,
+    errorCode: 'outcomeUnavailable',
+})
+
+test('restored viewer observes history and cannot send an old Cancel or replay a command', async () => {
+    const listeners = new Map()
+    const h = harness({ lifecycleTarget: {
+        addEventListener: (name, callback) => listeners.set(name, callback),
+        removeEventListener: name => listeners.delete(name),
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {
+        topWindowURL: 'file:///book.epub', documentStartedAtMs: 42,
+    } })
+    const staleTimer = [...h.timeouts.values()][0]
+    listeners.get('pagehide')()
+    assert.equal(h.pendingStates.at(-1).recoveryOnly, true)
+    assert.equal(h.coordinator.cancel(h.posted[0].requestID), false)
+    staleTimer()
+    assert.equal(h.controls.length, 0)
+    listeners.get('pageshow')()
+    ;[...h.timeouts.values()][0]()
+    assert.equal(h.controls[0].manualReadPendingOperation, 'status')
+    assert.equal(h.controls[0].manualReadPendingHistoryRecovery, true)
+    assert.equal(h.controls[0].manualReadPendingObservationToken,
+        h.posted[0].manualReadPendingObservationToken)
+    assert.equal(h.posted.length, 1)
+    assert.equal(h.coordinator.settle(unavailableFor(h.posted[0])), true)
+    const outcome = await completion
+    assert.equal(outcome.outcomeKnown, false)
+    assert.equal(outcome.success, undefined)
+    assert.equal(outcome.presentationAllowed, false)
+    assert.equal(h.coordinator.pendingCount, 0)
+})
+
+test('authenticated unavailable settles exact history truth without inventing failure', async () => {
+    const h = harness()
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const unavailable = unavailableFor(h.posted[0])
+    for (const invalid of [
+        { ...unavailable, manualReadPendingObservationToken: 'foreign' },
+        { ...unavailable, manualReadPendingHistoryRecovery: false },
+        { ...unavailable, manualReadPendingOutcomeOnly: false },
+        { ...unavailable, manualReadPendingPresentationAllowed: true },
+        { ...unavailable, errorCode: 'nativeCommitFailed' },
+        { ...unavailable, success: false },
+    ]) {
+        assert.equal(h.coordinator.settle(invalid), false)
+        assert.equal(h.coordinator.pendingCount, 1)
+    }
+    assert.equal(h.coordinator.settle(unavailable), true)
+    assert.equal((await completion).outcomeKnown, false)
+    assert.equal(h.coordinator.settle(unavailable), false)
+})
+
+test('native retired history success preserves outcome while declining old presentation', async () => {
+    const h = harness()
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0], {
+        manualReadPendingHistoryRecovery: true,
+        manualReadPendingOutcomeOnly: true,
+        manualReadPendingPresentationAllowed: false,
+    })), true)
+    const outcome = await completion
+    assert.equal(outcome.outcomeKnown, true)
+    assert.equal(outcome.success, true)
+    assert.equal(outcome.presentationAllowed, false)
+})
+
+test('ordinary unknown keeps observing ordinary admission rather than sealing history', async () => {
+    const h = harness()
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    assert.equal(h.coordinator.settle({
+        ...terminalFor(h.posted[0]), manualReadPendingState: 'unknown',
+    }), false)
+    ;[...h.timeouts.values()][0]()
+    assert.equal(h.controls.at(-1).manualReadPendingHistoryRecovery, undefined)
+    assert.equal(h.coordinator.cancel(h.posted[0].requestID), true)
+    h.coordinator.settle(terminalFor(h.posted[0], { success: false }))
+    await completion
+})
+
+test('restored native pending notice visibly withdraws Cancel until exact outcome', () => {
+    const previous = globalThis.document
+    const element = () => ({
+        children: [], attributes: {}, listeners: {},
+        append(...children) { this.children.push(...children) },
+        setAttribute(name, value) { this.attributes[name] = value },
+        addEventListener(name, callback) { this.listeners[name] = callback },
+        remove() { this.removed = true },
+        get firstElementChild() { return this.children[0] },
+        get lastElementChild() { return this.children.at(-1) },
+    })
+    const body = element()
+    globalThis.document = { body, createElement: element }
+    try {
+        const state = { requestID: 'history-notice', phase: 'pending', cancel() {} }
+        presentNativeMarkReadPending(state)
+        const notice = body.children[0]
+        presentNativeMarkReadPending({ ...state, recoveryOnly: true })
+        assert.equal(notice.lastElementChild.hidden, true)
+        assert.equal(notice.lastElementChild.disabled, true)
+        assert.match(notice.firstElementChild.textContent, /Recovering/)
+        presentNativeMarkReadPending({ ...state, phase: 'finished' })
+        assert.equal(notice.removed, true)
+    } finally { globalThis.document = previous }
+})
+
+test('restored outcome joins while existing book state waits for a matching fresh context', async () => {
+    const messages = []
+    let sequence = 0
+    const state = new BookReadingStateController({
+        postMessage: message => messages.push(message),
+        documentStartedAtMs: 42, topWindowURL: 'file:///book.epub',
+        makeRequestID: () => 'state-' + ++sequence,
+    })
+    const scope = { articleProgressID: 'book', articleEpochID: 'E1',
+        chapterKey: 'a'.repeat(64), chapterEpochID: null }
+    const response = revision => ({ ok: true,
+        state: { revision, articleProgressID: 'book', articleEpochID: 'E1', scope,
+            finished: false, bookReadPresence: 'present', chapterReadPresence: 'present',
+            readSegmentIdentifiers: ['segment'], sentenceIdentifiersRead: [] },
+        context: { contextID: 'context-' + revision, articleProgressID: 'book',
+            articleEpochID: 'E1', scope, sectionLocation: 'chapter.xhtml', isEndPage: false },
+    })
+    state.relocate({ sectionURL: 'chapter.xhtml' })
+    const previous = messages[0]
+    assert.equal(state.apply(previous.requestID, response(1)), true)
+    const h = harness({ onRecovery: ({ isCurrent }) =>
+        refreshNativeMarkReadBookStateForRecovery({ state }, scope, isCurrent) })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    h.coordinator.pause()
+    h.coordinator.resume()
+    assert.equal(h.coordinator.settle(unavailableFor(h.posted[0])), true)
+    assert.equal((await completion).outcomeKnown, false)
+    assert.equal(state.ready, false)
+    assert.equal(state.captureScope('chapter.xhtml'), null)
+    assert.equal(messages.length, 2)
+    assert.equal(state.apply(previous.requestID, response(2)), false)
+    assert.equal(state.ready, false)
+    assert.equal(state.apply(messages[1].requestID, response(2)), true)
+    assert.equal(state.ready, true)
+})
+
+test('history recovery callback failure cannot erase joined native success', async () => {
+    for (const error of [new Error('projection failed'), Object.create(null)]) {
+        const h = harness({ onRecovery: () => { throw error } })
+        const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+        h.coordinator.pause()
+        h.coordinator.resume()
+        assert.equal(h.coordinator.settle(terminalFor(h.posted[0], {
+            manualReadPendingHistoryRecovery: true,
+            manualReadPendingOutcomeOnly: true,
+            manualReadPendingPresentationAllowed: false,
+        })), true)
+        assert.equal((await completion).success, true)
+        assert.equal(h.coordinator.pendingCount, 0)
+        assert.equal(h.pendingStates.at(-1).phase, 'finished')
+    }
+})
+
+test('recovery callback can admit a successor without lending it the old outcome', async () => {
+    let successor
+    const h = harness({ onRecovery: () => {
+        successor ??= h.coordinator.request({ sectionID: 'section-a', message: { edition: 2 } })
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: { edition: 1 } })
+    const old = h.posted[0]
+    const retainedTimer = [...h.timeouts.values()][0]
+    h.coordinator.pause()
+    h.coordinator.resume()
+    assert.equal(h.coordinator.settle(terminalFor(old, {
+        manualReadPendingHistoryRecovery: true,
+        manualReadPendingOutcomeOnly: true,
+        manualReadPendingPresentationAllowed: false,
+    })), true)
+    assert.equal((await completion).success, true)
+    assert.equal(h.coordinator.pendingCount, 1)
+    assert.equal(h.posted.length, 2)
+    retainedTimer()
+    assert.equal(h.controls.length, 0)
+    assert.equal(h.coordinator.cancel(old.requestID), false)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[1])), true)
+    assert.equal((await successor).success, true)
+    assert.equal(h.coordinator.pendingCount, 0)
+})
+
+test('pause cleanup cannot resurrect a notice after terminal reentry', async () => {
+    const h = harness({ onTimerCancelled: () => {
+        h.coordinator.settle(terminalFor(h.posted[0]))
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    h.coordinator.pause()
+    assert.equal((await completion).success, true)
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.pendingStates.at(-1).phase, 'finished')
+})
+
+test('pause cleanup retains a timer installed by reentrant resume', async () => {
+    let resumed = false
+    const h = harness({ onTimerCancelled: () => {
+        if (!resumed) { resumed = true; h.coordinator.resume() }
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    h.coordinator.pause()
+    assert.equal(h.timeouts.size, 1)
+    h.coordinator.pause()
+    assert.equal(h.timeouts.size, 0)
+    h.coordinator.settle(terminalFor(h.posted[0]))
+    await completion
+})
+
+test('recovery defers to an ordinary successor and suppresses its old optional paint', async () => {
+    let recoveries = 0
+    const h = harness({ onRecovery: () => { recoveries++ } })
+    const original = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const old = h.posted[0]
+    h.coordinator.pause()
+    h.coordinator.resume()
+    const successor = h.coordinator.request({ sectionID: 'section-b', message: {} })
+    assert.equal(h.coordinator.settle(unavailableFor(old)), true)
+    assert.equal((await original).outcomeKnown, false)
+    assert.equal(recoveries, 0)
+    assert.equal(h.coordinator.pendingCount, 1)
+    assert.equal(h.controls.length, 0, 'Recovery must not send Cancel to a newer command')
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[1])), true)
+    const outcome = await successor
+    assert.equal(outcome.success, true)
+    assert.equal(outcome.presentationAllowed, false)
+    assert.equal(recoveries, 1)
+    assert.equal(h.coordinator.pendingCount, 0)
+})
+
+test('history refresh distinguishes accepted end-page context from a pending context', () => {
+    const messages = []
+    let sequence = 0
+    const state = new BookReadingStateController({
+        postMessage: message => messages.push(message), documentStartedAtMs: 42,
+        topWindowURL: 'file:///book.epub', makeRequestID: () => 'state-' + ++sequence,
+    })
+    state.relocate({ isEndPage: true })
+    assert.equal(state.apply(messages[0].requestID, { ok: true,
+        state: { revision: 1, articleProgressID: 'book', articleEpochID: 'E1', scope: null,
+            finished: false, bookReadPresence: 'present', chapterReadPresence: 'empty',
+            readSegmentIdentifiers: [], sentenceIdentifiersRead: [] },
+        context: { contextID: 'end-page', articleProgressID: 'book', articleEpochID: 'E1',
+            scope: null, sectionLocation: null, isEndPage: true },
+    }), true)
+    const chapterScope = { articleProgressID: 'book', articleEpochID: 'E1',
+        chapterKey: 'a'.repeat(64), chapterEpochID: null }
+    assert.equal(refreshNativeMarkReadBookStateForRecovery({ state }, chapterScope), false)
+    assert.equal(state.ready, true)
+    assert.equal(messages.length, 1)
+    state.relocate(state.location, { replaced: true })
+    assert.equal(state.context, null)
+    assert.equal(refreshNativeMarkReadBookStateForRecovery({ state }, chapterScope), true)
+    assert.equal(state.ready, false)
+    assert.equal(messages.length, 3)
+})
+
+test('throwing terminal timer cleanup cannot strand received native truth', async () => {
+    const h = harness({ onTimerCancelled: () => { throw new Error('cleanup failed') } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.pendingStates.at(-1).phase, 'finished')
 })
