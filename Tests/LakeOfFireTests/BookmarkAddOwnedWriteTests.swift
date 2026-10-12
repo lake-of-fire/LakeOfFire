@@ -64,6 +64,37 @@ final class BookmarkAddOwnedWriteTests: XCTestCase {
         XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 1)
     }
 
+    func testRepeatedHTMLSnippetAddPreservesExistingCreationIdentity() async throws {
+        try await verifyHTMLIdentity(url: nil)
+    }
+
+    func testRepeatedAboutURLAddUsesHTMLIdentityConsistently() async throws {
+        try await verifyHTMLIdentity(url: URL(string: "about:blank")!)
+    }
+
+    private func verifyHTMLIdentity(url: URL?) async throws {
+        let (configuration, realm) = try await makeRealm()
+        let html = "<p>A stable snippet</p>"
+        func save() async throws -> Bookmark {
+            try await Bookmark.add(
+                url: url, title: "Snippet", html: html,
+                isFromClipboard: true, rssContainsFullContent: false,
+                isReaderModeByDefault: true, isReaderModeAvailable: true,
+                realmConfiguration: configuration
+            )
+        }
+        let first = try await save()
+        let expectedKey = try XCTUnwrap(Bookmark.makePrimaryKey(url: url, html: html))
+        XCTAssertEqual(first.compoundKey, expectedKey)
+        let originalCreation = Date(timeIntervalSinceReferenceDate: 123)
+        try realm.write { first.createdAt = originalCreation }
+        let second = try await save()
+        XCTAssertEqual(second.compoundKey, expectedKey)
+        XCTAssertEqual(second.createdAt, originalCreation,
+                       "An existing HTML-identified row must take the update path")
+        XCTAssertEqual(realm.objects(Bookmark.self).count, 1)
+    }
+
     private func add(configuration: Realm.Configuration) async throws -> Bookmark {
         try await Bookmark.add(
             url: URL(string: "https://example.com/owned-add")!,

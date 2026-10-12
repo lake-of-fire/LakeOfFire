@@ -228,7 +228,7 @@ public extension Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         return try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
-            let pk = Bookmark.makePrimaryKey(url: url)
+            let pk = Bookmark.makePrimaryKey(url: url, html: html)
             let shouldStripClipboardIndicator = isFromClipboard || (url?.isSnippetURL ?? false)
             let sanitizedTitle = title.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
             if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
