@@ -661,3 +661,4 @@ for (const succeeded of [false, true]) {
         assert.deepEqual(f.moves, [])
     })
 }
+

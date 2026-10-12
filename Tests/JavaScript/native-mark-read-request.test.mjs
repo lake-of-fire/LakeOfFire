@@ -904,3 +904,5 @@ test('pause suppresses observation and resume observes the same request identity
     assert.equal((await completion).success, true)
     h.coordinator.acknowledgeHistoryReadingStatus({ requestID, observationToken: token })
 })
+
+
