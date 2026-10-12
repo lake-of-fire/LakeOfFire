@@ -94,6 +94,18 @@ test('missing post-commit projection is retryable without repeating the reset',a
     assert.deepEqual(f.moves,[{index:0,anchor:0,bookAction:true}]);
     f.runtime.close();
 });
+test('generic false at the requested destination cannot complete a committed restart',async()=>{
+    const f=fixture();
+    try {
+        assert.equal(f.publish(1,'E2'),true);
+        f.renderer.goTo=async()=>false;
+        const target={accountPresentation:'0:1',action:'startBookOver',articleProgressID:'book',articleEpochID:'E2',
+            locationRevision:f.runtime.state.locationRevision};
+        let completions=0;
+        assert.deepEqual(await f.runtime.navigate(target,{onCompleted:()=>{completions++;}}),{status:'failed'});
+        assert.equal(completions,0);
+    } finally { f.runtime.close(); }
+});
 test('a moved or replaced reader is superseded rather than navigated again',async()=>{
     const f=fixture();f.publish(1);
     const target={accountPresentation:'0:1',action:'startBookOver',articleProgressID:'book',articleEpochID:'E1',

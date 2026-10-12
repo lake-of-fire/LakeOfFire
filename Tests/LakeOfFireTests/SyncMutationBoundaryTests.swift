@@ -1,6 +1,7 @@
 import BigSyncKit
+import Combine
 import RealmSwift
-import RealmSwiftGaps
+@testable import RealmSwiftGaps
 import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
@@ -298,6 +299,333 @@ final class SyncMutationBoundaryTests: XCTestCase {
     }
 
     @MainActor
+    func testOverlappingBookmarkTogglesFromUnsavedStateLeaveJournaledTombstone() async throws {
+        try await assertOverlappingBookmarkToggles(initiallySaved: false)
+    }
+
+    @MainActor
+    func testOverlappingBookmarkTogglesFromSavedStateResurrectOneJournaledBookmark() async throws {
+        try await assertOverlappingBookmarkToggles(initiallySaved: true)
+    }
+
+    @MainActor
+    private func assertOverlappingBookmarkToggles(initiallySaved: Bool) async throws {
+        let configuration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let previousHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        defer { ReaderContentLoader.historyRealmConfiguration = previousHistoryConfiguration }
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        let realm = try await Realm.open(configuration: configuration)
+        let source = makeHistory(url: "https://example.com/overlapping-toggles")
+        let original = Bookmark()
+        original.url = source.url
+        original.updateCompoundKey()
+        if initiallySaved {
+            try await realm.asyncWrite {
+                realm.add(original)
+                original.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }
+        let initialGeneration = realm.objects(BigSyncPendingMutation.self).first?.generation
+        let barrier = BookmarkWriterOwnerBarrier()
+        let owner = Task { try await barrier.hold(configuration: configuration) }
+        defer { barrier.release() }
+        await fulfillment(of: [barrier.entered], timeout: 5)
+        let firstSubmitted = expectation(description: "First toggle queued behind owner")
+        let secondSubmitted = expectation(description: "Second toggle queued behind owner")
+        firstSubmitted.assertForOverFulfill = false
+        secondSubmitted.assertForOverFulfill = false
+        let first = Task { @MainActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({ firstSubmitted.fulfill() }) {
+                try await source.toggleBookmark(realmConfiguration: configuration)
+            }
+        }
+        let second = Task { @MainActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({ secondSubmitted.fulfill() }) {
+                try await source.toggleBookmark(realmConfiguration: configuration)
+            }
+        }
+        addTeardownBlock {
+            barrier.release()
+            _ = await first.result
+            _ = await second.result
+            _ = await owner.result
+            await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        // Both actual calls submitted their writer tickets before either can
+        // decide whether to add or remove. No sleep or scheduling guess.
+        await fulfillment(of: [firstSubmitted, secondSubmitted], timeout: 5)
+        barrier.release()
+        try await owner.value
+        let firstResult = try await first.value
+        let secondResult = try await second.value
+        XCTAssertEqual(Set([firstResult, secondResult]), Set([false, true]))
+        try await realm.asyncRefresh()
+        XCTAssertEqual(realm.objects(Bookmark.self).count, 1)
+        let bookmark = try XCTUnwrap(realm.objects(Bookmark.self).first)
+        XCTAssertEqual(bookmark.compoundKey, original.compoundKey)
+        XCTAssertEqual(bookmark.isDeleted, !initiallySaved)
+        let mutation = try XCTUnwrap(pendingMutation(for: bookmark, in: realm))
+        XCTAssertEqual(mutation.changedAt, bookmark.explicitlyModifiedAt)
+        XCTAssertNotEqual(mutation.generation, initialGeneration)
+    }
+
+    @MainActor
+    func testCancelledQueuedBookmarkToggleDoesNotMutateOrJournal() async throws {
+        let configuration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let realm = try await Realm.open(configuration: configuration)
+        let source = makeHistory(url: "https://example.com/cancelled-toggle")
+        let barrier = BookmarkWriterOwnerBarrier()
+        let owner = Task { try await barrier.hold(configuration: configuration) }
+        defer { barrier.release() }
+        await fulfillment(of: [barrier.entered], timeout: 5)
+        let submitted = expectation(description: "Cancelled toggle submitted")
+        let toggle = Task { @MainActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+                try await source.toggleBookmark(realmConfiguration: configuration)
+            }
+        }
+        addTeardownBlock {
+            barrier.release()
+            _ = await toggle.result
+            _ = await owner.result
+            await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        await fulfillment(of: [submitted], timeout: 5)
+        toggle.cancel()
+        do {
+            _ = try await toggle.value
+            XCTFail("A cancelled waiter must not mutate the bookmark")
+        } catch is CancellationError { }
+        barrier.release()
+        try await owner.value
+        try await realm.asyncRefresh()
+        XCTAssertTrue(realm.objects(Bookmark.self).isEmpty)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    @MainActor
+    func testQueuedBookmarkToggleRejectsSourceInvalidatedBeforeAdmission() async throws {
+        try await assertQueuedBookmarkToggleRejectsInvalidatedSource(recreateSource: false)
+    }
+
+    @MainActor
+    func testQueuedBookmarkToggleCannotAdoptRecreatedSourceWithSamePrimaryKey() async throws {
+        try await assertQueuedBookmarkToggleRejectsInvalidatedSource(recreateSource: true)
+    }
+
+    @MainActor
+    func testQueuedBookmarkRemovalRejectsInvalidatedSource() async throws {
+        try await assertQueuedBookmarkToggleRejectsInvalidatedSource(recreateSource: false, removingBookmark: true)
+    }
+
+    @MainActor
+    func testQueuedBookmarkRemovalCannotAdoptRecreatedSourceWithSamePrimaryKey() async throws {
+        try await assertQueuedBookmarkToggleRejectsInvalidatedSource(recreateSource: true, removingBookmark: true)
+    }
+
+    @MainActor
+    private func assertQueuedBookmarkToggleRejectsInvalidatedSource(
+        recreateSource: Bool,
+        removingBookmark: Bool = false
+    ) async throws {
+        let configuration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let realm = try await Realm.open(configuration: configuration)
+        let source = makeHistory(url: "https://example.com/invalidated-queued-toggle")
+        try await realm.asyncWrite {
+            realm.add(source)
+            if removingBookmark {
+                let saved = Bookmark()
+                saved.url = source.url
+                saved.updateCompoundKey()
+                realm.add(saved)
+            }
+        }
+        let sourceKey = source.compoundKey
+        let barrier = BookmarkWriterOwnerBarrier()
+        let owner = Task {
+            try await barrier.hold(configuration: configuration, beforeCommit: { owningRealm in
+                if let current = owningRealm.object(ofType: HistoryRecord.self, forPrimaryKey: sourceKey) {
+                    owningRealm.delete(current)
+                }
+                if recreateSource {
+                    let replacement = HistoryRecord()
+                    replacement.url = URL(string: "https://example.com/invalidated-queued-toggle")!
+                    replacement.title = "Replacement row"
+                    replacement.updateCompoundKey()
+                    XCTAssertEqual(replacement.compoundKey, sourceKey)
+                    owningRealm.add(replacement)
+                }
+            })
+        }
+        defer { barrier.release() }
+        await fulfillment(of: [barrier.entered], timeout: 5)
+        let submitted = expectation(description: "Bookmark mutation queued before source invalidation")
+        let toggle = Task { @MainActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+                if removingBookmark {
+                    return try await source.removeBookmark(realmConfiguration: configuration)
+                }
+                return try await source.toggleBookmark(realmConfiguration: configuration)
+            }
+        }
+        addTeardownBlock {
+            barrier.release()
+            _ = await toggle.result
+            _ = await owner.result
+            await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        await fulfillment(of: [submitted], timeout: 5)
+        barrier.release()
+        try await owner.value
+        do {
+            _ = try await toggle.value
+            XCTFail("A source deleted during admission cannot initiate a bookmark mutation")
+        } catch is CancellationError { }
+        try await realm.asyncRefresh()
+        XCTAssertTrue(source.isInvalidated)
+        XCTAssertEqual(realm.objects(HistoryRecord.self).count, recreateSource ? 1 : 0)
+        XCTAssertEqual(realm.objects(Bookmark.self).count, removingBookmark ? 1 : 0)
+        if removingBookmark {
+            XCTAssertFalse(try XCTUnwrap(realm.objects(Bookmark.self).first).isDeleted)
+        }
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    @MainActor
+    func testOlderBookmarkAddCompletionAfterRemovalDoesNotReviveOrPromoteHistory() async throws {
+        let configuration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let historyConfiguration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let previousHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        let previousBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        defer {
+            ReaderContentLoader.historyRealmConfiguration = previousHistoryConfiguration
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmarkConfiguration
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = historyConfiguration
+        let realm = try await Realm.open(configuration: configuration)
+        let historyRealm = try await Realm.open(configuration: historyConfiguration)
+        let source = makeHistory(url: "https://example.com/delayed-bookmark-completion")
+        let history = makeHistory(url: source.url.absoluteString)
+        history.isDemoted = true
+        try await historyRealm.asyncWrite { historyRealm.add(history) }
+        let barrier = BookmarkWriterOwnerBarrier()
+        let owner = Task { try await barrier.hold(configuration: historyConfiguration) }
+        defer { barrier.release() }
+        await fulfillment(of: [barrier.entered], timeout: 5)
+        let submitted = expectation(description: "Add submitted bookmark then history writes")
+        submitted.expectedFulfillmentCount = 2
+        let adding = Task { @MainActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+                try await source.toggleBookmark(realmConfiguration: configuration)
+            }
+        }
+        addTeardownBlock {
+            barrier.release()
+            _ = await adding.result
+            _ = await owner.result
+            await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+            await RealmBackgroundActor.shared.removeCachedRealm(for: historyConfiguration)
+        }
+        await fulfillment(of: [submitted], timeout: 5)
+        let cache = BookmarkStatusCache()
+        cache.startIfNeeded()
+        await waitForBookmarkStatus(true, source: source, cache: cache)
+        // The first call has committed its add but cannot finish history work.
+        let removed = try await source.toggleBookmark(realmConfiguration: configuration)
+        XCTAssertFalse(removed)
+        try await realm.asyncRefresh()
+        let bookmark = try XCTUnwrap(realm.objects(Bookmark.self).first)
+        let deletionGeneration = try XCTUnwrap(pendingMutation(for: bookmark, in: realm)?.generation)
+        XCTAssertTrue(bookmark.isDeleted)
+        await waitForBookmarkStatus(false, source: source, cache: cache)
+        barrier.release()
+        try await owner.value
+        let olderResult = try await adding.value
+        XCTAssertTrue(olderResult, "An older transaction result must never be treated as current UI state")
+        try await realm.asyncRefresh()
+        try await historyRealm.asyncRefresh()
+        XCTAssertTrue(bookmark.isDeleted)
+        XCTAssertFalse(cache.isBookmarked(source), "Older completion must leave canonical removed status visible")
+        XCTAssertEqual(pendingMutation(for: bookmark, in: realm)?.generation, deletionGeneration)
+        XCTAssertEqual(history.isDemoted, true)
+        XCTAssertNil(pendingMutation(for: history, in: historyRealm))
+    }
+
+    @MainActor
+    func testQueuedBookmarkHistoryPromotionCannotAdoptRecreatedHistoryRow() async throws {
+        let configuration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let historyConfiguration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let previousHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        defer { ReaderContentLoader.historyRealmConfiguration = previousHistoryConfiguration }
+        ReaderContentLoader.historyRealmConfiguration = historyConfiguration
+        let historyRealm = try await Realm.open(configuration: historyConfiguration)
+        let source = makeHistory(url: "https://example.com/recreated-bookmark-history")
+        let history = makeHistory(url: source.url.absoluteString)
+        history.isDemoted = true
+        try await historyRealm.asyncWrite { historyRealm.add(history) }
+        let historyKey = history.compoundKey
+        let historyURL = history.url
+        let barrier = BookmarkWriterOwnerBarrier()
+        let owner = Task {
+            try await barrier.hold(configuration: historyConfiguration, beforeCommit: { owningRealm in
+                let current = try XCTUnwrap(owningRealm.object(ofType: HistoryRecord.self, forPrimaryKey: historyKey))
+                owningRealm.delete(current)
+                let replacement = HistoryRecord()
+                replacement.url = historyURL
+                replacement.compoundKey = historyKey
+                replacement.isDemoted = true
+                owningRealm.add(replacement)
+            })
+        }
+        defer { barrier.release() }
+        await fulfillment(of: [barrier.entered], timeout: 5)
+        let submitted = expectation(description: "Bookmark add queued history promotion")
+        submitted.expectedFulfillmentCount = 2
+        let adding = Task { @MainActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+                try await source.addBookmark(realmConfiguration: configuration)
+            }
+        }
+        addTeardownBlock {
+            barrier.release()
+            _ = await adding.result
+            _ = await owner.result
+            await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+            await RealmBackgroundActor.shared.removeCachedRealm(for: historyConfiguration)
+        }
+        await fulfillment(of: [submitted], timeout: 5)
+        barrier.release()
+        try await owner.value
+        try await adding.value
+        try await historyRealm.asyncRefresh()
+        XCTAssertTrue(history.isInvalidated)
+        let replacement = try XCTUnwrap(historyRealm.object(ofType: HistoryRecord.self, forPrimaryKey: historyKey))
+        XCTAssertEqual(replacement.isDemoted, true)
+        XCTAssertNil(pendingMutation(for: replacement, in: historyRealm))
+    }
+
+    @MainActor
+    private func waitForBookmarkStatus(
+        _ expected: Bool,
+        source: HistoryRecord,
+        cache: BookmarkStatusCache
+    ) async {
+        if cache.isBookmarked(source) == expected { return }
+        let reached = expectation(description: "Canonical bookmark status becomes \(expected)")
+        reached.assertForOverFulfill = false
+        let cancellable = cache.objectWillChange.sink {
+            // objectWillChange fires before @Published assigns its value.
+            Task { @MainActor in
+                if cache.isBookmarked(source) == expected { reached.fulfill() }
+            }
+        }
+        await fulfillment(of: [reached], timeout: 5)
+        XCTAssertEqual(cache.isBookmarked(source), expected)
+        withExtendedLifetime(cancellable) { }
+    }
+
+    @MainActor
     func testRemoveBookmarkCommitsTombstoneAndRepeatedRemovalDoesNotRejournal() async throws {
         let configuration = makeConfiguration(objectTypes: [Bookmark.self])
         let realm = try await Realm.open(configuration: configuration)
@@ -395,8 +723,8 @@ final class SyncMutationBoundaryTests: XCTestCase {
     }
 
     @RealmBackgroundActor
-    func testScheduledBookmarkAssociationSkipsDeletedAndMissingTargets() async throws {
-        for removesTarget in [false, true] {
+    func testScheduledBookmarkAssociationSkipsDeletedMissingAndRecreatedTargets() async throws {
+        for targetDisposition in 0..<3 {
             let configuration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
             let history = makeHistory(url: "https://example.com/association-target")
@@ -419,10 +747,17 @@ final class SyncMutationBoundaryTests: XCTestCase {
                     completed.fulfill()
                 }) {
                     history.configureBookmark(target)
-                    if removesTarget {
-                        // Physical removal models an absent target; user
-                        // deletion uses the journaled tombstone in the other case.
+                    if targetDisposition != 0 {
+                        let targetURL = target.url
+                        let targetKey = target.compoundKey
                         realm.delete(target)
+                        if targetDisposition == 2 {
+                            let replacement = Bookmark()
+                            replacement.url = targetURL
+                            replacement.updateCompoundKey()
+                            XCTAssertEqual(replacement.compoundKey, targetKey)
+                            realm.add(replacement)
+                        }
                     } else {
                         target.isDeleted = true
                         target.refreshChangeMetadata(explicitlyModified: true)
@@ -434,7 +769,7 @@ final class SyncMutationBoundaryTests: XCTestCase {
             XCTAssertEqual(history.modifiedAt, previousModifiedAt)
             XCTAssertEqual(history.explicitlyModifiedAt, previousExplicitlyModifiedAt)
             XCTAssertNil(pendingMutation(for: history, in: realm))
-            if !removesTarget {
+            if targetDisposition == 0 {
                 XCTAssertTrue(target.isDeleted)
                 XCTAssertNotNil(pendingMutation(for: target, in: realm))
             }
@@ -654,7 +989,10 @@ private final class BookmarkWriterOwnerBarrier: @unchecked Sendable {
     private let queue = DispatchQueue(label: "LakeOfFireTests.bookmark-external-owner")
     private let releaseSemaphore = DispatchSemaphore(value: 0)
 
-    func hold(configuration: Realm.Configuration) async throws {
+    func hold(
+        configuration: Realm.Configuration,
+        beforeCommit: @escaping @Sendable (Realm) throws -> Void = { _ in }
+    ) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Swift.Error>) in
             queue.async {
                 autoreleasepool {
@@ -663,6 +1001,7 @@ private final class BookmarkWriterOwnerBarrier: @unchecked Sendable {
                         try realm.write {
                             self.entered.fulfill()
                             self.releaseSemaphore.wait()
+                            try beforeCommit(realm)
                         }
                         continuation.resume()
                     } catch {
