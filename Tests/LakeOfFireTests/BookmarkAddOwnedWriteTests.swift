@@ -92,6 +92,98 @@ final class BookmarkAddOwnedWriteTests: XCTestCase {
         XCTAssertEqual(realm.objects(Bookmark.self).count, 1)
     }
 
+    func testRepeatedCompressedSnippetAddPreservesUnspecifiedMetadata() async throws {
+        try await verifyCompressedIdentity(url: nil)
+    }
+
+    func testRepeatedCompressedAboutURLAddPreservesUnspecifiedMetadata() async throws {
+        try await verifyCompressedIdentity(url: URL(string: "about:blank")!)
+    }
+
+    func testRepeatedCompressedInternalURLAddPreservesUnspecifiedMetadata() async throws {
+        try await verifyCompressedIdentity(url: URL(string: "internal://local/snippet")!)
+    }
+
+    func testCompressedSnippetResurrectionPreservesUnspecifiedMetadata() async throws {
+        try await verifyCompressedIdentity(url: nil, tombstoneBeforeSecondSave: true)
+    }
+
+    func testCompressedHTTPAddRetainsURLIdentity() async throws {
+        try await verifyCompressedIdentity(url: URL(string: "https://example.com/compressed")!)
+    }
+
+    func testHTMLTakesPrecedenceOverConflictingCompressedContentForIdentity() async throws {
+        let (configuration, realm) = try await makeRealm()
+        let html = "<p>Preferred HTML</p>"
+        let otherContent = try XCTUnwrap("<p>Ignored compressed HTML</p>".readerContentData)
+        func save() async throws -> Bookmark {
+            try await Bookmark.add(
+                title: "Preferred", html: html, content: otherContent,
+                isFromClipboard: true, rssContainsFullContent: false,
+                isReaderModeByDefault: true, isReaderModeAvailable: true,
+                realmConfiguration: configuration
+            )
+        }
+        let first = try await save()
+        let originalCreation = Date(timeIntervalSinceReferenceDate: 123)
+        try realm.write {
+            first.createdAt = originalCreation
+            first.author = "User-edited author"
+        }
+        let second = try await save()
+        XCTAssertEqual(second.compoundKey, Bookmark.makePrimaryKey(html: html))
+        XCTAssertEqual(second.html, html)
+        XCTAssertEqual(second.createdAt, originalCreation)
+        XCTAssertEqual(second.author, "User-edited author")
+        XCTAssertEqual(realm.objects(Bookmark.self).count, 1)
+    }
+
+    private func verifyCompressedIdentity(
+        url: URL?,
+        tombstoneBeforeSecondSave: Bool = false
+    ) async throws {
+        let (configuration, realm) = try await makeRealm()
+        let html = "<p>A compressed stable snippet</p>"
+        let content = try XCTUnwrap(html.readerContentData)
+        func save(title: String) async throws -> Bookmark {
+            try await Bookmark.add(
+                url: url, title: title, content: content,
+                isFromClipboard: true, rssContainsFullContent: false,
+                isReaderModeByDefault: true, isReaderModeAvailable: true,
+                isReaderModeOfferHidden: true,
+                feedEntryCollectionKey: "supplied-collection",
+                realmConfiguration: configuration
+            )
+        }
+        let first = try await save(title: "Initial title")
+        let expectedKey = try XCTUnwrap(Bookmark.makePrimaryKey(url: url, html: html))
+        XCTAssertEqual(first.compoundKey, expectedKey)
+        let originalCreation = Date(timeIntervalSinceReferenceDate: 123)
+        let editedAudioURL = URL(string: "https://example.com/user-audio.mp3")!
+        try realm.write {
+            first.createdAt = originalCreation
+            first.author = "User-edited author"
+            first.meaningfulContentMinLength = 321
+            first.voiceAudioURLs.append(editedAudioURL)
+            first.isDeleted = tombstoneBeforeSecondSave
+        }
+        let second = try await save(title: "Updated title")
+        XCTAssertEqual(second.compoundKey, expectedKey)
+        XCTAssertEqual(second.createdAt, originalCreation)
+        XCTAssertEqual(second.author, "User-edited author")
+        XCTAssertEqual(second.meaningfulContentMinLength, 321)
+        XCTAssertEqual(Array(second.voiceAudioURLs), [editedAudioURL])
+        XCTAssertEqual(second.title, "Updated title", "Explicit add inputs must still update")
+        XCTAssertEqual(second.feedEntryCollectionKey, "supplied-collection")
+        XCTAssertTrue(second.isReaderModeOfferHidden)
+        XCTAssertFalse(second.isDeleted)
+        XCTAssertEqual(second.content, content)
+        XCTAssertEqual(second.html, html)
+        XCTAssertEqual(realm.objects(Bookmark.self).count, 1)
+        XCTAssertNotNil(second.explicitlyModifiedAt)
+        XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 1)
+    }
+
     private func verifyHTMLIdentity(url: URL?) async throws {
         let (configuration, realm) = try await makeRealm()
         let html = "<p>A stable snippet</p>"
@@ -141,3 +233,4 @@ final class BookmarkAddOwnedWriteTests: XCTestCase {
         return (configuration, realm)
     }
 }
+
