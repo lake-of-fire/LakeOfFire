@@ -135,3 +135,186 @@ test('account adoption callback cannot attach its reply to a reentrant successor
     assert.equal(state.ready,false);assert.notEqual(messages.at(-1).requestID,old.requestID)
     assert.equal(state.apply(messages.at(-1).requestID,{...response(),accountPresentation:'1:1'}),true)
 })
+
+const historyFixture = () => {
+    const f = make()
+    f.state.relocate({ sectionURL: 'chapter' })
+    assert.equal(f.state.apply(f.messages[0].requestID, { ...response(), accountPresentation: '0:1' }), true)
+    const scope = f.state.captureScope('chapter')
+    const proof = { requestID: 'original-command', observationToken: 'original-token' }
+    const publication = (request, sequence = 2) => ({ ...response(sequence), accountPresentation: '0:1',
+        location: { sectionURL: request.sectionURL, isEndPage: request.isEndPage, locationRevision: request.locationRevision },
+        historyRecoveryObservation: request.historyRecoveryObservation })
+    return { ...f, scope, proof, publication }
+}
+test('throwing recovery publication withdraws authoring context and settles false', async () => {
+    const f = historyFixture()
+    assert.equal(f.state.beginHistoryReadingStatusRecovery(f.proof, f.scope), true)
+    const completion = f.state.recoverHistoryReadingStatus(f.proof)
+    const request = f.messages.at(-1)
+    let invalidations = 0
+    f.state.onInvalidate = () => { invalidations++ }
+    f.state.onState = () => { throw new Error('Recovery projection failed') }
+    assert.equal(f.state.apply(request.requestID, f.publication(request)), false)
+    assert.equal(await completion, false)
+    assert.equal(f.state.ready, false)
+    assert.equal(f.state.state, null)
+    assert.throws(() => f.state.captureContext())
+    assert.equal(f.state.captureScope('chapter'), null)
+    assert.equal(f.state.refresh(), false)
+    assert.equal(f.state.failHistoryReadingStatusRecovery(f.proof), true)
+    assert.equal(invalidations, 1)
+})
+test('throwing old recovery callback preserves its reentrant successor publication', async () => {
+    const f = historyFixture()
+    assert.equal(f.state.beginHistoryReadingStatusRecovery(f.proof, f.scope), true)
+    const completion = f.state.recoverHistoryReadingStatus(f.proof)
+    const request = f.messages.at(-1)
+    f.state.onState = () => {
+        f.state.onState = () => {}
+        f.state.relocate({ sectionURL: 'chapter' }, { replaced: true })
+        const successor = f.messages.at(-1)
+        const result = f.publication(successor, 3)
+        result.context.contextID = 'successor-context'
+        assert.equal(f.state.apply(successor.requestID, result), true)
+        throw new Error('Old recovery callback failed after successor publication')
+    }
+    assert.equal(f.state.apply(request.requestID, f.publication(request)), false)
+    assert.equal(await completion, false)
+    assert.equal(f.state.ready, true)
+    assert.equal(f.state.captureContext().contextID, 'successor-context')
+    assert.equal(f.state.failHistoryReadingStatusRecovery(f.proof), false)
+})
+test('history terminal withdraws cached authority but only native initiation posts a read-only query', async () => {
+    const f = historyFixture(), revision = f.state.locationRevision
+    assert.equal(f.state.beginHistoryReadingStatusRecovery(f.proof, f.scope), true)
+    assert.equal(f.messages.length, 1)
+    assert.equal(f.state.locationRevision, revision)
+    assert.equal(f.state.ready, false)
+    assert.equal(f.state.captureScope('chapter'), null)
+    assert.throws(() => f.state.captureContext())
+    assert.equal(f.state.refresh(), false)
+    assert.equal(await f.state.recoverHistoryReadingStatus({ ...f.proof, observationToken: 'foreign' }), false)
+    const completion = f.state.recoverHistoryReadingStatus(f.proof), request = f.messages.at(-1)
+    assert.deepEqual(request.historyRecoveryObservation, f.proof)
+    assert.equal(request.historyRecoveryAccountPresentation, '0:1')
+    assert.equal(request.locationRevision, revision)
+    assert.equal(f.state.apply(request.requestID, f.publication(request)), true)
+    assert.equal(await completion, true)
+    assert.equal(f.state.ready, true)
+    assert.equal(f.state.reacknowledgeHistoryReadingStatus(f.proof), true)
+    assert.equal(f.state.captureScope('chapter').articleEpochID, 'E1')
+})
+test('ordinary native refresh callbacks coalesce into the authorized history query', async () => {
+    const f = historyFixture()
+    f.state.beginHistoryReadingStatusRecovery(f.proof, f.scope)
+    const completion = f.state.recoverHistoryReadingStatus(f.proof), request = f.messages.at(-1)
+    assert.equal(f.state.refresh(), true)
+    assert.equal(f.state.refresh(), true)
+    assert.equal(f.messages.length, 2)
+    assert.equal(f.state.apply(request.requestID, f.publication(request)), true)
+    assert.equal(await completion, true)
+})
+test('history status rejects missing proof, wrong account, new pass and unsolicited native refresh', async () => {
+    const f = historyFixture()
+    f.state.beginHistoryReadingStatusRecovery(f.proof, f.scope)
+    const completion = f.state.recoverHistoryReadingStatus(f.proof), request = f.messages.at(-1)
+    for (const invalid of [
+        { ...f.publication(request), historyRecoveryObservation: undefined },
+        { ...f.publication(request), accountPresentation: '1:1' },
+        { ...f.publication(request), nativeRefresh: true,
+            location: { sectionURL: 'chapter', isEndPage: false, locationRevision: f.state.locationRevision } },
+    ]) {
+        assert.equal(f.state.apply(request.requestID, invalid), false)
+        assert.equal(f.state.ready, false)
+    }
+    // A correctly correlated but unusable publication is an acknowledged
+    // status failure; it leaves the command outcome and mutation gate intact.
+    const wrongPass = f.publication(request)
+    wrongPass.state.scope.articleEpochID = 'replacement-pass'
+    assert.equal(f.state.apply(request.requestID, wrongPass), false)
+    assert.equal(await completion, false)
+    assert.equal(f.state.ready, false)
+    assert.equal(f.state.refresh(), false)
+})
+test('replacement location retires the waiting native attempt and rejects its old chapter reply', async () => {
+    const f = historyFixture()
+    f.state.beginHistoryReadingStatusRecovery(f.proof, f.scope)
+    const completion = f.state.recoverHistoryReadingStatus(f.proof), request = f.messages.at(-1)
+    f.state.relocate({ sectionURL: 'other-chapter' })
+    assert.equal(await completion, false)
+    assert.equal(f.state.apply(request.requestID, f.publication(request)), false)
+    assert.equal(f.state.ready, false)
+    assert.equal(f.state.reacknowledgeHistoryReadingStatus(f.proof), false)
+})
+test('failed history query settles native acknowledgement while keeping stale controls unavailable', async () => {
+    const f = historyFixture()
+    f.state.beginHistoryReadingStatusRecovery(f.proof, f.scope)
+    const completion = f.state.recoverHistoryReadingStatus(f.proof), request = f.messages.at(-1)
+    assert.equal(f.state.apply(request.requestID, { ok: false, accountPresentation: '0:1',
+        location: { sectionURL: request.sectionURL, isEndPage: request.isEndPage, locationRevision: request.locationRevision },
+        historyRecoveryObservation: request.historyRecoveryObservation }), false)
+    assert.equal(await completion, false)
+    assert.equal(f.state.ready, false)
+    assert.equal(f.state.refresh(), false)
+    assert.throws(() => f.state.captureContext())
+    assert.equal(f.state.failHistoryReadingStatusRecovery(f.proof), true)
+    f.state.close()
+    assert.equal(await f.state.recoverHistoryReadingStatus(f.proof), false)
+})
+test('correlated successor-account publication rejects adoption and settles the old native attempt', async () => {
+    const f = historyFixture()
+    f.state.beginHistoryReadingStatusRecovery(f.proof, f.scope)
+    const completion = f.state.recoverHistoryReadingStatus(f.proof), request = f.messages.at(-1)
+    assert.equal(f.state.apply(request.requestID, { ...f.publication(request), accountPresentation: '1:1' }), false)
+    assert.equal(await completion, false)
+    assert.equal(f.state.accountPresentation, '0:1')
+    assert.equal(f.state.ready, false)
+    assert.equal(f.state.refresh(), false)
+})
+test('proof copying cannot authorize a reentrant replacement location', async () => {
+    const f = historyFixture()
+    const hostile = { toJSON() { f.state.relocate({ sectionURL: 'other-chapter' }); return f.proof } }
+    assert.equal(f.state.beginHistoryReadingStatusRecovery(hostile, f.scope), false)
+    assert.equal(await f.state.recoverHistoryReadingStatus(f.proof), false)
+    assert.equal(f.state.location.sectionURL, 'other-chapter')
+})
+test('final native rejection withdraws only its unchanged applied recovery publication', async () => {
+    for (const boundary of ['unchanged', 'new-publication', 'new-location', 'new-account']) {
+        const f = historyFixture()
+        f.state.beginHistoryReadingStatusRecovery(f.proof, f.scope)
+        const completion = f.state.recoverHistoryReadingStatus(f.proof), request = f.messages.at(-1)
+        assert.equal(f.state.apply(request.requestID, f.publication(request)), true)
+        assert.equal(await completion, true)
+        if (boundary === 'new-publication') {
+            f.state.refresh()
+            assert.equal(f.state.apply(f.messages.at(-1).requestID, { ...response(3), accountPresentation: '0:1' }), true)
+        } else if (boundary === 'new-location') f.state.relocate({ sectionURL: 'other-chapter' })
+        else if (boundary === 'new-account') f.state.setAccountPresentation('1:1')
+        const before = f.state.ready
+        assert.equal(f.state.failHistoryReadingStatusRecovery(f.proof), boundary === 'unchanged')
+        assert.equal(f.state.ready, boundary === 'unchanged' ? false : before)
+        assert.equal(f.state.reacknowledgeHistoryReadingStatus(f.proof), false)
+        if (boundary === 'unchanged') {
+            assert.equal(f.state.captureScope('chapter'), null)
+            assert.throws(() => f.state.captureContext())
+            assert.equal(f.state.refresh(), false)
+        }
+        f.state.close()
+    }
+})
+test('matching proof and request cannot admit a recovery reply with a different echoed location', async () => {
+    for (const wrongLocation of [null, { sectionURL: 'other-chapter', isEndPage: false, locationRevision: 1 },
+        { sectionURL: 'chapter', isEndPage: true, locationRevision: 1 },
+        { sectionURL: 'chapter', isEndPage: false, locationRevision: 2 }]) {
+        const f = historyFixture()
+        f.state.beginHistoryReadingStatusRecovery(f.proof, f.scope)
+        const completion = f.state.recoverHistoryReadingStatus(f.proof), request = f.messages.at(-1)
+        assert.equal(f.state.apply(request.requestID, { ...f.publication(request), location: wrongLocation }), false)
+        assert.equal(await completion, false)
+        assert.equal(f.state.ready, false)
+        assert.equal(f.state.refresh(), false)
+        f.state.close()
+    }
+})
+

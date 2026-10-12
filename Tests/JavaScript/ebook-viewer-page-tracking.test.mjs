@@ -4,7 +4,7 @@ import test from 'node:test'
 import vm from 'node:vm'
 import { installBookReadingRuntime } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-runtime.js'
 import { applyBookReadingProjection } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-projection.js'
-import { createNativeMarkReadRequestCoordinator } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
+import { createNativeMarkReadRequestCoordinator, refreshNativeMarkReadBookStateForRecovery } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
 
 // Evaluate the complete shipping Reader class. Only the module/startup adapter
 // and DOM/native collaborators are replaced; no command or render method is
@@ -54,6 +54,7 @@ function fixture({ realCoordinator = false } = {}) {
                 return { success: false, errorCode: 'fixture-rejection' }
             } }),
         presentNativeMarkReadPending() {},
+        refreshNativeMarkReadBookStateForRecovery,
         nativeMarkReadCommandMessage: (payload, identity) => ({ ...identity,
             stableSegmentIDs: payload.segments.map(segment => segment.stableSegmentID),
             sentenceIdentifiers: payload.sentenceIdentifiers }),
@@ -166,11 +167,111 @@ function bookRuntimeFixture(f) {
             context: { contextID: `context-${revision}`, articleProgressID: 'book', articleEpochID: 'pass', scope,
                 isEndPage: false, sectionLocation: 'chapter.xhtml' } }
     }
-    const publish = (revision = 1) => runtime.state.apply(requests.at(-1).requestID, response(revision))
+    const publish = (revision = 1) => {
+        const request = requests.at(-1)
+        return runtime.state.apply(request.requestID, { ...response(revision),
+            location: { sectionURL: request.sectionURL, isEndPage: request.isEndPage, locationRevision: request.locationRevision },
+            ...(request.historyRecoveryObservation ? { historyRecoveryObservation: request.historyRecoveryObservation } : {}) })
+    }
     const native = (revision = 2) => runtime.state.apply('native', { ...response(revision), nativeRefresh: true,
         location: { ...runtime.state.location, locationRevision: runtime.state.locationRevision } })
     assert.equal(publish(), true)
     return { runtime, requests, publish, native, response }
+}
+
+test('restored shipping Reader refreshes readonly status without reviving its pagehide presentation lifetime', async () => {
+    const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+    f.seedPage('restored-page')
+    const completion = f.reader.markVisiblePageAsRead(), message = f.requests[0].message
+    f.lifecycle.dispatchEvent(new Event('pagehide'))
+    f.lifecycle.dispatchEvent(new Event('pageshow'))
+    const proof = { requestID: message.requestID, observationToken: message.manualReadPendingObservationToken }
+    assert.equal(f.reader.applyMarkSectionAsReadResult({ requestID: message.requestID,
+        manualReadPendingProtocol: 1, manualReadPendingObservationToken: proof.observationToken,
+        manualReadPendingState: 'finished', manualReadPendingHistoryRecovery: true,
+        manualReadPendingOutcomeOnly: true, manualReadPendingPresentationAllowed: false, success: true }), true)
+    await completion
+    assert.equal(book.runtime.state.ready, false)
+    assert.equal(book.requests.length, 1, 'A terminal result does not authorize its own fresh query')
+    const acknowledged = f.reader.recoverHistoryReadingStatus(proof)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(book.requests.length, 2)
+    assert.deepEqual(book.requests.at(-1).historyRecoveryObservation, proof)
+    assert.equal(book.publish(2), true)
+    assert.equal(await acknowledged, true)
+    assert.equal(book.runtime.state.ready, true)
+    assert.equal(f.reader.reacknowledgeHistoryReadingStatus(proof), true)
+    assert.equal(f.reader.applyMarkSectionAsReadResult({ requestID: message.requestID,
+        manualReadPendingProtocol: 1, manualReadPendingObservationToken: proof.observationToken,
+        manualReadPendingState: 'finished', manualReadPendingHistoryRecovery: true,
+        manualReadPendingOutcomeOnly: true, manualReadPendingPresentationAllowed: false, success: true }), false)
+    assert.equal(book.runtime.state.ready, true, 'Duplicate terminal delivery cannot recreate an old barrier')
+    assert.equal(book.requests.length, 2)
+    assert.deepEqual(f.moves, [], 'Readonly recovery cannot auto-advance the old Mark')
+    assert.equal(f.requests.length, 1, 'The committed mutation is never replayed')
+    f.reader.bookReadingRuntime = { ...book.runtime }
+    assert.equal(f.reader.failHistoryReadingStatusRecovery(proof), false,
+        'An equal-valued replacement runtime cannot inherit the old rejection')
+    assert.equal(book.runtime.state.ready, true)
+    assert.equal(f.reader.reacknowledgeHistoryReadingStatus(proof), false)
+    book.runtime.close()
+})
+
+test('late native recovery rejection cannot invalidate an admitted fresh Reader mutation', async () => {
+    const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+    f.seedPage('recovered-page')
+    const first = f.reader.markVisiblePageAsRead(), message = f.requests[0].message
+    f.lifecycle.dispatchEvent(new Event('pagehide'))
+    f.lifecycle.dispatchEvent(new Event('pageshow'))
+    const proof = { requestID: message.requestID, observationToken: message.manualReadPendingObservationToken }
+    f.reader.applyMarkSectionAsReadResult({ requestID: message.requestID, manualReadPendingProtocol: 1,
+        manualReadPendingObservationToken: proof.observationToken, manualReadPendingState: 'finished',
+        manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: true,
+        manualReadPendingPresentationAllowed: false, success: true })
+    await first
+    const acknowledged = f.reader.recoverHistoryReadingStatus(proof)
+    await new Promise(resolve => setImmediate(resolve))
+    book.publish(2)
+    assert.equal(await acknowledged, true)
+    f.seedPage('fresh-page')
+    const successor = f.reader.markVisiblePageAsRead(), next = f.requests[1].message
+    assert.equal(f.reader.nativeMarkReadRequestCoordinator.hasOrdinaryPendingRequests, true)
+    assert.equal(f.reader.failHistoryReadingStatusRecovery(proof), false)
+    assert.equal(book.runtime.state.ready, true)
+    assert.equal(f.reader.nativeMarkReadRequestCoordinator.pendingCount, 1)
+    assert.equal(f.reader.applyMarkSectionAsReadResult({ requestID: next.requestID, sectionId: next.sectionId,
+        manualReadPendingProtocol: 1, manualReadPendingObservationToken: next.manualReadPendingObservationToken,
+        manualReadPendingState: 'finished', success: false, errorCode: 'fixture-rejection' }), true)
+    await successor
+    book.runtime.close()
+})
+
+for (const boundary of ['reader', 'renderer', 'chapter', 'account', 'runtime']) {
+    test(`shipping Reader refuses restored status after ${boundary} replacement`, async () => {
+        const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+        f.seedPage('old-page')
+        const completion = f.reader.markVisiblePageAsRead(), message = f.requests[0].message
+        f.lifecycle.dispatchEvent(new Event('pagehide'))
+        f.lifecycle.dispatchEvent(new Event('pageshow'))
+        const proof = { requestID: message.requestID, observationToken: message.manualReadPendingObservationToken }
+        if (boundary === 'reader') f.context.reader = {}
+        else if (boundary === 'renderer') f.reader.view.renderer = { getContents: () => [] }
+        else if (boundary === 'chapter') {
+            f.doc.location.href = 'ebook://fixture/replacement.xhtml'
+            book.runtime.updateLocation(true)
+        } else if (boundary === 'account') book.runtime.state.setAccountPresentation('2:1')
+        else f.reader.bookReadingRuntime = { ...book.runtime }
+        const queries = book.requests.length
+        assert.equal(f.reader.applyMarkSectionAsReadResult({ requestID: message.requestID,
+            manualReadPendingProtocol: 1, manualReadPendingObservationToken: proof.observationToken,
+            manualReadPendingState: 'finished', manualReadPendingHistoryRecovery: true,
+            manualReadPendingOutcomeOnly: true, manualReadPendingPresentationAllowed: false, success: true }), true)
+        await completion
+        assert.equal(await f.reader.recoverHistoryReadingStatus(proof), false)
+        assert.equal(book.requests.length, queries)
+        assert.deepEqual(f.moves, [])
+        book.runtime.close()
+    })
 }
 
 test('invalidating a read page immediately withdraws native read controls and marker', () => {
