@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 SOURCES = ROOT / 'Sources/LakeOfFireReader/Resources/Resources/foliate-js'
-NAMES = ['book-reading-state.js', 'reader-producer-evidence.js', 'book-action-bridge.js', 'book-endcap.js']
+NAMES = ['cryptographic-uuid.js', 'book-reading-state.js', 'reader-producer-evidence.js', 'book-action-bridge.js', 'book-endcap.js']
 
 
 def main() -> int:
@@ -43,7 +43,8 @@ def main() -> int:
     names = []
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=executable, headless=True,
-                                   args=['--no-sandbox', '--disable-dev-shm-usage'])
+                                   args=['--no-sandbox', '--disable-dev-shm-usage',
+                                         '--disable-features=MacAppCodeSignClone'])
         report['browser'] = browser.version
         try:
             catalog = browser.new_page()
