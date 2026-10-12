@@ -535,6 +535,9 @@ for (const cancelling of [false, true]) {
         assert.equal(f.controls.at(-1).manualReadPendingHistoryRecovery, true)
         assert.equal(f.controls.at(-1).manualReadPendingObservationToken, message.manualReadPendingObservationToken)
         assert.equal(f.requests.length, 1, 'Restoration never replays the mutation')
+        assert.equal(f.reader.applyMarkSectionAsReadResult({ ...restoredTerminal(message),
+            manualReadPendingHistoryRecovery: false }), false,
+            'Delayed initial completion must wait for the native history observation')
         assert.equal(f.reader.applyMarkSectionAsReadResult(restoredTerminal(message)), true)
         assert.equal(await operation, true, 'The old native commit remains successful')
         assert.deepEqual(f.moves, [], 'Recovery never advances the restored chapter')
@@ -603,3 +606,27 @@ for (const replacement of ['account', 'chapter document', 'context', 'observatio
         assert.deepEqual(f.moves, [])
     })
 }
+
+
+test('account replacement retires the old EPUB reconciliation gate while preserving the original outcome', async t => {
+    const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+    t.after(() => { f.reader.nativeMarkReadRequestCoordinator.pause(); book.runtime.close() })
+    f.seedPage('original-subject')
+    const operation = f.reader.testMarkCluster(), message = f.requests[0].message
+    f.lifecycle.dispatchEvent(new Event('pagehide'))
+    f.lifecycle.dispatchEvent(new Event('pageshow'))
+    f.reader.applyMarkSectionAsReadResult(restoredTerminal(message))
+    assert.equal(await operation, true)
+    const observation = recoveryObservation(message)
+    assert.equal(f.reader.nativeMarkReadRequestCoordinator.hasPendingHistoryRecoveryObservation(observation), true)
+    book.runtime.accountDidChange('2:1')
+    assert.equal(f.reader.captureHistoryReadingStatus(observation), null)
+    assert.equal(f.reader.nativeMarkReadRequestCoordinator.hasPendingHistoryRecoveryObservation(observation), false)
+    const fresh = f.reader.nativeMarkReadRequestCoordinator.request({ sectionID: 'new-account', message: {},
+        owner: { accountPresentation: '2:1' } })
+    assert.equal(f.requests.length, 2, 'An obsolete presentation gate cannot block the successor account')
+    f.reader.nativeMarkReadRequestCoordinator.settle({ ...restoredTerminal(f.requests[1].message),
+        manualReadPendingHistoryRecovery: false })
+    assert.equal((await fresh).success, true)
+    assert.deepEqual(f.moves, [])
+})

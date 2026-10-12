@@ -514,6 +514,14 @@ test('pause suppresses observation and resume observes the same request identity
     assert.equal(h.controls[0].manualReadPendingObservationToken, token)
     assert.equal(h.controls[0].manualReadPendingOperation, 'status')
 
-    h.coordinator.settle(terminalFor(h.posted[0]))
+    assert.equal(h.controls[0].manualReadPendingHistoryRecovery, true)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), false,
+        'A delayed initial reply cannot acknowledge history reconciliation')
+    h.coordinator.settle(terminalFor(h.posted[0], {
+        manualReadPendingHistoryRecovery: true,
+        manualReadPendingOutcomeOnly: true,
+        manualReadPendingPresentationAllowed: false,
+    }))
     assert.equal((await completion).success, true)
+    h.coordinator.acknowledgeHistoryReadingStatus({ requestID, observationToken: token })
 })

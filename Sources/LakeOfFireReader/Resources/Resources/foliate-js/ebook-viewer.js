@@ -6344,6 +6344,8 @@ class Reader {
                 window.webkit.messageHandlers.markSectionAsRead.postMessage(message);
             },
             isOwnerCurrent: owner => this.#isMarkReadOwnerCurrent(owner),
+            isRecoveryAccountCurrent: owner => globalThis.reader === this
+                && owner?.accountPresentation === (this.bookReadingRuntime?.state.accountPresentation ?? null),
         });
         this.navHUD = new NavigationHUD({
             formatPercent: value => percentFormat.format(value),
@@ -7075,6 +7077,7 @@ class Reader {
             visiblePageCollectionGeneration: this.visiblePageCollectionGeneration,
             bookReadingScope,
             pageLifetime: this.#pageLifetime,
+            accountPresentation: this.bookReadingRuntime?.state.accountPresentation ?? null,
         };
     }
     #isMarkReadOwnerCurrent(owner) {
@@ -7279,12 +7282,12 @@ class Reader {
         return completed;
     }
     captureHistoryReadingStatus(observation) {
-        if (!this.nativeMarkReadRequestCoordinator?.hasPendingHistoryRecoveryObservation(observation)) return null;
+        if (!this.nativeMarkReadRequestCoordinator?.canReconcileHistoryReadingStatus(observation)) return null;
         const receipt = this.bookReadingRuntime?.captureHistoryReadingStatus();
         return receipt ? { ...receipt, pageLifetime: this.#historyReadingStatusGeneration } : null;
     }
     applyHistoryReadingStatus(state, observation, receipt) {
-        if (!this.nativeMarkReadRequestCoordinator?.hasPendingHistoryRecoveryObservation(observation)) return false;
+        if (!this.nativeMarkReadRequestCoordinator?.canReconcileHistoryReadingStatus(observation)) return false;
         if (!receipt || receipt.pageLifetime !== this.#historyReadingStatusGeneration) return false;
         if (!this.bookReadingRuntime?.applyHistoryReadingStatus(state, receipt)) return false;
         return this.nativeMarkReadRequestCoordinator.acknowledgeHistoryReadingStatus(observation);

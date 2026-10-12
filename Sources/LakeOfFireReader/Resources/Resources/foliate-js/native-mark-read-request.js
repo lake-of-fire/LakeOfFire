@@ -48,6 +48,7 @@ export const createNativeMarkReadRequestCoordinator = ({
     postMessage,
     postControlMessage,
     isOwnerCurrent = () => true,
+    isRecoveryAccountCurrent = () => true,
     makeRequestID = defaultRequestID,
     timeoutMilliseconds = 15_000,
     scheduleTimeout = globalThis.setTimeout,
@@ -156,7 +157,18 @@ export const createNativeMarkReadRequestCoordinator = ({
         observe(pending)
         return true
     }
+    const retireStaleHistoryRecoveries = () => {
+        for (const [requestID, receipt] of historyRecoveries) {
+            let current = false
+            try { current = isRecoveryAccountCurrent(receipt.owner) === true } catch (_) {}
+            if (current || historyRecoveries.get(requestID) !== receipt) continue
+            historyRecoveries.delete(requestID)
+            try { onPending({ requestID, phase: 'finished' }) } catch (_) {}
+        }
+        detachLifecycle()
+    }
     const request = ({ sectionID, message, owner = null, context = null }) => {
+        retireStaleHistoryRecoveries()
         if (typeof sectionID !== 'string' || !sectionID || !message || typeof message !== 'object') {
             return Promise.resolve({ requestID: null, context, success: false,
                 stale: false, errorCode: 'invalidMessage', presentationAllowed: false })
@@ -238,6 +250,10 @@ export const createNativeMarkReadRequestCoordinator = ({
             if (pending.slow) notify(pending)
             return false
         }
+        // A delayed initial reply cannot acknowledge restored reading status.
+        // Keep the exact request observing until native handles its status-only
+        // recovery packet and owns the matching chapter reconciliation.
+        if (pending.recoveryOnly && result.manualReadPendingHistoryRecovery !== true) return false
         const recovery = pending.recoveryOnly || result.manualReadPendingHistoryRecovery === true
         const unavailable = recovery && result.manualReadPendingHistoryRecovery === true
             && result.manualReadPendingState === 'unavailable' && result.errorCode === 'outcomeUnavailable'
@@ -248,7 +264,12 @@ export const createNativeMarkReadRequestCoordinator = ({
         if (!sectionMatches) return false
         if (recovery) {
             pending.recoveryOnly = true
-            historyRecoveries.set(pending.requestID, pending.message.manualReadPendingObservationToken)
+            if (present(pending, () => isRecoveryAccountCurrent(pending.owner)) === true) {
+                historyRecoveries.set(pending.requestID, {
+                    observationToken: pending.message.manualReadPendingObservationToken,
+                    owner: pending.owner,
+                })
+            }
         }
         const ownerIsCurrent = ownerCurrent(pending)
         const success = result.success === true
@@ -263,6 +284,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         })
     }
     const cancelAll = reason => {
+        retireStaleHistoryRecoveries()
         if (typeof reason === 'string' && reason.startsWith('readerClosed:')) {
             const retired = [...historyRecoveries.keys()]
             historyRecoveries.clear()
@@ -286,10 +308,16 @@ export const createNativeMarkReadRequestCoordinator = ({
         for (const pending of pendingByRequestID.values()) observe(pending, 0)
         detachLifecycle()
     }
-    const hasPendingHistoryRecoveryObservation = observation => !!observation
-        && historyRecoveries.get(observation.requestID) === observation.observationToken
+    const hasPendingHistoryRecoveryObservation = observation => {
+        retireStaleHistoryRecoveries()
+        return typeof observation?.observationToken === 'string'
+            && historyRecoveries.get(observation.requestID)?.observationToken
+            === observation.observationToken
+    }
+    const canReconcileHistoryReadingStatus = observation => observing
+        && hasPendingHistoryRecoveryObservation(observation)
     const acknowledgeHistoryReadingStatus = observation => {
-        if (!hasPendingHistoryRecoveryObservation(observation)) return false
+        if (!canReconcileHistoryReadingStatus(observation)) return false
         historyRecoveries.delete(observation.requestID)
         detachLifecycle()
         return true
@@ -301,7 +329,8 @@ export const createNativeMarkReadRequestCoordinator = ({
         return true
     }
     return { request, settle, cancel, cancelAll, pause, resume,
-        hasPendingHistoryRecoveryObservation, acknowledgeHistoryReadingStatus,
+        hasPendingHistoryRecoveryObservation, canReconcileHistoryReadingStatus,
+        acknowledgeHistoryReadingStatus,
         failFreshReadingStatusPublication,
         get pendingCount() { return pendingByRequestID.size } }
 }
