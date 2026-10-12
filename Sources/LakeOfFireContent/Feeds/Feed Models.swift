@@ -1123,13 +1123,6 @@ public enum FeedError: Error {
 fileprivate struct FeedFetchMetadata {
     let etag: String?
     let lastModifiedAt: Date?
-
-    func merged(with newer: FeedFetchMetadata) -> FeedFetchMetadata {
-        FeedFetchMetadata(
-            etag: newer.etag ?? etag,
-            lastModifiedAt: newer.lastModifiedAt ?? lastModifiedAt
-        )
-    }
 }
 
 fileprivate func logRSS(_ message: String) {
@@ -1376,6 +1369,9 @@ fileprivate func getRssData(
         "stage=http.head.response url=\(rssUrl.absoluteString) status=\(headHTTPResponse.statusCode) etag=\(headMetadata.etag ?? "nil") lastModified=\(headMetadata.lastModifiedAt.map(formatFeedHTTPDate) ?? "nil")"
     )
     switch headHTTPResponse.statusCode {
+    case 405, 501:
+        // HEAD is only an optimization; the resource may still support GET.
+        break
     case 304:
         if allowNotModified {
             logRSS("stage=http.notModified source=head304 url=\(rssUrl.absoluteString)")
@@ -1407,7 +1403,8 @@ fileprivate func getRssData(
         throw FeedError.downloadFailed
     }
 
-    let getMetadata = headMetadata.merged(with: feedFetchMetadata(from: getHTTPResponse))
+    // GET describes the returned representation, which may have changed since HEAD.
+    let getMetadata = feedFetchMetadata(from: getHTTPResponse)
     logRSS(
         "stage=http.get.response url=\(rssUrl.absoluteString) status=\(getHTTPResponse.statusCode) bytes=\(data.count) etag=\(getMetadata.etag ?? "nil") lastModified=\(getMetadata.lastModifiedAt.map(formatFeedHTTPDate) ?? "nil")"
     )
@@ -1450,6 +1447,7 @@ public extension Feed {
     @MainActor
     private func persistFetchMetadata(
         _ metadata: FeedFetchMetadata,
+        replacesValidators: Bool = false,
         expectedRSSURL: URL,
         refreshLease: FeedRefreshLease,
         realmConfiguration: Realm.Configuration
@@ -1470,8 +1468,11 @@ public extension Feed {
                     throw CancellationError()
                 }
                 feed.lastRefreshedEntriesAt = Date()
-                feed.lastFetchedETag = metadata.etag ?? feed.lastFetchedETag
-                feed.lastFetchedModifiedAt = metadata.lastModifiedAt ?? feed.lastFetchedModifiedAt
+                // A fetched body replaces the representation. A 304 only updates
+                // supplied validators for the representation already stored.
+                feed.lastFetchedETag = replacesValidators ? metadata.etag : metadata.etag ?? feed.lastFetchedETag
+                feed.lastFetchedModifiedAt = replacesValidators
+                    ? metadata.lastModifiedAt : metadata.lastModifiedAt ?? feed.lastFetchedModifiedAt
             }
         }()
         logRSS("stage=metadata.persist.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
@@ -1872,7 +1873,7 @@ public extension Feed {
                         )
                         try checkRequestIsCurrent()
                         try await persistFetchMetadata(
-                            metadata, expectedRSSURL: rssUrl, refreshLease: refreshLease,
+                            metadata, replacesValidators: true, expectedRSSURL: rssUrl, refreshLease: refreshLease,
                             realmConfiguration: realmConfiguration
                         )
                         logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=rss")
@@ -1893,7 +1894,7 @@ public extension Feed {
                         )
                         try checkRequestIsCurrent()
                         try await persistFetchMetadata(
-                            metadata, expectedRSSURL: rssUrl, refreshLease: refreshLease,
+                            metadata, replacesValidators: true, expectedRSSURL: rssUrl, refreshLease: refreshLease,
                             realmConfiguration: realmConfiguration
                         )
                         logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=atom")
