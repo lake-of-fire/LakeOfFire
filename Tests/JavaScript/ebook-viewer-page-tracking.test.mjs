@@ -4,7 +4,7 @@ import test from 'node:test'
 import vm from 'node:vm'
 import { installBookReadingRuntime } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-runtime.js'
 import { applyBookReadingProjection } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-projection.js'
-import { createNativeMarkReadRequestCoordinator } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
+import { createNativeMarkReadRequestCoordinator, refreshCommittedVisibleMarkReadState, committedVisibleMarkReadStateIsPresented, captureVisibleMarkReadNavigation } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
 
 // Evaluate the complete shipping Reader class. Only the module/startup adapter
 // and DOM/native collaborators are replaced; no command or render method is
@@ -20,6 +20,8 @@ function fixture({ realCoordinator = false } = {}) {
     const packets = [], requests = [], attributes = new Map(), timers = new Map(), moves = []
     const lifecycle = new EventTarget()
     const doc = { location: { href: 'ebook://fixture/chapter.xhtml' }, defaultView: {}, body: {} }
+    let navigationCurrent = true
+    doc.defaultView.manabiCaptureAutomaticScrollNavigation = () => () => navigationCurrent
     const visibleRange = { collapsed: false }
     const producerOwner = { required: false }
     class Element {}
@@ -34,6 +36,10 @@ function fixture({ realCoordinator = false } = {}) {
         screen: { orientation: {} },
         $: () => null,
         normalizeArticleReadingProgress: value => ({ readSegmentIdentifiers: [], sentenceIdentifiersRead: [], ...value }),
+        applyBookReadingProjection,
+        refreshCommittedVisibleMarkReadState,
+        committedVisibleMarkReadStateIsPresented,
+        captureVisibleMarkReadNavigation,
         debounce: callback => callback,
         applyStoredChromeInsets() {},
         NavigationHUD: class { refreshAuxiliaryLayout() {} },
@@ -49,7 +55,7 @@ function fixture({ realCoordinator = false } = {}) {
                 },
                 cancelTimeout: id => timers.delete(id),
             })
-            : ({ request: async request => {
+            : ({ cancelAll() {}, request: async request => {
                 requests.push(request)
                 return { success: false, errorCode: 'fixture-rejection' }
             } }),
@@ -91,14 +97,19 @@ function fixture({ realCoordinator = false } = {}) {
         testRender(reason) { this.#renderPageTrackingButtons(reason) }
         testInvalidate() { this.#invalidateVisiblePageSegmentSnapshot('renderer.relocate') }
         testMarkCluster() { return this.#markPageClusterAsRead('visible-screen') }
+        testNativeBookReadProjection(state, details = { passChanged: false }) { return this.#applyNativeBookReadProjection(state, details) }
+        testSuccessfulPublication() { return this.#successfulBookReadPublication }
+        testInvalidateBookPublication() { this.#successfulBookReadPublication = null }
     }; Reader`, context)
     const reader = new Reader()
     context.reader = reader
     reader.view = { renderer: { displayedIndex: 0, getContents: () => [{ index: 0, doc }] },
         goRight: async () => { moves.push('right'); return true },
         goLeft: async () => { moves.push('left'); return true } }
+    reader.refreshNativeLookupHitTargets = () => {}
     const state = (sentence, isRead = false) => ({ id: 'visible-screen', isRead,
-        payload: { stableIdentityVersion: 1, segments: [], sentenceIdentifiers: [sentence] } })
+        payload: { stableIdentityVersion: 1, segments: [{ stableSegmentID: `${sentence}-segment`,
+            jmdictEntryIds: [1], jmnedictEntryIds: [], searchString: 'word', sentenceIdentifier: sentence }], sentenceIdentifiers: [] } })
     const installPage = (sentence, isRead = false) => {
         const states = [state(sentence, isRead)]
         reader.visiblePageSegmentSnapshot = {
@@ -114,7 +125,7 @@ function fixture({ realCoordinator = false } = {}) {
         reader.testRender('fixture-current-page')
     }
     return { reader, packets, requests, attributes, seedPage, installPage, visibleRange,
-        context, doc, timers, moves, lifecycle }
+        context, doc, timers, moves, lifecycle, retireNavigation: () => { navigationCurrent = false } }
 }
 
 function bookRuntimeFixture(f) {
@@ -145,9 +156,9 @@ function bookRuntimeFixture(f) {
     const runtime = installBookReadingRuntime({ reader: f.reader, view: f.reader.view,
         document: { createElement: () => new Element(), getElementById: () => host },
         window: f.context, documentStartedAtMs: 1,
-        applyProjection: state => applyBookReadingProjection(f.reader, state,
-            progress => f.reader.applyBookReadingProgress(progress, 'native-chapter-publication', true)),
+        applyProjection: (state, details) => f.reader.testNativeBookReadProjection(state, details),
         invalidateProjection: () => {
+            f.reader.testInvalidateBookPublication()
             f.reader.optimisticReadSegmentIdentifiers.clear()
             f.reader.optimisticSentenceIdentifiersRead.clear()
             f.reader.applyBookReadingProgress({}, 'chapter-state-unavailable', true)
@@ -156,21 +167,26 @@ function bookRuntimeFixture(f) {
     })
     f.reader.bookReadingRuntime = runtime
     runtime.updateLocation()
-    const response = (revision = 1, accountPresentation = runtime.state.accountPresentation ?? '1:1') => {
+    const response = (revision = 1, accountPresentation = runtime.state.accountPresentation ?? '1:1',
+        readSegmentIdentifiers = runtime.state.state?.readSegmentIdentifiers ?? [],
+        sentenceIdentifiersRead = runtime.state.state?.sentenceIdentifiersRead ?? []) => {
         const scope = { articleProgressID: 'book', articleEpochID: 'pass',
             chapterKey: 'a'.repeat(64), chapterEpochID: null }
         return { ok: true, accountPresentation,
             state: { revision, articleProgressID: 'book', articleEpochID: 'pass', scope,
-                finished: false, readSegmentIdentifiers: [], sentenceIdentifiersRead: [],
+                finished: false, readSegmentIdentifiers, sentenceIdentifiersRead,
                 bookReadPresence: 'empty', chapterReadPresence: 'empty' },
             context: { contextID: `context-${revision}`, articleProgressID: 'book', articleEpochID: 'pass', scope,
                 isEndPage: false, sectionLocation: 'chapter.xhtml' } }
     }
-    const publish = (revision = 1) => runtime.state.apply(requests.at(-1).requestID, response(revision))
+    const publish = (revision = 1, segments, sentences) => runtime.state.apply(requests.at(-1).requestID,
+        response(revision, undefined, segments, sentences))
     const native = (revision = 2) => runtime.state.apply('native', { ...response(revision), nativeRefresh: true,
         location: { ...runtime.state.location, locationRevision: runtime.state.locationRevision } })
     assert.equal(publish(), true)
-    return { runtime, requests, publish, native, response }
+    const book = { runtime, requests, publish, native, response }
+    f.book = book
+    return book
 }
 
 test('invalidating a read page immediately withdraws native read controls and marker', () => {
@@ -190,7 +206,8 @@ test('a Mark tap after invalidation hydrates the current page instead of posting
     f.installPage('current-page')
     await f.reader.markVisiblePageAsRead()
     assert.equal(f.requests.length, 1)
-    assert.deepEqual(Array.from(f.requests[0].message.sentenceIdentifiers), ['current-page'])
+    assert.deepEqual(Array.from(f.requests[0].message.stableSegmentIDs), ['current-page-segment'])
+    assert.deepEqual(Array.from(f.requests[0].message.sentenceIdentifiers), [])
 })
 
 test('a Mark tap cannot report an invalidated read page as the current page when fresh geometry is unavailable', async () => {
@@ -260,6 +277,7 @@ async function successfulMarkAwaitingAdvance(f) {
     await new Promise(resolve => setImmediate(resolve))
     const advance = [...f.timers.values()].filter(timer => timer.delay === 430).at(-1)
     assert.ok(advance, 'Successful Mark must reach its existing delayed advance')
+    assert.equal(f.book.publish(f.nextMarkSequence, ['current-page-segment'], ['native-completed-current-page']), true)
     return { operation, advance }
 }
 
@@ -280,6 +298,47 @@ for (const continuation of ['unchanged scope', 'same-scope progress', 'producer 
         assert.deepEqual(f.moves, ['right'])
     })
 }
+
+test('same-page native lookup navigation vetoes pending automatic advance without changing native success', async t => {
+    const f = fixture(), book = bookRuntimeFixture(f)
+    t.after(() => book.runtime.close())
+    const { operation, advance } = await successfulMarkAwaitingAdvance(f)
+    f.retireNavigation()
+    advance.callback()
+    assert.equal(await operation, true)
+    assert.deepEqual(f.moves, [])
+})
+
+for (const unavailable of ['missing', 'throwing']) {
+    test(`a ${unavailable} navigation-veto capture disables only automatic advance`, async t => {
+        const f = fixture(), book = bookRuntimeFixture(f)
+        t.after(() => book.runtime.close())
+        f.doc.defaultView.manabiCaptureAutomaticScrollNavigation = unavailable === 'missing'
+            ? undefined : () => { throw new Error('capture unavailable') }
+        const { operation, advance } = await successfulMarkAwaitingAdvance(f)
+        advance.callback()
+        assert.equal(await operation, true)
+        assert.deepEqual(f.moves, [])
+        assert.equal(f.requests.length, 1)
+    })
+}
+
+test('the navigation-veto receipt comes from the actual owner document frame', async t => {
+    const f = fixture(), book = bookRuntimeFixture(f)
+    t.after(() => book.runtime.close())
+    let captures = 0
+    f.context.manabiCaptureAutomaticScrollNavigation = () => { throw new Error('top viewer must not supply receipt') }
+    f.doc.defaultView.manabiCaptureAutomaticScrollNavigation = function () {
+        assert.equal(this, f.doc.defaultView)
+        captures += 1
+        return () => true
+    }
+    const { operation, advance } = await successfulMarkAwaitingAdvance(f)
+    advance.callback()
+    assert.equal(await operation, true)
+    assert.deepEqual(f.moves, ['right'])
+    assert.equal(captures, 1)
+})
 
 for (const transition of ['account invalidation', 'unavailable chapter scope', 'runtime replacement']) {
     test(`successful Mark suppresses delayed automatic advance after ${transition}`, async t => {
@@ -374,8 +433,9 @@ function pendingNativeMark(t) {
         manualReadPendingState: 'finished', success: true,
         stateSnapshotSequence: 2, ...extra,
     })
-    const join = async () => {
+    const join = async ({ publish = false } = {}) => {
         await new Promise(resolve => setImmediate(resolve))
+        if (publish) assert.equal(book.publish(2, ['current-page-segment'], ['native-completed-current-page']), true)
         const advance = [...f.timers.values()].filter(timer => timer.delay === 430).at(-1)
         advance?.callback()
         return await completion
@@ -442,6 +502,8 @@ test('a projection exception cannot reject a successfully committed native Mark'
     const f = pendingNativeMark(t)
     f.reader.applyBookReadingProgress = () => { throw new Error('projection unavailable') }
     assert.equal(f.deliver(), true)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.throws(() => f.book.publish(2, ['current-page-segment'], ['native-completed-current-page']), /projection unavailable/)
     const result = await f.join()
     assert.equal(result.value, true)
     assert.equal(result.error, undefined)
@@ -473,13 +535,45 @@ test('a native request exception remains an exception before any committed resul
 test('a current authenticated native Mark success still projects and advances once', async t => {
     const f = pendingNativeMark(t)
     assert.equal(f.deliver(), true)
+    const result = await f.join({ publish: true })
+    assert.equal(result.value, true)
+    assert.equal(result.error, undefined)
+    assert.deepEqual(Array.from(f.reader.optimisticSentenceIdentifiersRead), [])
+    assert.deepEqual(Array.from(f.reader.articleReadingProgress.readSegmentIdentifiers), ['current-page-segment'])
+    assert.deepEqual(Array.from(f.reader.articleReadingProgress.sentenceIdentifiersRead), ['native-completed-current-page'])
+    assert.deepEqual(f.moves, ['right'])
+    assert.equal(f.requests.length, 1)
+})
+
+test('a terminal book publication preserves finished progress without a chapter-scope receipt', t => {
+    const f = fixture(), book = bookRuntimeFixture(f)
+    t.after(() => book.runtime.close())
+    assert.equal(book.runtime.state.relocate({ sectionURL: null, isEndPage: true }), true)
+    const terminal = book.response(2)
+    terminal.state.scope = null
+    terminal.state.finished = true
+    terminal.context.scope = null
+    terminal.context.isEndPage = true
+    terminal.context.sectionLocation = null
+    assert.equal(book.runtime.state.apply(book.requests.at(-1).requestID, terminal), true)
+    assert.equal(f.reader.articleReadingProgress.articleMarkedAsFinished, true)
+    assert.equal(f.reader.testSuccessfulPublication(), null)
+})
+
+test('a full native publication throwing after the viewer model changes cannot advance or discard committed success', async t => {
+    const f = pendingNativeMark(t)
+    assert.equal(f.deliver(), true)
+    await new Promise(resolve => setImmediate(resolve))
+    f.reader.bookEndcap = { setFinished() { throw new Error('endcap publication failed') } }
+    assert.throws(() => f.book.publish(2, ['current-page-segment'], ['native-completed-current-page']),
+        /endcap publication failed/)
+    assert.deepEqual(Array.from(f.reader.articleReadingProgress.readSegmentIdentifiers), ['current-page-segment'])
+    assert.equal(f.book.runtime.state.state.revision, 2)
+    assert.equal(f.reader.testSuccessfulPublication(), null)
     const result = await f.join()
     assert.equal(result.value, true)
     assert.equal(result.error, undefined)
-    assert.deepEqual(Array.from(f.reader.optimisticSentenceIdentifiersRead), ['current-page'])
-    assert.deepEqual(Array.from(f.reader.articleReadingProgress.sentenceIdentifiersRead), ['current-page'])
-    assert.deepEqual(f.moves, ['right'])
-    assert.equal(f.requests.length, 1)
+    assert.deepEqual(f.moves, [])
 })
 
 for (const succeeded of [false, true]) {
@@ -504,3 +598,4 @@ for (const succeeded of [false, true]) {
         assert.deepEqual(f.moves, [])
     })
 }
+
