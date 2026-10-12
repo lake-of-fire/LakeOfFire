@@ -648,7 +648,7 @@ export class FixedLayout extends HTMLElement {
         }
         return null
     }
-    async #goToSpread(index, side, reason, transaction) {
+    async #goToSpread(index, side, reason, transaction, confirmDestination = false) {
         if (!this.#isCurrentNavigation(transaction)) {
             return fixedLayoutNonOwningResult(
                 transaction?.reason ?? 'fixedLayoutNavigationSuperseded'
@@ -663,11 +663,19 @@ export class FixedLayout extends HTMLElement {
         const resolvedSide = side
         if (index === this.#index) {
             const previousSectionIndex = this.index
-            this.#render(resolvedSide)
+            if (!this.#render(resolvedSide)) return false
+            if (!this.#isCurrentNavigation(transaction)) {
+                return fixedLayoutNonOwningResult(
+                    transaction?.reason ?? 'fixedLayoutNavigationSuperseded'
+                )
+            }
             const moved = this.index !== previousSectionIndex
+            // An explicit BookAction owns a destination confirmation even when
+            // it is already selected. Page turns still report only movement.
+            const completed = moved || confirmDestination
             this.#finishNavigation(transaction)
-            if (moved) this.#reportLocation(reason, transaction.relocationID)
-            return moved
+            if (completed) this.#reportLocation(reason, transaction.relocationID)
+            return completed
         }
 
         let preparedSpread
@@ -778,7 +786,8 @@ export class FixedLayout extends HTMLElement {
                 spreadTarget.index,
                 spreadTarget.side,
                 undefined,
-                transaction
+                transaction,
+                resolved.bookAction === true
             )
         }, options)
     }

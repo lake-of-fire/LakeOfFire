@@ -82,10 +82,12 @@ public final class BookmarkStatusCache: ObservableObject {
     }
 
     public func isBookmarked(_ readerContent: any ReaderContentProtocol) -> Bool {
-        bookmarkedCompoundKeys.contains(readerContent.compoundKey)
+        guard !readerContent.isInvalidated else { return false }
+        return bookmarkedCompoundKeys.contains(readerContent.compoundKey)
     }
 
     public func setIsBookmarked(_ isBookmarked: Bool, for readerContent: any ReaderContentProtocol) {
+        guard !readerContent.isInvalidated else { return }
         guard bookmarkedCompoundKeys.contains(readerContent.compoundKey) != isBookmarked else {
             return
         }
@@ -115,8 +117,11 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
     public var body: some View {
         Button {
             Task { @MainActor in
-                let isBookmarked = try await readerContent.toggleBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
-                bookmarkStatusCache.setIsBookmarked(isBookmarked, for: readerContent)
+                guard !readerContent.isInvalidated else { return }
+                // The result describes this transaction; a later toggle may
+                // already have changed it while follow-up history work awaited.
+                // Realm observation publishes the current canonical status.
+                _ = try await readerContent.toggleBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
             }
         } label: {
             BookmarkMenuLabel(isBookmarked: showBookmarkExists)

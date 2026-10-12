@@ -526,18 +526,28 @@ public extension ReaderContentProtocol {
 
 public extension ReaderContentProtocol {
     /// Returns whether the result is having a bookmark or not.
+    @MainActor
     func toggleBookmark(realmConfiguration: Realm.Configuration) async throws -> Bool {
-        if try await removeBookmark(realmConfiguration: realmConfiguration) {
-            return false
-        }
-        try await addBookmark(realmConfiguration: realmConfiguration)
-        return true
+        guard !isInvalidated else { throw CancellationError() }
+        return try await writeBookmark(realmConfiguration: realmConfiguration, toggling: true)
     }
-    
+
     @MainActor
     func addBookmark(realmConfiguration: Realm.Configuration) async throws {
+        guard !isInvalidated else { throw CancellationError() }
+        _ = try await writeBookmark(realmConfiguration: realmConfiguration, toggling: false)
+    }
+
+    @MainActor
+    private func writeBookmark(realmConfiguration: Realm.Configuration, toggling: Bool) async throws -> Bool {
+        guard !isInvalidated else { throw CancellationError() }
+        try Task.checkCancellation()
         let historyRealmConfiguration = ReaderContentLoader.historyRealmConfiguration
-        let compoundKey = compoundKey
+        let admission = RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
+        let historyAdmission = RealmBackgroundActor.shared.realmCacheKey(for: historyRealmConfiguration) == RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+            ? admission : RealmBackgroundActor.shared.captureStorageAdmission(for: historyRealmConfiguration)
+        let sourceReference = ReaderContentLoader.ContentReference(content: self)
+        let sourceObjectReference = self.realm.map { _ in ThreadSafeReference(to: self) }
         let url = url
         let title = title
         let html = html
@@ -564,77 +574,134 @@ public extension ReaderContentProtocol {
         let resolvedRedditTranslationsURL = redditTranslationsUrl
         let resolvedRedditTranslationsTitle = redditTranslationsTitle
         let autoOpenMediaPlayer = autoOpenMediaPlayer
-        try await { @RealmBackgroundActor in
-            let bookmark = try await Bookmark.add(
-                url: url,
-                title: title,
-                imageUrl: imageURL,
-                sourceIconURL: sourceIconURL,
-                html: html,
-                content: content,
-                publicationDate: publicationDate,
-                readerContentKind: readerContentKind,
-                feedEntryCollectionKey: feedEntryCollectionKey,
-                feedEntryCollectionScheme: feedEntryCollectionScheme,
-                feedEntryCollectionTerm: feedEntryCollectionTerm,
-                feedEntryCollectionTitle: feedEntryCollectionTitle,
-                isFromClipboard: isFromClipboard,
-                isTitlePrefixOfContent: isTitlePrefixOfContent,
-                rssContainsFullContent: rssContainsFullContent,
-                isReaderModeByDefault: isReaderModeByDefault,
-                isReaderModeAvailable: isReaderModeAvailable,
-                isReaderModeOfferHidden: isReaderModeOfferHidden,
-                autoOpenMediaPlayer: autoOpenMediaPlayer,
-                realmConfiguration: realmConfiguration
-            )
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            let bookmarkKey = bookmark.compoundKey
-            try await realm.asyncWritePreservingOwnership {
-                if let managedBookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: bookmarkKey) {
-                    if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
-                        content.configureBookmark(managedBookmark)
-                    } else {
-                        managedBookmark.voiceFrameUrl = voiceFrameURL
-                        managedBookmark.voiceAudioURL = resolvedVoiceAudioURL
-                        managedBookmark.voiceAudioURLs.removeAll()
-                        managedBookmark.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
-                        managedBookmark.audioSubtitlesURL = resolvedAudioSubtitlesURL
-                        managedBookmark.audioSubtitlesRoleRawValue = resolvedAudioSubtitlesRoleRawValue ?? (resolvedAudioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
-                        managedBookmark.redditTranslationsUrl = resolvedRedditTranslationsURL
-                        managedBookmark.redditTranslationsTitle = resolvedRedditTranslationsTitle
-                        managedBookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
-                    }
-                    managedBookmark.refreshChangeMetadata(explicitlyModified: true)
-                }
+        return try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration, storageAdmission: admission)
+            let sourceRealm: Realm?
+            if let sourceReference {
+                sourceRealm = try await RealmBackgroundActor.shared.cachedRealm(for: sourceReference.realmConfiguration, storageAdmission: sourceReference.storageAdmission)
+            } else {
+                sourceRealm = nil
             }
-            
-            let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
+            let saved = try await realm.asyncWritePreservingOwnership { () throws -> Bool in
+                try Task.checkCancellation()
+                guard admission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration) }) else {
+                    throw RealmBackgroundActorError.realmFileChangedDuringOpen
+                }
+                let sourceContent: Self?
+                if let sourceReference, let sourceRealm, let sourceObjectReference {
+                    if sourceRealm != realm { sourceRealm.refresh() }
+                    try sourceReference.validateStorage()
+                    guard let original = sourceRealm.resolve(sourceObjectReference),
+                          !original.isInvalidated, original.url == url else {
+                        throw CancellationError()
+                    }
+                    sourceContent = original
+                } else { sourceContent = nil }
+                guard admission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration) }) else {
+                    throw RealmBackgroundActorError.realmFileChangedDuringOpen
+                }
+                if toggling, let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted {
+                    bookmark.isDeleted = true
+                    bookmark.refreshChangeMetadata(explicitlyModified: true)
+                    return false
+                }
+                _ = Bookmark.add(
+                    url: url,
+                    title: title,
+                    imageUrl: imageURL,
+                    sourceIconURL: sourceIconURL,
+                    html: html,
+                    content: content,
+                    publicationDate: publicationDate,
+                    readerContentKind: readerContentKind,
+                    feedEntryCollectionKey: feedEntryCollectionKey,
+                    feedEntryCollectionScheme: feedEntryCollectionScheme,
+                    feedEntryCollectionTerm: feedEntryCollectionTerm,
+                    feedEntryCollectionTitle: feedEntryCollectionTitle,
+                    isFromClipboard: isFromClipboard,
+                    isTitlePrefixOfContent: isTitlePrefixOfContent,
+                    rssContainsFullContent: rssContainsFullContent,
+                    isReaderModeByDefault: isReaderModeByDefault,
+                    isReaderModeAvailable: isReaderModeAvailable,
+                    isReaderModeOfferHidden: isReaderModeOfferHidden,
+                    autoOpenMediaPlayer: autoOpenMediaPlayer,
+                    realm: realm,
+                    configure: { managedBookmark in
+                        if let sourceContent {
+                            sourceContent.configureBookmark(managedBookmark)
+                        } else {
+                            managedBookmark.voiceFrameUrl = voiceFrameURL
+                            managedBookmark.voiceAudioURL = resolvedVoiceAudioURL
+                            managedBookmark.voiceAudioURLs.removeAll()
+                            managedBookmark.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
+                            managedBookmark.audioSubtitlesURL = resolvedAudioSubtitlesURL
+                            managedBookmark.audioSubtitlesRoleRawValue = resolvedAudioSubtitlesRoleRawValue ?? (resolvedAudioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+                            managedBookmark.redditTranslationsUrl = resolvedRedditTranslationsURL
+                            managedBookmark.redditTranslationsTitle = resolvedRedditTranslationsTitle
+                            managedBookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
+                        }
+                    }
+                )
+                return true
+            }
+            guard saved else { return false }
+
+            let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration, storageAdmission: historyAdmission)
             if let historyRecord = HistoryRecord.openedRecords(matching: url, in: historyRealm)
                 .sorted(by: [
                     SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
                     SortDescriptor(keyPath: "compoundKey", ascending: true),
                 ])
                 .first {
-                let historyKey = historyRecord.compoundKey
+                let historyReference = ThreadSafeReference(to: historyRecord)
                 try await historyRealm.asyncWritePreservingOwnership {
-                    guard let current = historyRealm.object(
-                        ofType: HistoryRecord.self, forPrimaryKey: historyKey
-                    ), !current.isDeleted, current.isDemoted != false else { return }
+                    try Task.checkCancellation()
+                    guard admission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration) }),
+                          historyAdmission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: historyRealmConfiguration) }) else {
+                        throw RealmBackgroundActorError.realmFileChangedDuringOpen
+                    }
+                    if realm != historyRealm { realm.refresh() }
+                    guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted else { return }
+                    guard let current = historyRealm.resolve(historyReference),
+                          !current.isDeleted, current.isDemoted != false else { return }
                     current.isDemoted = false
                     current.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
+            return true
         }()
     }
     
     /// Returns whether a matching bookmark was found and deleted.
     @MainActor
     func removeBookmark(realmConfiguration: Realm.Configuration) async throws -> Bool {
+        guard !isInvalidated else { throw CancellationError() }
+        let admission = RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
+        let sourceReference = ReaderContentLoader.ContentReference(content: self)
+        let sourceObjectReference = self.realm.map { _ in ThreadSafeReference(to: self) }
         let url = url
         let html = html
         return try await { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration, storageAdmission: admission)
+            let sourceRealm: Realm?
+            if let sourceReference {
+                sourceRealm = try await RealmBackgroundActor.shared.cachedRealm(for: sourceReference.realmConfiguration, storageAdmission: sourceReference.storageAdmission)
+            } else {
+                sourceRealm = nil
+            }
             return try await realm.asyncWritePreservingOwnership {
+                try Task.checkCancellation()
+                if let sourceReference, let sourceRealm, let sourceObjectReference {
+                    if sourceRealm != realm { sourceRealm.refresh() }
+                    try sourceReference.validateStorage()
+                    guard let original = sourceRealm.resolve(sourceObjectReference),
+                          !original.isInvalidated, original.url == url else {
+                        throw CancellationError()
+                    }
+                }
+                guard admission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration) }) else {
+                    throw RealmBackgroundActorError.realmFileChangedDuringOpen
+                }
                 guard let bookmark = realm.object(
                     ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)
                 ), !bookmark.isDeleted else { return false }

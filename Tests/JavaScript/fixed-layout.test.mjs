@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { webcrypto } from 'node:crypto'
+import { installBookReadingRuntime } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-runtime.js'
 
 class FakeElement extends EventTarget {
     constructor() {
@@ -80,6 +82,142 @@ globalThis.document = {
 globalThis.customElements = { define() {} }
 
 const { FixedLayout } = await import('../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/fixed-layout.js')
+
+// Use the real renderer and runtime together; only the host DOM/native state
+// transport is fake. Relocations supply the runtime's destination receipt.
+class BookActionElement extends FakeElement {
+    attributes = new Map()
+    classList = { add() {}, remove() {} }
+    setAttribute(key, value) { this.attributes.set(key, value) }
+    getAttribute(key) { return this.attributes.get(key) ?? null }
+    removeAttribute(key) { this.attributes.delete(key) }
+    querySelector() { return new BookActionElement() }
+    focus() {}
+}
+
+async function fixedLayoutBookActionFixture(index, spread) {
+    const layout = new FixedLayout(), loads = [], relocations = [], requests = []
+    const book = {
+        dir: 'ltr',
+        rendition: { spread, viewport: { width: 1000, height: 1000 } },
+        sections: [0, 1].map(index => ({
+            id: `chapter-${index}.xhtml`, linear: 'yes',
+            load: async () => { loads.push(index); return `book-action-page-${index}` },
+        })),
+    }
+    layout.open(book)
+    await layout.goTo({ index })
+    for (const content of layout.getContents()) {
+        content.doc.location = { href: `ebook://ebook/processed-section?subpath=chapter-${content.index}.xhtml` }
+        content.doc.defaultView = {}
+    }
+    const view = new BookActionElement()
+    view.renderer = layout
+    view.book = book
+    const host = new BookActionElement()
+    const runtime = installBookReadingRuntime({
+        reader: { view }, view,
+        document: { createElement: () => new BookActionElement(), getElementById: () => host },
+        window: { location: { href: 'ebook://ebook/load/book.epub' }, webkit: { messageHandlers: {
+            ebookBookAction: { postMessage() {} },
+            ebookBookReadingState: { postMessage: request => requests.push(request) },
+        } } },
+        documentStartedAtMs: 1, applyProjection() {}, invalidateProjection() {}, onVisibility() {},
+    })
+    layout.addEventListener('relocate', event => {
+        relocations.push(event.detail)
+        view.lastLocation = event.detail
+        runtime.updateLocation(true)
+    })
+    const publish = (revision, articleEpochID, chapterEpochID) => {
+        const scope = { articleProgressID: 'book', articleEpochID,
+            chapterKey: (index === 0 ? 'a' : 'b').repeat(64), chapterEpochID }
+        return runtime.state.apply(requests.at(-1).requestID, {
+            ok: true, accountPresentation: '0:1',
+            state: { revision, articleProgressID: 'book', articleEpochID, scope, finished: false,
+                bookReadPresence: 'present', chapterReadPresence: 'present',
+                readSegmentIdentifiers: [], sentenceIdentifiersRead: [] },
+            context: { contextID: `context-${revision}`, articleProgressID: 'book', articleEpochID,
+                scope, sectionLocation: book.sections[index].id, isEndPage: false },
+        })
+    }
+    runtime.updateLocation()
+    assert.equal(publish(1, 'E1', null), true)
+    runtime.state.refresh()
+    // Model the projection after the native Start Over write has committed.
+    assert.equal(publish(2, 'E2', 'C2'), true)
+    return { layout, runtime, view, loads, relocations }
+}
+
+for (const spread of [undefined, 'none']) {
+    for (const [action, index] of [['startBookOver', 0], ['startChapterOver', 1]]) {
+        test(`fixed layout ${spread ?? 'paired'} ${action} confirms the current destination`, async () => {
+            const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
+            Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto })
+            let f
+            try {
+                f = await fixedLayoutBookActionFixture(index, spread)
+                const { layout, runtime, view, loads, relocations } = f
+                const doc = layout.getContents().find(content => content.index === index).doc
+                const loaded = [...loads]
+                const target = () => ({ accountPresentation: '0:1', action,
+                    articleProgressID: 'book', articleEpochID: 'E2', chapterEpochID: 'C2',
+                    sectionLocation: `chapter-${index}.xhtml`, locationRevision: runtime.state.locationRevision })
+                let receipt
+                assert.deepEqual(await runtime.navigate(target(), {
+                    onCompleted: check => { receipt = check },
+                }), { status: 'completed' })
+                assert.equal(typeof receipt, 'function')
+                assert.equal(receipt(), true)
+                assert.equal(relocations.length, 1)
+                assert.equal(relocations[0].index, index)
+                assert.ok(relocations[0].relocationID)
+                assert.equal(view.lastLocation, relocations[0])
+                assert.equal(layout.getContents().find(content => content.index === index).doc, doc)
+                assert.deepEqual(loads, loaded, 'Confirmation must not load or turn a page')
+                view.lastLocation = { ...view.lastLocation }
+                assert.equal(receipt(), false, 'Equal-valued replacement is not the owned relocation')
+
+                let successorReceipt
+                assert.deepEqual(await runtime.navigate(target(), {
+                    onCompleted: check => { successorReceipt = check },
+                }), { status: 'completed' })
+                assert.notEqual(relocations[0].relocationID, relocations[1].relocationID)
+                assert.equal(receipt(), false, 'A later same-destination producer retires the receipt')
+                assert.equal(successorReceipt(), true)
+                assert.deepEqual(loads, loaded)
+                runtime.accountDidChange('1:1')
+                assert.equal(successorReceipt(), false, 'An account change retires the owned receipt')
+            } finally {
+                f?.runtime.close()
+                f?.layout.destroy()
+                if (cryptoDescriptor) Object.defineProperty(globalThis, 'crypto', cryptoDescriptor)
+                else delete globalThis.crypto
+            }
+        })
+    }
+}
+
+test('fixed layout superseded same-destination BookAction cannot issue an old receipt', async () => {
+    const layout = new FixedLayout(), relocations = []
+    layout.open({ dir: 'ltr', rendition: { spread: 'none', viewport: { width: 1000, height: 1000 } },
+        sections: [{ linear: 'yes', load: async () => 'owned-current-page' }] })
+    try {
+        await layout.goTo({ index: 0 })
+        layout.addEventListener('relocate', event => relocations.push(event.detail))
+        let resolve
+        const pending = layout.goTo(new Promise(done => { resolve = done }), { relocationID: 'old' })
+        assert.equal(await layout.goTo({ index: 0, bookAction: true }, { relocationID: 'fresh' }), true)
+        resolve({ index: 0, bookAction: true })
+        assert.equal((await pending).superseded, true)
+        assert.deepEqual(relocations.map(event => event.relocationID), ['fresh'])
+        assert.equal(await layout.prev(undefined, { relocationID: 'terminal-prev' }), false)
+        assert.equal(await layout.next(undefined, { relocationID: 'terminal-next', allowBookEndcap: false }), false)
+        assert.deepEqual(relocations.map(event => event.relocationID), ['fresh'])
+        assert.equal(await layout.goTo({ index: 0 }, { relocationID: 'ordinary' }), false)
+        assert.equal(relocations.length, 1)
+    } finally { layout.destroy() }
+})
 
 test('fixed layout reports the selected page when relocating within an existing spread', async () => {
     const sections = [
