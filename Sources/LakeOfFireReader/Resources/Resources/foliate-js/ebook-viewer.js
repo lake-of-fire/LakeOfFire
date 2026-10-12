@@ -5733,6 +5733,10 @@ class Reader {
     close(reason = 'unspecified') {
         if (this.#closed) return false;
         this.#closed = true;
+        // Dispose transport while the original generation still identifies
+        // the current chapter. The coordinator compares exact ownership and
+        // closes its own admissions; reentrant Reader close sees #closed.
+        this.nativeMarkReadRequestCoordinator?.close?.();
         this.#markReadProducerReadiness?.close();
         this.#markReadProducerReadiness = null;
         ++this.#markReadDiagnosticGeneration;
@@ -5801,8 +5805,6 @@ class Reader {
         );
         this.#pageTurnInFlight = false;
 
-        this.nativeMarkReadRequestCoordinator?.cancelAll?.(`readerClosed:${reason}`);
-        this.nativeMarkReadRequestCoordinator?.retireHistoryRecoveries?.();
         this.#resolveInitialDisplaySettled(`reader-closed:${reason}`);
         this.#resolveDisplaySettledWaiters(`reader-closed:${reason}`);
         this.#finishNavButtonOperations();
@@ -6368,7 +6370,7 @@ class Reader {
             postMessage: message => {
                 window.webkit.messageHandlers.markSectionAsRead.postMessage(message);
             },
-            isOwnerCurrent: owner => this.#isMarkReadOwnerCurrent(owner),
+            isOwnerCurrent: owner => this.#ownsMarkReadOwner(owner),
         });
         this.navHUD = new NavigationHUD({
             formatPercent: value => percentFormat.format(value),
@@ -7103,9 +7105,16 @@ class Reader {
         };
     }
     #isMarkReadOwnerCurrent(owner) {
+        return !this.#closed && this.#ownsMarkReadOwner(owner);
+    }
+    #ownsMarkReadOwner(owner) {
         if (!owner || globalThis.reader !== this || owner.pageLifetime !== this.#pageLifetime) return false;
         if (this.bookReadingRuntime && !this.bookReadingRuntime.isScopeCurrent(owner.bookReadingScope, owner.document)) return false;
-        if (!this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)) return false;
+        // Transport disposal can compare the original owner after #closed is
+        // set but before generation retirement. Admission/observation belongs
+        // to the coordinator; ordinary Reader continuation remains closed.
+        if (this.#lifecycleGeneration !== owner.lifecycleGeneration
+            || this.view?.renderer !== owner.renderer) return false;
         if (owner.requireVisibleGeneration === true
             && owner.visiblePageCollectionGeneration !== this.visiblePageCollectionGeneration) return false;
         if (owner.document && this.#currentPageTrackingDocument(owner.document) !== owner.document) return false;
