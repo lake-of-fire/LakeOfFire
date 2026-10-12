@@ -203,6 +203,30 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
             return true
         },
         captureScope, isScopeCurrent,
+        captureHistoryReadingStatus() {
+            const doc = primaryDocument(), event = this.captureEvent(doc)
+            if (!event) return null
+            const context = state.captureContext()
+            const accountPresentation = state.accountPresentation
+            return this.isEventCurrent(event) ? {
+                sectionURL: doc.location?.href ?? doc.URL,
+                locationRevision: event.locationRevision, contextID: context.contextID,
+                accountPresentation, scope: { ...event.scope },
+            } : null
+        },
+        applyHistoryReadingStatus(projection, receipt) {
+            const current = this.captureHistoryReadingStatus()
+            if (!current || !receipt || current.sectionURL !== receipt.sectionURL
+                || current.locationRevision !== receipt.locationRevision
+                || current.contextID !== receipt.contextID
+                || current.accountPresentation !== receipt.accountPresentation
+                || bookScopeKey(current.scope) !== bookScopeKey(receipt.scope)) return false
+            const context = state.captureContext()
+            return state.apply(null, { ok: true, nativeRefresh: true,
+                accountPresentation: receipt.accountPresentation,
+                location: { sectionURL: receipt.sectionURL, isEndPage: false,
+                    locationRevision: receipt.locationRevision }, state: projection, context })
+        },
         // Capture before a timer, promise or layout wait. A later same-URL
         // document, renderer, position or pass cannot adopt this event.
         captureEvent(doc) {

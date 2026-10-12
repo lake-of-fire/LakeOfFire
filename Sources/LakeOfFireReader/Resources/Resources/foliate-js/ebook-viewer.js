@@ -5490,6 +5490,7 @@ const navSpinnerMaximumMs = 1200;
 class Reader {
     #closed = false;
     #pageLifetime = {};
+    #historyReadingStatusGeneration = 0;
     #markReadProducerReadiness = null;
     #markReadDiagnosticGeneration = 0;
     #markReadBusyOwners = new Map();
@@ -6328,7 +6329,10 @@ class Reader {
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
-        this.#listen(window, 'pagehide', () => { this.#pageLifetime = {}; });
+        this.#listen(window, 'pagehide', () => {
+            this.#pageLifetime = {};
+            ++this.#historyReadingStatusGeneration;
+        });
         this.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
             postControlMessage: packet => {
                 const handler = globalThis.webkit?.messageHandlers?.manualReadPendingControl
@@ -7273,6 +7277,17 @@ class Reader {
             // to replace the already committed command's outcome.
         }
         return completed;
+    }
+    captureHistoryReadingStatus(observation) {
+        if (!this.nativeMarkReadRequestCoordinator?.hasPendingHistoryRecoveryObservation(observation)) return null;
+        const receipt = this.bookReadingRuntime?.captureHistoryReadingStatus();
+        return receipt ? { ...receipt, pageLifetime: this.#historyReadingStatusGeneration } : null;
+    }
+    applyHistoryReadingStatus(state, observation, receipt) {
+        if (!this.nativeMarkReadRequestCoordinator?.hasPendingHistoryRecoveryObservation(observation)) return false;
+        if (!receipt || receipt.pageLifetime !== this.#historyReadingStatusGeneration) return false;
+        if (!this.bookReadingRuntime?.applyHistoryReadingStatus(state, receipt)) return false;
+        return this.nativeMarkReadRequestCoordinator.acknowledgeHistoryReadingStatus(observation);
     }
     applyMarkSectionAsReadResult(result) {
         return this.nativeMarkReadRequestCoordinator?.settle?.(result) ?? false;

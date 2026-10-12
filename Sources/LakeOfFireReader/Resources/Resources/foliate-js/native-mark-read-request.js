@@ -58,6 +58,7 @@ export const createNativeMarkReadRequestCoordinator = ({
     if (typeof postMessage !== 'function') throw new TypeError('postMessage must be a function')
     if (typeof postControlMessage !== 'function') throw new TypeError('postControlMessage must be a function')
     const pendingByRequestID = new Map()
+    const historyRecoveries = new Map()
     // A document-local namespace and increasing sequence keep request IDs
     // distinct without retaining every completed request for its lifetime.
     let requestNamespace
@@ -80,7 +81,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         lifecycleTarget.addEventListener('pageshow', resume)
     }
     const detachLifecycle = () => {
-        if (!listening || !observing || pendingByRequestID.size !== 0) return
+        if (!listening || !observing || pendingByRequestID.size !== 0 || historyRecoveries.size !== 0) return
         listening = false
         lifecycleTarget.removeEventListener?.('pagehide', pause)
         lifecycleTarget.removeEventListener?.('pageshow', resume)
@@ -110,7 +111,8 @@ export const createNativeMarkReadRequestCoordinator = ({
                 requestID: pending.requestID,
                 manualReadPendingProtocol: 1,
                 manualReadPendingObservationToken: pending.message.manualReadPendingObservationToken,
-                manualReadPendingOperation: pending.cancelling ? 'cancel' : 'status',
+                manualReadPendingOperation: pending.recoveryOnly ? 'status' : pending.cancelling ? 'cancel' : 'status',
+                ...(pending.recoveryOnly ? { manualReadPendingHistoryRecovery: true } : {}),
                 manualReadPendingKind: 'section',
                 topWindowURL: pending.message.topWindowURL,
                 documentStartedAtMs: pending.message.documentStartedAtMs,
@@ -123,7 +125,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         pending.timeoutHandle = scheduleTimeout?.(() => {
             // A retained callback may fire after a terminal native result.
             // It must not resurrect polling, cancellation UI or transport.
-            if (pendingByRequestID.get(pending.requestID) !== pending) return
+            if (!observing || pendingByRequestID.get(pending.requestID) !== pending) return
             pending.timeoutHandle = null
             pending.slow = true
             notify(pending)
@@ -147,6 +149,7 @@ export const createNativeMarkReadRequestCoordinator = ({
     const cancel = requestID => {
         const pending = pendingByRequestID.get(requestID)
         if (!pending) return false
+        if (pending.recoveryOnly) { postControl(pending); observe(pending); return true }
         pending.cancelling = true
         notify(pending)
         postControl(pending)
@@ -173,6 +176,10 @@ export const createNativeMarkReadRequestCoordinator = ({
             // into an older Mark promise. Cancellation must finish first.
             return Promise.resolve({ requestID: null, context, success: false,
                 stale: false, errorCode: 'pendingTargetBusy', presentationAllowed: false })
+        }
+        if (historyRecoveries.size > 0 || [...pendingByRequestID.values()].some(p => p.recoveryOnly)) {
+            return Promise.resolve({ requestID: null, context, success: false,
+                stale: false, errorCode: 'historyReadingStatusPending', presentationAllowed: false })
         }
         if (!observing || pendingByRequestID.size >= 32) {
             return Promise.resolve({ requestID: null, context, success: false,
@@ -223,29 +230,47 @@ export const createNativeMarkReadRequestCoordinator = ({
         const pending = pendingByRequestID.get(result?.requestID)
         if (!pending) return false
         if (result.manualReadPendingProtocol !== 1
-            || result.manualReadPendingObservationToken !== pending.message.manualReadPendingObservationToken) return false
+            || result.manualReadPendingObservationToken !== pending.message.manualReadPendingObservationToken
+            || (result.manualReadPendingHistoryRecovery !== undefined
+                && typeof result.manualReadPendingHistoryRecovery !== 'boolean')) return false
         if (['pending', 'cancelling', 'unknown'].includes(result?.manualReadPendingState)) {
             if (result.manualReadPendingState === 'cancelling') pending.cancelling = true
             if (pending.slow) notify(pending)
             return false
         }
-        if (result.manualReadPendingState !== 'finished' || typeof result?.success !== 'boolean') return false
-        const sectionMatches = result.manualReadPendingOutcomeOnly === true
+        const recovery = pending.recoveryOnly || result.manualReadPendingHistoryRecovery === true
+        const unavailable = recovery && result.manualReadPendingHistoryRecovery === true
+            && result.manualReadPendingState === 'unavailable' && result.errorCode === 'outcomeUnavailable'
+            && result.manualReadPendingOutcomeOnly === true && result.manualReadPendingPresentationAllowed === false
+        if (!unavailable && (result.manualReadPendingState !== 'finished' || typeof result?.success !== 'boolean')) return false
+        const sectionMatches = unavailable || result.manualReadPendingOutcomeOnly === true
             || result.sectionId === pending.sectionID
         if (!sectionMatches) return false
+        if (recovery) {
+            pending.recoveryOnly = true
+            historyRecoveries.set(pending.requestID, pending.message.manualReadPendingObservationToken)
+        }
         const ownerIsCurrent = ownerCurrent(pending)
         const success = result.success === true
         return finish(pending, {
             success,
             stale: !ownerIsCurrent,
-            presentationAllowed: ownerIsCurrent && sectionMatches
+            presentationAllowed: !recovery && ownerIsCurrent && sectionMatches
                 && result.manualReadPendingOutcomeOnly !== true
                 && result.manualReadPendingPresentationAllowed !== false,
-            errorCode: success ? null : (!sectionMatches ? 'sectionMismatch' : result.errorCode || 'nativeCommitFailed'),
+            errorCode: success ? null : result.errorCode || 'nativeCommitFailed',
             nativeResult: result,
         })
     }
-    const cancelAll = () => {
+    const cancelAll = reason => {
+        if (typeof reason === 'string' && reason.startsWith('readerClosed:')) {
+            const retired = [...historyRecoveries.keys()]
+            historyRecoveries.clear()
+            for (const requestID of retired) {
+                try { onPending({ requestID, phase: 'finished' }) } catch (_) {}
+            }
+            detachLifecycle()
+        }
         for (const requestID of pendingByRequestID.keys()) cancel(requestID)
     }
     const pause = () => {
@@ -253,6 +278,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         for (const pending of pendingByRequestID.values()) {
             if (pending.timeoutHandle != null) cancelTimeout?.(pending.timeoutHandle)
             pending.timeoutHandle = null
+            pending.recoveryOnly = true
         }
     }
     const resume = () => {
@@ -260,7 +286,23 @@ export const createNativeMarkReadRequestCoordinator = ({
         for (const pending of pendingByRequestID.values()) observe(pending, 0)
         detachLifecycle()
     }
+    const hasPendingHistoryRecoveryObservation = observation => !!observation
+        && historyRecoveries.get(observation.requestID) === observation.observationToken
+    const acknowledgeHistoryReadingStatus = observation => {
+        if (!hasPendingHistoryRecoveryObservation(observation)) return false
+        historyRecoveries.delete(observation.requestID)
+        detachLifecycle()
+        return true
+    }
+    const failFreshReadingStatusPublication = (observation, failure) => {
+        if (!hasPendingHistoryRecoveryObservation(observation)) return false
+        try { onPending({ requestID: observation.requestID, phase: 'reconciliationFailed', failure }) }
+        catch (_) {}
+        return true
+    }
     return { request, settle, cancel, cancelAll, pause, resume,
+        hasPendingHistoryRecoveryObservation, acknowledgeHistoryReadingStatus,
+        failFreshReadingStatusPublication,
         get pendingCount() { return pendingByRequestID.size } }
 }
 
@@ -286,13 +328,15 @@ export const presentNativeMarkReadPending = state => {
         const button = document.createElement('button')
         button.type = 'button'
         button.textContent = 'Cancel'
-        button.addEventListener('click', () => state.cancel())
+        button.addEventListener('click', () => state.cancel?.())
         notice.append(label, button)
         document.body.append(notice)
         pendingNativeMarkNotices.set(state.requestID, notice)
     }
-    notice.firstElementChild.textContent = state.phase === 'cancelling'
+    notice.firstElementChild.textContent = state.phase === 'reconciliationFailed'
+        ? 'Reading change outcome received. Current reading status could not be refreshed. Reopen this book. '
+        : state.phase === 'cancelling'
         ? 'Cancelling reading change. Waiting for its outcome. '
         : 'Still saving reading change. '
-    notice.lastElementChild.disabled = state.phase === 'cancelling'
+    notice.lastElementChild.disabled = state.phase === 'cancelling' || state.phase === 'reconciliationFailed'
 }

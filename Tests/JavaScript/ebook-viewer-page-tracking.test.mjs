@@ -17,7 +17,7 @@ const classEnd = source.indexOf('\n}\n', classStart)
 const readerClass = source.slice(classStart, classEnd)
 
 function fixture({ realCoordinator = false } = {}) {
-    const packets = [], requests = [], attributes = new Map(), timers = new Map(), moves = []
+    const packets = [], requests = [], controls = [], attributes = new Map(), timers = new Map(), moves = []
     const lifecycle = new EventTarget()
     const doc = { location: { href: 'ebook://fixture/chapter.xhtml' }, defaultView: {}, body: {} }
     const visibleRange = { collapsed: false }
@@ -41,7 +41,7 @@ function fixture({ realCoordinator = false } = {}) {
             ? createNativeMarkReadRequestCoordinator({ ...options, lifecycleTarget: lifecycle,
                 makeRequestID: () => 'viewer-fixture',
                 postMessage: message => requests.push({ message }),
-                postControlMessage() {},
+                postControlMessage: message => controls.push(message),
                 scheduleTimeout: (callback, delay) => {
                     const id = timers.size + 1
                     timers.set(id, { callback, delay })
@@ -113,7 +113,7 @@ function fixture({ realCoordinator = false } = {}) {
         reader.pageTrackingStatesGeneration = reader.visiblePageCollectionGeneration
         reader.testRender('fixture-current-page')
     }
-    return { reader, packets, requests, attributes, seedPage, installPage, visibleRange,
+    return { reader, packets, requests, controls, attributes, seedPage, installPage, visibleRange,
         context, doc, timers, moves, lifecycle }
 }
 
@@ -501,6 +501,105 @@ for (const succeeded of [false, true]) {
         }), true)
         assert.equal(await operation, succeeded ? 1 : 0)
         assert.deepEqual(Array.from(f.reader.optimisticSentenceIdentifiersRead), [])
+        assert.deepEqual(f.moves, [])
+    })
+}
+
+
+const restoredTerminal = (message, extra = {}) => ({
+    requestID: message.requestID, sectionId: message.sectionId,
+    manualReadPendingProtocol: 1,
+    manualReadPendingObservationToken: message.manualReadPendingObservationToken,
+    manualReadPendingState: 'finished', success: true,
+    manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: true,
+    manualReadPendingPresentationAllowed: false, ...extra,
+})
+const recoveryObservation = message => ({ requestID: message.requestID,
+    observationToken: message.manualReadPendingObservationToken })
+
+for (const cancelling of [false, true]) {
+    test(`restored EPUB ${cancelling ? 'Cancel' : 'Mark'} observes status only and reconciles its actual chapter`, async t => {
+        const f = fixture({ realCoordinator: true })
+        const book = bookRuntimeFixture(f)
+        t.after(() => { f.reader.nativeMarkReadRequestCoordinator.pause(); book.runtime.close() })
+        f.seedPage('original-subject')
+        const operation = f.reader.testMarkCluster()
+        const message = f.requests[0].message
+        if (cancelling) f.reader.nativeMarkReadRequestCoordinator.cancel(message.requestID)
+        f.lifecycle.dispatchEvent(new Event('pagehide'))
+        f.lifecycle.dispatchEvent(new Event('pageshow'))
+        const scheduled = [...f.timers.values()].filter(timer => timer.delay === 0)
+        assert.equal(scheduled.length, 1)
+        scheduled[0].callback()
+        assert.equal(f.controls.at(-1).manualReadPendingOperation, 'status')
+        assert.equal(f.controls.at(-1).manualReadPendingHistoryRecovery, true)
+        assert.equal(f.controls.at(-1).manualReadPendingObservationToken, message.manualReadPendingObservationToken)
+        assert.equal(f.requests.length, 1, 'Restoration never replays the mutation')
+        assert.equal(f.reader.applyMarkSectionAsReadResult(restoredTerminal(message)), true)
+        assert.equal(await operation, true, 'The old native commit remains successful')
+        assert.deepEqual(f.moves, [], 'Recovery never advances the restored chapter')
+        const observation = recoveryObservation(message)
+        const receipt = f.reader.captureHistoryReadingStatus(observation)
+        assert.equal(receipt.sectionURL, f.doc.location.href)
+        assert.notEqual(receipt.sectionURL, f.context.location.href, 'The shell URL is not the chapter')
+        const blocked = await f.reader.nativeMarkReadRequestCoordinator.request({ sectionID: 'fresh', message: {} })
+        assert.equal(blocked.errorCode, 'historyReadingStatusPending')
+        const state = book.response(2).state
+        state.sentenceIdentifiersRead = ['fresh-native-subject']
+        assert.equal(f.reader.applyHistoryReadingStatus(state, observation, receipt), true)
+        assert.equal(f.reader.nativeMarkReadRequestCoordinator.hasPendingHistoryRecoveryObservation(observation), false)
+        assert.deepEqual(Array.from(f.reader.articleReadingProgress.sentenceIdentifiersRead), ['fresh-native-subject'])
+        assert.equal(f.reader.applyHistoryReadingStatus(state, observation, receipt), false,
+            'Duplicate callbacks cannot repaint through a retired observation')
+        const fresh = f.reader.nativeMarkReadRequestCoordinator.request({ sectionID: 'fresh', message: {} })
+        assert.equal(f.requests.length, 2, 'Accepted reconciliation permits a new command')
+        const freshMessage = f.requests[1].message
+        f.reader.nativeMarkReadRequestCoordinator.settle({ ...restoredTerminal(freshMessage),
+            manualReadPendingHistoryRecovery: false, manualReadPendingOutcomeOnly: false,
+            manualReadPendingPresentationAllowed: true })
+        assert.equal((await fresh).success, true)
+    })
+}
+
+test('unavailable restored EPUB outcome terminates without inventing success and awaits the native chapter sample', async t => {
+    const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+    t.after(() => { f.reader.nativeMarkReadRequestCoordinator.pause(); book.runtime.close() })
+    f.seedPage('original-subject')
+    const operation = f.reader.testMarkCluster(), message = f.requests[0].message
+    f.lifecycle.dispatchEvent(new Event('pagehide'))
+    f.lifecycle.dispatchEvent(new Event('pageshow'))
+    const terminal = restoredTerminal(message, { manualReadPendingState: 'unavailable', errorCode: 'outcomeUnavailable' })
+    delete terminal.success
+    assert.equal(f.reader.applyMarkSectionAsReadResult(terminal), true)
+    assert.equal(await operation, false)
+    const observation = recoveryObservation(message), receipt = f.reader.captureHistoryReadingStatus(observation)
+    assert.equal(f.reader.applyHistoryReadingStatus(book.response(2).state, observation, receipt), true)
+    assert.equal(f.requests.length, 1)
+    assert.deepEqual(f.moves, [])
+})
+
+for (const replacement of ['account', 'chapter document', 'context', 'observation token', 'page lifetime']) {
+    test(`EPUB history sample rejects a changed ${replacement} without acknowledging recovery`, async t => {
+        const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+        t.after(() => { f.reader.nativeMarkReadRequestCoordinator.pause(); book.runtime.close() })
+        f.seedPage('original-subject')
+        const operation = f.reader.testMarkCluster(), message = f.requests[0].message
+        f.lifecycle.dispatchEvent(new Event('pagehide'))
+        f.lifecycle.dispatchEvent(new Event('pageshow'))
+        f.reader.applyMarkSectionAsReadResult(restoredTerminal(message))
+        await operation
+        const observation = recoveryObservation(message), receipt = f.reader.captureHistoryReadingStatus(observation)
+        if (replacement === 'account') book.runtime.accountDidChange('2:1')
+        if (replacement === 'chapter document') {
+            const doc = { ...f.doc, defaultView: {} }
+            f.reader.view.renderer.getContents = () => [{ index: 0, doc }]
+            book.runtime.updateLocation()
+        }
+        if (replacement === 'context') book.native(2)
+        if (replacement === 'observation token') observation.observationToken = 'foreign'
+        if (replacement === 'page lifetime') f.lifecycle.dispatchEvent(new Event('pagehide'))
+        assert.equal(f.reader.applyHistoryReadingStatus(book.response(3).state, observation, receipt), false)
+        assert.equal(f.requests.length, 1)
         assert.deepEqual(f.moves, [])
     })
 }
