@@ -82,10 +82,12 @@ public final class BookmarkStatusCache: ObservableObject {
     }
 
     public func isBookmarked(_ readerContent: any ReaderContentProtocol) -> Bool {
-        bookmarkedCompoundKeys.contains(readerContent.compoundKey)
+        guard !readerContent.isInvalidated else { return false }
+        return bookmarkedCompoundKeys.contains(readerContent.compoundKey)
     }
 
     public func setIsBookmarked(_ isBookmarked: Bool, for readerContent: any ReaderContentProtocol) {
+        guard !readerContent.isInvalidated else { return }
         guard bookmarkedCompoundKeys.contains(readerContent.compoundKey) != isBookmarked else {
             return
         }
@@ -147,11 +149,14 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
             get: { showBookmarkExists },
             set: { newValue in
                 Task { @MainActor in
+                    guard !readerContent.isInvalidated else { return }
                     if newValue != showBookmarkExists {
-                        let isBookmarked = try await readerContent.toggleBookmark(
+                        // A completed mutation describes its own transaction, not
+                        // necessarily the latest state after overlapping commands.
+                        // Realm observation owns the displayed bookmark status.
+                        _ = try await readerContent.toggleBookmark(
                             realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration
                         )
-                        bookmarkStatusCache.setIsBookmarked(isBookmarked, for: readerContent)
                     }
                 }
             }
