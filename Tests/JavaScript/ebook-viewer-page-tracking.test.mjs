@@ -195,9 +195,7 @@ test('closing the shipping Reader retires unresolved Mark transport before reope
     assert.ok(retainedTimer)
     assert.equal(oldReader.close('fixture-reopen'), true)
     assert.equal(oldReader.nativeMarkReadRequestCoordinator.pendingCount, 0)
-    assert.equal(f.controls.length, 1)
-    assert.equal(f.controls[0].manualReadPendingOperation, 'cancel')
-    assert.equal(f.controls[0].manualReadPendingObservationToken, original.manualReadPendingObservationToken)
+    assert.equal(f.controls.length, 0, 'Reader teardown already retired its original cancellation owner')
     const outcome = await joined
     assert.equal(outcome.value, undefined)
     assert.equal(outcome.error?.code, 'readerClosed')
@@ -220,7 +218,7 @@ test('closing the shipping Reader retires unresolved Mark transport before reope
     retainedTimer.callback()
     f.lifecycle.dispatchEvent(new Event('pageshow'))
     oldReader.nativeMarkReadRequestCoordinator.resume()
-    assert.equal(f.controls.length, 1, 'Closed transport cannot poll or cancel after reopen')
+    assert.equal(f.controls.length, 0, 'Closed transport cannot poll or cancel after reopen')
     assert.equal(oldReader.applyMarkSectionAsReadResult({ ...original,
         manualReadPendingState: 'finished', success: true }), false)
     assert.equal(replacement.nativeMarkReadRequestCoordinator.pendingCount, 1)
@@ -229,6 +227,35 @@ test('closing the shipping Reader retires unresolved Mark transport before reope
         manualReadPendingState: 'finished', success: true }), true)
     assert.equal(await successor, true)
     currentBook.runtime.close()
+    book.runtime.close()
+})
+
+test('shipping Reader treats a running history receipt without section ID as status-only', async () => {
+    const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+    f.seedPage('running-history-page')
+    const completion = f.reader.markVisiblePageAsRead(), message = f.requests[0].message
+    const history = { requestID: message.requestID, manualReadPendingProtocol: 1,
+        manualReadPendingObservationToken: message.manualReadPendingObservationToken,
+        manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: true,
+        manualReadPendingPresentationAllowed: false }
+    assert.equal(f.reader.applyMarkSectionAsReadResult({ ...history,
+        manualReadPendingState: 'cancelling' }), false)
+    assert.equal(f.reader.nativeMarkReadRequestCoordinator.pendingCount, 1)
+    assert.equal(f.reader.nativeMarkReadRequestCoordinator.cancel(message.requestID), false)
+    assert.equal(book.requests.length, 1, 'A running history receipt cannot authorize a fresh native query')
+    const timer = [...f.timers.values()].find(value => value.delay === 15_000)
+    assert.ok(timer)
+    timer.callback()
+    assert.equal(f.controls.length, 1)
+    assert.equal(f.controls[0].manualReadPendingOperation, 'status')
+    assert.equal(f.controls[0].manualReadPendingHistoryRecovery, true)
+    assert.equal(f.controls[0].manualReadPendingObservationToken, message.manualReadPendingObservationToken)
+    assert.equal(f.requests.length, 1, 'History observation cannot replay the original mutation')
+    assert.equal(f.reader.applyMarkSectionAsReadResult({ ...history,
+        manualReadPendingState: 'finished', success: true }), true)
+    assert.equal(await completion, true)
+    assert.equal(book.requests.length, 1, 'Terminal truth still waits for native recovery delegation')
+    assert.deepEqual(f.moves, [])
     book.runtime.close()
 })
 
