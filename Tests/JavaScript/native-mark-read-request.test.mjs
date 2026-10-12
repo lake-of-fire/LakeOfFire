@@ -491,6 +491,69 @@ const unavailableFor = message => ({
     errorCode: 'outcomeUnavailable',
 })
 
+for (const success of [true, false]) {
+    test(`retained ${success ? 'success' : 'failure'} acknowledges only its exact history receipt`, async () => {
+        let current = true, preparations = 0, queries = 0
+        const h = harness({ onRecovery: () => { preparations++; return true },
+            onRecoveryQuery: () => { queries++; return true },
+            onRecoveryIsCurrent: () => current })
+        const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+        const message = h.posted[0]
+        h.coordinator.pause()
+        const terminal = terminalFor(message, { success,
+            ...(success ? {} : { errorCode: 'cancelled' }) })
+        assert.equal(h.coordinator.settle(terminal), true)
+        assert.equal((await completion).success, success)
+        assert.equal(h.controls.length, 1)
+        assert.equal(h.controls[0].manualReadPendingHistoryRecovery, true)
+        h.coordinator.resume()
+        const history = { ...terminal, manualReadPendingHistoryRecovery: true,
+            manualReadPendingOutcomeOnly: true, manualReadPendingPresentationAllowed: false }
+        for (const invalid of [terminal,
+            { ...history, requestID: 'other' },
+            { ...history, manualReadPendingProtocol: 2 },
+            { ...history, manualReadPendingObservationToken: 'foreign' },
+            { ...history, manualReadPendingHistoryRecovery: false },
+            { ...history, manualReadPendingOutcomeOnly: false },
+            { ...history, manualReadPendingPresentationAllowed: true },
+            { ...history, manualReadPendingState: 'pending' },
+            { ...history, success: !success },
+            { ...history, success: 1 },
+            ...(success ? [] : [{ ...history, errorCode: 'different-failure' }]),
+        ]) assert.equal(h.coordinator.settle(invalid), false)
+        current = false
+        assert.equal(h.coordinator.settle(history), false)
+        current = true
+        assert.equal(h.coordinator.settle(history), true)
+        assert.equal(h.coordinator.settle(history), true)
+        assert.equal(preparations, 1)
+        assert.equal(queries, 0)
+        assert.equal(h.posted.length, 1)
+        assert.equal(h.controls.length, 1)
+        assert.equal(h.coordinator.pendingCount, 0)
+        assert.equal(await h.coordinator.recoverHistoryReadingStatus({ requestID: message.requestID,
+            observationToken: message.manualReadPendingObservationToken }), true)
+        assert.equal(queries, 1)
+        assert.equal(h.coordinator.settle(history), false)
+    })
+}
+
+test('retiring during retained receipt ownership check cannot acknowledge a removed barrier', async () => {
+    let retire = false
+    const h = harness({ onRecovery: () => true, onRecoveryIsCurrent: () => {
+        if (retire) h.coordinator.retireHistoryRecoveries()
+        return true
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    h.coordinator.pause()
+    const terminal = terminalFor(h.posted[0])
+    assert.equal(h.coordinator.settle(terminal), true)
+    await completion
+    retire = true
+    assert.equal(h.coordinator.settle({ ...terminal, manualReadPendingHistoryRecovery: true,
+        manualReadPendingOutcomeOnly: true, manualReadPendingPresentationAllowed: false }), false)
+})
+
 test('restored viewer observes history and cannot send an old Cancel or replay a command', async () => {
     const listeners = new Map()
     const h = harness({ lifecycleTarget: {
@@ -833,4 +896,5 @@ test('pause suppresses observation and resume observes the same request identity
     h.coordinator.settle(terminalFor(h.posted[0]))
     assert.equal((await completion).success, true)
 })
+
 

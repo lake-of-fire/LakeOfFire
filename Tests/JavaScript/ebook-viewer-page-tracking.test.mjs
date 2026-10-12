@@ -217,6 +217,62 @@ test('restored shipping Reader refreshes readonly status without reviving its pa
     book.runtime.close()
 })
 
+test('ordinary terminal after pagehide acknowledges the subsequent native history receipt', async () => {
+    const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+    f.seedPage('restored-page')
+    const completion = f.reader.markVisiblePageAsRead(), message = f.requests[0].message
+    f.lifecycle.dispatchEvent(new Event('pagehide'))
+    const terminal = { requestID: message.requestID, sectionId: message.sectionId,
+        manualReadPendingProtocol: 1,
+        manualReadPendingObservationToken: message.manualReadPendingObservationToken,
+        manualReadPendingState: 'finished', success: true }
+    assert.equal(f.reader.applyMarkSectionAsReadResult(terminal), true)
+    await completion
+    f.lifecycle.dispatchEvent(new Event('pageshow'))
+    const historyTerminal = { ...terminal, manualReadPendingHistoryRecovery: true,
+        manualReadPendingOutcomeOnly: true, manualReadPendingPresentationAllowed: false }
+    // Core's actual terminalAccepted guard requires this Boolean before it
+    // invokes the sole automatic recoverHistoryReadingStatus call.
+    assert.equal(f.reader.applyMarkSectionAsReadResult(historyTerminal), true)
+    assert.equal(book.requests.length, 1)
+    const proof = { requestID: message.requestID,
+        observationToken: message.manualReadPendingObservationToken }
+    const acknowledged = f.reader.recoverHistoryReadingStatus(proof)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(book.requests.length, 2)
+    assert.equal(book.publish(2), true)
+    assert.equal(await acknowledged, true)
+    assert.equal(book.runtime.state.ready, true)
+    assert.equal(f.reader.applyMarkSectionAsReadResult(historyTerminal), false)
+    assert.equal(f.requests.length, 1)
+    assert.deepEqual(f.moves, [])
+    book.runtime.close()
+})
+
+for (const replacement of ['account', 'chapter']) {
+    test(`retained history receipt cannot acknowledge a replacement ${replacement}`, async () => {
+        const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+        f.seedPage('restored-page')
+        const completion = f.reader.markVisiblePageAsRead(), message = f.requests[0].message
+        f.lifecycle.dispatchEvent(new Event('pagehide'))
+        const terminal = { requestID: message.requestID, sectionId: message.sectionId,
+            manualReadPendingProtocol: 1,
+            manualReadPendingObservationToken: message.manualReadPendingObservationToken,
+            manualReadPendingState: 'finished', success: true }
+        assert.equal(f.reader.applyMarkSectionAsReadResult(terminal), true)
+        await completion
+        if (replacement === 'account') book.runtime.state.setAccountPresentation('2:1')
+        else book.runtime.state.relocate({ sectionURL: 'ebook://fixture/other.xhtml' })
+        const requests = book.requests.length
+        assert.equal(f.reader.applyMarkSectionAsReadResult({ ...terminal,
+            manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: true,
+            manualReadPendingPresentationAllowed: false }), false)
+        assert.equal(book.requests.length, requests)
+        assert.equal(f.requests.length, 1)
+        book.runtime.close()
+    })
+}
+
 test('late native recovery rejection cannot invalidate an admitted fresh Reader mutation', async () => {
     const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
     f.seedPage('recovered-page')
@@ -605,3 +661,4 @@ for (const succeeded of [false, true]) {
         assert.deepEqual(f.moves, [])
     })
 }
+

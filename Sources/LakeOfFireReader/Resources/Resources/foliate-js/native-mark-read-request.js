@@ -380,7 +380,28 @@ export const createNativeMarkReadRequestCoordinator = ({
     }
     const settle = result => {
         const pending = pendingByRequestID.get(result?.requestID)
-        if (!pending) return false
+        if (!pending) {
+            // An ordinary terminal can arrive after pagehide and consume the
+            // pending slot before native answers our history status request.
+            // Acknowledge only that retained exact outcome so native can start
+            // its single recovery attempt. Do not settle or prepare it twice,
+            // and never recreate a completed/retired recovery barrier.
+            const recovery = recoveryByRequestID.get(result?.requestID)
+            if (!recovery || recovery.outcome.outcomeKnown !== true
+                || result.manualReadPendingProtocol !== 1
+                || result.manualReadPendingObservationToken !== recovery.proof.observationToken
+                || result.manualReadPendingHistoryRecovery !== true
+                || result.manualReadPendingOutcomeOnly !== true
+                || result.manualReadPendingPresentationAllowed !== false
+                || result.manualReadPendingState !== 'finished'
+                || typeof result.success !== 'boolean'
+                || result.success !== recovery.outcome.success
+                || (!result.success && (result.errorCode || 'nativeCommitFailed') !== recovery.outcome.errorCode)) return false
+            return present(recovery.pending, () => onRecoveryIsCurrent({
+                owner: recovery.pending.owner, context: recovery.pending.context,
+                message: recovery.pending.message,
+            })) === true && recoveryByRequestID.get(result.requestID) === recovery
+        }
         if (result.manualReadPendingProtocol !== 1
             || result.manualReadPendingObservationToken !== pending.message.manualReadPendingObservationToken) return false
         if (['pending', 'cancelling', 'unknown'].includes(result?.manualReadPendingState)) {
@@ -490,4 +511,5 @@ export const presentNativeMarkReadPending = state => {
     notice.lastElementChild.hidden = state.recoveryOnly === true
     notice.lastElementChild.disabled = state.recoveryOnly === true || state.phase === 'cancelling'
 }
+
 
