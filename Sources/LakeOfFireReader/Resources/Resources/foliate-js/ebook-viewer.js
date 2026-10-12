@@ -5489,6 +5489,7 @@ const navSpinnerMaximumMs = 1200;
 
 class Reader {
     #closed = false;
+    #pageLifetime = {};
     #markReadProducerReadiness = null;
     #markReadDiagnosticGeneration = 0;
     #markReadBusyOwners = new Map();
@@ -6327,6 +6328,7 @@ class Reader {
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
+        this.#listen(window, 'pagehide', () => { this.#pageLifetime = {}; });
         this.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
             postControlMessage: packet => {
                 const handler = globalThis.webkit?.messageHandlers?.manualReadPendingControl
@@ -7395,6 +7397,7 @@ class Reader {
             renderer: this.view?.renderer ?? null,
             visiblePageCollectionGeneration: this.visiblePageCollectionGeneration,
             bookEvent,
+            pageLifetime: this.#pageLifetime,
         };
         this.lastNativeMarkReadRequestOutcome = 'pending';
         this.lastNativeMarkReadRequestErrorCode = '';
@@ -8731,6 +8734,7 @@ class Reader {
             || !this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
             || this.visiblePageCollectionGeneration !== owner.visiblePageCollectionGeneration
             || (owner.bookEvent && this.bookReadingRuntime?.isEventCurrent(owner.bookEvent) !== true)
+            || owner.pageLifetime !== this.#pageLifetime
         ) {
             return false;
         }

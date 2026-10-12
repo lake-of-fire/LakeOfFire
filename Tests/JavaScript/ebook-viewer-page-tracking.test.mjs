@@ -16,6 +16,7 @@ const readerClass = source.slice(classStart, classEnd)
 
 function fixture() {
     const packets = [], requests = [], attributes = new Map(), timers = new Map(), moves = []
+    const lifecycle = new EventTarget()
     const doc = { location: { href: 'ebook://fixture/chapter.xhtml' }, defaultView: {}, body: {} }
     const visibleRange = { collapsed: false }
     const producerOwner = { required: false }
@@ -64,6 +65,8 @@ function fixture() {
         setTimeout: (callback, delay) => { const id = timers.size + 1; timers.set(id, { callback, delay }); return id },
     })
     context.window = context
+    context.addEventListener = lifecycle.addEventListener.bind(lifecycle)
+    context.removeEventListener = lifecycle.removeEventListener.bind(lifecycle)
     context.top = context
     context.location = { href: 'ebook://fixture/book.epub' }
     context.webkit = { messageHandlers: {
@@ -97,7 +100,7 @@ function fixture() {
         reader.testRender('fixture-current-page')
     }
     return { reader, packets, requests, attributes, seedPage, installPage, visibleRange,
-        context, doc, timers, moves }
+        context, doc, timers, moves, lifecycle }
 }
 
 function bookRuntimeFixture(f) {
@@ -232,14 +235,15 @@ async function successfulMarkAwaitingAdvance(f) {
     f.seedPage('current-page')
     f.reader.nativeMarkReadRequestCoordinator.request = async request => {
         f.requests.push(request)
+        f.nextMarkSequence = (f.nextMarkSequence ?? 1) + 1
         return { success: true, stale: false, presentationAllowed: true,
-            nativeResult: { stateSnapshotSequence: 2 }, context: request.context }
+            nativeResult: { stateSnapshotSequence: f.nextMarkSequence }, context: request.context }
     }
     const operation = f.reader.markVisiblePageAsRead()
     // Let the VM's async command cross its Promise realm and reach the held
     // timer without firing that timer or introducing a wall-clock delay.
     await new Promise(resolve => setImmediate(resolve))
-    const advance = [...f.timers.values()].find(timer => timer.delay === 430)
+    const advance = [...f.timers.values()].filter(timer => timer.delay === 430).at(-1)
     assert.ok(advance, 'Successful Mark must reach its existing delayed advance')
     return { operation, advance }
 }
@@ -304,3 +308,36 @@ for (const failure of ['synchronous LTR', 'rejected LTR', 'rejected RTL']) {
         assert.equal(f.requests.length, 1)
     })
 }
+
+for (const restored of [false, true]) {
+    test(`an older Mark cannot automatically advance after pagehide${restored ? ' and pageshow' : ''}`, async t => {
+        const f = fixture(), book = bookRuntimeFixture(f)
+        t.after(() => book.runtime.close())
+        const event = book.runtime.captureEvent(f.doc)
+        const { operation, advance } = await successfulMarkAwaitingAdvance(f)
+        f.lifecycle.dispatchEvent(new Event('pagehide'))
+        f.context.readerArticleProducerOwnerIsCurrent = () => false
+        if (restored) f.lifecycle.dispatchEvent(new Event('pageshow'))
+        assert.equal(book.runtime.isEventCurrent(event), true,
+            'A retained same-account chapter may keep its book scope despite the navigation lifetime changing')
+        advance.callback()
+        assert.equal(await operation, true)
+        assert.equal(f.reader.lastNativeMarkReadRequestOutcome, 'committed')
+        assert.deepEqual(f.moves, [])
+    })
+}
+
+test('a fresh Mark after restoration can advance in its own page lifetime', async t => {
+    const f = fixture(), book = bookRuntimeFixture(f)
+    t.after(() => book.runtime.close())
+    const original = await successfulMarkAwaitingAdvance(f)
+    f.lifecycle.dispatchEvent(new Event('pagehide'))
+    f.lifecycle.dispatchEvent(new Event('pageshow'))
+    original.advance.callback()
+    assert.equal(await original.operation, true)
+    const restored = await successfulMarkAwaitingAdvance(f)
+    restored.advance.callback()
+    assert.equal(await restored.operation, true)
+    assert.deepEqual(f.moves, ['right'])
+    assert.equal(f.requests.length, 2)
+})
