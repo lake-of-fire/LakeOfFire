@@ -219,7 +219,8 @@ export const createNativeMarkReadRequestCoordinator = ({
         let resolve
         const completion = new Promise(done => { resolve = done })
         const pending = { requestID, sectionID, message: frozenMessage, fingerprint,
-            owner, context, resolve, completion, timeoutHandle: null,
+            owner, recoveryOwner: Object.freeze({ accountPresentation: owner?.accountPresentation }),
+            context, resolve, completion, timeoutHandle: null,
             cancelling: false, slow: false }
         pendingByRequestID.set(requestID, pending)
         attachLifecycle()
@@ -264,10 +265,10 @@ export const createNativeMarkReadRequestCoordinator = ({
         if (!sectionMatches) return false
         if (recovery) {
             pending.recoveryOnly = true
-            if (present(pending, () => isRecoveryAccountCurrent(pending.owner)) === true) {
+            if (present(pending, () => isRecoveryAccountCurrent(pending.recoveryOwner)) === true) {
                 historyRecoveries.set(pending.requestID, {
                     observationToken: pending.message.manualReadPendingObservationToken,
-                    owner: pending.owner,
+                    owner: pending.recoveryOwner,
                 })
             }
         }
@@ -319,6 +320,7 @@ export const createNativeMarkReadRequestCoordinator = ({
     const acknowledgeHistoryReadingStatus = observation => {
         if (!canReconcileHistoryReadingStatus(observation)) return false
         historyRecoveries.delete(observation.requestID)
+        try { onPending({ requestID: observation.requestID, phase: 'finished' }) } catch (_) {}
         detachLifecycle()
         return true
     }
