@@ -815,9 +815,10 @@ private func validatedReaderSegmentSidecarIdentityProjections(
               let paragraph = tableValue("pid", tuple: tuple, index: 10) as? String,
               !paragraph.isEmpty,
               (tuple.count == 11
-                || (tuple.count == 12 && tableValue("res", tuple: tuple, index: 11) != nil)
-                || (tuple.count == 13 && optionalReferenceIsValid("res", tuple: tuple, index: 11))),
-              tuple.count < 13 || optionalReferenceIsValid("x", tuple: tuple, index: 12) else {
+                || tableValue("res", tuple: tuple, index: 11) != nil
+                || (tuple.count == 13 && tuple[11] is NSNull)),
+              (tuple.count < 13
+                || (tableValue("x", tuple: tuple, index: 12) as? String)?.isEmpty == false) else {
             return nil
         }
         projections.append(ReaderSegmentSidecarIdentityProjection(

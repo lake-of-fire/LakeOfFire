@@ -867,7 +867,12 @@ test('outcome-only recovery preserves committed success without presentation aut
 })
 
 test('pause suppresses observation and resume observes the same request identity', async () => {
-    const h = harness()
+    let preparations = 0, queries = 0
+    const h = harness({
+        onRecovery: () => { preparations++; return true },
+        onRecoveryQuery: () => { queries++; return true },
+        onRecoveryIsCurrent: () => true,
+    })
     const completion = h.coordinator.request({
         sectionID: 'section-a',
         message: {
@@ -893,6 +898,28 @@ test('pause suppresses observation and resume observes the same request identity
     assert.equal(h.controls[0].manualReadPendingObservationToken, token)
     assert.equal(h.controls[0].manualReadPendingOperation, 'status')
 
-    h.coordinator.settle(terminalFor(h.posted[0]))
-    assert.equal((await completion).success, true)
+    assert.equal(h.controls[0].manualReadPendingHistoryRecovery, true)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true,
+        'The delayed original reply retains its immutable native outcome')
+    const outcome = await completion
+    assert.equal(outcome.success, true)
+    assert.equal(outcome.outcomeKnown, true)
+    assert.equal(outcome.presentationAllowed, false)
+    assert.equal(queries, 0, 'Receiving the original outcome cannot authorize a new query')
+    const history = terminalFor(h.posted[0], {
+        manualReadPendingHistoryRecovery: true,
+        manualReadPendingOutcomeOnly: true,
+        manualReadPendingPresentationAllowed: false,
+    })
+    assert.equal(h.coordinator.settle(history), true)
+    assert.equal(preparations, 1)
+    assert.equal(queries, 0, 'An exact history receipt still waits for native query delegation')
+    const proof = { requestID, observationToken: token }
+    assert.equal(await h.coordinator.recoverHistoryReadingStatus(proof), true)
+    assert.equal(queries, 1)
+    assert.equal(h.coordinator.settle(history), false)
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.posted.length, 1, 'Recovery observes state without replaying the mutation')
 })
+
+
