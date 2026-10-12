@@ -64,6 +64,27 @@ export const resolveRestoreLocator = (saved = {}) => {
         usesFraction: hasFraction && !synthetic && !cfi }
 }
 
+// The total completion fraction describes the end of the visible page. A
+// fraction navigation selects a page from its section anchor instead, so even
+// an accepted restore to zero usually has a nonzero completion fraction.
+// Call only after an owned navigation receipt; geometry alone grants no restore.
+export const fractionRestoreLocationSatisfied = ({
+    requestedFraction, target, location, paginated = false, tolerance = 0.003,
+}) => {
+    const sectionIndex = location?.section?.current ?? location?.sectionIndex
+    if (!Number.isFinite(requestedFraction) || !Number.isInteger(target?.index) || sectionIndex !== target.index
+        || !Number.isFinite(location?.fraction)) return false
+    if (!paginated) return Math.abs(location.fraction - requestedFraction) <= tolerance
+
+    const pageFraction = location?.pageFraction
+    const fractionInSection = location?.fractionInSection
+    if (!Number.isFinite(pageFraction) || pageFraction <= 0 || pageFraction > 1
+        || !Number.isFinite(fractionInSection) || !Number.isFinite(target.anchor)) return false
+    const textPages = Math.max(1, Math.round(1 / pageFraction))
+    const targetPage = Math.round(Math.max(0, Math.min(1, target.anchor)) * (textPages - 1))
+    return Math.abs(fractionInSection - targetPage / textPages) <= 1e-6
+}
+
 export const runLocatorWithFractionFallback = async ({
     navigateLocator, navigateFraction, isCurrent, onFallback = () => {},
 }) => {

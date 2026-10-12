@@ -7,6 +7,27 @@ import LakeOfFireCore
 /// document agrees with WebKit's frame provenance and with the document currently
 /// owned by the reader.
 enum ReaderDocumentMutationAdmission {
+    static func acceptsEBookReadiness<Binding: Equatable>(
+        claimedURL: URL,
+        frameMainDocumentURL: URL?,
+        currentPageURL: URL,
+        selectedContentURL: URL,
+        isMainFrame: Bool,
+        receiptBinding: Binding?,
+        currentBinding: Binding?
+    ) -> Bool {
+        guard claimedURL.isEBookURL,
+              let receiptBinding, receiptBinding == currentBinding,
+              urlsMatchWithoutHash(claimedURL, selectedContentURL) else { return false }
+        return acceptsTopLevelDocument(
+            claimedURL: claimedURL,
+            frameMainDocumentURL: frameMainDocumentURL,
+            currentPageURL: currentPageURL,
+            requiresMainFrame: true,
+            isMainFrame: isMainFrame
+        )
+    }
+
     static func acceptsTopLevelDocument(
         claimedURL: URL?,
         frameMainDocumentURL: URL?,

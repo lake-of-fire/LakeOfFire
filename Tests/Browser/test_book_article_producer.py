@@ -164,6 +164,105 @@ class BookArticleProducerTests(unittest.TestCase):
         self.assertTrue(all(x['bookReadingScope']['articleEpochID'] == result['epoch'] for x in receipts))
         self.assertEqual(self.errors, [])
 
+    def begin_restart_with_cold_producer(self, page):
+        self.install_position_receipts(page)
+        page.evaluate('''() => {
+            const context = reader.bookReadingRuntime.state.captureContext();
+            bookEpoch = 'committed-restart';
+            publishState(lastNativeBookStateRequest, true);
+            articleProducerToken = null;
+            const ready = new Promise((resolve, reject) => {
+                window.releaseBookProducerReady = () => {
+                    articleProducerToken = 'article-restart';
+                    resolve(manabiArticleProducer.captureIfReady());
+                };
+                window.rejectBookProducerReady = () => reject(new Error('producer admission failed'));
+            });
+            window.bookProducerReadyCalls = 0;
+            manabiArticleProducer.ready = () => { ++bookProducerReadyCalls; return ready; };
+            window.bookNavigationTarget = {
+                action:'startBookOver', accountPresentation, articleProgressID:'book',
+                articleEpochID:bookEpoch, chapterEpochID:null,
+                sectionLocation:context.sectionLocation, locationRevision:context.locationRevision,
+            };
+            window.pendingBookNavigation = reader.navigateBookReadingAction(bookNavigationTarget);
+        }''')
+        wait_for_reader(page, 'bookProducerReadyCalls === 1')
+
+    def test_committed_restart_joins_cold_producer_before_real_navigation(self):
+        page = self.open_book(section_index=1)
+        self.begin_restart_with_cold_producer(page)
+        self.assertEqual(page.evaluate('reader.view.renderer.displayedIndex'), 1)
+        self.assertEqual(page.evaluate('positionReceipts'), [])
+        self.assertTrue(page.evaluate('__manabiRequireUserInputBeforePositionSave'))
+        result = page.evaluate('''async () => {
+            releaseBookProducerReady();
+            return await pendingBookNavigation;
+        }''')
+        self.assertEqual(result['status'], 'completed')
+        self.wait_for_durable_progress(page)
+        wait_for_reader(page, 'positionReceipts.length > 0')
+        receipts = page.evaluate('positionReceipts')
+        self.assertTrue(all(x['sectionIndex'] == 0 for x in receipts))
+        self.assertTrue(all(x['bookReadingScope']['articleEpochID'] == 'committed-restart' for x in receipts))
+        self.assertTrue(all(x['readerArticleProducer']['token'] == 'article-restart' for x in receipts))
+        self.assertEqual(self.errors, [])
+
+    def test_cold_producer_wait_cannot_adopt_replacement_navigation_authority(self):
+        for mode in ['account', 'pass', 'location', 'producer', 'target']:
+            with self.subTest(mode=mode):
+                page = self.open_book(section_index=1)
+                self.begin_restart_with_cold_producer(page)
+                result = page.evaluate('''async mode => {
+                    if (mode === 'account') {
+                        accountPresentation = '2:1';
+                        reader.bookReadingRuntime.accountDidChange(accountPresentation);
+                    }
+                    else if (mode === 'pass' || mode === 'target') {
+                        bookEpoch = 'replacement-pass';
+                        publishState(lastNativeBookStateRequest, true);
+                        if (mode === 'target') bookNavigationTarget.articleEpochID = bookEpoch;
+                    } else if (mode === 'location') {
+                        await reader.view.renderer.goTo({index:1, anchor:1, bookAction:true});
+                    } else window.manabiArticleProducer = {...manabiArticleProducer};
+                    releaseBookProducerReady();
+                    return await pendingBookNavigation;
+                }''', mode)
+                self.assertEqual(result['status'], 'superseded')
+                self.assertEqual(page.evaluate('reader.view.renderer.displayedIndex'), 1)
+                self.assertEqual(page.evaluate('positionReceipts'), [])
+                self.assertTrue(page.evaluate('__manabiRequireUserInputBeforePositionSave'))
+                self.assertEqual(self.errors, [])
+
+    def test_failed_cold_producer_admission_does_not_turn_or_save(self):
+        page = self.open_book(section_index=1)
+        self.begin_restart_with_cold_producer(page)
+        result = page.evaluate('''async () => {
+            rejectBookProducerReady();
+            return await pendingBookNavigation;
+        }''')
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(page.evaluate('reader.view.renderer.displayedIndex'), 1)
+        self.assertEqual(page.evaluate('positionReceipts'), [])
+        self.assertTrue(page.evaluate('__manabiRequireUserInputBeforePositionSave'))
+        self.assertEqual(self.errors, [])
+
+    def test_cold_producer_wait_cannot_adopt_same_producer_replacement_ticket(self):
+        page = self.open_book(section_index=1)
+        self.begin_restart_with_cold_producer(page)
+        result = page.evaluate('''async () => {
+            releaseBookProducerReady();
+            // A synchronous readiness observer retires the resolved ticket
+            // before the awaiting navigation continuation can resume.
+            articleProducerToken = 'article-replacement';
+            return await pendingBookNavigation;
+        }''')
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(page.evaluate('reader.view.renderer.displayedIndex'), 1)
+        self.assertEqual(page.evaluate('positionReceipts'), [])
+        self.assertTrue(page.evaluate('__manabiRequireUserInputBeforePositionSave'))
+        self.assertEqual(self.errors, [])
+
     def test_unsuccessful_or_stale_real_navigation_does_not_admit_position_save(self):
         for mode in ['cancelled', 'rejected', 'stale-producer', 'stale-location']:
             with self.subTest(mode=mode):

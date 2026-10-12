@@ -129,6 +129,21 @@ class BookEndcapShellTests(unittest.TestCase):
         # Reverse registration closes the browser before its Playwright runtime.
         cls.addClassCleanup(cls.browser.close)
 
+    def test_initial_zero_fraction_restore_is_satisfied_at_first_page(self):
+        page = self.browser.new_page(viewport={'width':390, 'height':844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('''loadEBook({url:location.origin+"/fixture.epub",layoutMode:"paginated",
+            initialRestore:{requestID:"initial-zero",cfi:"",fractionalCompletion:0}})''')
+        page.locator('#loading-indicator').wait_for(state='hidden', timeout=15000)
+        self.assertEqual(page.evaluate('reader.view.renderer.displayedIndex'), 0)
+        self.assertEqual(page.evaluate('reader.view.lastLocation.fractionInSection'), 0)
+        self.assertGreater(page.evaluate('reader.view.lastLocation.fraction'), 0.003)
+        self.assertTrue(page.evaluate('reader.hasLoadedLastPosition'))
+        self.assertEqual(page.evaluate('window.__manabiInitialRestoreResult.terminalState'), 'satisfied')
+
     def test_actual_viewer_end_page_does_not_mark_skipped_content(self):
         page = self.browser.new_page(viewport={'width':390, 'height':844})
         self.addCleanup(page.close)
@@ -138,7 +153,15 @@ class BookEndcapShellTests(unittest.TestCase):
         wait_for_reader(page, 'typeof window.loadEBook === "function"')
         page.evaluate('loadEBook({url:location.origin+"/fixture.epub",layoutMode:"paginated"})')
         wait_for_reader(page, 'globalThis.reader?.view?.renderer?.getContents?.().length > 0 && reader.bookEndcap')
-        page.evaluate('loadLastPosition({cfi:"",fractionalCompletion:0})')
+        # Completion describes this short chapter's visible page end, even
+        # when fraction navigation correctly selected the beginning.
+        page.evaluate('loadLastPosition({cfi:"",fractionalCompletion:0,stateSettleTimeoutMs:1500})')
+        self.assertGreater(page.evaluate('reader.view.lastLocation.fraction'), 0.003)
+        self.assertEqual(page.evaluate('window.__manabiInitialRestoreResult.terminalState'), 'satisfied')
+        self.assertTrue(page.evaluate('reader.hasLoadedLastPosition'))
+        # A repeated same-page restore still needs an owned renderer receipt.
+        page.evaluate('loadLastPosition({cfi:"",fractionalCompletion:0,stateSettleTimeoutMs:1500})')
+        self.assertEqual(page.evaluate('window.__manabiInitialRestoreResult.terminalState'), 'satisfied')
         try:
             page.locator('#loading-indicator').wait_for(state='hidden', timeout=15000)
         except Exception:
