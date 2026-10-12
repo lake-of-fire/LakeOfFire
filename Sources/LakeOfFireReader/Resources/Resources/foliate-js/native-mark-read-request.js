@@ -113,6 +113,14 @@ export const createNativeMarkReadRequestCoordinator = ({
         }
     }
     const ownerCurrent = pending => present(pending, () => isOwnerCurrent(pending.owner)) === true
+    const retainObservationOwnership = pending => {
+        if (pendingByRequestID.get(pending.requestID) !== pending) return false
+        const current = pending.recoveryOnly || ownerCurrent(pending)
+        // Checking the renderer can synchronously join or retire this request.
+        if (pendingByRequestID.get(pending.requestID) !== pending) return false
+        if (!current) pending.recoveryOnly = true
+        return true
+    }
     const intentKey = message => {
         const { requestID, manualReadPendingProtocol,
             manualReadPendingObservationToken, ...intent } = message
@@ -130,6 +138,9 @@ export const createNativeMarkReadRequestCoordinator = ({
     }))
     const postControl = pending => {
         if (!observing || pendingByRequestID.get(pending.requestID) !== pending) return
+        // A same-document chapter change does not dispatch pagehide. The old
+        // command remains observable, but its Cancel capability is retired.
+        if (!retainObservationOwnership(pending) || !observing) return
         try {
             postControlMessage({
                 requestID: pending.requestID,
@@ -151,6 +162,7 @@ export const createNativeMarkReadRequestCoordinator = ({
             // It must not resurrect polling, cancellation UI or transport.
             if (!observing || pendingByRequestID.get(pending.requestID) !== pending) return
             pending.timeoutHandle = null
+            if (!retainObservationOwnership(pending) || !observing) return
             pending.slow = true
             notify(pending)
             postControl(pending)
@@ -300,6 +312,13 @@ export const createNativeMarkReadRequestCoordinator = ({
     const cancel = requestID => {
         const pending = pendingByRequestID.get(requestID)
         if (!pending || !observing || pending.recoveryOnly) return false
+        if (!retainObservationOwnership(pending) || !observing) return false
+        if (pending.recoveryOnly) {
+            notify(pending)
+            postControl(pending)
+            observe(pending)
+            return false
+        }
         pending.cancelling = true
         notify(pending)
         postControl(pending)
@@ -404,7 +423,15 @@ export const createNativeMarkReadRequestCoordinator = ({
         }
         if (result.manualReadPendingProtocol !== 1
             || result.manualReadPendingObservationToken !== pending.message.manualReadPendingObservationToken) return false
+        const history = result.manualReadPendingHistoryRecovery
+        const outcomeOnly = result.manualReadPendingOutcomeOnly
+        const presentationAllowed = result.manualReadPendingPresentationAllowed
+        if ((history !== undefined && typeof history !== 'boolean')
+            || (outcomeOnly !== undefined && typeof outcomeOnly !== 'boolean')
+            || (presentationAllowed !== undefined && typeof presentationAllowed !== 'boolean')
+            || (history === true && (outcomeOnly !== true || presentationAllowed !== false))) return false
         if (['pending', 'cancelling', 'unknown'].includes(result?.manualReadPendingState)) {
+            if (history === true) pending.recoveryOnly = true
             if (!pending.recoveryOnly && result.manualReadPendingState === 'cancelling') pending.cancelling = true
             if (pending.slow) notify(pending)
             return false
