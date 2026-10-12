@@ -5,7 +5,7 @@ import SwiftSoup
 import SwiftUtilities
 
 public enum ReaderCompactSegmentSidecarSchema {
-    public static let currentVersion = 12
+    public static let currentVersion = 13
 }
 
 public struct EbookProcessedSectionPayload: Sendable {
@@ -796,7 +796,7 @@ private func validatedReaderSegmentSidecarIdentityProjections(
     var projections = [ReaderSegmentSidecarIdentityProjection]()
     projections.reserveCapacity(segments.count)
     for tuple in segments {
-        guard (11...12).contains(tuple.count),
+        guard (11...13).contains(tuple.count),
               let token = tuple.first as? String,
               let identifier = expandedReaderSegmentIdentifier(from: token),
               identifiers.insert(identifier).inserted,
@@ -814,7 +814,10 @@ private func validatedReaderSegmentSidecarIdentityProjections(
               !sentence.isEmpty,
               let paragraph = tableValue("pid", tuple: tuple, index: 10) as? String,
               !paragraph.isEmpty,
-              tuple.count == 11 || tableValue("res", tuple: tuple, index: 11) != nil else {
+              tuple.count == 11 || (tuple.count == 12
+                ? tableValue("res", tuple: tuple, index: 11) != nil
+                : optionalReferenceIsValid("res", tuple: tuple, index: 11)),
+              tuple.count < 13 || optionalReferenceIsValid("x", tuple: tuple, index: 12) else {
             return nil
         }
         projections.append(ReaderSegmentSidecarIdentityProjection(
