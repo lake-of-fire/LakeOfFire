@@ -16,9 +16,10 @@ const classStart = source.indexOf('class Reader {')
 const classEnd = source.indexOf('\n}\n', classStart)
 const readerClass = source.slice(classStart, classEnd)
 
-function fixture({ realCoordinator = false } = {}) {
-    const packets = [], requests = [], attributes = new Map(), timers = new Map(), moves = []
+function fixture({ realCoordinator = false, onControl } = {}) {
+    const packets = [], requests = [], controls = [], attributes = new Map(), timers = new Map(), moves = []
     const lifecycle = new EventTarget()
+    let coordinatorSequence = 0
     const doc = { location: { href: 'ebook://fixture/chapter.xhtml' }, defaultView: {}, body: {} }
     const visibleRange = { collapsed: false }
     const producerOwner = { required: false }
@@ -39,9 +40,9 @@ function fixture({ realCoordinator = false } = {}) {
         NavigationHUD: class { refreshAuxiliaryLayout() {} },
         createNativeMarkReadRequestCoordinator: options => realCoordinator
             ? createNativeMarkReadRequestCoordinator({ ...options, lifecycleTarget: lifecycle,
-                makeRequestID: () => 'viewer-fixture',
+                makeRequestID: () => 'viewer-fixture-' + ++coordinatorSequence,
                 postMessage: message => requests.push({ message }),
-                postControlMessage() {},
+                postControlMessage: message => { controls.push(message); onControl?.(message) },
                 scheduleTimeout: (callback, delay) => {
                     const id = timers.size + 1
                     timers.set(id, { callback, delay })
@@ -76,6 +77,9 @@ function fixture({ realCoordinator = false } = {}) {
         shouldInvalidateVisibleSegmentGeometryForReason: () => true,
         MANABI_ENABLE_EBOOK_PAGE_TRACKING_BUTTONS: false,
         manabiTimelineMeasure() {}, cancelAnimationFrame() {}, clearTimeout() {},
+        lastPositionRestoreCoordinator: { current: null },
+        resetReaderTransientState() {},
+        PAGE_TURN_MOVEMENT_DISPOSITION: { notOwned: 'not-owned' },
         requestAnimationFrame: () => 1,
         setTimeout: (callback, delay) => { const id = timers.size + 1; timers.set(id, { callback, delay }); return id },
     })
@@ -114,7 +118,7 @@ function fixture({ realCoordinator = false } = {}) {
         reader.pageTrackingStatesGeneration = reader.visiblePageCollectionGeneration
         reader.testRender('fixture-current-page')
     }
-    return { reader, packets, requests, attributes, seedPage, installPage, visibleRange,
+    return { reader, Reader, packets, requests, controls, attributes, seedPage, installPage, visibleRange,
         context, doc, timers, moves, lifecycle }
 }
 
@@ -178,6 +182,96 @@ function bookRuntimeFixture(f) {
     assert.equal(publish(), true)
     return { runtime, requests, publish, native, response }
 }
+
+test('closing the shipping Reader retires unresolved Mark transport before reopening', async () => {
+    let reentrantClose
+    const f = fixture({ realCoordinator: true,
+        onControl: () => { reentrantClose = f.reader.close('fixture-reentrant-close') } })
+    const book = bookRuntimeFixture(f)
+    f.seedPage('closing-page')
+    const oldReader = f.reader, view = oldReader.view
+    const page = oldReader.visiblePageSegmentSnapshot, states = oldReader.pageTrackingStates
+    const completion = oldReader.markVisiblePageAsRead()
+    const joined = completion.then(value => ({ value }), error => ({ error }))
+    const original = f.requests[0].message
+    const retainedTimer = [...f.timers.values()].find(timer => timer.delay === 15_000)
+    assert.ok(retainedTimer)
+    assert.equal(oldReader.close('fixture-reopen'), true)
+    assert.equal(oldReader.nativeMarkReadRequestCoordinator.pendingCount, 0)
+    assert.equal(f.controls.length, 1)
+    assert.equal(f.controls[0].manualReadPendingOperation, 'cancel')
+    assert.equal(f.controls[0].manualReadPendingObservationToken, original.manualReadPendingObservationToken)
+    assert.equal(reentrantClose, false, 'Reader ownership is already closed before native cancellation callouts')
+    const outcome = await joined
+    assert.equal(outcome.value, undefined)
+    assert.equal(outcome.error?.code, 'readerClosed')
+    assert.equal(outcome.error?.outcomeUnknown, true)
+    assert.equal(oldReader.close('fixture-duplicate-close'), false)
+
+    const replacement = new f.Reader()
+    f.context.reader = replacement
+    replacement.view = view
+    const currentBook = bookRuntimeFixture({ ...f, reader: replacement })
+    replacement.visiblePageSegmentSnapshot = { ...page,
+        generation: replacement.visiblePageCollectionGeneration }
+    replacement.pageTrackingStates = states
+    replacement.pageTrackingStatesGeneration = replacement.visiblePageCollectionGeneration
+    const currentScope = f.doc.defaultView.manabi_bookReadingScope
+    const successor = replacement.markVisiblePageAsRead()
+    assert.equal(f.requests.length, 2, 'The reopened Reader owns its own valid pending Mark')
+    const current = f.requests.at(-1).message
+    assert.notEqual(current.manualReadPendingObservationToken, original.manualReadPendingObservationToken)
+    retainedTimer.callback()
+    f.lifecycle.dispatchEvent(new Event('pageshow'))
+    oldReader.nativeMarkReadRequestCoordinator.resume()
+    assert.equal(f.controls.length, 1, 'Closed transport cannot poll or cancel after reopen')
+    assert.equal(oldReader.applyMarkSectionAsReadResult({ ...original,
+        manualReadPendingState: 'finished', success: true }), false)
+    assert.equal(replacement.nativeMarkReadRequestCoordinator.pendingCount, 1)
+    assert.strictEqual(f.doc.defaultView.manabi_bookReadingScope, currentScope)
+    assert.equal(replacement.applyMarkSectionAsReadResult({ ...current,
+        manualReadPendingState: 'finished', success: true }), true)
+    assert.equal(await successor, true)
+    currentBook.runtime.close()
+    book.runtime.close()
+})
+
+test('closing the shipping Reader cannot cancel a departed chapter owner', async () => {
+    const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+    f.seedPage('departing-page')
+    const completion = f.reader.markVisiblePageAsRead()
+    const joined = completion.then(value => ({ value }), error => ({ error }))
+    const original = f.requests[0].message
+    const retainedTimer = [...f.timers.values()].find(timer => timer.delay === 15_000)
+    book.runtime.state.relocate({ sectionURL: 'different-chapter.xhtml', isEndPage: false })
+    const controlsBeforeClose = f.controls.length
+    assert.equal(f.reader.close('fixture-departed-close'), true)
+    assert.equal(f.controls.length, controlsBeforeClose, 'Close retains no departed cancellation permission')
+    const outcome = await joined
+    assert.equal(outcome.error?.code, 'readerClosed')
+    assert.equal(outcome.error?.outcomeUnknown, true)
+    retainedTimer.callback()
+    f.lifecycle.dispatchEvent(new Event('pageshow'))
+    assert.equal(f.controls.length, controlsBeforeClose)
+    assert.equal(f.reader.applyMarkSectionAsReadResult({ ...original,
+        manualReadPendingState: 'finished', success: true }), false)
+    assert.equal(f.reader.nativeMarkReadRequestCoordinator.pendingCount, 0)
+    book.runtime.close()
+})
+
+test('native Mark success accepted before Reader close retains its original outcome', async () => {
+    const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
+    f.seedPage('terminal-before-close')
+    const completion = f.reader.markVisiblePageAsRead(), message = f.requests[0].message
+    assert.equal(f.reader.applyMarkSectionAsReadResult({ ...message,
+        manualReadPendingState: 'finished', success: true }), true)
+    assert.equal(f.reader.close('fixture-terminal-won'), true)
+    assert.equal(await completion, true)
+    assert.equal(f.controls.length, 0, 'An accepted terminal cannot become an unresolved Cancel')
+    assert.equal(f.reader.nativeMarkReadRequestCoordinator.pendingCount, 0)
+    assert.deepEqual(f.moves, [], 'Closing retires optional advancement after native success')
+    book.runtime.close()
+})
 
 test('restored shipping Reader refreshes readonly status without reviving its pagehide presentation lifetime', async () => {
     const f = fixture({ realCoordinator: true }), book = bookRuntimeFixture(f)
