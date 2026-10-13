@@ -273,6 +273,12 @@ const getJapaneseLayoutFlags = doc => {
 }
 
 class View {
+    #closed = false
+    #loadGeneration = 0
+    #layoutGeneration = 0
+    #pendingGeometry = new Set()
+    #pendingLoadCancel = null
+    #currentDocument = null
     #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
     #debouncedExpand
     #hasResizerObserverTriggered = false
@@ -280,9 +286,10 @@ class View {
     #styleCache = new WeakMap()
     cachedViewSize = null
     #resizeObserver = new ResizeObserver(entries => {
-        if (this.#isCacheWarmer) return;
+        if (this.#closed || this.#isCacheWarmer) return;
 
         const entry = entries[0];
+        if (entry.target && entry.target !== this.#currentDocument?.body) return
         const rect = entry.contentRect;
 
         const newSize = {
@@ -332,6 +339,7 @@ class View {
         container,
         onBeforeExpand,
         onExpand,
+        onUnload,
         isCacheWarmer
     }) {
         this.container = container
@@ -339,6 +347,7 @@ class View {
         this.#debouncedExpand = this.expand.bind(this)
         this.onBeforeExpand = onBeforeExpand
         this.onExpand = onExpand
+        this.onUnload = onUnload
         //        this.#iframe.setAttribute('part', 'filter')
         this.#element.append(this.#iframe)
         Object.assign(this.#element.style, {
@@ -372,60 +381,112 @@ class View {
     get document() {
         return this.#iframe.contentDocument
     }
+    #retireGeometry() {
+        for (const operation of this.#pendingGeometry) operation.retire()
+        this.#pendingGeometry.clear()
+    }
+    #withGeometryOwner(callback, replacesLayout = false) {
+        if (this.#closed) return Promise.resolve()
+        if (replacesLayout) {
+            this.#layoutGeneration += 1
+            this.#retireGeometry()
+            this.cachedViewSize = null
+        }
+        const doc = this.document
+        const loadGeneration = this.#loadGeneration
+        const layoutGeneration = this.#layoutGeneration
+        let retire
+        const retired = new Promise(resolve => { retire = resolve })
+        const isCurrent = () => !this.#closed && this.#loadGeneration === loadGeneration
+            && this.#layoutGeneration === layoutGeneration && this.document === doc
+        const operation = {
+            document: doc, isCurrent, retire,
+            wait: promise => Promise.race([promise, retired]),
+            context: { view: this, document: doc, isCurrent },
+        }
+        this.#pendingGeometry.add(operation)
+        return operation.wait(Promise.resolve().then(() => {
+            if (isCurrent()) return callback(operation)
+        })).finally(() => { this.#pendingGeometry.delete(operation) })
+    }
     async load(src, afterLoad, beforeRender) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
-        const loadStartedAt = manabiPerfNow();
-        // Reset direction flags and promise before loading a new section
-        this.#vertical = this.#verticalRTL = this.#rtl = null;
-        this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
+        const cancelled = () => Object.assign(new Error('Paginator document load retired'), { name: 'AbortError' })
+        if (this.#closed) throw cancelled()
+        this.#pendingLoadCancel?.()
+        this.#retireGeometry()
+        this.#resizeObserver.disconnect()
+        this.#hasResizerObserverTriggered = false
+        this.#lastResizerRect = null
+        this.cachedViewSize = null
+        const outgoingDocument = this.#currentDocument
+        this.#currentDocument = null
+        if (outgoingDocument) this.onUnload?.(outgoingDocument)
+        const generation = ++this.#loadGeneration
+        const ownsLoad = () => !this.#closed && this.#loadGeneration === generation
+        this.#directionReadyResolve?.()
+        this.#vertical = this.#verticalRTL = this.#rtl = null
+        this.#directionReady = new Promise(resolve => { this.#directionReadyResolve = resolve })
+        if (this.#isCacheWarmer) return
         return new Promise((resolve, reject) => {
-            if (this.#isCacheWarmer) {
-                console.log("Don't create View for cache warmers")
-                resolve()
-            } else {
-                this.#iframe.addEventListener('load', async () => {
-                    try {
-                        const doc = this.document
-
-                        await afterLoad?.(doc)
-                        await doc?.defaultView?.manabi_waitForExternalSegmentSidecar?.()
-
-                        const direction = await resolvedPaginatorDirectionForDocument(doc)
-                        this.setDirection(direction)
-
-                        this.#contentRange.selectNodeContents(doc.body)
-
-                        const layout = await beforeRender?.({
-                            vertical: this.#vertical,
-                            rtl: this.#rtl,
-                        })
-                        await this.render(layout)
-
-                        this.#resizeObserver.observe(doc.body)
-                        doc.fonts?.ready?.then?.(() => {
-                            void this.expand()
-                        })
-                        resolve()
-                    } catch (error) {
-                        reject(error)
-                    }
-                }, {
-                    once: true
-                })
-                this.#iframe.addEventListener('error', error => {
-                    reject(error);
-                }, { once: true })
-                this.#iframe.src = src
+            let settled = false
+            const settle = error => {
+                if (settled) return
+                settled = true
+                this.#iframe.removeEventListener('load', onLoad)
+                this.#iframe.removeEventListener('error', onError)
+                if (this.#pendingLoadCancel === cancel) this.#pendingLoadCancel = null
+                if (error) reject(error)
+                else resolve()
             }
+            const cancel = () => settle(cancelled())
+            const requireOwner = doc => { if (!ownsLoad() || (doc && doc !== this.document)) throw cancelled() }
+            const onError = error => settle(error)
+            const onLoad = async () => {
+                try {
+                    requireOwner()
+                    const doc = this.document
+                    this.#currentDocument = doc
+                    await afterLoad?.(doc)
+                    requireOwner(doc)
+                    await doc?.defaultView?.manabi_waitForExternalSegmentSidecar?.()
+                    requireOwner(doc)
+                    const direction = await resolvedPaginatorDirectionForDocument(doc)
+                    requireOwner(doc)
+                    this.setDirection(direction)
+                    this.#contentRange.selectNodeContents(doc.body)
+                    const layout = await beforeRender?.({ vertical: this.#vertical, verticalRTL: this.#verticalRTL, rtl: this.#rtl })
+                    requireOwner(doc)
+                    await this.render(layout)
+                    requireOwner(doc)
+                    this.#resizeObserver.observe(doc.body)
+                    if (doc.fonts?.ready) {
+                        Promise.resolve(doc.fonts.ready).then(() => {
+                            if (ownsLoad() && this.document === doc) return this.expand()
+                        }).catch(() => {})
+                    }
+                    settle()
+                } catch (error) { settle(error) }
+            }
+            this.#pendingLoadCancel = cancel
+            this.#iframe.addEventListener('load', onLoad, { once: true })
+            this.#iframe.addEventListener('error', onError, { once: true })
+            this.#iframe.src = src
         })
     }
     async render(layout) {
+        if (this.#closed || !layout || !this.document?.body) return
+        return this.#withGeometryOwner(owner => this.#renderOwned(layout, owner), true)
+    }
+    async #renderOwned(layout, owner) {
+        await owner.wait(this.#awaitDirection())
+        if (!owner.isCurrent()) return
         //        console.log("render(layout)...")
         if (!layout) {
             //            console.log("render(layout)... return")
             return
         }
-        const doc = this.document
+        const doc = owner.document
         if (!doc?.documentElement || !doc?.body) {
             return
         }
@@ -445,21 +506,21 @@ class View {
 
         if (this.#column) {
             //            console.log("render(layout)... await columnize(layout)")
-            await this.columnize(layout)
+            await this.columnize(layout, owner)
             //            console.log("render(layout)... await'd columnize(layout)")
         } else {
             //            console.log("render(layout)... await scrolled")
-            await this.scrolled(layout)
+            await this.scrolled(layout, owner)
             //            console.log("render(layout)... await'd scrolled")
         }
     }
-    async scrolled({
-        gap,
-        columnWidth
-    }) {
-        await this.#awaitDirection();
+    async scrolled(layout, owner = null) {
+        if (!owner) return this.#withGeometryOwner(operation => this.scrolled(layout, operation), true)
+        const { gap, columnWidth } = layout
+        await owner.wait(this.#awaitDirection())
+        if (!owner.isCurrent()) return
         const vertical = this.#vertical
-        const doc = this.document
+        const doc = owner.document
         const { isJapanese } = getJapaneseLayoutFlags(doc)
         setStylesImportant(doc.documentElement, {
             'box-sizing': 'border-box',
@@ -501,24 +562,21 @@ class View {
         })
         this.setImageSize()
         manabiRevealPaginatorDocument(doc)
-        this.#debouncedExpand()
+        await this.#debouncedExpand()
         //        await this.expand()
     }
-    async columnize({
-        width,
-        height,
-        gap,
-        columnWidth,
-        divisor,
-    }) {
+    async columnize(layout, owner = null) {
+        if (!owner) return this.#withGeometryOwner(operation => this.columnize(layout, operation), true)
+        const { width, height, gap, columnWidth, divisor } = layout
         //        console.log("columnize...")
-        await this.#awaitDirection();
+        await owner.wait(this.#awaitDirection())
+        if (!owner.isCurrent()) return
         //        console.log("columnize... await'd direction")
         const vertical = this.#vertical
         this.#size = vertical ? height : width
         //        console.log("columnize #size = ", this.#size)
 
-        const doc = this.document
+        const doc = owner.document
         const { isJapanese } = getJapaneseLayoutFlags(doc)
         setStylesImportant(doc.documentElement, {
             'box-sizing': 'border-box',
@@ -657,98 +715,100 @@ class View {
         }
     }
     async expand() {
-        const expandStartedAt = manabiPerfNow();
-        await this.onBeforeExpand()
-        //        console.log("expand...")
-        return new Promise((resolve, reject) => {
-            requestAnimationFrame(async () => {
-                try {
-                    //                console.log("expand... inside 0")
-                    const doc = this.document
-                    const documentElement = doc?.documentElement
-                    if (!doc?.body || !documentElement || !this.#iframe?.isConnected) {
-                        resolve()
-                        return
-                    }
-                    const side = this.#vertical ? 'height' : 'width'
-                    const otherSide = side === 'width' ? 'height' : 'width'
-                    if (this.#column) {
-                        const contentRect = this.#contentRange.getBoundingClientRect()
-                        // offset caused by column break at the start of the page
-                        // which seem to be supported only by WebKit and only for horizontal writing
-                        const contentStart = this.#vertical ? 0 : (() => {
-                            const rootRect = documentElement.getBoundingClientRect()
-                            return this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
-                        })()
-                        const contentSize = contentStart + contentRect[side]
-                        const pageCount = Math.ceil(contentSize / this.#size)
-                        const expandedSize = pageCount * this.#size
-                        this.#element.style.padding = '0'
-                        this.#iframe.style[side] = `${expandedSize}px`
-                        this.#element.style[side] = `${expandedSize + this.#size * 2}px`
-                        this.#iframe.style[otherSide] = '100%'
-                        this.#element.style[otherSide] = '100%'
-                        if (documentElement) {
-                            documentElement.style[side] = `${this.#size}px`
+        if (this.#closed || !this.document?.body) return
+        return this.#withGeometryOwner(async owner => {
+            await owner.wait(this.onBeforeExpand?.(owner.context))
+            if (!owner.isCurrent()) return
+            return new Promise((resolve, reject) => {
+                requestAnimationFrame(async () => {
+                    try {
+                        if (!owner.isCurrent()) { resolve(); return }
+                        const doc = owner.document
+                        const documentElement = doc?.documentElement
+                        if (!doc?.body || !documentElement || !this.#iframe?.isConnected) {
+                            resolve()
+                            return
                         }
-                        if (this.#overlayer) {
-                            this.#overlayer.element.style.margin = '0'
-                            this.#overlayer.element.style.left = this.#vertical ? '0' : `${this.#size}px`
-                            this.#overlayer.element.style.top = this.#vertical ? `${this.#size}px` : '0'
-                            this.#overlayer.element.style[side] = `${expandedSize}px`
-                            this.#overlayer.redraw()
-                        }
-                    } else {
-                        const contentSize = documentElement.getBoundingClientRect()[side]
-                        const expandedSize = contentSize
-                        const {
-                            topMargin,
-                            bottomMargin
-                        } = this.layout
-                        //                    const paddingTop = `${marginTop}px`
-                        //                    const paddingBottom = `${marginBottom}px`
-                        const paddingTop = `${topMargin}px`
-                        const paddingBottom = `${bottomMargin}px`
-                        if (this.#vertical) {
-                            this.#element.style.paddingLeft = paddingTop
-                            this.#element.style.paddingRight = paddingBottom
-                            this.#element.style.paddingTop = '0'
-                            this.#element.style.paddingBottom = '0'
-                        } else {
-                            this.#element.style.paddingLeft = '0'
-                            this.#element.style.paddingRight = '0'
-                            this.#element.style.paddingTop = paddingTop
-                            this.#element.style.paddingBottom = paddingBottom
-                        }
-                        this.#iframe.style[side] = `${expandedSize}px`
-                        this.#element.style[side] = `${expandedSize}px`
-                        this.#iframe.style[otherSide] = '100%'
-                        this.#element.style[otherSide] = '100%'
-                        if (this.#overlayer) {
-                            if (this.#vertical) {
-                                this.#overlayer.element.style.marginLeft = paddingTop
-                                this.#overlayer.element.style.marginRight = paddingBottom
-                                this.#overlayer.element.style.marginTop = '0'
-                                this.#overlayer.element.style.marginBottom = '0'
-                            } else {
-                                this.#overlayer.element.style.marginLeft = '0'
-                                this.#overlayer.element.style.marginRight = '0'
-                                this.#overlayer.element.style.marginTop = paddingTop
-                                this.#overlayer.element.style.marginBottom = paddingBottom
+                        const side = this.#vertical ? 'height' : 'width'
+                        const otherSide = side === 'width' ? 'height' : 'width'
+                        if (this.#column) {
+                            const contentRect = this.#contentRange.getBoundingClientRect()
+                            // offset caused by column break at the start of the page
+                            // which seem to be supported only by WebKit and only for horizontal writing
+                            const contentStart = this.#vertical ? 0 : (() => {
+                                const rootRect = documentElement.getBoundingClientRect()
+                                return this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
+                            })()
+                            const contentSize = contentStart + contentRect[side]
+                            const pageCount = Math.ceil(contentSize / this.#size)
+                            const expandedSize = pageCount * this.#size
+                            this.#element.style.padding = '0'
+                            this.#iframe.style[side] = `${expandedSize}px`
+                            this.#element.style[side] = `${expandedSize + this.#size * 2}px`
+                            this.#iframe.style[otherSide] = '100%'
+                            this.#element.style[otherSide] = '100%'
+                            if (documentElement) {
+                                documentElement.style[side] = `${this.#size}px`
                             }
-                            this.#overlayer.element.style.left = '0'
-                            this.#overlayer.element.style.top = '0'
-                            this.#overlayer.element.style[side] = `${expandedSize}px`
-                            this.#overlayer.redraw()
+                            if (this.#overlayer) {
+                                this.#overlayer.element.style.margin = '0'
+                                this.#overlayer.element.style.left = this.#vertical ? '0' : `${this.#size}px`
+                                this.#overlayer.element.style.top = this.#vertical ? `${this.#size}px` : '0'
+                                this.#overlayer.element.style[side] = `${expandedSize}px`
+                                this.#overlayer.redraw()
+                            }
+                        } else {
+                            const contentSize = documentElement.getBoundingClientRect()[side]
+                            const expandedSize = contentSize
+                            const {
+                                topMargin,
+                                bottomMargin
+                            } = this.layout
+                            //                    const paddingTop = `${marginTop}px`
+                            //                    const paddingBottom = `${marginBottom}px`
+                            const paddingTop = `${topMargin}px`
+                            const paddingBottom = `${bottomMargin}px`
+                            if (this.#vertical) {
+                                this.#element.style.paddingLeft = paddingTop
+                                this.#element.style.paddingRight = paddingBottom
+                                this.#element.style.paddingTop = '0'
+                                this.#element.style.paddingBottom = '0'
+                            } else {
+                                this.#element.style.paddingLeft = '0'
+                                this.#element.style.paddingRight = '0'
+                                this.#element.style.paddingTop = paddingTop
+                                this.#element.style.paddingBottom = paddingBottom
+                            }
+                            this.#iframe.style[side] = `${expandedSize}px`
+                            this.#element.style[side] = `${expandedSize}px`
+                            this.#iframe.style[otherSide] = '100%'
+                            this.#element.style[otherSide] = '100%'
+                            if (this.#overlayer) {
+                                if (this.#vertical) {
+                                    this.#overlayer.element.style.marginLeft = paddingTop
+                                    this.#overlayer.element.style.marginRight = paddingBottom
+                                    this.#overlayer.element.style.marginTop = '0'
+                                    this.#overlayer.element.style.marginBottom = '0'
+                                } else {
+                                    this.#overlayer.element.style.marginLeft = '0'
+                                    this.#overlayer.element.style.marginRight = '0'
+                                    this.#overlayer.element.style.marginTop = paddingTop
+                                    this.#overlayer.element.style.marginBottom = paddingBottom
+                                }
+                                this.#overlayer.element.style.left = '0'
+                                this.#overlayer.element.style.top = '0'
+                                this.#overlayer.element.style[side] = `${expandedSize}px`
+                                this.#overlayer.redraw()
+                            }
                         }
+                        //                console.log("expand... call onexpand")
+                        if (owner.isCurrent()) await owner.wait(this.onExpand?.(owner.context))
+                        //                console.log("expand... call'd onexpand")
+                        resolve()
+                    } catch (error) {
+                        reject(error)
                     }
-                    //                console.log("expand... call onexpand")
-                    await this.onExpand()
-                    //                console.log("expand... call'd onexpand")
-                    resolve()
-                } catch (error) {
-                    reject(error)
-                }
+                })
             })
         })
     }
@@ -760,19 +820,41 @@ class View {
         return this.#overlayer
     }
     setDirection({ vertical, verticalRTL, rtl }) {
+        if (this.#vertical !== null && (vertical !== this.#vertical || verticalRTL !== this.#verticalRTL || rtl !== this.#rtl)) {
+            this.#layoutGeneration += 1
+            this.#retireGeometry()
+            this.cachedViewSize = null
+        }
         this.#vertical = vertical
         this.#verticalRTL = verticalRTL
         this.#rtl = rtl
         this.#directionReadyResolve?.()
     }
     destroy() {
-        if (this.document) this.#resizeObserver.unobserve(this.document.body)
-        //        if (this.document) this.#mutationObserver.disconnect()
+        if (this.#closed) return false
+        this.#closed = true
+        this.#loadGeneration += 1
+        this.#retireGeometry()
+        this.#pendingLoadCancel?.()
+        this.#directionReadyResolve?.()
+        this.#resizeObserver.disconnect()
+        const doc = this.#currentDocument
+        this.#currentDocument = null
+        this.onUnload?.(doc)
+        this.onUnload = this.onBeforeExpand = this.onExpand = null
+        return true
     }
+
 }
 
 // NOTE: everything here assumes the so-called "negative scroll type" for RTL
 export class Paginator extends HTMLElement {
+    #closed = false
+    #geometryGeneration = 0
+    #renderGeneration = 0
+    #pendingSizeCancel = null
+    #pendingViewSizeCancel = null
+    #pendingScrollFrames = new Set()
     static observedAttributes = [
         'flow', 'gap', 'marginTop', 'marginBottom',
         'max-inline-size', 'max-block-size', 'max-column-count',
@@ -783,7 +865,7 @@ export class Paginator extends HTMLElement {
     #debouncedRender = this.render.bind(this)
     #lastResizerRect = null
     #resizeObserver = new ResizeObserver(entries => {
-        if (this.#isCacheWarmer) return;
+        if (this.#closed || this.#isCacheWarmer) return;
 
         const entry = entries[0];
         const rect = entry.contentRect;
@@ -810,7 +892,7 @@ export class Paginator extends HTMLElement {
 
         this.#lastResizerRect = newSize
         this.#cachedSizes = null
-        this.#sizesPromise = null
+        this.#invalidateContainerGeometry()
         //            console.log("sizes() from resize updated to ", this.#cachedSizes)
         this.#cachedStart = null
         this.#invalidateVisibleRangeCache()
@@ -839,6 +921,7 @@ export class Paginator extends HTMLElement {
     #justAnchored = false
     #isLoading = false
     #locked = false // while true, prevent any further navigation
+    #directNavigationOwner = null
     #styles
     #writingDirectionOverride = 'original'
     #writingDirectionUpdate = Promise.resolve()
@@ -1092,6 +1175,12 @@ export class Paginator extends HTMLElement {
 
     // NOTE: In this foliate-js fork, currently paginator can only open a book once
     open(book, isCacheWarmer) {
+        this.#closed = false
+        this.#geometryGeneration += 1
+        this.#renderGeneration += 1
+        this.#retireScrollFrames()
+        this.#invalidateContainerGeometry()
+        this.#invalidateViewGeometry()
         // Keep layout measurable; hide visually until first anchor is settled.
         if (isCacheWarmer) {
             this.style.display = 'none'
@@ -1127,15 +1216,29 @@ export class Paginator extends HTMLElement {
         this.#top?.style?.setProperty('--side-nav-width', typeof widthPx === 'number' ? `${widthPx}px` : widthPx);
     }
     #createView() {
+        this.#retireScrollFrames()
+        this.#geometryGeneration += 1
+        this.#renderGeneration += 1
+        this.#invalidateContainerGeometry()
+        this.#invalidateViewGeometry()
+        this.#directionReadyResolve?.()
+        this.#vertical = this.#verticalRTL = this.#rtl = null
+        this.#directionReady = new Promise(resolve => { this.#directionReadyResolve = resolve })
         if (this.#view) {
             this.#view.destroy()
             this.#container.removeChild(this.#view.element)
         }
         this.#invalidateVisibleRangeCache()
+        const geometryGeneration = this.#geometryGeneration
         this.#view = new View({
             container: this,
-            onBeforeExpand: this.#onBeforeExpand.bind(this),
-            onExpand: this.#onExpand.bind(this),
+            onBeforeExpand: owner => this.#onBeforeExpand({ ...owner, geometryGeneration }),
+            onExpand: owner => this.#onExpand({ ...owner, geometryGeneration }),
+            onUnload: doc => {
+                if (doc) this.dispatchEvent(new CustomEvent('document-unload', {
+                    detail: { doc, index: this.#index, location: doc.location?.href ?? doc.URL },
+                }))
+            },
             isCacheWarmer: this.#isCacheWarmer,
             //            onExpand: debounce(() => this.#onExpand.bind(this), 500),
         })
@@ -1271,25 +1374,31 @@ export class Paginator extends HTMLElement {
         }
         return entry.fulfilled ? entry : null
     }
-    async #onBeforeExpand() {
-//        console.log("#onBeforeExpand...", this.style.display)
+    #ownsExpansion(owner) {
+        return !this.#closed && owner.geometryGeneration === this.#geometryGeneration && owner.isCurrent()
+            && this.#view === owner.view && this.#view?.document === owner.document
+    }
+    async #onBeforeExpand(owner) {
+        if (!this.#ownsExpansion(owner)) return
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
-        this.#viewSizePromise = null;
+        this.#invalidateViewGeometry();
         this.#cachedStart = null;
         this.#invalidateVisibleRangeCache()
     }
-    async #onExpand() {
-//        console.log("#onExpand...", this.style.display)
+    async #onExpand(owner) {
+        if (!this.#ownsExpansion(owner)) return
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
-        this.#viewSizePromise = null;
+        this.#invalidateViewGeometry();
         this.#cachedStart = null;
         this.#invalidateVisibleRangeCache()
         if (!this.#suspendOnExpandAnchor) {
-            await this.#scrollToAnchor(this.#anchor)
+            await this.#scrollToAnchor(this.#anchor, 'anchor', null,
+                () => this.#ownsExpansion(owner))
         }
 
+        if (!this.#ownsExpansion(owner)) return
         if (!this.#isLoading) return
         this.#setLoading(false, 'expand.onExpand')
     }
@@ -1667,33 +1776,39 @@ export class Paginator extends HTMLElement {
         if (!this.#view || this.#isCacheWarmer) {
             return { rendered: false, reason: 'unavailable' };
         }
-        const { width, height } = await this.sizes();
+        const isCurrent = this.#geometryOwner()
+        const measured = await this.sizes()
+        if (!isCurrent() || !measured) return { rendered: false, reason: 'replaced' }
+        const { width, height } = measured
         const signature = this.#typographyRenderSignature({ width, height });
         const previousSignature = this.#lastTypographyRenderSignature;
         if (signature === previousSignature) {
             return { rendered: false, reason: 'unchanged', signature };
         }
         this.#cachedSizes = null;
-        this.#sizesPromise = null;
+        this.#invalidateContainerGeometry();
         this.#cachedStart = null;
-        this.#viewSizePromise = null;
+        this.#invalidateViewGeometry();
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
         this.#invalidateVisibleRangeCache();
         await this.render();
         return { rendered: true, reason, previousSignature, signature };
     }
-    async #beforeRender({
-        vertical,
-        verticalRTL,
-        rtl,
-        //        background
-    }) {
+    async #beforeRender({ vertical, verticalRTL, rtl }, sourceView = this.#view) {
+        const doc = sourceView?.document
+        const generation = ++this.#renderGeneration
+        const isCurrent = () => !this.#closed && this.#view === sourceView
+            && sourceView?.document === doc && this.#renderGeneration === generation
+        let measured = await this.sizes()
+        while (!measured && isCurrent()) measured = await this.sizes()
+        if (!isCurrent() || !measured) return null
+        const { width, height } = measured
         this.#vertical = vertical
         this.#verticalRTL = verticalRTL
         this.#rtl = rtl
         this.#top.classList.toggle('vertical', vertical)
-        this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
+        this.#directionReadyResolve?.()
 
         // set background to `doc` background
         // this is needed because the iframe does not fill the whole element
@@ -1702,10 +1817,6 @@ export class Paginator extends HTMLElement {
         if (!this.#isCacheWarmer) {
         }
 
-        const {
-            width,
-            height
-        } = await this.sizes()
         this.#lastRenderContainerSize = { width, height }
         const size = vertical ? height : width
         const flow = this.getAttribute('flow')
@@ -1864,7 +1975,7 @@ export class Paginator extends HTMLElement {
         }
     }
     async render() {
-        if (!this.#view) {
+        if (this.#closed || !this.#view || this.#vertical === null) {
             return
         }
         this.#invalidateVisibleRangeCache()
@@ -1873,11 +1984,15 @@ export class Paginator extends HTMLElement {
         //        this.#hasResizeObserverTriggered = false
         //        this.#resizeObserver.observe(this.#container);
 
-        await this.#view.render(await this.#beforeRender({
+        const view = this.#view
+        const doc = view.document
+        const layout = await this.#beforeRender({
             vertical: this.#vertical,
             verticalRTL: this.#verticalRTL,
             rtl: this.#rtl,
-        }))
+        }, view)
+        if (this.#closed || this.#view !== view || view.document !== doc || !layout) return
+        await view.render(layout)
         //            await this.#scrollToAnchor(this.#anchor) // already called via render -> ... -> expand -> onExpand
     }
     async renderIfContainerSizeChanged(reason = 'unspecified') {
@@ -1901,9 +2016,9 @@ export class Paginator extends HTMLElement {
             return { rendered: false, reason: 'unchanged', previousSize, currentSize }
         }
         this.#cachedSizes = null
-        this.#sizesPromise = null
+        this.#invalidateContainerGeometry()
         this.#cachedStart = null
-        this.#viewSizePromise = null
+        this.#invalidateViewGeometry()
         this.#view.cachedViewSize = null
         this.#view.cachedSizes = null
         this.#invalidateVisibleRangeCache()
@@ -1929,97 +2044,104 @@ export class Paginator extends HTMLElement {
         return this.#vertical ? (scrolled ? 'width' : 'height') :
             scrolled ? 'height' : 'width'
     }
+    #invalidateContainerGeometry() {
+        this.#pendingSizeCancel?.()
+        this.#pendingSizeCancel = null
+        this.#sizesPromise = null
+        this.#cachedSizes = null
+    }
+    #invalidateViewGeometry() {
+        this.#pendingViewSizeCancel?.()
+        this.#pendingViewSizeCancel = null
+        this.#viewSizePromise = null
+        if (this.#view) this.#view.cachedViewSize = null
+    }
+    #geometryOwner() {
+        const generation = this.#geometryGeneration
+        const view = this.#view
+        const doc = view?.document
+        return () => !this.#closed && this.#geometryGeneration === generation
+            && this.#view === view && this.#view?.document === doc
+    }
     async sizes() {
-        //        await this.#awaitDirection();
+        if (this.#closed) return null
         if (this.#isCacheWarmer) return 0
-        if (/*true || */this.#cachedSizes === null) {
-            if (this.#sizesPromise) {
-                return this.#sizesPromise
-            }
-            this.#sizesPromise = new Promise(resolve => {
-                requestAnimationFrame(async () => {
-                    //                    const r = this.#container.getBoundingClientRect()
-                    //                    this.#cachedSizes = {
-                    //                        width: r.width,
-                    //                        height: r.height,
-                    //                    }
-                    //                    resolve(this.#cachedSizes)
-                    //                    return ;
-
-                    this.#cachedSizes = {
-                        width: this.#container.clientWidth,
-                        height: this.#container.clientHeight,
-                    }
-                    this.#sizesPromise = null
-                    resolve(this.#cachedSizes)
-                })
-            })
-            return this.#sizesPromise
-            //        } else {
-            //                                const r = this.#container.getBoundingClientRect()
-            //            console.log("sizes() cached/real", this.#cachedSizes, r)
-            //            requestAnimationFrame(() => {
-            //                                const r = this.#container.getBoundingClientRect()
-            //            console.log("sizes() FRAME cached/real", this.#cachedSizes, r)
-            //            })
-
+        if (this.#cachedSizes !== null) return this.#cachedSizes
+        if (this.#sizesPromise) return this.#sizesPromise
+        const isCurrent = this.#geometryOwner()
+        let resolve
+        const promise = new Promise(settle => { resolve = settle })
+        const cancel = () => {
+            if (this.#sizesPromise === promise) this.#sizesPromise = null
+            if (this.#pendingSizeCancel === cancel) this.#pendingSizeCancel = null
+            resolve(null)
         }
-        return this.#cachedSizes
+        this.#sizesPromise = promise
+        this.#pendingSizeCancel = cancel
+        requestAnimationFrame(() => {
+            if (!isCurrent() || this.#sizesPromise !== promise) { cancel(); return }
+            const sizes = { width: this.#container.clientWidth, height: this.#container.clientHeight }
+            this.#cachedSizes = sizes
+            this.#sizesPromise = null
+            if (this.#pendingSizeCancel === cancel) this.#pendingSizeCancel = null
+            resolve(sizes)
+        })
+        return promise
     }
     async size() {
+        const isCurrent = this.#geometryOwner()
         const sideProp = await this.sideProp()
+        if (!isCurrent()) return 0
         return await this.#sizeForSide(sideProp)
     }
     async viewSize() {
-        return await this.#viewSizeForSide(await this.sideProp())
+        const isCurrent = this.#geometryOwner()
+        const sideProp = await this.sideProp()
+        if (!isCurrent()) return 0
+        return await this.#viewSizeForSide(sideProp)
     }
     async #sizeForSide(sideProp) {
+        const isCurrent = this.#geometryOwner()
         const sizes = await this.sizes()
-        return sizes?.[sideProp] ?? 0
+        return isCurrent() ? sizes?.[sideProp] ?? 0 : 0
     }
     async #viewSizeForSide(sideProp) {
-        if (this.#isCacheWarmer) return 0
-        if (!this.#view) return 0
-        if (/*true ||*/ this.#view.cachedViewSize === null) {
-            if (this.#viewSizePromise) {
-                const cachedViewSize = await this.#viewSizePromise
-                return cachedViewSize?.[sideProp] ?? 0
+        if (this.#closed || this.#isCacheWarmer || !this.#view) return 0
+        const isCurrent = this.#geometryOwner()
+        const view = this.#view
+        if (view.cachedViewSize !== null) return view.cachedViewSize?.[sideProp] ?? 0
+        let promise = this.#viewSizePromise
+        if (!promise) {
+            let resolve
+            promise = new Promise(settle => { resolve = settle })
+            const pending = promise
+            const cancel = () => {
+                if (this.#viewSizePromise === pending) this.#viewSizePromise = null
+                if (this.#pendingViewSizeCancel === cancel) this.#pendingViewSizeCancel = null
+                resolve(null)
             }
-            const view = this.#view
-            this.#viewSizePromise = new Promise(resolve => {
-                requestAnimationFrame(async () => {
-                    //                    const r = this.#view.element.getBoundingClientRect()
-                    //                    this.#view.cachedViewSize = {
-                    //                        width: r.width,
-                    //                        height: r.height,
-                    //                    }
-                    //                    resolve(this.#view.cachedViewSize[await this.sideProp()])
-                    //                    return ;
-                    const v = view?.element
-                    const cachedViewSize = {
-                        width: v.clientWidth,
-                        height: v.clientHeight,
-                    }
-                    if (this.#view === view) {
-                        this.#view.cachedViewSize = cachedViewSize
-                    }
-                    this.#viewSizePromise = null
-                    //                                        console.log("viewSize() the rect we chose:", this.#view.cachedViewSize)
-                    //                                        console.log("viewSize() the rect magnitude we chose:", this.#view.cachedViewSize[await this.sideProp()])
-                    //                                        console.log('viewSize() prev slow but correct implementation rect:', this.#view.element.getBoundingClientRect())
-                    //                                        console.log('viewSize() prev slow but correct implementation chosen magnitude:', this.#view.element.getBoundingClientRect()[await this.sideProp()])
-                    resolve(cachedViewSize)
-                })
+            this.#viewSizePromise = pending
+            this.#pendingViewSizeCancel = cancel
+            requestAnimationFrame(() => {
+                if (!isCurrent() || this.#viewSizePromise !== pending) { cancel(); return }
+                const sizes = { width: view.element.clientWidth, height: view.element.clientHeight }
+                view.cachedViewSize = sizes
+                this.#viewSizePromise = null
+                if (this.#pendingViewSizeCancel === cancel) this.#pendingViewSizeCancel = null
+                resolve(sizes)
             })
-            const cachedViewSize = await this.#viewSizePromise
-            return cachedViewSize?.[sideProp] ?? 0
         }
-        return this.#view.cachedViewSize[sideProp] ?? 0
+        const sizes = await promise
+        return isCurrent() ? sizes?.[sideProp] ?? 0 : 0
     }
     async start() {
-        return await this.#startForScrollProp(await this.scrollProp())
+        const isCurrent = this.#geometryOwner()
+        const scrollProp = await this.scrollProp()
+        if (!isCurrent()) return 0
+        return await this.#startForScrollProp(scrollProp)
     }
     async #startForScrollProp(scrollProp) {
+        if (this.#closed) return 0
         if (this.#cachedStart === null) {
             //        return new Promise(resolve => {
             //            requestAnimationFrame(async () => {
@@ -2055,15 +2177,24 @@ export class Paginator extends HTMLElement {
         }
         return rawPages
     }
+    #retiredPageMetrics() {
+        return { scrolled: this.scrolled, vertical: false, rtl: false, sideProp: 'width', scrollProp: 'scrollLeft',
+            size: 0, viewSize: 0, start: 0, end: 0, page: 0, pages: 0 }
+    }
     async pageMetrics() {
+        const isCurrent = this.#geometryOwner()
         await this.#awaitDirection()
+        if (!isCurrent()) return this.#retiredPageMetrics()
         const sideProp = await this.sideProp()
+        if (!isCurrent()) return this.#retiredPageMetrics()
         const scrollProp = await this.scrollProp()
+        if (!isCurrent()) return this.#retiredPageMetrics()
         const [size, viewSize, start] = await Promise.all([
             this.#sizeForSide(sideProp),
             this.#viewSizeForSide(sideProp),
             this.#startForScrollProp(scrollProp),
         ])
+        if (!isCurrent()) return this.#retiredPageMetrics()
         const end = start + size
         const rawPages = size > 0 ? Math.round(viewSize / size) : 0
         const pages = this.#normalizePages(rawPages)
@@ -2330,45 +2461,83 @@ export class Paginator extends HTMLElement {
         }
         this.#lastWheelDeltaX = e.deltaX;
     }
-    async #scrollToRect(rect, reason) {
+    #retireScrollFrames() {
+        for (const cancel of this.#pendingScrollFrames) cancel()
+        this.#pendingScrollFrames.clear()
+    }
+    #runScrollFrame(isCurrent, callback) {
+        return new Promise((resolve, reject) => {
+            let settled = false
+            const finish = error => {
+                if (settled) return
+                settled = true
+                this.#pendingScrollFrames.delete(cancel)
+                if (error) reject(error)
+                else resolve()
+            }
+            const cancel = () => finish()
+            this.#pendingScrollFrames.add(cancel)
+            requestAnimationFrame(async () => {
+                if (settled || !isCurrent()) { finish(); return }
+                try { await callback(); finish() }
+                catch (error) { finish(error) }
+            })
+        })
+    }
+    async #scrollToRect(rect, reason, navigationOwner = null, isCurrent = this.#geometryOwner()) {
         const metrics = await this.pageMetrics()
+        if (!isCurrent()) return
         if (this.scrolled) {
             const rectMapper = await this.#getRectMapper(metrics);
+            if (!isCurrent()) return
             const offset = rectMapper(rect).left - this.#topMargin
-            return await this.#scrollTo(offset, reason, undefined, metrics)
+            return await this.#scrollTo(offset, reason, undefined, metrics, navigationOwner, isCurrent)
         }
         const rectMapper = await this.#getRectMapper(metrics);
+        if (!isCurrent()) return
         const offset = rectMapper(rect).left
-        return await this.#scrollToPage(Math.floor(offset / metrics.size) + (this.#rtl ? -1 : 1), reason, undefined, metrics)
+        return await this.#scrollToPage(Math.floor(offset / metrics.size) + (this.#rtl ? -1 : 1), reason, undefined, metrics, navigationOwner, isCurrent)
     }
-    async #scrollTo(offset, reason, smooth, knownMetrics = null) {
+    async #scrollTo(offset, reason, smooth, knownMetrics = null, navigationOwner = null, isCurrent = this.#geometryOwner()) {
         await this.#awaitDirection();
+        if (!isCurrent()) return
         const scroll = async () => {
+            if (!isCurrent()) return
             this.#cachedStart = null;
             const element = this.#container
             const scrollProp = await this.scrollProp()
+            if (!isCurrent()) return
             const metrics = knownMetrics || await this.pageMetrics()
+            if (!isCurrent()) return
             const size = metrics.size
             const atStart = this.#adjacentIndex(-1) == null && metrics.page <= 1
             const atEnd = this.#adjacentIndex(1) == null && metrics.page >= metrics.pages - 2
             if (element[scrollProp] === offset) {
                 this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                await this.#afterScroll(reason)
+                await this.#afterScroll(reason, navigationOwner, isCurrent)
                 return
             }
             // FIXME: vertical-rl only, not -lr
             if (this.scrolled && this.#vertical) offset = -offset
             if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
                 element[scrollProp], offset, 300, easeOutQuad,
-                x => element[scrollProp] = x,
+                x => { if (isCurrent()) element[scrollProp] = x },
             ).then(async () => {
+                if (!isCurrent()) return
                 this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                await this.#afterScroll(reason)
+                await this.#afterScroll(reason, navigationOwner, isCurrent)
             })
             else {
                 element[scrollProp] = offset
+                // WebKit can defer a paginated programmatic scroll until the
+                // next rendering update. Let that update settle before
+                // #afterScroll derives and publishes the relocation.
+                if (reason === 'page' && !this.scrolled) {
+                    await new Promise(resolve => requestAnimationFrame(() => resolve()))
+                }
+                if (!isCurrent()) return
                 this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                await this.#afterScroll(reason)
+                await this.#afterScroll(reason, navigationOwner, isCurrent)
             }
         }
 
@@ -2384,22 +2553,15 @@ export class Paginator extends HTMLElement {
         //                (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
         //                typeof document.startViewTransition !== 'function'
         //                ) {
-        return new Promise(resolve => {
-            requestAnimationFrame(async () => {
-                const shouldFade = !(reason === 'page' || reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation');
-                if (!shouldFade) {
-                    await scroll()
-                } else {
-                    this.#container.classList.add('view-fade')
-                    // Allow the browser to paint the fade
-                    /*await new Promise(r => setTimeout(r, 65));
-                     this.#container.classList.add('view-faded')*/
-                    await scroll()
-                    this.#container.classList.remove('view-faded')
-                    this.#container.classList.remove('view-fade')
-                }
-                resolve()
-            })
+        return this.#runScrollFrame(isCurrent, async () => {
+            const shouldFade = !(reason === 'page' || reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation')
+            if (shouldFade) this.#container.classList.add('view-fade')
+            await scroll()
+            if (!isCurrent()) return
+            if (shouldFade) {
+                this.#container.classList.remove('view-faded')
+                this.#container.classList.remove('view-fade')
+            }
         })
         //                } else {
         //                    let goingForward = offset > this.start;
@@ -2441,23 +2603,25 @@ export class Paginator extends HTMLElement {
         //                    }
         //                }
     }
-    async #scrollToPage(page, reason, smooth, knownMetrics = null) {
+    async #scrollToPage(page, reason, smooth, knownMetrics = null, navigationOwner = null, isCurrent = this.#geometryOwner()) {
         const metrics = knownMetrics || await this.pageMetrics()
+            if (!isCurrent()) return
         const targetPage = manabiNormalizeSingleMediaPageTarget({
             page,
             pages: metrics.pages,
             isSingleMedia: this.#isSingleMediaElementWithoutText(),
         })
         const offset = metrics.size * (this.#rtl ? -targetPage : targetPage)
-        return await this.#scrollTo(offset, reason, smooth, metrics)
+        return await this.#scrollTo(offset, reason, smooth, metrics, navigationOwner, isCurrent)
     }
-    async scrollToAnchor(anchor, select) {
+    async scrollToAnchor(anchor, select, navigationOwner = null) {
         //            await new Promise(resolve => requestAnimationFrame(resolve));
-        await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
+        await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation', navigationOwner)
     }
     // TODO: Fix newer way and stop using this one that calculates getClientRects
-    async #scrollToAnchor(anchor, reason = 'anchor') {
+    async #scrollToAnchor(anchor, reason = 'anchor', navigationOwner = null, isCurrent = this.#geometryOwner()) {
         //        console.log('#scrollToAnchor0...', anchor)
+        if (!isCurrent()) return
         this.#anchor = anchor
         const rects = uncollapse(anchor)?.getClientRects?.()
         // if anchor is an element or a range
@@ -2467,19 +2631,20 @@ export class Paginator extends HTMLElement {
             const rect = Array.from(rects)
                 .find(r => r.width > 0 && r.height > 0) || rects[0]
             if (!rect) return
-            await this.#scrollToRect(rect, reason)
+            await this.#scrollToRect(rect, reason, navigationOwner, isCurrent)
             return
         }
         // if anchor is a fraction
         const metrics = await this.pageMetrics()
+        if (!isCurrent()) return
         if (this.scrolled) {
-            await this.#scrollTo(anchor * metrics.viewSize, reason, undefined, metrics)
+            await this.#scrollTo(anchor * metrics.viewSize, reason, undefined, metrics, navigationOwner, isCurrent)
             return
         }
         if (!metrics.pages) return
         const textPages = metrics.pages - 2
         const newPage = Math.round(anchor * (textPages - 1))
-        await this.#scrollToPage(newPage + 1, reason, undefined, metrics)
+        await this.#scrollToPage(newPage + 1, reason, undefined, metrics, navigationOwner, isCurrent)
     }
     async #NscrollToAnchor(anchor, reason = 'anchor') {
         //        console.log("#scrollToAnchor...cached sizes:", this.#cachedSizes, "real sizes: ", await this.sizes())
@@ -2676,7 +2841,14 @@ export class Paginator extends HTMLElement {
             }
         }
     }
-    async #afterScroll(reason) {
+    async #afterScroll(reason, navigationOwner = null, continuationIsCurrent = () => true) {
+        if (this.#closed || !this.#view || !continuationIsCurrent()) return
+        const sourceView = this.#view
+        const sourceIndex = this.#index
+        const isCurrent = () => !this.#closed && continuationIsCurrent()
+            && this.#view === sourceView && this.#index === sourceIndex
+            && (!navigationOwner || this.#ownsDirectNavigation(navigationOwner))
+        if (!isCurrent()) return
         if (this.#isCacheWarmer) {
             return;
         }
@@ -2684,6 +2856,7 @@ export class Paginator extends HTMLElement {
 
         this.#cachedStart = null;
         const range = await this.#getVisibleRange()
+        if (!isCurrent()) return
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
             this.#anchor = range
@@ -2693,13 +2866,15 @@ export class Paginator extends HTMLElement {
         const detail = {
             reason,
             range,
-            index
+            index,
+            relocationID: navigationOwner?.relocationID ?? null,
         }
         if ((reason === 'page' || reason === 'navigation') && this.#pendingPageTurnDirection) {
             detail.pageTurnDirection = this.#pendingPageTurnDirection;
         }
 
         const metrics = await this.pageMetrics()
+        if (!isCurrent()) return
         if (this.scrolled) {
             detail.fraction = metrics.viewSize > 0 ? metrics.start / metrics.viewSize : 0
         } else if (metrics.pages > 0) {
@@ -2710,6 +2885,7 @@ export class Paginator extends HTMLElement {
             detail.size = 1 / (pages - 2)
         }
 
+        if (navigationOwner) navigationOwner.didRelocate = true
         this.dispatchEvent(new CustomEvent('relocate', {
             detail
         }))
@@ -2781,7 +2957,7 @@ export class Paginator extends HTMLElement {
             }))
         }
     }
-    async #display(promise) {
+    async #display(promise, navigationOwner = null) {
         //            console.log("#display...")
         this.#suspendOnExpandAnchor = false
         this.#setLoading(true, 'display.start')
@@ -2802,10 +2978,12 @@ export class Paginator extends HTMLElement {
         }
 
         //            console.log("#display...awaited promise")
+        if (navigationOwner && !this.#ownsDirectNavigation(navigationOwner)) return
         this.#index = index
         const hasFocus = this.#view?.document?.hasFocus?.()
         if (src) {
             const afterLoad = async (doc) => {
+                if (navigationOwner && !this.#ownsDirectNavigation(navigationOwner)) return
                 if (this.#isCacheWarmer) {
                     await onLoad?.({
                         doc,
@@ -2842,19 +3020,23 @@ export class Paginator extends HTMLElement {
                 this.#suspendOnExpandAnchor = true
 
                 this.#cachedSizes = null
-                this.#sizesPromise = null
-                this.#viewSizePromise = null
+                this.#invalidateContainerGeometry()
+                this.#invalidateViewGeometry()
                 this.#cachedStart = null
                 this.#invalidateVisibleRangeCache()
 
                 //                console.log("#display... await load")
                 const view = this.#createView()
-                const beforeRender = this.#beforeRender.bind(this)
+                const beforeRender = direction => this.#beforeRender(direction, view)
 
                 if (!this.#isCacheWarmer) {
                 }
                 await view.load(src, afterLoad, beforeRender)
-                this.#view = view
+                if (navigationOwner && !this.#ownsDirectNavigation(navigationOwner)) {
+                    view.destroy()
+                    return
+                }
+                if (this.#closed || this.#view !== view) return
                 //                console.log("#display... awaited load")
                 if (!this.#isCacheWarmer) {
                 }
@@ -2899,13 +3081,13 @@ export class Paginator extends HTMLElement {
                 Math.abs((metrics.start ?? 0) - Math.abs(targetStart)) < 0.5
                 && metrics.page === targetPage
             if (alreadyAtTargetPage) {
-                await this.#afterScroll('navigation')
+                await this.#afterScroll('navigation', navigationOwner)
             } else {
-                await this.#scrollToPage(targetPage, 'navigation', undefined, metrics)
+                await this.#scrollToPage(targetPage, 'navigation', undefined, metrics, navigationOwner)
             }
         } else {
             await this.scrollToAnchor((typeof anchor === 'function' ?
-                anchor(this.#view.document) : anchor) ?? 0, select)
+                anchor(this.#view.document) : anchor) ?? 0, select, navigationOwner)
         }
         if (!this.#isCacheWarmer && typeof anchor === 'number' && !this.scrolled) {
             const metrics = await this.pageMetrics().catch(() => null)
@@ -2921,9 +3103,10 @@ export class Paginator extends HTMLElement {
                 && (pageCurrent >= pageTotal - 1 || landedPastContent)
             ) {
                 const correctedPage = Math.max(1, pageTotal - 2)
-                await this.#scrollToPage(correctedPage, 'navigation', undefined, metrics)
+                await this.#scrollToPage(correctedPage, 'navigation', undefined, metrics, navigationOwner)
             }
         }
+        if (navigationOwner && !this.#ownsDirectNavigation(navigationOwner)) return
         this.#suspendOnExpandAnchor = false
         if (hasFocus) this.focusView()
         if (!this.#isCacheWarmer && this.style.visibility === 'hidden') {
@@ -2939,8 +3122,10 @@ export class Paginator extends HTMLElement {
             displayError = error
             throw error
         } finally {
-            this.#suspendOnExpandAnchor = false
-            this.#setLoading(false, displayError ? 'display.error.finally' : 'display.complete.finally')
+            if (!navigationOwner || this.#ownsDirectNavigation(navigationOwner)) {
+                this.#suspendOnExpandAnchor = false
+                this.#setLoading(false, displayError ? 'display.error.finally' : 'display.complete.finally')
+            }
         }
     }
     #canGoToIndex(index) {
@@ -2951,7 +3136,7 @@ export class Paginator extends HTMLElement {
         anchor,
         localPage,
         select
-    }) {
+    }, navigationOwner = null) {
         //        console.log("#goTo...", this.style.display, index, anchor)
         const willLoadNewIndex = index !== this.#index;
         const anchorKind = Number.isFinite(localPage)
@@ -2978,7 +3163,7 @@ export class Paginator extends HTMLElement {
                     anchor,
                     localPage,
                     select
-                })
+                }, navigationOwner)
             } catch (error) {
                 throw error;
             }
@@ -3035,7 +3220,7 @@ export class Paginator extends HTMLElement {
                     }))
                     .catch(error => {
                         throw error
-                    }));
+                    }), navigationOwner);
             } catch (error) {
                 throw error;
             } finally {
@@ -3047,13 +3232,31 @@ export class Paginator extends HTMLElement {
             this.#scheduleNeighborPrefetch('section-display')
         }
     }
-    async goTo(target) {
-        if (this.#locked) return null
-        const resolved = await target
-        // A page turn may acquire the lock while an asynchronous target resolves.
-        // Explicit rejection must not look like legacy void navigation success.
-        if (this.#locked || !this.#canGoToIndex(resolved?.index)) return null
-        return await this.#goTo(resolved)
+    #ownsDirectNavigation(owner) {
+        return this.#directNavigationOwner === owner && this.book === owner.book
+    }
+    async goTo(target, options = {}) {
+        if (this.#locked) return false
+        const owner = {
+            book: this.book,
+            relocationID: typeof options.relocationID === 'string' ? options.relocationID : null,
+        }
+        this.#directNavigationOwner = owner
+        this.#locked = true
+        try {
+            const resolved = await target
+            if (!this.#ownsDirectNavigation(owner) || !this.#canGoToIndex(resolved?.index)) return false
+            await this.#goTo(resolved, owner)
+            return this.#ownsDirectNavigation(owner) && owner.didRelocate === true
+        } catch (error) {
+            if (!this.#ownsDirectNavigation(owner)) return false
+            throw error
+        } finally {
+            if (this.#directNavigationOwner === owner) {
+                this.#directNavigationOwner = null
+                this.#locked = false
+            }
+        }
     }
     async #scrollPrev(distance, knownMetrics = null) {
         if (!this.#view) return true
@@ -3065,7 +3268,7 @@ export class Paginator extends HTMLElement {
                 parseFloat(style.lineHeight) || 20;
             const scrollDistance = distance ?? (metrics.size - lineAdvance);
             if (metrics.start > 0) {
-                return await this.#scrollTo(Math.max(0, metrics.start - scrollDistance), null, true, metrics);
+                return await this.#scrollTo(Math.max(0, metrics.start - scrollDistance), 'page', true, metrics);
             }
             return true;
         }
@@ -3091,7 +3294,7 @@ export class Paginator extends HTMLElement {
                 parseFloat(style.lineHeight) || 20;
             const scrollDistance = distance ?? (metrics.size - lineAdvance);
             if (metrics.viewSize - metrics.end > 2) {
-                return await this.#scrollTo(Math.min(metrics.viewSize, metrics.start + scrollDistance), null, true, metrics);
+                return await this.#scrollTo(Math.min(metrics.viewSize, metrics.start + scrollDistance), 'page', true, metrics);
             }
             return true;
         }
@@ -3301,9 +3504,9 @@ export class Paginator extends HTMLElement {
 
         view.setDirection(direction)
         this.#cachedSizes = null
-        this.#sizesPromise = null
+        this.#invalidateContainerGeometry()
         this.#cachedStart = null
-        this.#viewSizePromise = null
+        this.#invalidateViewGeometry()
         this.#view.cachedViewSize = null
         this.#view.cachedSizes = null
         this.#invalidateVisibleRangeCache()
@@ -3329,6 +3532,15 @@ export class Paginator extends HTMLElement {
         this.#view?.document?.defaultView?.focus?.()
     }
     destroy() {
+        this.#closed = true
+        this.#retireScrollFrames()
+        this.#geometryGeneration += 1
+        this.#renderGeneration += 1
+        this.#invalidateContainerGeometry()
+        this.#invalidateViewGeometry()
+        this.#directionReadyResolve?.()
+        this.#directNavigationOwner = null
+        this.#locked = false
         this.#disconnectElementVisibilityObserver()
         this.#resizeObserver.unobserve(this)
         this.#setLoading(false, 'paginator.destroy')
@@ -3340,7 +3552,7 @@ export class Paginator extends HTMLElement {
         this.#prefetchCache = new Map()
         this.#view?.destroy?.()
         this.#view = null
-        this.sections[this.#index]?.unload?.()
+        this.sections?.[this.#index]?.unload?.()
     }
     // Public navigation edge detection methods
     async canTurnPrev() {
@@ -3384,3 +3596,5 @@ export class Paginator extends HTMLElement {
 }
 
 customElements.define('foliate-paginator', Paginator)
+
+export { View as PaginatorContentView }
