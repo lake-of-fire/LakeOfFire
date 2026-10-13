@@ -5,6 +5,7 @@ import {
 createTOCView
 } from './ui/tree.js'
 import { installBookReadingRuntime } from './book-reading-runtime.js'
+import { bookScopeKey } from './book-reading-state.js'
 import { applyBookReadingProjection } from './book-reading-projection.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import { processedSectionURLForHref } from './ebook-direct-section.js'
@@ -171,6 +172,8 @@ const manabiExpandCompactSegmentMetadata = (segment, tables) => {
         p: manabiSidecarTableValue(tables.p, segment?.[6], null),
         l: segment?.[7],
         x: manabiSidecarTableValue(tables.x, segment?.[8], null),
+        scopeText: manabiSidecarTableValue(tables.x, segment?.[12], null),
+        paragraphScopeText: manabiSidecarTableValue(tables.x, segment?.[13], null),
         selectedLexicon: resolution?.selectedLexicon ?? null,
         selectedEntryID: resolution?.selectedEntryID ?? null,
         canonicalSearchString: resolution?.canonicalSearchString ?? null,
@@ -5733,6 +5736,10 @@ class Reader {
     close(reason = 'unspecified') {
         if (this.#closed) return false;
         this.#closed = true;
+        // Dispose transport while the original generation still identifies
+        // the current chapter. The coordinator compares exact ownership and
+        // closes its own admissions; reentrant Reader close sees #closed.
+        this.nativeMarkReadRequestCoordinator?.close?.();
         this.#markReadProducerReadiness?.close();
         this.#markReadProducerReadiness = null;
         ++this.#markReadDiagnosticGeneration;
@@ -5801,8 +5808,6 @@ class Reader {
         );
         this.#pageTurnInFlight = false;
 
-        this.nativeMarkReadRequestCoordinator?.cancelAll?.(`readerClosed:${reason}`);
-        this.nativeMarkReadRequestCoordinator?.retireHistoryRecoveries?.();
         this.#resolveInitialDisplaySettled(`reader-closed:${reason}`);
         this.#resolveDisplaySettledWaiters(`reader-closed:${reason}`);
         this.#finishNavButtonOperations();
@@ -6331,6 +6336,12 @@ class Reader {
     constructor() {
         applyStoredChromeInsets('reader.constructor');
         this.#listen(window, 'pagehide', () => { this.#pageLifetime = {}; });
+        const historyRecoveryLocations = new WeakMap()
+        const ownsHistoryRecoveryLocation = (context, runtime) => {
+            const receipt = historyRecoveryLocations.get(context)
+            return !receipt || (receipt.runtime === runtime
+                && receipt.locationRevision === runtime?.state.locationRevision)
+        }
         this.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
             postControlMessage: packet => {
                 const handler = globalThis.webkit?.messageHandlers?.manualReadPendingControl
@@ -6348,27 +6359,44 @@ class Reader {
                     && isCurrent()
                     && runtime === this.bookReadingRuntime
                     && context?.bookReadingRuntime === runtime
+                    && ownsHistoryRecoveryLocation(context, runtime)
                     && (!message?.pageURL || message.pageURL === runtime?.state.location?.sectionURL)
                     && context?.accountPresentation === runtime?.state.accountPresentation
                     && this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
                     && (!owner.document || this.#currentPageTrackingDocument(owner.document) === owner.document)
                     && context?.accountPresentation === runtime?.state.accountPresentation
                     && isCurrent();
-                if (!ownsOriginal()) return false;
+                if (!runtime || !ownsOriginal()) return false;
+                if (!historyRecoveryLocations.has(context)) {
+                    // Movement before the terminal still needs recovery. Once
+                    // recovery starts, a later relocation retires this receipt
+                    // with BookState's original proof, even in the same chapter.
+                    historyRecoveryLocations.set(context, {
+                        runtime, locationRevision: runtime.state.locationRevision,
+                    })
+                }
                 return refreshNativeMarkReadBookStateForRecovery(runtime, owner.bookReadingScope, ownsOriginal, observation);
             },
             onRecoveryQuery: observation => this.bookReadingRuntime?.state
                 .recoverHistoryReadingStatus(observation) ?? Promise.resolve(false),
-            onRecoveryIsCurrent: ({ owner, context, message }) => !!owner && globalThis.reader === this
-                && context?.bookReadingRuntime === this.bookReadingRuntime
-                && (!message?.pageURL || message.pageURL === this.bookReadingRuntime?.state.location?.sectionURL)
-                && context?.accountPresentation === this.bookReadingRuntime?.state.accountPresentation
-                && this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
-                && (!owner.document || this.#currentPageTrackingDocument(owner.document) === owner.document),
+            onRecoveryIsCurrent: ({ owner, context, message }) => {
+                const runtime = this.bookReadingRuntime
+                const currentContext = runtime?.state.context
+                // A new pass can keep the same chapter Document and account.
+                // A null context is expected while the original recovery waits.
+                return !!owner && globalThis.reader === this
+                    && context?.bookReadingRuntime === runtime
+                    && ownsHistoryRecoveryLocation(context, runtime)
+                    && (!currentContext || bookScopeKey(currentContext.scope) === bookScopeKey(owner.bookReadingScope))
+                    && (!message?.pageURL || message.pageURL === runtime?.state.location?.sectionURL)
+                    && context?.accountPresentation === runtime?.state.accountPresentation
+                    && this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
+                    && (!owner.document || this.#currentPageTrackingDocument(owner.document) === owner.document)
+            },
             postMessage: message => {
                 window.webkit.messageHandlers.markSectionAsRead.postMessage(message);
             },
-            isOwnerCurrent: owner => this.#isMarkReadOwnerCurrent(owner),
+            isOwnerCurrent: owner => this.#ownsMarkReadOwner(owner),
         });
         this.navHUD = new NavigationHUD({
             formatPercent: value => percentFormat.format(value),
@@ -7103,12 +7131,28 @@ class Reader {
         };
     }
     #isMarkReadOwnerCurrent(owner) {
+        return !this.#closed && this.#ownsMarkReadOwner(owner);
+    }
+    #ownsMarkReadOwner(owner) {
         if (!owner || globalThis.reader !== this || owner.pageLifetime !== this.#pageLifetime) return false;
         if (this.bookReadingRuntime && !this.bookReadingRuntime.isScopeCurrent(owner.bookReadingScope, owner.document)) return false;
-        if (!this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)) return false;
+        // Transport disposal can compare the original owner after #closed is
+        // set but before generation retirement. Admission/observation belongs
+        // to the coordinator; ordinary Reader continuation remains closed.
+        if (this.#lifecycleGeneration !== owner.lifecycleGeneration
+            || this.view?.renderer !== owner.renderer) return false;
         if (owner.requireVisibleGeneration === true
             && owner.visiblePageCollectionGeneration !== this.visiblePageCollectionGeneration) return false;
-        if (owner.document && this.#currentPageTrackingDocument(owner.document) !== owner.document) return false;
+        if (owner.document) {
+            // Compare the exact committed document without the ordinary
+            // UI-live scope predicate: close has already withdrawn UI work,
+            // while the coordinator still disposes this original transport.
+            const doc = getCurrentRendererDocument(owner.renderer, owner.document);
+            if (doc !== owner.document || !isDocumentLike(doc)) return false;
+            const scope = this.#documentScopes.get(doc);
+            if (scope && (scope.doc !== doc || scope.lifecycleGeneration !== owner.lifecycleGeneration
+                || scope.committed !== true || getPrimaryRendererContent(owner.renderer)?.doc !== doc)) return false;
+        }
         return true;
     }
     #validatedMarkReadPayload(payload) {

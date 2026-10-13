@@ -9,6 +9,164 @@ import {
     refreshNativeMarkReadBookStateForRecovery,
 } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
 
+test('closing rejects unacknowledged local waiters even when cleanup throws or reenters', async () => {
+    let reentered
+    const h = harness({ onTimerCancelled: () => {
+        reentered ??= h.coordinator.request({ sectionID: 'new-section', message: {} })
+        throw new Error('timer cleanup failed')
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const original = h.posted[0], retainedTimer = [...h.timeouts.values()][0]
+    assert.equal(h.coordinator.close(), true)
+    await assert.rejects(completion, error => error.code === 'readerClosed'
+        && error.outcomeUnknown === true && error.requestID === original.requestID)
+    await assert.rejects(reentered, error => error.code === 'readerClosed' && error.outcomeUnknown === true)
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.controls.length, 1)
+    assert.equal(h.controls[0].manualReadPendingOperation, 'cancel')
+    assert.equal(h.controls[0].manualReadPendingObservationToken, original.manualReadPendingObservationToken)
+    assert.equal(h.pendingStates.at(-1).phase, 'finished')
+    assert.equal(h.coordinator.settle(terminalFor(original)), false)
+    retainedTimer()
+    h.coordinator.resume()
+    assert.equal(h.coordinator.close(), false)
+    assert.equal(h.controls.length, 1)
+    assert.equal(h.posted.length, 1)
+    assert.equal(h.timeouts.size, 0)
+})
+
+test('close during terminal cleanup preserves native success without recreating history recovery', async () => {
+    let preparations = 0, queries = 0
+    const h = harness({ onTimerCancelled: () => h.coordinator.close(),
+        onRecovery: () => { preparations++; return true },
+        onRecoveryQuery: () => { queries++; return true } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const original = h.posted[0]
+    assert.equal(h.coordinator.settle(terminalFor(original, {
+        manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: true,
+        manualReadPendingPresentationAllowed: false,
+    })), false)
+    assert.equal((await completion).success, true)
+    const proof = { requestID: original.requestID,
+        observationToken: original.manualReadPendingObservationToken }
+    assert.equal(await h.coordinator.recoverHistoryReadingStatus(proof), false)
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), false)
+    assert.equal(h.controls.length, 0)
+    assert.equal(preparations, 0)
+    assert.equal(queries, 0)
+    assert.equal(h.pendingStates.at(-1).phase, 'finished')
+})
+
+for (const terminal of ['success', 'failure', 'unavailable']) {
+test(`close during terminal owner validation preserves the accepted native ${terminal} outcome without Cancel`, async () => {
+    let closes = false
+    const h = harness({ onOwnerCurrent: () => {
+        if (!closes) return
+        closes = false
+        h.coordinator.close()
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const original = h.posted[0]
+    closes = true
+    const result = terminal === 'unavailable' ? {
+        requestID: original.requestID, manualReadPendingProtocol: 1,
+        manualReadPendingObservationToken: original.manualReadPendingObservationToken,
+        manualReadPendingState: 'unavailable', manualReadPendingHistoryRecovery: true,
+        manualReadPendingOutcomeOnly: true, manualReadPendingPresentationAllowed: false,
+        errorCode: 'outcomeUnavailable',
+    } : terminalFor(original, { success: terminal === 'success',
+        ...(terminal === 'failure' ? { errorCode: 'nativeCommitFailed' } : {}) })
+    assert.equal(h.coordinator.settle(result), terminal !== 'unavailable')
+    const outcome = await completion
+    assert.equal(outcome.success, terminal === 'unavailable' ? undefined : terminal === 'success')
+    assert.equal(outcome.outcomeKnown, terminal !== 'unavailable')
+    assert.equal(outcome.errorCode, terminal === 'success' ? null
+        : terminal === 'failure' ? 'nativeCommitFailed' : 'outcomeUnavailable')
+    assert.equal(outcome.nativeResult, result)
+    assert.equal(outcome.presentationAllowed, false)
+    assert.equal(h.controls.length, 0, 'An accepted terminal cannot require an unresolved Cancel')
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.timeouts.size, 0)
+    assert.equal(h.pendingStates.at(-1).phase, 'finished')
+})
+}
+
+test('closing during authorized recovery preparation cannot start its retired native query', async () => {
+    let preparations = 0, queries = 0
+    const h = harness({ onRecovery: () => {
+        if (++preparations === 2) h.coordinator.close()
+        return true
+    }, onRecoveryQuery: () => { queries++; return true } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const original = h.posted[0]
+    h.coordinator.settle(terminalFor(original, {
+        manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: true,
+        manualReadPendingPresentationAllowed: false,
+    }))
+    assert.equal((await completion).success, true)
+    const proof = { requestID: original.requestID,
+        observationToken: original.manualReadPendingObservationToken }
+    assert.equal(await h.coordinator.recoverHistoryReadingStatus(proof), false)
+    assert.equal(queries, 0)
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), false)
+    assert.equal(h.pendingStates.at(-1).phase, 'finished')
+})
+
+for (const boundary of ['post-query authority', 'finished publication', 'failure authority', 'ownership authority']) {
+    test(`close during history ${boundary} cannot restore retired recovery authority`, async () => {
+        let closes = false, queries = 0
+        const h = harness({ onRecovery: () => true,
+            onRecoveryQuery: () => { queries++; return true },
+            onRecoveryIsCurrent: () => {
+                if (closes && boundary !== 'finished publication') h.coordinator.close()
+                return true
+            }, onPendingEffect: state => {
+                if (closes && boundary === 'finished publication' && state.phase === 'finished') h.coordinator.close()
+            } })
+        const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+        const original = h.posted[0]
+        h.coordinator.settle(terminalFor(original, {
+            manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: true,
+            manualReadPendingPresentationAllowed: false,
+        }))
+        assert.equal((await completion).success, true)
+        const proof = { requestID: original.requestID,
+            observationToken: original.manualReadPendingObservationToken }
+        if (boundary === 'post-query authority' || boundary === 'finished publication') {
+            closes = true
+            assert.equal(await h.coordinator.recoverHistoryReadingStatus(proof), false)
+        } else {
+            assert.equal(await h.coordinator.recoverHistoryReadingStatus(proof), true)
+            closes = true
+            if (boundary === 'failure authority') assert.equal(h.coordinator.failHistoryReadingStatusRecovery(proof), false)
+            else assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), false)
+        }
+        assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), false)
+        assert.equal(h.coordinator.failHistoryReadingStatusRecovery(proof), false)
+        assert.equal(await h.coordinator.recoverHistoryReadingStatus(proof), false)
+        assert.equal(queries, 1)
+        assert.equal(h.controls.length, 0)
+        assert.equal(h.pendingStates.at(-1).phase, 'finished')
+    })
+}
+
+test('closing a history observer removes lifecycle ownership without cancelling or querying', async () => {
+    const lifecycleTarget = new EventTarget()
+    let queries = 0
+    const h = harness({ lifecycleTarget, onRecoveryQuery: () => { queries++; return true } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const original = h.posted[0], retainedTimer = [...h.timeouts.values()][0]
+    lifecycleTarget.dispatchEvent(new Event('pagehide'))
+    assert.equal(h.coordinator.close(), true)
+    await assert.rejects(completion, error => error.code === 'readerClosed' && error.outcomeUnknown === true)
+    lifecycleTarget.dispatchEvent(new Event('pageshow'))
+    retainedTimer()
+    assert.equal(h.controls.length, 0)
+    assert.equal(queries, 0)
+    assert.equal(h.timeouts.size, 0)
+    assert.equal(h.coordinator.settle(terminalFor(original)), false)
+})
+
 test('carries a native tap account presentation stamp into the immutable command', () => {
     const message = nativeMarkReadCommandMessage({
         stableIdentityVersion: 1,
@@ -72,7 +230,8 @@ test('carries the immutable Core producer ticket through Mark projection', () =>
     assert.equal(Object.getOwnPropertyDescriptor(message, 'readerArticleProducer').writable, false)
 })
 
-const terminalFor = (message, result = {}) => ({
+function terminalFor(message, result = {}) {
+    return {
     requestID: message.requestID,
     sectionId: message.sectionId,
     manualReadPendingProtocol: 1,
@@ -80,9 +239,10 @@ const terminalFor = (message, result = {}) => ({
     manualReadPendingState: 'finished',
     success: true,
     ...result,
-})
+    }
+}
 
-const harness = ({ current = true, postThrows = false, lifecycleTarget, onRecovery, onRecoveryQuery, onRecoveryIsCurrent, onTimerCancelled } = {}) => {
+function harness({ current = true, postThrows = false, lifecycleTarget, onRecovery, onRecoveryQuery, onRecoveryIsCurrent, onTimerCancelled, onTimerScheduled, onPendingEffect, onOwnerCurrent } = {}) {
     const posted = []
     const controls = []
     const pendingStates = []
@@ -95,17 +255,19 @@ const harness = ({ current = true, postThrows = false, lifecycleTarget, onRecove
             posted.push(message)
         },
         postControlMessage: message => controls.push(message),
-        onPending: state => pendingStates.push({
-            requestID: state.requestID,
-            phase: state.phase,
-            recoveryOnly: state.recoveryOnly,
-            cancel: state.cancel,
-        }),
+        onPending: state => {
+            pendingStates.push({ requestID: state.requestID, phase: state.phase,
+                recoveryOnly: state.recoveryOnly, cancel: state.cancel })
+            onPendingEffect?.(state)
+        },
         lifecycleTarget,
         onRecovery,
         onRecoveryQuery,
         onRecoveryIsCurrent,
-        isOwnerCurrent: () => current,
+        isOwnerCurrent: () => {
+            onOwnerCurrent?.()
+            return current
+        },
         makeRequestID: () => 'request',
         scheduleTimeout: (callback, delay) => {
             const id = ++timeoutSequence
@@ -117,6 +279,7 @@ const harness = ({ current = true, postThrows = false, lifecycleTarget, onRecove
                 callback()
             })
             timeoutDelays.set(id, delay)
+            onTimerScheduled?.()
             return id
         },
         cancelTimeout: id => {
@@ -138,6 +301,61 @@ const harness = ({ current = true, postThrows = false, lifecycleTarget, onRecove
         },
     }
 }
+
+test('close cannot cancel a departed chapter even before its next observation', async t => {
+    for (const desiredState of ['read', 'unmarked']) {
+        for (const queuedCancel of [false, true]) {
+            await t.test(`${desiredState}, queued Cancel ${queuedCancel}`, async () => {
+                const h = harness()
+                const completion = h.coordinator.request({ sectionID: 'section-a', message: { desiredState } })
+                const original = h.posted[0]
+                if (queuedCancel) assert.equal(h.coordinator.cancel(original.requestID), true)
+                const previousControls = h.controls.length
+                const retainedTimer = [...h.timeouts.values()][0]
+                h.setCurrent(false)
+                assert.equal(h.coordinator.close(), true)
+                await assert.rejects(completion, error => error.code === 'readerClosed' && error.outcomeUnknown === true)
+                h.setCurrent(true)
+                retainedTimer()
+                h.coordinator.resume()
+                assert.equal(h.controls.length, previousControls, 'Closing cannot regain departed Cancel authority')
+                assert.equal(h.coordinator.pendingCount, 0)
+                assert.equal(h.timeouts.size, 0)
+                assert.equal(h.coordinator.settle(terminalFor(original)), false)
+            })
+        }
+    }
+})
+
+test('close during initial observation setup cannot post a retired intent or retain its timer', async () => {
+    const h = harness({ onTimerScheduled: () => h.coordinator.close() })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    await assert.rejects(completion, error => error.code === 'readerClosed' && error.outcomeUnknown === true)
+    assert.equal(h.posted.length, 0)
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.timeouts.size, 0)
+    assert.equal(h.controls.length, 0, 'An intent never handed to native needs no Cancel')
+})
+
+test('owner validation that closes the Reader cannot admit another request afterward', async () => {
+    let closeDuringOwnerCheck = false
+    const h = harness({ onRecoveryIsCurrent: () => {
+        if (closeDuringOwnerCheck) h.coordinator.close()
+        return true
+    }, onRecovery: () => true })
+    const first = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const original = h.posted[0]
+    h.coordinator.pause()
+    h.coordinator.resume()
+    h.coordinator.settle(terminalFor(original))
+    assert.equal((await first).success, true)
+    closeDuringOwnerCheck = true
+    const second = h.coordinator.request({ sectionID: 'section-b', message: {} })
+    await assert.rejects(second, error => error.code === 'readerClosed' && error.outcomeUnknown === true)
+    assert.equal(h.posted.length, 1)
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.timeouts.size, 0)
+})
 
 test('command, status and cancellation retain the captured producer document timestamp', async () => {
     const h = harness()
@@ -276,6 +494,154 @@ test('mismatched section cannot settle the real request and duplicate terminal r
     assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
     assert.equal((await completion).success, true)
     assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), false)
+})
+
+test('a departed chapter cannot cancel its original Mark or Unmark', async t => {
+    for (const desiredState of ['read', 'unmarked']) {
+        await t.test(desiredState, async () => {
+            const h = harness({ onRecovery: () => true })
+            const completion = h.coordinator.request({ sectionID: 'section-a',
+                message: { desiredState, topWindowURL: 'file:///book.epub', documentStartedAtMs: 42 } })
+            const original = h.posted[0]
+            h.setCurrent(false)
+            assert.equal(h.coordinator.cancel(original.requestID), false)
+            assert.equal(h.coordinator.pendingCount, 1)
+            assert.equal(h.controls.at(-1).manualReadPendingOperation, 'status')
+            assert.equal(h.controls.at(-1).manualReadPendingHistoryRecovery, true)
+            assert.equal(h.controls.at(-1).manualReadPendingObservationToken,
+                original.manualReadPendingObservationToken)
+            assert.equal(h.controls.at(-1).documentStartedAtMs, 42)
+            assert.equal(h.pendingStates.at(-1).recoveryOnly, true)
+            h.setCurrent(true)
+            assert.equal(h.coordinator.cancel(original.requestID), false,
+                'Returning cannot restore a retired Cancel capability')
+            assert.equal(h.coordinator.settle(terminalFor(original)), true)
+            const outcome = await completion
+            assert.equal(outcome.success, true)
+            assert.equal(outcome.presentationAllowed, false)
+            assert.equal(h.posted.length, 1)
+            assert.equal(h.controls.some(packet => packet.manualReadPendingOperation === 'cancel'), false)
+        })
+    }
+})
+
+test('queued cancellation becomes status-only when its chapter owner departs', async () => {
+    const h = harness({ onRecovery: () => true })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: { desiredState: 'unmarked' } })
+    const original = h.posted[0]
+    assert.equal(h.coordinator.cancel(original.requestID), true)
+    assert.equal(h.controls.at(-1).manualReadPendingOperation, 'cancel')
+    h.setCurrent(false)
+    ;[...h.timeouts.values()][0]()
+    assert.equal(h.controls.at(-1).manualReadPendingOperation, 'status')
+    assert.equal(h.controls.at(-1).manualReadPendingHistoryRecovery, true)
+    assert.equal(h.pendingStates.at(-1).recoveryOnly, true)
+    assert.equal(h.coordinator.settle(terminalFor(original, { success: false, errorCode: 'cancelled' })), true)
+    assert.equal((await completion).errorCode, 'cancelled')
+    assert.equal(h.controls.filter(packet => packet.manualReadPendingOperation === 'cancel').length, 1)
+    assert.equal(h.posted.length, 1)
+})
+
+test('malformed history flags cannot settle an intent or change its cancellation ownership', async t => {
+    const invalidFlags = [
+        { manualReadPendingHistoryRecovery: 'true' },
+        { manualReadPendingHistoryRecovery: null },
+        { manualReadPendingHistoryRecovery: true, manualReadPendingPresentationAllowed: false },
+        { manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: false,
+            manualReadPendingPresentationAllowed: false },
+        { manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: true },
+        { manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: true,
+            manualReadPendingPresentationAllowed: true },
+        { manualReadPendingOutcomeOnly: 'true' },
+        { manualReadPendingOutcomeOnly: null },
+        { manualReadPendingPresentationAllowed: 'false' },
+        { manualReadPendingPresentationAllowed: null },
+    ]
+    for (const phase of ['pending', 'cancelling', 'unknown', 'finished']) {
+        await t.test(phase, async () => {
+            for (const flags of invalidFlags) {
+                const h = harness()
+                const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+                const original = h.posted[0]
+                let settled = false
+                completion.then(() => { settled = true })
+                assert.equal(h.coordinator.settle(terminalFor(original, {
+                    manualReadPendingState: phase, ...flags,
+                })), false)
+                await Promise.resolve()
+                assert.equal(settled, false, 'An invalid envelope cannot finish the original promise')
+                assert.equal(h.coordinator.pendingCount, 1)
+                ;[...h.timeouts.values()][0]()
+                assert.equal(h.controls.at(-1).manualReadPendingOperation, 'status',
+                    'Invalid cancellation state cannot send Cancel before a user asks')
+                assert.equal(h.controls.at(-1).manualReadPendingHistoryRecovery, undefined)
+                assert.equal(h.pendingStates.at(-1).phase, 'pending')
+                assert.equal(h.coordinator.cancel(original.requestID), true)
+                assert.equal(h.controls.at(-1).manualReadPendingOperation, 'cancel')
+                assert.equal(h.controls.at(-1).manualReadPendingHistoryRecovery, undefined)
+                assert.equal(h.coordinator.settle(terminalFor(original)), true)
+                assert.equal((await completion).success, true)
+            }
+        })
+    }
+})
+
+test('ordinary terminal replies retain optional false history marker compatibility', async () => {
+    for (const fields of [{}, { manualReadPendingHistoryRecovery: false }]) {
+        const h = harness()
+        const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+        assert.equal(h.coordinator.settle(terminalFor(h.posted[0], fields)), true)
+        const outcome = await completion
+        assert.equal(outcome.success, true)
+        assert.equal(outcome.presentationAllowed, true)
+        assert.equal(h.controls.length, 0)
+    }
+})
+
+test('coherent restored intermediate replies remain status-only observations', async () => {
+    const h = harness()
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const original = h.posted[0]
+    const history = { manualReadPendingHistoryRecovery: true,
+        manualReadPendingOutcomeOnly: true, manualReadPendingPresentationAllowed: false }
+    h.coordinator.pause()
+    h.coordinator.resume()
+    for (const phase of ['pending', 'cancelling', 'unknown']) {
+        assert.equal(h.coordinator.settle({
+            requestID: original.requestID,
+            manualReadPendingProtocol: 1,
+            manualReadPendingObservationToken: original.manualReadPendingObservationToken,
+            manualReadPendingState: phase,
+            ...history,
+        }), false)
+        ;[...h.timeouts.values()][0]()
+        assert.equal(h.controls.at(-1).manualReadPendingOperation, 'status')
+        assert.equal(h.controls.at(-1).manualReadPendingHistoryRecovery, true)
+        assert.equal(h.coordinator.cancel(original.requestID), false)
+        assert.equal(h.coordinator.pendingCount, 1)
+    }
+    assert.equal(h.coordinator.settle(terminalFor(original, history)), true)
+    const outcome = await completion
+    assert.equal(outcome.success, true)
+    assert.equal(outcome.presentationAllowed, false)
+    assert.equal(h.posted.length, 1)
+})
+
+test('a valid nonterminal history receipt withdraws Cancel before another observation', async () => {
+    const h = harness({ onRecovery: () => true })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const original = h.posted[0]
+    assert.equal(h.coordinator.settle(terminalFor(original, {
+        manualReadPendingState: 'pending', manualReadPendingHistoryRecovery: true,
+        manualReadPendingOutcomeOnly: true, manualReadPendingPresentationAllowed: false,
+    })), false)
+    assert.equal(h.coordinator.cancel(original.requestID), false)
+    ;[...h.timeouts.values()][0]()
+    assert.equal(h.controls.at(-1).manualReadPendingOperation, 'status')
+    assert.equal(h.controls.at(-1).manualReadPendingHistoryRecovery, true)
+    assert.equal(h.coordinator.settle(terminalFor(original)), true)
+    assert.equal((await completion).presentationAllowed, false)
+    assert.equal(h.posted.length, 1)
 })
 
 test('synchronous bridge failure is terminal because native never received the mutation', async () => {
@@ -732,7 +1098,7 @@ test('retired native recovery cannot leave failure chrome on its replacement own
     const h = harness({ onRecovery: () => false, onRecoveryIsCurrent: () => false })
     const completion = h.coordinator.request({ sectionID: 'old-section', message: {} })
     h.coordinator.pause(); h.coordinator.resume()
-    assert.equal(h.coordinator.settle(unavailableFor(h.posted[0])), true)
+    assert.equal(h.coordinator.settle(unavailableFor(h.posted[0])), false)
     assert.equal((await completion).outcomeKnown, false)
     assert.equal(h.pendingStates.at(-1).phase, 'finished')
     assert.equal(h.pendingStates.at(-1).recoveryOnly, false)
@@ -895,4 +1261,310 @@ test('pause suppresses observation and resume observes the same request identity
 
     h.coordinator.settle(terminalFor(h.posted[0]))
     assert.equal((await completion).success, true)
+})
+
+
+test('close during lifecycle registration removes a callback installed after teardown', async () => {
+    const listeners = new Map(), registrations = []
+    const h = harness({ lifecycleTarget: {
+        addEventListener(name, callback) {
+            registrations.push(name)
+            h.coordinator.close()
+            listeners.set(name, callback)
+        },
+        removeEventListener(name) { listeners.delete(name) },
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    await assert.rejects(completion, error => error.code === 'readerClosed')
+    assert.deepEqual(registrations, ['pagehide'])
+    assert.equal(listeners.size, 0)
+    assert.equal(h.posted.length, 0)
+    assert.equal(h.timeouts.size, 0)
+    assert.equal(h.controls.length, 0)
+})
+
+test('partial lifecycle registration failure preserves the command and removes listeners', async () => {
+    const listeners = new Map()
+    const h = harness({ lifecycleTarget: {
+        addEventListener(name, callback) {
+            listeners.set(name, callback)
+            if (name === 'pageshow') throw new Error('registered before failure')
+        },
+        removeEventListener(name) { listeners.delete(name) },
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    assert.equal(listeners.size, 0)
+    assert.equal(h.posted.length, 1)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+    assert.equal(h.timeouts.size, 0)
+})
+
+test('one failing lifecycle removal does not skip the other listener or native settlement', async () => {
+    const removals = []
+    const h = harness({ lifecycleTarget: {
+        addEventListener() {},
+        removeEventListener(name) {
+            removals.push(name)
+            if (name === 'pagehide') throw new Error('cleanup failed')
+        },
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+    assert.deepEqual(removals, ['pagehide', 'pageshow'])
+    assert.equal(h.timeouts.size, 0)
+})
+
+
+test('terminal lifecycle cleanup preserves listeners installed by a reentrant successor', async () => {
+    const listeners = new Map(), retained = new Map()
+    let successor, reenter = false
+    const h = harness({ lifecycleTarget: {
+        addEventListener(name, callback) {
+            const callbacks = listeners.get(name) ?? new Set()
+            callbacks.add(callback)
+            listeners.set(name, callbacks)
+            retained.set(name, callback)
+        },
+        removeEventListener(name, callback) {
+            if (reenter) {
+                reenter = false
+                successor = h.coordinator.request({ sectionID: 'section-b', message: {} })
+            }
+            listeners.get(name)?.delete(callback)
+        },
+    } })
+    const original = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const oldPagehide = retained.get('pagehide')
+    reenter = true
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    await original
+    assert.equal(listeners.get('pagehide').size, 1)
+    assert.equal(listeners.get('pageshow').size, 1)
+    oldPagehide()
+    assert.equal(h.timeouts.size, 1, 'A removed callback cannot pause its successor')
+    retained.get('pagehide')()
+    assert.equal(h.timeouts.size, 0)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[1])), true)
+    assert.equal((await successor).success, true)
+})
+
+
+test('throwing initial timer scheduling cannot strand an intent before native submission', async () => {
+    const h = harness({ onTimerScheduled: () => { throw new Error('timer setup failed') } })
+    let completion
+    assert.doesNotThrow(() => {
+        completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    })
+    assert.equal(h.posted.length, 1)
+    const retainedCallback = [...h.timeouts.values()][0]
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+    retainedCallback()
+    assert.equal(h.controls.length, 0, 'An unreturned timer handle cannot revive a terminal command')
+    assert.equal(h.coordinator.pendingCount, 0)
+})
+
+test('throwing timer cleanup cannot interrupt cancellation observation or native settlement', async () => {
+    const h = harness({ onTimerCancelled: () => { throw new Error('timer cleanup failed') } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    assert.doesNotThrow(() => {
+        assert.equal(h.coordinator.cancel(h.posted[0].requestID), true)
+    })
+    assert.equal(h.controls.at(-1).manualReadPendingOperation, 'cancel')
+    assert.equal(h.timeouts.size, 1, 'Cancellation still observes its original outcome')
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+    assert.equal(h.coordinator.pendingCount, 0)
+})
+
+test('one failing departure cleanup cannot strand other commands or restore their Cancel permission', async () => {
+    const h = harness({ onTimerCancelled: () => { throw new Error('timer cleanup failed') } })
+    const first = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const second = h.coordinator.request({ sectionID: 'section-b', message: {} })
+    assert.doesNotThrow(() => h.coordinator.pause())
+    assert.equal(h.timeouts.size, 0)
+    for (const message of h.posted) assert.equal(h.coordinator.cancel(message.requestID), false)
+    assert.deepEqual(h.pendingStates.slice(-2).map(state => state.recoveryOnly), [true, true])
+    h.coordinator.resume()
+    for (const callback of [...h.timeouts.values()]) callback()
+    assert.equal(h.controls.length, 2)
+    assert.ok(h.controls.every(control => control.manualReadPendingOperation === 'status'
+        && control.manualReadPendingHistoryRecovery === true))
+    for (const message of h.posted) assert.equal(h.coordinator.settle(terminalFor(message)), true)
+    assert.equal((await first).success, true)
+    assert.equal((await second).success, true)
+    assert.equal(h.coordinator.pendingCount, 0)
+})
+
+
+test('timer replacement cleanup cannot overwrite a resumed observation for the same command', async () => {
+    let resumeDuringCleanup = false
+    const h = harness({ onTimerCancelled: () => {
+        if (resumeDuringCleanup) {
+            resumeDuringCleanup = false
+            h.coordinator.resume()
+        }
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const retiredCallback = [...h.timeouts.values()][0]
+    resumeDuringCleanup = true
+    assert.equal(h.coordinator.cancel(h.posted[0].requestID), true)
+    assert.equal(h.timeouts.size, 1, 'The resumed observer retains its single timer')
+    assert.deepEqual([...h.timeoutDelays.values()], [0])
+    const controlsBeforeRetiredCallback = h.controls.length
+    retiredCallback()
+    assert.equal(h.controls.length, controlsBeforeRetiredCallback)
+    assert.equal(h.timeouts.size, 1)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+    assert.equal(h.timeouts.size, 0)
+})
+
+
+test('departure cleanup retains resumed observation timers for every pending command', async () => {
+    let resumeDuringCleanup = false
+    const h = harness({ onTimerCancelled: () => {
+        if (resumeDuringCleanup) {
+            resumeDuringCleanup = false
+            h.coordinator.resume()
+        }
+    } })
+    const first = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const second = h.coordinator.request({ sectionID: 'section-b', message: {} })
+    const retiredCallbacks = [...h.timeouts.values()]
+    resumeDuringCleanup = true
+    h.coordinator.pause()
+    assert.equal(h.timeouts.size, 2, 'Cleanup must not cancel the second resumed command timer')
+    assert.deepEqual([...h.timeoutDelays.values()], [0, 0])
+    for (const callback of retiredCallbacks) callback()
+    assert.equal(h.controls.length, 0)
+    assert.equal(h.timeouts.size, 2)
+    for (const callback of [...h.timeouts.values()]) callback()
+    assert.equal(h.controls.length, 2)
+    assert.ok(h.controls.every(control => control.manualReadPendingHistoryRecovery === true))
+    for (const message of h.posted) assert.equal(h.coordinator.settle(terminalFor(message)), true)
+    assert.equal((await first).success, true)
+    assert.equal((await second).success, true)
+})
+
+
+test('a successful history sample cannot acknowledge an owner retired while the query awaited', async () => {
+    let current = true, releaseQuery, queryStarted
+    const started = new Promise(resolve => { queryStarted = resolve })
+    const h = harness({ onRecovery: () => true,
+        onRecoveryIsCurrent: () => current,
+        onRecoveryQuery: () => {
+            queryStarted()
+            return new Promise(resolve => { releaseQuery = resolve })
+        },
+    })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const message = h.posted[0]
+    h.coordinator.pause()
+    h.coordinator.settle(terminalFor(message))
+    assert.equal((await completion).success, true)
+    const proof = { requestID: message.requestID,
+        observationToken: message.manualReadPendingObservationToken }
+    const recovery = h.coordinator.recoverHistoryReadingStatus(proof)
+    await started
+    current = false
+    releaseQuery(true)
+    assert.equal(await recovery, false)
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), false)
+    assert.equal(h.pendingStates.at(-1).phase, 'finished')
+})
+
+test('bulk retirement preserves a new recovery created during old notice cleanup', async () => {
+    let reenter = false, successor
+    const h = harness({ onRecovery: () => true, onRecoveryQuery: () => true,
+        onPendingEffect: state => {
+            if (!reenter || state.phase !== 'finished') return
+            reenter = false
+            h.coordinator.resume()
+            successor = h.coordinator.request({ sectionID: 'section-b', message: {} })
+            h.coordinator.pause()
+            h.coordinator.settle(terminalFor(h.posted[1]))
+        },
+    })
+    const original = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    h.coordinator.pause()
+    h.coordinator.settle(terminalFor(h.posted[0]))
+    await original
+    reenter = true
+    h.coordinator.retireHistoryRecoveries()
+    assert.equal(h.posted.length, 2, 'Old admission is withdrawn before cleanup calls out')
+    assert.equal((await successor).success, true)
+    const message = h.posted[1]
+    const proof = { requestID: message.requestID,
+        observationToken: message.manualReadPendingObservationToken }
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), true)
+    assert.equal(await h.coordinator.recoverHistoryReadingStatus(proof), true)
+    assert.equal(h.coordinator.pendingCount, 0)
+})
+
+
+test('history acknowledgement rechecks its owner after optional notice cleanup', async () => {
+    let current = true, retireDuringNotice = false
+    const h = harness({ onRecovery: () => true, onRecoveryQuery: () => true,
+        onRecoveryIsCurrent: () => current,
+        onPendingEffect: state => {
+            if (retireDuringNotice && state.phase === 'finished') current = false
+        },
+    })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const message = h.posted[0]
+    h.coordinator.pause()
+    h.coordinator.settle(terminalFor(message))
+    await completion
+    const proof = { requestID: message.requestID,
+        observationToken: message.manualReadPendingObservationToken }
+    retireDuringNotice = true
+    assert.equal(await h.coordinator.recoverHistoryReadingStatus(proof), false)
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), false)
+})
+
+
+for (const boundary of ['preparation', 'presentation ownership']) {
+    test(`recovery retired during ${boundary} cannot recreate a perpetual recovering notice`, async () => {
+        let retire = false
+        const h = harness({ onRecovery: () => {
+            if (retire && boundary === 'preparation') h.coordinator.retireHistoryRecoveries()
+            return true
+        }, onRecoveryIsCurrent: () => {
+            if (retire && boundary === 'presentation ownership') h.coordinator.retireHistoryRecoveries()
+            return true
+        } })
+        const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+        const message = h.posted[0]
+        h.coordinator.pause()
+        retire = true
+        assert.equal(h.coordinator.settle(terminalFor(message)), true)
+        assert.equal((await completion).success, true, 'Retirement cannot erase native truth')
+        assert.equal(h.pendingStates.at(-1).phase, 'finished')
+        assert.equal(h.pendingStates.at(-1).recoveryOnly, false)
+        assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery({ requestID: message.requestID,
+            observationToken: message.manualReadPendingObservationToken }), false)
+        assert.equal(h.controls.length, 1, 'Only the existing read-only History status was sent')
+    })
+}
+
+test('a new tap cannot coalesce into an old command settled during owner validation', async () => {
+    let settleDuringCheck = false
+    const h = harness({ onOwnerCurrent: () => {
+        if (settleDuringCheck) {
+            settleDuringCheck = false
+            h.coordinator.settle(terminalFor(h.posted[0]))
+        }
+    } })
+    const first = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    settleDuringCheck = true
+    const second = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    assert.equal((await first).success, true)
+    assert.notEqual(first, second)
+    assert.equal(h.posted.length, 2, 'The new intent requires its own native acknowledgement')
+    assert.equal(h.coordinator.pendingCount, 1)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[1])), true)
+    assert.equal((await second).success, true)
 })

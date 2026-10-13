@@ -50,7 +50,7 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
 BRIDGE = '''(() => {
-    window.manabi_compactSegmentSidecarSchemaVersion = 12;
+    window.manabi_compactSegmentSidecarSchemaVersion = 14;
     window.nativeMessages = []; window.bookActionRequests = [];
     window.accountPresentation = '1:1';
     window.persistedProgress = {readSegmentIdentifiers:['previously-read-segment'],sentenceIdentifiersRead:['previously-read-sentence'],articleMarkedAsFinished:false};
@@ -128,6 +128,26 @@ class BookEndcapShellTests(unittest.TestCase):
         # unittest runs class cleanups even if setup or an earlier cleanup fails.
         # Reverse registration closes the browser before its Playwright runtime.
         cls.addClassCleanup(cls.browser.close)
+
+    def test_schema14_preserves_visible_scope_text_from_sidecar(self):
+        page = self.browser.new_page(viewport={'width':390, 'height':844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/fixture.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        actual = page.evaluate("""() => {
+            const doc = reader.view.renderer.getContents()[0].doc;
+            const result = reader.visiblePageSegmentResult(doc, null, 'schema14-scope-test', {
+                postLookupTargets: false, hydrateStatuses: false
+            });
+            const metadata = result.visibleSegments[0]?.segmentMetadata;
+            return { text: metadata?.x, scope: metadata?.scopeText,
+                paragraph: metadata?.paragraphScopeText };
+        }""")
+        expected = '昨日の午後、図書館で本を読みました。猫がいます。 one'
+        self.assertEqual(actual, {'text': expected, 'scope': expected, 'paragraph': expected})
 
     def test_initial_zero_fraction_restore_is_satisfied_at_first_page(self):
         page = self.browser.new_page(viewport={'width':390, 'height':844})

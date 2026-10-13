@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { installBookReadingRuntime } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-runtime.js';
 import { createBookActionBridge } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-action-bridge.js';
-import { createNativeMarkReadRequestCoordinator, refreshNativeMarkReadBookStateForRecovery }
-    from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js';
+import * as nativeMarkReadRuntime from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
+const { createNativeMarkReadRequestCoordinator, refreshNativeMarkReadBookStateForRecovery } = nativeMarkReadRuntime
 
 class Element extends EventTarget {
     attributes = new Map(); children = []; classes = new Set();
@@ -40,9 +40,9 @@ function fixture({ onInvalidate = () => {} } = {}) {
         ebookBookAction:{postMessage:()=>{}},ebookBookReadingState:{postMessage:r=>requests.push(r)},
     }}};
     const runtime=installBookReadingRuntime({reader,view,document,window,documentStartedAtMs:1,
-        applyProjection:p=>projections.push(p),invalidateProjection:onInvalidate,onVisibility:()=>{}});
+        applyProjection:p=>projections.push(p),invalidateProjection:onInvalidate,onVisibility:()=>{}})
     const publish=(revision,parent='E1',accountPresentation='0:1',readIDs=['read'],request=requests.at(-1))=>{
-        const end=request.isEndPage;
+        const end=request.isEndPage
         const location=renderer.displayedIndex===0?'a.xhtml':'b.xhtml';
         const scope=end?null:{articleProgressID:'book',articleEpochID:parent,
             chapterKey:(renderer.displayedIndex===0?'a':'b').repeat(64),chapterEpochID:null};
@@ -524,3 +524,4 @@ for (const [name,crypto] of [['missing entropy',{}],['throwing entropy',{getRand
         });
     });
 }
+

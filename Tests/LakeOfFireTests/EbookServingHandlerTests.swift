@@ -116,6 +116,9 @@ final class EbookServingHandlerTests: XCTestCase {
         let package = try await package("Must not publish")
         let store = ReaderEBookServingSessionStore(), lease = try store.install(package)
         let handler = handler(store), webView = WKWebView()
+        // Production WebKit retains its registered handler. This direct-call
+        // fixture must retain it until the detached serving work settles too.
+        defer { withExtendedLifetime(handler) {} }
         let task = ServingSchemeTask(request(session: lease.id))
         handler.webView(webView, start: task)
         // start captures synchronously. Terminal callbacks run on MainActor;

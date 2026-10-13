@@ -13,7 +13,7 @@ final class EbookProcessingCancellationTests: XCTestCase {
     private func payload() -> EbookProcessedSectionPayload {
         .successfulReaderProcessing(
             documentHTML: Data("<m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">本文</m-m></m-s></m-c>".utf8),
-            segmentSidecar: Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+            segmentSidecar: Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
         )
     }
 

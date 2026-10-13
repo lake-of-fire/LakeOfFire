@@ -1,10 +1,41 @@
 import Foundation
 import WebKit
 import XCTest
+#if os(iOS)
+import UIKit
+#endif
 @preconcurrency @testable import LakeOfFireReader
 @testable import SwiftUIWebView
 
 final class EBookRenderReadyNativeIntegrationTests: XCTestCase {
+    @MainActor
+    static func mountWebView(_ webView: WKWebView) throws -> (@MainActor () -> Void) {
+#if os(iOS)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive },
+            "Native WebKit tests require the active application-hosted scene")
+        weak var previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        let controller = UIViewController()
+        window.frame = CGRect(x: 0, y: 0, width: 430, height: 932)
+        controller.view.frame = window.bounds
+        webView.frame = window.bounds
+        controller.view.addSubview(webView)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        controller.view.layoutIfNeeded()
+        XCTAssertTrue(webView.window === window)
+        return {
+            webView.removeFromSuperview()
+            window.isHidden = true
+            window.rootViewController = nil
+            previousKeyWindow?.makeKeyAndVisible()
+        }
+#else
+        return {}
+#endif
+    }
     @MainActor
     private final class Fixture: NSObject, WKURLSchemeHandler, WKNavigationDelegate, WKScriptMessageHandler {
         let loaded: XCTestExpectation
@@ -72,10 +103,12 @@ final class EBookRenderReadyNativeIntegrationTests: XCTestCase {
         configuration.setURLSchemeHandler(fixture, forURLScheme: "ebook")
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 430, height: 932), configuration: configuration)
         webView.navigationDelegate = fixture
+        let closeHost = try Self.mountWebView(webView)
         defer {
             webView.stopLoading()
             controller.removeScriptMessageHandler(forName: "readerDocState")
             webView.navigationDelegate = nil
+            closeHost()
         }
         webView.load(URLRequest(url: URL(string: "ebook://ebook/load/fixture.epub")!))
         await fulfillment(of: [loaded], timeout: 10)
@@ -113,10 +146,12 @@ final class EBookRenderReadyNativeIntegrationTests: XCTestCase {
         configuration.setURLSchemeHandler(fixture, forURLScheme: "ebook")
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = fixture
+        let closeHost = try Self.mountWebView(webView)
         defer {
             webView.stopLoading()
             controller.removeScriptMessageHandler(forName: "readerDocState")
             webView.navigationDelegate = nil
+            closeHost()
         }
         webView.load(URLRequest(url: URL(string: "ebook://ebook/load/fixture.epub")!))
         await fulfillment(of: [loaded, ready], timeout: 10)

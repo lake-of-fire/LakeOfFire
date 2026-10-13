@@ -4,7 +4,7 @@ const nonEmptyString = value => typeof value === 'string' && value.length > 0
 
 const compactMnbSegmentTokenPattern = /^[0-9A-Za-z]+$/
 
-export const compactEbookSegmentSidecarVersion = 12
+export const compactEbookSegmentSidecarVersion = 14
 export const stableEbookSegmentIdentityVersion = 1
 
 export const compactEbookSegmentSchemaVersionsAreCompatible = nativeVersion => (
@@ -26,7 +26,7 @@ export const compactEbookSegmentRuntimeIDsAreUnique = segments => {
     if (!Array.isArray(segments)) return false
     const runtimeIDs = new Set()
     return segments.every(segment => {
-        if (!Array.isArray(segment) || segment.length < 11 || segment.length > 12) return false
+        if (!Array.isArray(segment) || segment.length < 11 || segment.length > 14) return false
         const runtimeID = expandCompactEbookSegmentIDToken(segment[0])
         if (runtimeID === null || runtimeIDs.has(runtimeID)) return false
         runtimeIDs.add(runtimeID)
@@ -75,7 +75,7 @@ const compactSegmentTablesAreCurrent = tables => (
 )
 
 const compactSegmentTupleIsCurrent = (segment, tables) => {
-    if (!Array.isArray(segment) || segment.length < 11 || segment.length > 12) return false
+    if (!Array.isArray(segment) || segment.length < 11 || segment.length > 14) return false
     if (expandCompactEbookSegmentIDToken(segment[0]) === null) return false
     return [
         compactSegmentTableValue(tables?.h, segment[1]),
@@ -90,7 +90,7 @@ const compactSegmentTupleIsCurrent = (segment, tables) => {
         && (segment[7] === null
             || (Number.isSafeInteger(segment[7]) && segment[7] >= 1 && segment[7] <= 5))
         && optionalTableReferenceIsValid(tables?.x, segment[8], nonEmptyStringIsValid)
-        && (segment.length === 11
+        && (segment.length <= 11
             || optionalTableReferenceIsValid(
                 tables?.res,
                 segment[11],
@@ -100,6 +100,10 @@ const compactSegmentTupleIsCurrent = (segment, tables) => {
                     compactSegmentTableValue(tables?.n, segment[3]) ?? []
                 ) !== null
             ))
+        && (segment.length <= 12
+            || optionalTableReferenceIsValid(tables?.x, segment[12], nonEmptyStringIsValid))
+        && (segment.length <= 13
+            || optionalTableReferenceIsValid(tables?.x, segment[13], nonEmptyStringIsValid))
 }
 
 export const expandCompactEbookSegmentResolution = (
