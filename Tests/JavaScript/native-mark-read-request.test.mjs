@@ -45,7 +45,7 @@ test('close during terminal cleanup preserves native success without recreating 
     assert.equal(h.coordinator.settle(terminalFor(original, {
         manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: true,
         manualReadPendingPresentationAllowed: false,
-    })), true)
+    })), false)
     assert.equal((await completion).success, true)
     const proof = { requestID: original.requestID,
         observationToken: original.manualReadPendingObservationToken }
@@ -76,7 +76,7 @@ test(`close during terminal owner validation preserves the accepted native ${ter
         errorCode: 'outcomeUnavailable',
     } : terminalFor(original, { success: terminal === 'success',
         ...(terminal === 'failure' ? { errorCode: 'nativeCommitFailed' } : {}) })
-    assert.equal(h.coordinator.settle(result), true)
+    assert.equal(h.coordinator.settle(result), terminal !== 'unavailable')
     const outcome = await completion
     assert.equal(outcome.success, terminal === 'unavailable' ? undefined : terminal === 'success')
     assert.equal(outcome.outcomeKnown, terminal !== 'unavailable')
@@ -1098,7 +1098,7 @@ test('retired native recovery cannot leave failure chrome on its replacement own
     const h = harness({ onRecovery: () => false, onRecoveryIsCurrent: () => false })
     const completion = h.coordinator.request({ sectionID: 'old-section', message: {} })
     h.coordinator.pause(); h.coordinator.resume()
-    assert.equal(h.coordinator.settle(unavailableFor(h.posted[0])), true)
+    assert.equal(h.coordinator.settle(unavailableFor(h.posted[0])), false)
     assert.equal((await completion).outcomeKnown, false)
     assert.equal(h.pendingStates.at(-1).phase, 'finished')
     assert.equal(h.pendingStates.at(-1).recoveryOnly, false)

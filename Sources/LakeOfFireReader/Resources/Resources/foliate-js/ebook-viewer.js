@@ -5,6 +5,7 @@ import {
 createTOCView
 } from './ui/tree.js'
 import { installBookReadingRuntime } from './book-reading-runtime.js'
+import { bookScopeKey } from './book-reading-state.js'
 import { applyBookReadingProjection } from './book-reading-projection.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import { processedSectionURLForHref } from './ebook-direct-section.js'
@@ -6361,12 +6362,19 @@ class Reader {
             },
             onRecoveryQuery: observation => this.bookReadingRuntime?.state
                 .recoverHistoryReadingStatus(observation) ?? Promise.resolve(false),
-            onRecoveryIsCurrent: ({ owner, context, message }) => !!owner && globalThis.reader === this
-                && context?.bookReadingRuntime === this.bookReadingRuntime
-                && (!message?.pageURL || message.pageURL === this.bookReadingRuntime?.state.location?.sectionURL)
-                && context?.accountPresentation === this.bookReadingRuntime?.state.accountPresentation
-                && this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
-                && (!owner.document || this.#currentPageTrackingDocument(owner.document) === owner.document),
+            onRecoveryIsCurrent: ({ owner, context, message }) => {
+                const runtime = this.bookReadingRuntime
+                const currentContext = runtime?.state.context
+                // A new pass can keep the same chapter Document and account.
+                // A null context is expected while the original recovery waits.
+                return !!owner && globalThis.reader === this
+                    && context?.bookReadingRuntime === runtime
+                    && (!currentContext || bookScopeKey(currentContext.scope) === bookScopeKey(owner.bookReadingScope))
+                    && (!message?.pageURL || message.pageURL === runtime?.state.location?.sectionURL)
+                    && context?.accountPresentation === runtime?.state.accountPresentation
+                    && this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
+                    && (!owner.document || this.#currentPageTrackingDocument(owner.document) === owner.document)
+            },
             postMessage: message => {
                 window.webkit.messageHandlers.markSectionAsRead.postMessage(message);
             },
