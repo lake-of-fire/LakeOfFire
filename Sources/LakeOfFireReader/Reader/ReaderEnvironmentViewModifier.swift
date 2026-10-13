@@ -89,7 +89,34 @@ fileprivate struct ReaderFileManagerModifier: ViewModifier {
         content
             .task(id: ubiquityContainerIdentifier) { @MainActor in
                 readerModeViewModel.readerFileManager = ReaderFileManager.shared
-                try? await ReaderFileManager.shared.initialize(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
+                // EPUB UI fixtures index their staged file explicitly before
+                // restore. Do not block the initial reader host on an unrelated
+                // full-library inventory scan first.
+#if DEBUG
+                let isUIFixtureOpen = ProcessInfo.processInfo.environment[
+                    "MANABI_UI_TEST_TARGETED_EBOOK_INDEXING"
+                ] == "1"
+#else
+                let isUIFixtureOpen = false
+#endif
+                if isUIFixtureOpen {
+                    NSLog("ReaderTestStartup stage=fileManagerInitializeFixtureBegin")
+                }
+                do {
+                    try await ReaderFileManager.shared.initialize(
+                        ubiquityContainerIdentifier: ubiquityContainerIdentifier,
+                        refreshInventory: !isUIFixtureOpen
+                    )
+                    if isUIFixtureOpen {
+                        NSLog("ReaderTestStartup stage=fileManagerInitializeComplete")
+                    }
+                } catch {
+                    if isUIFixtureOpen {
+                        let nsError = error as NSError
+                        NSLog("ReaderTestStartup stage=fileManagerInitializeFailed errorType=%@ errorDomain=%@ errorCode=%d",
+                              String(reflecting: type(of: error)), nsError.domain, nsError.code)
+                    }
+                }
             }
     }
 }

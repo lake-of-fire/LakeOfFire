@@ -32,6 +32,12 @@ private actor ReaderFileInitializationGate {
     }
 }
 
+private actor ReaderFileInitializationScanRecorder {
+    private var count = 0
+    func record() { count += 1 }
+    func snapshot() -> Int { count }
+}
+
 private enum ReaderFileInitializationTestError: Swift.Error {
     case unexpectedFactoryContinuation
     case localFactoryShouldNotRun
@@ -91,6 +97,39 @@ final class ReaderFileInitializationTests: XCTestCase {
             try await refresh.value
             XCTFail("Cancelled refresh must not report successful completion")
         } catch is CancellationError {
+        }
+    }
+
+    @MainActor
+    func testInitializationCanDeferInventoryUntilTargetedStartupIndex() async throws {
+        try await withDriveFixture { f in
+            let scans = ReaderFileInitializationScanRecorder()
+            let manager = ReaderFileManager(
+                payloadStateProvider: { _ in .current },
+                directoryContentsProvider: { _ in
+                    await scans.record()
+                    return []
+                },
+                cloudDriveFactory: { _ in
+                    throw ReaderFileInitializationTestError.unexpectedFactoryContinuation
+                },
+                localDriveFactory: { f.local }
+            )
+            manager.historyRealmConfigurationOverride = f.configuration
+
+            try await manager.initialize(
+                ubiquityContainerIdentifier: "iCloud.fixture-no-inventory",
+                refreshInventory: false
+            )
+            let scansAfterDeferredInitialization = await scans.snapshot()
+            XCTAssertEqual(scansAfterDeferredInitialization, 0)
+
+            try await manager.initialize(
+                ubiquityContainerIdentifier: "iCloud.fixture-with-inventory",
+                refreshInventory: true
+            )
+            let scansAfterDefaultInitialization = await scans.snapshot()
+            XCTAssertGreaterThan(scansAfterDefaultInitialization, 0)
         }
     }
 

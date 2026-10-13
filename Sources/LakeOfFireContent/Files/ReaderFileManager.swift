@@ -317,7 +317,10 @@ public class ReaderFileManager: ObservableObject {
     }
     
     @MainActor
-    public func initialize(ubiquityContainerIdentifier: String) async throws {
+    public func initialize(
+        ubiquityContainerIdentifier: String,
+        refreshInventory: Bool = true
+    ) async throws {
         // A cancelled entrant cannot revoke a healthy initialization or invoke
         // a factory whose preparation may itself create directories/presenters.
         try Task.checkCancellation()
@@ -359,8 +362,10 @@ public class ReaderFileManager: ObservableObject {
             object: self
         )
         try validateInitialization(identifier)
-        try await refreshAllFilesMetadata()
-        try validateInitialization(identifier)
+        if refreshInventory {
+            try await refreshAllFilesMetadata()
+            try validateInitialization(identifier)
+        }
     }
 
     @MainActor
@@ -966,6 +971,43 @@ public class ReaderFileManager: ObservableObject {
     public func refreshAllFilesMetadata(force: Bool = false) async throws {
         let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
         try await refreshAllFilesMetadata(force: force, selection: selection)
+    }
+
+    /// Index one reader-backed file through the production metadata scanner.
+    /// Scanning only its containing directory avoids a whole-library inventory
+    /// refresh when a caller needs one newly staged file to become a ContentFile.
+    @MainActor
+    public func refreshContentFileMetadata(forReaderFileURL readerFileURL: URL) async throws -> ContentFile? {
+        let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
+        guard let canonicalURL = canonicalReaderBackingURL(for: readerFileURL) else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
+        let (drive, filePath) = try extractCloudDrivePath(fromReaderFileURL: canonicalURL)
+        let parentPath = URL(fileURLWithPath: filePath.path)
+            .deletingLastPathComponent()
+            .relativePath
+        let scanPath = parentPath.isEmpty || parentPath == "."
+            ? nil : RootRelativePath(path: parentPath)
+
+        try Task.checkCancellation()
+        _ = try await refreshFilesMetadata(
+            drive: drive,
+            relativePath: scanPath,
+            selection: selection
+        )
+        try validateMetadataRefreshSelection(selection)
+
+        let realm = try await Realm.open(configuration: selection.realmConfiguration)
+        guard let contentFile = realm.objects(ContentFile.self)
+            .filter(NSPredicate(
+                format: "isDeleted == %@ AND url == %@",
+                NSNumber(value: false),
+                canonicalURL.absoluteString as CVarArg
+            ))
+            .first else {
+            return nil
+        }
+        return contentFile
     }
 
     @MainActor
