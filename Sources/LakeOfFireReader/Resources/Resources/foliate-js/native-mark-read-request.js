@@ -14,6 +14,42 @@ export const refreshNativeMarkReadBookStateForRecovery = (runtime, originalScope
     return state.beginHistoryReadingStatusRecovery(observation, originalScope, isCurrent)
 }
 
+export const captureVisibleMarkReadNavigation = document => {
+    try {
+        const frame = document?.defaultView;
+        const capture = frame?.manabiCaptureAutomaticScrollNavigation;
+        if (typeof capture !== 'function') return null;
+        const isCurrent = Reflect.apply(capture, frame, []);
+        return typeof isCurrent === 'function' ? isCurrent : null;
+    } catch (_) { return null; }
+};
+
+// A page command's reply projects only its requested subjects. Obtain the full
+// native chapter state instead of treating submitted subjects as read state.
+export const refreshCommittedVisibleMarkReadState = ({ outcome, state, isOwnerCurrent }) => {
+    const current = () => typeof isOwnerCurrent === 'function' && isOwnerCurrent() === true;
+    if (outcome?.success !== true || outcome.stale
+        || outcome.presentationAllowed === false || !current()) return false;
+    if (state?.noteManualReadSnapshot?.(outcome.nativeResult?.stateSnapshotSequence) !== true
+        || !current()) return false;
+    if (state.refresh?.() !== true) return false;
+    return current();
+};
+
+export const committedVisibleMarkReadStateIsPresented = ({ state, minimumSnapshotSequence, stableSegmentIDs, successfulPublicationSequence }) => {
+    if (state?.ready !== true || !Number.isSafeInteger(minimumSnapshotSequence)
+        || minimumSnapshotSequence <= 0 || !Array.isArray(stableSegmentIDs) || stableSegmentIDs.length === 0
+        || !Number.isSafeInteger(successfulPublicationSequence)
+        || successfulPublicationSequence < minimumSnapshotSequence) return false;
+    const projection = state.state;
+    if (!Number.isSafeInteger(projection?.revision)
+        || projection.revision !== successfulPublicationSequence
+        || !Array.isArray(projection.readSegmentIdentifiers)) return false;
+    const readIDs = new Set(projection.readSegmentIdentifiers);
+    return stableSegmentIDs.every(id => typeof id === 'string' && id.length > 0
+        && readIDs.has(id));
+};
+
 const defaultRequestID = () => {
     if (typeof globalThis.crypto?.randomUUID === 'function') {
         return globalThis.crypto.randomUUID()

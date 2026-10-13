@@ -9,6 +9,7 @@ import { bookScopeKey } from './book-reading-state.js'
 import { applyBookReadingProjection } from './book-reading-projection.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import { processedSectionURLForHref } from './ebook-direct-section.js'
+import { visibleMarkReadSidecarSelection } from './ebook-visible-mark-read-selection.js'
 import { forwardCustomReaderFontStyleToDocuments } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
@@ -16,6 +17,9 @@ import {
     presentNativeMarkReadPending,
     nativeMarkReadCommandMessage,
     refreshNativeMarkReadBookStateForRecovery,
+    refreshCommittedVisibleMarkReadState,
+    committedVisibleMarkReadStateIsPresented,
+    captureVisibleMarkReadNavigation,
 } from './native-mark-read-request.js'
 import {
     compactEbookSegmentMetadataPayloadIsCurrent,
@@ -5042,59 +5046,30 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress, visibleRang
             },
         };
     }
-    const sentencesByIdentifier = new Map();
-    for (const item of visibleSegments) {
-        if (!dedupedSegments.has(item.segmentIdentifier)) {
-            const metadata = item.segmentMetadata || segmentMetadataForNode(item.node, bootstrap);
-            let searchString = metadata?.s || metadata?.ns;
-            if (typeof searchString !== 'string' || searchString.length === 0) {
-                const textSearchString = item.node.textContent?.trim?.() || '';
-                if (textSearchString.length === 0) {
-                    skippedMissingSearchStringCount += 1;
-                    continue;
-                }
-                searchString = textSearchString;
-                recoveredTextSearchStringCount += 1;
-            }
-            const identity = segmentIdentityForNode(item.node, bootstrap, metadata);
-            if (!identity.stableID) {
-                skippedMissingSearchStringCount += 1;
-                continue;
-            }
-            const { sentenceHTML, sentenceJMDictIDs } = buildExampleSentenceForSegment(item.node, bootstrap, metadata);
-            dedupedSegments.set(identity.stableID, {
-                jmdictEntryIds: segmentEntryIDsForMetadata(metadata, 'jmdict'),
-                jmnedictEntryIds: segmentEntryIDsForMetadata(metadata, 'jmnedict'),
-                searchString,
-                displayText: metadata?.x || item.node.textContent?.trim?.() || searchString,
-                runtimeElementID: identity.elementID,
-                stableSegmentID: identity.stableID,
-                segmentIdentifier: identity.stableID,
-                sentenceIdentifier: item.sentenceIdentifier || metadata?.sentenceID || null,
-                exampleSentence: sentenceHTML,
-                exampleSentenceJMDictIDs: sentenceJMDictIDs,
-            });
-        }
-        if (item.sentenceIdentifier && !sentencesByIdentifier.has(item.sentenceIdentifier)) {
-            const sentenceNode = item.node.closest(manabiReaderSentenceSelector);
-            const allSegmentIdentifierAliasSets = Array.from(sentenceNode?.querySelectorAll?.('m-m') || [])
-                .map((segmentNode) => {
-                    const metadata = segmentNode === item.node
-                        ? (item.segmentMetadata || null)
-                        : segmentMetadataForNode(segmentNode, bootstrap);
-                    return segmentIdentifierAliasesForNode(segmentNode, bootstrap, metadata);
-                })
-                .filter((aliases) => aliases.length > 0);
-            sentencesByIdentifier.set(item.sentenceIdentifier, allSegmentIdentifierAliasSets);
-        }
+    const selectedMetadata = visibleMarkReadSidecarSelection({
+        visibleSegmentIdentifiers: visibleSegmentIdentifierList,
+        metadataByID: bootstrap.byID,
+        segmentIDsBySentenceID: bootstrap.segmentIDsBySentenceID,
+    });
+    for (const metadata of selectedMetadata || []) {
+        const sidecarSentence = bootstrap.sentenceArchive?.get?.(metadata.sentenceID);
+        const searchString = metadata.s || metadata.ns || metadata.x || '';
+        dedupedSegments.set(metadata.sid, {
+            jmdictEntryIds: segmentEntryIDsForMetadata(metadata, 'jmdict'),
+            jmnedictEntryIds: segmentEntryIDsForMetadata(metadata, 'jmnedict'),
+            searchString,
+            displayText: metadata.x || searchString,
+            runtimeElementID: metadata.i,
+            stableSegmentID: metadata.sid,
+            segmentIdentifier: metadata.sid,
+            sentenceIdentifier: metadata.sentenceID,
+            exampleSentence: sidecarSentence?.sentenceHTML ?? null,
+            exampleSentenceJMDictIDs: sidecarSentence?.sentenceJMDictIDs ?? null,
+        });
     }
-    const sentenceIdentifiers = Array.from(sentencesByIdentifier.entries())
-        .filter(([, allSegmentIdentifierAliasSets]) => allSegmentIdentifierAliasSets.length > 0
-            && allSegmentIdentifierAliasSets.every((aliases) =>
-                aliases.some((segmentIdentifier) =>
-                    readSegmentIdentifiers.has(segmentIdentifier)
-                    || visibleSegmentIdentifiers.has(segmentIdentifier))))
-        .map(([sentenceIdentifier]) => sentenceIdentifier);
+    // The native transaction derives sentence completion from its current
+    // committed support. Page Mark never extends its selection offscreen.
+    const sentenceIdentifiers = [];
     const states = dedupedSegments.size > 0 ? [{
         id: 'visible-screen',
         payload: {
@@ -5494,6 +5469,7 @@ const navSpinnerMaximumMs = 1200;
 class Reader {
     #closed = false;
     #pageLifetime = {};
+    #successfulBookReadPublication = null;
     #markReadProducerReadiness = null;
     #markReadDiagnosticGeneration = 0;
     #markReadBusyOwners = new Map();
@@ -6928,6 +6904,33 @@ class Reader {
             clusterCount: diagnostics.clusterCount,
         }, 100);
     }
+    #applyNativeBookReadProjection(state, { passChanged }) {
+        this.#successfulBookReadPublication = null;
+        if (passChanged) {
+            this.nativeMarkReadRequestCoordinator?.cancelAll('chapter-pass-changed');
+            this.#clearOptimisticMarkReadState('chapter-pass-changed');
+            this.#invalidateVisiblePageSegmentSnapshot('chapter-pass-changed');
+        }
+        const runtime = this.bookReadingRuntime;
+        const owner = state.scope ? this.#markReadOwner({
+            document: this.#currentPageTrackingDocument(),
+        }) : null;
+        const current = () => globalThis.reader === this && !this.#closed
+            && this.bookReadingRuntime === runtime
+            && runtime?.state?.state?.revision === state.revision
+            && (owner ? this.#isMarkReadOwnerCurrent(owner) : runtime?.state?.context?.isEndPage === true);
+        if (!current()) return;
+        applyBookReadingProjection(this, state, progress =>
+            this.applyBookReadingProgress(progress, 'native-chapter-publication', true));
+        this.#resumeConfirmedTurnAfterChapterAdmission();
+        if (this.#bookPositionRefreshNeeded && state.scope) {
+            this.#refreshBookPositionObservation();
+        }
+        this.refreshNativeLookupHitTargets?.('chapter-pass-publication');
+        if (owner && current()) {
+            this.#successfulBookReadPublication = { revision: state.revision, owner };
+        }
+    }
     applyBookReadingProgress(articleReadingProgress, _reason = 'unspecified', scoped = false) {
         // Old unqualified Article refreshes are not authority for a chapter pass.
         if (this.bookReadingRuntime && !scoped) return false;
@@ -7127,6 +7130,8 @@ class Reader {
             requireVisibleGeneration,
             visiblePageCollectionGeneration: this.visiblePageCollectionGeneration,
             bookReadingScope,
+            bookReadingRuntime: this.bookReadingRuntime,
+            accountPresentation: this.bookReadingRuntime?.state?.accountPresentation ?? null,
             pageLifetime: this.#pageLifetime,
         };
     }
@@ -7134,8 +7139,11 @@ class Reader {
         return !this.#closed && this.#ownsMarkReadOwner(owner);
     }
     #ownsMarkReadOwner(owner) {
-        if (!owner || globalThis.reader !== this || owner.pageLifetime !== this.#pageLifetime) return false;
-        if (this.bookReadingRuntime && !this.bookReadingRuntime.isScopeCurrent(owner.bookReadingScope, owner.document)) return false;
+        if (!owner || globalThis.reader !== this || owner.pageLifetime !== this.#pageLifetime
+            || owner.bookReadingRuntime !== this.bookReadingRuntime) return false;
+        if (this.bookReadingRuntime
+            && (this.bookReadingRuntime.state.accountPresentation !== owner.accountPresentation
+                || !this.bookReadingRuntime.isScopeCurrent(owner.bookReadingScope, owner.document))) return false;
         // Transport disposal can compare the original owner after #closed is
         // set but before generation retirement. Admission/observation belongs
         // to the coordinator; ordinary Reader continuation remains closed.
@@ -7277,26 +7285,26 @@ class Reader {
         producerOwner = null,
         originAccountPresentation = null,
         diagnosticGeneration = null,
+        refreshCommittedVisibleState = false,
     }) {
         const bookReadingRuntime = this.bookReadingRuntime;
         const validatedPayload = this.#validatedMarkReadPayload(payload);
         if (!validatedPayload) {
             this.lastNativeMarkReadRequestOutcome = 'failed';
             this.lastNativeMarkReadRequestErrorCode = 'invalidPayload';
-            return { success: false, presentationApplied: false };
+            return { success: false, mayAdvance: false };
         }
         if (!producerOwner) {
             this.lastNativeMarkReadRequestOutcome = 'failed';
             this.lastNativeMarkReadRequestErrorCode = 'producerUnavailable';
             globalThis.manabiArticleProducer?.ready?.().catch?.(() => {});
-            return { success: false, presentationApplied: false };
+            return { success: false, mayAdvance: false };
         }
         if (this.bookReadingRuntime !== bookReadingRuntime
-            || (bookReadingRuntime && !bookReadingRuntime.isScopeCurrent(owner?.bookReadingScope, owner?.document))
-            || this.bookReadingRuntime !== bookReadingRuntime) {
+            || (bookReadingRuntime && !bookReadingRuntime.isScopeCurrent(owner?.bookReadingScope, owner?.document))) {
             this.lastNativeMarkReadRequestOutcome = 'failed';
             this.lastNativeMarkReadRequestErrorCode = 'staleChapterPass';
-            return { success: false, presentationApplied: false };
+            return { success: false, mayAdvance: false };
         }
         const outcome = await this.nativeMarkReadRequestCoordinator.request({
             sectionID,
@@ -7322,7 +7330,7 @@ class Reader {
                 producerOwner,
             }),
         });
-        const completed = { success: outcome.success === true, presentationApplied: false };
+        const completed = { success: outcome.success === true, mayAdvance: false };
         // A committed write can itself retire its producer. Preserve the native
         // outcome while preventing an old delivery from replacing a newer tap
         // or another reader's diagnostics; the coordinator still fences display.
@@ -7337,20 +7345,26 @@ class Reader {
         this.lastNativeMarkReadRequestErrorCode = outcome.errorCode ?? '';
         if (!completed.success || outcome.stale || outcome.presentationAllowed === false) return completed;
         try {
-            // Settlement and this continuation are separate callback turns.
-            // Only the original owner may mirror or project the committed reply.
             if (!this.#isMarkReadOwnerCurrent(owner)) return completed;
-            if (this.bookReadingRuntime && !this.bookReadingRuntime.state.noteManualReadSnapshot(outcome.nativeResult?.stateSnapshotSequence)) return completed;
-            if (!this.#isMarkReadOwnerCurrent(owner)) return completed;
-            this.#applyCommittedMarkReadPayload(
-                outcome.context.payload,
-                outcome.context.reason,
-                outcome.context.animateStateID
-            );
-            completed.presentationApplied = this.#isMarkReadOwnerCurrent(owner);
+            if (refreshCommittedVisibleState) {
+                owner.minimumReadSnapshotSequence = outcome.nativeResult?.stateSnapshotSequence;
+                owner.committedVisibleStableSegmentIDs = outcome.context.payload.segments.map(segment => segment.stableSegmentID);
+                completed.mayAdvance = refreshCommittedVisibleMarkReadState({
+                    outcome,
+                    state: this.bookReadingRuntime?.state,
+                    isOwnerCurrent: () => this.#isMarkReadOwnerCurrent(owner),
+                });
+            } else {
+                if (this.bookReadingRuntime && !this.bookReadingRuntime.state.noteManualReadSnapshot(outcome.nativeResult?.stateSnapshotSequence)) return completed;
+                if (!this.#isMarkReadOwnerCurrent(owner)) return completed;
+                this.#applyCommittedMarkReadPayload(
+                    outcome.context.payload,
+                    outcome.context.reason,
+                    outcome.context.animateStateID
+                );
+            }
         } catch (_error) {
-            // Projection is optional after native success; it owns no authority
-            // to replace the already committed command's outcome.
+            // Optional publication cannot replace a successfully committed Mark.
         }
         return completed;
     }
@@ -7494,13 +7508,13 @@ class Reader {
         if (!isDocumentLike(doc)) return this.#rejectNativeMarkRead('visiblePageUnavailable', diagnosticGeneration);
         bookEvent ??= this.bookReadingRuntime?.captureEvent(doc) ?? null;
         if (this.bookReadingRuntime && !this.bookReadingRuntime.isEventCurrent(bookEvent)) return this.#rejectNativeMarkRead('staleChapterPass', diagnosticGeneration);
-        const advanceOwner = {
-            lifecycleGeneration: this.#lifecycleGeneration,
-            renderer: this.view?.renderer ?? null,
-            visiblePageCollectionGeneration: this.visiblePageCollectionGeneration,
-            bookEvent,
-            pageLifetime: this.#pageLifetime,
-        };
+        const advanceOwner = this.#markReadOwner({
+            document: doc,
+            requireVisibleGeneration: true,
+            bookReadingScope: bookEvent?.scope ?? null,
+        });
+        advanceOwner.bookEvent = bookEvent;
+        advanceOwner.navigationIsCurrent = captureVisibleMarkReadNavigation(doc);
         this.lastNativeMarkReadRequestOutcome = 'pending';
         this.lastNativeMarkReadRequestErrorCode = '';
         const busyOwner = {};
@@ -7510,25 +7524,18 @@ class Reader {
         try {
             const result = await this.#submitMarkReadPayload(pageTrackingState.payload, {
                 sectionID: `ebook-page:${stateID}:${this.visiblePageCollectionGeneration}`,
-                owner: this.#markReadOwner({
-                    document: doc,
-                    requireVisibleGeneration: true,
-                    bookReadingScope: bookEvent?.scope ?? null,
-                }),
+                owner: advanceOwner,
                 reason: 'native-mark-read-committed',
+                refreshCommittedVisibleState: true,
                 animateStateID: stateID,
                 producerOwner,
                 originAccountPresentation,
                 diagnosticGeneration,
             });
             if (!result.success) return false;
-            if (result.presentationApplied) {
-                try {
-                    await this.#advanceAfterMarkRead(advanceOwner);
-                } catch (_error) {
-                    // Navigation is optional after the native Mark committed.
-                    // A failed page turn cannot replace that successful outcome.
-                }
+            if (result.mayAdvance) {
+                try { await this.#advanceAfterMarkRead(advanceOwner); }
+                catch (_error) { /* Navigation cannot replace committed success. */ }
             }
             return true;
         } finally {
@@ -8834,11 +8841,18 @@ class Reader {
     async #advanceAfterMarkRead(owner) {
         await new Promise((resolve) => setTimeout(resolve, 430));
         if (
-            !owner
-            || !this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
-            || this.visiblePageCollectionGeneration !== owner.visiblePageCollectionGeneration
+            !this.#isMarkReadOwnerCurrent(owner)
+            || typeof owner.navigationIsCurrent !== 'function'
+            || owner.navigationIsCurrent() !== true
             || (owner.bookEvent && this.bookReadingRuntime?.isEventCurrent(owner.bookEvent) !== true)
-            || owner.pageLifetime !== this.#pageLifetime
+            || !this.#isMarkReadOwnerCurrent(this.#successfulBookReadPublication?.owner)
+            || !committedVisibleMarkReadStateIsPresented({
+                state: this.bookReadingRuntime?.state,
+                minimumSnapshotSequence: owner.minimumReadSnapshotSequence,
+                stableSegmentIDs: owner.committedVisibleStableSegmentIDs,
+                successfulPublicationSequence: this.#successfulBookReadPublication?.revision,
+            })
+            || !this.#isMarkReadOwnerCurrent(owner)
         ) {
             return false;
         }
@@ -9134,25 +9148,13 @@ class Reader {
         this.bookReadingRuntime = installBookReadingRuntime({
             reader: this, view, document, window, documentStartedAtMs: readerDocumentStartedAtMs(),
             invalidateProjection: () => {
+                this.#successfulBookReadPublication = null;
                 this.#clearOptimisticMarkReadState('chapter-state-unavailable');
                 this.nativeMarkReadRequestCoordinator?.cancelAll('chapter-state-unavailable');
                 this.articleReadingProgress = normalizeArticleReadingProgress({});
                 this.#renderPageTrackingButtons('chapter-state-unavailable');
             },
-            applyProjection: (state, { passChanged }) => {
-                if (passChanged) {
-                    this.nativeMarkReadRequestCoordinator?.cancelAll('chapter-pass-changed');
-                    this.#clearOptimisticMarkReadState('chapter-pass-changed');
-                    this.#invalidateVisiblePageSegmentSnapshot('chapter-pass-changed');
-                }
-                applyBookReadingProjection(this, state, progress =>
-                    this.applyBookReadingProgress(progress, 'native-chapter-publication', true));
-                this.#resumeConfirmedTurnAfterChapterAdmission();
-                if (this.#bookPositionRefreshNeeded && state.scope) {
-                    this.#refreshBookPositionObservation();
-                }
-                this.refreshNativeLookupHitTargets?.('chapter-pass-publication');
-            },
+            applyProjection: (state, details) => this.#applyNativeBookReadProjection(state, details),
             onVisibility: () => {
                 this.#clearOptimisticMarkReadState('book-endcap');
                 this.#renderPageTrackingButtons('book-endcap');
