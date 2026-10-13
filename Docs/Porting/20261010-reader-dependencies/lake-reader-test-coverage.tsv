@@ -1,0 +1,84 @@
+dated_test_path	inspection	execution
+Tests/JavaScript/book-action-bridge-settlement.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-action-bridge.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-action-envelope-metadata.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-action-recovery.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-action-settlement.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-content-style.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-endcap-lifecycle.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-endcap.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-reading-projection.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-reading-publication-revalidation.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-reading-runtime.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-reading-state.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-runtime-boundaries.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-runtime-handoff.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/book-state-publication-transaction.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/cache-warmer-open-intent.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/cache-warmer-preceding-sections.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/confirmed-page-turn-progress.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/deferred-open-work.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-blank-pointer-target.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-direct-section.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-document-frame-identity.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-font-forwarding.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-layout-settings.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-load-resources.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-native-lookup-publication.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-native-source-request.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-navigation-hud-lifecycle.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-package-media.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-paginator-writing-direction.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-process-text-response.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-reader-presentation.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-reading-progress.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-render-readiness.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-restore-coordination.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-segment-identity.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-segment-metadata-cache.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-text-decoding.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-viewer-nav.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-viewer-writing-direction.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/ebook-writing-direction.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/epub-lifecycle.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/epub-loader-lifecycle.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/epub-source-lifecycle.test.mjs	runtime contract inspection	not run by request
+Tests/JavaScript/fixed-layout-content-descriptor.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/fixed-layout.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/foreground-critical-section.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/frame-timeout-scheduler.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/native-mark-read-request.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/navigation-intent.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/owned-async-cache.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/owned-async-resource.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/owned-element-operation.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/owned-event-bindings.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/owned-object-url.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/page-turn-coordination.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/paginator-decisions.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/paginator-navigation.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/paginator-writing-direction.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/reader-producer-evidence.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/reader-transient-state.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/relocate-location.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/renderer-content.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/renderer-navigation.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/renderer-operation-ownership.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/section-progress.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/view-history.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/view-lifecycle.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/view-relocation.test.mjs	unresolved semantic test comparison	not run by request
+Tests/JavaScript/visible-segment-collection.test.mjs	unresolved semantic test comparison	not run by request
+Tests/LakeOfFireTests/ReaderDocumentMutationAdmissionTests.swift	unresolved semantic test comparison	not run by request
+Tests/LakeOfFireTests/ReaderExternalSegmentSidecarRetentionTests.swift	runtime contract inspection	not run by request
+Tests/LakeOfFireTests/ReaderHTTPErrorRecoveryPolicyTests.swift	runtime contract inspection	not run by request
+Tests/LakeOfFireTests/ReaderJavascriptMessageDecodingTests.swift	runtime contract inspection	not run by request
+Tests/LakeOfFireTests/ReaderJavascriptMessagesTests.swift	unresolved semantic test comparison	not run by request
+Tests/LakeOfFireTests/ReaderMediaMetadataTests.swift	unresolved semantic test comparison	not run by request
+Tests/LakeOfFireTests/ReaderModePendingMatchKeyTests.swift	unresolved semantic test comparison	not run by request
+Tests/LakeOfFireTests/ReaderModeProcessingDependencyPublicationTests.swift	unresolved semantic test comparison	not run by request
+Tests/LakeOfFireTests/ReaderProgressMessageSequenceGateTests.swift	runtime contract inspection	not run by request
+Tests/LakeOfFireTests/ReaderTTSProgressEvaluatorTests.swift	unresolved semantic test comparison	not run by request
+Tests/LakeOfFireTests/ReaderWebViewCallbackContractTests.swift	unresolved semantic test comparison	not run by request
+Tests/LakeOfFireTests/ReaderThemeMutationTests.swift	new actual generated-JavaScript runtime side-effect regression	not run by request
+Tests/JavaScript/ebook-renderability-segment-probe.test.mjs [PR #74 only]	runtime contract inspection	not run by request

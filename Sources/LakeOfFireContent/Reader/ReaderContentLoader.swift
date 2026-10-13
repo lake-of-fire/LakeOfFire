@@ -86,7 +86,8 @@ public struct ReaderContentLoader {
         public let realmConfiguration: Realm.Configuration
 
         public init?(content: any ReaderContentProtocol) {
-            guard let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type,
+            guard !content.isInvalidated,
+                  let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type,
                   var config = content.realm?.configuration else { return nil }
             if var objectTypes = config.objectTypes,
                !objectTypes.contains(where: { $0 == contentType }) {
@@ -529,6 +530,37 @@ public struct ReaderContentLoader {
         return try await task.value
     }
 
+    /// A document receipt owns this lookup and its default-history creation.
+    /// Do not put its admission closure into URL-coalesced getContent tasks: a
+    /// different window or successor document must retain its own authority.
+    /// This route may create defaults but never refreshes an existing record
+    /// as a navigation history visit.
+    @MainActor
+    public static func getContent(
+        forURL pageURL: URL,
+        source: String,
+        admittingMutation: @escaping @Sendable () -> Bool
+    ) async throws -> (any ReaderContentProtocol)? {
+        try requireDocumentMutationAdmission(admittingMutation)
+        let resolvedURL = getContentURL(fromLoaderURL: pageURL) ?? pageURL
+        let content = try await loadContent(
+            url: resolvedURL,
+            persist: !resolvedURL.isNativeReaderView,
+            countsAsHistoryVisit: false,
+            source: source,
+            admittingMutation: admittingMutation
+        )
+        try requireDocumentMutationAdmission(admittingMutation)
+        return content
+    }
+
+    private static func requireDocumentMutationAdmission(
+        _ admittingMutation: (@Sendable () -> Bool)?
+    ) throws {
+        try Task.checkCancellation()
+        guard admittingMutation?() ?? true else { throw CancellationError() }
+    }
+
     /// Update all reader-content objects that share the given URL. The updater returns true if it mutated the object.
     @RealmBackgroundActor
     public static func updateContent(
@@ -555,6 +587,24 @@ public struct ReaderContentLoader {
         countsAsHistoryVisit: Bool = false,
         source: String = "ReaderContentLoader.load"
     ) async throws -> (any ReaderContentProtocol)? {
+        try await loadContent(
+            url: url, persist: persist, countsAsHistoryVisit: countsAsHistoryVisit,
+            source: source, admittingMutation: nil
+        )
+    }
+
+    @MainActor
+    private static func loadContent(
+        url: URL,
+        persist: Bool,
+        countsAsHistoryVisit: Bool,
+        source: String,
+        admittingMutation: (@Sendable () -> Bool)?
+    ) async throws -> (any ReaderContentProtocol)? {
+        // The admitted entry point always sets countsAsHistoryVisit=false;
+        // native visit creation keeps its existing independent API.
+        try requireDocumentMutationAdmission(admittingMutation)
+        let targetHistoryRealmConfiguration = historyRealmConfiguration
         let startedAt = Date()
         logReaderLoad(
             "stage=contentLoader.load.begin url=\(url.absoluteString) persist=\(persist) countsAsHistoryVisit=\(countsAsHistoryVisit) source=\(source)"
@@ -564,10 +614,11 @@ public struct ReaderContentLoader {
             logReaderLoad(
                 "stage=contentLoader.load.transcriptPage url=\(url.absoluteString) key=\(transcriptContent.compoundKey) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
             )
+            try requireDocumentMutationAdmission(admittingMutation)
             return transcriptContent
         }
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
-            try Task.checkCancellation()
+            try requireDocumentMutationAdmission(admittingMutation)
 
             if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
                 // Don't persist about:load
@@ -585,6 +636,7 @@ public struct ReaderContentLoader {
 
             var match: (any ReaderContentProtocol)?
             let candidates = try await loadAll(url: url)
+            try requireDocumentMutationAdmission(admittingMutation)
             match = candidates.max(by: {
                 ($0 as? HistoryRecord)?.lastVisitedAt ?? $0.createdAt < ($1 as? HistoryRecord)?.lastVisitedAt ?? $1.createdAt
             })
@@ -592,12 +644,13 @@ public struct ReaderContentLoader {
                 logReaderLoad(
                     "stage=contentLoader.load.addHistoryVisit url=\(url.absoluteString) contentType=\(String(describing: type(of: nonHistoryMatch))) key=\(nonHistoryMatch.compoundKey)"
                 )
-                match = try await nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
+                match = try await nonHistoryMatch.addHistoryRecord(realmConfiguration: targetHistoryRealmConfiguration, pageURL: url)
             } else if let historyMatch = match as? HistoryRecord,
                       countsAsHistoryVisit,
                       persist,
                       let historyRealm = historyMatch.realm {
                 try await historyRealm.asyncWrite {
+                    try requireDocumentMutationAdmission(admittingMutation)
                     historyMatch.lastVisitedAt = Date()
                     historyMatch.isDeleted = false
                     historyMatch.refreshChangeMetadata(explicitlyModified: true)
@@ -609,31 +662,53 @@ public struct ReaderContentLoader {
                 //        historyRecord.isReaderModeByDefault
                 historyRecord.updateCompoundKey()
                 if persist {
-                    let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
+                    let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: targetHistoryRealmConfiguration)
 //                    await historyRealm.asyncRefresh()
                     try await historyRealm.asyncWrite {
-                        historyRealm.add(historyRecord, update: .modified)
-                        historyRecord.isDeleted = false
-                        historyRecord.refreshChangeMetadata(explicitlyModified: true)
+                        try requireDocumentMutationAdmission(admittingMutation)
+                        // A cached miss or suspended lookup may predate a committed capture.
+                        // Resolve canonical aliases again at the write boundary before creating defaults.
+                        if let existing = HistoryRecord.getOpenedRecord(forURL: url, in: historyRealm)
+                            ?? HistoryRecord.records(matching: url, in: historyRealm)
+                                .sorted(by: [
+                                    SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
+                                    SortDescriptor(keyPath: "compoundKey", ascending: true),
+                                ]).first {
+                            if countsAsHistoryVisit {
+                                let timestamp = Date()
+                                existing.lastVisitedAt = timestamp
+                                existing.isDeleted = false
+                                existing.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                            }
+                            match = existing
+                        } else {
+                            if countsAsHistoryVisit { historyRecord.lastVisitedAt = Date() }
+                            historyRealm.add(historyRecord)
+                            historyRecord.refreshChangeMetadata(explicitlyModified: true)
+                            match = historyRecord
+                        }
                     }
                     invalidateCachedContent(for: url)
+                } else {
+                    match = historyRecord
                 }
-                match = historyRecord
                 logReaderLoad(
                     "stage=contentLoader.load.createdHistory url=\(url.absoluteString) persist=\(persist)"
                 )
             }
 
-            try Task.checkCancellation()
+            try requireDocumentMutationAdmission(admittingMutation)
             if persist, let match = match, url.isReaderFileURL, url.contains(.plainText), let realm = match.realm {
 //                await realm.asyncRefresh()
                 try await realm.asyncWrite {
+                    try requireDocumentMutationAdmission(admittingMutation)
                     match.isReaderModeByDefault = true
                     match.refreshChangeMetadata(explicitlyModified: true)
                 }
             } else if persist, let match = match, url.isEBookURL, !match.isReaderModeByDefault, let realm = match.realm {
 //                await realm.asyncRefresh()
                 try await realm.asyncWrite {
+                    try requireDocumentMutationAdmission(admittingMutation)
                     match.isReaderModeByDefault = true
                     match.refreshChangeMetadata(explicitlyModified: true)
                 }
@@ -644,6 +719,7 @@ public struct ReaderContentLoader {
                       let realm = match.realm {
 //                await realm.asyncRefresh()
                 try await realm.asyncWrite {
+                    try requireDocumentMutationAdmission(admittingMutation)
                     match.isReaderModeByDefault = true
                     match.rssContainsFullContent = true
                     match.refreshChangeMetadata(explicitlyModified: true)
@@ -657,6 +733,7 @@ public struct ReaderContentLoader {
                repairedHTML != html,
                let realm = match.realm {
                 try await realm.asyncWrite {
+                    try requireDocumentMutationAdmission(admittingMutation)
                     match.html = repairedHTML
                     match.refreshChangeMetadata(explicitlyModified: true)
                 }
@@ -664,13 +741,14 @@ public struct ReaderContentLoader {
             guard let match else { return nil }
 
             if let historyRecord = match as? HistoryRecord {
-                try await historyRecord.refreshDemotedStatus()
+                try await historyRecord.refreshDemotedStatus(admittingMutation: admittingMutation)
             }
 
             return ReaderContentLoader.ContentReference(content: match)
         }()
-        try Task.checkCancellation()
+        try requireDocumentMutationAdmission(admittingMutation)
         let content = try await contentRef?.resolveOnMainActor()
+        try requireDocumentMutationAdmission(admittingMutation)
         if let content {
             logReaderLoad(
                 "stage=contentLoader.load.finish url=\(url.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey) readerDefault=\(content.isReaderModeByDefault) hasHTML=\(content.hasHTML) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt))) source=\(source)"
@@ -1336,6 +1414,35 @@ This snippet loads when the pasteboard is empty in a debug build.
             countsAsHistoryVisit: false,
             source: "ReaderContentLoader.appendSnippetHTML.reload"
         )
+    }
+
+    /// Rename persisted snippet representations using each record's current HTML.
+    /// Storage is selected by the existing loader configuration; this URL-only
+    /// command does not capture an account or admit a delayed editor lifetime.
+    @MainActor
+    public static func updateSnippetTitle(
+        contentURL: URL,
+        title: String
+    ) async throws -> Bool {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard contentURL.isSnippetURL, !trimmedTitle.isEmpty else { return false }
+        return try await { @RealmBackgroundActor in
+            var didChange = false
+            try await updateContent(url: contentURL) { object in
+                guard !object.isInvalidated, !object.isDeleted else { return false }
+                let isTitlePrefixOfContent = snippetTitleMatchesGeneratedPrefix(
+                    trimmedTitle,
+                    sourceHTML: object.html
+                )
+                guard object.title != trimmedTitle
+                    || object.isTitlePrefixOfContent != isTitlePrefixOfContent else { return false }
+                object.title = trimmedTitle
+                object.isTitlePrefixOfContent = isTitlePrefixOfContent
+                didChange = true
+                return true
+            }
+            return didChange
+        }()
     }
 
     @MainActor

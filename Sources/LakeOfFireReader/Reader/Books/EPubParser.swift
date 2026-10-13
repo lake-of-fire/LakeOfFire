@@ -11,9 +11,13 @@ struct EPubParser {
     /// Reads metadata from either a packed or unpacked EPUB through the same
     /// package-entry boundary used by the viewer.
     static func parseMetadataAndCover(
-        from epubURL: URL
+        from epubURL: URL,
+        limits: ReaderPackageResourceLimits = .metadata
     ) throws -> (title: String, author: String?, coverHref: String?, publicationDate: Date?)? {
-        let source = try ReaderPackageEntrySource(localURL: epubURL)
+        let source = try ReaderPackageEntrySource(localURL: epubURL, limits: limits)
+        // Bound catalog inspection separately from the metadata bytes read below.
+        // Unrequested media does not inherit the per-entry metadata read cap.
+        _ = try source.enumerateEntries()
         let containerData = try source.readEntry(subpath: "META-INF/container.xml")
         guard let packagePath = parseContainer(containerData) else { return nil }
         let packageData = try source.readEntry(subpath: packagePath)
@@ -164,10 +168,20 @@ struct EPubParser {
                 }
                 depth = max(depth - 1, 0)
             }
+
+            func parser(_ parser: XMLParser, foundInternalEntityDeclarationWithName: String, value: String?) {
+                parser.abortParsing()
+            }
+
+            func parser(_ parser: XMLParser, foundExternalEntityDeclarationWithName: String,
+                        publicID: String?, systemID: String?) {
+                parser.abortParsing()
+            }
         }
 
         let parser = XMLParser(data: data)
         parser.shouldProcessNamespaces = true
+        parser.shouldResolveExternalEntities = false
         let delegate = ContainerParser()
         parser.delegate = delegate
         guard parser.parse(),
@@ -188,6 +202,7 @@ struct EPubParser {
                 case title
                 case creator
                 case date
+                case titleType
             }
 
             private var depth = 0
@@ -200,14 +215,19 @@ struct EPubParser {
             private var activeTextField: TextField?
             private var activeTextDepth: Int?
             private var accumulatingText = ""
-            private var didSelectTitle = false
+            private var titles: [(id: String?, value: String)] = []
+            private var mainTitleIDs = Set<String>()
+            private var activeTextID: String?
             private var didSelectCreator = false
             private var didSelectDate = false
             private var coverID: String?
             private var coverImageHref: String?
             private var manifestHrefsByID: [String: String] = [:]
 
-            private(set) var foundTitle: String?
+            var foundTitle: String? {
+                titles.first(where: { $0.id.map(mainTitleIDs.contains) == true })?.value
+                    ?? titles.first?.value
+            }
             private(set) var foundAuthor: String?
             private(set) var foundDate: Date?
 
@@ -261,11 +281,9 @@ struct EPubParser {
                 if metadataDepth == 2, depth == 3 {
                     if namespaceURI == EPubParser.dublinCoreNamespace {
                         switch elementName {
-                        case "title" where !didSelectTitle:
-                            didSelectTitle = true
-                            beginTextField(.title)
+                        case "title":
+                            beginTextField(.title, id: attributeDict["id"])
                         case "creator" where !didSelectCreator:
-                            didSelectCreator = true
                             beginTextField(.creator)
                         case "date" where !didSelectDate:
                             didSelectDate = true
@@ -273,13 +291,17 @@ struct EPubParser {
                         default:
                             break
                         }
-                    } else if namespaceURI == packageNamespaceURI,
-                              elementName == "meta",
-                              coverID == nil,
-                              attributeDict["name"]?.lowercased() == "cover",
-                              let content = attributeDict["content"],
-                              !content.isEmpty {
-                        coverID = content
+                    } else if namespaceURI == packageNamespaceURI, elementName == "meta" {
+                        if attributeDict["property"] == "title-type",
+                           let refines = attributeDict["refines"],
+                           refines.hasPrefix("#"), refines.count > 1 {
+                            beginTextField(.titleType, id: String(refines.dropFirst()))
+                        }
+                        if coverID == nil,
+                           attributeDict["name"]?.lowercased() == "cover",
+                           let content = attributeDict["content"], !content.isEmpty {
+                            coverID = content
+                        }
                     }
                     return
                 }
@@ -311,6 +333,23 @@ struct EPubParser {
                 }
             }
 
+            func parser(_ parser: XMLParser, foundCDATA data: Data) {
+                guard let value = String(data: data, encoding: .utf8) else {
+                    parser.abortParsing()
+                    return
+                }
+                self.parser(parser, foundCharacters: value)
+            }
+
+            func parser(_ parser: XMLParser, foundInternalEntityDeclarationWithName: String, value: String?) {
+                parser.abortParsing()
+            }
+
+            func parser(_ parser: XMLParser, foundExternalEntityDeclarationWithName: String,
+                        publicID: String?, systemID: String?) {
+                parser.abortParsing()
+            }
+
             func parser(
                 _ parser: XMLParser,
                 didEndElement elementName: String,
@@ -318,11 +357,12 @@ struct EPubParser {
                 qualifiedName qName: String?
             ) {
                 let namespaceURI = EPubParser.normalizedNamespace(namespaceURI)
-                if activeTextDepth == depth,
-                   namespaceURI == EPubParser.dublinCoreNamespace {
+                if activeTextDepth == depth {
                     switch (activeTextField, elementName) {
                     case (.title, "title"), (.creator, "creator"), (.date, "date"):
-                        finishTextField()
+                        if namespaceURI == EPubParser.dublinCoreNamespace { finishTextField() }
+                    case (.titleType, "meta"):
+                        if namespaceURI == packageNamespaceURI { finishTextField() }
                     default:
                         break
                     }
@@ -340,9 +380,10 @@ struct EPubParser {
                 depth = max(depth - 1, 0)
             }
 
-            private func beginTextField(_ field: TextField) {
+            private func beginTextField(_ field: TextField, id: String? = nil) {
                 activeTextField = field
                 activeTextDepth = depth
+                activeTextID = id
                 accumulatingText = ""
             }
 
@@ -350,24 +391,31 @@ struct EPubParser {
                 let normalized = EPubParser.normalizedMetadataText(accumulatingText)
                 switch activeTextField {
                 case .title:
-                    if !normalized.isEmpty { foundTitle = normalized }
+                    if !normalized.isEmpty { titles.append((activeTextID, normalized)) }
                 case .creator:
-                    if !normalized.isEmpty { foundAuthor = normalized }
+                    if !normalized.isEmpty {
+                        foundAuthor = normalized
+                        didSelectCreator = true
+                    }
                 case .date:
                     if !normalized.isEmpty {
                         foundDate = EPubParser.parsePublicationDate(normalized)
                     }
+                case .titleType:
+                    if normalized == "main", let activeTextID { mainTitleIDs.insert(activeTextID) }
                 case nil:
                     break
                 }
                 activeTextField = nil
                 activeTextDepth = nil
+                activeTextID = nil
                 accumulatingText = ""
             }
         }
 
         let parser = XMLParser(data: data)
         parser.shouldProcessNamespaces = true
+        parser.shouldResolveExternalEntities = false
         let delegate = PackageParser()
         parser.delegate = delegate
         guard parser.parse(),

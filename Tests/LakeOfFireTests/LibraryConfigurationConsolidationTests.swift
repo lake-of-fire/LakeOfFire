@@ -222,12 +222,12 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
         XCTAssertEqual(consolidated.getUserScripts()?.map(\.id), [userScriptID])
     }
 
-    func testConsolidationAdmitsActiveOrphanScriptsDeterministically() async throws {
-        try await verifyConsolidationAdmitsActiveOrphanScriptsDeterministically()
+    func testConsolidationAdmitsNonDeletedOrphanScriptsDeterministically() async throws {
+        try await verifyConsolidationAdmitsNonDeletedOrphanScriptsDeterministically()
     }
 
     @RealmBackgroundActor
-    private func verifyConsolidationAdmitsActiveOrphanScriptsDeterministically() async throws {
+    private func verifyConsolidationAdmitsNonDeletedOrphanScriptsDeterministically() async throws {
         let (configuration, realm) = try await makeRealm()
         let first = UserScript()
         first.id = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
@@ -249,8 +249,47 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
             realmConfiguration: configuration
         )
 
-        XCTAssertEqual(Array(consolidated.userScriptIDs), [second.id, first.id])
-        XCTAssertFalse(consolidated.userScriptIDs.contains(archived.id))
+        XCTAssertEqual(Array(consolidated.userScriptIDs), [archived.id, second.id, first.id])
+        XCTAssertTrue(consolidated.userScriptIDs.contains(archived.id))
+    }
+
+    func testDisabledScriptKeepsItsExistingSlotAndRepeatedConsolidationIsANoOp() async throws {
+        let (configuration, realm) = try await makeRealm()
+        let first = UserScript()
+        let disabled = UserScript()
+        disabled.isArchived = true
+        let deleted = UserScript()
+        deleted.isDeleted = true
+        let last = UserScript()
+        let primary = LibraryConfiguration()
+        primary.userScriptIDs.append(objectsIn: [first.id, disabled.id, deleted.id, last.id])
+        try realm.write {
+            realm.add([first, disabled, deleted, last])
+            realm.add(primary)
+        }
+
+        let consolidated = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: configuration
+        )
+        XCTAssertEqual(Array(consolidated.userScriptIDs), [first.id, disabled.id, last.id])
+        XCTAssertEqual(consolidated.getUserScripts()?.map(\.id), [first.id, disabled.id, last.id])
+        let settledModifiedAt = consolidated.modifiedAt
+        let settledExplicitlyModifiedAt = consolidated.explicitlyModifiedAt
+        for _ in 0..<3 {
+            let repeated = try await LibraryConfiguration.getConsolidatedOrCreate(
+                realmConfiguration: configuration
+            )
+            XCTAssertEqual(Array(repeated.userScriptIDs), [first.id, disabled.id, last.id])
+            XCTAssertEqual(repeated.modifiedAt, settledModifiedAt)
+            XCTAssertEqual(repeated.explicitlyModifiedAt, settledExplicitlyModifiedAt)
+        }
+
+        try realm.write { disabled.isArchived = false }
+        let enabled = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: configuration
+        )
+        XCTAssertEqual(Array(enabled.userScriptIDs), [first.id, disabled.id, last.id])
+        XCTAssertEqual(enabled.modifiedAt, settledModifiedAt)
     }
 
     func testConsolidationAdmitsActiveOrphanCategoriesDeterministically() async throws {

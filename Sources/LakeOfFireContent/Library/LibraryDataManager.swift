@@ -182,7 +182,11 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
 extension OPMLEntry {
     func attributeBoolValue(_ name: String) -> Bool? {
         guard let value = attributes?.first(where: { $0.name == name })?.value else { return nil }
-        return value == "true"
+        switch value {
+        case "true": return true
+        case "false": return false
+        default: return nil
+        }
     }
     
     func attributeStringValue(_ name: String) -> String? {
@@ -209,7 +213,11 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
 
     nonisolated(unsafe) public static var observesDownloadController = true
 
-    private static let attributeCharacterSet: CharacterSet = .alphanumerics.union(.punctuationCharacters.union(.symbols.union(.whitespaces)))
+    // The importer percent-decodes these attributes exactly once. Escape
+    // literal percent signs too, so JavaScript strings/operators survive export.
+    private static let attributeCharacterSet: CharacterSet = CharacterSet.alphanumerics
+        .union(.punctuationCharacters.union(.symbols.union(.whitespaces)))
+        .subtracting(CharacterSet(charactersIn: "%"))
 
     @MainActor
     private static var downloadController: DownloadController {
@@ -219,35 +227,35 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     public override init() {
         super.init()
 
-        guard Self.observesDownloadController else { return }
-        
-        // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
-        Task { @MainActor in
-            Self.downloadController.$finishedDownloads
-                .debounceLeadingTrailing(for: .seconds(0.25), scheduler: RunLoop.main)
-                .sink(receiveValue: { [weak self] feedDownloads in
-                    guard let self = self else { return }
-                    importOPMLTask?.cancel()
-                    importOPMLTask = Task { @RealmBackgroundActor [weak self] in
-                        let opmlDownloads = feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") })
-                        //                    let libraryConfiguration = try await LibraryConfiguration.get()
-                        for download in opmlDownloads {
-                            try Task.checkCancellation()
-                            //                        if (download.finishedDownloadingDuringCurrentLaunchAt == nil && (download.lastDownloaded ?? Date.distantPast) > libraryConfiguration?.opmlLastImportedAt ?? Date.distantPast) || ((download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)) {
-                            // ^ Re-enable reloading on every launch:
-                            if download.finishedLoadingDuringCurrentLaunchAt == nil || (download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast) {
-                                do {
-                                    try await self?.importOPML(download: download)
-                                } catch {
-                                    if error as? CancellationError == nil {
+        if Self.observesDownloadController {
+            // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
+            Task { @MainActor in
+                Self.downloadController.$finishedDownloads
+                    .debounceLeadingTrailing(for: .seconds(0.25), scheduler: RunLoop.main)
+                    .sink(receiveValue: { [weak self] feedDownloads in
+                        guard let self = self else { return }
+                        importOPMLTask?.cancel()
+                        importOPMLTask = Task { @RealmBackgroundActor [weak self] in
+                            let opmlDownloads = feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") })
+                            //                    let libraryConfiguration = try await LibraryConfiguration.get()
+                            for download in opmlDownloads {
+                                try Task.checkCancellation()
+                                //                        if (download.finishedDownloadingDuringCurrentLaunchAt == nil && (download.lastDownloaded ?? Date.distantPast) > libraryConfiguration?.opmlLastImportedAt ?? Date.distantPast) || ((download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)) {
+                                // ^ Re-enable reloading on every launch:
+                                if download.finishedLoadingDuringCurrentLaunchAt == nil || (download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast) {
+                                    do {
+                                        try await self?.importOPML(download: download)
+                                    } catch {
+                                        if error as? CancellationError == nil {
+                                        }
                                     }
+                                } else {
                                 }
-                            } else {
                             }
                         }
-                    }
-                })
-                .store(in: &cancellables)
+                    })
+                    .store(in: &cancellables)
+            }
         }
         
         //        DownloadController.shared.finishedDownloads.publisher
@@ -293,7 +301,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         guard let self = self else { return }
-                        try await refreshScripts()
+                        try await refreshScripts(
+                            realmConfiguration: realmConfiguration
+                        )
                     }
                 })
                 .store(in: &realmCancellables)
@@ -306,7 +316,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         guard let self = self else { return }
-                        try await refreshScripts()
+                        try await refreshScripts(
+                            realmConfiguration: realmConfiguration
+                        )
                     }
                 })
                 .store(in: &realmCancellables)
@@ -314,8 +326,29 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     }
     
     @RealmBackgroundActor
-    private func refreshScripts() async throws {
-        try await Realm.asyncWrite(ThreadSafeReference(to: LibraryConfiguration.getConsolidatedOrCreate()), configuration: LibraryDataManager.realmConfiguration) { realm, configuration in
+    private func refreshScripts(
+        realmConfiguration: Realm.Configuration
+    ) async throws {
+        // Collection publishers emit an initial empty snapshot. Observing an
+        // explicitly scoped Realm must not manufacture a library row by itself.
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: realmConfiguration
+        )
+        guard !realm.objects(LibraryConfiguration.self)
+                .where({ !$0.isDeleted }).isEmpty
+            || !realm.objects(UserScript.self)
+                .where({ !$0.isDeleted }).isEmpty else {
+            return
+        }
+
+        try await Realm.asyncWrite(
+            ThreadSafeReference(
+                to: LibraryConfiguration.getConsolidatedOrCreate(
+                    realmConfiguration: realmConfiguration
+                )
+            ),
+            configuration: realmConfiguration
+        ) { realm, configuration in
             let scripts = Array(realm.objects(UserScript.self))
             for script in scripts {
                 if script.isDeleted {
@@ -334,8 +367,11 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     }
     
     @RealmBackgroundActor
-    public func createEmptyCategory(addToLibrary: Bool) async throws -> UUID {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+    public func createEmptyCategory(
+        addToLibrary: Bool,
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+    ) async throws -> UUID {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         let category = FeedCategory()
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
@@ -343,7 +379,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             category.refreshChangeMetadata(explicitlyModified: true)
         }
         if addToLibrary {
-            let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
+            let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(
+                realmConfiguration: realmConfiguration
+            )
             let categoryID = category.id
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
@@ -356,8 +394,11 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     }
     
     @RealmBackgroundActor
-    public func createEmptyFeed(inCategory category: ThreadSafeReference<FeedCategory>) async throws -> UUID? {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration)
+    public func createEmptyFeed(
+        inCategory category: ThreadSafeReference<FeedCategory>,
+        realmConfiguration: Realm.Configuration = ReaderContentLoader.feedEntryRealmConfiguration
+    ) async throws -> UUID? {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         guard let category = realm.resolve(category) else { return nil }
         let feed = Feed()
         feed.categoryID = category.id
@@ -441,8 +482,13 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     }
     
     @RealmBackgroundActor
-    public func duplicateFeed(_ feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws -> UUID? {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration)
+    public func duplicateFeed(
+        _ feed: ThreadSafeReference<Feed>,
+        inCategory category: ThreadSafeReference<FeedCategory>,
+        overwriteExisting: Bool,
+        realmConfiguration: Realm.Configuration = ReaderContentLoader.feedEntryRealmConfiguration
+    ) async throws -> UUID? {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         guard let category = realm.resolve(category), let feed = realm.resolve(feed) else { return nil }
         let existing = category.getFeeds()?.filter { $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
         let value = try JSONDecoder().decode(Feed.self, from: JSONEncoder().encode(feed))
@@ -459,8 +505,11 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     }
     
     @RealmBackgroundActor
-    public func createEmptyScript(addToLibrary: Bool) async throws -> UUID {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+    public func createEmptyScript(
+        addToLibrary: Bool,
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+    ) async throws -> UUID {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         let script = UserScript()
         script.title = ""
         if addToLibrary {
@@ -469,7 +518,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                 realm.add(script, update: .modified)
                 script.refreshChangeMetadata(explicitlyModified: true)
             }
-            let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
+            let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(
+                realmConfiguration: realmConfiguration
+            )
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 configuration.userScriptIDs.append(script.id)
@@ -546,7 +597,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         // Add new scripts
         try Task.checkCancellation()
         for script in allImportedScripts {
-            if !configuration.userScriptIDs.contains(where: { $0 != script.id }) {
+            if !configuration.userScriptIDs.contains(script.id) {
                 var lastNeighborIdx = configuration.userScriptIDs.count - 1
                 if let downloadURL = download?.url, let userScripts = configuration.getUserScripts() {
                     lastNeighborIdx = userScripts.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
@@ -793,6 +844,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                 }
             }
         } else if !(opmlEntry.attributeStringValue("script")?.isEmpty ?? true) {
+            // A malformed restricted-domain list must never become the empty
+            // list, which the WebView treats as unrestricted script execution.
+            _ = try Self.decodedScriptDomains(from: opmlEntry)
             if let uuid = uuid, let script = realm.objects(UserScript.self).filter({ $0.id == uuid }).first {
                 if script.opmlURL == download?.url || script.isDeleted {
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, script: script) {
@@ -936,9 +990,18 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         return .orderedSame
     }
     
+    static func decodedScriptDomains(from entry: OPMLEntry) throws -> [String] {
+        try (entry.attributeStringValue("allowedDomains")?.split(separator: ",") ?? []).map {
+            guard let domain = $0.removingPercentEncoding else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return domain
+        }
+    }
+
     static func applyScriptDomains(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) throws {
         guard let realm = script.realm else { return }
-        let domains: [String] = opmlEntry.attributeStringValue("allowedDomains")?.split(separator: ",").compactMap { $0.removingPercentEncoding } ?? []
+        let domains = try Self.decodedScriptDomains(from: opmlEntry)
 //        script.allowedDomains.removeAll()
         let allowedDomainIDs = Array(script.allowedDomainIDs)
         var didChangeScript = false
@@ -961,9 +1024,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                 existingDomain.refreshChangeMetadata(explicitlyModified: true)
             }
         }
-        let existingDomains = script.getAllowedDomains()?.map { $0.domain } ?? []
+        var existingDomains = Set(script.getAllowedDomains()?.map { $0.domain } ?? [])
         for domain in domains {
-            if !existingDomains.contains(domain) {
+            if existingDomains.insert(domain).inserted {
                 let newDomain = UserScriptAllowedDomain()
                 newDomain.domain = domain
                 realm.add(newDomain, update: .modified)
@@ -986,8 +1049,8 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         if script.script != newScript {
             return true
         }
-        let newAllowedDomains = opmlEntry.attributeStringValue("allowedDomains")?.split(separator: ",").compactMap { $0.removingPercentEncoding }
-        if Set(script.getAllowedDomains()?.map({ $0.domain }) ?? []) != Set(newAllowedDomains ?? []) {
+        guard let newAllowedDomains = try? Self.decodedScriptDomains(from: opmlEntry) else { return true }
+        if Set(script.getAllowedDomains()?.map({ $0.domain }) ?? []) != Set(newAllowedDomains) {
             return true
         }
         let newInjectAtStart = opmlEntry.attributeBoolValue("injectAtStart") ?? false
@@ -1015,9 +1078,6 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             return true
         }
         if script.isDeleted {
-            return true
-        }
-        if script.isArchived {
             return true
         }
         return false
@@ -1069,10 +1129,6 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         
         if script.isDeleted {
             script.isDeleted = false
-            didChange = true
-        }
-        if script.isArchived {
-            script.isArchived = false
             didChange = true
         }
         
@@ -1444,8 +1500,12 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     }
     
     @RealmBackgroundActor
-    public func exportUserOPML() async throws -> OPML {
-        let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
+    public func exportUserOPML(
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+    ) async throws -> OPML {
+        let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: realmConfiguration
+        )
         let userCategories = (configuration.getCategories() ?? []).filter { $0.opmlOwnerName == nil && $0.opmlURL == nil }
         
         let scriptEntries = OPMLEntry(text: "User Scripts", attributes: [

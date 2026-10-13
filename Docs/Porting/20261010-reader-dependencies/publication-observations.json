@@ -1,0 +1,19 @@
+{
+  "default_branch": "main",
+  "candidate_workflows": "",
+  "main_workflows": "",
+  "owned_draft": {
+    "author": {
+      "id": "MDQ6VXNlcjcxNjAx",
+      "is_bot": false,
+      "login": "aehlke",
+      "name": "Alex Ehlke"
+    },
+    "headRefName": "audit/reader-dependencies-20261010-task18",
+    "headRefOid": "338acd87af421120a523bfb884b5ece9c7247a10",
+    "isDraft": true,
+    "statusCheckRollup": [],
+    "url": "https://github.com/lake-of-fire/LakeOfFire/pull/138"
+  },
+  "note": "Historical Actions registry contains 49 entries, including active retired/hotfix definitions. Default main and candidate contain no .github files. No workflow enabled or dispatched. All commits [skip ci]."
+}

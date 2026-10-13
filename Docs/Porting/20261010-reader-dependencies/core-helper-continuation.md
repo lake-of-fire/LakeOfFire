@@ -1,0 +1,23 @@
+# Core helper continuation — 2026-10-11 UTC
+
+Frozen source/target remain Lake hotfix `036d4193078016db0becdf91b86dd34fb1d579e0` and main `8985bf92b9504d53e00025e4054b3aa97f876e45`; no audit-window extension. This source-only continuation follows the recorded root shuffle (Google query, then AsyncView) with deterministic URL helper caller tracing. No code was executed, built or tested.
+
+## AsyncView: unresolved cancellation integration, not a claimed finished port
+
+`Sources/LakeOfFireCore/AsyncView.swift:83` on main, #50 (`0b91431f`) and #95 (`21c42ff0`) awaits an unstructured `Task { @MainActor ... }.value` for refresh. Hotfix directly awaits `model.load`. Cancellation of the SwiftUI refresh task is not automatically propagated into that separately created task. Preserve the newer actor adaptation rather than deleting it without compiler evidence.
+
+The direct consumer is `Sources/LakeOfFireLibrary/Feeds/FeedView.swift:232`, calling `FeedViewModel.fetchIfNeeded` at line 179, then `feed.fetch()` and `reloadEntries` after suspension. Main's checked-in `Package.resolved` selects AsyncView `4f73cccaae9ba768eccee63579cd84f1fe128d44`; its `Sources/AsyncView/AsyncModel.swift::load` only checks `.inProgress`, assigns `.inProgress`, awaits the operation and assigns success/failure. It carries no request incarnation/generation or cancellation check before publication. This API was read through GitHub at the exact selected SHA, not installed or edited. AsyncView is a package reference, not an owned recursive hotfix gitlink.
+
+Dated provenance is hotfix module move `17b292c11389adcec8725e4716dc8cfa7855ee88` (2026-05-05) and upstream move/adaptation `f73247eab0b63b8197c1673e988979c4be5fd2a1` (2026-02-04). Hotfix's older direct-refresh implementation predates this audit window; it is context, not a new cancellation feature swept into the port list. Classification remains **unresolved**: a cancellation-forwarding actor hop could restore direct-await cancellation, but mounted lifetime, independently owned model requests and feed durable admission must be reconciled first. No source patch or artificial source-string test was added. Existing errors reload and onAppear tasks are also unstructured in both endpoints; they are not a hotfix-only gap established here.
+
+## URL+EBook: actual consumers traced; platform behavior remains unresolved
+
+`Sources/LakeOfFireCore/URL+EBook.swift:4` hotfix explicitly uses `URLComponents.path` then NSString.pathExtension; main/#50 use Foundation URL.pathExtension. Hotfix provenance `675aa6e6f541feabe3c0cccbed8d3cde6a88ee68` (2026-07-14) replaces the older `lakePathExtension` implementation. Both retain the same file/http/https/ebook/ebook-url scheme gate and lowercase extension comparison. There is no established source-only proof that the two Foundation operations differ for accepted production URLs.
+
+Actual consumers include `URL+ReaderBook.swift:5`, `ReaderContentLoader` lines 606/654/819/826, `WebViewNavigator+ReaderContent.swift:36`, `EbookFileManager.swift:27/34`, and `ReaderMessageHandlersViewModifier.swift` ebook/native metadata branches. These affect import, native navigation, reader-mode persistence and layout, so speculative extension changes are inappropriate. `Tests/LakeOfFireTests/URLInternalTests.swift` is byte-identical across endpoints and its two methods test escaped snippet keys/legacy double encoding, not ebook path-extension recognition. No dedicated hotfix EBookSchemeURLRecognition suite exists. Classification remains **unresolved** pending Foundation URL cases and actual custom-scheme import/navigation coverage; testing is prohibited in this task.
+
+The two dated-path rows retain unresolved status with this more specific caller/API evidence. Other core files and source/test families are not silently marked closed.
+
+## Direct content setters: bounded caller follow-up
+
+Root caller search found actual editor preview assignments in `Sources/LakeOfFireLibrary/Library/LibraryFeedView.swift::refresh` (main lines 692/704/713). The method writes ReaderContent.content directly before `navigator.load(content:)`. `Sources/LakeOfFireContent/Reader/WebViewNavigator+ReaderContent.swift::load` first awaits Loader resolution and a related-content prefetch, then issues navigation; it does not retire ReaderContent's selection at the direct assignment. Therefore the load(url:)-only selection tranche cannot be credited as full application retirement for this path. This remains part of the library preview lifetime/selection policy. In contrast, direct assignments in ReaderContentList.swift:1866 and ReaderContentHorizontalList.swift:646 are in DEBUG preview galleries, not production selection evidence. No broader public setter/API change was made.

@@ -4,7 +4,7 @@ import {
 createTOCView
 } from './ui/tree.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
-import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
+import { forwardCustomReaderFontStyleToDocuments } from './ebook-font-forwarding.js'
 import { applyLayoutSettingsToEbookDocument } from './ebook-layout-settings.js'
 import {
     applyReaderPresentationStateToDocument,
@@ -16,8 +16,13 @@ import {
     EbookRenderReadinessCoordinator,
     waitForEbookRenderReadinessSignal,
 } from './ebook-render-readiness.js'
-import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
+import { createNativeEpubLoader } from './ebook-native-loader.js'
+import { makeNativeEbookSource } from './ebook-native-source-request.js'
 import { applyEbookViewerWritingDirection } from './ebook-viewer-writing-direction.js'
+import {
+    boundedRenderabilityAnchorSegment,
+    visibleSegmentProbeAcceptsIdentity,
+} from './ebook-renderability-segment-probe.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import { ebookProcessTextResponseIsAuthoritative } from './ebook-process-text-response.js'
 import { createNativeMarkReadRequestCoordinator } from './native-mark-read-request.js'
@@ -33,24 +38,20 @@ import {
     indexUniqueEbookSegmentAlias,
 } from './ebook-segment-identity.js'
 import {
-    makeInitialRestoreTerminalResult,
     makeSyntheticRestoreLocator,
-    normalizeInitialRestoreRequest,
-    parseSyntheticRestoreLocator,
-    restoreLocatorKind as classifyRestoreLocator,
-    runRequiredRestoreNavigation,
     shouldSkipScheduledReaderFractionGoTo,
 } from './ebook-restore-coordination.js'
 import { CacheWarmerOpenIntent } from './cache-warmer-open-intent.js'
 import { CacheWarmerPrecedingSections } from './cache-warmer-preceding-sections.js'
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
-import { EbookLoadResources } from './ebook-load-resources.js'
+import { createEbookLoadHandlers, createNavigationIntentRunner } from './ebook-load-coordinator.js'
 import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
 import { scheduleFrameWithTimeoutFallback } from './frame-timeout-scheduler.js'
 import { OwnedAsyncResource, OwnedPromiseSlot, OwnedScheduledTask } from './owned-async-resource.js'
 import { createOwnedAsyncCache } from './owned-async-cache.js'
 import { OwnedEventBindings, OwnedEventBindingScopes } from './owned-event-bindings.js'
 import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
+import { navButtonRefreshIsCurrent } from './nav-button-refresh-ownership.js'
 import { OwnedObjectURL } from './owned-object-url.js'
 import {
     activeRendererContentsForLookup,
@@ -261,12 +262,12 @@ const fingerprintReplaceTextInput = (text) => {
     return `${text.length}:${(hash >>> 0).toString(16)}`;
 };
 
-const makeReplaceTextCacheKey = ({ href, text, isCacheWarmer }) => {
-    return `${isCacheWarmer ? 'cache' : 'live'}|${href || 'nil'}|${fingerprintReplaceTextInput(text)}`;
+const makeReplaceTextCacheKey = ({ href, text, isCacheWarmer, packageSessionID = null }) => {
+    return `${packageSessionID ?? 'legacy'}|${isCacheWarmer ? 'cache' : 'live'}|${href || 'nil'}|${fingerprintReplaceTextInput(text)}`;
 };
 
 // Factory for replaceText with isCacheWarmer support
-const makeReplaceText = (isCacheWarmer) => {
+const makeReplaceText = (isCacheWarmer, nativeSource = null) => {
     const owner = replaceTextCacheOwner;
     return async (href, text, mediaType) => {
         if (!owner.active) return text;
@@ -280,6 +281,7 @@ const makeReplaceText = (isCacheWarmer) => {
             href,
             text,
             isCacheWarmer: !!isCacheWarmer,
+            packageSessionID: nativeSource?.packageSessionID ?? null,
         });
         const run = async (signal) => {
             globalThis.__manabiInflightReplaceTextCount = (globalThis.__manabiInflightReplaceTextCount ?? 0) + 1;
@@ -295,13 +297,15 @@ const makeReplaceText = (isCacheWarmer) => {
                     (globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 0) + 1;
             }
             try {
-                const sourceURL = globalThis.reader?.view?.ownerDocument?.defaultView?.top?.location?.href
+                const sourceURL = nativeSource?.url
+                    ?? globalThis.reader?.view?.ownerDocument?.defaultView?.top?.location?.href
                     ?? window.top.location.href;
                 const headers = {
                     "Content-Type": mediaType,
                     "X-Replaced-Text-Location": href,
                     "X-Content-Location": sourceURL,
                 };
+                if (nativeSource?.packageSessionID) headers['X-Ebook-Package-Session'] = nativeSource.packageSessionID;
                 if (isCacheWarmer) headers['X-Is-Cache-Warmer'] = 'true';
                 const response = await fetch('ebook://ebook/process-text', {
                     method: "POST",
@@ -954,18 +958,7 @@ const getActiveReaderDocument = () => {
     return contents[0]?.doc || null;
 };
 
-const runWithNavigationIntent = async (intent, operation) => {
-    const previousIntent = globalThis.__manabiNavigationIntent ?? null;
-    globalThis.__manabiNavigationIntent = {
-        timestamp: Date.now(),
-        ...intent,
-    };
-    try {
-        return await operation();
-    } finally {
-        globalThis.__manabiNavigationIntent = previousIntent;
-    }
-};
+const runWithNavigationIntent = createNavigationIntentRunner();
 
 const shouldSkipScheduledReaderFractionGoToForRestoreSettling = (fraction) => {
     const restoreSettlingMs = typeof bookRestoreSettlingMs === 'function'
@@ -1043,12 +1036,9 @@ window.manabiForwardReaderFontToEbookDocuments = (reason = 'manual', explicitDoc
     const sourceFontStyle = document.getElementById('mnb-custom-fonts-inline')
         || docs.map((doc) => doc?.getElementById?.('mnb-custom-fonts-inline')).find(Boolean)
         || null;
-    let forwardedCount = 0;
-    for (const doc of docs) {
-        if (doc !== document && copyCustomReaderFontStyleToDocument(sourceFontStyle, doc, reason)) {
-            forwardedCount += 1;
-        }
-    }
+    const forwardedCount = forwardCustomReaderFontStyleToDocuments(
+        sourceFontStyle, docs.filter((doc) => doc !== document), reason, globalThis,
+    );
     return {
         documentCount: docs.length,
         forwardedCount,
@@ -2455,7 +2445,10 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
         const segmentIdentifier = includeSegmentMetadata
             ? segmentIdentifierForNode(segmentNode)
             : runtimeSegmentIdentifier;
-        if (!segmentIdentifier) {
+        if (!visibleSegmentProbeAcceptsIdentity({
+            includeSegmentMetadata,
+            segmentIdentifier,
+        })) {
             missingIdentifierCount += 1;
             continue;
         }
@@ -2632,9 +2625,28 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
     const expandedRangeResult = useVisibleRange
         ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds, { includeSegmentMetadata })
         : null;
-    const viewportSampleSegmentNodes = isEbookDoc && !expandedRangeResult
+    let viewportSampleSegmentNodes = isEbookDoc && !expandedRangeResult
         ? collectViewportSampleSegmentNodes(doc, visibleBounds, { sampleDensity: viewportSampleDensity })
         : null;
+    let viewportSampleSource = viewportSampleSegmentNodes
+        ? `viewport-sample-${viewportSampleDensity}`
+        : null;
+    if (
+        isEbookDoc
+        && !expandedRangeResult
+        && viewportSampleDensity === 'minimal'
+        && includeSegmentMetadata === false
+        && (viewportSampleSegmentNodes?.length ?? 0) === 0
+    ) {
+        // Nine fixed sample points can all miss a short line of visible text.
+        // Probe one bounded DOM anchor; normal range/geometry checks below still
+        // decide whether it is actually visible. This does not load sidecars.
+        const anchorSegment = boundedRenderabilityAnchorSegment(doc, visibleRange);
+        if (anchorSegment) {
+            viewportSampleSegmentNodes = [anchorSegment];
+            viewportSampleSource = 'minimal-anchor-probe';
+        }
+    }
     const boundedSegmentNodes = expandedRangeResult?.segmentNodes ?? viewportSampleSegmentNodes ?? null;
     const segmentSearchRoot = useVisibleRange && !expandedRangeResult && !isBroadEbookRange
         && rangeCommonAncestorElement?.querySelectorAll
@@ -2649,7 +2661,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         ? allSegmentNodes.length
         : null;
     const segmentCandidateSource = expandedRangeResult?.segmentCandidateSource
-        || (viewportSampleSegmentNodes ? `viewport-sample-${viewportSampleDensity}` : null)
+        || viewportSampleSource
         || (isBroadEbookRange ? 'ebook-broad-range-empty' : null)
         || (isEbookDoc && segmentSearchRoot === doc ? 'ebook-bounded-empty' : null)
         || (segmentSearchRoot === doc ? 'document' : 'range-ancestor');
@@ -2673,7 +2685,10 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         const segmentIdentifier = includeSegmentMetadata
             ? segmentIdentifierForNode(segmentNode)
             : runtimeSegmentIdentifier;
-        if (!segmentIdentifier) {
+        if (!visibleSegmentProbeAcceptsIdentity({
+            includeSegmentMetadata,
+            segmentIdentifier,
+        })) {
             missingIdentifierCount += 1;
             continue;
         }
@@ -2682,6 +2697,13 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         const rect = rects[0] ?? null;
         rectMeasureCount += 1;
         rectMeasureElapsedMs += performance.now() - rectStartedAt;
+        // The bounded DOM fallback was not found by a viewport hit test.
+        // A broad Range can intersect an offscreen/hidden node, so it cannot
+        // replace positive visible geometry for this readiness-only candidate.
+        if (viewportSampleSource === 'minimal-anchor-probe' && !rect) {
+            outOfViewportCount += 1;
+            continue;
+        }
         const isInVisibleRange = useVisibleRange
             ? (() => {
                 const rangeStartedAt = performance.now();
@@ -3166,55 +3188,8 @@ const isZip = async (file) => {
     return arr[0] === 0x50 && arr[1] === 0x4b && arr[2] === 0x03 && arr[3] === 0x04
 }
 
-const makeNativeSource = url => ({ kind: 'native', url })
+const makeNativeSource = makeNativeEbookSource
 const makeFileSource = file => ({ kind: 'file', file })
-
-const makeNativeSourceURLQuery = sourceURL =>
-    `sourceURL=${encodeURIComponent(sourceURL)}`
-
-const fetchNativeEntries = async (sourceURL) => {
-    const response = await fetch(`ebook://ebook/entries?${makeNativeSourceURLQuery(sourceURL)}`, {
-        headers: {
-            'X-Ebook-Source-URL': sourceURL,
-        },
-    })
-    if (!response.ok) {
-        throw new Error(`Failed to load native EPUB entries: ${response.status}`)
-    }
-    return response.json()
-}
-
-const fetchNativeEntryResponse = async (sourceURL, subpath) => {
-    const response = await fetch(`ebook://ebook/entry?subpath=${encodeURIComponent(subpath)}&${makeNativeSourceURLQuery(sourceURL)}`, {
-        headers: {
-            'X-Ebook-Source-URL': sourceURL,
-        },
-    })
-    if (!response.ok) {
-        return null
-    }
-    return response
-}
-
-const readNativeEntryText = async (response) => {
-    if (!response) return null
-    const arrayBuffer = await response.arrayBuffer()
-    const charset = response.headers?.get?.('content-type')?.match(/charset=([^;]+)/i)?.[1]?.trim() || 'utf-8'
-    let decoder
-    try {
-        decoder = new TextDecoder(charset)
-    } catch (_error) {
-        decoder = new TextDecoder('utf-8')
-    }
-    return decoder.decode(arrayBuffer)
-}
-
-const readNativeEntryBlob = async (response) => {
-    if (!response) return null
-    const arrayBuffer = await response.arrayBuffer()
-    const mimeType = response.headers?.get?.('content-type') || ''
-    return new Blob([arrayBuffer], mimeType ? { type: mimeType } : undefined)
-}
 
 const readerOpenSupersededError = () => {
     const error = new Error('Reader open was superseded')
@@ -3222,59 +3197,8 @@ const readerOpenSupersededError = () => {
     return error
 }
 
-const makeNativeEpubLoader = async (url, isCacheWarmer, { isCurrent = () => true } = {}) => {
-    if (!isCurrent()) throw readerOpenSupersededError()
-    const loaderStartedAt = performanceNowMs();
-    const { entries: rawEntries = [] } = await fetchNativeEntries(url)
-    if (!isCurrent()) throw readerOpenSupersededError()
-    const entries = rawEntries.map(function(entry) {
-        return {
-            filename: entry.path,
-            uncompressedSize: entry.size ?? 0,
-        };
-    })
-    const sizeMap = new Map(entries.map(function(entry) { return [entry.filename, entry.uncompressedSize]; }))
-    const entryNames = new Set(entries.map(function(entry) { return entry.filename; }))
-    let destroyed = false
-    const isActive = () => !destroyed && isCurrent()
-    const replaceText = makeReplaceText(isCacheWarmer)
-    const loadText = async (name) => {
-        if (!isActive() || !entryNames.has(name)) {
-            return null
-        }
-        const response = await fetchNativeEntryResponse(url, name)
-        if (!isActive()) return null
-        const text = await readNativeEntryText(response)
-        return isActive() ? text : null
-    }
-    const replaceURL = makeDirectSectionURLResolver(url, isCacheWarmer, loadText)
-    return {
-        entries,
-        loadText,
-        loadBlob: async (name) => {
-            if (!isActive() || !entryNames.has(name)) {
-                return null
-            }
-            const response = await fetchNativeEntryResponse(url, name)
-            if (!isActive()) return null
-            const blob = await readNativeEntryBlob(response)
-            return isActive() ? blob : null
-        },
-        getSize: name => isActive() ? (sizeMap.get(name) ?? 0) : 0,
-        replaceText,
-        replaceURL,
-        sourceURL: url,
-        destroy: () => {
-            if (destroyed) return false
-            destroyed = true
-            replaceURL?.destroy?.()
-            entryNames.clear()
-            sizeMap.clear()
-            entries.length = 0
-            return true
-        },
-    }
-}
+const makeNativeEpubLoader = (source, isCacheWarmer, options = {}) =>
+    createNativeEpubLoader(source, isCacheWarmer, { ...options, makeReplaceText })
 
 const closeZipReader = reader => {
     try {
@@ -3383,7 +3307,7 @@ const getView = async (source, isCacheWarmer, { isCurrent = () => true } = {}) =
         const {
             EPUB
         } = await import('./epub.js')
-        const loader = await makeNativeEpubLoader(source.url, isCacheWarmer, { isCurrent })
+        const loader = await makeNativeEpubLoader(source, isCacheWarmer, { isCurrent })
         book = await initializeEPUBBook(EPUB, loader)
     } else if (source?.kind === 'file' && source.file?.size) {
         const file = source.file
@@ -3943,6 +3867,7 @@ class Reader {
     #ownedEventBindings = new OwnedEventBindings()
     #documentEventBindings = new OwnedEventBindingScopes()
     #navButtonOperations = new Set()
+    #navButtonOperationSequence = 0
     #sidebarCloseHandle = null
     #sidebarCoverURL = new OwnedObjectURL()
     #sidebarCoverLoadPromise = null
@@ -3977,6 +3902,7 @@ class Reader {
         if (this.#closed) return false
         if (globalThis.reader === this) this.setLoadingIndicator(false)
         this.#closed = true
+        this.onLoadClosed?.()
         this.nativeMarkReadRequestCoordinator?.cancelAll?.(`readerClosed:${_reason}`)
         this.visiblePageCollectionGeneration += 1
         this.nativeLookupHitTargetRefreshGeneration += 1
@@ -6681,8 +6607,25 @@ class Reader {
     }
 
     async updateNavButtons() {
+        const r = this.view?.renderer ?? null;
+        const operationSequence = this.#navButtonOperationSequence;
+        const viewGeneration = this.visiblePageCollectionGeneration;
+        const isCurrentUpdate = () => navButtonRefreshIsCurrent({
+            closed: this.#closed,
+            capturedRenderer: r,
+            currentRenderer: this.view?.renderer ?? null,
+            capturedOperationSequence: operationSequence,
+            currentOperationSequence: this.#navButtonOperationSequence,
+            capturedViewGeneration: viewGeneration,
+            currentViewGeneration: this.visiblePageCollectionGeneration,
+            activeOperationCount: this.#navButtonOperations.size,
+        });
+        if (!r || !isCurrentUpdate()) return false;
+
         const navVisibilityBefore = captureNavVisibilityState();
-        // Remove any nav-spinner left over from chapter navigation click
+        // Remove only spinners owned before this refresh starts. If a chapter
+        // operation begins while a renderer await is suspended, the ownership
+        // checks below prevent this older refresh from publishing over it.
         document.querySelectorAll('.ispinner.nav-spinner').forEach(spinner => {
             const btn = spinner.closest('button');
             if (btn && btn._originalIcon) {
@@ -6692,14 +6635,17 @@ class Reader {
             const label = btn.querySelector('.button-label');
             if (label) label.style.visibility = '';
         });
-        if (!this.view?.renderer) return;
-        const r = this.view.renderer;
-        // Use new section start/end helpers if available
+
+        // Use new section start/end helpers if available.
         const atSectionStart = typeof r.isAtSectionStart === "function" ? await r.isAtSectionStart() : false;
+        if (!isCurrentUpdate()) return false;
         const atSectionEnd = typeof r.isAtSectionEnd === "function" ? await r.isAtSectionEnd() : false;
-        // Use public helpers to detect prev/next section
+        if (!isCurrentUpdate()) return false;
+        // Use public helpers to detect prev/next section.
         const hasPrevSection = typeof r.getHasPrevSection === "function" ? await r.getHasPrevSection() : true;
+        if (!isCurrentUpdate()) return false;
         const hasNextSection = typeof r.getHasNextSection === "function" ? await r.getHasNextSection() : true;
+        if (!isCurrentUpdate()) return false;
         const sectionIndex = typeof this.navHUD?.lastRelocateDetail?.sectionIndex === 'number'
             ? this.navHUD.lastRelocateDetail.sectionIndex
             : (typeof this.navHUD?.lastRelocateDetail?.index === 'number'
@@ -6799,6 +6745,7 @@ class Reader {
             });
         }
         this.#schedulePageTrackingSync('nav-buttons', null, 1, 96);
+        return true;
     }
     async #handleKeydown(event) {
         const k = event.key;
@@ -8096,6 +8043,10 @@ class Reader {
             }
             if (label) label.style.visibility = previousLabelVisibility;
         });
+        // Remember that this operation happened even after it finishes. An
+        // older refresh suspended in renderer metrics must never regain control
+        // merely because the newer operation already left the active set.
+        this.#navButtonOperationSequence += 1
         this.#navButtonOperations.add(operation)
         fallbackTimer = setTimeout(refreshAfterFinish, navSpinnerMaximumMs);
 
@@ -8557,218 +8508,22 @@ window.loadNextCacheWarmerSection = async (settledSectionHrefs = []) => {
     scheduleLoadNextCacheWarmerSection(settledSectionHrefs, 'native-ready');
 }
 
-window.loadEBook = ({
-    url,
-    layoutMode,
-    initialRestore,
-    readerPresentationState,
-}) => {
-    installReaderPresentationState(
-        globalThis,
-        document,
-        readerPresentationState,
-        'loadEBook',
-    );
-    const requestedURL = typeof url === 'string' ? url : '';
-    const initialRestoreRequest = normalizeInitialRestoreRequest(initialRestore);
-    if (
-        requestedURL.length > 0
-        && globalThis.manabiLoadEBookURL === requestedURL
-        && globalThis.manabiLoadEBookInFlight === true
-    ) {
-        const existingStartedAt = Number(globalThis.manabiLoadEBookStartedAt || 0);
-        const existingStartedAgeMs = existingStartedAt > 0 ? Date.now() - existingStartedAt : 0;
-        if (globalThis.reader?.view?.renderer || existingStartedAgeMs < 2500) {
-            globalThis.manabiLoadEBookLastState = 'duplicate-inflight';
-            globalThis.manabiPendingInitialRestoreRequest = initialRestoreRequest;
-            return globalThis.manabiLoadEBookPromise;
-        }
-        globalThis.manabiLoadEBookLastState = 'duplicate-inflight-stale-restart';
-    }
-    if (
-        requestedURL.length > 0
-        && globalThis.manabiLoadEBookURL === requestedURL
-        && globalThis.manabiLoadEBookReady === true
-        && globalThis.reader?.view?.renderer
-    ) {
-        globalThis.__manabiFinishInitialForegroundCriticalSection?.('loadEBook.duplicate-ready');
-        globalThis.manabiLoadEBookLastState = 'duplicate-ready';
-        globalThis.manabiPendingLoadEBookArgs = null;
-        return;
-    }
-    globalThis.__manabiFinishInitialForegroundCriticalSection?.('loadEBook.replace');
-    const loadToken = (globalThis.manabiLoadEBookToken ?? 0) + 1;
-    globalThis.manabiLoadEBookToken = loadToken;
-    globalThis.manabiLoadEBookURL = requestedURL;
-    globalThis.manabiLoadEBookInFlight = true;
-    globalThis.manabiLoadEBookStarted = true;
-    globalThis.manabiLoadEBookStartedAt = Date.now();
-    globalThis.manabiLoadEBookReady = false;
-    globalThis.manabiLoadEBookLastState = 'start';
-    beginReplaceTextCacheGeneration();
-    globalThis.manabiInitialRestoreResult = null;
-    globalThis.manabiPendingLoadEBookArgs = {
-        hasURL: typeof url === 'string' && url.length > 0,
-        layoutMode: layoutMode || null,
-    };
-    globalThis.manabiPendingInitialRestoreRequest = initialRestoreRequest;
-    const initialForegroundCriticalSectionToken = beginForegroundCriticalSection();
-    const finishInitialForegroundCriticalSection = (_reason) => {
-        if (globalThis.manabiLoadEBookToken !== loadToken) {
-            return;
-        }
-        finishForegroundCriticalSection(initialForegroundCriticalSectionToken);
-        if (globalThis.__manabiFinishInitialForegroundCriticalSection === finishInitialForegroundCriticalSection) {
-            globalThis.__manabiFinishInitialForegroundCriticalSection = null;
-        }
-    };
-    globalThis.__manabiFinishInitialForegroundCriticalSection = finishInitialForegroundCriticalSection;
-    globalThis.__manabiLiveProcessedSectionHrefs = new Set();
-    globalThis.__manabiLiveSettledSectionHrefs = new Set();
-    globalThis.__manabiFirstLiveSectionHref = null;
-    globalThis.__manabiFinishEPUBLoadWatchdogs = null;
-    const replacedReader = globalThis.reader ?? null;
-    try {
-        if (typeof replacedReader?.close === 'function') {
-            replacedReader.close('loadEBook.replace')
-        } else {
-            replacedReader?.view?.close?.()
-            replacedReader?.view?.remove?.()
-        }
-    } catch (_error) {}
-    try {
-        window.cacheWarmer?.destroy?.()
-    } catch (_error) {}
-    let reader = new Reader()
-    globalThis.reader = reader
-    const isCurrentLoad = () => globalThis.manabiLoadEBookToken === loadToken
-        && globalThis.reader === reader
-        && reader.isClosed !== true
-
-    const ebookSource = typeof url === 'string' && url.length > 0 && url.startsWith('ebook://')
-        ? makeNativeSource(url)
-        : null
-    const sourcePath = (() => {
-        try {
-            return new URL(url, window.location.href).pathname
-        } catch (_error) {
-            return 'book.epub'
-        }
-    })()
-    const loadResources = new EbookLoadResources({
-        nativeSource: ebookSource,
-        sourcePath,
-    })
-    const cacheWarmer = new CacheWarmer({ loadResources })
-    window.cacheWarmer = cacheWarmer
-
-    if (url) {
-        globalThis.manabiLoadEBookLastState = 'source-start';
-        const sourcePromise = ebookSource
-            ? Promise.resolve(ebookSource)
-            : fetch(url, {
-                headers: {
-                    "IS-SWIFTUIWEBVIEW-VIEWER-FILE-REQUEST": "true",
-                },
-                })
-                .then(res => res.blob())
-                .then((blob) => {
-                    loadResources.setRemoteBlob(blob)
-                    return makeFileSource(new File([blob], new URL(url).pathname))
-                })
-
-        const openPromise = sourcePromise
-        .then(async (source) => {
-            if (!isCurrentLoad()) {
-                reader.close('loadEBook.superseded-before-open')
-                return;
-            }
-            globalThis.manabiLoadEBookLastState = 'source-ready';
-            globalThis.manabiPendingLoadEBookArgs = null;
-            if (source?.kind === 'native') {
-            }
-            if (layoutMode) {
-                window.initialLayoutMode = layoutMode
-            }
-            globalThis.manabiLoadEBookLastState = 'reader-open-dispatch';
-            await reader.open(source)
-            if (!isCurrentLoad()) {
-                reader.close('loadEBook.superseded-after-open')
-                return;
-            }
-            if (!reader?.view?.renderer) {
-                throw new Error('reader-open-missing-renderer');
-            }
-            const restoreRequest = globalThis.manabiPendingInitialRestoreRequest;
-            globalThis.manabiPendingInitialRestoreRequest = null;
-            let restoreSnapshot = null;
-            let restoreError = null;
-            try {
-                restoreSnapshot = await window.loadLastPosition(restoreRequest ?? {
-                    cfi: '',
-                    fractionalCompletion: 0,
-                });
-            } catch (error) {
-                restoreError = error;
-            }
-            globalThis.manabiInitialRestoreResult = makeInitialRestoreTerminalResult({
-                request: restoreRequest,
-                snapshot: restoreSnapshot,
-                error: restoreError,
-            });
-        })
-        .then(async () => {
-            if (!isCurrentLoad()) return;
-            globalThis.reader = reader;
-            globalThis.manabiLoadEBookReady = true;
-            globalThis.manabiLoadEBookLastState = 'reader-open-resolved';
-            const probe = globalThis.reader?.collectLayoutGapProbe?.('ebookViewerLoaded', {
-                bookDir: globalThis.reader?.bookDir || null,
-                isRTL: !!globalThis.reader?.isRTL,
-            }) ?? null;
-            window.webkit.messageHandlers.ebookViewerLoaded.postMessage({
-                probe,
-                initialRestoreResult: globalThis.manabiInitialRestoreResult,
-            })
-        })
-        .catch((error) => {
-            if (!isCurrentLoad()) {
-                reader.close('loadEBook.superseded-error')
-                return;
-            }
-            finishInitialForegroundCriticalSection('loadEBook.error');
-            globalThis.manabiLoadEBookReady = false;
-            globalThis.manabiLoadEBookLastState = `open-error:${error?.message || String(error)}`;
-            try {
-                reader?.setLoadingIndicator?.(false);
-            } catch (_error) {}
-            reader.close('loadEBook.error')
-            if (globalThis.reader === reader) globalThis.reader = null
-            cacheWarmer.destroy()
-            if (window.cacheWarmer === cacheWarmer) window.cacheWarmer = null
-            throw error;
-        })
-        .finally(() => {
-            if (globalThis.manabiLoadEBookToken !== loadToken) return;
-            globalThis.manabiLoadEBookInFlight = false;
-            globalThis.manabiLoadEBookPromise = null;
-        })
-        globalThis.manabiLoadEBookPromise = openPromise;
-        return openPromise;
-    } else {
-        finishInitialForegroundCriticalSection('loadEBook.no-url');
-        globalThis.manabiLoadEBookReady = false;
-        globalThis.manabiLoadEBookLastState = 'no-url';
-        globalThis.manabiPendingLoadEBookArgs = null;
-        globalThis.manabiLoadEBookInFlight = false;
-        globalThis.manabiLoadEBookPromise = null;
-        reader.close('loadEBook.no-url')
-        if (globalThis.reader === reader) globalThis.reader = null
-        cacheWarmer.destroy()
-        if (window.cacheWarmer === cacheWarmer) window.cacheWarmer = null
-    }
-    //.catch(e => console.error(e))
-}
+const ebookLoadHandlers = createEbookLoadHandlers({
+    Reader,
+    CacheWarmer,
+    makeNativeSource,
+    makeFileSource,
+    installReaderPresentationState,
+    beginReplaceTextCacheGeneration,
+    beginForegroundCriticalSection,
+    finishForegroundCriticalSection,
+    ensureRestorePositionSaveUserInputTracking: () => ensureRestorePositionSaveUserInputTracking(),
+    runWithNavigationIntent,
+    markReaderRenderReady,
+    postLandscapeInsetRestoreProbe,
+    scheduleDeferredCacheWarmerOpen,
+});
+window.loadEBook = ebookLoadHandlers.loadEBook;
 
 const markRestorePositionSaveUserInput = () => {
     if (globalThis.__manabiRequireUserInputBeforePositionSave !== true) {
@@ -8814,172 +8569,7 @@ const installRestorePositionSaveUserInputTracking = (target, source) => {
     };
 };
 
-window.loadLastPosition = async ({
-    cfi,
-    fractionalCompletion,
-}) => {
-    ensureRestorePositionSaveUserInputTracking();
-    globalThis.__manabiRequestedRestoreFraction = Number.isFinite(fractionalCompletion)
-        ? Math.max(0, Math.min(1, fractionalCompletion))
-        : null;
-    globalThis.__manabiRestoreInProgress = true;
-    const awaitWithTimeout = (promise, timeoutMs) =>
-        Promise.race([
-            promise,
-            new Promise((_, reject) => {
-                setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
-            }),
-        ]);
-    const waitForFrames = async (count = 2) => {
-        for (let index = 0; index < count; index += 1) {
-            await new Promise((resolve) => requestAnimationFrame(() => resolve()));
-        }
-    };
-    const captureRestoreState = (stage, extra = {}) => {
-        const detail = globalThis.reader?.view?.lastLocation ?? null;
-        const currentFraction = typeof detail?.fraction === 'number' ? detail.fraction : null;
-        const locationCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
-        const locationTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
-        const sectionIndex = typeof detail?.section?.current === 'number'
-            ? detail.section.current
-            : (typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null);
-        return {
-            detail,
-            currentFraction,
-            locationCurrent,
-            locationTotal,
-            sectionIndex,
-        };
-    };
-    const hasFractionalCompletion = Number.isFinite(fractionalCompletion) && fractionalCompletion > 0;
-    const syntheticRestoreLocator = parseSyntheticRestoreLocator(cfi);
-    const restoreLocatorKind = classifyRestoreLocator({ cfi, fractionalCompletion });
-    let handledCFI = null;
-    const reconcileRestoreFractionIfNeeded = async (restoreState, reason, stageOnReconcile) => {
-        if (!hasFractionalCompletion || typeof restoreState?.currentFraction !== 'number') {
-            return;
-        }
-        const delta = Math.abs(restoreState.currentFraction - fractionalCompletion);
-        const requestedDisplayPercent = roundedDisplayPercent(fractionalCompletion);
-        const landedDisplayPercent = roundedDisplayPercent(restoreState.currentFraction);
-        const displayPercentChanged = requestedDisplayPercent != null
-            && landedDisplayPercent != null
-            && requestedDisplayPercent !== landedDisplayPercent;
-        if (delta <= 0.003 && !displayPercentChanged) {
-            return;
-        }
-        const rendererPageCurrent = globalThis.reader?.navHUD?.rendererPageSnapshot?.current ?? null;
-        const rendererPageTotal = globalThis.reader?.navHUD?.rendererPageSnapshot?.total ?? null;
-        const targetRendererPage = typeof rendererPageTotal === 'number' && rendererPageTotal > 1
-            ? Math.max(1, Math.min(rendererPageTotal, Math.round(fractionalCompletion * (rendererPageTotal - 1)) + 1))
-            : null;
-        if (
-            typeof rendererPageCurrent === 'number'
-            && typeof targetRendererPage === 'number'
-            && rendererPageCurrent === targetRendererPage
-        ) {
-            return;
-        }
-        await runWithNavigationIntent({
-            source: 'restore.reconcile',
-            reason,
-            target: 'view.goToFraction',
-            fraction: fractionalCompletion,
-            stageOnReconcile,
-        }, () => globalThis.reader.view.goToFraction(fractionalCompletion));
-        await waitForFrames(2);
-        const reconciledState = captureRestoreState(stageOnReconcile, {
-            drift: safeRound(delta, 6),
-        });
-    };
-    try {
-        if (syntheticRestoreLocator) {
-            if (typeof globalThis.reader?.displayInitialSection === 'function') {
-                await globalThis.reader.displayInitialSection('loadLastPosition.synthetic-locator', {
-                    cfi,
-                    fractionalCompletion,
-                });
-            }
-            await waitForFrames(2);
-            const syntheticState = captureRestoreState('after-synthetic-locator', {
-                sectionIndex: syntheticRestoreLocator.sectionIndex,
-                localSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                rendererTotal: syntheticRestoreLocator.rendererTotal,
-            });
-            handledCFI = typeof cfi === 'string' && cfi.length > 0 ? cfi : null;
-        } else if (cfi.length > 0) {
-            const navigationResult = await runRequiredRestoreNavigation(() => runWithNavigationIntent(
-                {
-                    source: 'restore.cfi',
-                    target: 'view.goTo',
-                    cfiLength: cfi.length,
-                    fraction: hasFractionalCompletion ? fractionalCompletion : null,
-                },
-                () => globalThis.reader.view.goTo(cfi),
-            ));
-            if (!navigationResult.ok) {
-                throw navigationResult.error ?? new Error('CFI restore navigation failed');
-            }
-            handledCFI = cfi;
-            await waitForFrames(2);
-            const cfiState = captureRestoreState('after-cfi');
-            await reconcileRestoreFractionIfNeeded(
-                cfiState,
-                'cfi-fraction-drift',
-                'after-cfi-fraction-reconcile',
-            );
-        } else if (hasFractionalCompletion) {
-            const navigationResult = await runRequiredRestoreNavigation(() => runWithNavigationIntent(
-                {
-                    source: 'restore.fraction',
-                    target: 'view.goToFraction',
-                    fraction: fractionalCompletion,
-                },
-                () => globalThis.reader.view.goToFraction(fractionalCompletion),
-            ));
-            if (!navigationResult.ok) {
-                throw navigationResult.error ?? new Error('Fraction restore navigation failed');
-            }
-            await waitForFrames(2);
-            const fractionState = captureRestoreState('after-fraction');
-        } else {
-            try {
-                await awaitWithTimeout(globalThis.reader.view.renderer.next(), 1500);
-            } catch (error) {
-                await globalThis.reader.view.renderer.nextSection();
-            }
-            await waitForFrames(2);
-            const defaultState = captureRestoreState('after-default-next');
-        }
-        globalThis.reader.completeLastPositionLoad()
-        globalThis.reader.refreshNativeLookupHitTargets?.('load-last-position-done');
-        const doneState = captureRestoreState('done');
-        globalThis.reader?.maybeFlashInitialForwardSideNavChevron?.(doneState);
-        markReaderRenderReady('loadLastPosition.done');
-        postLandscapeInsetRestoreProbe('done', doneState, {
-            hasCFI: typeof cfi === 'string' && cfi.length > 0,
-            requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
-        });
-
-        // Let the visible section finish rendering before warming secondary sections.
-        scheduleDeferredCacheWarmerOpen('load-last-position-done', 2200);
-        return {
-            handledFractionalCompletion: doneState.currentFraction,
-            currentFractionalCompletion: doneState.currentFraction,
-            handledCFI,
-        };
-    } catch (error) {
-        if (globalThis.reader) {
-            globalThis.reader.hasLoadedLastPosition = false;
-            globalThis.reader.completeLastPositionLoadAttempt();
-        }
-        throw error;
-    } finally {
-        globalThis.__manabiRestoreInProgress = false;
-        globalThis.__manabiSuppressNextRestoreRelocateSave = false;
-        globalThis.__manabiRequireUserInputBeforePositionSave = true;
-    }
-}
+window.loadLastPosition = ebookLoadHandlers.loadLastPosition;
 
 window.refreshBookReadingProgress = async (articleReadingProgress) => {
     if (!globalThis.reader) {

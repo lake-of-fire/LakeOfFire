@@ -8,35 +8,6 @@ import LakeKit
 import LakeOfFireContent
 import LakeOfFireCore
 
-private struct ReaderEBookInitialRestoreBridgeRequest {
-    let requestID = UUID().uuidString
-    let cfi: String
-    let fractionalCompletion: Double?
-    let requestedLocator: String
-
-    init?(restore: ReaderContentEbookInitialRestore?) {
-        guard let restore else { return nil }
-        cfi = restore.cfi
-        fractionalCompletion = restore.fractionalCompletion.map(Double.init)
-        let hasCFI = !cfi.isEmpty
-        let hasFraction = (fractionalCompletion ?? 0) > 0
-        guard hasCFI || hasFraction else { return nil }
-        requestedLocator = hasCFI ? "cfi" : "fraction"
-    }
-
-    var javaScriptArgument: [String: any Sendable] {
-        var argument: [String: any Sendable] = [
-            "requestID": requestID,
-            "requestedLocator": requestedLocator,
-            "cfi": cfi,
-        ]
-        if let fractionalCompletion {
-            argument["fractionalCompletion"] = fractionalCompletion
-        }
-        return argument
-    }
-}
-
 public typealias ReaderShowOriginalWillBeginHandler = @MainActor @Sendable (_ contentURL: URL, _ pageURL: URL) async -> Void
 public struct ReaderNavigationVisibilityChange: Sendable {
     public let shouldHide: Bool
@@ -353,7 +324,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         || logMessage.contains("\"loadEBook:delayed-state:1s\"")
                         || logMessage.contains("\"loadEBook:delayed-state:3s\"")
                         || logMessage.contains("\"loadEBook:delayed-state:8s\"") {
-                        registerEbookViewerFrame(message.frameInfo)
+                        if message.isMainFrame,
+                           let binding = message.javaScriptBindingToken,
+                           scriptCaller.currentJavaScriptBindingToken == binding {
+                            registerEbookViewerFrame(message.frameInfo)
+                        }
                     }
                     if logMessage.hasPrefix("# EBOOKFIX1")
                         || logMessage.hasPrefix("# BOOKBUG1")
@@ -901,12 +876,32 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 do {
                     guard let result = RSSURLsMessage(fromMessage: message) else { return }
                     guard let windowURL = result.windowURL,
-                          !windowURL.isNativeReaderView,
-                          let _ = try await contentForWindowURL(windowURL, source: "rssURLs") else { return }
+                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                            claimedURL: windowURL,
+                            frameMainDocumentURL: message.mainDocumentURL,
+                            currentPageURL: readerViewModel.state.pageURL,
+                            requiresMainFrame: true,
+                            isMainFrame: message.isMainFrame
+                          ),
+                          let admission = ReaderDocumentMutationAdmission.capture(
+                            targetURL: windowURL,
+                            requiring: message.javaScriptBindingToken,
+                            scriptCaller: scriptCaller
+                          ) else { return }
+                    // Early discovery can precede navigation's stored content.
+                    // Its fallback creation belongs to this exact receipt;
+                    // never lend it to a URL-coalesced getContent operation.
+                    guard let _ = try await ReaderContentLoader.getContent(
+                        forURL: admission.targetURL,
+                        source: "rssURLs",
+                        admittingMutation: { admission.permitsMutation }
+                    ),
+                          admission.permitsMutation else { return }
                     let pairs = result.rssURLs.prefix(10)
                     let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
                     let titles = pairs.map { $0.last ?? $0.first ?? "" }
-                    try await ReaderContentLoader.updateContent(url: windowURL) { object in
+                    try await ReaderContentLoader.updateContent(url: admission.targetURL) { object in
+                        guard admission.permitsMutation else { return false }
                         let existingURLs = Array(object.rssURLs)
                         let existingTitles = Array(object.rssTitles)
                         let isRSSAvailable = !urls.isEmpty
@@ -930,57 +925,92 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let self else { return }
                 do {
                     guard let result = PageMetadataUpdatedMessage(fromMessage: message) else { return }
-                    guard urlsMatchWithoutHash(result.url, readerViewModel.state.pageURL) else { return }
+                    guard let url = result.url,
+                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                            claimedURL: url,
+                            frameMainDocumentURL: message.mainDocumentURL,
+                            currentPageURL: readerViewModel.state.pageURL,
+                            requiresMainFrame: true,
+                            isMainFrame: message.isMainFrame
+                          ), let admission = ReaderDocumentMutationAdmission.capture(
+                            targetURL: url,
+                            requiring: message.javaScriptBindingToken,
+                            scriptCaller: scriptCaller
+                          ) else { return }
                     try await readerViewModel.pageMetadataUpdated(
                         title: result.title,
-                        author: result.author
+                        author: result.author,
+                        admission: admission
                     )
                 } catch {
                     print(error)
                 }
             }),
-            ("imageUpdated", { @RealmBackgroundActor [weak self] message in
+            ("imageUpdated", { @MainActor [weak self] message in
                 guard let self else { return }
                 do {
                     guard let result = ImageUpdatedMessage(fromMessage: message) else { return }
-                    guard let url = result.mainDocumentURL, !url.isNativeReaderView else { return }
-                    let contents = try await ReaderContentLoader.loadAll(url: url)
-                    for content in contents {
-                        guard content.imageUrl != result.newImageURL else { continue }
-                        //                        await content.realm?.asyncRefresh()
-                        try await content.realm?.asyncWrite {
-                            content.imageUrl = result.newImageURL
-                            content.refreshChangeMetadata(explicitlyModified: true)
-                        }
+                    guard let url = result.mainDocumentURL,
+                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                            claimedURL: url,
+                            frameMainDocumentURL: message.mainDocumentURL,
+                            currentPageURL: readerViewModel.state.pageURL,
+                            requiresMainFrame: false,
+                            isMainFrame: message.isMainFrame
+                          ), let admission = ReaderDocumentMutationAdmission.capture(
+                            targetURL: url,
+                            requiring: message.javaScriptBindingToken,
+                            scriptCaller: scriptCaller
+                          ) else { return }
+                    let newImageURL = result.newImageURL
+                    try await ReaderContentLoader.updateContent(url: admission.targetURL) { content in
+                        guard admission.permitsMutation,
+                              content.imageUrl != newImageURL else { return false }
+                        content.imageUrl = newImageURL
+                        return true
                     }
                 } catch {
                     print(error)
                 }
             }),
             ("ebookViewerInitialized", { @MainActor [weak self] message in
-                guard let self else { return }
-                registerEbookViewerFrame(message.frameInfo)
+                guard let self, message.isMainFrame else { return }
+                // Use the framework's immutable receipt, never the current
+                // document sampled after acknowledgment or restore lookup.
+                let receiptBinding = message.javaScriptBindingToken
                 let stateURL = readerViewModel.state.pageURL
                 let url = stateURL.isEBookURL ? stateURL : readerContent.pageURL
-                if let scheme = url.scheme,
-                   (scheme == "ebook" || scheme == "ebook-url"),
-                   url.absoluteString.hasPrefix("\(scheme)://"),
-                   url.isEBookURL,
-                   let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))") {
-                    debugPrint(
-                        "# EPUB  ebookViewerInitialized",
-                        "page=\(url.absoluteString)",
-                        "frame=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")"
-                    )
-                    _ = try? await scriptCaller.evaluateJavaScript(
-                        "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
-                        in: message.frameInfo
-                    )
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        do {
-                            let initialRestore = try? await ReaderContentReadingProgressLoader
-                                .ebookInitialRestoreLoader?(url)
+                guard url.isEBookURL,
+                      let scheme = url.scheme,
+                      scheme == "ebook" || scheme == "ebook-url",
+                      let receiptURL = message.requestURL ?? message.mainDocumentURL,
+                      urlsMatchIgnoringFragment(
+                        ReaderContentLoader.getContentURL(fromLoaderURL: receiptURL) ?? receiptURL,
+                        ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+                      ) else { return }
+                let loaderURL = url
+                let caller = scriptCaller
+                do {
+                    try await ReaderEBookInitialization.perform(
+                        receiptBinding: receiptBinding,
+                        currentBinding: { scriptCaller.currentJavaScriptBindingToken },
+                        registerFrame: { _ in
+                            registerEbookViewerFrame(message.frameInfo)
+                        },
+                        acknowledge: { bindingToken in
+                            _ = try await caller.evaluateJavaScript(
+                                "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
+                                in: message.frameInfo,
+                                requiring: bindingToken
+                            )
+                        },
+                        prepare: { _ in () },
+                        restore: { _ -> ReaderEBookInitialRestoreBridgeRequest? in
+                            try await ReaderEBookInitialRestoreBridgeRequest.prepare {
+                                try await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
+                            }
+                        },
+                        publish: { bindingToken, _, initialRestoreRequest in
                             let defaults = UserDefaults.standard
                             let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16
                             let rawWritingDirection = defaults.string(
@@ -1007,12 +1037,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 "layoutMode": defaults.string(forKey: "ebookViewerLayout") ?? "paginated",
                                 "readerPresentationState": readerPresentationState,
                             ]
-                            let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(
-                                restore: initialRestore
-                            )
                             loadArguments["initialRestore"] =
                                 initialRestoreRequest?.javaScriptArgument ?? NSNull()
-                            try await scriptCaller.evaluateJavaScript(
+                            try await caller.evaluateJavaScript(
                                 """
                                 window.loadEBook({
                                     url,
@@ -1022,14 +1049,18 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 });
                                 """,
                                 arguments: loadArguments,
-                                in: message.frameInfo
-                            )
-                        } catch {
-                            Logger.shared.logger.error(
-                                "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
+                                in: message.frameInfo,
+                                requiring: bindingToken
                             )
                         }
-                    }
+                    )
+                } catch is CancellationError {
+                    // Navigation, owner revocation and parent cancellation are
+                    // expected terminal outcomes. Do not launch detached retry.
+                } catch {
+                    Logger.shared.logger.error(
+                        "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
+                    )
                 }
             }),
             ("updateReadingProgress", { @MainActor [weak self] message in

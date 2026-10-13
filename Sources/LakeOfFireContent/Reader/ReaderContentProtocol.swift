@@ -31,16 +31,6 @@ public actor ReaderContentReadingProgressLoader {
     nonisolated(unsafe) public static var ebookInitialRestoreLoader: ((URL) async throws -> ReaderContentEbookInitialRestore?)?
 }
 
-public struct ReaderContentEbookInitialRestore: Sendable {
-    public let cfi: String
-    public let fractionalCompletion: Float?
-
-    public init(cfi: String, fractionalCompletion: Float?) {
-        self.cfi = cfi
-        self.fractionalCompletion = fractionalCompletion
-    }
-}
-
 @globalActor
 public actor ReaderContentSyncStatusLoader {
     public static let shared = ReaderContentSyncStatusLoader()
@@ -722,10 +712,7 @@ public extension ReaderContentProtocol {
             record.imageUrl = imageURL
             record.sourceIconURL = sourceIconURL
             record.isFromClipboard = isFromClipboard
-            record.rssContainsFullContent = rssContainsFullContent
-            if rssContainsFullContent {
-                record.content = content
-            }
+            applyFeedBody(content, containsFullContent: rssContainsFullContent, to: record)
             record.voiceFrameUrl = voiceFrameUrl
             record.voiceAudioURL = resolvedVoiceAudioURLList.first
             record.voiceAudioURLs.removeAll()

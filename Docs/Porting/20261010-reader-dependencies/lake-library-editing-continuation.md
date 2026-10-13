@@ -1,0 +1,71 @@
+# Lake library editing continuation
+
+Worktree: `/Users/alex/Documents/Codex/2026-10-10/task-18/LakeOfFire`. Exclusive production write slice: `Sources/LakeOfFireLibrary/Library/LibraryFeedView.swift` and `Sources/LakeOfFireContent/Library/LibraryConfiguration+Consolidation.swift`. Two new regression source files are owned by this slice. Root reviewed and committed the four owned source/test files as `1d3eaef975c3aff0e5d69bf5b5f84d74411ba125`. This worker performed no builds, tests, generators, native apps, installs, CI, staging, commits, or pushes in this continuation. Runtime tests are **not run by request**. `git diff --check` passed after the final production edits.
+
+## Frozen evidence
+
+| Reference | Exact SHA / URL |
+| --- | --- |
+| Fresh upstream main | `8985bf92b9504d53e00025e4054b3aa97f876e45` |
+| Shared worktree baseline / owned draft PR #138 | `338acd87af421120a523bfb884b5ece9c7247a10`; https://github.com/lake-of-fire/LakeOfFire/pull/138 |
+| Selected dated hotfix source | `036d4193078016db0becdf91b86dd34fb1d579e0` |
+| Separately authorized hotfix tail | `6e492b3e2a65b4d8a7e49a0e196152d82b6bdc04`; `refs/remotes/audit/final-v3-hotfix` |
+| Pending upstream library PR #95 | `21c42ff0138c0b5b934956cbcccd107e5c577cf6`; base `f02b10e1cb55e8db1d148967948ce2656ef58f0a` on main; https://github.com/lake-of-fire/LakeOfFire/pull/95 |
+| Pending hotfix PR #113 | `9ef23abaecf93eb24dfbe55cbf02e9598f4f935f`; base `e5157aab215286a34a2b4b970ef5c37012401405` on v3-hotfix; https://github.com/lake-of-fire/LakeOfFire/pull/113 |
+| Pending hotfix PR #137 | `8b9d8381ce7561625452545b99260b29aaf81f37`; base `00dcfa75f3f65337450089b2df15ed2be779bb79` on v3-hotfix; https://github.com/lake-of-fire/LakeOfFire/pull/137 |
+
+PR #95 does not contain the scoped feed command ordering/metadata admission or immutable consolidation repair. Its endpoint feed preview lacks main's later graceful Realm-open handling; this is endpoint staleness, not a proposed #95 preview regression. Preserve main's graceful handling. #95 supplies `LakeOfFireLibrary` and OPML test-target dependencies; do not duplicate its manifest change here. #113/#137 contain hotfix architecture and are not upstream-main forward ports.
+
+Other fetched heads were checked for proposed owned-path changes relative their main merge base: #41 `af14b895d9d3e1a1fe8c3a00e52c158d6eae211e`, #48 `2f3a63733583e179bddc8025a7320141fc1ddade`, #50 `0b91431f0fe04c45b24b08b427a5df66e87661b9`, #51 `547b1e88a836c8c4b53c24c98294700e9066a745`, #53 `35e0a7e65ce63365a9923a92fac832ad087c549b`, #54 `28c6911ada2221bc9a390de65f31b79bfba84bd4`, #59 `0dd0b07afac69c6d02512a7b02ff2acb27bf7bb0`, #61 `0dc1e429fc8e2d2b7e7f2a176fe2f72fabc7ab9e`, #74 `ad19065bd567f09f64a7f321feb2087fd60701fa`: no proposed changes in these two production paths. Exact links are `https://github.com/lake-of-fire/LakeOfFire/pull/<number>`; all local heads use `refs/remotes/audit/pr-<number>`. No PR138 audit ref exists locally: its observed HEAD is recorded above, without inventing a ref.
+
+## Dated provenance
+
+Feed behavior was traced through dated commits `3d9791093686f75aeb2e091d3c9a06c44d7bb9cf` (editor identity and field ordering), `254be0f7b6925db95f91bbe48a66f936ff2f7317` (older writer after newer no-op), `c4aa2d20b81648d02583763c7042b83e89f92a12` (metadata/editor fence), `327e32a2b6a708dd8f9bb926b39da2000be6d12c` (actual form delay), `49bebc908558920ce136d6e7c4cafa0535313742` (paste sibling drafts and preview), `7e87081ae873d6b838b1869b456cf51c26d035a3` (iOS15 delay), and `6c61199059dcc2f828e60b745399ef189442bff9` (retirement/shared ordering). Main's graceful preview behavior comes from `52bbc40fbf712598d47a1a7d925c5a72d2be1e28` and was retained.
+
+Consolidation tail provenance: `4dfe7759021a3287d76fe2474fee50f485ee1bde` and `e045a775059c5747c848dd9da536556dfd3990ec`, both dated 2026-10-08. Tail hotfix stores consolidation in `LibraryConfiguration.swift`; current main deliberately has the separate `LibraryConfiguration+Consolidation.swift` owner. The port preserves that split and the public method signature.
+
+`a0d0e896396f527d3b4cc97540368dc117fa3d00` adds independent transaction ownership using a dependency helper. That behavior is **not claimed fully ported**: this continuation retains the selected native `realm.asyncWrite` API and cannot add dependency APIs or pins outside its ownership.
+
+## Deterministic behavior ledger
+
+| Path / functions | Baseline status and resulting behavior |
+| --- | --- |
+| Feed view: `LibraryFeedFormIdentity`, outer `.task`, form `.id`, captured ReaderViewModel configuration | Missing incarnation/storage identity at main/#95. Capture original Realm configuration and feed/category creation identity; recreate child StateObjects when that identity changes. Preserve main ReaderContentCell/navigation architecture. |
+| Feed model: `observeBuffered`, `LibraryFeedWriteOrdering`, `LibraryFeedFieldCommand.write` | Missing shared final-field admission. Every actual field publication reserves shared order synchronously before leading/trailing debounce; same-value inputs remain intent. Commands capture storage and re-resolve feed/category inside final write, checking IDs, creation dates, deletion, category archive state and OPML ownership. Latest field intent fences older commands across editor instances. |
+| Feed model: immediate toggles, `writeFeedAsync`, `refresh` | Missing no-op journal guards/hydration suppression. Install subscriptions synchronously before observer opening; hydrate under `isRefreshing`, preserve pending sibling drafts; only changed admitted fields refresh BigSync metadata in the same transaction. Bool edits have equality guards. |
+| Feed model: `finishEditing`, `deinit`, `settle` | Missing captured-storage retirement. Only pending user commands are replayed on focus loss/disappearance/retirement. Shared ordering survives while any old command exists and uses weak scope registration. Errors settle matching pending command only. Automatic metadata never enters this retirement queue. |
+| Feed model: `beginMetadataRefresh`, `refreshMetadataAfterDelay`, OpenGraph/favicon, `applyMetadataValue` | Missing originating URL/generation/input admission. Actual SwiftUI `.task(id: currentRSSURL)` invokes guarded iOS15-compatible delay and owns structured refresh children. Metadata captures local field revisions plus shared field/URL intent at request start; final write must match both. It never allocates a later human-input sequence after network completion. Source URL, feed/category incarnation, empty-field/native-icon eligibility and cancellation are checked before mutation. Metadata uses one cancellable command; cancel followed by finishEditing cannot replay it. |
+| Feed model: `pasteRSSURL`, `previewEntries`; view `refresh` | Missing captured preview Realm and paste sibling preservation. Paste publishes newest URL intent and its completion hydrates URL only when its input still matches. Preview reopens captured storage and rejects replacement feed incarnation. Existing graceful open-failure handling and main preview composition remain. |
+| Consolidation: `LibraryAdmissionKey`, `getConsolidatedOrCreate` | Partially ported at main/#95: deterministic survivor/orphans existed but new relationship admission still followed duplicate placement/traversal and mutable metadata. Final transaction now chooses survivor by creation/UUID, preserves surviving primary order, appends unioned eligible new relationships using immutable target creation/UUID. Missing target references use immutable source configuration creation/UUID/ordinal/target ID; retain unresolved references for bounded sync delivery. Drop deleted/archive records, deduplicate and resolve duplicate IDs again before tombstoning. No-op reruns avoid new metadata generations. |
+| Consolidation helper `mergeLibraryConfigurationIdentifiers` | Intentionally preserved public/internal helper and existing semantics; no caller/API removal. Main's explicit `missingPrimaryAfterConsolidation` error remains, rather than returning an unrelated replacement after the transaction. |
+
+## Actual caller traces
+
+`LibraryManagerView.swift:141` navigates to `LibraryFeedView(feed:)`. `LibraryFeedFormSections` TextField/TextEditor bindings publish title/description/URL/icon edits into `observeBuffered`; Toggle bindings call scoped immediate commands. Focus loss/disappearance call `finishEditing`; PasteButton calls `pasteRSSURL`; Add Description calls scoped `.description`. The URL section's `.task(id: currentRSSURL)` begins request intent and executes the guarded metadata delay. Entry observation may request OpenGraph again but keeps the current request generation. Preview reader initialization now uses the editor's captured Realm configuration.
+
+Feed refresh explicitly calls current `Feed.fetch(realmConfiguration:)` in `Feeds/Feed Models.swift:1775`, rather than the Reader extension's no-argument convenience overload that uses mutable `ReaderContentLoader.feedEntryRealmConfiguration`. This only fixes caller storage selection; download/persist publication fencing remains the Feed owner below.
+
+`getConsolidatedOrCreate` is called by LibraryDataManager initialization/import/relationship mutations, ReaderViewModel default category loading, LibraryCategoriesViewModel, LibraryManagerViewModel, LibraryScriptsListView, WebFeedButton, ContentCategoryButtons, and LibraryDataManager+Categories. Its existing default and explicit-configuration call forms remain valid. Immutable ordering applies when those callers consolidate; their broader post-await relationship mutations were read for caller context, not edited or certified here.
+
+## Runtime regression source ownership
+
+New `Tests/LakeOfFireTests/LibraryFeedEditingContinuationTests.swift`: nine runtime Realm/XCTest cases exercise captured storage after default replacement; older suspended writer versus the actual newer same-value form publisher before trailing debounce; replacement feed incarnation; replaced/OPML-managed category; delayed OG after RSS paste; explicit empty description during metadata write; no mutation on hydration; late OG after another editor's empty input; and canceled metadata followed by retirement flush. Tests inspect persisted values and BigSync pending mutations, not source text.
+
+New `Tests/LakeOfFireTests/LibraryConsolidationAdmissionContinuationTests.swift`: runtime Realm/XCTest compares two equivalent logical libraries with reversed duplicate lists/mutable modification dates, verifies preserved primary prefix and immutable category/script admissions, duplicate tombstones, and unchanged mutation generations on rerun. Existing main consolidation tests were inspected for preserved survivor, deduplication, unresolved-reference and orphan behavior.
+
+These files belong to `LakeOfFireTests` by path. Root added the direct `LakeOfFireLibrary` dependency required by the feed test to the selected `Package.swift`. This minimal source integration aligns with pending #95; no OPML dependency was added because the new tests do not import OPML. Manifest edit belongs to root, outside this worker’s write slice. The test-target source gate is resolved; no compile verification was run. Existing content test support `configureLakeOfFireMutationTrackingForTesting` supplies journal fixtures. No runtime/compile success is claimed.
+
+## Supplemental shuffled pass
+
+Reproducible `random.Random(20261011).shuffle` over the deterministic eight source clusters yielded: (1) buffered field order; (2) consolidation resolved relationship keys; (3) form identity/storage; (4) paste/preview publication; (5) consolidation unresolved references; (6) metadata/source URL admission; (7) immediate field no-op/journal; (8) test source/target dependencies. Re-read those implementations/callers in that order. Results: field order is reserved before debounce; resolved keys do not use modifiedAt; identity captures Realm+createdAt; URL completion preserves sibling drafts; unresolved IDs retain source keys; metadata final shared/local admission rejects later human intent; hydration/no-op guards avoid metadata refresh; test target requires the direct library dependency, subsequently supplied by root. Independent root review then identified metadata retirement replay and cross-editor late issuance; both were repaired and regression source added before this report.
+
+## Remaining boundaries and inventory
+
+1. Independent Realm transaction ownership/foreign in-flight transaction behavior remains unresolved until the RealmSwiftGaps owner supplies/reconciles the source-proven ownership helper; native `asyncWrite` is retained. No claim of foreign rollback isolation.
+2. `Feed.fetch`, `persistFetchMetadata`, RSS/Atom persistence and post-download feed source/incarnation checks belong to `Feeds/Feed Models.swift`, outside this write slice. Passing captured configuration does not establish complete late-feed-fetch admission.
+3. Record incarnation uses the available immutable creation dates and category identity. Replacing a physical store or row while deliberately preserving the same storage path, UUID and creation date is not a newly invented durable lifetime token; no such stronger token exists in this slice.
+4. FaviconFinder's detached network work is not canceled by parent cancellation. Final mutation admission/cancellation prevents stale publication; network cancellation remains a dependency limitation.
+5. Broader LibraryDataManager/Category/Script form writes, OPML import publication, sidecar, ReaderContent/Loader/Protocol, Reader handlers and ReaderFileManager remain other owners' inventory. Earlier dated cosmetic/feature changes in LibraryFeedView are not newly certified by this focused continuation. No whole-Lake completeness claim.
+6. Narrow tests lack execution evidence by explicit request. Root supplied the minimal direct library test-target dependency; this resolves source wiring only, without build or test evidence.
+
+Only the two production files and two new test files listed here were edited by this continuation. No excluded parent ManabiMeCab or falsely discovered nested mecab repository was touched. Prior small-dependency findings remain in `small-dependencies-report.md`; this report does not expand their coverage claim.

@@ -1,0 +1,77 @@
+# Focused Lake document-fence implementation
+
+This pass implements source-proven metadata, RSS fallback/field and image-field admission gaps identified in `lake-reader-document-admission-continuation.md`. It is bounded to the assigned handler/view-model/helper/runtime-test slice and the subsequently authorized URL-loader/history-demotion extension. Changes remain unstaged; no builds, tests, generators, native apps, package operations, commits, pushes or CI were run. Runtime source compilation, discovery and execution remain unverified by request.
+
+## References and provenance
+
+| Evidence | Pin |
+| --- | --- |
+| Selected Lake hotfix source | `036d4193078016db0becdf91b86dd34fb1d579e0` |
+| Frozen/fresh Lake main | `8985bf92b9504d53e00025e4054b3aa97f876e45` |
+| Pending [Lake #50](https://github.com/lake-of-fire/LakeOfFire/pull/50) | `0b91431f0fe04c45b24b08b427a5df66e87661b9` |
+| Pending [Lake #53](https://github.com/lake-of-fire/LakeOfFire/pull/53) | `35e0a7e65ce63365a9923a92fac832ad087c549b` |
+| Parent-owned [Lake #138](https://github.com/lake-of-fire/LakeOfFire/pull/138), checkout HEAD before this pass | `338acd87af421120a523bfb884b5ece9c7247a10` |
+| WebView frozen/fresh main | `da0ec9394a3a89734768768ad7b8cb6082ac9d80` |
+| Pending [WebView #23](https://github.com/lake-of-fire/swiftui-webview/pull/23) | `c13e5da5b343f56631234d6d9957655dd91d5d04` |
+| Independently observed later Lake hotfix after external #137 merge | `6e492b3e2a65b4d8a7e49a0e196152d82b6bdc04` (`refs/remotes/audit/final-v3-hotfix`) |
+
+The selected Reader roots still pin `036d4193`. The later independently observed hotfix is supplementary evidence, not a changed selected-pin inventory. A bounded comparison of admission/helper/view-model/handler paths against that later ref found unchanged admission/helper and metadata view-model paths, and 20 added snippet diagnostics lines in the handler. No later tail-wide closure is claimed. `fresh-final-observations.json` records unchanged main/open PR heads; no independent network fetch was performed by this worker.
+
+Dated source provenance is the 2026-08-30 `cfb348e64122a6f3ef5e22564c12f9552888cf11` document-admission change and the 2026-10-01 binding changes documented in the preceding continuation. Hotfix checks payload/native/current URL agreement and post-await URL/cancellation checks. This implementation adapts those protections to main's already-present exact receipt token and revocable commit-fence API, rather than importing unsupported Realm `asyncWritePreservingOwnership` or replacing upstream receipt architecture. #50's newer EPUB initialization/import identity and #53's alternative branch context are untouched.
+
+## Edited paths and resulting behavior
+
+| Path/symbol | Status | Result and scope |
+| --- | --- | --- |
+| `Sources/LakeOfFireReader/Reader/ReaderDocumentMutationAdmission.swift` (new) | Focused port implemented | Captures immutable target URL and exact binding token on MainActor before suspension. Payload URL must agree with immutable `message.mainDocumentURL` and current page URL; RSS/metadata require native main frame, image retains hotfix's permitted child-frame behavior when native top-level provenance agrees. Missing/stale/other-caller receipt token fails closed. The Sendable predicate combines current task cancellation with the framework's revocable binding fence and can run on the final Realm writer actor. |
+| `ReaderMessageHandlersViewModifier.swift::pageMetadataUpdated` | Focused bridge admission implemented | Unwraps claimed target, validates native provenance, captures message token rather than sampling a successor, and passes captured admission into the view model. |
+| `ReaderViewModel.swift::pageMetadataUpdated` | Focused durable-field port implemented | Uses captured target URL for normalization/loadAll, rechecks authority after lookup/reference resolution, and checks admission inside `content.asyncWrite` before title/author/change-metadata mutation. Required binding is also carried into title JavaScript refresh, so successor DOM cannot accept this older operation. |
+| Same public metadata method/native caller | Public API preserved; native-origin limitation explicit | `pageMetadataUpdated(title:author:)` still serves `Reader.swift`'s page-title callback. It captures current native binding when mounted; unavailable mounted identity fails closed. An unmounted/headless native caller retains durable captured-target behavior with cancellation checks and no DOM refresh. This API cannot recover the origin token of an already queued native title notification; that larger callback-origin contract remains open. |
+| `ReaderMessageHandlersViewModifier.swift::imageUpdated` | Focused durable-field port implemented | Admission runs on MainActor; existing `ReaderContentLoader.updateContent` resolves destination records on its background actor. Its mutation closure checks admission before changing image URL and returns false for stale/unchanged work, suppressing explicit change-metadata refresh. URL values, rather than a non-Sendable parsed wrapper, cross the boundary. |
+| `ReaderMessageHandlersViewModifier.swift::rssURLs` | Bounded fallback/field port implemented | Native main-frame/provenance/token admission precedes lookup. RSS now uses a receipt-owned loader overload that bypasses coalesced get tasks and never counts a navigation visit. Exact fence is checked at fallback history creation/demotion, after lookup, and inside every RSS field mutation closure. Valid early history creation is preserved. See loader extension below; no multi-record/storage atomicity claim. |
+| `ReaderViewModel` initialization | Internal runtime-fixture seam | Public initializer retains subscriptions/script-update behavior via an internal initializer with `observeLibraryChanges: true`. Regression source passes false to avoid unrelated library publisher/default-library writes. No production caller opts out. |
+| `Tests/LakeOfFireTests/ReaderDocumentMutationFenceTests.swift` (new) | Runtime source authored, not run | Six tests exercise real helper binding/provenance and actual metadata loader/view-model/Realm behavior. No source-string assertions or copied writer implementation. |
+
+Existing Realm configuration authority, compound-key resolution, imported content configuration and actor ownership stay in the existing `content.asyncWrite` / `updateContent` APIs. No new Realm dependency API was introduced. The authorized content-module extension adds one admitted getContent overload and one optional default-nil history-demotion predicate; existing public get/load callers retain their signatures/default behavior. A fence is a revocation predicate checked at admission and the writer boundary; it is not an atomic lock over multiple fields or multiple Realm transactions.
+
+## RSS timing and exact cross-owner gate
+
+Main and selected hotfix both call `contentForWindowURL` before RSS updates. It reuses current reader content when URLs match, otherwise calls `ReaderViewModel.getContent` → `ReaderContentLoader.getContent` → `load(persist: true, countsAsHistoryVisit: false)`. The loader's miss path creates a `HistoryRecord` and explicitly refreshes its metadata inside its own Realm writer. Thus the fallback is itself a durable mutation, not merely a lookup.
+
+The actual navigation path is `ReaderWebView.swift::handleNavigationCommitted` (133 onward) → `ReaderContent.load` → its resolver task (approximately 314 onward) → `getContent(persist: true, countsAsHistoryVisit: true)`. It awaits content loading before downstream committed callbacks. The RSS handler is independently dispatched, and that ordering does not prove navigation persistence completes before an RSS receipt. Bundled RSS producer code was not found in the reviewed Lake sources; app-provided system scripts can be another caller boundary. Dropping the fallback could therefore lose a valid early RSS receipt on a new page before any record exists. A temporary loadAll-only change was withdrawn for this reason.
+
+The initially reported gate was subsequently authorized for this worker to repair. The new `ReaderContentLoader.getContent(forURL:source:admittingMutation:)` overload bypasses `inFlightGetContentTasks`, fixes `countsAsHistoryVisit=false`, and calls a private shared load implementation. The existing public get/load APIs retain the original URL-coalesced native route without importing a receipt predicate into shared tasks. `loadAll` may still share read/reference tasks, but no receipt authority is passed into them: each admitted caller rechecks its own predicate after that read returns and before its own writer.
+
+The shared private load checks cancellation/admission at entry, after read suspension, at every local Realm writer and before/after MainActor reference resolution. History miss creation checks the predicate inside the final Realm closure, retains the existing canonical-alias requery that preserves a concurrently captured record, and invalidates caches after creation. File/EPUB/snippet-default/repair writers in this URL method also receive the predicate; snippet HTML/text producer implementations below the URL load section were left untouched. The admitted route cannot request a navigation visit, so it does not call `addHistoryRecord`'s separate visit-copy API. Existing default load callers still own that native visit path independently. Destination history configuration is captured before suspension; this is not a storage/account transition fence.
+
+`HistoryRecord.refreshDemotedStatus` now has an optional default-nil predicate and checks it with cancellation inside its final writer before changing demotion/change metadata. The private loader passes its admitted predicate to that helper. This closes the identified RSS fallback's local creation/demotion gate at the source level; compilation/runtime remain unverified, and independent review remains parent-owned.
+
+`HistoryRecord.lastVisitedAt` still has its initial default `Date()` when a genuinely missing record is created, as before. An admitted RSS lookup does not represent a navigation visit and does not advance `lastVisitedAt` on a matched history record or a canonical-alias record discovered inside the miss writer. No claim is made that RSS creates a record with an unset/zero visit date.
+
+## Runtime regression ownership and limits
+
+`ReaderDocumentMutationFenceTests.swift` covers:
+
+1. Payload/native/current disagreement and required-main-frame rejection; permitted same-top-level child-frame image admission and fragment agreement.
+2. A missing receipt cannot borrow the current token, and a different caller's token cannot authorize capture.
+3. The actual metadata method suspended in an actual additional-content provider lookup: same-URL rebinding before resumption leaves title, author, modifiedAt and explicitlyModifiedAt unchanged.
+4. Cancellation while that lookup is suspended leaves those fields/metadata unchanged even with a current binding.
+5. A valid current admission reaches the actual Realm title/author writer and explicit metadata refresh.
+6. The existing public native metadata method still succeeds through that production path.
+
+The fixture uses an isolated in-memory Realm, the existing mutation-tracking configuration helper, real `loadAll`/content-reference resolution and `content.asyncWrite`. It restores loader/provider/resolver globals and clears transient caches. It disables unrelated library subscriptions through the internal initializer seam. Direct test import of `SwiftUIWebView` uses its existing internal binding harness through `@testable`; compilation/module availability are unverified because builds are prohibited.
+
+These tests suspend before metadata reference delivery; they do not delay Realm's own internal transaction scheduling. A subsequent `ReaderRSSDocumentAdmissionTests.swift` adds six more runtime sources: replaced/cancelled early lookups create no history; a current early lookup creates one record and a later admitted lookup does not advance its visit date; overlapping same-URL receipts retain independent authority; mounted synchronous readiness with unavailable document identity cannot enter the native metadata fallback; denied actual history demotion leaves fields/change metadata unchanged. These use actual loader/history APIs rather than a copied writer. Actual mounted WKScriptMessage RSS/image integration, a receipt withdrawn precisely while native Realm queues a transaction, and bound DOM publication runtime scenarios remain untested in this new source. The unavailable-identity regression exercises the actual native metadata API with an installed binding whose document-generation provider returns nil while `hasAsyncCaller` still lags; production now gates mounted state with synchronous `canEvaluateJavaScript`. Existing WebView tests already cover real receipt capture, binding revocation and same-URL handler cancellation, but they are not credited as Lake persistence integration. No test asserts all ReaderMode/render pipelines are fenced.
+
+## Inspection/remaining boundary
+
+`git diff --check` passed for the owned tracked source changes. New helper/test source was read manually alongside actual APIs; no execution validation was performed. The source API inspection caught and corrected optional `PageMetadataUpdatedMessage.url` handling and avoided sending the parsed image wrapper across actors.
+
+ReaderMode's origin-to-render-task ownership, cached readability/default propagation durable writes, external sidecar producer/consumer identity and multi-record atomicity remain outside this pass. Parent separately owns ReaderMode's bounded font/navigation binding change and corresponding test source; this worker did not edit those paths. Native title callback origin remains open; the preliminary RSS history creation/demotion gate was subsequently implemented through the bounded admitted loader route described above. The prior broader 128-path unresolved ledger is not closed by this implementation.
+
+
+## Final authorized loader extension and fixture controls
+
+Additional edited paths are `Sources/LakeOfFireContent/Reader/ReaderContentLoader.swift` (URL get/load region only), `Sources/LakeOfFireContent/Web/HistoryRecord.swift::refreshDemotedStatus`, and new `Tests/LakeOfFireTests/ReaderRSSDocumentAdmissionTests.swift`. The existing metadata fixture was hardened as well. All new provider gates race entry against producer completion through XCTest expectations, bound entry/join waits to two seconds, cancel failed producers, and release gates persistently so late entrants cannot remain stuck. This is runtime test source, not a claim of executed timeout behavior. An unexpected loader failure before the suspension seam can now surface instead of leaving the fixture indefinitely waiting for entry. Completion is signalled in the producer's final defer before inspecting its result; no blocking sleep or execution validation was used.
+
+Twelve runtime tests are now authored across the two owned test files. Test configuration/globals, and metadata resolver state, are restored. The RSS fixture releases gates and resets read caches on failure as well as success. The tests still do not enforce whole-task quiescence after a timeout in an arbitrarily uncooperative external provider; local test gates are released and the receipt-owning tasks are cancelled. Native Realm transaction scheduling and full mounted handler integration remain the explicit untested boundary.

@@ -1020,10 +1020,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         let feed = getFeed()
         
         // Feed options.
-        bookmark.rssContainsFullContent = feed?.rssContainsFullContent ?? bookmark.rssContainsFullContent
-        if bookmark.rssContainsFullContent {
-            bookmark.content = content
-        }
+        applyFeedBody(content, containsFullContent: feed?.rssContainsFullContent ?? false, to: bookmark)
         bookmark.meaningfulContentMinLength = feed?.meaningfulContentMinLength ?? bookmark.meaningfulContentMinLength
         bookmark.injectEntryImageIntoHeader = feed?.injectEntryImageIntoHeader ?? bookmark.injectEntryImageIntoHeader
         //        bookmark.rawEntryThumbnailContentMode = feed?.contentmode
@@ -1482,6 +1479,7 @@ public extension Feed {
         let iconUrl = iconUrl
         let rssUrl = rssUrl
         let entryContentKind = entryContentKind
+        let containsFullContent = rssContainsFullContent
         var incomingIDs = [String]()
         var skippedItems = 0
         let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
@@ -1572,7 +1570,8 @@ public extension Feed {
                 entries: feedEntries,
                 existingEntryIDs: existingEntryIDs,
                 incomingIDs: incomingIDs,
-                deleteOrphans: deleteOrphans
+                deleteOrphans: deleteOrphans,
+                containsFullContent: containsFullContent
             )
             for payload in payloads {
                 try await syncRelatedReaderContent(with: payload)
@@ -1594,6 +1593,7 @@ public extension Feed {
         let sourceIconURL = iconUrl
         let rssUrl = rssUrl
         let entryContentKind = entryContentKind
+        let containsFullContent = rssContainsFullContent
         let collectionObjects = collections.map { parsedCollection -> FeedEntryCollection in
             let collection = FeedEntryCollection()
             collection.feedID = feedID
@@ -1695,7 +1695,8 @@ public extension Feed {
             feedEntry.publicationDate = item.published ?? item.updated
             feedEntry.html = item.content?.value
             feedEntry.voiceFrameUrl = voiceFrameUrl
-            feedEntry.voiceAudioURL = voiceAudioURLs.first ?? feedEntry.voiceAudioURL
+            feedEntry.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
+            feedEntry.voiceAudioURL = voiceAudioURLs.first
             feedEntry.audioSubtitlesURL = audioSubtitlesURL
             feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
             feedEntry.redditTranslationsUrl = redditTranslationsUrl
@@ -1758,7 +1759,8 @@ public extension Feed {
                 entries: feedEntries,
                 existingEntryIDs: existingEntryIDs,
                 incomingIDs: incomingIDs,
-                deleteOrphans: deleteOrphans
+                deleteOrphans: deleteOrphans,
+                containsFullContent: containsFullContent
             )
             for payload in payloads {
                 try await syncRelatedReaderContent(with: payload)
@@ -1865,7 +1867,7 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
     for entry in entries {
         if let existingEntry = existingEntriesDict[entry.compoundKey] {
             let schema = entry.objectSchema
-            for property in schema.properties where property.name != "createdAt" && property.name != "modifiedAt" {
+            for property in schema.properties where !["createdAt", "modifiedAt", "explicitlyModifiedAt"].contains(property.name) {
                 let propertyName = property.name
                 if property.type == .object, let objectType = property.objectClassName {
                     let primaryKey = realm.schema[objectType]?.primaryKeyProperty?.name ?? ""
@@ -1897,6 +1899,12 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
                                 break
                             }
                         }
+                        if let entryList = entry.value(forKey: propertyName) as? List<URL>,
+                           let existingList = existingEntry.value(forKey: propertyName) as? List<URL>,
+                           Array(entryList) != Array(existingList) {
+                            differentEntries.append(entry)
+                            break
+                        }
                     default:
                         fatalError("Comparison for \(property.type) property type for feed entries not currently supported")
                     }
@@ -1919,16 +1927,25 @@ fileprivate func upsertFeedEntries(
     entries: [FeedEntry],
     existingEntryIDs: [String],
     incomingIDs: [String],
-    deleteOrphans: Bool
+    deleteOrphans: Bool,
+    containsFullContent: Bool
 ) async throws -> [FeedEntryPayload] {
     let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: entries)
     let feedIDDescription = entries.first?.feedID?.uuidString ?? "nil"
     logRSS(
         "stage=upsert.filtered feedID=\(feedIDDescription) incomingEntries=\(entries.count) existingEntries=\(existingEntryIDs.count) changedOrNewEntries=\(entriesToPersist.count) deleteOrphans=\(deleteOrphans)"
     )
+    // Feed authority can change without changing stored entry fields. Reconcile
+    // only its body on unchanged mirrors; do not replay parser-default metadata.
+    let changedKeys = Set(entriesToPersist.map(\.compoundKey))
+    let bodyProjections = containsFullContent ? entries.filter {
+        !changedKeys.contains($0.compoundKey)
+    }.map {
+        FeedEntryPayload(entry: $0, existing: nil, containsFullContent: true, updatesMetadata: false)
+    } : []
     if !deleteOrphans && entriesToPersist.isEmpty {
         logRSS("stage=upsert.skipped feedID=\(feedIDDescription) reason=noChangedEntries")
-        return []
+        return bodyProjections
     }
 
     let payloads: [FeedEntryPayload]
@@ -1942,7 +1959,7 @@ fileprivate func upsertFeedEntries(
                     .map { ($0.compoundKey, $0) }
         )
         payloads = entriesToPersist.map { entry in
-            FeedEntryPayload(entry: entry, existing: existingByKey[entry.compoundKey])
+            FeedEntryPayload(entry: entry, existing: existingByKey[entry.compoundKey], containsFullContent: containsFullContent)
         }
     }
 
@@ -2001,10 +2018,10 @@ fileprivate func upsertFeedEntries(
         )
     }
 
-    return payloads
+    return payloads + bodyProjections
 }
 
-fileprivate struct FeedEntryPayload {
+struct FeedEntryPayload {
     let compoundKey: String
     let feedID: UUID?
     let url: URL
@@ -2014,6 +2031,8 @@ fileprivate struct FeedEntryPayload {
     let sourceIconURL: URL?
     let publicationDate: Date?
     let content: Data?
+    let containsFullContent: Bool
+    let updatesMetadata: Bool
     let voiceFrameUrl: URL?
     let voiceAudioURL: URL?
     let voiceAudioURLs: [URL]
@@ -2035,7 +2054,9 @@ fileprivate struct FeedEntryPayload {
     let feedEntryCollectionTitle: String?
     let createdAt: Date
 
-    init(entry: FeedEntry, existing: FeedEntry?) {
+    init(entry: FeedEntry, existing: FeedEntry?, containsFullContent: Bool, updatesMetadata: Bool = true) {
+        self.containsFullContent = containsFullContent
+        self.updatesMetadata = updatesMetadata
         compoundKey = entry.compoundKey
         feedID = entry.feedID
         url = entry.url
@@ -2069,8 +2090,28 @@ fileprivate struct FeedEntryPayload {
     }
 }
 
+/// Missing feed bodies cannot revoke captured content; summaries cannot replace full bodies.
 @discardableResult
-fileprivate func applyPayload(_ payload: FeedEntryPayload, to content: any ReaderContentProtocol) -> Bool {
+func applyFeedBody(_ body: Data?, containsFullContent: Bool, to content: any ReaderContentProtocol) -> Bool {
+    guard let body, !body.isEmpty,
+          containsFullContent || !content.rssContainsFullContent else { return false }
+    var didChange = false
+    if content.content != body {
+        content.content = body
+        didChange = true
+    }
+    if containsFullContent, !content.rssContainsFullContent {
+        content.rssContainsFullContent = true
+        didChange = true
+    }
+    return didChange
+}
+
+@discardableResult
+func applyPayload(_ payload: FeedEntryPayload, to content: any ReaderContentProtocol) -> Bool {
+    guard payload.updatesMetadata else {
+        return applyFeedBody(payload.content, containsFullContent: payload.containsFullContent, to: content)
+    }
     var didChange = false
     if content.title != payload.title {
         content.title = payload.title
@@ -2092,8 +2133,7 @@ fileprivate func applyPayload(_ payload: FeedEntryPayload, to content: any Reade
         content.publicationDate = payload.publicationDate
         didChange = true
     }
-    if content.content != payload.content {
-        content.content = payload.content
+    if applyFeedBody(payload.content, containsFullContent: payload.containsFullContent, to: content) {
         didChange = true
     }
     if content.voiceFrameUrl != payload.voiceFrameUrl {
