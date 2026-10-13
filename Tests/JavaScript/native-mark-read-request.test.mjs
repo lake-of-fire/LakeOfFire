@@ -1349,3 +1349,75 @@ test('terminal lifecycle cleanup preserves listeners installed by a reentrant su
     assert.equal(h.coordinator.settle(terminalFor(h.posted[1])), true)
     assert.equal((await successor).success, true)
 })
+
+
+test('throwing initial timer scheduling cannot strand an intent before native submission', async () => {
+    const h = harness({ onTimerScheduled: () => { throw new Error('timer setup failed') } })
+    let completion
+    assert.doesNotThrow(() => {
+        completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    })
+    assert.equal(h.posted.length, 1)
+    const retainedCallback = [...h.timeouts.values()][0]
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+    retainedCallback()
+    assert.equal(h.controls.length, 0, 'An unreturned timer handle cannot revive a terminal command')
+    assert.equal(h.coordinator.pendingCount, 0)
+})
+
+test('throwing timer cleanup cannot interrupt cancellation observation or native settlement', async () => {
+    const h = harness({ onTimerCancelled: () => { throw new Error('timer cleanup failed') } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    assert.doesNotThrow(() => {
+        assert.equal(h.coordinator.cancel(h.posted[0].requestID), true)
+    })
+    assert.equal(h.controls.at(-1).manualReadPendingOperation, 'cancel')
+    assert.equal(h.timeouts.size, 1, 'Cancellation still observes its original outcome')
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+    assert.equal(h.coordinator.pendingCount, 0)
+})
+
+test('one failing departure cleanup cannot strand other commands or restore their Cancel permission', async () => {
+    const h = harness({ onTimerCancelled: () => { throw new Error('timer cleanup failed') } })
+    const first = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const second = h.coordinator.request({ sectionID: 'section-b', message: {} })
+    assert.doesNotThrow(() => h.coordinator.pause())
+    assert.equal(h.timeouts.size, 0)
+    for (const message of h.posted) assert.equal(h.coordinator.cancel(message.requestID), false)
+    assert.deepEqual(h.pendingStates.slice(-2).map(state => state.recoveryOnly), [true, true])
+    h.coordinator.resume()
+    for (const callback of [...h.timeouts.values()]) callback()
+    assert.equal(h.controls.length, 2)
+    assert.ok(h.controls.every(control => control.manualReadPendingOperation === 'status'
+        && control.manualReadPendingHistoryRecovery === true))
+    for (const message of h.posted) assert.equal(h.coordinator.settle(terminalFor(message)), true)
+    assert.equal((await first).success, true)
+    assert.equal((await second).success, true)
+    assert.equal(h.coordinator.pendingCount, 0)
+})
+
+
+test('timer replacement cleanup cannot overwrite a resumed observation for the same command', async () => {
+    let resumeDuringCleanup = false
+    const h = harness({ onTimerCancelled: () => {
+        if (resumeDuringCleanup) {
+            resumeDuringCleanup = false
+            h.coordinator.resume()
+        }
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const retiredCallback = [...h.timeouts.values()][0]
+    resumeDuringCleanup = true
+    assert.equal(h.coordinator.cancel(h.posted[0].requestID), true)
+    assert.equal(h.timeouts.size, 1, 'The resumed observer retains its single timer')
+    assert.deepEqual([...h.timeoutDelays.values()], [0])
+    const controlsBeforeRetiredCallback = h.controls.length
+    retiredCallback()
+    assert.equal(h.controls.length, controlsBeforeRetiredCallback)
+    assert.equal(h.timeouts.size, 1)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+    assert.equal(h.timeouts.size, 0)
+})

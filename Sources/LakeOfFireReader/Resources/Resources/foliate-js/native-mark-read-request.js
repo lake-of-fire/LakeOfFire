@@ -181,22 +181,30 @@ export const createNativeMarkReadRequestCoordinator = ({
         } catch (error) { pending.lastTransportError = String(error) }
     }
     const observe = (pending, delay = 5000) => {
-        if (pending.timeoutHandle != null) cancelTimeout?.(pending.timeoutHandle)
-        if (!observing || pendingByRequestID.get(pending.requestID) !== pending) return
-        const timer = scheduleTimeout?.(() => {
-            // A retained callback may fire after a terminal native result.
-            // It must not resurrect polling, cancellation UI or transport.
-            if (!observing || pendingByRequestID.get(pending.requestID) !== pending) return
+        const observation = {}
+        pending.observation = observation
+        const ownsObservation = () => observing
+            && pendingByRequestID.get(pending.requestID) === pending
+            && pending.observation === observation
+        const previousTimer = pending.timeoutHandle
+        pending.timeoutHandle = null
+        if (previousTimer != null) present(pending, () => cancelTimeout?.(previousTimer))
+        // Cleanup can resume this same request with a newer observation.
+        // Do not replace its timer or let the retired callback resume polling.
+        if (!ownsObservation()) return
+        const timer = present(pending, () => scheduleTimeout?.(() => {
+            if (!ownsObservation()) return
             pending.timeoutHandle = null
-            if (!retainObservationOwnership(pending) || !observing) return
+            if (!retainObservationOwnership(pending) || !ownsObservation()) return
             pending.slow = true
             notify(pending)
+            if (!ownsObservation()) return
             postControl(pending)
-            observe(pending)
-        }, delay)
-        // Scheduling can call into teardown before returning its handle. The
-        // closed coordinator cannot retain that newly returned observation.
-        if (!observing || pendingByRequestID.get(pending.requestID) !== pending) {
+            if (ownsObservation()) observe(pending)
+        }, delay))
+        // Scheduling can call into teardown or install another observation
+        // before returning its handle. Release only this retired timer.
+        if (!ownsObservation()) {
             if (timer != null) present(pending, () => cancelTimeout?.(timer))
             return
         }
@@ -568,11 +576,14 @@ export const createNativeMarkReadRequestCoordinator = ({
         observing = false
         // Pagehide proves departure. Ordinary unknown does not: the original
         // command may still be waiting for native admission.
-        for (const pending of pendingByRequestID.values()) pending.recoveryOnly = true
+        for (const pending of pendingByRequestID.values()) {
+            pending.recoveryOnly = true
+            pending.observation = null
+        }
         for (const pending of pendingByRequestID.values()) {
             const timer = pending.timeoutHandle
             pending.timeoutHandle = null
-            if (timer != null) cancelTimeout?.(timer)
+            if (timer != null) present(pending, () => cancelTimeout?.(timer))
             // Cleanup can finish this request or resume it with another timer.
             // Retain that successor handle and never resurrect terminal chrome.
             if (pendingByRequestID.get(pending.requestID) === pending) notify(pending)
