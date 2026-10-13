@@ -1421,3 +1421,30 @@ test('timer replacement cleanup cannot overwrite a resumed observation for the s
     assert.equal((await completion).success, true)
     assert.equal(h.timeouts.size, 0)
 })
+
+
+test('departure cleanup retains resumed observation timers for every pending command', async () => {
+    let resumeDuringCleanup = false
+    const h = harness({ onTimerCancelled: () => {
+        if (resumeDuringCleanup) {
+            resumeDuringCleanup = false
+            h.coordinator.resume()
+        }
+    } })
+    const first = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const second = h.coordinator.request({ sectionID: 'section-b', message: {} })
+    const retiredCallbacks = [...h.timeouts.values()]
+    resumeDuringCleanup = true
+    h.coordinator.pause()
+    assert.equal(h.timeouts.size, 2, 'Cleanup must not cancel the second resumed command timer')
+    assert.deepEqual([...h.timeoutDelays.values()], [0, 0])
+    for (const callback of retiredCallbacks) callback()
+    assert.equal(h.controls.length, 0)
+    assert.equal(h.timeouts.size, 2)
+    for (const callback of [...h.timeouts.values()]) callback()
+    assert.equal(h.controls.length, 2)
+    assert.ok(h.controls.every(control => control.manualReadPendingHistoryRecovery === true))
+    for (const message of h.posted) assert.equal(h.coordinator.settle(terminalFor(message)), true)
+    assert.equal((await first).success, true)
+    assert.equal((await second).success, true)
+})

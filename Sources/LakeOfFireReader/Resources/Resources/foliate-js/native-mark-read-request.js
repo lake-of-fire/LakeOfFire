@@ -576,13 +576,14 @@ export const createNativeMarkReadRequestCoordinator = ({
         observing = false
         // Pagehide proves departure. Ordinary unknown does not: the original
         // command may still be waiting for native admission.
-        for (const pending of pendingByRequestID.values()) {
+        const departed = [...pendingByRequestID.values()].map(pending => {
             pending.recoveryOnly = true
             pending.observation = null
-        }
-        for (const pending of pendingByRequestID.values()) {
             const timer = pending.timeoutHandle
             pending.timeoutHandle = null
+            return { pending, timer }
+        })
+        for (const { pending, timer } of departed) {
             if (timer != null) present(pending, () => cancelTimeout?.(timer))
             // Cleanup can finish this request or resume it with another timer.
             // Retain that successor handle and never resurrect terminal chrome.
