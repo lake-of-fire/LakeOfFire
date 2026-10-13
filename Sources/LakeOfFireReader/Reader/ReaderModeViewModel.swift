@@ -1305,6 +1305,79 @@ private func propagateReaderModeDefaultsOnBackgroundActor(
     }
 }
 
+// Shared DOM operations used by the native prepared dispatcher and the
+// default page-world replacement. Page-world initialization stays separate.
+let readerModeFrameContentReplacementDOMScript = """
+var root = document.body
+if (renderToSelector) {
+    root = document.querySelector(renderToSelector)
+}
+if (typeof requireReplacementRoot !== 'undefined'
+    && requireReplacementRoot && !root) { return false; }
+var serialized = html
+
+let xmlns = document.body?.getAttribute('xmlns')
+if (xmlns) {
+    let parser = new DOMParser()
+    let doc = parser.parseFromString(serialized, 'text/html')
+    let readabilityNode = doc.body
+    let replacementNode = root.cloneNode()
+    replacementNode.innerHTML = ''
+    for (let innerNode of readabilityNode.childNodes) {
+        serialized = new XMLSerializer().serializeToString(innerNode)
+        replacementNode.innerHTML += serialized
+    }
+    root.innerHTML = replacementNode.innerHTML
+} else if (root) {
+    root.outerHTML = serialized
+}
+// XML replacement retains the original body node. Its
+// old attributes cannot describe the emitted catalog.
+if (document.body && typeof requireReplacementRoot !== 'undefined'
+    && requireReplacementRoot === true && typeof expectedNativeContentFingerprint === 'string') {
+    if (expectedNativeContentFingerprint.length > 0) {
+        document.body.setAttribute('data-mnb-native-sidecar-content-fingerprint',
+            expectedNativeContentFingerprint)
+    } else {
+        document.body.removeAttribute('data-mnb-native-sidecar-content-fingerprint')
+    }
+    if (typeof nativeBodyBootstrapAttributes === 'object'
+        && nativeBodyBootstrapAttributes) {
+        for (const name of ['data-mnb-reading-progress-enabled',
+            'data-mnb-tracking-enabled']) {
+            if (Object.prototype.hasOwnProperty.call(nativeBodyBootstrapAttributes, name)) {
+                document.body.setAttribute(name, nativeBodyBootstrapAttributes[name])
+            } else {
+                document.body.removeAttribute(name)
+            }
+        }
+    }
+}
+
+let existingStyle = document.getElementById('swiftuiwebview-readability-styles')
+if (existingStyle) {
+    existingStyle.textContent = css
+} else {
+    let style = document.createElement('style')
+    style.id = 'swiftuiwebview-readability-styles'
+    style.textContent = css
+    document.head.appendChild(style)
+}
+const manabiStyle = document.getElementById('mnb-readability-styles')
+if (manabiStyle && document.head) {
+    document.head.appendChild(manabiStyle)
+}
+if (document.body) {
+    document.body.className = bodyClassNames || 'readability-mode'
+}
+"""
+
+/// Executes a prepared native child-frame replacement. The script contains
+/// only shared DOM operations and reports whether its target was replaced.
+public typealias ReaderModeFrameContentReplacement = @MainActor (
+    String, [String: any Sendable]
+) async throws -> Bool
+
 @MainActor
 @Perceptible
 public final class ReaderModeLoadingState {
@@ -1441,13 +1514,14 @@ public class ReaderModeViewModel: ObservableObject {
     @Published public var sharedReaderFontAsset: SharedReaderFontAsset?
     public var readerModeLoadCompletionHandler: ((URL) -> Void)?
     /// Native handoff for replacing a child document in place. The original
-    /// caller binding and exact target survive processing. Preparation returns
-    /// an action run after the final render gates, immediately before replacement;
-    /// a missing action or false result withdraws this render. Nil keeps the default.
+    /// caller binding, exact target and processed native fingerprint survive
+    /// processing. The returned dispatcher runs after the final render gates;
+    /// missing preparation or a false replacement withdraws the render.
+    /// Nil keeps the default page-world replacement behavior.
     public var readerModeWillReplaceFrameContent: (@MainActor (
         WebViewScriptCaller, WebViewScriptCaller.JavaScriptBindingToken,
-        WKFrameInfo, URL, URL
-    ) async -> ReaderFrameContentReplacementPreparation?)?
+        WKFrameInfo, URL, URL, String
+    ) async -> ReaderModeFrameContentReplacement?)?
     
     @Published public var isReaderMode = false
     public let loadingState = ReaderModeLoadingState()
@@ -2996,6 +3070,18 @@ public class ReaderModeViewModel: ObservableObject {
                 renderGeneration: frameInfo?.isMainFrame == false ? nil : renderGeneration
             )
 
+            let expectedNativeContentFingerprint =
+                (try? doc.body()?.attr("data-mnb-native-sidecar-content-fingerprint")) ?? ""
+            let nativeBodyBootstrapAttributes: [String: String] = Dictionary(
+                uniqueKeysWithValues: [
+                    "data-mnb-reading-progress-enabled",
+                    "data-mnb-tracking-enabled",
+                ].compactMap { name -> (String, String)? in
+                    guard let body = doc.body(), (try? body.hasAttr(name)) == true,
+                          let value = try? body.attr(name) else { return nil }
+                    return (name, value)
+                }
+            )
             let serializedHTMLBytes = try doc.outerHtmlUTF8()
 
             var transformedHTMLBytes = serializedHTMLBytes
@@ -3103,7 +3189,7 @@ public class ReaderModeViewModel: ObservableObject {
                         ? (transformedStyleTextForFrameInjection ?? "")
                         : ""
                     var requiredReplacementBinding: WebViewScriptCaller.JavaScriptBindingToken?
-                    var frameReplacementPreparation: ReaderFrameContentReplacementPreparation?
+                    var preparedReplacement: ReaderModeFrameContentReplacement?
                     if let frameReplacementHook {
                         guard let frameReplacementBinding,
                               scriptCaller.currentJavaScriptBindingToken == frameReplacementBinding,
@@ -3112,8 +3198,9 @@ public class ReaderModeViewModel: ObservableObject {
                                 ifOwnedBy: renderGeneration, readerContent: readerContent)
                             return
                         }
-                        let preparation = await frameReplacementHook(
-                            scriptCaller, frameReplacementBinding, frameInfo, url, frameURL
+                        let replacement = await frameReplacementHook(
+                            scriptCaller, frameReplacementBinding, frameInfo, url, frameURL,
+                            expectedNativeContentFingerprint
                         )
                         // The handoff can suspend into WebKit or withdraw this
                         // render. Its original job, content and binding still
@@ -3124,57 +3211,18 @@ public class ReaderModeViewModel: ObservableObject {
                         else {
                             cancelReaderModeLoad(for: requestedURL,
                                 ifOwnedBy: renderGeneration, readerContent: readerContent)
-                            await preparation?.discard()
                             return
                         }
-                        guard let preparation, preparation.commit() else {
+                        guard let replacement else {
                             cancelReaderModeLoad(for: requestedURL,
                                 ifOwnedBy: renderGeneration, readerContent: readerContent)
-                            await preparation?.discard()
                             return
                         }
                         requiredReplacementBinding = frameReplacementBinding
-                        frameReplacementPreparation = preparation
+                        preparedReplacement = replacement
                     }
-                    let replacementScript = """
-                        var root = document.body
-                        if (renderToSelector) {
-                            root = document.querySelector(renderToSelector)
-                        }
-                        var serialized = html
-                        
-                        let xmlns = document.body?.getAttribute('xmlns')
-                        if (xmlns) {
-                            let parser = new DOMParser()
-                            let doc = parser.parseFromString(serialized, 'text/html')
-                            let readabilityNode = doc.body
-                            let replacementNode = root.cloneNode()
-                            replacementNode.innerHTML = ''
-                            for (let innerNode of readabilityNode.childNodes) {
-                                serialized = new XMLSerializer().serializeToString(innerNode)
-                                replacementNode.innerHTML += serialized
-                            }
-                            root.innerHTML = replacementNode.innerHTML
-                        } else if (root) {
-                            root.outerHTML = serialized
-                        }
-                        
-                        let existingStyle = document.getElementById('swiftuiwebview-readability-styles')
-                        if (existingStyle) {
-                            existingStyle.textContent = css
-                        } else {
-                            let style = document.createElement('style')
-                            style.id = 'swiftuiwebview-readability-styles'
-                            style.textContent = css
-                            document.head.appendChild(style)
-                        }
-                        const manabiStyle = document.getElementById('mnb-readability-styles')
-                        if (manabiStyle && document.head) {
-                            document.head.appendChild(manabiStyle)
-                        }
-                        if (document.body) {
-                            document.body.className = bodyClassNames || 'readability-mode'
-                        }
+                    let replacementScript = readerModeFrameContentReplacementDOMScript
+                    let readerModeInitializationScript = """
                         if (readerModeScript) {
                             try {
                                 new Function(readerModeScript)()
@@ -3189,37 +3237,35 @@ public class ReaderModeViewModel: ObservableObject {
                         "css": transformedStyleText,
                         "bodyClassNames": transformedBodyClasses,
                         "readerModeScript": Readability.shared.scripts,
+                        "requireReplacementRoot": false,
                     ]
-                    if let requiredReplacementBinding {
-                        guard let preparation = frameReplacementPreparation,
-                              let guardedScript = preparation.guardedScript(replacementScript) else {
+                    if let preparedReplacement, let requiredReplacementBinding {
+                        replacementArguments["requireReplacementRoot"] = true
+                        replacementArguments["expectedNativeContentFingerprint"] = expectedNativeContentFingerprint
+                        replacementArguments["nativeBodyBootstrapAttributes"] = nativeBodyBootstrapAttributes
+                        let replaced = try await preparedReplacement(
+                            replacementScript + "\nreturn true;", replacementArguments
+                        )
+                        guard replaced,
+                              isCurrentRender(for: requestedURL, generation: renderGeneration),
+                              url.matchesReaderURL(readerContent.pageURL),
+                              scriptCaller.currentJavaScriptBindingToken == requiredReplacementBinding
+                        else {
                             cancelReaderModeLoad(for: requestedURL,
                                 ifOwnedBy: renderGeneration, readerContent: readerContent)
-                            await frameReplacementPreparation?.discard()
                             return
                         }
-                        replacementArguments["readerFrameReplacementToken"] = preparation.token
-                        let replaced: Bool
-                        do {
-                            replaced = try await scriptCaller.evaluateJavaScript(
-                                guardedScript, arguments: replacementArguments,
-                                in: frameInfo, duplicateInMultiTargetFrames: false,
-                                requiring: requiredReplacementBinding) as? Bool == true
-                        } catch {
-                            cancelReaderModeLoad(for: requestedURL,
-                                ifOwnedBy: renderGeneration, readerContent: readerContent)
-                            await preparation.discard()
-                            throw error
-                        }
-                        guard replaced else {
-                            cancelReaderModeLoad(for: requestedURL,
-                                ifOwnedBy: renderGeneration, readerContent: readerContent)
-                            await preparation.discard()
-                            return
-                        }
+                        // Native phase and DOM replacement commit together.
+                        // Initialize page-world globals only for that successful
+                        // original replacement, never in the native content world.
+                        _ = try await scriptCaller.evaluateJavaScript(
+                            readerModeInitializationScript,
+                            arguments: ["readerModeScript": Readability.shared.scripts],
+                            in: frameInfo, requiring: requiredReplacementBinding)
                     } else {
                         _ = try await scriptCaller.evaluateJavaScript(
-                            replacementScript, arguments: replacementArguments, in: frameInfo)
+                            replacementScript + "\n" + readerModeInitializationScript,
+                            arguments: replacementArguments, in: frameInfo)
                     }
                     guard isCurrentRender(
                         for: requestedURL,
