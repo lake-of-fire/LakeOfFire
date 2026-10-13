@@ -6334,6 +6334,12 @@ class Reader {
     constructor() {
         applyStoredChromeInsets('reader.constructor');
         this.#listen(window, 'pagehide', () => { this.#pageLifetime = {}; });
+        const historyRecoveryLocations = new WeakMap()
+        const ownsHistoryRecoveryLocation = (context, runtime) => {
+            const receipt = historyRecoveryLocations.get(context)
+            return !receipt || (receipt.runtime === runtime
+                && receipt.locationRevision === runtime?.state.locationRevision)
+        }
         this.nativeMarkReadRequestCoordinator = createNativeMarkReadRequestCoordinator({
             postControlMessage: packet => {
                 const handler = globalThis.webkit?.messageHandlers?.manualReadPendingControl
@@ -6351,13 +6357,22 @@ class Reader {
                     && isCurrent()
                     && runtime === this.bookReadingRuntime
                     && context?.bookReadingRuntime === runtime
+                    && ownsHistoryRecoveryLocation(context, runtime)
                     && (!message?.pageURL || message.pageURL === runtime?.state.location?.sectionURL)
                     && context?.accountPresentation === runtime?.state.accountPresentation
                     && this.#isRendererLifecycleCurrent(owner.lifecycleGeneration, owner.renderer)
                     && (!owner.document || this.#currentPageTrackingDocument(owner.document) === owner.document)
                     && context?.accountPresentation === runtime?.state.accountPresentation
                     && isCurrent();
-                if (!ownsOriginal()) return false;
+                if (!runtime || !ownsOriginal()) return false;
+                if (!historyRecoveryLocations.has(context)) {
+                    // Movement before the terminal still needs recovery. Once
+                    // recovery starts, a later relocation retires this receipt
+                    // with BookState's original proof, even in the same chapter.
+                    historyRecoveryLocations.set(context, {
+                        runtime, locationRevision: runtime.state.locationRevision,
+                    })
+                }
                 return refreshNativeMarkReadBookStateForRecovery(runtime, owner.bookReadingScope, ownsOriginal, observation);
             },
             onRecoveryQuery: observation => this.bookReadingRuntime?.state
@@ -6369,6 +6384,7 @@ class Reader {
                 // A null context is expected while the original recovery waits.
                 return !!owner && globalThis.reader === this
                     && context?.bookReadingRuntime === runtime
+                    && ownsHistoryRecoveryLocation(context, runtime)
                     && (!currentContext || bookScopeKey(currentContext.scope) === bookScopeKey(owner.bookReadingScope))
                     && (!message?.pageURL || message.pageURL === runtime?.state.location?.sectionURL)
                     && context?.accountPresentation === runtime?.state.accountPresentation

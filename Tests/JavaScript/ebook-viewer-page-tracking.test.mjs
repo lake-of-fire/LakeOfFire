@@ -407,6 +407,131 @@ function restoredBookPassFixture(replacement) {
         proof: { requestID: message.requestID, observationToken: message.manualReadPendingObservationToken } }
 }
 
+test('Book recovery relocation admits a fresh Mark after a current same-chapter sample', async t => {
+    const { f, book, completion, historyTerminal, proof } = restoredBookPassFixture('unchanged')
+    t.after(() => book.runtime.close())
+    assert.equal(f.reader.applyMarkSectionAsReadResult(historyTerminal), true)
+    assert.equal(await completion, true)
+    const recovery = f.reader.recoverHistoryReadingStatus(proof)
+    await new Promise(resolve => setImmediate(resolve))
+    const historyRequest = book.requests.at(-1)
+    assert.deepEqual(historyRequest.historyRecoveryObservation, proof)
+    assert.equal(book.runtime.state.ready, false)
+
+    // Reader's real relocate handler calls this runtime entry point for a
+    // page turn, including movement within the same chapter Document.
+    assert.equal(book.runtime.updateLocation(true), true)
+    const currentRequest = book.requests.at(-1)
+    assert.equal(currentRequest.sectionURL, historyRequest.sectionURL)
+    assert.ok(currentRequest.locationRevision > historyRequest.locationRevision)
+    assert.equal(currentRequest.historyRecoveryObservation, undefined)
+    assert.equal(await recovery, false, 'Relocation retires the old native query')
+    assert.equal(book.publish(3), true, 'The current ordinary location query supplies fresh native facts')
+    assert.equal(book.runtime.state.ready, true)
+    const currentContext = book.runtime.state.context
+    assert.equal(f.reader.failHistoryReadingStatusRecovery(proof), false,
+        'A late native failure cannot withdraw the successor location publication')
+    assert.deepEqual(book.runtime.state.context, currentContext)
+
+    f.seedPage('current-location-page')
+    const successor = f.reader.markVisiblePageAsRead()
+    const fresh = f.requests[1]?.message
+    if (fresh) f.reader.applyMarkSectionAsReadResult({ ...fresh,
+        manualReadPendingState: 'finished', success: false, errorCode: 'fixture-complete' })
+    await successor
+    assert.equal(f.requests.length, 2,
+        'A retired recovery cannot reject the ready current page as pendingCapacityExceeded')
+    assert.deepEqual(fresh.bookReadingScope, currentContext.scope)
+    assert.equal(f.reader.failHistoryReadingStatusRecovery(proof), false)
+    assert.equal(book.runtime.state.ready, true)
+    assert.deepEqual(f.moves, [], 'Read-only recovery does not advance the original page')
+})
+
+test('Book recovery relocation leaves unchanged-location failure blocked', async t => {
+    const { f, book, completion, historyTerminal, proof } = restoredBookPassFixture('unchanged')
+    t.after(() => book.runtime.close())
+    assert.equal(f.reader.applyMarkSectionAsReadResult(historyTerminal), true)
+    assert.equal(await completion, true)
+    const recovery = f.reader.recoverHistoryReadingStatus(proof)
+    await new Promise(resolve => setImmediate(resolve))
+    const request = book.requests.at(-1)
+    assert.equal(book.runtime.state.apply(request.requestID, {
+        ok: false, accountPresentation: book.runtime.state.accountPresentation,
+        location: { sectionURL: request.sectionURL, isEndPage: request.isEndPage,
+            locationRevision: request.locationRevision },
+        historyRecoveryObservation: proof,
+    }), false)
+    assert.equal(await recovery, false)
+    assert.equal(book.runtime.state.ready, false)
+    assert.equal(book.native(3), false, 'An unsolicited ordinary sample cannot bypass the retained barrier')
+    f.seedPage('unreconciled-page')
+    assert.equal(await f.reader.markVisiblePageAsRead(), false)
+    assert.equal(f.requests.length, 1)
+    assert.equal(f.reader.failHistoryReadingStatusRecovery(proof), true)
+})
+
+test('Book recovery relocation before the delegated query cannot rebase the old receipt', async t => {
+    const { f, book, completion, historyTerminal, proof } = restoredBookPassFixture('unchanged')
+    t.after(() => book.runtime.close())
+    assert.equal(f.reader.applyMarkSectionAsReadResult(historyTerminal), true)
+    assert.equal(await completion, true)
+    assert.equal(book.runtime.state.ready, false)
+    assert.equal(book.runtime.updateLocation(true), true)
+    assert.equal(book.publish(3), true)
+    const currentContext = book.runtime.state.context
+    const requestCount = book.requests.length
+
+    const recovery = f.reader.recoverHistoryReadingStatus(proof)
+    await new Promise(resolve => setImmediate(resolve))
+    if (book.requests.length > requestCount) {
+        // Drain any incorrectly reissued read so the baseline fails on the
+        // ownership assertion instead of leaving an unresolved test promise.
+        const request = book.requests.at(-1)
+        book.runtime.state.apply(request.requestID, { ok: false,
+            accountPresentation: book.runtime.state.accountPresentation,
+            location: { sectionURL: request.sectionURL, isEndPage: request.isEndPage,
+                locationRevision: request.locationRevision },
+            historyRecoveryObservation: request.historyRecoveryObservation,
+        })
+    }
+    assert.equal(await recovery, false)
+    assert.equal(book.requests.length, requestCount,
+        'A delayed native delegation cannot reprepare recovery at the successor location')
+    assert.equal(book.runtime.state.ready, true)
+    assert.deepEqual(book.runtime.state.context, currentContext)
+    f.seedPage('current-before-delegation')
+    const successor = f.reader.markVisiblePageAsRead()
+    const fresh = f.requests[1]?.message
+    if (fresh) f.reader.applyMarkSectionAsReadResult({ ...fresh,
+        manualReadPendingState: 'finished', success: false, errorCode: 'fixture-complete' })
+    await successor
+    assert.equal(f.requests.length, 2)
+    assert.equal(f.reader.failHistoryReadingStatusRecovery(proof), false)
+    assert.equal(book.runtime.state.ready, true)
+})
+
+test('Book recovery relocation before terminal retains the later correlated recovery', async t => {
+    const { f, book, completion, historyTerminal, proof } = restoredBookPassFixture('unchanged')
+    t.after(() => book.runtime.close())
+    assert.equal(book.runtime.updateLocation(true), true)
+    assert.equal(book.publish(3), true)
+    assert.equal(book.runtime.state.ready, true)
+    const movedRevision = book.runtime.state.locationRevision
+    assert.equal(f.reader.applyMarkSectionAsReadResult(historyTerminal), true)
+    assert.equal(await completion, true)
+    assert.equal(book.runtime.state.ready, false,
+        'Movement before the terminal cannot excuse its required reading-status recovery')
+    const recovery = f.reader.recoverHistoryReadingStatus(proof)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(book.requests.at(-1).locationRevision, movedRevision)
+    assert.deepEqual(book.requests.at(-1).historyRecoveryObservation, proof)
+    assert.equal(book.publish(4), true)
+    assert.equal(await recovery, true)
+    assert.equal(f.reader.reacknowledgeHistoryReadingStatus(proof), true)
+    assert.equal(book.runtime.state.ready, true)
+    assert.equal(f.requests.length, 1, 'Recovery observes the original mutation without replaying it')
+})
+
 for (const replacement of ['book', 'chapter']) {
     for (const delivery of ['ordinary', 'history']) {
         test(`a successor Book pass admits a fresh Mark after the previous ${replacement} pass ${delivery} terminal`, async () => {
