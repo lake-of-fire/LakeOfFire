@@ -1,10 +1,12 @@
 import Foundation
+import CoreText
 import LakeOfFireContent
 import LakeOfFireCore
 
 public struct SharedReaderFontAsset: Hashable, Sendable {
     public let localFileURL: URL?
     public let systemFontNames: [String: String]
+    public let enablesRuntimeResourceDelivery: Bool
     public let mimeType: String
     public let format: String
     public let horizontalFamilyName: String
@@ -20,6 +22,7 @@ public struct SharedReaderFontAsset: Hashable, Sendable {
         publicFilenameBase: String = "YuKyokasho"
     ) {
         self.systemFontNames = [:]
+        self.enablesRuntimeResourceDelivery = false
         self.localFileURL = localFileURL
         self.mimeType = mimeType
         self.format = format
@@ -28,14 +31,17 @@ public struct SharedReaderFontAsset: Hashable, Sendable {
         self.publicFilenameBase = publicFilenameBase
     }
 
-    /// System-managed fonts expose names, never their files or bytes.
+    /// Name-only by default. Opt in to serve validated, exact CoreText resources
+    /// through the reader's local schemes, resolving them anew for each request.
     public init(
         systemFontNames: [String: String],
         horizontalFamilyName: String,
-        verticalFamilyName: String
+        verticalFamilyName: String,
+        enablesRuntimeResourceDelivery: Bool = false
     ) {
         self.localFileURL = nil
         self.systemFontNames = systemFontNames
+        self.enablesRuntimeResourceDelivery = enablesRuntimeResourceDelivery
         self.mimeType = "text/css"
         self.format = ""
         self.horizontalFamilyName = horizontalFamilyName
@@ -60,6 +66,48 @@ public struct SharedReaderFontAsset: Hashable, Sendable {
     public func supportsFamily(_ familyName: String) -> Bool {
         supportedFamilyNames.contains(familyName)
     }
+}
+
+// The endpoint encodes logical identity only, never a filesystem path. Each
+// registered PostScript name retains its route across downloads and file changes.
+private func sharedReaderFontRuntimeFilename(postScriptName: String) -> String {
+    let encodedName = Data(postScriptName.utf8).base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+    return "system-" + encodedName
+}
+
+private func sharedReaderFontRuntimeResource(
+    postScriptName: String
+) -> (url: URL, mimeType: String, format: String)? {
+    let font = CTFontCreateWithName(postScriptName as CFString, 17, nil)
+    guard CTFontCopyPostScriptName(font) as String == postScriptName,
+          let resourceURL = CTFontCopyAttribute(font, kCTFontURLAttribute) as? URL,
+          resourceURL.isFileURL else { return nil }
+    let fileURL = resourceURL.resolvingSymlinksInPath()
+    guard fileURL.isFileURL,
+          FileManager.default.isReadableFile(atPath: fileURL.path) else { return nil }
+    let mimeType: String
+    let format: String
+    switch fileURL.pathExtension.lowercased() {
+    case "ttf":
+        mimeType = "font/ttf"
+        format = "truetype"
+    case "otf":
+        mimeType = "font/otf"
+        format = "opentype"
+    case "ttc", "otc":
+        mimeType = "font/collection"
+        format = "opentype"
+    default:
+        return nil
+    }
+    guard let descriptors = CTFontManagerCreateFontDescriptorsFromURL(fileURL as CFURL) as? [CTFontDescriptor],
+          descriptors.contains(where: {
+              CTFontDescriptorCopyAttribute($0, kCTFontNameAttribute) as? String == postScriptName
+          }) else { return nil }
+    return (fileURL, mimeType, format)
 }
 
 public struct SharedReaderFontServedResponse {
@@ -168,14 +216,22 @@ public func sharedReaderFontStylesheetURLTemplate(for pageURL: URL) -> String? {
 
 private func sharedReaderFontFontURL(
     for pageURL: URL,
-    asset: SharedReaderFontAsset
+    asset: SharedReaderFontAsset,
+    postScriptName: String? = nil
 ) -> URL? {
     guard let baseURL = sharedReaderFontBaseURL(for: pageURL),
           let scheme = SharedReaderFontScheme(pageURL: baseURL) else { return nil }
     var components = URLComponents()
     components.scheme = scheme.rawValue
     components.host = scheme.host
-    components.path = scheme.fontPathPrefix + asset.publicFilename
+    if let postScriptName {
+        components.path = scheme.fontPathPrefix + sharedReaderFontRuntimeFilename(postScriptName: postScriptName)
+        components.fragment = postScriptName
+        components.queryItems = URLComponents(url: pageURL, resolvingAgainstBaseURL: false)?
+            .queryItems?.filter { $0.name == "revision" }
+    } else {
+        components.path = scheme.fontPathPrefix + asset.publicFilename
+    }
     return components.url
 }
 
@@ -253,14 +309,32 @@ public func sharedReaderFontResponse(
         }
 
         // Keep CSS literals and joining on String rather than imported SQL overloads.
-        let fontFaces: String = asset.supportedFamilyNames.map { supportedFamilyName -> String in
+        var fontFaceRules: [String] = []
+        for supportedFamilyName in asset.supportedFamilyNames {
             let source: String
-            if let postScriptName = asset.systemFontNames[supportedFamilyName] {
+            if asset.enablesRuntimeResourceDelivery {
+                guard let postScriptName = asset.systemFontNames[supportedFamilyName],
+                      let resourceURL = sharedReaderFontFontURL(
+                          for: requestURL, asset: asset, postScriptName: postScriptName
+                      ) else {
+                    let response = sharedReaderFontHTTPResponse(
+                        url: requestURL, statusCode: 404, contentType: "text/plain", textEncodingName: "utf-8"
+                    )
+                    return SharedReaderFontServedResponse(response: response, data: Data())
+                }
+                // Publish both logical routes while downloads are in flight.
+                // Each byte request validates its own exact installed face and
+                // returns 404 until ready; an unavailable vertical face must not
+                // prevent the horizontal face from being used.
+                let formatHint = sharedReaderFontRuntimeResource(postScriptName: postScriptName)
+                    .map { " format(\"\($0.format)\")" } ?? ""
+                source = "url(\"\(resourceURL.absoluteString)\")" + formatHint
+            } else if let postScriptName = asset.systemFontNames[supportedFamilyName] {
                 source = "local('\(postScriptName)')"
             } else {
                 source = "url(\"\(fontURL.absoluteString)\") format(\"\(asset.format)\")"
             }
-            return """
+            fontFaceRules.append("""
             @font-face {
               font-family: '\(supportedFamilyName)';
               font-weight: 400 700;
@@ -268,8 +342,9 @@ public func sharedReaderFontResponse(
               src: \(source);
               font-display: swap;
             }
-            """
-        }.joined(separator: "\n")
+            """)
+        }
+        let fontFaces = fontFaceRules.joined(separator: "\n")
         let css = """
         \(fontFaces)
         :root {
@@ -299,7 +374,27 @@ public func sharedReaderFontResponse(
         return SharedReaderFontServedResponse(response: response, data: data)
 
     case .font:
-        guard let fileURL = asset.localFileURL,
+        let fileURL: URL?
+        let mimeType: String
+        let scheme = SharedReaderFontScheme(pageURL: requestURL)
+        if let scheme, let localFileURL = asset.localFileURL,
+           requestURL.path == scheme.fontPathPrefix + asset.publicFilename {
+            fileURL = localFileURL
+            mimeType = asset.mimeType
+        } else if let scheme, asset.enablesRuntimeResourceDelivery,
+                  let postScriptName = asset.systemFontNames.values.first(where: {
+                      requestURL.path == scheme.fontPathPrefix + sharedReaderFontRuntimeFilename(postScriptName: $0)
+                  }),
+                  let resource = sharedReaderFontRuntimeResource(postScriptName: postScriptName) {
+            fileURL = resource.url
+            mimeType = resource.mimeType
+        } else {
+            fileURL = nil
+            mimeType = "text/plain"
+        }
+        // Prefix routing catches unknown font endpoints, but only the exact
+        // registered routes above can ever produce bytes.
+        guard let fileURL,
               let data = try? Data(contentsOf: fileURL) else {
             let response = sharedReaderFontHTTPResponse(
                 url: requestURL,
@@ -312,7 +407,7 @@ public func sharedReaderFontResponse(
         let response = sharedReaderFontHTTPResponse(
             url: requestURL,
             statusCode: 200,
-            contentType: asset.mimeType,
+            contentType: mimeType,
             extraHeaders: ["Access-Control-Allow-Origin": "*"]
         )
         return SharedReaderFontServedResponse(response: response, data: data)
