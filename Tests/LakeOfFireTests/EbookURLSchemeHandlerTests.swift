@@ -49,7 +49,7 @@ private func ebookIndexedSidecarPayload(_ index: Int) -> EbookProcessedSectionPa
     EbookProcessedSectionPayload.successfulReaderProcessing(
         documentHTML: Data("<m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">\(index)</m-m></m-s></m-c>".utf8),
         segmentSidecar: Data("""
-        {"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h\(index)"],"x":["\(index)"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}
+        {"v":\(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h\(index)"],"x":["\(index)"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}
         """.utf8)
     )
 }
@@ -61,6 +61,101 @@ private let ebookTestProcessingVariant = EbookProcessingVariant(
 )
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
+    private func currentSchemaPayload(tuple: [Any], version: Int = ReaderCompactSegmentSidecarSchema.currentVersion) throws -> EbookProcessedSectionPayload {
+        let html = Data("<m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">本文</m-m></m-s></m-c>".utf8)
+        let sidecar = try JSONSerialization.data(withJSONObject: [
+            "v": version,
+            "t": [
+                "j": [], "n": [], "s": [], "ns": [], "p": [],
+                "h": ["h"], "x": ["本文", " 本文 "], "sid": ["s"], "pid": ["p"],
+                "res": [[String: Any]()],
+            ] as [String: Any],
+            "s": [tuple],
+        ])
+        return EbookReaderProcessingCompletionProof.forTesting(
+            sourceHTML: String(decoding: html, as: UTF8.self)
+        ).complete(documentHTML: html, segmentSidecar: sidecar)
+    }
+
+    private var currentSchemaBaseTuple: [Any] {
+        ["!m", 0, NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), 0, 0, 0]
+    }
+
+    func testCurrentSchemaSidecarAcceptsScopeTextAndOptionalResolution() throws {
+        let suffixes: [[Any]] = [[NSNull(), 1], [0, 1], [0, NSNull()], [NSNull(), NSNull()]]
+        for suffix in suffixes {
+            let payload = try currentSchemaPayload(tuple: currentSchemaBaseTuple + suffix)
+            XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+            let encoded = encodedEbookProcessedSectionCacheValue(payload)
+            let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(encoded))
+            XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(restored))
+            XCTAssertEqual(restored.segmentSidecar, payload.segmentSidecar)
+        }
+    }
+
+    func testCurrentSchemaSidecarAcceptsShorterTuplesWithoutScopeText() throws {
+        let suffixes: [[Any]] = [[], [0]]
+        for suffix in suffixes {
+            let payload = try currentSchemaPayload(tuple: currentSchemaBaseTuple + suffix)
+            XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+            let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
+                encodedEbookProcessedSectionCacheValue(payload)))
+            XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(restored))
+        }
+    }
+
+    func testCurrentSchemaSidecarRejectsInvalidScopeTextReferences() throws {
+        let references: [Any] = [true, 0.5, -1, "0", 2, [String: Any]()]
+        for reference in references {
+            let payload = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull(), reference])
+            XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+            let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
+                encodedEbookProcessedSectionCacheValue(payload)))
+            XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(restored))
+        }
+    }
+
+    func testCurrentSchemaSidecarPreservesResolutionBoundsAndTupleLength() throws {
+        let references: [Any] = [true, 0.5, -1, "0", 1]
+        for reference in references {
+            let payload = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [reference, 1])
+            XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+        }
+        let nullResolutionOnly = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull()])
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(nullResolutionOnly))
+        let extraField = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull(), 1, 1, NSNull()])
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(extraField))
+    }
+
+    func testCurrentSidecarPreservesCompleteParagraphTextAndRejectsInvalidReferences() throws {
+        let payload = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull(), 0, 1])
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+        let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
+            encodedEbookProcessedSectionCacheValue(payload)))
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(restored))
+        XCTAssertEqual(restored.segmentSidecar, payload.segmentSidecar)
+        let absent = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull(), 0, NSNull()])
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(absent))
+        let invalidReferences: [Any] = [true, 0.5, -1, "0", 2]
+        for reference in invalidReferences {
+            let invalid = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull(), 0, reference])
+            XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(invalid))
+        }
+        let prior = try currentSchemaPayload(tuple: currentSchemaBaseTuple + [NSNull(), 1], version: 13)
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(prior))
+    }
+
+    func testPriorSchema12SidecarCannotClaimCurrentProcessingAuthority() throws {
+        let suffixes: [[Any]] = [[], [NSNull(), 1]]
+        for suffix in suffixes {
+            let payload = try currentSchemaPayload(tuple: currentSchemaBaseTuple + suffix, version: 12)
+            XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+            let restored = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(
+                encodedEbookProcessedSectionCacheValue(payload)))
+            XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(restored))
+        }
+    }
+
     func testEbookEndpointSourceRequiresTheRequestMainDocumentPackage() throws {
         let manager = ReaderFileManager()
         let bookURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/one.epub"))
@@ -135,7 +230,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testExternalizingCanonicalSidecarKeepsAggregateAndPublishesRawJSON() throws {
-        let canonicalJSON = #"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
+        let canonicalJSON = #"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
         let aggregateJSON = #"{"c":0,"j":[],"n":[],"k":[],"sid":[]}"#
         let html = """
         <html><head><title>Test</title></head><body><m-c pid="p"><m-s sid="s" o="true"><m-m id="m">本文</m-m></m-s></m-c>
@@ -167,7 +262,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testExternalizingCanonicalSidecarIgnoresIdentifierTextInsideEarlierScript() throws {
-        let canonicalJSON = #"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
+        let canonicalJSON = #"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
         let html = """
         <html><head></head><body>
         <script>window.decoy = 'id="mnb-segment-metadata"';</script>
@@ -198,7 +293,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testExternalizingCanonicalSidecarIgnoresCommentedScriptDecoy() throws {
-        let canonicalJSON = #"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
+        let canonicalJSON = #"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
         let html = """
         <html><head></head><body>
         <!-- <script id="mnb-segment-metadata">{"decoy":true}</script> -->
@@ -229,7 +324,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testExternalizingCanonicalSidecarRejectsMultipleCanonicalOwners() {
-        let canonicalJSON = #"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
+        let canonicalJSON = #"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
         let html = """
         <html><body><m-c pid="p"><m-s sid="s" o="true"><m-m id="m">本文</m-m></m-s></m-c>
         <script id="mnb-segment-metadata">\(canonicalJSON)</script>
@@ -250,7 +345,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     func testExternalSidecarIdentityIsDeterministicAndCacheable() throws {
         let payload = EbookProcessedSectionPayload.successfulReaderProcessing(
             documentHTML: Data("<html><head></head><body><m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">本文</m-m></m-s></m-c></body></html>".utf8),
-            segmentSidecar: Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+            segmentSidecar: Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
         )
 
         let first = publishingCanonicalReaderSegmentSidecar(payload, scheme: .ebook)
@@ -515,7 +610,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testExternalizingCanonicalSidecarRetainsInlineMetadataWhenPublicationFails() {
-        let canonicalJSON = #"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
+        let canonicalJSON = #"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
         let html = """
         <html><head></head><body><m-c pid="p"><m-s sid="s" o="true"><m-m id="m">本文</m-m></m-s></m-c>
         <script id="mnb-segment-metadata" type="application/json" data-mnb-seg-meta="true">\(canonicalJSON)</script>
@@ -639,14 +734,14 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         <m-m id="runtime"><m-t>text</m-t></m-m>
         </m-s></m-c>
         """.utf8)
-        let sidecar = Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["text"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        let sidecar = Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["text"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
         let valid = EbookProcessedSectionPayload.successfulReaderProcessing(
             documentHTML: documentHTML,
             segmentSidecar: sidecar
         )
         let missingSentenceIdentity = EbookProcessedSectionPayload.successfulReaderProcessing(
             documentHTML: valid.documentHTML,
-            segmentSidecar: Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["text"],"sid":[],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+            segmentSidecar: Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["text"],"sid":[],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
         )
         let previousSchemaVersion = EbookProcessedSectionPayload.successfulReaderProcessing(
             documentHTML: valid.documentHTML,
@@ -696,11 +791,11 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
         let emptySidecar = EbookProcessedSectionPayload.successfulReaderProcessing(
             documentHTML: documentHTML,
-            segmentSidecar: Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":[],"x":[],"sid":[],"pid":[]},"s":[]}"#.utf8)
+            segmentSidecar: Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":[],"x":[],"sid":[],"pid":[]},"s":[]}"#.utf8)
         )
         let incompleteSidecar = EbookProcessedSectionPayload.successfulReaderProcessing(
             documentHTML: documentHTML,
-            segmentSidecar: Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["A"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+            segmentSidecar: Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["A"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
         )
         let segmentFreeDocument = EbookProcessedSectionPayload.successfulReaderProcessing(
             documentHTML: Data("<html><body><m-metadata>Plain text</m-metadata></body></html>".utf8),
@@ -724,7 +819,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testProcessedSidecarCacheBindsSentenceParagraphAndSurface() {
-        let sidecar = Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["本文"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        let sidecar = Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["本文"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
         let valid = EbookProcessedSectionPayload.successfulReaderProcessing(
             documentHTML: Data("<m-c pid=\"paragraph\"><m-s sid=\"sentence\" o=\"true\"><m-m id=\"runtime\"><m-t>本文</m-t></m-m></m-s></m-c>".utf8),
             segmentSidecar: sidecar
@@ -750,11 +845,11 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let document = Data("<m-c pid=\"paragraph\"><m-s sid=\"sentence\" o=\"true\"><m-m id=\"runtime\">本文</m-m></m-s></m-c>".utf8)
         let fractional = EbookProcessedSectionPayload.successfulReaderProcessing(
             documentHTML: document,
-            segmentSidecar: Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["本文"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0.5,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+            segmentSidecar: Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["本文"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0.5,null,null,null,null,null,null,0,0,0]]}"#.utf8)
         )
         let boolean = EbookProcessedSectionPayload.successfulReaderProcessing(
             documentHTML: document,
-            segmentSidecar: Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["本文"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",true,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+            segmentSidecar: Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["本文"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",true,null,null,null,null,null,null,0,0,0]]}"#.utf8)
         )
 
         XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(fractional))
@@ -771,7 +866,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         <html xmlns="http://www.w3.org/1999/xhtml"><head><title>A &amp; B</title></head>\(body)</html>
         """
         let sidecar = Data("""
-        {"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["学\(nonbreakingSpace)校"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}
+        {"v":\(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["hash"],"x":["学\(nonbreakingSpace)校"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,0,0,0]]}
         """.utf8)
 
         let payload = EbookProcessedSectionPayload.successfulReaderProcessing(
@@ -793,7 +888,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let html = """
         <body><m-c pid="p"><m-s sid="s" o="true"><m-m id="m"><ruby><rb>猫</rb><rt>ねこ</rt></ruby></m-m></m-s></m-c></body>
         """
-        let sidecar = Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["猫"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        let sidecar = Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["猫"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
         let payload = EbookProcessedSectionPayload.successfulReaderProcessing(
             documentHTML: Data(html.utf8),
             segmentSidecar: sidecar
@@ -896,7 +991,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
     func testIncompletePayloadCannotForgeOrPublishSidecarAuthority() {
         let document = Data("<m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">本文</m-m></m-s></m-c>".utf8)
-        let sidecar = Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        let sidecar = Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
         let incomplete = EbookProcessedSectionPayload(
             documentHTML: document,
             segmentSidecar: sidecar
@@ -916,7 +1011,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
     func testHTMLTransformAppendingUncoveredJapaneseRevokesAuthority() async throws {
         let source = "<html><head></head><body><m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">本文</m-m></m-s></m-c></body></html>"
-        let sidecar = Data(#"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+        let sidecar = Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
 
         let result = try await ebookTextProcessor(
             contentURL: URL(string: "ebook://ebook/load/local/book.epub")!,
@@ -2100,7 +2195,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
     func testForegroundProcessingPopulatesDisplayReadyProcessedTextCache() async throws {
         let writerCalled = expectation(description: "display-ready cache writer runs")
-        let canonicalJSON = #"{"v":12,"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["foreground result"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
+        let canonicalJSON = #"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["foreground result"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#
         let processedHTML = "<html><body><m-c pid=\"p\"><m-s sid=\"s\" o=\"true\"><m-m id=\"m\">foreground result</m-m></m-s></m-c><script id=\"mnb-segment-metadata\">\(canonicalJSON)</script></body></html>"
         let actor = EBookProcessingActor(
             ebookProcessedTextCacheWriter: { _, _, _, payload in
