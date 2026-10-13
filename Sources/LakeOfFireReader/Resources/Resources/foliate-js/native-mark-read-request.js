@@ -329,23 +329,34 @@ export const createNativeMarkReadRequestCoordinator = ({
                 context: recovery.pending.context, outcomeKnown: recovery.outcome.outcomeKnown,
                 success: recovery.outcome.success }))
             if (closed || recoveryByRequestID.get(proof.requestID) !== recovery) return false
-            if (accepted) {
+            // Optional notice cleanup can retire the presentation too. Recheck
+            // the original owner before retaining a positive acknowledgement.
+            const acknowledged = accepted && ownsRecovery && present(recovery.pending, () => onRecoveryIsCurrent({
+                owner: recovery.pending.owner, context: recovery.pending.context, message: recovery.pending.message,
+            })) === true
+            if (closed || recoveryByRequestID.get(proof.requestID) !== recovery) return false
+            if (acknowledged) {
                 recoveryByRequestID.delete(proof.requestID)
                 completedRecovery = recovery
             }
-            return accepted
+            // A successful sample alone cannot acknowledge presentation after
+            // the original chapter/pass owner retired while its query awaited.
+            return acknowledged
         })
         recoveryQueryTail = recovery.completion.then(() => {}, () => {})
         return recovery.completion
     }
     const retireHistoryRecoveries = () => {
-        for (const recovery of recoveryByRequestID.values()) {
+        const recoveries = [...recoveryByRequestID.values()]
+        // Withdraw old admissions before cleanup. Its callbacks may create a
+        // fresh command/recovery; never clear that successor afterward.
+        recoveryByRequestID.clear()
+        completedRecovery = null
+        for (const recovery of recoveries) {
             recovery.join?.()
             present(recovery.pending, () => onPending({ requestID: recovery.proof.requestID,
                 phase: 'finished', context: recovery.pending.context }))
         }
-        recoveryByRequestID.clear()
-        completedRecovery = null
     }
     const failHistoryReadingStatusRecovery = observation => {
         let proof
