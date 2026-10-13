@@ -172,6 +172,8 @@ const manabiExpandCompactSegmentMetadata = (segment, tables) => {
         p: manabiSidecarTableValue(tables.p, segment?.[6], null),
         l: segment?.[7],
         x: manabiSidecarTableValue(tables.x, segment?.[8], null),
+        scopeText: manabiSidecarTableValue(tables.x, segment?.[12], null),
+        paragraphScopeText: manabiSidecarTableValue(tables.x, segment?.[13], null),
         selectedLexicon: resolution?.selectedLexicon ?? null,
         selectedEntryID: resolution?.selectedEntryID ?? null,
         canonicalSearchString: resolution?.canonicalSearchString ?? null,

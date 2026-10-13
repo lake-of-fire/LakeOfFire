@@ -12,12 +12,12 @@ def prepared_chapter(name):
     sentence_id = 'fixture-' + name
     text = f'昨日の午後、図書館で本を読みました。猫がいます。 {name}'
     payload = {
-        'v': 12,
+        'v': 14,
         't': {
             'h': ['A1'], 'j': [], 'n': [], 's': [], 'ns': [], 'p': [],
             'x': [text], 'sid': [sentence_id], 'pid': ['paragraph-' + name],
         },
-        's': [['0', 0, None, None, None, None, None, None, 0, 0, 0]],
+        's': [['0', 0, None, None, None, None, None, None, 0, 0, 0, None, 0, 0]],
     }
     sidecar = json.dumps(payload, separators=(',', ':'))
     return f'''<html xmlns="http://www.w3.org/1999/xhtml">

@@ -12,7 +12,7 @@ import {
 
 test('accepts only exact current-schema segment tuples', () => {
     const payload = {
-        v: 12,
+        v: 14,
         t: {
             h: ['hash'],
             j: [[1001]],
@@ -28,7 +28,7 @@ test('accepts only exact current-schema segment tuples', () => {
         s: [['Ab09', 0, 0, null, 0, null, 0, null, 0, 0, 0, 0]],
     }
 
-    assert.equal(compactEbookSegmentSidecarVersion, 12)
+    assert.equal(compactEbookSegmentSidecarVersion, 14)
     assert.equal(stableEbookSegmentIdentityVersion, 1)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent(payload), true)
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({ ...payload, v: 9 }), false)
@@ -102,4 +102,31 @@ test('does not promote runtime, metadata, or hash IDs when sid is absent', () =>
     assert.equal(identity.stableID, null)
     assert.equal(identity.hasSidecarStableID, false)
     assert.deepEqual(ebookSegmentIdentifierAliases(segmentNode('runtime-id'), identity), [])
+})
+
+
+test('schema 14 accepts scope text tuples and rejects malformed or old layouts', () => {
+    const payload = {
+        v: 14,
+        t: { h: ['hash'], j: [], n: [], s: [], ns: [], p: [],
+            x: ['桃', '  桃。\n隣の文。  '], sid: ['sentence'], pid: ['paragraph'] },
+        s: [['!runtime', 0, null, null, null, null, null, null, 0, 0, 0, null, 1, 1]],
+    }
+    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent(payload), true)
+    for (const version of [12, 13, 15]) {
+        assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({ ...payload, v: version }), false)
+    }
+    for (const size of [11, 12, 13, 14]) {
+        assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({ ...payload,
+            s: [payload.s[0].slice(0, size)] }), true)
+    }
+    for (const index of [12, 13]) {
+        for (const invalid of [true, -1, 2, 0.5, '1']) {
+            const tuple = payload.s[0].slice()
+            tuple[index] = invalid
+            assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({ ...payload, s: [tuple] }), false)
+        }
+    }
+    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({ ...payload,
+        s: [[...payload.s[0], null]] }), false)
 })
