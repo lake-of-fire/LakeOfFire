@@ -499,6 +499,17 @@ export const createNativeMarkReadRequestCoordinator = ({
         const isHistoryOutcome = result.manualReadPendingHistoryRecovery === true
             && result.manualReadPendingOutcomeOnly === true
             && result.manualReadPendingPresentationAllowed === false
+        const finishOutcome = outcome => {
+            const finished = finish(pending, outcome)
+            if (!finished || !isHistoryOutcome) return finished
+            // Terminal truth resolves its original waiter above. Native may
+            // withdraw current Book controls only for a current recovery owner.
+            const recovery = recoveryByRequestID.get(pending.requestID)
+            if (closed || recovery?.pending !== pending) return false
+            return present(pending, () => onRecoveryIsCurrent({
+                owner: pending.owner, context: pending.context, message: pending.message,
+            })) === true && !closed && recoveryByRequestID.get(pending.requestID) === recovery
+        }
         if (result.manualReadPendingState === 'unavailable') {
             const allowedKeys = new Set([
                 'requestID', 'manualReadPendingProtocol', 'manualReadPendingObservationToken',
@@ -508,7 +519,7 @@ export const createNativeMarkReadRequestCoordinator = ({
             if (!isHistoryOutcome || result.errorCode !== 'outcomeUnavailable'
                 || !Object.keys(result).every(key => allowedKeys.has(key))) return false
             pending.recoveryOnly = true
-            return finish(pending, { outcomeKnown: false,
+            return finishOutcome({ outcomeKnown: false,
                 presentationAllowed: false, errorCode: 'outcomeUnavailable', nativeResult: result })
         }
         if (result.manualReadPendingState !== 'finished' || typeof result?.success !== 'boolean') return false
@@ -517,7 +528,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         if (!sectionMatches) return false
         if (isHistoryOutcome) pending.recoveryOnly = true
         const success = result.success === true
-        return finish(pending, {
+        return finishOutcome({
             success,
             outcomeKnown: true,
             presentationAllowed: !pending.recoveryOnly && sectionMatches
