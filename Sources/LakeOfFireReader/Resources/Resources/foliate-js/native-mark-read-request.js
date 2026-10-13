@@ -284,9 +284,13 @@ export const createNativeMarkReadRequestCoordinator = ({
                     phase: 'finished', context: pending.context }))
                 return true
             }
-            const displaysRecovery = !closed && pending.recoveryOnly && present(pending, () => onRecoveryIsCurrent({
-                owner: pending.owner, context: pending.context, message: pending.message,
-            })) === true && !closed
+            const displayedRecovery = recoveryByRequestID.get(pending.requestID)
+            const displaysRecovery = !closed && pending.recoveryOnly
+                && displayedRecovery?.pending === pending
+                && present(pending, () => onRecoveryIsCurrent({
+                    owner: pending.owner, context: pending.context, message: pending.message,
+                })) === true && !closed
+                && recoveryByRequestID.get(pending.requestID) === displayedRecovery
             if (closed) outcome.presentationAllowed = false
             present(pending, () => onPending({ requestID: pending.requestID,
                 phase: displaysRecovery
@@ -437,6 +441,9 @@ export const createNativeMarkReadRequestCoordinator = ({
             if (pending.sectionID !== sectionID) continue
             const sameOwner = ownerCurrent(pending) && ownerCurrent({ owner })
             if (closed) return rejectClosedRequest()
+            // Owner validation can synchronously settle the old command. A
+            // new tap must not inherit that already-completed native outcome.
+            if (pendingByRequestID.get(pending.requestID) !== pending) continue
             if (sameOwner && fingerprint === pending.fingerprint) {
                 return pending.completion
             }

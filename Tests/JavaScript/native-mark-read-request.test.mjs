@@ -1524,3 +1524,47 @@ test('history acknowledgement rechecks its owner after optional notice cleanup',
     assert.equal(await h.coordinator.recoverHistoryReadingStatus(proof), false)
     assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), false)
 })
+
+
+for (const boundary of ['preparation', 'presentation ownership']) {
+    test(`recovery retired during ${boundary} cannot recreate a perpetual recovering notice`, async () => {
+        let retire = false
+        const h = harness({ onRecovery: () => {
+            if (retire && boundary === 'preparation') h.coordinator.retireHistoryRecoveries()
+            return true
+        }, onRecoveryIsCurrent: () => {
+            if (retire && boundary === 'presentation ownership') h.coordinator.retireHistoryRecoveries()
+            return true
+        } })
+        const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+        const message = h.posted[0]
+        h.coordinator.pause()
+        retire = true
+        assert.equal(h.coordinator.settle(terminalFor(message)), true)
+        assert.equal((await completion).success, true, 'Retirement cannot erase native truth')
+        assert.equal(h.pendingStates.at(-1).phase, 'finished')
+        assert.equal(h.pendingStates.at(-1).recoveryOnly, false)
+        assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery({ requestID: message.requestID,
+            observationToken: message.manualReadPendingObservationToken }), false)
+        assert.equal(h.controls.length, 1, 'Only the existing read-only History status was sent')
+    })
+}
+
+test('a new tap cannot coalesce into an old command settled during owner validation', async () => {
+    let settleDuringCheck = false
+    const h = harness({ onOwnerCurrent: () => {
+        if (settleDuringCheck) {
+            settleDuringCheck = false
+            h.coordinator.settle(terminalFor(h.posted[0]))
+        }
+    } })
+    const first = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    settleDuringCheck = true
+    const second = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    assert.equal((await first).success, true)
+    assert.notEqual(first, second)
+    assert.equal(h.posted.length, 2, 'The new intent requires its own native acknowledgement')
+    assert.equal(h.coordinator.pendingCount, 1)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[1])), true)
+    assert.equal((await second).success, true)
+})
