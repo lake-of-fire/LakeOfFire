@@ -5,14 +5,12 @@ on:
     branches: [codex/book-actions-epochs-20260920]
     paths:
       - Sources/LakeOfFireReader/Resources/Resources/foliate-js/**
-      - Sources/LakeOfFireReader/Resources/Resources/reader-frame-replacement-guard.js
       - Tests/Browser/**
       - Tests/JavaScript/**
       - .github/workflows/book-actions-tests.yml
   pull_request:
     paths:
       - Sources/LakeOfFireReader/Resources/Resources/foliate-js/**
-      - Sources/LakeOfFireReader/Resources/Resources/reader-frame-replacement-guard.js
       - Tests/Browser/**
       - Tests/JavaScript/**
       - .github/workflows/book-actions-tests.yml
