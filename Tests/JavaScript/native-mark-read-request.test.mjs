@@ -1262,3 +1262,90 @@ test('pause suppresses observation and resume observes the same request identity
     h.coordinator.settle(terminalFor(h.posted[0]))
     assert.equal((await completion).success, true)
 })
+
+
+test('close during lifecycle registration removes a callback installed after teardown', async () => {
+    const listeners = new Map(), registrations = []
+    const h = harness({ lifecycleTarget: {
+        addEventListener(name, callback) {
+            registrations.push(name)
+            h.coordinator.close()
+            listeners.set(name, callback)
+        },
+        removeEventListener(name) { listeners.delete(name) },
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    await assert.rejects(completion, error => error.code === 'readerClosed')
+    assert.deepEqual(registrations, ['pagehide'])
+    assert.equal(listeners.size, 0)
+    assert.equal(h.posted.length, 0)
+    assert.equal(h.timeouts.size, 0)
+    assert.equal(h.controls.length, 0)
+})
+
+test('partial lifecycle registration failure preserves the command and removes listeners', async () => {
+    const listeners = new Map()
+    const h = harness({ lifecycleTarget: {
+        addEventListener(name, callback) {
+            listeners.set(name, callback)
+            if (name === 'pageshow') throw new Error('registered before failure')
+        },
+        removeEventListener(name) { listeners.delete(name) },
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    assert.equal(listeners.size, 0)
+    assert.equal(h.posted.length, 1)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+    assert.equal(h.timeouts.size, 0)
+})
+
+test('one failing lifecycle removal does not skip the other listener or native settlement', async () => {
+    const removals = []
+    const h = harness({ lifecycleTarget: {
+        addEventListener() {},
+        removeEventListener(name) {
+            removals.push(name)
+            if (name === 'pagehide') throw new Error('cleanup failed')
+        },
+    } })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    assert.equal((await completion).success, true)
+    assert.deepEqual(removals, ['pagehide', 'pageshow'])
+    assert.equal(h.timeouts.size, 0)
+})
+
+
+test('terminal lifecycle cleanup preserves listeners installed by a reentrant successor', async () => {
+    const listeners = new Map(), retained = new Map()
+    let successor, reenter = false
+    const h = harness({ lifecycleTarget: {
+        addEventListener(name, callback) {
+            const callbacks = listeners.get(name) ?? new Set()
+            callbacks.add(callback)
+            listeners.set(name, callbacks)
+            retained.set(name, callback)
+        },
+        removeEventListener(name, callback) {
+            if (reenter) {
+                reenter = false
+                successor = h.coordinator.request({ sectionID: 'section-b', message: {} })
+            }
+            listeners.get(name)?.delete(callback)
+        },
+    } })
+    const original = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const oldPagehide = retained.get('pagehide')
+    reenter = true
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[0])), true)
+    await original
+    assert.equal(listeners.get('pagehide').size, 1)
+    assert.equal(listeners.get('pageshow').size, 1)
+    oldPagehide()
+    assert.equal(h.timeouts.size, 1, 'A removed callback cannot pause its successor')
+    retained.get('pagehide')()
+    assert.equal(h.timeouts.size, 0)
+    assert.equal(h.coordinator.settle(terminalFor(h.posted[1])), true)
+    assert.equal((await successor).success, true)
+})

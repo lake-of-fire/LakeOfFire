@@ -96,18 +96,40 @@ export const createNativeMarkReadRequestCoordinator = ({
     let requestSequence = 0
     let closed = false
     let observing = true
-    let listening = false
+    let lifecycleObservation = null
+    const removeLifecycleListeners = observation => {
+        for (const [name, callback] of Object.entries(observation)) {
+            try { lifecycleTarget.removeEventListener?.(name, callback) } catch (_) {}
+        }
+    }
     const attachLifecycle = () => {
-        if (listening || typeof lifecycleTarget?.addEventListener !== 'function') return
-        listening = true
-        lifecycleTarget.addEventListener('pagehide', pause)
-        lifecycleTarget.addEventListener('pageshow', resume)
+        if (closed || lifecycleObservation || typeof lifecycleTarget?.addEventListener !== 'function') return
+        const observation = {
+            pagehide: () => { if (lifecycleObservation === observation) pause() },
+            pageshow: () => { if (lifecycleObservation === observation) resume() },
+        }
+        lifecycleObservation = observation
+        for (const [name, callback] of Object.entries(observation)) {
+            try { lifecycleTarget.addEventListener(name, callback) }
+            catch (_) {
+                if (lifecycleObservation === observation) lifecycleObservation = null
+                removeLifecycleListeners(observation)
+                return
+            }
+            // Registration can close the Reader or settle its last request
+            // before installing the callback. Cleanup belongs to this exact
+            // observation and cannot remove a reentrant successor's listeners.
+            if (closed || lifecycleObservation !== observation) {
+                removeLifecycleListeners(observation)
+                return
+            }
+        }
     }
     const detachLifecycle = () => {
-        if (!listening || !observing || pendingByRequestID.size !== 0) return
-        listening = false
-        lifecycleTarget.removeEventListener?.('pagehide', pause)
-        lifecycleTarget.removeEventListener?.('pageshow', resume)
+        if (!lifecycleObservation || !observing || pendingByRequestID.size !== 0) return
+        const observation = lifecycleObservation
+        lifecycleObservation = null
+        removeLifecycleListeners(observation)
     }
     const present = (pending, callback) => {
         try { return callback() }
@@ -571,8 +593,8 @@ export const createNativeMarkReadRequestCoordinator = ({
         // a reopened Reader's presentation or recreate observation traffic.
         closed = true; observing = false
         pendingByRequestID.clear(); recoveryByRequestID.clear(); completedRecovery = null
-        const wasListening = listening
-        listening = false
+        const observation = lifecycleObservation
+        lifecycleObservation = null
         for (const recovery of recoveries) recovery.join?.()
         for (const value of pending) {
             // Departure can precede the next observation. Closing must not
@@ -588,11 +610,7 @@ export const createNativeMarkReadRequestCoordinator = ({
                 documentStartedAtMs: value.message.documentStartedAtMs,
             }))
         }
-        if (wasListening) {
-            for (const name of ['pagehide', 'pageshow']) {
-                try { lifecycleTarget.removeEventListener?.(name, name === 'pagehide' ? pause : resume) } catch (_) {}
-            }
-        }
+        if (observation) removeLifecycleListeners(observation)
         for (const value of pending) {
             const timer = value.timeoutHandle
             value.timeoutHandle = null
