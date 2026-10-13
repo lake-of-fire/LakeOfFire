@@ -1448,3 +1448,79 @@ test('departure cleanup retains resumed observation timers for every pending com
     assert.equal((await first).success, true)
     assert.equal((await second).success, true)
 })
+
+
+test('a successful history sample cannot acknowledge an owner retired while the query awaited', async () => {
+    let current = true, releaseQuery, queryStarted
+    const started = new Promise(resolve => { queryStarted = resolve })
+    const h = harness({ onRecovery: () => true,
+        onRecoveryIsCurrent: () => current,
+        onRecoveryQuery: () => {
+            queryStarted()
+            return new Promise(resolve => { releaseQuery = resolve })
+        },
+    })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const message = h.posted[0]
+    h.coordinator.pause()
+    h.coordinator.settle(terminalFor(message))
+    assert.equal((await completion).success, true)
+    const proof = { requestID: message.requestID,
+        observationToken: message.manualReadPendingObservationToken }
+    const recovery = h.coordinator.recoverHistoryReadingStatus(proof)
+    await started
+    current = false
+    releaseQuery(true)
+    assert.equal(await recovery, false)
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), false)
+    assert.equal(h.pendingStates.at(-1).phase, 'finished')
+})
+
+test('bulk retirement preserves a new recovery created during old notice cleanup', async () => {
+    let reenter = false, successor
+    const h = harness({ onRecovery: () => true, onRecoveryQuery: () => true,
+        onPendingEffect: state => {
+            if (!reenter || state.phase !== 'finished') return
+            reenter = false
+            h.coordinator.resume()
+            successor = h.coordinator.request({ sectionID: 'section-b', message: {} })
+            h.coordinator.pause()
+            h.coordinator.settle(terminalFor(h.posted[1]))
+        },
+    })
+    const original = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    h.coordinator.pause()
+    h.coordinator.settle(terminalFor(h.posted[0]))
+    await original
+    reenter = true
+    h.coordinator.retireHistoryRecoveries()
+    assert.equal(h.posted.length, 2, 'Old admission is withdrawn before cleanup calls out')
+    assert.equal((await successor).success, true)
+    const message = h.posted[1]
+    const proof = { requestID: message.requestID,
+        observationToken: message.manualReadPendingObservationToken }
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), true)
+    assert.equal(await h.coordinator.recoverHistoryReadingStatus(proof), true)
+    assert.equal(h.coordinator.pendingCount, 0)
+})
+
+
+test('history acknowledgement rechecks its owner after optional notice cleanup', async () => {
+    let current = true, retireDuringNotice = false
+    const h = harness({ onRecovery: () => true, onRecoveryQuery: () => true,
+        onRecoveryIsCurrent: () => current,
+        onPendingEffect: state => {
+            if (retireDuringNotice && state.phase === 'finished') current = false
+        },
+    })
+    const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+    const message = h.posted[0]
+    h.coordinator.pause()
+    h.coordinator.settle(terminalFor(message))
+    await completion
+    const proof = { requestID: message.requestID,
+        observationToken: message.manualReadPendingObservationToken }
+    retireDuringNotice = true
+    assert.equal(await h.coordinator.recoverHistoryReadingStatus(proof), false)
+    assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery(proof), false)
+})
