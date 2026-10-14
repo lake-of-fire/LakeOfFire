@@ -93,6 +93,10 @@ jobs:
           test -x "$chromium_path"
           ln -s "$chromium_path" "$settlement_bin/chromium"
           PATH="$settlement_bin:$PATH" python3 Tests/Browser/BookActionSettlement/run.py --output book-actions-settlement-results.json 2>&1 | tee book-actions-settlement-results.txt
+      - name: Reading outcome notice runtime journeys
+        run: |
+          set -o pipefail
+          python3 Tests/JavaScript/native-mark-read-recovery-notice.browser.py --output book-actions-recovery-notice-results.json 2>&1 | tee book-actions-recovery-notice-results.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -104,4 +108,5 @@ jobs:
             book-actions-transaction-results.json
             book-actions-boundaries-results.json
             book-actions-settlement-results.json
+            book-actions-recovery-notice-results.json
           retention-days: 14
