@@ -128,8 +128,8 @@ public class ReaderFileManager: ObservableObject {
         }
     }
 
-    private struct SharedInitializationFailure: Error {
-        let underlying: any Error
+    private struct SharedInitializationFailure: Swift.Error {
+        let underlying: any Swift.Error
     }
 
     // Inventory publication must invalidate Books and Documents consumers.
