@@ -733,7 +733,8 @@ export const presentNativeMarkReadPending = state => {
     notice.firstElementChild.textContent = state.phase === 'recovery-failed'
         ? outcome + 'Reading status couldn’t be refreshed. Close and reopen this book to continue. '
         : state.recoveryOnly === true
-        ? 'Recovering reading change. Waiting for its outcome. '
+        ? (outcome ? outcome + 'Refreshing reading status. '
+            : 'Recovering reading change. Waiting for its outcome. ')
         : state.phase === 'cancelling'
         ? 'Cancelling reading change. Waiting for its outcome. '
         : 'Still saving reading change. '
