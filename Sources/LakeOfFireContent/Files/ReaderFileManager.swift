@@ -110,6 +110,13 @@ public enum CloudDriveSyncStatus: Sendable {
 }
 
 public class ReaderFileManager: ObservableObject {
+    private struct SharedInitialization {
+        let id: UUID
+        let containerIdentifier: String
+        let refreshInventory: Bool
+        let task: Task<Void, Error>
+    }
+
     // Inventory publication must invalidate Books and Documents consumers.
     public static let readerBackingStatusRefreshRequestedNotification = Notification.Name("ReaderFileManager.readerBackingStatusRefreshRequested")
     public static let driveAvailabilityDidChangeNotification = Notification.Name("ReaderFileManager.driveAvailabilityDidChange")
@@ -220,12 +227,7 @@ public class ReaderFileManager: ObservableObject {
     private var initializationID: UUID?
 
     @MainActor
-    private var sharedInitialization: (
-        id: UUID,
-        containerIdentifier: String,
-        refreshInventory: Bool,
-        task: Task<Void, Error>
-    )?
+    private var sharedInitialization: SharedInitialization?
     
     /*@MainActor*/ public var cloudDrive: CloudDrive?
     //    /*@MainActor*/ @Published public var legacyCloudDrive: CloudDrive?
@@ -347,19 +349,20 @@ public class ReaderFileManager: ObservableObject {
         }
 
         let sharedID = UUID()
-        let task = Task { @MainActor [weak self] in
+        let task = Task<Void, Error> { @MainActor [weak self] in
             guard let self else { throw CancellationError() }
             try await self.initialize(
                 ubiquityContainerIdentifier: ubiquityContainerIdentifier,
                 refreshInventory: refreshInventory
             )
         }
-        sharedInitialization = (
+        let initialization = SharedInitialization(
             id: sharedID,
             containerIdentifier: ubiquityContainerIdentifier,
             refreshInventory: refreshInventory,
             task: task
         )
+        sharedInitialization = initialization
         defer {
             if sharedInitialization?.id == sharedID {
                 sharedInitialization = nil
