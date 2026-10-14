@@ -210,7 +210,7 @@ final class ReaderFileInitializationTests: XCTestCase {
             )
             manager.historyRealmConfigurationOverride = f.configuration
 
-            let owner = Task { @MainActor -> Bool in
+            let owner = Task { @MainActor in
                 do {
                     try await manager.initializeShared(
                         ubiquityContainerIdentifier: "iCloud.shared-failure",
@@ -225,7 +225,7 @@ final class ReaderFileInitializationTests: XCTestCase {
             }
             await gate.waitUntilEntered()
             let joinerStarted = expectation(description: "joiner enters shared initialization")
-            let joiner = Task { @MainActor -> Bool in
+            let joiner = Task { @MainActor in
                 joinerStarted.fulfill()
                 do {
                     try await manager.initializeShared(
