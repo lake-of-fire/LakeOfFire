@@ -632,3 +632,170 @@ add('a live predecessor rejection releases later work only after that rejection'
     equal(outcomes.every(value => value.success), true, 'read-only failure cannot rewrite committed native outcomes')
     equal(h.queries.length, 2, 'no duplicate recovery attempt')
 })
+
+
+// A read queued by a projection callback is not a successfully published
+// successor. Exercise that distinction through both production owners.
+async function beginBookRecoveryPublication(h, options) {
+    const book = installBookController(h), request = await h.recovery('a', options)
+    const observer = h.observe(request)
+    await turn()
+    equal(book.samples.length, 2, 'recovery has one authorized native sample')
+    return { book, request, observer, sample: book.samples[1] }
+}
+
+for (const outcome of ['success', 'cancelled', 'unavailable']) {
+    add(`failed Book repaint withdraws its queued read while preserving native ${outcome}`, async h => {
+        const { book, request, observer, sample } = await beginBookRecoveryPublication(h, {
+            success: outcome === 'success', unavailable: outcome === 'unavailable',
+        })
+        let queued, invalidations = 0
+        book.state.onInvalidate = () => { invalidations++ }
+        book.state.onState = () => {
+            queued = book.state.refresh()
+            throw new Error('Presentation failed after queuing a read')
+        }
+        equal(book.state.apply(sample.requestID, book.reply(sample, 2)), false, 'failed repaint rejected')
+        await turn()
+        isFalse(observer, 'failed publication')
+        equal(queued, true, 'the callback actually queued a read before failing')
+        equal(book.samples.length, 3, 'exactly one follow-up read was posted')
+        equal(book.state.ready, false, 'queued read cannot preserve failed authoring authority')
+        equal(book.state.state, null, 'failed projection withdrawn')
+        equal(book.state.context, null, 'failed context withdrawn')
+        equal(book.state.captureScope(sample.sectionURL), null, 'scope unavailable')
+        let captureRejected = false
+        try { book.state.captureContext() } catch (_) { captureRejected = true }
+        equal(captureRejected, true, 'Book Actions cannot capture the failed context')
+        equal(book.state.refresh(), false, 'ordinary refresh cannot bypass the restored recovery barrier')
+        const queuedSample = book.samples[2]
+        book.state.onState = () => {}
+        equal(book.state.apply(queuedSample.requestID, book.reply(queuedSample, 3)), false,
+            'late queued reply cannot reopen the failed recovery')
+        equal(book.state.reacknowledgeHistoryReadingStatus(request.proof), false, 'no recovery acknowledgement')
+        equal(book.state.failHistoryReadingStatusRecovery(request.proof), true, 'original barrier retained')
+        equal(invalidations, 1, 'failed publication invalidates exactly once')
+        equal(h.notices.at(-1).phase, 'recovery-failed', 'recovery failure remains visible')
+        equal(request.outcome.outcomeKnown, outcome !== 'unavailable', 'native outcome knowledge retained')
+        equal(request.outcome.success, outcome === 'unavailable' ? undefined : outcome === 'success',
+            'native command outcome is not replaced by presentation failure')
+        equal(h.messages.length, 1, 'original mutation was not replayed')
+        equal(h.controls.length, 0, 'failure did not send Cancel')
+    })
+}
+
+add('failed Book repaint rejects all queued reads and a genuine later selection remains usable', async h => {
+    const { book, observer, sample } = await beginBookRecoveryPublication(h)
+    const queued = []
+    book.state.onState = () => {
+        queued.push(book.state.refresh(), book.state.refresh())
+        throw new Error('Failed after two ordinary refreshes')
+    }
+    equal(book.state.apply(sample.requestID, book.reply(sample, 4)), false, 'failed repaint rejected')
+    await turn()
+    isFalse(observer, 'failed publication')
+    equal(queued.length, 2, 'both refreshes attempted')
+    equal(queued.every(value => value === true), true, 'both refreshes posted')
+    equal(book.state.ready, false, 'failed projection unavailable')
+    book.state.onState = () => {}
+    for (const stale of book.samples.slice(2)) {
+        equal(book.state.apply(stale.requestID, book.reply(stale, 5)), false, 'queued stale reply rejected')
+    }
+    equal(book.state.relocate({ sectionURL: sample.sectionURL }, { replaced: true }), true,
+        'a new document selection can request its own state')
+    const fresh = book.samples.at(-1)
+    equal(book.state.apply(fresh.requestID, book.reply(fresh, 3)), false, 'snapshot ordering floor preserved')
+    equal(book.state.apply(fresh.requestID, book.reply(fresh, 5)), true, 'fresh matching reply accepted')
+    equal(book.state.ready, true, 'new selection recovers without replaying the old command')
+})
+
+add('successful Book repaint may queue a refresh without withdrawing its live context', async h => {
+    const { book, request, observer, sample } = await beginBookRecoveryPublication(h)
+    let queued
+    book.state.onState = () => { queued = book.state.refresh() }
+    equal(book.state.apply(sample.requestID, book.reply(sample, 2)), true, 'successful repaint accepted')
+    await turn()
+    equal(queued, true, 'follow-up read posted')
+    equal(observer.value, true, 'successful recovery acknowledged')
+    equal(book.state.ready, true, 'pending refresh leaves successful context usable')
+    equal(book.state.reacknowledgeHistoryReadingStatus(request.proof), true, 'current recovery retained')
+    book.state.onState = () => {}
+    const queuedSample = book.samples.at(-1)
+    equal(book.state.apply(queuedSample.requestID, book.reply(queuedSample, 3)), true, 'follow-up sample accepted')
+    equal(book.state.state.revision, 3, 'new sample published')
+})
+
+for (const successorRevision of [2, 3]) {
+    add(`failed old Book repaint preserves an actually published successor at revision ${successorRevision}`, async h => {
+        const { book, request, observer, sample } = await beginBookRecoveryPublication(h)
+        let queued, successorAccepted
+        book.state.onState = () => {
+            book.state.onState = () => {}
+            queued = book.state.refresh()
+            const next = book.samples.at(-1)
+            successorAccepted = book.state.apply(next.requestID, book.reply(next, successorRevision))
+            throw new Error('Old callback failed after a successor was published')
+        }
+        equal(book.state.apply(sample.requestID, book.reply(sample, 2)), false, 'old callback rejected')
+        await turn()
+        isFalse(observer, 'old publication')
+        equal(queued, true, 'successor read actually posted')
+        equal(successorAccepted, true, 'successor actually published')
+        equal(book.state.ready, true, 'published successor is not withdrawn')
+        equal(book.state.captureContext().contextID, `context-${successorRevision}`, 'successor context retained')
+        equal(book.state.state.revision, successorRevision, 'successor revision retained')
+        equal(book.state.failHistoryReadingStatusRecovery(request.proof), false, 'old barrier cannot return')
+    })
+}
+
+for (const replacement of ['document', 'account']) {
+    add(`failed old Book repaint preserves a pending ${replacement} replacement`, async h => {
+        const { book, observer, sample } = await beginBookRecoveryPublication(h)
+        let replaced, queued
+        book.state.onState = () => {
+            if (replacement === 'document') {
+                replaced = book.state.relocate({ sectionURL: sample.sectionURL }, { replaced: true })
+            } else {
+                replaced = book.state.setAccountPresentation('2:1')
+                queued = book.state.refresh()
+            }
+            throw new Error('Old callback failed after replacement')
+        }
+        equal(book.state.apply(sample.requestID, book.reply(sample, 2)), false, 'old callback rejected')
+        await turn()
+        isFalse(observer, 'old publication')
+        equal(replaced, true, 'replacement actually selected')
+        if (replacement === 'account') equal(queued, true, 'replacement account queued its sample')
+        equal(book.state.ready, false, 'replacement still needs its sample')
+        book.state.onState = () => {}
+        const fresh = book.samples.at(-1), result = book.reply(fresh, 3)
+        if (replacement === 'account') result.accountPresentation = '2:1'
+        equal(book.state.apply(fresh.requestID, result), true, 'replacement request was not cancelled by old cleanup')
+        equal(book.state.ready, true, 'replacement can become ready')
+    })
+}
+
+add('failed Book repaint cleanup preserves a successor selected by invalidation', async h => {
+    const { book, observer, sample } = await beginBookRecoveryPublication(h)
+    let queued, replacementAccepted, invalidations = 0
+    book.state.onState = () => {
+        queued = book.state.refresh()
+        throw new Error('Recovery repaint failed')
+    }
+    book.state.onInvalidate = () => {
+        invalidations++
+        book.state.onInvalidate = () => {}
+        book.state.onState = () => {}
+        book.state.relocate({ sectionURL: sample.sectionURL }, { replaced: true })
+        const fresh = book.samples.at(-1)
+        replacementAccepted = book.state.apply(fresh.requestID, book.reply(fresh, 3))
+    }
+    equal(book.state.apply(sample.requestID, book.reply(sample, 2)), false, 'failed old repaint rejected')
+    await turn()
+    isFalse(observer, 'failed old publication')
+    equal(queued, true, 'old callback really queued a read')
+    equal(invalidations, 1, 'failure cleanup invoked the invalidation callback')
+    equal(replacementAccepted, true, 'invalidation published a real successor')
+    equal(book.state.ready, true, 'successor remains ready after old cleanup returns')
+    equal(book.state.captureContext().contextID, 'context-3', 'successor context preserved')
+})
