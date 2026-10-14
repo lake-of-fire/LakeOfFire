@@ -72,7 +72,10 @@ final class ReaderMediaMetadataTests: XCTestCase {
     func testInjectedSpeechControllerMakesReadAloudPlaybackDeterministic() {
         let synthesizer = FakeReaderSpeechSynthesizer()
         let controller = ReaderReadAloudController(synthesizer: synthesizer)
-        let viewModel = ReaderMediaPlayerViewModel(readAloudController: controller)
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: controller,
+            readAloudVoiceResolver: { _, _ in nil }
+        )
 
         XCTAssertTrue(viewModel.presentAITTS(
             utterances: [
@@ -98,7 +101,10 @@ final class ReaderMediaMetadataTests: XCTestCase {
     func testSpeechProgressPublishesOneCoherentChangeAndSkipsIdenticalCallbacks() throws {
         let synthesizer = FakeReaderSpeechSynthesizer()
         let controller = ReaderReadAloudController(synthesizer: synthesizer)
-        let viewModel = ReaderMediaPlayerViewModel(readAloudController: controller)
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: controller,
+            readAloudVoiceResolver: { _, _ in nil }
+        )
 
         XCTAssertTrue(viewModel.presentAITTS(
             utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
