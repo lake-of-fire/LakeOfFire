@@ -114,7 +114,7 @@ public class ReaderFileManager: ObservableObject {
         let id: UUID
         let containerIdentifier: String
         let refreshInventory: Bool
-        let task: Task<Void, any Error>
+        let task: Task<Void, Error>
     }
 
     // Inventory publication must invalidate Books and Documents consumers.
@@ -349,7 +349,7 @@ public class ReaderFileManager: ObservableObject {
         }
 
         let sharedID = UUID()
-        let task = Task<Void, any Error> { @MainActor [weak self] in
+        let task = Task<Void, Error> { @MainActor [weak self] in
             guard let self else { throw CancellationError() }
             try await self.initialize(
                 ubiquityContainerIdentifier: ubiquityContainerIdentifier,
