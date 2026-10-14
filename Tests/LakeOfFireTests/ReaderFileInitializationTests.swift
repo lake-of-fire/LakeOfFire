@@ -133,6 +133,55 @@ final class ReaderFileInitializationTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testConcurrentSharedInitializationJoinsTheCurrentDrivePreparation() async throws {
+        try await withDriveFixture { f in
+            let gate = ReaderFileInitializationGate()
+            var cloudFactoryCalls = 0
+            var localFactoryCalls = 0
+            let manager = ReaderFileManager(
+                payloadStateProvider: { _ in .current },
+                directoryContentsProvider: { _ in [] },
+                cloudDriveFactory: { _ in
+                    cloudFactoryCalls += 1
+                    await gate.blockUntilReleased()
+                    return f.first
+                },
+                localDriveFactory: {
+                    localFactoryCalls += 1
+                    return f.local
+                }
+            )
+            manager.historyRealmConfigurationOverride = f.configuration
+
+            let first = Task { @MainActor in
+                try await manager.initializeShared(
+                    ubiquityContainerIdentifier: "iCloud.shared-startup",
+                    refreshInventory: false
+                )
+            }
+            await gate.waitUntilEntered()
+            let release = Task {
+                await gate.release()
+            }
+            // Calling directly from this actor reaches the existing shared-task
+            // branch before suspending; the independent release task then lets
+            // the owner finish and both callers observe the same result.
+            try await manager.initializeShared(
+                ubiquityContainerIdentifier: "iCloud.shared-startup",
+                refreshInventory: false
+            )
+            try await first.value
+            await release.value
+
+            XCTAssertEqual(cloudFactoryCalls, 1)
+            XCTAssertEqual(localFactoryCalls, 1)
+            XCTAssertTrue(manager.cloudDrive === f.first)
+            XCTAssertTrue(manager.localDrive === f.local)
+            XCTAssertEqual(manager.ubiquityContainerIdentifier, "iCloud.shared-startup")
+        }
+    }
+
 }
 
 

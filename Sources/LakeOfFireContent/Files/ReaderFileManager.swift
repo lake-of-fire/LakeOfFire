@@ -218,6 +218,14 @@ public class ReaderFileManager: ObservableObject {
     // Like the installed drives/configuration, this selection identity must
     // be visible to synchronous owned-write admission on RealmBackgroundActor.
     private var initializationID: UUID?
+
+    @MainActor
+    private var sharedInitialization: (
+        id: UUID,
+        containerIdentifier: String,
+        refreshInventory: Bool,
+        task: Task<Void, Error>
+    )?
     
     /*@MainActor*/ public var cloudDrive: CloudDrive?
     //    /*@MainActor*/ @Published public var legacyCloudDrive: CloudDrive?
@@ -316,6 +324,52 @@ public class ReaderFileManager: ObservableObject {
         historyRealmConfigurationOverride ?? ReaderContentLoader.historyRealmConfiguration
     }
     
+    @MainActor
+    public func initializeShared(
+        ubiquityContainerIdentifier: String,
+        refreshInventory: Bool = true
+    ) async throws {
+        try Task.checkCancellation()
+
+        if !refreshInventory,
+           hasInitializedUbiquityContainerIdentifier,
+           self.ubiquityContainerIdentifier == ubiquityContainerIdentifier,
+           localDrive != nil {
+            return
+        }
+
+        if let sharedInitialization,
+           sharedInitialization.containerIdentifier == ubiquityContainerIdentifier,
+           sharedInitialization.refreshInventory == refreshInventory {
+            try await sharedInitialization.task.value
+            try Task.checkCancellation()
+            return
+        }
+
+        let sharedID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { throw CancellationError() }
+            try await self.initialize(
+                ubiquityContainerIdentifier: ubiquityContainerIdentifier,
+                refreshInventory: refreshInventory
+            )
+        }
+        sharedInitialization = (
+            id: sharedID,
+            containerIdentifier: ubiquityContainerIdentifier,
+            refreshInventory: refreshInventory,
+            task: task
+        )
+        defer {
+            if sharedInitialization?.id == sharedID {
+                sharedInitialization = nil
+            }
+        }
+
+        try await task.value
+        try Task.checkCancellation()
+    }
+
     @MainActor
     public func initialize(
         ubiquityContainerIdentifier: String,

@@ -103,7 +103,7 @@ fileprivate struct ReaderFileManagerModifier: ViewModifier {
                     NSLog("ReaderTestStartup stage=fileManagerInitializeFixtureBegin")
                 }
                 do {
-                    try await ReaderFileManager.shared.initialize(
+                    try await ReaderFileManager.shared.initializeShared(
                         ubiquityContainerIdentifier: ubiquityContainerIdentifier,
                         refreshInventory: !isUIFixtureOpen
                     )
