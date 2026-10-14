@@ -475,3 +475,160 @@ add('ordinary Book-controller relocation retains its existing recovery-release b
     equal(book.publications.length, 1, 'relocation does not reuse old projection')
     equal(request.outcome.success, true, 'original command outcome unchanged')
 })
+
+// Pruning may remove only a queued obsolete chapter while an earlier query is
+// still current. Retirement releases callers, not that live predecessor's turn.
+for (const queuedBeforePruning of [true, false]) {
+    for (let mask = 1; mask < 8; mask++) {
+        add(`selective retirement mask ${mask}, queued before pruning ${queuedBeforePruning}: retain every live predecessor`, async h => {
+            const requests = ['a', 'b', 'c', 'd', 'e'].map(owner => h.begin(owner))
+            for (const request of requests) h.finish(request)
+            const outcomes = await Promise.all(requests.map(request => request.completion))
+            const gates = requests.map(() => h.hold())
+            h.query = proof => gates[requests.findIndex(request => request.proof.requestID === proof.requestID)].promise
+            const observers = [h.observe(requests[0])]
+            await turn()
+            // Queue B in either ordering. C/D may be enqueued before or after
+            // request() prunes their stale owners. E always arrives afterward.
+            observers[1] = h.observe(requests[1])
+            if (queuedBeforePruning) {
+                observers[2] = h.observe(requests[2]); observers[3] = h.observe(requests[3])
+            }
+            const retired = new Set(['b', 'c', 'd'].filter((_, index) => mask & (1 << index)))
+            h.recoveryCurrent = owner => !retired.has(owner)
+            const refused = await h.coordinator.request({ sectionID: 'unadmitted', message: { desiredState: 'marked' } })
+            equal(refused.errorCode, 'pendingCapacityExceeded', 'live recoveries continue to gate new commands')
+            if (!queuedBeforePruning) {
+                observers[2] = h.observe(requests[2]); observers[3] = h.observe(requests[3])
+            }
+            observers[4] = h.observe(requests[4])
+            await turn()
+            for (let index = 1; index < 4; index++) {
+                if (retired.has(['a', 'b', 'c', 'd', 'e'][index])) isFalse(observers[index], 'pruned queued caller')
+            }
+            equal(h.queries.join(','), requests[0].proof.requestID,
+                'pruning a queued recovery cannot dispatch past the still-live first query')
+            const live = [0, ...[1, 2, 3].filter(index => !(mask & (1 << (index - 1)))), 4]
+            for (const [position, index] of live.entries()) {
+                equal(h.queries.length, position + 1, 'only one live query dispatched at a time')
+                equal(h.queries[position], requests[index].proof.requestID, 'live queries preserve submission order')
+                equal(observers[index].settled, false, 'current query still needs its own native reply')
+                gates[index].resolve(true)
+                await turn()
+                equal(observers[index].value, true, 'matching native sample acknowledged')
+            }
+            equal(h.queries.length, live.length, 'retired queued queries never reached native')
+            equal(outcomes.every(outcome => outcome.success && outcome.outcomeKnown), true,
+                'all original native command results remain successful')
+            equal(h.messages.length, 5, 'pruning and recovery cannot replay a mutation')
+            equal(h.controls.length, 0, 'no cancellation or retry traffic')
+        })
+    }
+}
+
+add('selective queued retirement preserves the first real Book sample until its acknowledgement', async h => {
+    const book = installBookController(h)
+    const a = h.begin('current-a'), b = h.begin('obsolete-b'), c = h.begin('current-c')
+    h.finish(a); h.finish(b); h.finish(c)
+    const outcomes = await Promise.all([a.completion, b.completion, c.completion])
+    const first = h.observe(a)
+    await turn()
+    const firstSample = book.samples[1]
+    equal(book.samples.length, 2, 'first recovery reached the real Book controller')
+    const retired = h.observe(b)
+    h.recoveryCurrent = owner => owner !== 'obsolete-b'
+    const refused = await h.coordinator.request({ sectionID: 'unadmitted', message: {} })
+    equal(refused.errorCode, 'pendingCapacityExceeded', 'current recovery still gates command admission')
+    const last = h.observe(c)
+    await turn()
+    isFalse(retired, 'obsolete queued caller')
+    const sampleCountBeforeReply = book.samples.length, firstWasPending = !first.settled
+    equal(book.state.apply(firstSample.requestID, book.reply(firstSample, 2)), true,
+        'first correlated native Book sample remains admissible')
+    equal(sampleCountBeforeReply, 2, 'later recovery did not replace the first Book request')
+    equal(firstWasPending, true, 'first Book recovery still waited for its own sample')
+    await turn()
+    equal(first.value, true, 'first sample is acknowledged before later preparation')
+    equal(book.samples.length, 3, 'later Book recovery starts after first acknowledgement')
+    const lastSample = book.samples[2]
+    equal(lastSample.historyRecoveryObservation.requestID, c.proof.requestID, 'later sample belongs to C, not B')
+    equal(book.state.apply(lastSample.requestID, book.reply(lastSample, 3)), true, 'C sample accepted')
+    await turn()
+    equal(last.value, true, 'C acknowledged its own sample')
+    equal(book.publications.map(value => value.revision).join(','), '1,2,3', 'both live samples published in order')
+    equal(book.state.ready, true, 'Book controls are ready after the final recovery')
+    equal(outcomes.every(value => value.success && value.outcomeKnown), true, 'original mutations remain successful')
+    equal(h.messages.length, 3, 'no additional mutation')
+    equal(h.controls.length, 0, 'no Cancel or retry')
+})
+
+add('selectively retiring the active query still releases a live queued successor immediately', async h => {
+    const a = h.begin('obsolete-a'), b = h.begin('current-b')
+    h.finish(a); h.finish(b)
+    await Promise.all([a.completion, b.completion])
+    const gate = h.hold()
+    h.query = proof => proof.requestID === a.proof.requestID ? gate.promise : true
+    const first = h.observe(a)
+    await turn()
+    const second = h.observe(b)
+    h.recoveryCurrent = owner => owner !== 'obsolete-a'
+    await h.coordinator.request({ sectionID: 'unadmitted', message: {} })
+    await turn()
+    isFalse(first, 'retired active caller')
+    equal(second.value, true, 'live successor does not wait for the obsolete read')
+    equal(h.queries.join(','), [a, b].map(value => value.proof.requestID).join(','), 'one query per proof')
+    const notices = h.notices.length
+    gate.resolve(true)
+    await turn()
+    equal(h.notices.length, notices, 'late retired success cannot repaint')
+    equal(h.coordinator.ownsHistoryReadingStatusRecovery(b.proof), true, 'live successor proof remains valid')
+})
+
+add('recovery queued during pruning cleanup cannot bypass a live predecessor', async h => {
+    const a = h.begin('a'), b = h.begin('b'), c = h.begin('c')
+    h.finish(a); h.finish(b); h.finish(c)
+    await Promise.all([a.completion, b.completion, c.completion])
+    const gate = h.hold()
+    h.query = proof => proof.requestID === a.proof.requestID ? gate.promise : true
+    const first = h.observe(a)
+    await turn()
+    const retired = h.observe(b)
+    let last
+    h.pendingEffect = state => {
+        if (state.requestID === b.proof.requestID && state.phase === 'finished') last ??= h.observe(c)
+    }
+    h.recoveryCurrent = owner => owner !== 'b'
+    await h.coordinator.request({ sectionID: 'unadmitted', message: {} })
+    await turn()
+    isFalse(retired, 'retired queued caller')
+    equal(last?.settled, false, 'reentrant successor remains behind first recovery')
+    equal(h.queries.length, 1, 'cleanup did not dispatch out of order')
+    gate.resolve(true)
+    await turn()
+    equal(first.value, true, 'first query acknowledged')
+    equal(last.value, true, 'reentrant successor acknowledged afterward')
+    equal(h.queries.join(','), [a, c].map(value => value.proof.requestID).join(','), 'live queue order retained')
+})
+
+add('a live predecessor rejection releases later work only after that rejection', async h => {
+    const a = h.begin('a'), b = h.begin('b'), c = h.begin('c')
+    h.finish(a); h.finish(b); h.finish(c)
+    const outcomes = await Promise.all([a.completion, b.completion, c.completion])
+    const gate = h.hold()
+    h.query = proof => proof.requestID === a.proof.requestID ? gate.promise : true
+    const first = h.observe(a)
+    await turn()
+    const retired = h.observe(b)
+    h.recoveryCurrent = owner => owner !== 'b'
+    await h.coordinator.request({ sectionID: 'unadmitted', message: {} })
+    const last = h.observe(c)
+    await turn()
+    isFalse(retired, 'pruned caller')
+    equal(h.queries.length, 1, 'later query waits for first failure or success')
+    gate.reject(new Error('first native sample failed'))
+    await turn()
+    equal(first.value, false, 'first query preserves failure result')
+    equal(last.value, true, 'later query can recover after first failure')
+    equal(outcomes.every(value => value.success), true, 'read-only failure cannot rewrite committed native outcomes')
+    equal(h.queries.length, 2, 'no duplicate recovery attempt')
+})

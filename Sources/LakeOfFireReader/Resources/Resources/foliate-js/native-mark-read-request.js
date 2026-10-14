@@ -356,7 +356,8 @@ export const createNativeMarkReadRequestCoordinator = ({
         const recovery = recoveryByRequestID.get(proof.requestID)
         if (!recovery || proof.observationToken !== recovery.proof.observationToken) return false
         if (recovery.completion) return recovery.completion
-        const query = recoveryQueryTail.then(async () => {
+        const predecessor = recoveryQueryTail
+        const query = predecessor.then(async () => {
             if (closed || recoveryByRequestID.get(proof.requestID) !== recovery) return false
             if (ordinaryRequests().length > 0) await new Promise(resolve => { recovery.join = resolve })
             if (recoveryByRequestID.get(proof.requestID) !== recovery) return false
@@ -396,7 +397,11 @@ export const createNativeMarkReadRequestCoordinator = ({
         // Observe late rejection too; only the original recovery can publish
         // after the awaited query, and a retired query cannot clear its successor.
         recovery.completion = Promise.race([query, recovery.retirement])
-        recoveryQueryTail = recovery.completion.then(() => {}, () => {})
+        const settled = recovery.completion.then(() => {}, () => {})
+        // Retiring a queued recovery releases its callers immediately, not its
+        // still-live predecessors. Otherwise pruning B behind running A lets
+        // C replace A's Book recovery before A has received its native sample.
+        recoveryQueryTail = predecessor.then(() => settled)
         return recovery.completion
     }
     const retireHistoryRecoveries = () => {
