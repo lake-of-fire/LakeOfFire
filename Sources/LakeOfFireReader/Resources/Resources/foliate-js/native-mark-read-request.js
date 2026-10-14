@@ -80,7 +80,7 @@ export const createNativeMarkReadRequestCoordinator = ({
     const pendingByRequestID = new Map()
     const recoveryByRequestID = new Map()
     let completedRecovery = null
-    let recoveryQueryTail = Promise.resolve(), activeRecoveryQuery = false
+    let recoveryQueryTail = Promise.resolve(), activeRecoveryQuery = null
     // A document-local namespace and increasing sequence keep request IDs
     // distinct without retaining every completed request for its lifetime.
     let requestNamespace
@@ -211,6 +211,14 @@ export const createNativeMarkReadRequestCoordinator = ({
         pending.timeoutHandle = timer
     }
     const ordinaryRequests = () => [...pendingByRequestID.values()].filter(value => !value.recoveryOnly)
+    const retireRecoveryWaiters = recovery => {
+        // A read-only refresh may never answer after its chapter/Reader exits.
+        // Release local callers and the serial queue without inventing a native
+        // outcome or waiting for that obsolete refresh to cooperate.
+        if (activeRecoveryQuery === recovery) activeRecoveryQuery = null
+        recovery.retire?.()
+        recovery.join?.()
+    }
     const prepareRecovery = (recovery, force = false) => {
         if (force) recovery.prepared = false
         if (recovery.prepared || ordinaryRequests().length > 0) return
@@ -254,7 +262,8 @@ export const createNativeMarkReadRequestCoordinator = ({
                     const recovery = { pending, outcome, prepared: false, ready: false,
                         proof: Object.freeze({ requestID: pending.requestID,
                             observationToken: pending.message.manualReadPendingObservationToken }),
-                        completion: null, join: null }
+                        completion: null, join: null, retire: null, retirement: null }
+                    recovery.retirement = new Promise(resolve => { recovery.retire = () => resolve(false) })
                     recoveryByRequestID.set(pending.requestID, recovery)
                     for (const value of ordinaryRequests()) value.recoveryRequested = true
                     // An ordinary completion can arrive after pagehide before
@@ -311,18 +320,19 @@ export const createNativeMarkReadRequestCoordinator = ({
         const recovery = recoveryByRequestID.get(proof.requestID)
         if (!recovery || proof.observationToken !== recovery.proof.observationToken) return false
         if (recovery.completion) return recovery.completion
-        recovery.completion = recoveryQueryTail.then(async () => {
+        const query = recoveryQueryTail.then(async () => {
+            if (closed || recoveryByRequestID.get(proof.requestID) !== recovery) return false
             if (ordinaryRequests().length > 0) await new Promise(resolve => { recovery.join = resolve })
             if (recoveryByRequestID.get(proof.requestID) !== recovery) return false
-            activeRecoveryQuery = true
+            activeRecoveryQuery = recovery
             prepareRecovery(recovery, true)
             if (closed || recoveryByRequestID.get(proof.requestID) !== recovery || !recovery.ready) {
-                activeRecoveryQuery = false
+                if (activeRecoveryQuery === recovery) activeRecoveryQuery = null
                 return false
             }
             let accepted = false
             try { accepted = await onRecoveryQuery(recovery.proof) === true } catch (_) {}
-            activeRecoveryQuery = false
+            if (activeRecoveryQuery === recovery) activeRecoveryQuery = null
             if (closed || recoveryByRequestID.get(proof.requestID) !== recovery) return false
             const ownsRecovery = present(recovery.pending, () => onRecoveryIsCurrent({
                 owner: recovery.pending.owner, context: recovery.pending.context, message: recovery.pending.message,
@@ -347,6 +357,9 @@ export const createNativeMarkReadRequestCoordinator = ({
             // the original chapter/pass owner retired while its query awaited.
             return acknowledged
         })
+        // Observe late rejection too; only the original recovery can publish
+        // after the awaited query, and a retired query cannot clear its successor.
+        recovery.completion = Promise.race([query, recovery.retirement])
         recoveryQueryTail = recovery.completion.then(() => {}, () => {})
         return recovery.completion
     }
@@ -357,7 +370,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         recoveryByRequestID.clear()
         completedRecovery = null
         for (const recovery of recoveries) {
-            recovery.join?.()
+            retireRecoveryWaiters(recovery)
             present(recovery.pending, () => onPending({ requestID: recovery.proof.requestID,
                 phase: 'finished', context: recovery.pending.context }))
         }
@@ -421,7 +434,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         for (const [requestID, recovery] of recoveryByRequestID) {
             if (present(recovery.pending, () => onRecoveryIsCurrent({ owner: recovery.pending.owner,
                 context: recovery.pending.context, message: recovery.pending.message })) === true) continue
-            recoveryByRequestID.delete(requestID); recovery.join?.()
+            recoveryByRequestID.delete(requestID); retireRecoveryWaiters(recovery)
             present(recovery.pending, () => onPending({ requestID, phase: 'finished', context: recovery.pending.context }))
         }
         if (closed) return rejectClosedRequest()
@@ -625,7 +638,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         pendingByRequestID.clear(); recoveryByRequestID.clear(); completedRecovery = null
         const observation = lifecycleObservation
         lifecycleObservation = null
-        for (const recovery of recoveries) recovery.join?.()
+        for (const recovery of recoveries) retireRecoveryWaiters(recovery)
         for (const value of pending) {
             // Departure can precede the next observation. Closing must not
             // restore its Cancel permission, and a never-submitted request
