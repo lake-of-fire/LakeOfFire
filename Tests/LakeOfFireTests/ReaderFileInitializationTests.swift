@@ -41,6 +41,7 @@ private actor ReaderFileInitializationScanRecorder {
 private enum ReaderFileInitializationTestError: Swift.Error {
     case unexpectedFactoryContinuation
     case localFactoryShouldNotRun
+    case sharedInitializationFailure
 }
 
 final class ReaderFileInitializationTests: XCTestCase {
@@ -179,6 +180,79 @@ final class ReaderFileInitializationTests: XCTestCase {
             XCTAssertTrue(manager.cloudDrive === f.first)
             XCTAssertTrue(manager.localDrive === f.local)
             XCTAssertEqual(manager.ubiquityContainerIdentifier, "iCloud.shared-startup")
+        }
+    }
+
+    @MainActor
+    func testSharedInitializationPropagatesFailureToJoinerAndAllowsRetry() async throws {
+        try await withDriveFixture { f in
+            let gate = ReaderFileInitializationGate()
+            var cloudFactoryCalls = 0
+            var localFactoryCalls = 0
+            let manager = ReaderFileManager(
+                payloadStateProvider: { _ in .current },
+                directoryContentsProvider: { _ in [] },
+                cloudDriveFactory: { _ in
+                    cloudFactoryCalls += 1
+                    if cloudFactoryCalls == 1 {
+                        await gate.blockUntilReleased()
+                        throw ReaderFileInitializationTestError.sharedInitializationFailure
+                    }
+                    return f.first
+                },
+                localDriveFactory: {
+                    localFactoryCalls += 1
+                    return f.local
+                }
+            )
+            manager.historyRealmConfigurationOverride = f.configuration
+
+            let owner = Task { @MainActor in
+                try await manager.initializeShared(
+                    ubiquityContainerIdentifier: "iCloud.shared-failure",
+                    refreshInventory: false
+                )
+            }
+            await gate.waitUntilEntered()
+            let release = Task { await gate.release() }
+
+            var joinerObservedFailure = false
+            do {
+                try await manager.initializeShared(
+                    ubiquityContainerIdentifier: "iCloud.shared-failure",
+                    refreshInventory: false
+                )
+                XCTFail("A shared initialization failure must reach the joining caller")
+            } catch ReaderFileInitializationTestError.sharedInitializationFailure {
+                joinerObservedFailure = true
+            } catch {
+                throw error
+            }
+
+            var ownerObservedFailure = false
+            do {
+                try await owner.value
+                XCTFail("The owning caller must observe the shared initialization failure")
+            } catch ReaderFileInitializationTestError.sharedInitializationFailure {
+                ownerObservedFailure = true
+            } catch {
+                throw error
+            }
+            await release.value
+
+            XCTAssertTrue(joinerObservedFailure)
+            XCTAssertTrue(ownerObservedFailure)
+            XCTAssertEqual(cloudFactoryCalls, 1)
+            XCTAssertEqual(localFactoryCalls, 0)
+
+            try await manager.initializeShared(
+                ubiquityContainerIdentifier: "iCloud.shared-failure",
+                refreshInventory: false
+            )
+            XCTAssertEqual(cloudFactoryCalls, 2)
+            XCTAssertEqual(localFactoryCalls, 1)
+            XCTAssertTrue(manager.cloudDrive === f.first)
+            XCTAssertTrue(manager.localDrive === f.local)
         }
     }
 
