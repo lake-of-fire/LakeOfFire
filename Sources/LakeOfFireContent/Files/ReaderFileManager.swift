@@ -119,13 +119,17 @@ public class ReaderFileManager: ObservableObject {
 
     private enum SharedInitializationOutcome {
         case success
-        case failure(Error)
+        case failure(SharedInitializationFailure)
 
         func rethrowFailure() throws {
             if case let .failure(error) = self {
-                throw error
+                throw error.underlying
             }
         }
+    }
+
+    private struct SharedInitializationFailure: Error {
+        let underlying: any Error
     }
 
     // Inventory publication must invalidate Books and Documents consumers.
@@ -369,7 +373,7 @@ public class ReaderFileManager: ObservableObject {
                 )
                 return .success
             } catch {
-                return .failure(error)
+                return .failure(SharedInitializationFailure(underlying: error))
             }
         }
         let initialization = SharedInitialization(
