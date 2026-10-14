@@ -119,7 +119,7 @@ public class ReaderFileManager: ObservableObject {
 
     private enum SharedInitializationOutcome {
         case success
-        case failure(any Error)
+        case failure(Error)
 
         func rethrowFailure() throws {
             if case let .failure(error) = self {
