@@ -799,3 +799,137 @@ add('failed Book repaint cleanup preserves a successor selected by invalidation'
     equal(book.state.ready, true, 'successor remains ready after old cleanup returns')
     equal(book.state.captureContext().contextID, 'context-3', 'successor context preserved')
 })
+
+for (const outcome of ['success', 'cancelled', 'unavailable']) {
+    const options = { success: outcome === 'success', unavailable: outcome === 'unavailable' }
+    const retainsOutcome = request => {
+        equal(request.outcome.outcomeKnown, outcome !== 'unavailable', 'native outcome knowledge retained')
+        equal(request.outcome.success, outcome === 'unavailable' ? undefined : outcome === 'success',
+            'native outcome retained independently of presentation rejection')
+    }
+    add(`final publication rejection releases a running refresh after native ${outcome}`, async h => {
+        const gate = h.hold()
+        h.query = () => gate.promise
+        const request = await h.recovery('a', options)
+        const first = h.observe(request), joined = h.observe(request)
+        await turn()
+        equal(h.queries.length, 1, 'one original read dispatched')
+        equal(h.coordinator.failHistoryReadingStatusRecovery(request.proof), true, 'owned final rejection admitted')
+        await turn()
+        isFalse(first, 'original caller'); isFalse(joined, 'joined caller')
+        equal(await h.coordinator.recoverHistoryReadingStatus(request.proof), false, 'duplicate rejects retired read')
+        const noticeCount = h.notices.length
+        equal(h.notices.at(-1).phase, 'recovery-failed', 'failure notice remains actionable')
+        gate.resolve(true)
+        await turn()
+        equal(h.notices.length, noticeCount, 'late successful read cannot clear failure notice')
+        equal(await h.coordinator.recoverHistoryReadingStatus(request.proof), false, 'late result cannot restore completion')
+        equal(h.queries.length, 1, 'duplicate did not dispatch another read')
+        equal(h.controls.length, 0, 'presentation rejection sent no Cancel')
+        retainsOutcome(request)
+    })
+    add(`final rejection replaces a cached positive acknowledgement after native ${outcome}`, async h => {
+        const { book, request, observer, sample } = await beginBookRecoveryPublication(h, options)
+        equal(book.state.apply(sample.requestID, book.reply(sample, 2)), true, 'real Book sample accepted')
+        await turn()
+        equal(observer.value, true, 'initial coordinator read acknowledged')
+        equal(book.state.reacknowledgeHistoryReadingStatus(request.proof), true, 'Book receiver acknowledged its original read')
+        equal(book.state.failHistoryReadingStatusRecovery(request.proof), true, 'Book receiver withdraws rejected final publication')
+        equal(h.coordinator.failHistoryReadingStatusRecovery(request.proof), true, 'native rejects final publication')
+        equal(book.state.ready, false, 'rejected Book publication grants no actions')
+        equal(book.state.reacknowledgeHistoryReadingStatus(request.proof), false, 'Book cannot reacknowledge the rejected publication')
+        equal(await h.coordinator.recoverHistoryReadingStatus(request.proof), false, 'cached positive cannot acknowledge again')
+        equal(await h.coordinator.recoverHistoryReadingStatus(request.proof), false, 'repeated observer remains rejected')
+        equal(h.notices.at(-1).phase, 'recovery-failed', 'rejected publication retains failure guidance')
+        equal(h.queries.length, 1, 'final rejection does not authorize another read')
+        equal(h.messages.length, 1, 'original mutation not replayed')
+        retainsOutcome(request)
+    })
+    add(`synchronous final rejection during finished notice cannot publish success after native ${outcome}`, async h => {
+        const request = await h.recovery('a', options)
+        let rejected = false
+        h.pendingEffect = state => {
+            if (state.requestID !== request.proof.requestID || state.phase !== 'finished' || rejected) return
+            rejected = true
+            equal(h.coordinator.failHistoryReadingStatusRecovery(request.proof), true, 'final callback rejects its current read')
+        }
+        equal(await h.coordinator.recoverHistoryReadingStatus(request.proof), false, 'reentrant rejection defeats original query')
+        equal(rejected, true, 'final callback actually ran')
+        equal(await h.coordinator.recoverHistoryReadingStatus(request.proof), false, 'reentrant rejection cannot be cached as positive')
+        equal(h.notices.at(-1).phase, 'recovery-failed', 'nested failure notice survives callback return')
+        equal(h.queries.length, 1, 'exact read retained')
+        retainsOutcome(request)
+    })
+}
+
+add('foreign final rejection cannot retire an acknowledged query', async h => {
+    const request = await h.recovery('a')
+    equal(await h.coordinator.recoverHistoryReadingStatus(request.proof), true, 'original query acknowledged')
+    const noticeCount = h.notices.length
+    equal(h.coordinator.failHistoryReadingStatusRecovery({ ...request.proof, observationToken: 'foreign' }),
+        false, 'foreign token rejected')
+    equal(h.coordinator.ownsHistoryReadingStatusRecovery(request.proof), true, 'original acknowledgement preserved')
+    equal(h.notices.length, noticeCount, 'foreign rejection did not paint')
+})
+
+add('a rejected held query releases a successor without lending its late completion', async h => {
+    const old = h.hold(), next = h.hold()
+    const a = await h.recovery('a')
+    h.query = proof => proof.requestID === a.proof.requestID ? old.promise : next.promise
+    const first = h.observe(a)
+    await turn()
+    equal(h.coordinator.failHistoryReadingStatusRecovery(a.proof), true, 'old read rejected')
+    h.recoveryCurrent = owner => owner !== 'a'
+    const b = await h.recovery('b'), second = h.observe(b)
+    await turn()
+    isFalse(first, 'rejected predecessor')
+    equal(h.queries.length, 2, 'successor read not blocked by retired predecessor')
+    const noticeCount = h.notices.length
+    old.resolve(true)
+    await turn()
+    equal(second.settled, false, 'old completion cannot settle successor')
+    equal(h.notices.length, noticeCount, 'old completion cannot repaint successor')
+    next.resolve(true)
+    await turn()
+    equal(second.value, true, 'successor acknowledges its own read')
+})
+
+add('final rejection of unprepared queued B cannot let C overtake still-live A', async h => {
+    const gate = h.hold()
+    const a = h.begin('a'), b = h.begin('b'), c = h.begin('c')
+    h.finish(a); h.finish(b); h.finish(c)
+    await Promise.all([a.completion, b.completion, c.completion])
+    h.query = proof => proof.requestID === a.proof.requestID ? gate.promise : true
+    const first = h.observe(a)
+    await turn()
+    const queued = h.observe(b)
+    equal(h.coordinator.failHistoryReadingStatusRecovery(b.proof), false, 'no final publication exists for unprepared B')
+    const last = h.observe(c)
+    await turn()
+    equal(queued.settled, false, 'B retains its valid queued read')
+    equal(first.settled, false, 'A still awaits its native sample')
+    equal(last.settled, false, 'C preserves its live predecessor barrier')
+    equal(h.queries.length, 1, 'C did not dispatch over A')
+    gate.resolve(true)
+    await turn()
+    equal(first.value, true, 'A completes its own sample')
+    equal(queued.value, true, 'B completes after A')
+    equal(last.value, true, 'C runs after A')
+    equal(h.queries.join(','), [a.proof.requestID, b.proof.requestID, c.proof.requestID].join(','), 'live queue order retained')
+})
+
+add('late read rejection cannot replace the final-publication failure notice', async h => {
+    const gate = h.hold()
+    h.query = () => gate.promise
+    const request = await h.recovery('a')
+    const first = h.observe(request)
+    await turn()
+    equal(h.coordinator.failHistoryReadingStatusRecovery(request.proof), true, 'owned final rejection accepted')
+    await turn()
+    isFalse(first, 'original caller')
+    const noticeCount = h.notices.length
+    gate.reject(new Error('Obsolete read rejected later'))
+    await turn()
+    equal(h.notices.length, noticeCount, 'late rejected read did not replace final failure notice')
+    equal(await h.coordinator.recoverHistoryReadingStatus(request.proof), false, 'retired observation remains rejected')
+})

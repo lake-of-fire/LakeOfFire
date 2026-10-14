@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 
 from playwright.sync_api import sync_playwright
 
@@ -96,6 +97,8 @@ def main() -> int:
     results = []
     with sync_playwright() as playwright:
         launch = {"headless": True}
+        if sys.platform == "darwin":
+            launch["args"] = ["--disable-features=MacAppCodeSignClone"]
         if args.browser:
             launch["executable_path"] = args.browser
         browser = playwright.chromium.launch(**launch)
@@ -116,7 +119,11 @@ def main() -> int:
                         page.close()
             version = browser.version
         finally:
-            browser.close()
+            try:
+                for context in list(browser.contexts):
+                    context.close()
+            finally:
+                browser.close()
     result = {"browser": version, "source_sha256": {
         name: hashlib.sha256(source.encode()).hexdigest() for name, source in sources.items()},
         "passed": sum(case["passed"] for case in results),

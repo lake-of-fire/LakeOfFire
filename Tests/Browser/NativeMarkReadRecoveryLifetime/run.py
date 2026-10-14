@@ -106,7 +106,11 @@ def main() -> int:
                       'passed': sum(row['passed'] for row in rows),
                       'failed': sum(not row['passed'] for row in rows), 'page_errors': errors}
         finally:
-            browser.close()
+            try:
+                for retained_context in list(browser.contexts):
+                    retained_context.close()
+            finally:
+                browser.close()
     text = json.dumps(report, indent=2, ensure_ascii=False)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
