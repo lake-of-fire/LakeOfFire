@@ -3393,7 +3393,9 @@ public class ReaderModeViewModel: ObservableObject {
         let contentIsCurrent = { @MainActor in
             guard !content.isInvalidated,
                   let currentContent = readerContent.validCachedContent,
-                  content === currentContent || content.isSameObject(as: currentContent as Object),
+                  // Match ReaderContent's selection ownership: a new cached
+                  // wrapper does not inherit a suspended callback's authority.
+                  content === currentContent,
                   currentContent.url.matchesReaderURL(committedURL) else {
                 return false
             }
