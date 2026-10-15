@@ -3370,7 +3370,7 @@ public class ReaderModeViewModel: ObservableObject {
         // successor's captured HTML, frame, or loading state.
         try Task.checkCancellation()
         guard readerContent.pageURL.matchesReaderURL(newState.pageURL) else { return }
-        let content = readerContent.content
+        let content = readerContent.validCachedContent
         if let content, !content.url.matchesReaderURL(newState.pageURL) {
             print("URL mismatch in ReaderModeViewModel onNavigationCommitted", content.url, newState.pageURL)
             return
@@ -3431,7 +3431,8 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         guard readerContent.pageURL.matchesReaderURL(committedURL),
-              let currentContent = readerContent.content,
+              let currentContent = readerContent.validCachedContent,
+              currentContent === content,
               currentContent.url.matchesReaderURL(committedURL) else {
             return
         }
@@ -3468,6 +3469,7 @@ public class ReaderModeViewModel: ObservableObject {
             let html = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
             if let html {
                 try Task.checkCancellation()
+                guard readerContent.validCachedContent === content else { return }
                 guard ownsReaderDocumentBinding(
                     navigationBindingToken,
                     scriptCaller: scriptCaller
@@ -3489,7 +3491,8 @@ public class ReaderModeViewModel: ObservableObject {
                 ) else {
                     throw CancellationError()
                 }
-                guard committedURL.matchesReaderURL(readerContent.pageURL) else {
+                guard committedURL.matchesReaderURL(readerContent.pageURL),
+                      readerContent.validCachedContent === content else {
                     return
                 }
                 if committedURL.isSnippetURL,
