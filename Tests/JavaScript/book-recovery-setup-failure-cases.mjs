@@ -263,3 +263,54 @@ for (const outcome of ['success', 'cancelled', 'unavailable']) {
         equal(timers.size, 0, 'coordinator timers released')
     })
 }
+
+// Failure cleanup is also a completion boundary. An explicit new read may use
+// the same recovery proof/object without inheriting the predecessor's result.
+for (const boundary of ['negative reply', 'throwing invalidation', 'sample copying', 'location validation']) {
+    add(`${boundary}: old reply cleanup cannot settle a newer explicit recovery read`, async f => {
+        const observation = f.begin()
+        const originalPromise = f.state.recoverHistoryReadingStatus(observation)
+        const original = watch(originalPromise), oldRequest = f.requests.at(-1)
+        let successorPromise, successor, replacementEntered = false
+        const replaceRead = () => {
+            if (replacementEntered) return
+            replacementEntered = true
+            f.state.onInvalidate = () => {}
+            f.state.isLocationCurrent = () => true
+            equal(f.state.failHistoryReadingStatusRecovery(observation), true, 'old attempt rejected')
+            successorPromise = f.state.recoverHistoryReadingStatus(observation)
+            successor = watch(successorPromise)
+        }
+        const oldReply = f.reply(oldRequest, 2, boundary !== 'negative reply' && boundary !== 'throwing invalidation')
+        if (boundary === 'negative reply' || boundary === 'throwing invalidation') {
+            f.state.onInvalidate = () => {
+                replaceRead()
+                if (boundary === 'throwing invalidation') throw new Error('Old invalidation failed after retry')
+            }
+        } else if (boundary === 'sample copying') {
+            oldReply.state.toJSON = function () { delete this.toJSON; replaceRead(); return this }
+        } else f.state.isLocationCurrent = () => { replaceRead(); return true }
+        let accepted, thrown
+        try { accepted = f.state.apply(oldRequest.requestID, oldReply) } catch (error) { thrown = error }
+        equal(replacementEntered, true, 'controlled boundary entered')
+        if (boundary === 'throwing invalidation') {
+            equal(thrown?.message, 'Old invalidation failed after retry', 'existing reply error behavior retained')
+        } else {
+            equal(thrown, undefined, 'ordinary old reply does not throw')
+            equal(accepted, false, 'old reply cannot acknowledge replacement')
+        }
+        await turn()
+        answered(original, false, 'original failed attempt')
+        equal(successor.settled, false, 'new read still awaits its own native response')
+        equal(f.state.recoverHistoryReadingStatus(observation), successorPromise, 'new completion identity is retained')
+        equal(f.requests.length, 3, 'one initial read and two explicitly admitted attempts')
+        const newRequest = f.requests.at(-1)
+        equal(newRequest.requestID === oldRequest.requestID, false, 'new query has a distinct native request ID')
+        equal(f.state.apply(newRequest.requestID, f.reply(newRequest, 3)), true, 'new sample accepted')
+        await turn()
+        answered(successor, true, 'new attempt receives only its own result')
+        equal(f.state.ready, true, 'new accepted Book state remains available')
+        equal(f.state.state.revision, 3, 'new revision retained')
+        equal(f.state.reacknowledgeHistoryReadingStatus(observation), true, 'new acknowledgement retained')
+    })
+}

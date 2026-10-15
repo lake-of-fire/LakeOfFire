@@ -245,6 +245,7 @@ export class BookReadingStateController {
     }
     apply(requestID, result) {
         const recovery = this.#historyRecovery, pending = this.#pending
+        const completion = recovery?.promise, resolve = recovery?.resolve
         let acknowledgesRecovery = false, accepted = false
         try {
             acknowledgesRecovery = !!recovery && !!pending && requestID === pending.requestID
@@ -254,11 +255,15 @@ export class BookReadingStateController {
             return accepted
         } finally {
             if (acknowledgesRecovery && !accepted) {
-                if (this.#historyRecovery === recovery) {
+                // Reply callbacks can reject this attempt and explicitly start
+                // another on the same recovery. Only the original completion
+                // owns failure cleanup; a newer read still needs its own reply.
+                if (this.#historyRecovery === recovery && recovery.promise === completion) {
                     recovery.requested = false
                     if (this.#pending === pending) this.#pending = null
+                    recovery.resolve = null; recovery.promise = null
                 }
-                recovery.resolve?.(false); recovery.resolve = null; recovery.promise = null
+                resolve?.(false)
             }
         }
     }
@@ -306,10 +311,6 @@ export class BookReadingStateController {
         if (ok !== true) {
             this.#pending = null; this.#context = null
             this.#notify('onInvalidate', [], this.#captureProjection())
-            if (this.#historyRecovery === recovery && recovery) {
-                recovery.requested = false
-                recovery.resolve?.(false); recovery.resolve = null; recovery.promise = null
-            }
             return false
         }
         let prepared, notification
