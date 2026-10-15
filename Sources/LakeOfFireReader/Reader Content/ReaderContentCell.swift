@@ -957,39 +957,42 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         (showsUnreadIndicator || (appearance.isEbookStyle && !isProgressVisible))
     }
 
+    // Keep the menu's multiple entries in the deployment-compatible ViewBuilder
+    // representation. New SDK ContentBuilder tuples otherwise leak TupleContent
+    // metadata into this generic cell, which older SwiftUI runtimes cannot load.
+    @ViewBuilder
+    private var cellMenuItems: some View {
+        let deletable = item as? (any DeletableReaderContent)
+        if let customLeadingMenuOptions {
+            customLeadingMenuOptions(self.item)
+        }
+        if let item = item as? ContentFile {
+            CloudDriveSyncStatusView(item: item)
+                .labelStyle(.titleAndIcon)
+            Divider()
+        }
+        AnyView(self.item.bookmarkButtonView(iconOnly: false))
+#if DEBUG
+        videoMakerMenuItem
+#endif
+        if let customMenuOptions {
+            customMenuOptions(self.item)
+        }
+        if let deletable {
+            Divider()
+            Button(role: .destructive) {
+                readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
+            } label: {
+                Label(deletable.deleteActionTitle, systemImage: "trash")
+            }
+        }
+    }
+
     @ViewBuilder
     private var controlsRow: some View {
-        let deletable = item as? (any DeletableReaderContent)
         if #available(iOS 16, macOS 13, *) {
             Menu {
-                if let customLeadingMenuOptions {
-                    customLeadingMenuOptions(self.item)
-                }
-
-                if let item = item as? ContentFile {
-                    CloudDriveSyncStatusView(item: item)
-                        .labelStyle(.titleAndIcon)
-                    Divider()
-                }
-
-                AnyView(self.item.bookmarkButtonView(iconOnly: false))
-
-#if DEBUG
-                videoMakerMenuItem
-#endif
-
-                if let customMenuOptions {
-                    customMenuOptions(self.item)
-                }
-
-                if let deletable {
-                    Divider()
-                    Button(role: .destructive) {
-                        readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
-                    } label: {
-                        Label(deletable.deleteActionTitle, systemImage: "trash")
-                    }
-                }
+                cellMenuItems
             } label: {
                 Label("More Options", systemImage: "ellipsis")
                     .labelStyle(.iconOnly)
@@ -999,34 +1002,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             .accessibilityLabel("More Options")
         } else if #available(iOS 15, macOS 12, *) {
             Menu {
-                if let customLeadingMenuOptions {
-                    customLeadingMenuOptions(self.item)
-                }
-
-                if let item = item as? ContentFile {
-                    CloudDriveSyncStatusView(item: item)
-                        .labelStyle(.titleAndIcon)
-                    Divider()
-                }
-
-                AnyView(self.item.bookmarkButtonView(iconOnly: false))
-
-#if DEBUG
-                videoMakerMenuItem
-#endif
-
-                if let customMenuOptions {
-                    customMenuOptions(self.item)
-                }
-
-                if let deletable {
-                    Divider()
-                    Button(role: .destructive) {
-                        readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
-                    } label: {
-                        Label(deletable.deleteActionTitle, systemImage: "trash")
-                    }
-                }
+                cellMenuItems
             } label: {
                 Label("More Options", systemImage: "ellipsis")
                     .labelStyle(.iconOnly)
@@ -1035,34 +1011,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             .accessibilityLabel("More Options")
         } else {
             Menu {
-                if let customLeadingMenuOptions {
-                    customLeadingMenuOptions(self.item)
-                }
-
-                if let item = item as? ContentFile {
-                    CloudDriveSyncStatusView(item: item)
-                        .labelStyle(.titleAndIcon)
-                    Divider()
-                }
-
-                AnyView(self.item.bookmarkButtonView(iconOnly: false))
-
-#if DEBUG
-                videoMakerMenuItem
-#endif
-
-                if let customMenuOptions {
-                    customMenuOptions(self.item)
-                }
-
-                if let deletable {
-                    Divider()
-                    Button(role: .destructive) {
-                        readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
-                    } label: {
-                        Label(deletable.deleteActionTitle, systemImage: "trash")
-                    }
-                }
+                cellMenuItems
             } label: {
                 Label("More Options", systemImage: "ellipsis")
                     .labelStyle(.iconOnly)
@@ -1259,9 +1208,16 @@ enum ReaderContentInitialImageRenderer {
         dimension: CGFloat,
         displayScale: CGFloat
     ) -> CGImage? {
-        guard !initial.isEmpty else { return nil }
+        guard !initial.isEmpty, dimension.isFinite, dimension > 0,
+              displayScale.isFinite, displayScale > 0 else { return nil }
         let scale = max(displayScale, 1)
-        let pixelDimension = max(1, Int((dimension * scale).rounded(.up)))
+        guard let pixelDimension = Int(exactly: (dimension * scale).rounded(.up)),
+              pixelDimension > 0 else { return nil }
+        let (bytesPerRow, rowOverflow) = pixelDimension.multipliedReportingOverflow(by: 4)
+        let (byteCount, costOverflow) = bytesPerRow.multipliedReportingOverflow(by: pixelDimension)
+        // Bound allocation itself, not just the cache's later eviction policy.
+        // One decorative fallback must fit the existing total cache budget.
+        guard !rowOverflow, !costOverflow, byteCount <= cacheTotalCostLimit else { return nil }
         let cacheKey = "\(initial)|\(pixelDimension)" as NSString
         if let cachedImage = imageCache.object(forKey: cacheKey) {
             return cachedImage
@@ -1273,7 +1229,7 @@ enum ReaderContentInitialImageRenderer {
             width: pixelDimension,
             height: pixelDimension,
             bitsPerComponent: 8,
-            bytesPerRow: pixelDimension * 4,
+            bytesPerRow: bytesPerRow,
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else {
@@ -1311,7 +1267,7 @@ enum ReaderContentInitialImageRenderer {
         imageCache.setObject(
             image,
             forKey: cacheKey,
-            cost: pixelDimension * pixelDimension * 4
+            cost: byteCount
         )
         return image
     }
@@ -1397,6 +1353,19 @@ private struct ReaderContentThumbnailTile: View {
     }
 }
 
+/// SwiftUI owns cancellation through .task(id:). A detached metadata read may
+/// finish afterward, so the result must still belong to the uncancelled caller.
+@MainActor
+func refreshReaderBookCoverWidth(
+    resolve: @MainActor () async -> CGFloat,
+    publish: @MainActor (CGFloat) -> Void
+) async {
+    guard !Task.isCancelled else { return }
+    let width = await resolve()
+    guard !Task.isCancelled else { return }
+    publish(width)
+}
+
 public struct BookCoverImageView: View {
     public let imageURL: URL
     public let dimension: CGFloat
@@ -1423,15 +1392,19 @@ public struct BookCoverImageView: View {
             }
             .preference(key: ReaderContentBookCoverRenderedWidthPreferenceKey.self, value: renderedCoverWidth)
             .task(id: "\(imageURL.absoluteString)|\(dimension)") {
-                let width = await resolveRenderedCoverWidth(imageURL: imageURL, dimension: dimension)
-                if abs(width - renderedCoverWidth) >= 0.5 {
-                    renderedCoverWidth = width
-                }
+                await refreshReaderBookCoverWidth(
+                    resolve: { await resolveRenderedCoverWidth(imageURL: imageURL, dimension: dimension) },
+                    publish: { width in
+                        if abs(width - renderedCoverWidth) >= 0.5 {
+                            renderedCoverWidth = width
+                        }
+                    }
+                )
             }
     }
 
     private func resolveRenderedCoverWidth(imageURL: URL, dimension: CGFloat) async -> CGFloat {
-        guard dimension > 0 else { return 0 }
+        guard dimension.isFinite, dimension > 0 else { return 0 }
         guard let pixelSize = await imagePixelSize(for: imageURL), pixelSize.height > 0 else {
             return 0
         }
