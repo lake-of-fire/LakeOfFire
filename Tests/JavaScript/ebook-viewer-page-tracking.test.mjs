@@ -1083,16 +1083,25 @@ test('a full native publication throwing after the viewer model changes cannot a
     const f = pendingNativeMark(t)
     assert.equal(f.deliver(), true)
     await new Promise(resolve => setImmediate(resolve))
+    const originalEndcap = f.reader.bookEndcap
     f.reader.bookEndcap = { setFinished() { throw new Error('endcap publication failed') } }
     assert.throws(() => f.book.publish(2, ['current-page-segment'], ['native-completed-current-page']),
         /endcap publication failed/)
-    assert.deepEqual(Array.from(f.reader.articleReadingProgress.readSegmentIdentifiers), ['current-page-segment'])
-    assert.equal(f.book.runtime.state.state.revision, 2)
+    assert.deepEqual(Array.from(f.reader.articleReadingProgress.readSegmentIdentifiers), [])
+    assert.equal(f.book.runtime.state.state, null)
+    assert.equal(f.book.runtime.state.context, null)
+    assert.equal(f.book.runtime.state.ready, false)
     assert.equal(f.reader.testSuccessfulPublication(), null)
     const result = await f.join()
     assert.equal(result.value, true)
     assert.equal(result.error, undefined)
     assert.deepEqual(f.moves, [])
+    f.reader.bookEndcap = originalEndcap
+    assert.equal(f.book.runtime.state.refresh(), true)
+    assert.equal(f.book.publish(3, ['current-page-segment'], ['native-completed-current-page']), true)
+    assert.deepEqual(Array.from(f.reader.articleReadingProgress.readSegmentIdentifiers), ['current-page-segment'])
+    assert.equal(f.book.runtime.state.ready, true)
+    assert.deepEqual(f.moves, [], 'A fresh display must not replay navigation for the already committed command')
 })
 
 for (const succeeded of [false, true]) {
