@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import RealmSwift
 import XCTest
@@ -168,5 +169,95 @@ final class ReviewReaderCellRefreshTests: XCTestCase {
         XCTAssertEqual(model.author, "Author")
         XCTAssertEqual(model.imageURL, file.imageUrl)
         XCTAssertTrue(model.hasLoadedDisplayState)
+    }
+
+    func testAlreadyCancelledCoverWidthRequestDoesNotStartResolution() async {
+        var resolutions = 0
+        var widths: [CGFloat] = []
+        let request = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await refreshReaderBookCoverWidth(
+                resolve: { resolutions += 1; return 24 },
+                publish: { widths.append($0) }
+            )
+        }
+        await request.value
+        XCTAssertEqual(resolutions, 0)
+        XCTAssertTrue(widths.isEmpty)
+    }
+
+    func testCancelledCoverWidthCannotPublishAfterNoncooperativeReadReturns() async {
+        let entered = expectation(description: "cover metadata read suspended")
+        let gate = ReaderCellImageGate(entered)
+        var widths: [CGFloat] = []
+        let request = Task { @MainActor in
+            await refreshReaderBookCoverWidth(
+                resolve: { _ = await gate.wait(); return 24 },
+                publish: { widths.append($0) }
+            )
+        }
+        await fulfillment(of: [entered], timeout: 3)
+        request.cancel()
+        // The underlying read deliberately finishes despite cancellation.
+        gate.release(nil)
+        await request.value
+        XCTAssertTrue(widths.isEmpty)
+    }
+
+    func testCancelledOldCoverWidthCannotOverwriteSuccessorWidth() async {
+        let entered = expectation(description: "previous cover metadata suspended")
+        let gate = ReaderCellImageGate(entered)
+        var widths: [CGFloat] = []
+        let old = Task { @MainActor in
+            await refreshReaderBookCoverWidth(
+                resolve: { _ = await gate.wait(); return 24 },
+                publish: { widths.append($0) }
+            )
+        }
+        await fulfillment(of: [entered], timeout: 3)
+        // Models the cancellation performed by the existing SwiftUI .task(id:)
+        // when its image URL or dimension changes, without launching SwiftUI.
+        old.cancel()
+        await refreshReaderBookCoverWidth(resolve: { 72 }, publish: { widths.append($0) })
+        gate.release(nil)
+        await old.value
+        XCTAssertEqual(widths, [72])
+    }
+
+    func testCurrentDelayedCoverWidthStillPublishes() async {
+        let entered = expectation(description: "current cover metadata suspended")
+        let gate = ReaderCellImageGate(entered)
+        var widths: [CGFloat] = []
+        let request = Task { @MainActor in
+            await refreshReaderBookCoverWidth(
+                resolve: { _ = await gate.wait(); return 24 },
+                publish: { widths.append($0) }
+            )
+        }
+        await fulfillment(of: [entered], timeout: 3)
+        gate.release(nil)
+        await request.value
+        XCTAssertEqual(widths, [24])
+    }
+
+    func testCancellationBeforeCoverResolverReturnsPreventsPublication() async {
+        var widths: [CGFloat] = []
+        let request = Task { @MainActor in
+            await refreshReaderBookCoverWidth(
+                resolve: {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    return 24
+                },
+                publish: { widths.append($0) }
+            )
+        }
+        await request.value
+        XCTAssertTrue(widths.isEmpty)
+    }
+
+    func testCurrentMissingCoverCanPublishZeroWidth() async {
+        var width: CGFloat = 72
+        await refreshReaderBookCoverWidth(resolve: { 0 }, publish: { width = $0 })
+        XCTAssertEqual(width, 0)
     }
 }
