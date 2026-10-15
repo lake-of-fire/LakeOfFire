@@ -138,7 +138,7 @@ export class BookReadingStateController {
             && acknowledged.isCurrent() && this.ready && acknowledged.isCurrent()
     }
     failHistoryReadingStatusRecovery(observation) {
-        const ownsFailure = this.#captureAdmission()
+        let ownsFailure = this.#captureAdmission()
         let recovery = this.#historyRecovery
         const acknowledged = this.#acknowledgedHistoryRecovery
         const proof = recoveryObservation(observation)
@@ -154,12 +154,13 @@ export class BookReadingStateController {
                 requested: false, promise: null, resolve: null }
             this.#acknowledgedHistoryRecovery = null
             this.#pending = null; this.#context = null; this.#state = null
-            const ownsWithdrawal = this.#captureAdmission()
-            this.#notify('onInvalidate', [], ownsWithdrawal)
-            if (!this.#locationIsCurrent(ownsWithdrawal)) return false
+            ownsFailure = this.#captureAdmission()
+            this.#notify('onInvalidate', [], ownsFailure)
+            if (!this.#locationIsCurrent(ownsFailure)) return false
         }
         if (this.#historyRecovery !== recovery || !recovery
-            || !sameRecoveryObservation(proof, recovery.proof) || !recovery.isCurrent()) return false
+            || !sameRecoveryObservation(proof, recovery.proof) || !recovery.isCurrent()
+            || !ownsFailure()) return false
         this.#pending = null; recovery.requested = false
         recovery.resolve?.(false); recovery.resolve = null; recovery.promise = null
         return true
@@ -199,11 +200,12 @@ export class BookReadingStateController {
     }
     refresh() {
         if (this.#closed || !this.#location) return false
+        const preparationIsCurrent = this.#captureAdmission()
         const recovery = this.#historyRecovery
         if (recovery && (!recovery.requested || !recovery.isCurrent()
             || recovery.account !== this.#accountPresentation)) return false
+        if (!preparationIsCurrent()) return false
         if (recovery && this.#pending) return true
-        const preparationIsCurrent = this.#captureAdmission()
         let request = null, projectionIsCurrent = null
         try {
             const makeRequestID = this.makeRequestID
@@ -246,11 +248,13 @@ export class BookReadingStateController {
     apply(requestID, result) {
         const recovery = this.#historyRecovery, pending = this.#pending
         const completion = recovery?.promise, resolve = recovery?.resolve
+        const ownsReply = this.#captureAdmission()
         let acknowledgesRecovery = false, accepted = false
         try {
             acknowledgesRecovery = !!recovery && !!pending && requestID === pending.requestID
                 && sameRecoveryObservation(recoveryObservation(result?.historyRecoveryObservation), recovery.proof)
                 && this.#historyRecovery === recovery && this.#pending === pending
+            if (!ownsReply()) return false
             accepted = this.#apply(requestID, result)
             return accepted
         } finally {

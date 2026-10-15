@@ -314,3 +314,167 @@ for (const boundary of ['negative reply', 'throwing invalidation', 'sample copyi
         equal(f.state.reacknowledgeHistoryReadingStatus(observation), true, 'new acknowledgement retained')
     })
 }
+
+// A retry through fail/recover deliberately reuses the same recovery record.
+// A fresh begin() would allocate another record and miss this ownership gap.
+for (const boundary of ['negative reply', 'publication failure', 'location validation']) {
+    for (const throwsAfterRetry of [false, true]) {
+        for (const retryAccepted of [false, true]) {
+            add(`${boundary} cleanup cannot settle a same-record retry (${throwsAfterRetry ? 'throws' : 'returns'}, retry ${retryAccepted})`, async f => {
+                const observation = f.begin()
+                const original = watch(f.state.recoverHistoryReadingStatus(observation))
+                const oldRequest = f.requests.at(-1)
+                const failure = new Error('Original callback failed after retry')
+                let successorPromise, successor, callbackCount = 0
+                const restart = () => {
+                    callbackCount++
+                    f.state.onInvalidate = () => {}
+                    f.state.isLocationCurrent = () => true
+                    f.state.onState = sample => f.publications.push(sample)
+                    equal(f.state.failHistoryReadingStatusRecovery(observation), true, 'original attempt rejected')
+                    successorPromise = f.state.recoverHistoryReadingStatus(observation)
+                    successor = watch(successorPromise)
+                    if (throwsAfterRetry) throw failure
+                    return true
+                }
+                if (boundary === 'negative reply') f.state.onInvalidate = restart
+                if (boundary === 'location validation') f.state.isLocationCurrent = restart
+                if (boundary === 'publication failure') {
+                    f.state.onState = () => { throw new Error('Original publication failed') }
+                    f.state.onInvalidate = restart
+                }
+                let result, error
+                try { result = f.state.apply(oldRequest.requestID,
+                    f.reply(oldRequest, 2, boundary !== 'negative reply')) }
+                catch (caught) { error = caught }
+                // Publication failures have an existing contained-error contract;
+                // negative/validation callback errors still belong to their caller.
+                if (throwsAfterRetry && boundary !== 'publication failure') equal(error, failure, 'original error preserved')
+                else { equal(error, undefined, 'no unexpected error'); equal(result, false, 'old reply rejected') }
+                equal(callbackCount, 1, 'cleanup entered once')
+                await turn()
+                answered(original, false, 'original attempt')
+                equal(successor.settled, false, 'new attempt still waits for its own native reply')
+                equal(f.state.recoverHistoryReadingStatus(observation), successorPromise, 'exact retry Promise retained')
+                equal(f.requests.length, 3, 'one initial sample and two explicit recovery attempts')
+                equal(f.state.ready, false, 'unanswered retry cannot expose authoring context')
+                const nextRequest = f.requests.at(-1)
+                equal(f.state.apply(nextRequest.requestID, f.reply(nextRequest, 3, retryAccepted)), retryAccepted,
+                    'retry owns its own native response')
+                await turn()
+                answered(successor, retryAccepted, 'retry observer')
+                equal(f.state.ready, retryAccepted, 'retry readiness matches its response')
+                equal(f.state.reacknowledgeHistoryReadingStatus(observation), retryAccepted, 'only successful retry acknowledged')
+                equal(f.requests.length, 3, 'reply cleanup did not dispatch an extra query')
+            })
+        }
+    }
+}
+
+for (const repeatedID of [false, true]) {
+    add(`reply proof capture cannot lend a predecessor response to a new attempt (${repeatedID ? 'repeated' : 'distinct'} wire ID)`, async f => {
+        const observation = f.begin()
+        if (repeatedID) f.state.makeRequestID = () => 'compatibility-wire-id'
+        const original = watch(f.state.recoverHistoryReadingStatus(observation))
+        const oldRequest = f.requests.at(-1), oldReply = f.reply(oldRequest, 2)
+        let successorPromise, successor, entered = false
+        Object.defineProperty(oldReply, 'historyRecoveryObservation', { get() {
+            if (!entered) {
+                entered = true
+                equal(f.state.failHistoryReadingStatusRecovery(observation), true, 'old read retired during proof copy')
+                successorPromise = f.state.recoverHistoryReadingStatus(observation)
+                successor = watch(successorPromise)
+            }
+            return observation
+        } })
+        equal(f.state.apply(oldRequest.requestID, oldReply), false, 'old proof-copy continuation rejected')
+        await turn()
+        answered(original, false, 'original proof-copy attempt')
+        equal(successor.settled, false, 'replacement is not answered by the old response')
+        equal(f.state.recoverHistoryReadingStatus(observation), successorPromise, 'replacement completion retained')
+        equal(f.state.ready, false, 'old response did not publish a ready context')
+        equal(f.publications.length, 1, 'only the initial sample was published')
+        equal(f.requests.length, 3, 'only explicit replacement read dispatched')
+        const nextRequest = f.requests.at(-1)
+        equal(f.state.apply(nextRequest.requestID, f.reply(nextRequest, 3)), true, 'new response accepted')
+        await turn()
+        answered(successor, true, 'replacement result')
+        equal(f.state.state.revision, 3, 'replacement revision retained')
+    })
+}
+
+for (const replacement of ['retry', 'same-proof reset', 'different-proof reset']) {
+    add(`terminal failure checking cannot cancel a ${replacement} admitted by its original owner callback`, async f => {
+        const observation = proof('a'), nextProof = replacement === 'different-proof reset' ? proof('b') : observation
+        let check = () => true
+        equal(f.state.beginHistoryReadingStatusRecovery(observation, f.scope, () => check()), true, 'recovery prepared')
+        const original = watch(f.state.recoverHistoryReadingStatus(observation))
+        let successorPromise, successor
+        check = () => {
+            check = () => true
+            if (replacement === 'retry') equal(f.state.failHistoryReadingStatusRecovery(observation), true, 'nested failure retired original')
+            else f.begin(nextProof)
+            successorPromise = f.state.recoverHistoryReadingStatus(nextProof)
+            successor = watch(successorPromise)
+            return true
+        }
+        equal(f.state.failHistoryReadingStatusRecovery(observation), false, 'outer failure lost admission')
+        await turn()
+        answered(original, false, 'original failure observer')
+        equal(successor.settled, false, 'successor waits for its response')
+        equal(f.state.recoverHistoryReadingStatus(nextProof), successorPromise, 'successor completion retained')
+        equal(f.requests.length, 3, 'only explicit attempts were dispatched')
+        const request = f.requests.at(-1)
+        equal(f.state.apply(request.requestID, f.reply(request, 3)), true, 'successor request slot preserved')
+        await turn()
+        answered(successor, true, 'successor failure-check result')
+    })
+}
+
+for (const sameProof of [false, true]) {
+    add(`refresh owner checking cannot post through a replacement ${sameProof ? 'same-proof' : 'different-proof'} preparation`, async f => {
+        const observation = proof('a'), nextProof = sameProof ? observation : proof('b')
+        let check = () => true
+        equal(f.state.beginHistoryReadingStatusRecovery(observation, f.scope, () => check()), true, 'recovery prepared')
+        const original = watch(f.state.recoverHistoryReadingStatus(observation))
+        check = () => {
+            check = () => true
+            f.begin(nextProof)
+            return true
+        }
+        equal(f.state.refresh(), false, 'old refresh cannot adopt replacement preparation')
+        await turn()
+        answered(original, false, 'replaced recovery')
+        equal(f.requests.length, 2, 'prepared-only replacement must not dispatch a read')
+        equal(f.state.ready, false, 'prepared-only replacement is not ready')
+        const successor = watch(f.state.recoverHistoryReadingStatus(nextProof))
+        equal(f.requests.length, 3, 'explicit replacement starts exactly one read')
+        const request = f.requests.at(-1)
+        equal(request.historyRecoveryObservation.observationToken, nextProof.observationToken, 'new proof on new query')
+        equal(f.state.apply(request.requestID, f.reply(request, 3)), true, 'replacement response accepted')
+        await turn()
+        answered(successor, true, 'explicit replacement result')
+    })
+}
+
+add('withdrawing an acknowledged recovery preserves a query started by that withdrawal callback', async f => {
+    const observation = f.begin(), first = watch(f.state.recoverHistoryReadingStatus(observation))
+    const request = f.requests.at(-1)
+    equal(f.state.apply(request.requestID, f.reply(request, 2)), true, 'first read acknowledged')
+    await turn()
+    answered(first, true, 'first read')
+    let successorPromise, successor
+    f.state.onInvalidate = () => {
+        f.state.onInvalidate = () => {}
+        successorPromise = f.state.recoverHistoryReadingStatus(observation)
+        successor = watch(successorPromise)
+    }
+    equal(f.state.failHistoryReadingStatusRecovery(observation), false, 'withdrawal cannot cancel nested read')
+    await turn()
+    equal(successor.settled, false, 'nested read still needs its response')
+    equal(f.state.recoverHistoryReadingStatus(observation), successorPromise, 'nested completion retained')
+    const next = f.requests.at(-1)
+    equal(f.state.apply(next.requestID, f.reply(next, 3)), true, 'nested read accepted')
+    await turn()
+    answered(successor, true, 'nested read result')
+})
