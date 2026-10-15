@@ -3390,6 +3390,15 @@ public class ReaderModeViewModel: ObservableObject {
         try Task.checkCancellation()
         
         let committedURL = content.url
+        let contentIsCurrent = { @MainActor in
+            guard !content.isInvalidated,
+                  let currentContent = readerContent.validCachedContent,
+                  content === currentContent || content.isSameObject(as: currentContent as Object),
+                  currentContent.url.matchesReaderURL(committedURL) else {
+                return false
+            }
+            return readerContent.pageURL.matchesReaderURL(committedURL)
+        }
         try Task.checkCancellation()
 
         let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
@@ -3430,12 +3439,7 @@ public class ReaderModeViewModel: ObservableObject {
             throw CancellationError()
         }
 
-        guard readerContent.pageURL.matchesReaderURL(committedURL),
-              let currentContent = readerContent.validCachedContent,
-              currentContent === content,
-              currentContent.url.matchesReaderURL(committedURL) else {
-            return
-        }
+        guard contentIsCurrent() else { return }
 
         if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
             return
@@ -3469,7 +3473,7 @@ public class ReaderModeViewModel: ObservableObject {
             let html = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
             if let html {
                 try Task.checkCancellation()
-                guard readerContent.validCachedContent === content else { return }
+                guard contentIsCurrent() else { return }
                 guard ownsReaderDocumentBinding(
                     navigationBindingToken,
                     scriptCaller: scriptCaller
@@ -3491,10 +3495,7 @@ public class ReaderModeViewModel: ObservableObject {
                 ) else {
                     throw CancellationError()
                 }
-                guard committedURL.matchesReaderURL(readerContent.pageURL),
-                      readerContent.validCachedContent === content else {
-                    return
-                }
+                guard contentIsCurrent() else { return }
                 if committedURL.isSnippetURL,
                    let snippetHTML = buildSnippetCanonicalReadabilityHTML(
                     html: html,
