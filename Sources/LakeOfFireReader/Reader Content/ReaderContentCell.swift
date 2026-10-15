@@ -1196,8 +1196,11 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         }
     }
 
-    var body: some View {
-        Group {
+    // A concrete Body witness keeps older SwiftUI runtimes from resolving this
+    // generic cell's full opaque modifier tree before constructing the view.
+    // The subtree retains its original task identities and cancellation owners.
+    var body: AnyView {
+        AnyView(Group {
             if usesCompactControlSize {
                 compactLayout
             } else {
@@ -1237,6 +1240,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
                 publish: { annotationStatus = $0 }
             )
         }
+        )
     }
 }
 
