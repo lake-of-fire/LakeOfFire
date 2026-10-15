@@ -102,7 +102,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
     func testCommitRejectsCachedRowInvalidatedDuringLoadPublication() async throws {
         let fixture = makeReaderWebViewHandlerFixture()
         let reader = ReaderCallbackViewModel(systemScripts: [])
-        let media = ReaderCallbackMediaViewModel()
+        let media = ReaderCallbackMediaViewModel(readAloudController: ReaderReadAloudController())
         fixture.handler.readerViewModel = reader
         fixture.handler.readerMediaPlayerViewModel = media
         let url = URL(string: "https://example.invalid/invalidated-publication")!
@@ -134,7 +134,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         for change in ["invalidated", "removed", "replacement", "lateFailureReplacement", "binding", "cancelled", "live"] {
             let fixture = makeReaderWebViewHandlerFixture()
             let reader = ReaderCallbackViewModel(systemScripts: [])
-            let media = ReaderCallbackMediaViewModel()
+            let media = ReaderCallbackMediaViewModel(readAloudController: ReaderReadAloudController())
             fixture.handler.readerViewModel = reader
             fixture.handler.readerMediaPlayerViewModel = media
             let url = URL(string: "https://example.invalid/suspended-commit")!
@@ -342,9 +342,9 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
                     unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
                 )
                 if entryPoint == "finish" {
-                    model.onNavigationFinished(content: record, newState: state) { _ in
+                    model.onNavigationFinished(content: record, newState: state, completion: { _ in
                         unexpected.fulfill()
-                    }
+                    })
                 } else {
                     model.refreshSettingsInWebView(content: record, newState: state)
                 }
