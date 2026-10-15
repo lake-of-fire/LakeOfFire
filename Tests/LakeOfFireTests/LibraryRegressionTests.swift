@@ -5,6 +5,32 @@ import XCTest
 @testable import LakeOfFireContent
 
 final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
+    @MainActor
+    func testConfiguredCatalogDownloadRespectsTheInjectedDataRoot() throws {
+        let key = "JVIDS_MANABI_DATA_ROOT"
+        let previousRoot = ProcessInfo.processInfo.environment[key]
+        let previousGroup = LibraryConfiguration.securityApplicationGroupIdentifier
+        let previousDirectory = LibraryConfiguration.downloadstDirectoryName
+        let previousURLs = LibraryConfiguration.opmlURLs
+        defer {
+            if let previousRoot { setenv(key, previousRoot, 1) } else { unsetenv(key) }
+            LibraryConfiguration.securityApplicationGroupIdentifier = previousGroup
+            LibraryConfiguration.downloadstDirectoryName = previousDirectory
+            LibraryConfiguration.opmlURLs = previousURLs
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        setenv(key, root.path, 1)
+        LibraryConfiguration.securityApplicationGroupIdentifier = "group.manabi.fixture-only"
+        LibraryConfiguration.downloadstDirectoryName = "catalog-fixture"
+        let source = URL(string: "https://example.invalid/\(UUID().uuidString).opml")!
+        LibraryConfiguration.opmlURLs = [source]
+        let downloadable = try XCTUnwrap(LibraryConfiguration.configuredDownloadables.first)
+        XCTAssertEqual(downloadable.url, source)
+        XCTAssertEqual(downloadable.localDestination,
+                       root.appendingPathComponent("catalog-fixture", isDirectory: true)
+                           .appendingPathComponent(source.lastPathComponent))
+    }
+
     @RealmBackgroundActor
     func testAppFeedCreatesAfterForeignProvisionalMatchRollsBack() async throws {
         try await verifyAppFeedSelectionAfterForeignRollback(provisionalCreation: true)
