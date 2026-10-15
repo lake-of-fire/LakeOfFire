@@ -56,7 +56,8 @@ const setup = () => {
         isCurrent: () => current, retire: () => { current = false; },
         failRefresh: () => { failRefresh = true; },
         retireOnRefresh: () => { retireOnRefresh = true; },
-        failPublication: () => { failPublication = true; } };
+        failPublication: () => { failPublication = true; },
+        restorePublication: () => { failPublication = false; } };
 };
 
 test('successful exact visible request refreshes and displays only the full native state', async () => {
@@ -201,8 +202,18 @@ test('a failed native state publication cannot authorize advance from the contro
     fixture.failPublication();
     assert.throws(() => fixture.state.apply(fixture.requests.at(-1).requestID,
         snapshot(2, ['old', 'visible-name', 'visible-punctuation'])), /publication unavailable/);
-    assert.equal(fixture.state.state.revision, 2);
+    assert.equal(fixture.state.state, null);
+    assert.equal(fixture.state.context, null);
+    assert.equal(fixture.state.ready, false);
     assert.equal(committedVisibleMarkReadStateIsPresented({ state: fixture.state,
         minimumSnapshotSequence: 2, stableSegmentIDs: ['visible-name', 'visible-punctuation'],
         successfulPublicationSequence: fixture.publicationSequence }), false);
+    fixture.restorePublication();
+    assert.equal(fixture.state.refresh(), true);
+    assert.equal(fixture.state.apply(fixture.requests.at(-1).requestID,
+        snapshot(3, ['old', 'visible-name', 'visible-punctuation'])), true);
+    assert.equal(fixture.state.ready, true);
+    assert.equal(committedVisibleMarkReadStateIsPresented({ state: fixture.state,
+        minimumSnapshotSequence: 2, stableSegmentIDs: ['visible-name', 'visible-punctuation'],
+        successfulPublicationSequence: fixture.publicationSequence }), true);
 });

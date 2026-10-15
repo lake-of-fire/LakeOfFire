@@ -60,7 +60,12 @@ export class BookReadingStateController {
     }
     #captureAdmission() {
         const projectionIsCurrent = this.#captureProjection(), pending = this.#pending
+        // A failed/restarted read can keep the same recovery object and empty
+        // request slot. Its predecessor must not dispatch under that new phase.
+        const recovery = this.#historyRecovery
+        const completion = recovery?.promise, requested = recovery?.requested
         return () => projectionIsCurrent() && this.#pending === pending
+            && recovery?.promise === completion && recovery?.requested === requested
     }
     #locationIsCurrent(isCurrent) {
         if (!isCurrent()) return false
@@ -111,12 +116,19 @@ export class BookReadingStateController {
             || this.#accountPresentation !== recovery.account) return Promise.resolve(false)
         if (recovery.promise) return recovery.promise
         recovery.promise = new Promise(resolve => { recovery.resolve = resolve })
-        const completion = recovery.promise
+        const completion = recovery.promise, resolve = recovery.resolve
         recovery.requested = true
-        if (!this.refresh()) {
+        try {
+            if (this.refresh()) return completion
+        } catch (_) {} // Failed invalidation is not an unresolved native read.
+        // Cleanup may already have retired this observer or admitted another
+        // recovery. Settle the original promise, never its replacement, even
+        // when an optional callback threw after releasing the stored resolver.
+        if (this.#historyRecovery === recovery && recovery.promise === completion) {
             recovery.requested = false
-            recovery.resolve(false); recovery.resolve = null; recovery.promise = null
+            recovery.resolve = null; recovery.promise = null
         }
+        resolve(false)
         return completion
     }
     reacknowledgeHistoryReadingStatus(observation) {
@@ -126,7 +138,7 @@ export class BookReadingStateController {
             && acknowledged.isCurrent() && this.ready && acknowledged.isCurrent()
     }
     failHistoryReadingStatusRecovery(observation) {
-        const ownsFailure = this.#captureAdmission()
+        let ownsFailure = this.#captureAdmission()
         let recovery = this.#historyRecovery
         const acknowledged = this.#acknowledgedHistoryRecovery
         const proof = recoveryObservation(observation)
@@ -142,12 +154,13 @@ export class BookReadingStateController {
                 requested: false, promise: null, resolve: null }
             this.#acknowledgedHistoryRecovery = null
             this.#pending = null; this.#context = null; this.#state = null
-            const ownsWithdrawal = this.#captureAdmission()
-            this.#notify('onInvalidate', [], ownsWithdrawal)
-            if (!this.#locationIsCurrent(ownsWithdrawal)) return false
+            ownsFailure = this.#captureAdmission()
+            this.#notify('onInvalidate', [], ownsFailure)
+            if (!this.#locationIsCurrent(ownsFailure)) return false
         }
         if (this.#historyRecovery !== recovery || !recovery
-            || !sameRecoveryObservation(proof, recovery.proof) || !recovery.isCurrent()) return false
+            || !sameRecoveryObservation(proof, recovery.proof) || !recovery.isCurrent()
+            || !ownsFailure()) return false
         this.#pending = null; recovery.requested = false
         recovery.resolve?.(false); recovery.resolve = null; recovery.promise = null
         return true
@@ -187,11 +200,12 @@ export class BookReadingStateController {
     }
     refresh() {
         if (this.#closed || !this.#location) return false
+        const preparationIsCurrent = this.#captureAdmission()
         const recovery = this.#historyRecovery
         if (recovery && (!recovery.requested || !recovery.isCurrent()
             || recovery.account !== this.#accountPresentation)) return false
+        if (!preparationIsCurrent()) return false
         if (recovery && this.#pending) return true
-        const preparationIsCurrent = this.#captureAdmission()
         let request = null, projectionIsCurrent = null
         try {
             const makeRequestID = this.makeRequestID
@@ -233,20 +247,27 @@ export class BookReadingStateController {
     }
     apply(requestID, result) {
         const recovery = this.#historyRecovery, pending = this.#pending
+        const completion = recovery?.promise, resolve = recovery?.resolve
+        const ownsReply = this.#captureAdmission()
         let acknowledgesRecovery = false, accepted = false
         try {
             acknowledgesRecovery = !!recovery && !!pending && requestID === pending.requestID
                 && sameRecoveryObservation(recoveryObservation(result?.historyRecoveryObservation), recovery.proof)
                 && this.#historyRecovery === recovery && this.#pending === pending
+            if (!ownsReply()) return false
             accepted = this.#apply(requestID, result)
             return accepted
         } finally {
             if (acknowledgesRecovery && !accepted) {
-                if (this.#historyRecovery === recovery) {
+                // Reply callbacks can reject this attempt and explicitly start
+                // another on the same recovery. Only the original completion
+                // owns failure cleanup; a newer read still needs its own reply.
+                if (this.#historyRecovery === recovery && recovery.promise === completion) {
                     recovery.requested = false
                     if (this.#pending === pending) this.#pending = null
+                    recovery.resolve = null; recovery.promise = null
                 }
-                recovery.resolve?.(false); recovery.resolve = null; recovery.promise = null
+                resolve?.(false)
             }
         }
     }
@@ -294,10 +315,6 @@ export class BookReadingStateController {
         if (ok !== true) {
             this.#pending = null; this.#context = null
             this.#notify('onInvalidate', [], this.#captureProjection())
-            if (this.#historyRecovery === recovery && recovery) {
-                recovery.requested = false
-                recovery.resolve?.(false); recovery.resolve = null; recovery.promise = null
-            }
             return false
         }
         let prepared, notification
@@ -336,24 +353,31 @@ export class BookReadingStateController {
         this.#state = prepared.state; this.#context = prepared.context
         const ownsPublication = this.#captureProjection()
         const publicationIsCurrent = () => this.#locationIsCurrent(ownsPublication)
-        let accepted
-        try {
-            Reflect.apply(onState, this, [notification.state, notification.context, { passChanged }, publicationIsCurrent])
-            accepted = publicationIsCurrent()
-        } catch (error) {
-            if (!recovery) throw error
-            // A failed recovery callback cannot leave authoring authority live
-            // without either its barrier or an acknowledged publication. Use
-            // private identities so external checks cannot obstruct cleanup,
-            // and retain any successor installed by a reentrant callback.
-            // A queued refresh is not a published successor. Withdraw its
-            // request together with the failed projection and restore the barrier.
-            if (ownsPublication()) {
-                this.#pending = null; this.#state = null; this.#context = null
+        const withdrawFailedPublication = () => {
+            // Withdraw only this failed projection, retaining a published
+            // successor and the native ordering floor. Ordinary queued reads
+            // keep their slots; recovery must restore its authorization barrier.
+            if (!ownsPublication()) return
+            this.#state = null; this.#context = null
+            if (recovery) {
+                this.#pending = null
                 this.#historyRecovery = recovery
                 recovery.requested = false
-                try { this.#notify('onInvalidate', [], this.#captureAdmission()) } catch (_) {}
             }
+            try { this.#notify('onInvalidate', [], this.#captureAdmission()) } catch (_) {}
+        }
+        let accepted
+        try {
+            // Existing void callbacks remain compatible; explicit false means
+            // the renderer declined delivery, not that a native write failed.
+            if (Reflect.apply(onState, this, [notification.state, notification.context, { passChanged }, publicationIsCurrent]) === false) {
+                withdrawFailedPublication()
+                return false
+            }
+            accepted = publicationIsCurrent()
+        } catch (error) {
+            withdrawFailedPublication()
+            if (!recovery) throw error
             return false
         }
         if (accepted && recovery) this.#acknowledgedHistoryRecovery = {
@@ -411,4 +435,3 @@ export class BookReadingStateController {
         this.onInvalidate()
     }
 }
-
