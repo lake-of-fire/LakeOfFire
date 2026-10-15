@@ -3430,6 +3430,12 @@ public class ReaderModeViewModel: ObservableObject {
             throw CancellationError()
         }
 
+        guard readerContent.pageURL.matchesReaderURL(committedURL),
+              let currentContent = readerContent.content,
+              currentContent.url.matchesReaderURL(committedURL) else {
+            return
+        }
+
         if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
             return
         }
