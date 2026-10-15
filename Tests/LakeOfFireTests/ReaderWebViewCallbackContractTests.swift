@@ -41,7 +41,9 @@ private final class ReaderCallbackViewModel: ReaderViewModel {
         try await beforeCommitReturns?()
     }
 
-    override func onNavigationFinished(content: any ReaderContentProtocol, newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
+    override func onNavigationFinished(content: any ReaderContentProtocol, newState: WebViewState,
+                                      documentIsCurrent: @escaping @MainActor () -> Bool = { true },
+                                      completion: ((WebViewState) -> Void)? = nil) {
         finishedContents.append(ObjectIdentifier(content))
         completion?(newState)
     }
@@ -54,6 +56,12 @@ private final class ReaderCallbackMediaViewModel: ReaderMediaPlayerViewModel {
     override func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
         committedContents.append(ObjectIdentifier(content))
     }
+}
+
+@MainActor
+private final class ReaderSettingsDispatchProbe {
+    var settingsCount = 0
+    var titles: [String] = []
 }
 
 @MainActor
@@ -235,6 +243,130 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             XCTAssertEqual(fixture.readerModeViewModel.isReaderModeLoading,
                            !["invalidated", "live"].contains(change), change)
             XCTAssertEqual(fixture.readerModeViewModel.readabilityContent, html, change)
+        }
+    }
+
+    func testProductionFinishSettingsRevalidateAfterSuspendedJavaScript() async throws {
+        for change in ["invalidated", "replacement", "binding", "page", "live"] {
+            let url = URL(string: "https://example.invalid/production-finish-settings")!
+            let (realm, record) = try cachedHistoryRecord(url: url)
+            try realm.write {
+                record.title = "Original reader title"
+                record.rssContainsFullContent = true
+            }
+            let content = ReaderContent()
+            content.content = record
+            content.pageURL = url
+            var model: ReaderViewModel? = ReaderViewModel(systemScripts: [])
+            weak var pendingModel = model
+            var state = WebViewState.empty
+            state.pageURL = url
+            model?.state = state
+            let caller = try XCTUnwrap(model?.scriptCaller)
+            let dispatches = ReaderSettingsDispatchProbe()
+            let entered = expectation(description: "Production settings suspended: \(change)")
+            let gate = ReaderCallbackGate()
+            caller.installBinding(
+                ownedBy: UUID(),
+                asyncCaller: { _, arguments, _, _ in
+                    if let title = arguments?["title"] as? String {
+                        dispatches.titles.append(title)
+                    } else {
+                        dispatches.settingsCount += 1
+                        entered.fulfill()
+                        await gate.wait()
+                    }
+                    return .init(nil)
+                },
+                unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+            )
+            let selectionIsCurrent = content.makeSelectionCommitFence(requiring: content.currentSelectionID)
+            model?.onNavigationFinished(content: record, newState: state, documentIsCurrent: {
+                selectionIsCurrent() && content.content === record && content.pageURL.matchesReaderURL(url)
+            })
+            await fulfillment(of: [entered], timeout: 5)
+            if change == "invalidated" {
+                try realm.write { realm.delete(record) }
+            } else if change == "replacement" {
+                let replacement = HistoryRecord()
+                replacement.url = url
+                replacement.compoundKey = record.compoundKey
+                content.content = replacement
+            } else if change == "binding" {
+                caller.installBinding(
+                    ownedBy: UUID(),
+                    asyncCaller: { _, _, _, _ in
+                        XCTFail("Retired settings must not send title work to a replacement binding")
+                        return .init(nil)
+                    },
+                    unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+                )
+            } else if change == "page" {
+                var successorState = state
+                successorState.pageURL = URL(string: "https://example.invalid/successor")!
+                model?.state = successorState
+            }
+            // The production settings task retains its model while suspended.
+            // Releasing the external owner lets deallocation prove that the
+            // actual unstructured task has completed before assertions.
+            model = nil
+            XCTAssertNotNil(pendingModel)
+            await gate.release()
+            let deadline = Date().addingTimeInterval(5)
+            while pendingModel != nil, Date() < deadline {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            XCTAssertNil(pendingModel, "Production settings task did not finish: \(change)")
+            XCTAssertEqual(dispatches.settingsCount, 1, change)
+            XCTAssertEqual(dispatches.titles, change == "live" ? ["Original reader title"] : [], change)
+        }
+    }
+
+    func testProductionSettingsSchedulingCannotAdoptRetiredDocument() async throws {
+        for entryPoint in ["finish", "settings"] {
+            for change in ["invalidated", "binding", "page"] {
+                let url = URL(string: "https://example.invalid/queued-settings")!
+                let (realm, record) = try cachedHistoryRecord(url: url)
+                let model = ReaderViewModel(systemScripts: [])
+                var state = WebViewState.empty
+                state.pageURL = url
+                model.state = state
+                let unexpected = expectation(description: "Retired \(entryPoint) must stay inert: \(change)")
+                unexpected.isInverted = true
+                let caller = model.scriptCaller
+                caller.installBinding(
+                    ownedBy: UUID(), asyncCaller: { _, _, _, _ in
+                        unexpected.fulfill()
+                        return .init(nil)
+                    },
+                    unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+                )
+                if entryPoint == "finish" {
+                    model.onNavigationFinished(content: record, newState: state) { _ in
+                        unexpected.fulfill()
+                    }
+                } else {
+                    model.refreshSettingsInWebView(content: record, newState: state)
+                }
+                // Still on the same MainActor turn: both production tasks are
+                // queued, so this retires their captured owner before admission.
+                if change == "invalidated" {
+                    try realm.write { realm.delete(record) }
+                } else if change == "binding" {
+                    caller.installBinding(
+                        ownedBy: UUID(), asyncCaller: { _, _, _, _ in
+                            unexpected.fulfill()
+                            return .init(nil)
+                        },
+                        unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+                    )
+                } else {
+                    var successorState = state
+                    successorState.pageURL = URL(string: "https://example.invalid/successor")!
+                    model.state = successorState
+                }
+                await fulfillment(of: [unexpected], timeout: 0.05)
+            }
         }
     }
 

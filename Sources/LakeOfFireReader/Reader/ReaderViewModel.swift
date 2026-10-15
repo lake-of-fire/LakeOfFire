@@ -254,11 +254,24 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
     }
     
-    public func onNavigationFinished(content: any ReaderContentProtocol, newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
+    public func onNavigationFinished(
+        content: any ReaderContentProtocol,
+        newState: WebViewState,
+        documentIsCurrent: @escaping @MainActor () -> Bool = { true },
+        completion: ((WebViewState) -> Void)? = nil
+    ) {
+        guard !Task.isCancelled, !content.isInvalidated, documentIsCurrent(),
+              content.url.matchesReaderURL(newState.pageURL),
+              state.pageURL.matchesReaderURL(newState.pageURL),
+              let binding = scriptCaller.currentJavaScriptBindingToken else { return }
+        let caller = scriptCaller
         Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            try Task.checkCancellation()
-            refreshSettingsInWebView(content: content, newState: newState, reason: "navigation-finished")
+            guard let self, !Task.isCancelled, !content.isInvalidated, documentIsCurrent(),
+                  self.scriptCaller === caller, caller.currentJavaScriptBindingToken == binding,
+                  content.url.matchesReaderURL(newState.pageURL),
+                  self.state.pageURL.matchesReaderURL(newState.pageURL) else { return }
+            refreshSettingsInWebView(content: content, newState: newState,
+                                    reason: "navigation-finished", documentIsCurrent: documentIsCurrent)
             
             completion?(newState)
         }
@@ -279,8 +292,16 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    private func refreshTitleInWebView(content: (any ReaderContentProtocol), newState: WebViewState? = nil) async throws {
+    private func refreshTitleInWebView(
+        content: any ReaderContentProtocol,
+        newState: WebViewState? = nil,
+        requiring expectedBinding: WebViewScriptCaller.JavaScriptBindingToken? = nil
+    ) async throws {
         let state = newState ?? self.state
+        guard !Task.isCancelled, !content.isInvalidated,
+              self.state.pageURL.matchesReaderURL(state.pageURL),
+              let binding = expectedBinding ?? scriptCaller.currentJavaScriptBindingToken,
+              scriptCaller.currentJavaScriptBindingToken == binding else { return }
         if !content.url.isEBookURL && !content.isFromClipboard && content.rssContainsFullContent && !content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
                 try await scriptCaller.evaluateJavaScript(
@@ -294,7 +315,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
                         }
                     })()
                     """,
-                    arguments: ["title": content.title]
+                    arguments: ["title": content.title],
+                    requiring: binding
                 )
             }
         }
@@ -362,13 +384,27 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
-    public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil, reason: String) {
+    public func refreshSettingsInWebView(
+        content: any ReaderContentProtocol,
+        newState: WebViewState? = nil,
+        reason: String,
+        documentIsCurrent: @escaping @MainActor () -> Bool = { true }
+    ) {
+        let refreshState = newState ?? state
+        guard !Task.isCancelled, !content.isInvalidated, documentIsCurrent(),
+              content.url.matchesReaderURL(refreshState.pageURL),
+              state.pageURL.matchesReaderURL(refreshState.pageURL),
+              let binding = scriptCaller.currentJavaScriptBindingToken else { return }
+        let caller = scriptCaller
         Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self, !Task.isCancelled, !content.isInvalidated, documentIsCurrent(),
+                  self.scriptCaller === caller, caller.currentJavaScriptBindingToken == binding,
+                  content.url.matchesReaderURL(refreshState.pageURL),
+                  self.state.pageURL.matchesReaderURL(refreshState.pageURL) else { return }
             let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
             let reasonJSON = (try? JSONEncoder().encode(reason))
                 .flatMap { String(data: $0, encoding: .utf8) } ?? "\"unspecified\""
-            try await self.scriptCaller.evaluateJavaScript("""
+            try await caller.evaluateJavaScript("""
                 (() => {
                     const settingsTraceReason = \(reasonJSON);
                     const traceAll = globalThis.__manabiTimelineTraceAll === true;
@@ -409,8 +445,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 })();
                 //# sourceURL=lake-reader-view-model-settings-sync.js
 
-                """, duplicateInMultiTargetFrames: true)
-            try await self.refreshTitleInWebView(content: content, newState: newState)
+                """, duplicateInMultiTargetFrames: true, requiring: binding)
+            guard !Task.isCancelled, !content.isInvalidated, documentIsCurrent(),
+                  self.scriptCaller === caller, caller.currentJavaScriptBindingToken == binding,
+                  content.url.matchesReaderURL(refreshState.pageURL),
+                  self.state.pageURL.matchesReaderURL(refreshState.pageURL) else { return }
+            try await self.refreshTitleInWebView(content: content, newState: refreshState, requiring: binding)
         }
     }
 }

@@ -216,8 +216,9 @@ final class ReaderWebViewHandler {
             requiring: readerContent.currentSelectionID
         )
         let navigationBinding = scriptCaller.currentJavaScriptBindingToken
-        let ownsFinishedSelection = { [self] in
-            selectionIsCurrent()
+        let ownsFinishedSelection = { [weak readerContent = readerContent, weak scriptCaller = scriptCaller] in
+            guard let readerContent, let scriptCaller else { return false }
+            return selectionIsCurrent()
                 && (navigationBinding != nil || !scriptCaller.canEvaluateJavaScript)
                 && scriptCaller.currentJavaScriptBindingToken == navigationBinding
                 && readerContent.pageURL.matchesReaderURL(state.pageURL)
@@ -236,7 +237,8 @@ final class ReaderWebViewHandler {
         }
         readerViewModel.onNavigationFinished(
             content: currentContent,
-            newState: state
+            newState: state,
+            documentIsCurrent: ownsFinishedSelection
         )
     }
 
