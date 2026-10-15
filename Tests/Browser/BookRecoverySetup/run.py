@@ -18,13 +18,14 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / 'Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-state.js'
-CASES = ROOT / 'Tests/JavaScript/book-recovery-setup-failure-cases.mjs'
-# These modules use static relative imports, including multiline named imports.
+CASES = (ROOT / 'Tests/JavaScript/book-recovery-setup-failure-cases.mjs',
+         ROOT / 'Tests/JavaScript/book-reading-delivery-cases.mjs')
+# These modules use static imports and re-exports, including multiline named imports.
 # Rewriting specifiers keeps every production declaration intact.
-IMPORT = re.compile(r'''(?m)^([ \t]*import[ \t]+(?:[\w*{},\s]+[ \t]+from[ \t]+)?)(['"])(\.[^'"]+)\2''')
+IMPORT = re.compile(r'''(?m)^([ \t]*(?:import|export)[ \t]+(?:[\w*{},\s]+[ \t]+from[ \t]+)?)(['"])(\.[^'"]+)\2''')
 
 
-def module_inputs(source: Path) -> tuple[str, dict[str, str]]:
+def module_inputs(source: Path) -> tuple[list[str], dict[str, str]]:
     modules: dict[str, str] = {}
 
     def visit(path: Path) -> str:
@@ -44,7 +45,7 @@ def module_inputs(source: Path) -> tuple[str, dict[str, str]]:
         modules[key] = IMPORT.sub(replace, text)
         return key
 
-    return visit(CASES), modules
+    return [visit(path) for path in CASES], modules
 
 
 def main() -> int:
@@ -59,7 +60,7 @@ def main() -> int:
         parser.error('Provide --browser or CHROMIUM_PATH for an installed Chromium executable.')
     if args.output and args.output.exists():
         parser.error('Use a fresh --output path; existing results are not overwritten.')
-    entry, modules = module_inputs(source)
+    entries, modules = module_inputs(source)
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
@@ -74,7 +75,7 @@ def main() -> int:
             errors = []
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.set_content('<!doctype html><html><body></body></html>')
-            rows = page.evaluate('''async ({ entry, modules }) => {
+            rows = page.evaluate('''async ({ entries, modules }) => {
                 const imports = Object.fromEntries(Object.entries(modules).map(([key, source]) => [
                     key, URL.createObjectURL(new Blob([source], { type: 'text/javascript' })),
                 ]));
@@ -82,13 +83,15 @@ def main() -> int:
                 map.type = 'importmap'; map.textContent = JSON.stringify({ imports });
                 document.head.append(map);
                 try {
-                    const { bookRecoverySetupFailureCases } = await import(entry);
-                    const names = bookRecoverySetupFailureCases.map(([name]) => name);
+                    const { bookRecoverySetupFailureCases } = await import(entries[0]);
+                    const { bookReadingDeliveryCases } = await import(entries[1]);
+                    const cases = [...bookRecoverySetupFailureCases, ...bookReadingDeliveryCases];
+                    const names = cases.map(([name]) => name);
                     if (!names.length || new Set(names).size !== names.length) {
                         throw new Error('Scenario roster is empty or has duplicate names');
                     }
                     const rows = [];
-                    for (const [name, run] of bookRecoverySetupFailureCases) {
+                    for (const [name, run] of cases) {
                         let timer;
                         try {
                             await Promise.race([run(), new Promise((_, reject) => {
@@ -102,7 +105,7 @@ def main() -> int:
                     await new Promise(resolve => setTimeout(resolve, 0));
                     return rows;
                 } finally { Object.values(imports).forEach(url => URL.revokeObjectURL(url)); }
-            }''', {'entry': entry, 'modules': modules})
+            }''', {'entries': entries, 'modules': modules})
             report = {'browser': browser.version, 'source': str(source), 'cases': rows,
                       'passed': sum(row['passed'] for row in rows),
                       'failed': sum(not row['passed'] for row in rows), 'page_errors': errors}

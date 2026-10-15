@@ -118,14 +118,17 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
                 if (!isCurrent()) return
                 frame.manabi_bookReadingScope = projection.scope ? { ...projection.scope } : null
                 if (!isCurrent()) return
-                if (project != null) Reflect.apply(project, frame, [frameProjection])
+                // The frame may decline an otherwise valid native snapshot
+                // while its Article publication is suspended or superseded.
+                // Invoking it is not acknowledgement of delivery.
+                if (project != null && Reflect.apply(project, frame, [frameProjection]) === false) return false
             }
             if (!isCurrent()) return
             endcap?.setFinished(projection.finished)
             if (!isCurrent()) return
             endcap?.setReady(context.isEndPage)
             if (!isCurrent()) return
-            applyProjection(projection, details)
+            return applyProjection(projection, details)
         },
     })
     bridge = createBookActionBridge({

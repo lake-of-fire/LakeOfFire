@@ -353,24 +353,31 @@ export class BookReadingStateController {
         this.#state = prepared.state; this.#context = prepared.context
         const ownsPublication = this.#captureProjection()
         const publicationIsCurrent = () => this.#locationIsCurrent(ownsPublication)
-        let accepted
-        try {
-            Reflect.apply(onState, this, [notification.state, notification.context, { passChanged }, publicationIsCurrent])
-            accepted = publicationIsCurrent()
-        } catch (error) {
-            if (!recovery) throw error
-            // A failed recovery callback cannot leave authoring authority live
-            // without either its barrier or an acknowledged publication. Use
-            // private identities so external checks cannot obstruct cleanup,
-            // and retain any successor installed by a reentrant callback.
-            // A queued refresh is not a published successor. Withdraw its
-            // request together with the failed projection and restore the barrier.
-            if (ownsPublication()) {
-                this.#pending = null; this.#state = null; this.#context = null
+        const withdrawFailedPublication = () => {
+            // Withdraw only this failed projection, retaining a published
+            // successor and the native ordering floor. Ordinary queued reads
+            // keep their slots; recovery must restore its authorization barrier.
+            if (!ownsPublication()) return
+            this.#state = null; this.#context = null
+            if (recovery) {
+                this.#pending = null
                 this.#historyRecovery = recovery
                 recovery.requested = false
-                try { this.#notify('onInvalidate', [], this.#captureAdmission()) } catch (_) {}
             }
+            try { this.#notify('onInvalidate', [], this.#captureAdmission()) } catch (_) {}
+        }
+        let accepted
+        try {
+            // Existing void callbacks remain compatible; explicit false means
+            // the renderer declined delivery, not that a native write failed.
+            if (Reflect.apply(onState, this, [notification.state, notification.context, { passChanged }, publicationIsCurrent]) === false) {
+                withdrawFailedPublication()
+                return false
+            }
+            accepted = publicationIsCurrent()
+        } catch (error) {
+            withdrawFailedPublication()
+            if (!recovery) throw error
             return false
         }
         if (accepted && recovery) this.#acknowledgedHistoryRecovery = {
