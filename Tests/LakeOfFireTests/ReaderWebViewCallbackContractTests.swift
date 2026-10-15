@@ -65,6 +65,14 @@ private final class ReaderSettingsDispatchProbe {
 }
 
 @MainActor
+private func makeReaderCallbackLibraryConfiguration() -> Realm.Configuration {
+    var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+    configuration.objectTypes = [LibraryConfiguration.self, FeedCategory.self, UserScript.self]
+    configureLakeOfFireMutationTrackingForTesting(&configuration)
+    return configuration
+}
+
+@MainActor
 private func makeReaderWebViewHandlerFixture() -> (
     handler: ReaderWebViewHandler,
     taskManager: NavigationTaskManager,
@@ -77,7 +85,7 @@ private func makeReaderWebViewHandlerFixture() -> (
     let handler = ReaderWebViewHandler(
         navigationTaskManager: taskManager,
         readerContent: readerContent,
-        readerViewModel: ReaderViewModel(systemScripts: []),
+        readerViewModel: ReaderViewModel(realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: []),
         readerModeViewModel: readerModeViewModel,
         readerMediaPlayerViewModel: ReaderMediaPlayerViewModel(),
         scriptCaller: WebViewScriptCaller(),
@@ -101,7 +109,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
 
     func testCommitRejectsCachedRowInvalidatedDuringLoadPublication() async throws {
         let fixture = makeReaderWebViewHandlerFixture()
-        let reader = ReaderCallbackViewModel(systemScripts: [])
+        let reader = ReaderCallbackViewModel(realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
         let media = ReaderCallbackMediaViewModel(readAloudController: ReaderReadAloudController())
         fixture.handler.readerViewModel = reader
         fixture.handler.readerMediaPlayerViewModel = media
@@ -133,7 +141,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
     func testCommitRevalidatesCachedSelectionAfterReaderCallback() async throws {
         for change in ["invalidated", "removed", "replacement", "lateFailureReplacement", "binding", "cancelled", "live"] {
             let fixture = makeReaderWebViewHandlerFixture()
-            let reader = ReaderCallbackViewModel(systemScripts: [])
+            let reader = ReaderCallbackViewModel(realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
             let media = ReaderCallbackMediaViewModel(readAloudController: ReaderReadAloudController())
             fixture.handler.readerViewModel = reader
             fixture.handler.readerMediaPlayerViewModel = media
@@ -197,7 +205,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
     func testFinishRevalidatesCachedRowAfterModeCallback() async throws {
         for change in ["invalidated", "replacement", "binding", "cancelled", "live"] {
             let fixture = makeReaderWebViewHandlerFixture()
-            let reader = ReaderCallbackViewModel(systemScripts: [])
+            let reader = ReaderCallbackViewModel(realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
             fixture.handler.readerViewModel = reader
             let url = URL(string: "https://example.invalid/suspended-finish")!
             let (realm, record) = try cachedHistoryRecord(url: url)
@@ -257,7 +265,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             let content = ReaderContent()
             content.content = record
             content.pageURL = url
-            var model: ReaderViewModel? = ReaderViewModel(systemScripts: [])
+            var model: ReaderViewModel? = ReaderViewModel(realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
             weak var pendingModel = model
             var state = WebViewState.empty
             state.pageURL = url
@@ -327,7 +335,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             for change in ["invalidated", "binding", "page"] {
                 let url = URL(string: "https://example.invalid/queued-settings")!
                 let (realm, record) = try cachedHistoryRecord(url: url)
-                let model = ReaderViewModel(systemScripts: [])
+                let model = ReaderViewModel(realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
                 var state = WebViewState.empty
                 state.pageURL = url
                 model.state = state
