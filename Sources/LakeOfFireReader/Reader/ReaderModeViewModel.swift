@@ -3473,16 +3473,15 @@ public class ReaderModeViewModel: ObservableObject {
             }
             let activeReaderFileManager = readerFileManager ?? .shared
             let html = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
+            try Task.checkCancellation()
+            guard contentIsCurrent() else { return }
+            guard ownsReaderDocumentBinding(
+                navigationBindingToken,
+                scriptCaller: scriptCaller
+            ) else {
+                throw CancellationError()
+            }
             if let html {
-                try Task.checkCancellation()
-                guard contentIsCurrent() else { return }
-                guard ownsReaderDocumentBinding(
-                    navigationBindingToken,
-                    scriptCaller: scriptCaller
-                ) else {
-                    throw CancellationError()
-                }
-
                 let currentURL = readerContent.pageURL
                 guard committedURL.matchesReaderURL(currentURL) else {
                     print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
