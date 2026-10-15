@@ -3366,13 +3366,20 @@ public class ReaderModeViewModel: ObservableObject {
         navigator: WebViewNavigator
     ) async throws {
         ReaderSnippetFinalDocumentDiagnostics.record("commit-start", contentURL: newState.pageURL)
-        readabilityContainerFrameInfo = nil
-        readabilityContent = nil
-        readabilityContainerSelector = nil
-//        contentRules = nil
+        // A cancelled or retired callback has no authority to clear the
+        // successor's captured HTML, frame, or loading state.
         try Task.checkCancellation()
-
-        guard let content = readerContent.content else {
+        guard readerContent.pageURL.matchesReaderURL(newState.pageURL) else { return }
+        let content = readerContent.content
+        if let content, !content.url.matchesReaderURL(newState.pageURL) {
+            print("URL mismatch in ReaderModeViewModel onNavigationCommitted", content.url, newState.pageURL)
+            return
+        }
+        try Task.checkCancellation()
+        guard let content else {
+            readabilityContainerFrameInfo = nil
+            readabilityContent = nil
+            readabilityContainerSelector = nil
             print("No content to display in ReaderModeViewModel onNavigationCommitted")
             cancelReaderModeLoad(
                 for: newState.pageURL,
@@ -3383,14 +3390,6 @@ public class ReaderModeViewModel: ObservableObject {
         try Task.checkCancellation()
         
         let committedURL = content.url
-        guard committedURL.matchesReaderURL(newState.pageURL) else {
-            print("URL mismatch in ReaderModeViewModel onNavigationCommitted", committedURL, newState.pageURL)
-            cancelReaderModeLoad(
-                for: committedURL,
-                readerContent: readerContent
-            )
-            return
-        }
         try Task.checkCancellation()
 
         let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
@@ -3434,6 +3433,13 @@ public class ReaderModeViewModel: ObservableObject {
         if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
             return
         }
+
+        // The processed document commits as a second navigation. Its canonical
+        // readability state still belongs to this load and must survive that
+        // callback; reset only when processing a different, live document.
+        readabilityContainerFrameInfo = nil
+        readabilityContent = nil
+        readabilityContainerSelector = nil
 
         // FIXME: Mokuro? check plugins thing for reader mode url instead of hardcoding methods here
         let isReaderModeVerified = content.isReaderModeByDefault
