@@ -1263,9 +1263,16 @@ enum ReaderContentInitialImageRenderer {
         dimension: CGFloat,
         displayScale: CGFloat
     ) -> CGImage? {
-        guard !initial.isEmpty else { return nil }
+        guard !initial.isEmpty, dimension.isFinite, dimension > 0,
+              displayScale.isFinite, displayScale > 0 else { return nil }
         let scale = max(displayScale, 1)
-        let pixelDimension = max(1, Int((dimension * scale).rounded(.up)))
+        guard let pixelDimension = Int(exactly: (dimension * scale).rounded(.up)),
+              pixelDimension > 0 else { return nil }
+        let (bytesPerRow, rowOverflow) = pixelDimension.multipliedReportingOverflow(by: 4)
+        let (byteCount, costOverflow) = bytesPerRow.multipliedReportingOverflow(by: pixelDimension)
+        // Bound allocation itself, not just the cache's later eviction policy.
+        // One decorative fallback must fit the existing total cache budget.
+        guard !rowOverflow, !costOverflow, byteCount <= cacheTotalCostLimit else { return nil }
         let cacheKey = "\(initial)|\(pixelDimension)" as NSString
         if let cachedImage = imageCache.object(forKey: cacheKey) {
             return cachedImage
@@ -1277,7 +1284,7 @@ enum ReaderContentInitialImageRenderer {
             width: pixelDimension,
             height: pixelDimension,
             bitsPerComponent: 8,
-            bytesPerRow: pixelDimension * 4,
+            bytesPerRow: bytesPerRow,
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else {
@@ -1315,7 +1322,7 @@ enum ReaderContentInitialImageRenderer {
         imageCache.setObject(
             image,
             forKey: cacheKey,
-            cost: pixelDimension * pixelDimension * 4
+            cost: byteCount
         )
         return image
     }
@@ -1401,6 +1408,19 @@ private struct ReaderContentThumbnailTile: View {
     }
 }
 
+/// SwiftUI owns cancellation through .task(id:). A detached metadata read may
+/// finish afterward, so the result must still belong to the uncancelled caller.
+@MainActor
+func refreshReaderBookCoverWidth(
+    resolve: @MainActor () async -> CGFloat,
+    publish: @MainActor (CGFloat) -> Void
+) async {
+    guard !Task.isCancelled else { return }
+    let width = await resolve()
+    guard !Task.isCancelled else { return }
+    publish(width)
+}
+
 public struct BookCoverImageView: View {
     public let imageURL: URL
     public let dimension: CGFloat
@@ -1427,15 +1447,19 @@ public struct BookCoverImageView: View {
             }
             .preference(key: ReaderContentBookCoverRenderedWidthPreferenceKey.self, value: renderedCoverWidth)
             .task(id: "\(imageURL.absoluteString)|\(dimension)") {
-                let width = await resolveRenderedCoverWidth(imageURL: imageURL, dimension: dimension)
-                if abs(width - renderedCoverWidth) >= 0.5 {
-                    renderedCoverWidth = width
-                }
+                await refreshReaderBookCoverWidth(
+                    resolve: { await resolveRenderedCoverWidth(imageURL: imageURL, dimension: dimension) },
+                    publish: { width in
+                        if abs(width - renderedCoverWidth) >= 0.5 {
+                            renderedCoverWidth = width
+                        }
+                    }
+                )
             }
     }
 
     private func resolveRenderedCoverWidth(imageURL: URL, dimension: CGFloat) async -> CGFloat {
-        guard dimension > 0 else { return 0 }
+        guard dimension.isFinite, dimension > 0 else { return 0 }
         guard let pixelSize = await imagePixelSize(for: imageURL), pixelSize.height > 0 else {
             return 0
         }
