@@ -60,7 +60,12 @@ export class BookReadingStateController {
     }
     #captureAdmission() {
         const projectionIsCurrent = this.#captureProjection(), pending = this.#pending
+        // A failed/restarted read can keep the same recovery object and empty
+        // request slot. Its predecessor must not dispatch under that new phase.
+        const recovery = this.#historyRecovery
+        const completion = recovery?.promise, requested = recovery?.requested
         return () => projectionIsCurrent() && this.#pending === pending
+            && recovery?.promise === completion && recovery?.requested === requested
     }
     #locationIsCurrent(isCurrent) {
         if (!isCurrent()) return false
@@ -111,12 +116,19 @@ export class BookReadingStateController {
             || this.#accountPresentation !== recovery.account) return Promise.resolve(false)
         if (recovery.promise) return recovery.promise
         recovery.promise = new Promise(resolve => { recovery.resolve = resolve })
-        const completion = recovery.promise
+        const completion = recovery.promise, resolve = recovery.resolve
         recovery.requested = true
-        if (!this.refresh()) {
+        try {
+            if (this.refresh()) return completion
+        } catch (_) {} // Failed invalidation is not an unresolved native read.
+        // Cleanup may already have retired this observer or admitted another
+        // recovery. Settle the original promise, never its replacement, even
+        // when an optional callback threw after releasing the stored resolver.
+        if (this.#historyRecovery === recovery && recovery.promise === completion) {
             recovery.requested = false
-            recovery.resolve(false); recovery.resolve = null; recovery.promise = null
+            recovery.resolve = null; recovery.promise = null
         }
+        resolve(false)
         return completion
     }
     reacknowledgeHistoryReadingStatus(observation) {
@@ -411,4 +423,3 @@ export class BookReadingStateController {
         this.onInvalidate()
     }
 }
-
