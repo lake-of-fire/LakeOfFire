@@ -192,7 +192,11 @@ final class ReaderWebViewHandler {
             // Replacement commits cancel the previous task. If an unrelated
             // operation failed at the same time, its cleanup must not release a
             // newer same-URL reader render.
-            guard !Task.isCancelled, loadedSelectionIsCurrent?() != false else {
+            guard !Task.isCancelled,
+                  navigationBinding != nil || !scriptCaller.canEvaluateJavaScript,
+                  scriptCaller.currentJavaScriptBindingToken == navigationBinding,
+                  readerContent.pageURL.matchesReaderURL(state.pageURL),
+                  loadedSelectionIsCurrent?() != false else {
                 throw CancellationError()
             }
             readerModeViewModel.cancelReaderModeLoad(
