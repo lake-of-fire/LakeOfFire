@@ -66,6 +66,7 @@ def main() -> int:
             executable_path=args.browser, headless=True,
             args=['--disable-features=MacAppCodeSignClone'] if sys.platform == 'darwin' else [],
         )
+        context = None
         try:
             context = browser.new_context()
             context.route('**/*', lambda route: route.abort())
@@ -106,7 +107,11 @@ def main() -> int:
                       'passed': sum(row['passed'] for row in rows),
                       'failed': sum(not row['passed'] for row in rows), 'page_errors': errors}
         finally:
-            browser.close()
+            try:
+                if context is not None:
+                    context.close()
+            finally:
+                browser.close()
     text = json.dumps(report, indent=2, ensure_ascii=False)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
