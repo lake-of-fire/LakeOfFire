@@ -3369,11 +3369,11 @@ public class ReaderModeViewModel: ObservableObject {
         // A cancelled or retired callback has no authority to clear the
         // successor's captured HTML, frame, or loading state.
         try Task.checkCancellation()
-        guard readerContent.pageURL.matchesReaderURL(newState.pageURL) else { return }
-        let content = readerContent.content
+        guard readerContent.pageURL.matchesReaderURL(newState.pageURL) else { throw CancellationError() }
+        let content = readerContent.validCachedContent
         if let content, !content.url.matchesReaderURL(newState.pageURL) {
             print("URL mismatch in ReaderModeViewModel onNavigationCommitted", content.url, newState.pageURL)
-            return
+            throw CancellationError()
         }
         try Task.checkCancellation()
         guard let content else {
@@ -3390,22 +3390,29 @@ public class ReaderModeViewModel: ObservableObject {
         try Task.checkCancellation()
         
         let committedURL = content.url
+        let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
+        let requireCurrentDocument = { @MainActor in
+            try Task.checkCancellation()
+            guard !content.isInvalidated,
+                  let currentContent = readerContent.validCachedContent,
+                  // Match ReaderContent's selection ownership: a new cached
+                  // wrapper does not inherit a suspended callback's authority.
+                  content === currentContent,
+                  currentContent.url.matchesReaderURL(committedURL),
+                  readerContent.pageURL.matchesReaderURL(committedURL),
+                  self.ownsReaderDocumentBinding(navigationBindingToken, scriptCaller: scriptCaller) else {
+                throw CancellationError()
+            }
+        }
         try Task.checkCancellation()
 
-        let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
         ReaderSnippetFinalDocumentDiagnostics.record("font-injection-start", contentURL: newState.pageURL)
         await injectSharedFontIfNeeded(
             scriptCaller: scriptCaller,
             pageURL: committedURL,
             requiring: navigationBindingToken
         )
-        try Task.checkCancellation()
-        guard ownsReaderDocumentBinding(
-            navigationBindingToken,
-            scriptCaller: scriptCaller
-        ) else {
-            throw CancellationError()
-        }
+        try requireCurrentDocument()
         ReaderSnippetFinalDocumentDiagnostics.record("font-injection-returned", contentURL: newState.pageURL)
         if !scriptCaller.hasAsyncCaller {
         } else {
@@ -3422,19 +3429,7 @@ public class ReaderModeViewModel: ObservableObject {
             } catch {
             }
         }
-        try Task.checkCancellation()
-        guard ownsReaderDocumentBinding(
-            navigationBindingToken,
-            scriptCaller: scriptCaller
-        ) else {
-            throw CancellationError()
-        }
-
-        guard readerContent.pageURL.matchesReaderURL(committedURL),
-              let currentContent = readerContent.content,
-              currentContent.url.matchesReaderURL(committedURL) else {
-            return
-        }
+        try requireCurrentDocument()
 
         if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
             return
@@ -3465,33 +3460,19 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
             let activeReaderFileManager = readerFileManager ?? .shared
-            let html = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
+            let html: String?
+            do {
+                html = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
+            } catch {
+                // A late read failure has no authority to trigger the caller's
+                // current-page cleanup after this selection has been retired.
+                try requireCurrentDocument()
+                throw error
+            }
+            try requireCurrentDocument()
             if let html {
-                try Task.checkCancellation()
-                guard ownsReaderDocumentBinding(
-                    navigationBindingToken,
-                    scriptCaller: scriptCaller
-                ) else {
-                    throw CancellationError()
-                }
-
-                let currentURL = readerContent.pageURL
-                guard committedURL.matchesReaderURL(currentURL) else {
-                    print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
-                    cancelReaderModeLoad(for: committedURL)
-                    return
-                }
                 let publicationDateFallback = await readerContentPublicationDateFallback(for: content)
-                try Task.checkCancellation()
-                guard ownsReaderDocumentBinding(
-                    navigationBindingToken,
-                    scriptCaller: scriptCaller
-                ) else {
-                    throw CancellationError()
-                }
-                guard committedURL.matchesReaderURL(readerContent.pageURL) else {
-                    return
-                }
+                try requireCurrentDocument()
                 if committedURL.isSnippetURL,
                    let snippetHTML = buildSnippetCanonicalReadabilityHTML(
                     html: html,
