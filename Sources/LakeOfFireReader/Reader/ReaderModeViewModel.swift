@@ -3503,7 +3503,8 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     public func onNavigationFinished(
         newState: WebViewState,
-        scriptCaller: WebViewScriptCaller
+        scriptCaller: WebViewScriptCaller,
+        documentIsCurrent: @MainActor () -> Bool = { true }
     ) async {
         let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
         await injectSharedFontIfNeeded(
@@ -3511,7 +3512,7 @@ public class ReaderModeViewModel: ObservableObject {
             pageURL: newState.pageURL,
             requiring: navigationBindingToken
         )
-        guard !Task.isCancelled,
+        guard !Task.isCancelled, documentIsCurrent(),
               ownsReaderDocumentBinding(
                 navigationBindingToken,
                 scriptCaller: scriptCaller
@@ -3549,7 +3550,7 @@ public class ReaderModeViewModel: ObservableObject {
                     scriptCaller: scriptCaller,
                     requiring: navigationBindingToken
                 )
-                guard !Task.isCancelled,
+                guard !Task.isCancelled, documentIsCurrent(),
                       ownsReaderDocumentBinding(
                         navigationBindingToken,
                         scriptCaller: scriptCaller
@@ -3561,7 +3562,7 @@ public class ReaderModeViewModel: ObservableObject {
                     readerModeLoading(false)
                 }
             } catch {
-                guard !Task.isCancelled,
+                guard !Task.isCancelled, documentIsCurrent(),
                       ownsReaderDocumentBinding(
                         navigationBindingToken,
                         scriptCaller: scriptCaller

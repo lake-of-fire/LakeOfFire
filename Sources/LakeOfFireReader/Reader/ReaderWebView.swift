@@ -206,19 +206,25 @@ final class ReaderWebViewHandler {
     func handleNavigationFinished(state: WebViewState) async {
         guard !Task.isCancelled,
               readerContent.pageURL.matchesReaderURL(state.pageURL) else { return }
-        let content = readerContent.validCachedContent
+        // Retain identity only; all property reads below use the valid accessor.
+        let content = readerContent.content
         let selectionIsCurrent = readerContent.makeSelectionCommitFence(
             requiring: readerContent.currentSelectionID
         )
         let navigationBinding = scriptCaller.currentJavaScriptBindingToken
+        let ownsFinishedSelection = { [self] in
+            selectionIsCurrent()
+                && (navigationBinding != nil || !scriptCaller.canEvaluateJavaScript)
+                && scriptCaller.currentJavaScriptBindingToken == navigationBinding
+                && readerContent.pageURL.matchesReaderURL(state.pageURL)
+                && readerContent.content === content
+        }
         await readerModeViewModel.onNavigationFinished(
             newState: state,
-            scriptCaller: scriptCaller
+            scriptCaller: scriptCaller,
+            documentIsCurrent: ownsFinishedSelection
         )
-        guard !Task.isCancelled, selectionIsCurrent(),
-              navigationBinding != nil || !scriptCaller.canEvaluateJavaScript,
-              scriptCaller.currentJavaScriptBindingToken == navigationBinding,
-              readerContent.pageURL.matchesReaderURL(state.pageURL),
+        guard !Task.isCancelled, ownsFinishedSelection(),
               let currentContent = readerContent.validCachedContent,
               currentContent === content,
               currentContent.url.matchesReaderURL(state.pageURL) else {

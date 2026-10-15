@@ -197,7 +197,6 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             fixture.readerContent.pageURL = url
             fixture.readerContent.isRenderingReaderHTML = true
             fixture.readerModeViewModel.beginReaderModeLoad(for: url)
-            fixture.readerModeViewModel.expectSyntheticReaderLoaderCommit(for: url)
             let html = "<main>Pending reader</main>"
             fixture.readerModeViewModel.readabilityContent = html
             let entered = expectation(description: "Mode finish suspended: \(change)")
@@ -233,7 +232,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
 
             XCTAssertEqual(reader.finishedContents, change == "live" ? [ObjectIdentifier(record)] : [], change)
             XCTAssertTrue(fixture.readerContent.isRenderingReaderHTML, change)
-            XCTAssertTrue(fixture.readerModeViewModel.isReaderModeLoading, change)
+            XCTAssertEqual(fixture.readerModeViewModel.isReaderModeLoading,
+                           !["invalidated", "live"].contains(change), change)
             XCTAssertEqual(fixture.readerModeViewModel.readabilityContent, html, change)
         }
     }
