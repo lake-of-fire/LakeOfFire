@@ -957,39 +957,42 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         (showsUnreadIndicator || (appearance.isEbookStyle && !isProgressVisible))
     }
 
+    // Keep the menu's multiple entries in the deployment-compatible ViewBuilder
+    // representation. New SDK ContentBuilder tuples otherwise leak TupleContent
+    // metadata into this generic cell, which older SwiftUI runtimes cannot load.
+    @ViewBuilder
+    private var cellMenuItems: some View {
+        let deletable = item as? (any DeletableReaderContent)
+        if let customLeadingMenuOptions {
+            customLeadingMenuOptions(self.item)
+        }
+        if let item = item as? ContentFile {
+            CloudDriveSyncStatusView(item: item)
+                .labelStyle(.titleAndIcon)
+            Divider()
+        }
+        AnyView(self.item.bookmarkButtonView(iconOnly: false))
+#if DEBUG
+        videoMakerMenuItem
+#endif
+        if let customMenuOptions {
+            customMenuOptions(self.item)
+        }
+        if let deletable {
+            Divider()
+            Button(role: .destructive) {
+                readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
+            } label: {
+                Label(deletable.deleteActionTitle, systemImage: "trash")
+            }
+        }
+    }
+
     @ViewBuilder
     private var controlsRow: some View {
-        let deletable = item as? (any DeletableReaderContent)
         if #available(iOS 16, macOS 13, *) {
             Menu {
-                if let customLeadingMenuOptions {
-                    customLeadingMenuOptions(self.item)
-                }
-
-                if let item = item as? ContentFile {
-                    CloudDriveSyncStatusView(item: item)
-                        .labelStyle(.titleAndIcon)
-                    Divider()
-                }
-
-                AnyView(self.item.bookmarkButtonView(iconOnly: false))
-
-#if DEBUG
-                videoMakerMenuItem
-#endif
-
-                if let customMenuOptions {
-                    customMenuOptions(self.item)
-                }
-
-                if let deletable {
-                    Divider()
-                    Button(role: .destructive) {
-                        readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
-                    } label: {
-                        Label(deletable.deleteActionTitle, systemImage: "trash")
-                    }
-                }
+                cellMenuItems
             } label: {
                 Label("More Options", systemImage: "ellipsis")
                     .labelStyle(.iconOnly)
@@ -999,34 +1002,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             .accessibilityLabel("More Options")
         } else if #available(iOS 15, macOS 12, *) {
             Menu {
-                if let customLeadingMenuOptions {
-                    customLeadingMenuOptions(self.item)
-                }
-
-                if let item = item as? ContentFile {
-                    CloudDriveSyncStatusView(item: item)
-                        .labelStyle(.titleAndIcon)
-                    Divider()
-                }
-
-                AnyView(self.item.bookmarkButtonView(iconOnly: false))
-
-#if DEBUG
-                videoMakerMenuItem
-#endif
-
-                if let customMenuOptions {
-                    customMenuOptions(self.item)
-                }
-
-                if let deletable {
-                    Divider()
-                    Button(role: .destructive) {
-                        readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
-                    } label: {
-                        Label(deletable.deleteActionTitle, systemImage: "trash")
-                    }
-                }
+                cellMenuItems
             } label: {
                 Label("More Options", systemImage: "ellipsis")
                     .labelStyle(.iconOnly)
@@ -1035,34 +1011,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             .accessibilityLabel("More Options")
         } else {
             Menu {
-                if let customLeadingMenuOptions {
-                    customLeadingMenuOptions(self.item)
-                }
-
-                if let item = item as? ContentFile {
-                    CloudDriveSyncStatusView(item: item)
-                        .labelStyle(.titleAndIcon)
-                    Divider()
-                }
-
-                AnyView(self.item.bookmarkButtonView(iconOnly: false))
-
-#if DEBUG
-                videoMakerMenuItem
-#endif
-
-                if let customMenuOptions {
-                    customMenuOptions(self.item)
-                }
-
-                if let deletable {
-                    Divider()
-                    Button(role: .destructive) {
-                        readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
-                    } label: {
-                        Label(deletable.deleteActionTitle, systemImage: "trash")
-                    }
-                }
+                cellMenuItems
             } label: {
                 Label("More Options", systemImage: "ellipsis")
                     .labelStyle(.iconOnly)
@@ -1196,11 +1145,8 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         }
     }
 
-    // A concrete Body witness keeps older SwiftUI runtimes from resolving this
-    // generic cell's full opaque modifier tree before constructing the view.
-    // The subtree retains its original task identities and cancellation owners.
-    var body: AnyView {
-        AnyView(Group {
+    var body: some View {
+        Group {
             if usesCompactControlSize {
                 compactLayout
             } else {
@@ -1240,7 +1186,6 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
                 publish: { annotationStatus = $0 }
             )
         }
-        )
     }
 }
 
