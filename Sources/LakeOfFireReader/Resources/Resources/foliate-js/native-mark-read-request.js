@@ -14,6 +14,42 @@ export const refreshNativeMarkReadBookStateForRecovery = (runtime, originalScope
     return state.beginHistoryReadingStatusRecovery(observation, originalScope, isCurrent)
 }
 
+export const captureVisibleMarkReadNavigation = document => {
+    try {
+        const frame = document?.defaultView;
+        const capture = frame?.manabiCaptureAutomaticScrollNavigation;
+        if (typeof capture !== 'function') return null;
+        const isCurrent = Reflect.apply(capture, frame, []);
+        return typeof isCurrent === 'function' ? isCurrent : null;
+    } catch (_) { return null; }
+};
+
+// A page command's reply projects only its requested subjects. Obtain the full
+// native chapter state instead of treating submitted subjects as read state.
+export const refreshCommittedVisibleMarkReadState = ({ outcome, state, isOwnerCurrent }) => {
+    const current = () => typeof isOwnerCurrent === 'function' && isOwnerCurrent() === true;
+    if (outcome?.success !== true || outcome.stale
+        || outcome.presentationAllowed === false || !current()) return false;
+    if (state?.noteManualReadSnapshot?.(outcome.nativeResult?.stateSnapshotSequence) !== true
+        || !current()) return false;
+    if (state.refresh?.() !== true) return false;
+    return current();
+};
+
+export const committedVisibleMarkReadStateIsPresented = ({ state, minimumSnapshotSequence, stableSegmentIDs, successfulPublicationSequence }) => {
+    if (state?.ready !== true || !Number.isSafeInteger(minimumSnapshotSequence)
+        || minimumSnapshotSequence <= 0 || !Array.isArray(stableSegmentIDs) || stableSegmentIDs.length === 0
+        || !Number.isSafeInteger(successfulPublicationSequence)
+        || successfulPublicationSequence < minimumSnapshotSequence) return false;
+    const projection = state.state;
+    if (!Number.isSafeInteger(projection?.revision)
+        || projection.revision !== successfulPublicationSequence
+        || !Array.isArray(projection.readSegmentIdentifiers)) return false;
+    const readIDs = new Set(projection.readSegmentIdentifiers);
+    return stableSegmentIDs.every(id => typeof id === 'string' && id.length > 0
+        && readIDs.has(id));
+};
+
 const defaultRequestID = () => {
     if (typeof globalThis.crypto?.randomUUID === 'function') {
         return globalThis.crypto.randomUUID()
@@ -80,7 +116,7 @@ export const createNativeMarkReadRequestCoordinator = ({
     const pendingByRequestID = new Map()
     const recoveryByRequestID = new Map()
     let completedRecovery = null
-    let recoveryQueryTail = Promise.resolve(), activeRecoveryQuery = false
+    let recoveryQueryTail = Promise.resolve(), activeRecoveryQuery = null
     // A document-local namespace and increasing sequence keep request IDs
     // distinct without retaining every completed request for its lifetime.
     let requestNamespace
@@ -211,6 +247,14 @@ export const createNativeMarkReadRequestCoordinator = ({
         pending.timeoutHandle = timer
     }
     const ordinaryRequests = () => [...pendingByRequestID.values()].filter(value => !value.recoveryOnly)
+    const retireRecoveryWaiters = recovery => {
+        // A read-only refresh may never answer after its chapter/Reader exits.
+        // Release local callers and the serial queue without inventing a native
+        // outcome or waiting for that obsolete refresh to cooperate.
+        if (activeRecoveryQuery === recovery) activeRecoveryQuery = null
+        recovery.retire?.()
+        recovery.join?.()
+    }
     const prepareRecovery = (recovery, force = false) => {
         if (force) recovery.prepared = false
         if (recovery.prepared || ordinaryRequests().length > 0) return
@@ -254,7 +298,8 @@ export const createNativeMarkReadRequestCoordinator = ({
                     const recovery = { pending, outcome, prepared: false, ready: false,
                         proof: Object.freeze({ requestID: pending.requestID,
                             observationToken: pending.message.manualReadPendingObservationToken }),
-                        completion: null, join: null }
+                        completion: null, join: null, retire: null, retirement: null }
+                    recovery.retirement = new Promise(resolve => { recovery.retire = () => resolve(false) })
                     recoveryByRequestID.set(pending.requestID, recovery)
                     for (const value of ordinaryRequests()) value.recoveryRequested = true
                     // An ordinary completion can arrive after pagehide before
@@ -311,34 +356,39 @@ export const createNativeMarkReadRequestCoordinator = ({
         const recovery = recoveryByRequestID.get(proof.requestID)
         if (!recovery || proof.observationToken !== recovery.proof.observationToken) return false
         if (recovery.completion) return recovery.completion
-        recovery.completion = recoveryQueryTail.then(async () => {
+        const predecessor = recoveryQueryTail
+        let completion
+        const ownsQuery = () => !closed && recoveryByRequestID.get(proof.requestID) === recovery
+            && recovery.completion === completion
+        const query = predecessor.then(async () => {
+            if (!ownsQuery()) return false
             if (ordinaryRequests().length > 0) await new Promise(resolve => { recovery.join = resolve })
-            if (recoveryByRequestID.get(proof.requestID) !== recovery) return false
-            activeRecoveryQuery = true
+            if (!ownsQuery()) return false
+            activeRecoveryQuery = recovery
             prepareRecovery(recovery, true)
-            if (closed || recoveryByRequestID.get(proof.requestID) !== recovery || !recovery.ready) {
-                activeRecoveryQuery = false
+            if (!ownsQuery() || !recovery.ready) {
+                if (activeRecoveryQuery === recovery) activeRecoveryQuery = null
                 return false
             }
             let accepted = false
             try { accepted = await onRecoveryQuery(recovery.proof) === true } catch (_) {}
-            activeRecoveryQuery = false
-            if (closed || recoveryByRequestID.get(proof.requestID) !== recovery) return false
+            if (activeRecoveryQuery === recovery) activeRecoveryQuery = null
+            if (!ownsQuery()) return false
             const ownsRecovery = present(recovery.pending, () => onRecoveryIsCurrent({
                 owner: recovery.pending.owner, context: recovery.pending.context, message: recovery.pending.message,
             })) === true
-            if (closed || recoveryByRequestID.get(proof.requestID) !== recovery) return false
+            if (!ownsQuery()) return false
             present(recovery.pending, () => onPending({ requestID: proof.requestID,
                 phase: accepted || !ownsRecovery ? 'finished' : 'recovery-failed', recoveryOnly: true,
                 context: recovery.pending.context, outcomeKnown: recovery.outcome.outcomeKnown,
                 success: recovery.outcome.success }))
-            if (closed || recoveryByRequestID.get(proof.requestID) !== recovery) return false
+            if (!ownsQuery()) return false
             // Optional notice cleanup can retire the presentation too. Recheck
             // the original owner before retaining a positive acknowledgement.
             const acknowledged = accepted && ownsRecovery && present(recovery.pending, () => onRecoveryIsCurrent({
                 owner: recovery.pending.owner, context: recovery.pending.context, message: recovery.pending.message,
             })) === true
-            if (closed || recoveryByRequestID.get(proof.requestID) !== recovery) return false
+            if (!ownsQuery()) return false
             if (acknowledged) {
                 recoveryByRequestID.delete(proof.requestID)
                 completedRecovery = recovery
@@ -347,8 +397,15 @@ export const createNativeMarkReadRequestCoordinator = ({
             // the original chapter/pass owner retired while its query awaited.
             return acknowledged
         })
-        recoveryQueryTail = recovery.completion.then(() => {}, () => {})
-        return recovery.completion
+        // Observe late rejection too; only the original recovery can publish
+        // after the awaited query, and a retired query cannot clear its successor.
+        completion = recovery.completion = Promise.race([query, recovery.retirement])
+        const settled = completion.then(() => {}, () => {})
+        // Retiring a queued recovery releases its callers immediately, not its
+        // still-live predecessors. Otherwise pruning B behind running A lets
+        // C replace A's Book recovery before A has received its native sample.
+        recoveryQueryTail = predecessor.then(() => settled)
+        return completion
     }
     const retireHistoryRecoveries = () => {
         const recoveries = [...recoveryByRequestID.values()]
@@ -357,7 +414,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         recoveryByRequestID.clear()
         completedRecovery = null
         for (const recovery of recoveries) {
-            recovery.join?.()
+            retireRecoveryWaiters(recovery)
             present(recovery.pending, () => onPending({ requestID: recovery.proof.requestID,
                 phase: 'finished', context: recovery.pending.context }))
         }
@@ -377,6 +434,11 @@ export const createNativeMarkReadRequestCoordinator = ({
         })) !== true || !ownsRecovery()) return false
         if (completedRecovery === recovery) completedRecovery = null
         recoveryByRequestID.set(proof.requestID, recovery)
+        // The native final publication rejected this read. Retain its failure
+        // notice, but retire the original query and its positive completion.
+        // A duplicate observation must not reuse success or start another read.
+        recovery.completion = recovery.retirement
+        retireRecoveryWaiters(recovery)
         present(recovery.pending, () => onPending({ requestID: proof.requestID,
             phase: 'recovery-failed', recoveryOnly: true, context: recovery.pending.context,
             outcomeKnown: recovery.outcome.outcomeKnown, success: recovery.outcome.success }))
@@ -421,7 +483,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         for (const [requestID, recovery] of recoveryByRequestID) {
             if (present(recovery.pending, () => onRecoveryIsCurrent({ owner: recovery.pending.owner,
                 context: recovery.pending.context, message: recovery.pending.message })) === true) continue
-            recoveryByRequestID.delete(requestID); recovery.join?.()
+            recoveryByRequestID.delete(requestID); retireRecoveryWaiters(recovery)
             present(recovery.pending, () => onPending({ requestID, phase: 'finished', context: recovery.pending.context }))
         }
         if (closed) return rejectClosedRequest()
@@ -625,7 +687,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         pendingByRequestID.clear(); recoveryByRequestID.clear(); completedRecovery = null
         const observation = lifecycleObservation
         lifecycleObservation = null
-        for (const recovery of recoveries) recovery.join?.()
+        for (const recovery of recoveries) retireRecoveryWaiters(recovery)
         for (const value of pending) {
             // Departure can precede the next observation. Closing must not
             // restore its Cancel permission, and a never-submitted request
@@ -697,7 +759,8 @@ export const presentNativeMarkReadPending = state => {
     notice.firstElementChild.textContent = state.phase === 'recovery-failed'
         ? outcome + 'Reading status couldn’t be refreshed. Close and reopen this book to continue. '
         : state.recoveryOnly === true
-        ? 'Recovering reading change. Waiting for its outcome. '
+        ? (outcome ? outcome + 'Refreshing reading status. '
+            : 'Recovering reading change. Waiting for its outcome. ')
         : state.phase === 'cancelling'
         ? 'Cancelling reading change. Waiting for its outcome. '
         : 'Still saving reading change. '

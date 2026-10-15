@@ -32,9 +32,16 @@ private actor ReaderFileInitializationGate {
     }
 }
 
+private actor ReaderFileInitializationScanRecorder {
+    private var count = 0
+    func record() { count += 1 }
+    func snapshot() -> Int { count }
+}
+
 private enum ReaderFileInitializationTestError: Swift.Error {
     case unexpectedFactoryContinuation
     case localFactoryShouldNotRun
+    case sharedInitializationFailure
 }
 
 final class ReaderFileInitializationTests: XCTestCase {
@@ -91,6 +98,194 @@ final class ReaderFileInitializationTests: XCTestCase {
             try await refresh.value
             XCTFail("Cancelled refresh must not report successful completion")
         } catch is CancellationError {
+        }
+    }
+
+    @MainActor
+    func testInitializationCanDeferInventoryUntilTargetedStartupIndex() async throws {
+        try await withDriveFixture { f in
+            let scans = ReaderFileInitializationScanRecorder()
+            let manager = ReaderFileManager(
+                payloadStateProvider: { _ in .current },
+                directoryContentsProvider: { _ in
+                    await scans.record()
+                    return []
+                },
+                cloudDriveFactory: { _ in
+                    throw ReaderFileInitializationTestError.unexpectedFactoryContinuation
+                },
+                localDriveFactory: { f.local }
+            )
+            manager.historyRealmConfigurationOverride = f.configuration
+
+            try await manager.initialize(
+                ubiquityContainerIdentifier: "iCloud.fixture-no-inventory",
+                refreshInventory: false
+            )
+            let scansAfterDeferredInitialization = await scans.snapshot()
+            XCTAssertEqual(scansAfterDeferredInitialization, 0)
+
+            try await manager.initialize(
+                ubiquityContainerIdentifier: "iCloud.fixture-with-inventory",
+                refreshInventory: true
+            )
+            let scansAfterDefaultInitialization = await scans.snapshot()
+            XCTAssertGreaterThan(scansAfterDefaultInitialization, 0)
+        }
+    }
+
+    @MainActor
+    func testConcurrentSharedInitializationJoinsTheCurrentDrivePreparation() async throws {
+        try await withDriveFixture { f in
+            let gate = ReaderFileInitializationGate()
+            var cloudFactoryCalls = 0
+            var localFactoryCalls = 0
+            let manager = ReaderFileManager(
+                payloadStateProvider: { _ in .current },
+                directoryContentsProvider: { _ in [] },
+                cloudDriveFactory: { _ in
+                    cloudFactoryCalls += 1
+                    await gate.blockUntilReleased()
+                    return f.first
+                },
+                localDriveFactory: {
+                    localFactoryCalls += 1
+                    return f.local
+                }
+            )
+            manager.historyRealmConfigurationOverride = f.configuration
+
+            let first = Task { @MainActor in
+                try await manager.initializeShared(
+                    ubiquityContainerIdentifier: "iCloud.shared-startup",
+                    refreshInventory: false
+                )
+            }
+            await gate.waitUntilEntered()
+            let release = Task {
+                await gate.release()
+            }
+            // Calling directly from this actor reaches the existing shared-task
+            // branch before suspending; the independent release task then lets
+            // the owner finish and both callers observe the same result.
+            try await manager.initializeShared(
+                ubiquityContainerIdentifier: "iCloud.shared-startup",
+                refreshInventory: false
+            )
+            try await first.value
+            await release.value
+
+            XCTAssertEqual(cloudFactoryCalls, 1)
+            XCTAssertEqual(localFactoryCalls, 1)
+            XCTAssertTrue(manager.cloudDrive === f.first)
+            XCTAssertTrue(manager.localDrive === f.local)
+            XCTAssertEqual(manager.ubiquityContainerIdentifier, "iCloud.shared-startup")
+        }
+    }
+
+    @MainActor
+    func testSharedInitializationPropagatesFailureToJoinerAndAllowsRetry() async throws {
+        try await withDriveFixture { f in
+            let gate = ReaderFileInitializationGate()
+            var cloudFactoryCalls = 0
+            var localFactoryCalls = 0
+            let manager = ReaderFileManager(
+                payloadStateProvider: { _ in .current },
+                directoryContentsProvider: { _ in [] },
+                cloudDriveFactory: { _ in
+                    cloudFactoryCalls += 1
+                    return f.first
+                },
+                localDriveFactory: {
+                    localFactoryCalls += 1
+                    if localFactoryCalls == 1 {
+                        // Cloud preparation errors are intentionally optional
+                        // and fall back to local storage. Fail the required
+                        // local step to exercise shared terminal failure.
+                        await gate.blockUntilReleased()
+                        throw ReaderFileInitializationTestError.sharedInitializationFailure
+                    }
+                    return f.local
+                }
+            )
+            manager.historyRealmConfigurationOverride = f.configuration
+
+            let owner = Task { @MainActor in
+                do {
+                    try await manager.initializeShared(
+                        ubiquityContainerIdentifier: "iCloud.shared-failure",
+                        refreshInventory: false
+                    )
+                    return false
+                } catch ReaderFileInitializationTestError.sharedInitializationFailure {
+                    return true
+                } catch {
+                    return false
+                }
+            }
+            await gate.waitUntilEntered()
+            let joinerStarted = expectation(description: "joiner enters shared initialization")
+            let joiner = Task { @MainActor in
+                joinerStarted.fulfill()
+                do {
+                    try await manager.initializeShared(
+                        ubiquityContainerIdentifier: "iCloud.shared-failure",
+                        refreshInventory: false
+                    )
+                    return false
+                } catch ReaderFileInitializationTestError.sharedInitializationFailure {
+                    return true
+                } catch {
+                    return false
+                }
+            }
+            await fulfillment(of: [joinerStarted], timeout: 1)
+            await gate.release()
+
+            let joinerObservedFailure = await joiner.value
+            let ownerObservedFailure = await owner.value
+
+            XCTAssertTrue(joinerObservedFailure)
+            XCTAssertTrue(ownerObservedFailure)
+            XCTAssertEqual(cloudFactoryCalls, 1)
+            XCTAssertEqual(localFactoryCalls, 1)
+
+            try await manager.initializeShared(
+                ubiquityContainerIdentifier: "iCloud.shared-failure",
+                refreshInventory: false
+            )
+            XCTAssertEqual(cloudFactoryCalls, 2)
+            XCTAssertEqual(localFactoryCalls, 2)
+            XCTAssertTrue(manager.cloudDrive === f.first)
+            XCTAssertTrue(manager.localDrive === f.local)
+        }
+    }
+
+    @MainActor
+    func testCloudDrivePreparationFailureFallsBackToLocalDrive() async throws {
+        try await withDriveFixture { f in
+            let manager = ReaderFileManager(
+                payloadStateProvider: { _ in .current },
+                directoryContentsProvider: { _ in [] },
+                cloudDriveFactory: { _ in
+                    throw ReaderFileInitializationTestError
+                        .unexpectedFactoryContinuation
+                },
+                localDriveFactory: { f.local }
+            )
+            manager.historyRealmConfigurationOverride = f.configuration
+
+            try await manager.initializeShared(
+                ubiquityContainerIdentifier: "iCloud.optional-fallback",
+                refreshInventory: false
+            )
+
+            XCTAssertNil(manager.cloudDrive)
+            XCTAssertTrue(manager.localDrive === f.local)
+            XCTAssertEqual(
+                manager.ubiquityContainerIdentifier,
+                "iCloud.optional-fallback"
+            )
         }
     }
 

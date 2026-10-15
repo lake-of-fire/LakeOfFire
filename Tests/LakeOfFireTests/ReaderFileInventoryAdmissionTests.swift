@@ -32,6 +32,12 @@ private actor MigrationMetadataRetirementProbe {
     func snapshot() -> ([String], [String: String])? { observation }
 }
 
+private actor InventoryDirectoryRecorder {
+    private var paths = [String]()
+    func record(_ path: String) { paths.append(path) }
+    func snapshot() -> [String] { paths }
+}
+
 private enum InventoryAdmissionFixtureError: Swift.Error { case mappingDidNotStart }
 
 /// Real manager, filesystem, Realm and mutation journal. Only URL-mapping
@@ -285,6 +291,34 @@ final class ReaderFileInventoryAdmissionTests: XCTestCase {
         try await scan.value
         await f.manager.inventoryRefreshQueue?.waitForIdle()
         f.realm.refresh()
+    }
+
+    func testSingleFileStartupIndexScansOnlyContainingDirectory() async throws {
+        let directories = InventoryDirectoryRecorder()
+        try await withFixture(directoryContentsProvider: { url in
+            await directories.record(url.lastPathComponent)
+            return try FileManager.default.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles, .producesRelativePathURLs]
+            )
+        }) { f in
+            let books = f.library.appendingPathComponent("Books", isDirectory: true)
+            let unrelated = f.library.appendingPathComponent("Unrelated", isDirectory: true)
+            try FileManager.default.createDirectory(at: books, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: true)
+            try Data("startup fixture".utf8).write(to: books.appendingPathComponent("startup.txt"))
+            try Data("unrelated".utf8).write(to: unrelated.appendingPathComponent("other.txt"))
+
+            let readerURL = try XCTUnwrap(URL(string: "reader-file://file/load/local/Books/startup.txt"))
+            let indexed = try await f.manager.refreshContentFileMetadata(forReaderFileURL: readerURL)
+
+            XCTAssertEqual(indexed?.url, readerURL)
+            let scannedDirectories = await directories.snapshot()
+            XCTAssertEqual(scannedDirectories, ["Books"])
+            f.realm.refresh()
+            XCTAssertEqual(f.realm.objects(ContentFile.self).map(\.url.absoluteString), [readerURL.absoluteString])
+        }
     }
 
     func testMigratedCloudDocumentsRequireAnInstalledMatchingDrive() async throws {

@@ -336,7 +336,6 @@ export class BookReadingStateController {
         this.#state = prepared.state; this.#context = prepared.context
         const ownsPublication = this.#captureProjection()
         const publicationIsCurrent = () => this.#locationIsCurrent(ownsPublication)
-        const ownsRecoveryPublication = recovery ? this.#captureAdmission() : null
         let accepted
         try {
             Reflect.apply(onState, this, [notification.state, notification.context, { passChanged }, publicationIsCurrent])
@@ -347,8 +346,10 @@ export class BookReadingStateController {
             // without either its barrier or an acknowledged publication. Use
             // private identities so external checks cannot obstruct cleanup,
             // and retain any successor installed by a reentrant callback.
-            if (ownsRecoveryPublication()) {
-                this.#state = null; this.#context = null
+            // A queued refresh is not a published successor. Withdraw its
+            // request together with the failed projection and restore the barrier.
+            if (ownsPublication()) {
+                this.#pending = null; this.#state = null; this.#context = null
                 this.#historyRecovery = recovery
                 recovery.requested = false
                 try { this.#notify('onInvalidate', [], this.#captureAdmission()) } catch (_) {}

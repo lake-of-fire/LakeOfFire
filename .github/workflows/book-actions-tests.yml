@@ -30,6 +30,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: JavaScript behavioral tests
         run: |
           set -o pipefail
@@ -90,6 +93,16 @@ jobs:
           test -x "$chromium_path"
           ln -s "$chromium_path" "$settlement_bin/chromium"
           PATH="$settlement_bin:$PATH" python3 Tests/Browser/BookActionSettlement/run.py --output book-actions-settlement-results.json 2>&1 | tee book-actions-settlement-results.txt
+      - name: Reading outcome notice runtime journeys
+        run: |
+          set -o pipefail
+          python3 Tests/JavaScript/native-mark-read-recovery-notice.browser.py --output book-actions-recovery-notice-results.json 2>&1 | tee book-actions-recovery-notice-results.txt
+      - name: Reading recovery lifetime runtime journeys
+        run: |
+          set -o pipefail
+          chromium_path="${CHROMIUM_PATH:-$(python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')}"
+          test -x "$chromium_path"
+          python3 Tests/Browser/NativeMarkReadRecoveryLifetime/run.py --browser "$chromium_path" --output book-actions-recovery-lifetime-results.json 2>&1 | tee book-actions-recovery-lifetime-results.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -101,4 +114,6 @@ jobs:
             book-actions-transaction-results.json
             book-actions-boundaries-results.json
             book-actions-settlement-results.json
+            book-actions-recovery-notice-results.json
+            book-actions-recovery-lifetime-results.json
           retention-days: 14

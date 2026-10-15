@@ -110,6 +110,28 @@ public enum CloudDriveSyncStatus: Sendable {
 }
 
 public class ReaderFileManager: ObservableObject {
+    private struct SharedInitialization {
+        let id: UUID
+        let containerIdentifier: String
+        let refreshInventory: Bool
+        let task: Task<SharedInitializationOutcome, Never>
+    }
+
+    private enum SharedInitializationOutcome {
+        case success
+        case failure(SharedInitializationFailure)
+
+        func rethrowFailure() throws {
+            if case let .failure(error) = self {
+                throw error.underlying
+            }
+        }
+    }
+
+    private struct SharedInitializationFailure: Swift.Error {
+        let underlying: any Swift.Error
+    }
+
     // Inventory publication must invalidate Books and Documents consumers.
     public static let readerBackingStatusRefreshRequestedNotification = Notification.Name("ReaderFileManager.readerBackingStatusRefreshRequested")
     public static let driveAvailabilityDidChangeNotification = Notification.Name("ReaderFileManager.driveAvailabilityDidChange")
@@ -218,6 +240,9 @@ public class ReaderFileManager: ObservableObject {
     // Like the installed drives/configuration, this selection identity must
     // be visible to synchronous owned-write admission on RealmBackgroundActor.
     private var initializationID: UUID?
+
+    @MainActor
+    private var sharedInitialization: SharedInitialization?
     
     /*@MainActor*/ public var cloudDrive: CloudDrive?
     //    /*@MainActor*/ @Published public var legacyCloudDrive: CloudDrive?
@@ -317,7 +342,61 @@ public class ReaderFileManager: ObservableObject {
     }
     
     @MainActor
-    public func initialize(ubiquityContainerIdentifier: String) async throws {
+    public func initializeShared(
+        ubiquityContainerIdentifier: String,
+        refreshInventory: Bool = true
+    ) async throws {
+        try Task.checkCancellation()
+
+        if !refreshInventory,
+           hasInitializedUbiquityContainerIdentifier,
+           self.ubiquityContainerIdentifier == ubiquityContainerIdentifier,
+           localDrive != nil {
+            return
+        }
+
+        if let sharedInitialization,
+           sharedInitialization.containerIdentifier == ubiquityContainerIdentifier,
+           sharedInitialization.refreshInventory == refreshInventory {
+            try await sharedInitialization.task.value.rethrowFailure()
+            try Task.checkCancellation()
+            return
+        }
+
+        let sharedID = UUID()
+        let task = Task<SharedInitializationOutcome, Never> { @MainActor [weak self] in
+            do {
+                guard let self else { throw CancellationError() }
+                try await self.initialize(
+                    ubiquityContainerIdentifier: ubiquityContainerIdentifier,
+                    refreshInventory: refreshInventory
+                )
+                return .success
+            } catch {
+                return .failure(SharedInitializationFailure(underlying: error))
+            }
+        }
+        let initialization = SharedInitialization(
+            id: sharedID,
+            containerIdentifier: ubiquityContainerIdentifier,
+            refreshInventory: refreshInventory,
+            task: task
+        )
+        sharedInitialization = initialization
+        defer {
+            if sharedInitialization?.id == sharedID {
+                sharedInitialization = nil
+            }
+        }
+        try await task.value.rethrowFailure()
+        try Task.checkCancellation()
+    }
+
+    @MainActor
+    public func initialize(
+        ubiquityContainerIdentifier: String,
+        refreshInventory: Bool = true
+    ) async throws {
         // A cancelled entrant cannot revoke a healthy initialization or invoke
         // a factory whose preparation may itself create directories/presenters.
         try Task.checkCancellation()
@@ -359,8 +438,10 @@ public class ReaderFileManager: ObservableObject {
             object: self
         )
         try validateInitialization(identifier)
-        try await refreshAllFilesMetadata()
-        try validateInitialization(identifier)
+        if refreshInventory {
+            try await refreshAllFilesMetadata()
+            try validateInitialization(identifier)
+        }
     }
 
     @MainActor
@@ -966,6 +1047,43 @@ public class ReaderFileManager: ObservableObject {
     public func refreshAllFilesMetadata(force: Bool = false) async throws {
         let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
         try await refreshAllFilesMetadata(force: force, selection: selection)
+    }
+
+    /// Index one reader-backed file through the production metadata scanner.
+    /// Scanning only its containing directory avoids a whole-library inventory
+    /// refresh when a caller needs one newly staged file to become a ContentFile.
+    @MainActor
+    public func refreshContentFileMetadata(forReaderFileURL readerFileURL: URL) async throws -> ContentFile? {
+        let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
+        guard let canonicalURL = canonicalReaderBackingURL(for: readerFileURL) else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
+        let (drive, filePath) = try extractCloudDrivePath(fromReaderFileURL: canonicalURL)
+        let parentPath = URL(fileURLWithPath: filePath.path)
+            .deletingLastPathComponent()
+            .relativePath
+        let scanPath = parentPath.isEmpty || parentPath == "."
+            ? nil : RootRelativePath(path: parentPath)
+
+        try Task.checkCancellation()
+        _ = try await refreshFilesMetadata(
+            drive: drive,
+            relativePath: scanPath,
+            selection: selection
+        )
+        try validateMetadataRefreshSelection(selection)
+
+        let realm = try await Realm.open(configuration: selection.realmConfiguration)
+        guard let contentFile = realm.objects(ContentFile.self)
+            .filter(NSPredicate(
+                format: "isDeleted == %@ AND url == %@",
+                NSNumber(value: false),
+                canonicalURL.absoluteString as CVarArg
+            ))
+            .first else {
+            return nil
+        }
+        return contentFile
     }
 
     @MainActor
