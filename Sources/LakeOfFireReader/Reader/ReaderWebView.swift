@@ -116,6 +116,8 @@ final class ReaderWebViewHandler {
 //        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
 
         try Task.checkCancellation()
+        let navigationBinding = scriptCaller.currentJavaScriptBindingToken
+        var loadedSelectionIsCurrent: (() -> Bool)?
         if !readerModeViewModel.expectsSyntheticReaderLoaderCommit(
             for: state.pageURL
         ) {
@@ -130,18 +132,40 @@ final class ReaderWebViewHandler {
             try await readerContent.load(url: state.pageURL, consuming: selectionIntent)
             ReaderSnippetFinalDocumentDiagnostics.record("content-load-returned", contentURL: state.pageURL)
             try Task.checkCancellation()
-            guard let content = readerContent.content else {
+            guard readerContent.pageURL.matchesReaderURL(state.pageURL),
+                  navigationBinding != nil || !scriptCaller.canEvaluateJavaScript,
+                  scriptCaller.currentJavaScriptBindingToken == navigationBinding else {
+                throw CancellationError()
+            }
+            guard let content = readerContent.validCachedContent else {
                 readerModeViewModel.cancelReaderModeLoad(
                     for: state.pageURL,
                     readerContent: readerContent
                 )
                 return
             }
+            guard content.url.matchesReaderURL(state.pageURL) else {
+                throw CancellationError()
+            }
+            let selectionIsCurrent = readerContent.makeSelectionCommitFence(
+                requiring: readerContent.currentSelectionID
+            )
+            let ownsLoadedSelection = { [self] in
+                selectionIsCurrent()
+                    && (navigationBinding != nil || !scriptCaller.canEvaluateJavaScript)
+                    && scriptCaller.currentJavaScriptBindingToken == navigationBinding
+                    && readerContent.pageURL.matchesReaderURL(state.pageURL)
+                    // A removed current row still needs the mode model's
+                    // missing-content cleanup. A new wrapper never inherits it.
+                    && (readerContent.content == nil || readerContent.content === content)
+            }
+            loadedSelectionIsCurrent = ownsLoadedSelection
             try await readerViewModel.onNavigationCommitted(
                 content: content,
                 newState: state
             )
             try Task.checkCancellation()
+            guard ownsLoadedSelection() else { throw CancellationError() }
             try await readerModeViewModel.onNavigationCommitted(
                 readerContent: readerContent,
                 newState: state,
@@ -149,12 +173,14 @@ final class ReaderWebViewHandler {
                 navigator: navigator
             )
             try Task.checkCancellation()
-            guard let content = readerContent.content,
-                  content.url.matchesReaderURL(state.pageURL) else {
+            guard ownsLoadedSelection(),
+                  let currentContent = readerContent.validCachedContent,
+                  currentContent === content,
+                  currentContent.url.matchesReaderURL(state.pageURL) else {
                 throw CancellationError()
             }
             try await readerMediaPlayerViewModel.onNavigationCommitted(
-                content: content,
+                content: currentContent,
                 newState: state
             )
             try Task.checkCancellation()
@@ -166,7 +192,11 @@ final class ReaderWebViewHandler {
             // Replacement commits cancel the previous task. If an unrelated
             // operation failed at the same time, its cleanup must not release a
             // newer same-URL reader render.
-            guard !Task.isCancelled else {
+            guard !Task.isCancelled,
+                  navigationBinding != nil || !scriptCaller.canEvaluateJavaScript,
+                  scriptCaller.currentJavaScriptBindingToken == navigationBinding,
+                  readerContent.pageURL.matchesReaderURL(state.pageURL),
+                  loadedSelectionIsCurrent?() != false else {
                 throw CancellationError()
             }
             readerModeViewModel.cancelReaderModeLoad(
@@ -178,19 +208,37 @@ final class ReaderWebViewHandler {
     }
 
     func handleNavigationFinished(state: WebViewState) async {
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled,
+              readerContent.pageURL.matchesReaderURL(state.pageURL) else { return }
+        // Retain identity only; all property reads below use the valid accessor.
+        let content = readerContent.content
+        let selectionIsCurrent = readerContent.makeSelectionCommitFence(
+            requiring: readerContent.currentSelectionID
+        )
+        let navigationBinding = scriptCaller.currentJavaScriptBindingToken
+        let ownsFinishedSelection = { [weak readerContent = readerContent, weak scriptCaller = scriptCaller] in
+            guard let readerContent, let scriptCaller else { return false }
+            return selectionIsCurrent()
+                && (navigationBinding != nil || !scriptCaller.canEvaluateJavaScript)
+                && scriptCaller.currentJavaScriptBindingToken == navigationBinding
+                && readerContent.pageURL.matchesReaderURL(state.pageURL)
+                && readerContent.content === content
+        }
         await readerModeViewModel.onNavigationFinished(
             newState: state,
-            scriptCaller: scriptCaller
+            scriptCaller: scriptCaller,
+            documentIsCurrent: ownsFinishedSelection
         )
-        guard !Task.isCancelled,
-              let content = readerContent.content,
-              content.url.matchesReaderURL(state.pageURL) else {
+        guard !Task.isCancelled, ownsFinishedSelection(),
+              let currentContent = readerContent.validCachedContent,
+              currentContent === content,
+              currentContent.url.matchesReaderURL(state.pageURL) else {
             return
         }
         readerViewModel.onNavigationFinished(
-            content: content,
-            newState: state
+            content: currentContent,
+            newState: state,
+            documentIsCurrent: ownsFinishedSelection
         )
     }
 

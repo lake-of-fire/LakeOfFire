@@ -1,5 +1,7 @@
 import XCTest
 import SwiftUI
+import Combine
+import RealmSwift
 @testable import SwiftUIWebView
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
@@ -29,6 +31,48 @@ private enum ReaderCallbackTestError: Error {
 }
 
 @MainActor
+private final class ReaderCallbackViewModel: ReaderViewModel {
+    var beforeCommitReturns: (() async throws -> Void)?
+    var committedCount = 0
+    var finishedContents: [ObjectIdentifier] = []
+
+    override func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
+        committedCount += 1
+        try await beforeCommitReturns?()
+    }
+
+    override func onNavigationFinished(content: any ReaderContentProtocol, newState: WebViewState,
+                                      documentIsCurrent: @escaping @MainActor () -> Bool = { true },
+                                      completion: ((WebViewState) -> Void)? = nil) {
+        finishedContents.append(ObjectIdentifier(content))
+        completion?(newState)
+    }
+}
+
+@MainActor
+private final class ReaderCallbackMediaViewModel: ReaderMediaPlayerViewModel {
+    var committedContents: [ObjectIdentifier] = []
+
+    override func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
+        committedContents.append(ObjectIdentifier(content))
+    }
+}
+
+@MainActor
+private final class ReaderSettingsDispatchProbe {
+    var settingsCount = 0
+    var titles: [String] = []
+}
+
+@MainActor
+private func makeReaderCallbackLibraryConfiguration() -> Realm.Configuration {
+    var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+    configuration.objectTypes = [LibraryConfiguration.self, FeedCategory.self, UserScript.self]
+    configureLakeOfFireMutationTrackingForTesting(&configuration)
+    return configuration
+}
+
+@MainActor
 private func makeReaderWebViewHandlerFixture() -> (
     handler: ReaderWebViewHandler,
     taskManager: NavigationTaskManager,
@@ -41,7 +85,7 @@ private func makeReaderWebViewHandlerFixture() -> (
     let handler = ReaderWebViewHandler(
         navigationTaskManager: taskManager,
         readerContent: readerContent,
-        readerViewModel: ReaderViewModel(systemScripts: []),
+        readerViewModel: ReaderViewModel(realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: []),
         readerModeViewModel: readerModeViewModel,
         readerMediaPlayerViewModel: ReaderMediaPlayerViewModel(),
         scriptCaller: WebViewScriptCaller(),
@@ -52,6 +96,288 @@ private func makeReaderWebViewHandlerFixture() -> (
 
 @MainActor
 final class ReaderWebViewCallbackContractTests: XCTestCase {
+    private func cachedHistoryRecord(url: URL) throws -> (Realm, HistoryRecord) {
+        let realm = try Realm(configuration: .init(
+            inMemoryIdentifier: UUID().uuidString, objectTypes: [HistoryRecord.self]
+        ), queue: nil)
+        let record = HistoryRecord()
+        record.compoundKey = UUID().uuidString
+        record.url = url
+        try realm.write { realm.add(record) }
+        return (realm, record)
+    }
+
+    func testCommitRejectsCachedRowInvalidatedDuringLoadPublication() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let reader = ReaderCallbackViewModel(realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
+        let media = ReaderCallbackMediaViewModel(readAloudController: ReaderReadAloudController())
+        fixture.handler.readerViewModel = reader
+        fixture.handler.readerMediaPlayerViewModel = media
+        let url = URL(string: "https://example.invalid/invalidated-publication")!
+        let (realm, record) = try cachedHistoryRecord(url: url)
+        fixture.readerContent.pageURL = url
+        fixture.readerContent.preloadResolvedContent(record, for: url)
+        fixture.readerContent.isRenderingReaderHTML = true
+        fixture.readerModeViewModel.beginReaderModeLoad(for: url)
+        fixture.readerModeViewModel.expectSyntheticReaderLoaderCommit(for: url)
+        let publication = fixture.readerContent.$content.sink { content in
+            guard content === record, !record.isInvalidated else { return }
+            do { try realm.write { realm.delete(record) } }
+            catch { XCTFail("Could not invalidate the published row: \(error)") }
+        }
+        defer { publication.cancel() }
+        var state = WebViewState.empty
+        state.pageURL = url
+
+        try await fixture.handler.handleNavigationCommitted(state: state)
+
+        XCTAssertTrue(record.isInvalidated)
+        XCTAssertEqual(reader.committedCount, 0)
+        XCTAssertTrue(media.committedContents.isEmpty)
+        XCTAssertFalse(fixture.readerContent.isRenderingReaderHTML)
+        XCTAssertFalse(fixture.readerModeViewModel.isReaderModeLoading)
+    }
+
+    func testCommitRevalidatesCachedSelectionAfterReaderCallback() async throws {
+        for change in ["invalidated", "removed", "replacement", "lateFailureReplacement", "binding", "cancelled", "live"] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            let reader = ReaderCallbackViewModel(realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
+            let media = ReaderCallbackMediaViewModel(readAloudController: ReaderReadAloudController())
+            fixture.handler.readerViewModel = reader
+            fixture.handler.readerMediaPlayerViewModel = media
+            let url = URL(string: "https://example.invalid/suspended-commit")!
+            let (realm, record) = try cachedHistoryRecord(url: url)
+            fixture.readerContent.content = record
+            fixture.readerContent.pageURL = url
+            fixture.readerContent.isRenderingReaderHTML = true
+            fixture.readerModeViewModel.beginReaderModeLoad(for: url)
+            fixture.readerModeViewModel.expectSyntheticReaderLoaderCommit(for: url)
+            fixture.readerModeViewModel.sharedFontCSSBase64Provider = { nil }
+            let html = "<main>Current reader</main>"
+            fixture.readerModeViewModel.readabilityContent = html
+            let entered = expectation(description: "Reader commit suspended: \(change)")
+            let gate = ReaderCallbackGate()
+            reader.beforeCommitReturns = {
+                entered.fulfill()
+                await gate.wait()
+                if change == "lateFailureReplacement" { throw ReaderCallbackTestError.commitFailed }
+            }
+            var state = WebViewState.empty
+            state.pageURL = url
+            let callback = Task { @MainActor in
+                try await fixture.handler.handleNavigationCommitted(state: state)
+            }
+            await fulfillment(of: [entered], timeout: 5)
+            if change == "invalidated" {
+                try realm.write { realm.delete(record) }
+            } else if change == "removed" {
+                fixture.readerContent.content = nil
+            } else if ["replacement", "lateFailureReplacement"].contains(change) {
+                // Equal URL and primary key do not transfer physical selection ownership.
+                let replacement = HistoryRecord()
+                replacement.url = url
+                replacement.compoundKey = record.compoundKey
+                fixture.readerContent.content = replacement
+            } else if change == "binding" {
+                fixture.handler.scriptCaller.installBinding(
+                    ownedBy: UUID(), asyncCaller: { _, _, _, _ in .init(nil) },
+                    unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+                )
+            } else if change == "cancelled" {
+                callback.cancel()
+            }
+            await gate.release()
+            do {
+                try await callback.value
+                XCTAssertEqual(change, "live")
+            } catch is CancellationError {
+                XCTAssertNotEqual(change, "live")
+            }
+
+            XCTAssertEqual(media.committedContents, change == "live" ? [ObjectIdentifier(record)] : [], change)
+            let missingCurrentContent = ["invalidated", "removed"].contains(change)
+            XCTAssertEqual(fixture.readerContent.isRenderingReaderHTML, !missingCurrentContent, change)
+            XCTAssertEqual(fixture.readerModeViewModel.isReaderModeLoading, !missingCurrentContent, change)
+            XCTAssertEqual(fixture.readerModeViewModel.readabilityContent, missingCurrentContent ? nil : html, change)
+        }
+    }
+
+    func testFinishRevalidatesCachedRowAfterModeCallback() async throws {
+        for change in ["invalidated", "replacement", "binding", "cancelled", "live"] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            let reader = ReaderCallbackViewModel(realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
+            fixture.handler.readerViewModel = reader
+            let url = URL(string: "https://example.invalid/suspended-finish")!
+            let (realm, record) = try cachedHistoryRecord(url: url)
+            fixture.readerContent.content = record
+            fixture.readerContent.pageURL = url
+            fixture.readerContent.isRenderingReaderHTML = true
+            fixture.readerModeViewModel.beginReaderModeLoad(for: url)
+            let html = "<main>Pending reader</main>"
+            fixture.readerModeViewModel.readabilityContent = html
+            let entered = expectation(description: "Mode finish suspended: \(change)")
+            let gate = ReaderCallbackGate()
+            fixture.readerModeViewModel.sharedFontCSSBase64Provider = {
+                entered.fulfill()
+                await gate.wait()
+                return nil
+            }
+            var state = WebViewState.empty
+            state.pageURL = url
+            let callback = Task { @MainActor in
+                await fixture.handler.handleNavigationFinished(state: state)
+            }
+            await fulfillment(of: [entered], timeout: 5)
+            if change == "invalidated" {
+                try realm.write { realm.delete(record) }
+            } else if change == "replacement" {
+                let replacement = HistoryRecord()
+                replacement.url = url
+                replacement.compoundKey = record.compoundKey
+                fixture.readerContent.content = replacement
+            } else if change == "binding" {
+                fixture.handler.scriptCaller.installBinding(
+                    ownedBy: UUID(), asyncCaller: { _, _, _, _ in .init(nil) },
+                    unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+                )
+            } else if change == "cancelled" {
+                callback.cancel()
+            }
+            await gate.release()
+            await callback.value
+
+            XCTAssertEqual(reader.finishedContents, change == "live" ? [ObjectIdentifier(record)] : [], change)
+            XCTAssertTrue(fixture.readerContent.isRenderingReaderHTML, change)
+            XCTAssertEqual(fixture.readerModeViewModel.isReaderModeLoading,
+                           !["invalidated", "live"].contains(change), change)
+            XCTAssertEqual(fixture.readerModeViewModel.readabilityContent, html, change)
+        }
+    }
+
+    func testProductionFinishSettingsRevalidateAfterSuspendedJavaScript() async throws {
+        for change in ["invalidated", "replacement", "binding", "page", "live"] {
+            let url = URL(string: "https://example.invalid/production-finish-settings")!
+            let (realm, record) = try cachedHistoryRecord(url: url)
+            try realm.write {
+                record.title = "Original reader title"
+                record.rssContainsFullContent = true
+            }
+            let content = ReaderContent()
+            content.content = record
+            content.pageURL = url
+            var model: ReaderViewModel? = ReaderViewModel(realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
+            weak var pendingModel = model
+            var state = WebViewState.empty
+            state.pageURL = url
+            model?.state = state
+            let caller = try XCTUnwrap(model?.scriptCaller)
+            let dispatches = ReaderSettingsDispatchProbe()
+            let entered = expectation(description: "Production settings suspended: \(change)")
+            let gate = ReaderCallbackGate()
+            caller.installBinding(
+                ownedBy: UUID(),
+                asyncCaller: { _, arguments, _, _ in
+                    if let title = arguments?["title"] as? String {
+                        dispatches.titles.append(title)
+                    } else {
+                        dispatches.settingsCount += 1
+                        entered.fulfill()
+                        await gate.wait()
+                    }
+                    return .init(nil)
+                },
+                unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+            )
+            let selectionIsCurrent = content.makeSelectionCommitFence(requiring: content.currentSelectionID)
+            model?.onNavigationFinished(content: record, newState: state, documentIsCurrent: {
+                selectionIsCurrent() && content.content === record && content.pageURL.matchesReaderURL(url)
+            })
+            await fulfillment(of: [entered], timeout: 5)
+            if change == "invalidated" {
+                try realm.write { realm.delete(record) }
+            } else if change == "replacement" {
+                let replacement = HistoryRecord()
+                replacement.url = url
+                replacement.compoundKey = record.compoundKey
+                content.content = replacement
+            } else if change == "binding" {
+                caller.installBinding(
+                    ownedBy: UUID(),
+                    asyncCaller: { _, _, _, _ in
+                        XCTFail("Retired settings must not send title work to a replacement binding")
+                        return .init(nil)
+                    },
+                    unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+                )
+            } else if change == "page" {
+                var successorState = state
+                successorState.pageURL = URL(string: "https://example.invalid/successor")!
+                model?.state = successorState
+            }
+            // The production settings task retains its model while suspended.
+            // Releasing the external owner lets deallocation prove that the
+            // actual unstructured task has completed before assertions.
+            model = nil
+            XCTAssertNotNil(pendingModel)
+            await gate.release()
+            let deadline = Date().addingTimeInterval(5)
+            while pendingModel != nil, Date() < deadline {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            XCTAssertNil(pendingModel, "Production settings task did not finish: \(change)")
+            XCTAssertEqual(dispatches.settingsCount, 1, change)
+            XCTAssertEqual(dispatches.titles, change == "live" ? ["Original reader title"] : [], change)
+        }
+    }
+
+    func testProductionSettingsSchedulingCannotAdoptRetiredDocument() async throws {
+        for entryPoint in ["finish", "settings"] {
+            for change in ["invalidated", "binding", "page"] {
+                let url = URL(string: "https://example.invalid/queued-settings")!
+                let (realm, record) = try cachedHistoryRecord(url: url)
+                let model = ReaderViewModel(realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
+                var state = WebViewState.empty
+                state.pageURL = url
+                model.state = state
+                let unexpected = expectation(description: "Retired \(entryPoint) must stay inert: \(change)")
+                unexpected.isInverted = true
+                let caller = model.scriptCaller
+                caller.installBinding(
+                    ownedBy: UUID(), asyncCaller: { _, _, _, _ in
+                        unexpected.fulfill()
+                        return .init(nil)
+                    },
+                    unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+                )
+                if entryPoint == "finish" {
+                    model.onNavigationFinished(content: record, newState: state, completion: { _ in
+                        unexpected.fulfill()
+                    })
+                } else {
+                    model.refreshSettingsInWebView(content: record, newState: state)
+                }
+                // Still on the same MainActor turn: both production tasks are
+                // queued, so this retires their captured owner before admission.
+                if change == "invalidated" {
+                    try realm.write { realm.delete(record) }
+                } else if change == "binding" {
+                    caller.installBinding(
+                        ownedBy: UUID(), asyncCaller: { _, _, _, _ in
+                            unexpected.fulfill()
+                            return .init(nil)
+                        },
+                        unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+                    )
+                } else {
+                    var successorState = state
+                    successorState.pageURL = URL(string: "https://example.invalid/successor")!
+                    model.state = successorState
+                }
+                await fulfillment(of: [unexpected], timeout: 0.05)
+            }
+        }
+    }
+
     func testCancelledCommitCannotReleaseNewerReaderRender() async {
         let fixture = makeReaderWebViewHandlerFixture()
         fixture.readerContent.isRenderingReaderHTML = true
