@@ -1234,10 +1234,23 @@ private func rebuildCanonicalSnippetReadabilityHTML(
 @MainActor
 private func locallyRetrievableReaderHTML(
     for content: any ReaderContentProtocol,
-    readerFileManager: ReaderFileManager
+    readerFileManager: ReaderFileManager,
+    loadHTML: (@MainActor (any ReaderContentProtocol) async throws -> String?)? = nil
 ) async throws -> String? {
-    var html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
-    if html == nil, content.url.isSnippetURL {
+    guard !Task.isCancelled, !content.isInvalidated else { throw CancellationError() }
+    let contentURL = content.url
+    var html: String?
+    if let loadHTML {
+        html = try await loadHTML(content)
+    } else {
+        html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
+    }
+    // The getter may intentionally return nil after physical invalidation.
+    // Revalidate before even testing the retained managed row's URL/fallback.
+    guard !Task.isCancelled, !content.isInvalidated, content.url == contentURL else {
+        throw CancellationError()
+    }
+    if html == nil, contentURL.isSnippetURL {
         html = content.html
     }
     guard let html else {
@@ -1449,6 +1462,16 @@ func readerModeReadyGenerationIsCurrent(
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
+    // Narrow asynchronous collaborators let native tests suspend the actual
+    // routing/render caller while retaining real managed content rows.
+    internal var readerLocalHTMLLoader: (@MainActor (any ReaderContentProtocol) async throws -> String?)?
+    internal var readerPublicationDateLoader: (@MainActor (URL) async -> String?)?
+    internal var swiftReadabilityProcessor: (@MainActor (String, URL, String?, Int) async -> String?)?
+
+    internal func waitForReaderModeRender(for url: URL) async {
+        let task = activeRenderTaskByURL[canonicalRenderKey(url)]
+        await task?.value
+    }
     private var isBatchingProcessingDependencyChanges = false
     internal private(set) var processingDependencyRevision: UInt64 = 0
     private func processingDependencyWillChange() {
@@ -2434,14 +2457,26 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     private func resolveReaderModeRouteDecision(readerContent: ReaderContent) async -> ReaderModeRouteDecision {
         let activeReaderFileManager = readerFileManager ?? .shared
+        let unavailable = ReaderModeRouteDecision(route: .unavailable, prefetchedContent: nil, prefetchedLocalHTML: nil)
+        let initialContent = readerContent.content
+        let initialURL = readerContent.pageURL
+        let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
+        let ownsRoute = {
+            !Task.isCancelled && selectionIsCurrent()
+                && urlsMatchWithoutHashForHotfix(initialURL, readerContent.pageURL)
+                && (initialContent == nil || readerContent.content === initialContent)
+                && initialContent?.isInvalidated != true
+        }
         if let content = try? await readerContent.getContent(),
            content.rssContainsFullContent,
            !content.isReaderModeByDefault {
             if let html = try? await locallyRetrievableReaderHTML(
                 for: content,
-                readerFileManager: activeReaderFileManager
+                readerFileManager: activeReaderFileManager,
+                loadHTML: readerLocalHTMLLoader
             ),
                !html.isEmpty {
+                guard ownsRoute() else { return unavailable }
                 if !looksLikeStaleCachedCanonicalReadabilityHTML(html, url: content.url) {
                     return ReaderModeRouteDecision(
                         route: .localHTML,
@@ -2451,6 +2486,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
             }
         }
+        guard ownsRoute() else { return unavailable }
         if let readabilityContent, !readabilityContent.isEmpty {
             let contentURL = readerContent.pageURL
             if !looksLikeStaleCachedCanonicalReadabilityHTML(readabilityContent, url: contentURL) {
@@ -2464,9 +2500,11 @@ public class ReaderModeViewModel: ObservableObject {
         if let content = try? await readerContent.getContent(),
            let html = try? await locallyRetrievableReaderHTML(
                 for: content,
-                readerFileManager: activeReaderFileManager
+                readerFileManager: activeReaderFileManager,
+                loadHTML: readerLocalHTMLLoader
            ),
            !html.isEmpty {
+            guard ownsRoute() else { return unavailable }
             if !looksLikeStaleCachedCanonicalReadabilityHTML(html, url: content.url) {
                 return ReaderModeRouteDecision(
                     route: .localHTML,
@@ -2475,11 +2513,7 @@ public class ReaderModeViewModel: ObservableObject {
                 )
             }
         }
-        return ReaderModeRouteDecision(
-            route: .unavailable,
-            prefetchedContent: nil,
-            prefetchedLocalHTML: nil
-        )
+        return unavailable
     }
 
     @MainActor
@@ -2526,6 +2560,8 @@ public class ReaderModeViewModel: ObservableObject {
         let cachedReadabilityContent = readabilityContent
         let cachedContainerSelector = readabilityContainerSelector
         let cachedContainerFrameInfo = readabilityContainerFrameInfo
+        let initialContent = readerContent.content
+        let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
         beginReaderModeLoad(for: contentURL)
         let didStart = startRenderTaskIfNeeded(for: contentURL) { [weak self] generation in
             guard let self else { return }
@@ -2546,6 +2582,12 @@ public class ReaderModeViewModel: ObservableObject {
             guard await self.isCurrentRender(for: contentURL, generation: generation) else {
                 return
             }
+            guard await MainActor.run(body: {
+                selectionIsCurrent()
+                    && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
+                    && (initialContent == nil || readerContent.content === initialContent)
+                    && initialContent?.isInvalidated != true
+            }) else { return }
             switch routeDecision.route {
             case .localHTML:
                 await self.showReaderViewUsingSwiftProcessing(
@@ -2667,6 +2709,8 @@ public class ReaderModeViewModel: ObservableObject {
             )
             return
         }
+        let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
+        var resolvedContentIsCurrent: (() -> Bool)?
         do {
             let content: any ReaderContentProtocol
             if let prefetchedContent {
@@ -2685,6 +2729,19 @@ public class ReaderModeViewModel: ObservableObject {
             guard isCurrentRender(for: contentURL, generation: renderGeneration) else {
                 return
             }
+            guard !content.isInvalidated, readerContent.content === content else { return }
+            let resolvedContentURL = content.url
+            let meaningfulContentMinChars = max(content.meaningfulContentMinLength, 1)
+            let ownsContent = {
+                self.isCurrentRender(for: contentURL, generation: renderGeneration)
+                    && selectionIsCurrent()
+                    && !content.isInvalidated
+                    && readerContent.content === content
+                    && content.url == resolvedContentURL
+                    && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
+            }
+            resolvedContentIsCurrent = ownsContent
+            guard ownsContent() else { return }
             let activeReaderFileManager = readerFileManager ?? .shared
             let html: String
             if let prefetchedLocalHTML {
@@ -2692,7 +2749,8 @@ public class ReaderModeViewModel: ObservableObject {
             } else {
                 guard let resolvedHTML = try await locallyRetrievableReaderHTML(
                     for: content,
-                    readerFileManager: activeReaderFileManager
+                    readerFileManager: activeReaderFileManager,
+                    loadHTML: readerLocalHTMLLoader
                 ) else {
                     cancelReaderModeLoad(
                         for: contentURL,
@@ -2703,28 +2761,40 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 html = resolvedHTML
             }
-            guard isCurrentRender(for: contentURL, generation: renderGeneration) else {
-                return
-            }
+            guard ownsContent() else { return }
 
             let resolvedReadabilityHTML: String?
             if hasCanonicalReadabilityMarkup(in: html) {
                 resolvedReadabilityHTML = rebuildCanonicalSnippetReadabilityHTML(
                     html: html,
-                    contentURL: content.url,
+                    contentURL: resolvedContentURL,
                     fallbackTitle: titleFromReadabilityHTML(html)
                 )
             } else {
-                let publicationDateFallback = await readerContentPublicationDateFallback(for: content)
-                guard isCurrentRender(for: contentURL, generation: renderGeneration) else {
-                    return
+                let publicationDateFallback: String?
+                if let readerPublicationDateLoader {
+                    publicationDateFallback = await readerPublicationDateLoader(resolvedContentURL)
+                } else {
+                    publicationDateFallback = await readerContentPublicationDateFallback(for: content)
                 }
-                let swiftReadability = await processReadabilityHTMLInSwift(
-                    html: html,
-                    url: content.url,
-                    snippetPublishedTime: publicationDateFallback,
-                    meaningfulContentMinChars: max(content.meaningfulContentMinLength, 1)
-                )
+                guard ownsContent() else { return }
+                let swiftReadability: SwiftReadabilityProcessingOutcome
+                if let swiftReadabilityProcessor {
+                    if let output = await swiftReadabilityProcessor(
+                        html, resolvedContentURL, publicationDateFallback, meaningfulContentMinChars
+                    ) {
+                        swiftReadability = .success(SwiftReadabilityProcessingResult(outputHTML: output))
+                    } else {
+                        swiftReadability = .failed
+                    }
+                } else {
+                    swiftReadability = await processReadabilityHTMLInSwift(
+                        html: html,
+                        url: resolvedContentURL,
+                        snippetPublishedTime: publicationDateFallback,
+                        meaningfulContentMinChars: meaningfulContentMinChars
+                    )
+                }
                 switch swiftReadability {
                 case .success(let result):
                     resolvedReadabilityHTML = result.outputHTML
@@ -2733,9 +2803,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
             }
 
-            guard isCurrentRender(for: contentURL, generation: renderGeneration) else {
-                return
-            }
+            guard ownsContent() else { return }
 
             if let resolvedReadabilityHTML {
                 readabilityContent = resolvedReadabilityHTML
@@ -2754,20 +2822,23 @@ public class ReaderModeViewModel: ObservableObject {
 
             readabilityContent = nil
             let directHTML = prepareHTMLForDirectLoad(html)
-            guard isCurrentRender(for: contentURL, generation: renderGeneration) else {
-                return
-            }
+            guard ownsContent() else { return }
             if let htmlData = directHTML.data(using: .utf8) {
                 navigator.load(
                     htmlData,
                     mimeType: "text/html",
                     characterEncodingName: "UTF-8",
-                    baseURL: content.url
+                    baseURL: resolvedContentURL
                 )
             } else {
-                navigator.loadHTML(directHTML, baseURL: content.url)
+                navigator.loadHTML(directHTML, baseURL: resolvedContentURL)
             }
+        } catch is CancellationError {
+            // Retired work has no authority to clean up a newer selection.
+            return
         } catch {
+            guard selectionIsCurrent(), resolvedContentIsCurrent?() ?? true,
+                  urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL) else { return }
             print(error)
             cancelReaderModeLoad(
                 for: contentURL,
