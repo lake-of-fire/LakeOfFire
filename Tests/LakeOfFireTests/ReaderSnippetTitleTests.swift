@@ -115,7 +115,6 @@ final class ReaderSnippetTitleTests: XCTestCase {
             XCTAssertTrue(imported.rssContainsFullContent)
             XCTAssertTrue(imported.hasHTML)
             XCTAssertFalse(imported.isDeleted)
-            XCTAssertFalse(imported.isDemoted)
 
             // Inspect persisted HTML as a document, rather than relying on a
             // source-text match or reproducing the normalizer in this test.
@@ -138,6 +137,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
             XCTAssertTrue(persisted.isReaderModeByDefault)
             XCTAssertTrue(persisted.rssContainsFullContent)
             XCTAssertEqual(realm.objects(HistoryRecord.self).count, 1)
+            XCTAssertEqual(persisted.isDemoted, false)
             let mutationKey = persisted.objectSchema.className + "." + key
             XCTAssertNotNil(realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: mutationKey))
 
