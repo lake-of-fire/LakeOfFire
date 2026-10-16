@@ -360,20 +360,25 @@ export class BookReadingStateController {
         this.#state = prepared.state; this.#context = prepared.context
         const ownsPublication = this.#capturePublishedState()
         const ownsProjection = this.#captureProjection()
+        const publicationAccount = this.#accountPresentation
         const publicationIsCurrent = () => this.#locationIsCurrent(ownsProjection)
         const withdrawFailedPublication = () => {
-            // Withdraw only this failed projection, retaining a published
-            // successor and the native ordering floor. Ordinary queued reads
-            // keep their slots; recovery must restore its authorization barrier.
-            // Advancing the minimum native snapshot is not a new publication:
-            // it cannot preserve this failed sample or discard its recovery proof.
-            if (!ownsPublication()) return
+            // A move may change the location revision while keeping exactly
+            // this rejected projection cached. Withdraw the original state and
+            // context by identity, not by the now-obsolete location revision.
+            if (this.#closed || this.#accountPresentation !== publicationAccount
+                || this.#state !== prepared.state || this.#context !== prepared.context) return
+            // A moved chapter owns its new pending read. Restore the old
+            // History barrier only while the original publication still owns
+            // the same location, account and recovery admission.
+            const restoreRecovery = recovery && ownsPublication()
             this.#state = null; this.#context = null
-            if (recovery) {
+            if (restoreRecovery) {
                 this.#pending = null
                 this.#historyRecovery = recovery
                 recovery.requested = false
             }
+            // Do not roll back native ordering, pending reads, or successors.
             try { this.#notify('onInvalidate', [], this.#captureAdmission()) } catch (_) {}
         }
         let accepted
