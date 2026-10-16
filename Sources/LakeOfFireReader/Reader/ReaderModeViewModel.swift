@@ -2455,6 +2455,18 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     @MainActor
+    private func readerModeContentIsCurrent(
+        _ content: any ReaderContentProtocol,
+        readerContent: ReaderContent
+    ) -> Bool {
+        guard !content.isInvalidated, let current = readerContent.validCachedContent else { return false }
+        // A title edit can resolve a new wrapper for the captured Realm row.
+        // Never admit a different store or a deleted-and-recreated primary key.
+        return content === current
+            || (content.realm != nil && current.realm != nil && content.isSameObject(as: current))
+    }
+
+    @MainActor
     private func resolveReaderModeRouteDecision(readerContent: ReaderContent) async -> ReaderModeRouteDecision {
         let activeReaderFileManager = readerFileManager ?? .shared
         let unavailable = ReaderModeRouteDecision(route: .unavailable, prefetchedContent: nil, prefetchedLocalHTML: nil)
@@ -2464,7 +2476,7 @@ public class ReaderModeViewModel: ObservableObject {
         let ownsRoute = {
             !Task.isCancelled && selectionIsCurrent()
                 && urlsMatchWithoutHashForHotfix(initialURL, readerContent.pageURL)
-                && (initialContent == nil || readerContent.content === initialContent)
+                && (initialContent.map { self.readerModeContentIsCurrent($0, readerContent: readerContent) } ?? true)
                 && initialContent?.isInvalidated != true
         }
         if let content = try? await readerContent.getContent(),
@@ -2585,7 +2597,7 @@ public class ReaderModeViewModel: ObservableObject {
             guard await MainActor.run(body: {
                 selectionIsCurrent()
                     && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
-                    && (initialContent == nil || readerContent.content === initialContent)
+                    && (initialContent.map { self.readerModeContentIsCurrent($0, readerContent: readerContent) } ?? true)
                     && initialContent?.isInvalidated != true
             }) else { return }
             switch routeDecision.route {
@@ -2729,14 +2741,14 @@ public class ReaderModeViewModel: ObservableObject {
             guard isCurrentRender(for: contentURL, generation: renderGeneration) else {
                 return
             }
-            guard !content.isInvalidated, readerContent.content === content else { return }
+            guard readerModeContentIsCurrent(content, readerContent: readerContent) else { return }
             let resolvedContentURL = content.url
             let meaningfulContentMinChars = max(content.meaningfulContentMinLength, 1)
             let ownsContent = {
                 self.isCurrentRender(for: contentURL, generation: renderGeneration)
                     && selectionIsCurrent()
                     && !content.isInvalidated
-                    && readerContent.content === content
+                    && self.readerModeContentIsCurrent(content, readerContent: readerContent)
                     && content.url == resolvedContentURL
                     && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
             }
