@@ -1234,9 +1234,15 @@ private func rebuildCanonicalSnippetReadabilityHTML(
 @MainActor
 private func locallyRetrievableReaderHTML(
     for content: any ReaderContentProtocol,
-    readerFileManager: ReaderFileManager
+    readerFileManager: ReaderFileManager,
+    loadHTML: (@MainActor (any ReaderContentProtocol) async throws -> String?)? = nil
 ) async throws -> String? {
-    var html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
+    var html: String?
+    if let loadHTML {
+        html = try await loadHTML(content)
+    } else {
+        html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
+    }
     if html == nil, content.url.isSnippetURL {
         html = content.html
     }
@@ -1449,6 +1455,16 @@ func readerModeReadyGenerationIsCurrent(
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
+    // Narrow asynchronous collaborators let native tests suspend the actual
+    // routing/render caller while retaining real managed content rows.
+    internal var readerLocalHTMLLoader: (@MainActor (any ReaderContentProtocol) async throws -> String?)?
+    internal var readerPublicationDateLoader: (@MainActor (URL) async -> String?)?
+    internal var swiftReadabilityProcessor: (@MainActor (String, URL, String?, Int) async -> String?)?
+
+    internal func waitForReaderModeRender(for url: URL) async {
+        let task = activeRenderTaskByURL[canonicalRenderKey(url)]
+        await task?.value
+    }
     private var isBatchingProcessingDependencyChanges = false
     internal private(set) var processingDependencyRevision: UInt64 = 0
     private func processingDependencyWillChange() {
@@ -2439,7 +2455,8 @@ public class ReaderModeViewModel: ObservableObject {
            !content.isReaderModeByDefault {
             if let html = try? await locallyRetrievableReaderHTML(
                 for: content,
-                readerFileManager: activeReaderFileManager
+                readerFileManager: activeReaderFileManager,
+                loadHTML: readerLocalHTMLLoader
             ),
                !html.isEmpty {
                 if !looksLikeStaleCachedCanonicalReadabilityHTML(html, url: content.url) {
@@ -2464,7 +2481,8 @@ public class ReaderModeViewModel: ObservableObject {
         if let content = try? await readerContent.getContent(),
            let html = try? await locallyRetrievableReaderHTML(
                 for: content,
-                readerFileManager: activeReaderFileManager
+                readerFileManager: activeReaderFileManager,
+                loadHTML: readerLocalHTMLLoader
            ),
            !html.isEmpty {
             if !looksLikeStaleCachedCanonicalReadabilityHTML(html, url: content.url) {
@@ -2692,7 +2710,8 @@ public class ReaderModeViewModel: ObservableObject {
             } else {
                 guard let resolvedHTML = try await locallyRetrievableReaderHTML(
                     for: content,
-                    readerFileManager: activeReaderFileManager
+                    readerFileManager: activeReaderFileManager,
+                    loadHTML: readerLocalHTMLLoader
                 ) else {
                     cancelReaderModeLoad(
                         for: contentURL,
@@ -2715,16 +2734,32 @@ public class ReaderModeViewModel: ObservableObject {
                     fallbackTitle: titleFromReadabilityHTML(html)
                 )
             } else {
-                let publicationDateFallback = await readerContentPublicationDateFallback(for: content)
+                let publicationDateFallback: String?
+                if let readerPublicationDateLoader {
+                    publicationDateFallback = await readerPublicationDateLoader(content.url)
+                } else {
+                    publicationDateFallback = await readerContentPublicationDateFallback(for: content)
+                }
                 guard isCurrentRender(for: contentURL, generation: renderGeneration) else {
                     return
                 }
-                let swiftReadability = await processReadabilityHTMLInSwift(
-                    html: html,
-                    url: content.url,
-                    snippetPublishedTime: publicationDateFallback,
-                    meaningfulContentMinChars: max(content.meaningfulContentMinLength, 1)
-                )
+                let swiftReadability: SwiftReadabilityProcessingOutcome
+                if let swiftReadabilityProcessor {
+                    if let output = await swiftReadabilityProcessor(
+                        html, content.url, publicationDateFallback, max(content.meaningfulContentMinLength, 1)
+                    ) {
+                        swiftReadability = .success(SwiftReadabilityProcessingResult(outputHTML: output))
+                    } else {
+                        swiftReadability = .failed
+                    }
+                } else {
+                    swiftReadability = await processReadabilityHTMLInSwift(
+                        html: html,
+                        url: content.url,
+                        snippetPublishedTime: publicationDateFallback,
+                        meaningfulContentMinChars: max(content.meaningfulContentMinLength, 1)
+                    )
+                }
                 switch swiftReadability {
                 case .success(let result):
                     resolvedReadabilityHTML = result.outputHTML
