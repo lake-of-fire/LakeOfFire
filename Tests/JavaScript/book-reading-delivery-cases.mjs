@@ -346,3 +346,196 @@ for (const replacement of ['renderer publication', 'recovery query']) {
         equal(f.controls.length, 0, 'no spurious cancellation')
     })
 }
+
+// A minimum snapshot sequence is an ordering floor, not an accepted replacement
+// publication. The actual frame/shell adapter can stop after that floor changes.
+for (const boundary of ['frame', 'shell']) {
+    for (const failure of ['false', 'throw', 'interrupted']) {
+        add(`${boundary} ${failure} after a snapshot-floor advance withdraws Unmark recovery`, async f => {
+            const original = await f.begin()
+            const request = f.requests[1]
+            let event, queued, invalidations = 0
+            f.setInvalidation(() => { invalidations++ })
+            const update = () => {
+                event = f.runtime.captureEvent(f.a)
+                equal(f.runtime.isEventCurrent(event), true, 'fixture captured the being-delivered state')
+                equal(f.runtime.state.noteManualReadSnapshot(3), true, 'new native floor observed')
+                equal(f.runtime.state.refresh(), true, 'read queued, not published')
+                queued = f.requests.at(-1)
+                if (failure === 'throw') throw new Error('old snapshot delivery failed')
+                if (failure === 'false') return false
+                // The real runtime/controller must detect interrupted delivery
+                // even when this collaborator returns normally.
+            }
+            if (boundary === 'frame') f.setFrame(update); else f.setShell(update)
+            equal(f.publish(2, request), false, 'old sample cannot acknowledge the newer floor')
+            equal(await original.recovery, false, 'original recovery caller settles false')
+            equal(f.runtime.state.ready, false, 'rejected sample cannot keep Book actions ready')
+            equal(f.runtime.state.context, null, 'rejected context withdrawn')
+            equal(f.runtime.state.state, null, 'rejected sample withdrawn')
+            equal(f.a.defaultView.manabi_bookReadingScope, null, 'real frame scope withdrawn')
+            equal(f.runtime.isEventCurrent(event), false, 'event from failed delivery retired')
+            equal(f.runtime.captureEvent(f.a), null, 'no new event can borrow the failed context')
+            equal(invalidations, 1, 'one failure invalidation')
+            equal(f.runtime.state.refresh(), false, 'ordinary reads cannot bypass restored recovery')
+            f.setFrame(() => true); f.setShell(() => {})
+            equal(f.publish(3, queued), false, 'queued ordinary reply has no recovery permission')
+            equal(f.runtime.state.failHistoryReadingStatusRecovery(original.proof), true, 'original recovery barrier remains')
+            equal(f.notices.at(-1).phase, 'recovery-failed', 'failure remains visible')
+            equal(await original.completion, original.outcome, 'original native result object preserved')
+            equal(original.outcome.success, true, 'accepted Unmark is not reported as failed')
+            equal(f.mutations.length, 1, 'no mutation replay')
+            equal(f.controls.length, 0, 'no cancellation')
+            // A genuine new renderer selection can resume normal hydration, but
+            // cannot reuse a snapshot below the advanced native floor.
+            f.view.renderer = { ...f.view.renderer }
+            equal(f.runtime.updateLocation(), true, 'new renderer selection admitted')
+            equal(f.publish(2), false, 'minimum native snapshot was not rolled back')
+            equal(f.publish(3), true, 'new matching sample restores readiness')
+            equal(f.runtime.state.ready, true, 'new renderer remains usable')
+        })
+    }
+}
+
+for (const boundary of ['frame', 'shell']) {
+    for (const failure of ['false', 'throw', 'interrupted']) {
+        add(`ordinary ${boundary} ${failure} after a snapshot-floor advance preserves the queued read`, async f => {
+            f.runtime.state.refresh()
+            const request = f.requests.at(-1), error = new Error('ordinary delivery failed')
+            let queued
+            const update = () => {
+                equal(f.runtime.state.noteManualReadSnapshot(4), true, 'minimum cut advanced')
+                equal(f.runtime.state.refresh(), true, 'fresh ordinary read queued')
+                queued = f.requests.at(-1)
+                if (failure === 'throw') throw error
+                if (failure === 'false') return false
+            }
+            if (boundary === 'frame') f.setFrame(update); else f.setShell(update)
+            let accepted, thrown
+            try { accepted = f.publish(2, request) } catch (value) { thrown = value }
+            if (failure === 'throw') equal(thrown, error, 'ordinary exception identity retained')
+            else { equal(thrown, undefined, 'no manufactured exception'); equal(accepted, false, 'interrupted delivery rejected') }
+            equal(f.runtime.state.ready, false, 'unacknowledged state unavailable')
+            equal(f.runtime.captureScope(f.a), null, 'failed frame cannot supply action scope')
+            equal(f.a.defaultView.manabi_bookReadingScope, null, 'failed frame paint withdrawn')
+            f.setFrame(() => true); f.setShell(() => {})
+            equal(f.publish(3, queued), false, 'queued reply below native floor rejected')
+            equal(f.publish(4, queued), true, 'same queued read retains valid response admission')
+            equal(f.runtime.state.ready, true, 'valid successor restores readiness')
+            equal(f.runtime.state.state.revision, 4, 'successor native revision retained')
+            equal(f.requests.length, 3, 'no extra recovery query or retry')
+            equal(f.mutations.length, 0, 'ordinary publication cannot submit a mutation')
+        })
+    }
+}
+
+for (const kind of ['cancelled', 'unavailable']) {
+    add(`snapshot-floor interruption preserves original native ${kind}`, async f => {
+        const original = await f.begin(kind, 'marked')
+        f.setFrame(() => { f.runtime.state.noteManualReadSnapshot(3) })
+        equal(f.publish(2), false, 'obsolete read-only sample rejected')
+        equal(await original.recovery, false, 'read-only caller released')
+        equal(f.runtime.state.ready, false, 'interrupted delivery is not ready')
+        equal(await original.completion, original.outcome, 'original command completion retained')
+        equal(original.outcome.outcomeKnown, kind !== 'unavailable', 'original outcome knowledge retained')
+        equal(original.outcome.success, kind === 'unavailable' ? undefined : false, 'no invented write outcome')
+        equal(f.mutations.length, 1, 'no second command')
+        equal(f.controls.length, 0, 'no cancellation')
+    })
+}
+
+for (const revision of [2, 3]) {
+    for (const failure of ['false', 'throw']) {
+        add(`floor advancement and old ${failure} preserve an actually published revision ${revision}`, async f => {
+            const original = await f.begin()
+            f.setFrame(() => {
+                f.setFrame(() => true)
+                equal(f.runtime.state.refresh(), true, 'successor read queued')
+                equal(f.publish(revision), true, 'distinct successor really published, even at equal values')
+                equal(f.runtime.state.noteManualReadSnapshot(4), true, 'later floor update retained')
+                if (failure === 'throw') throw new Error('retired frame callback failed')
+                return false
+            })
+            equal(f.publish(2, f.requests[1]), false, 'old callback cannot acknowledge successor')
+            equal(await original.recovery, false, 'original caller remains rejected')
+            equal(f.runtime.state.ready, true, 'actually accepted successor not withdrawn')
+            equal(f.runtime.state.state.revision, revision, 'successor sample retained')
+            equal(f.runtime.state.context.contextID, `context-${revision}`, 'successor context retained')
+            equal(f.runtime.state.failHistoryReadingStatusRecovery(original.proof), false, 'old recovery cannot return')
+            equal(f.runtime.isEventCurrent(f.runtime.captureEvent(f.a)), true, 'new successor event is usable')
+            equal(f.runtime.state.refresh(), true, 'successor can request its next cut')
+            equal(f.publish(3), false, 'floor remains 4')
+            equal(f.publish(4), true, 'next valid cut accepted')
+        })
+    }
+}
+
+for (const replacement of ['renderer', 'account', 'recovery']) {
+    add(`snapshot-floor interruption preserves a pending ${replacement} replacement`, async f => {
+        const original = await f.begin()
+        const nextProof = { requestID: 'next-recovery', observationToken: 'c'.repeat(32) }
+        let completion
+        f.setFrame(() => {
+            equal(f.runtime.state.noteManualReadSnapshot(3), true, 'old floor advanced')
+            if (replacement === 'renderer') {
+                f.view.renderer = { ...f.view.renderer }
+                equal(f.runtime.updateLocation(), true, 'new renderer selected')
+            } else if (replacement === 'account') {
+                equal(f.runtime.accountDidChange('2:1'), true, 'new account selected')
+            } else {
+                equal(f.runtime.state.beginHistoryReadingStatusRecovery(nextProof, f.scope), true, 'new recovery selected')
+                completion = f.runtime.state.recoverHistoryReadingStatus(nextProof)
+            }
+            return false
+        })
+        equal(f.publish(2, f.requests[1]), false, 'old delivery rejected')
+        equal(await original.recovery, false, 'old caller rejected')
+        equal(f.runtime.state.ready, false, 'replacement still needs its own sample')
+        f.setFrame(() => true)
+        const request = f.requests.at(-1), result = f.reply(replacement === 'account' ? 1 : 3, request)
+        if (replacement === 'account') result.accountPresentation = '2:1'
+        equal(f.runtime.state.apply(request.requestID, result), true, 'replacement pending slot preserved')
+        if (completion) equal(await completion, true, 'new recovery completion preserved')
+        equal(f.runtime.state.ready, true, 'replacement becomes ready normally')
+        equal(f.mutations.length, 1, 'no additional mutation')
+    })
+}
+
+add('an unchanged snapshot floor does not withdraw successfully delivered recovery', async f => {
+    const original = await f.begin()
+    f.setFrame(() => { equal(f.runtime.state.noteManualReadSnapshot(2), true, 'same cut accepted') })
+    equal(f.publish(2), true, 'unchanged floor does not invalidate delivery')
+    equal(await original.recovery, true, 'original sample acknowledged')
+    equal(f.runtime.state.ready, true, 'successful state remains ready')
+    equal(f.notices.at(-1).phase, 'finished', 'normal recovery completes')
+})
+
+add('a floor-only update outside delivery preserves an already accepted sample', async f => {
+    const event = f.runtime.captureEvent(f.a)
+    equal(f.runtime.state.noteManualReadSnapshot(5), true, 'minimum future cut advanced')
+    equal(f.runtime.state.ready, true, 'existing successful publication is not a failed delivery')
+    equal(f.runtime.isEventCurrent(event), true, 'existing accepted event remains scoped')
+    equal(f.runtime.state.refresh(), true, 'future sample requested')
+    equal(f.publish(4), false, 'older incoming sample rejected')
+    equal(f.runtime.state.state.revision, 1, 'accepted display retained while waiting')
+    equal(f.publish(5), true, 'matching future cut accepted')
+})
+
+add('snapshot-floor failure cleanup preserves a successor published by invalidation', async f => {
+    const original = await f.begin()
+    let cleanups = 0
+    f.setFrame(() => { f.runtime.state.noteManualReadSnapshot(3); return false })
+    f.setInvalidation(() => {
+        cleanups++
+        f.setInvalidation(() => {}); f.setFrame(() => true)
+        f.view.renderer = { ...f.view.renderer }
+        equal(f.runtime.updateLocation(), true, 'cleanup selects a new renderer')
+        equal(f.publish(4), true, 'cleanup successor actually published')
+    })
+    equal(f.publish(2, f.requests[1]), false, 'old delivery cannot acknowledge cleanup successor')
+    equal(await original.recovery, false, 'old recovery settles false')
+    equal(cleanups, 1, 'failed delivery cleanup ran exactly once')
+    equal(f.runtime.state.ready, true, 'new successful publication remains ready')
+    equal(f.runtime.state.state.revision, 4, 'cleanup successor retained')
+    equal(f.runtime.state.failHistoryReadingStatusRecovery(original.proof), false, 'old barrier cannot replace successor')
+})

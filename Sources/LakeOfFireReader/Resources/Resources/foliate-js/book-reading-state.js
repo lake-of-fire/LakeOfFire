@@ -49,14 +49,18 @@ export class BookReadingStateController {
     // The projection and pending request have different lifetimes: queuing a
     // refresh does not withdraw an accepted display, but it supersedes another
     // request's preparation or failure cleanup. Reuse their existing identities.
-    #captureProjection() {
+    #capturePublishedState() {
         const location = this.#location, revision = this.#revision
-        const account = this.#accountPresentation, sequence = this.#lastSnapshotSequence
+        const account = this.#accountPresentation
         const state = this.#state, context = this.#context
         const recovery = this.#historyRecovery
         return () => !this.#closed && this.#location === location && this.#revision === revision
-            && this.#accountPresentation === account && this.#lastSnapshotSequence === sequence
+            && this.#accountPresentation === account
             && this.#state === state && this.#context === context && this.#historyRecovery === recovery
+    }
+    #captureProjection() {
+        const ownsState = this.#capturePublishedState(), sequence = this.#lastSnapshotSequence
+        return () => ownsState() && this.#lastSnapshotSequence === sequence
     }
     #captureAdmission() {
         const projectionIsCurrent = this.#captureProjection(), pending = this.#pending
@@ -354,12 +358,15 @@ export class BookReadingStateController {
         this.#acknowledgedHistoryRecovery = null
         if (recovery) this.#historyRecovery = null
         this.#state = prepared.state; this.#context = prepared.context
-        const ownsPublication = this.#captureProjection()
-        const publicationIsCurrent = () => this.#locationIsCurrent(ownsPublication)
+        const ownsPublication = this.#capturePublishedState()
+        const ownsProjection = this.#captureProjection()
+        const publicationIsCurrent = () => this.#locationIsCurrent(ownsProjection)
         const withdrawFailedPublication = () => {
             // Withdraw only this failed projection, retaining a published
             // successor and the native ordering floor. Ordinary queued reads
             // keep their slots; recovery must restore its authorization barrier.
+            // Advancing the minimum native snapshot is not a new publication:
+            // it cannot preserve this failed sample or discard its recovery proof.
             if (!ownsPublication()) return
             this.#state = null; this.#context = null
             if (recovery) {
@@ -378,6 +385,7 @@ export class BookReadingStateController {
                 return false
             }
             accepted = publicationIsCurrent()
+            if (!accepted) withdrawFailedPublication()
         } catch (error) {
             withdrawFailedPublication()
             if (!recovery) throw error
