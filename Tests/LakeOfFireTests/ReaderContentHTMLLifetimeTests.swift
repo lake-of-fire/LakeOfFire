@@ -174,6 +174,32 @@ extension ReaderContentHTMLLifetimeTests {
         try await assertSameRowSnippetRenameCompletes(duringProcessing: true)
     }
 
+    func testSameRowSnippetRenameKeepsBothLocalHTMLRoutesAvailable() async throws {
+        for readerByDefault in [false, true] {
+            let (realm, row, reader, mode, _) = try renderFixture()
+            defer {
+                mode.readerLocalHTMLLoader = nil
+                withExtendedLifetime(realm) {}
+            }
+            try await prepareSnippet(row, in: realm, reader: reader)
+            try realm.write { row.isReaderModeByDefault = readerByDefault }
+            let selectionID = try XCTUnwrap(reader.currentSelectionID)
+            var reads = 0
+            mode.readerLocalHTMLLoader = { content in
+                reads += 1
+                XCTAssertTrue(content === row)
+                await Task.yield()
+                try self.renameWithFreshWrapper(row, in: realm, reader: reader)
+                return content.html
+            }
+            let route = await mode.readerModeRouteForTesting(readerContent: reader)
+            XCTAssertEqual(route, "swiftFinalLoad", "readerByDefault=\(readerByDefault)")
+            XCTAssertEqual(reads, 1, "The route must retain its captured local HTML")
+            XCTAssertEqual(reader.currentSelectionID, selectionID)
+            XCTAssertEqual(reader.content?.title, "Renamed snippet")
+        }
+    }
+
     private func assertSameRowSnippetRenameCompletes(duringProcessing: Bool) async throws {
         let (realm, row, reader, mode, navigator) = try renderFixture()
         defer {
@@ -185,7 +211,12 @@ extension ReaderContentHTMLLifetimeTests {
         let url = row.url
         let selectionID = try XCTUnwrap(reader.currentSelectionID)
         var renamed = false
+        var reads = 0
+        var processingCalls = 0
+        let processedHTML = "<html><body><div id='reader-content'>Processed snippet.</div></body></html>"
         mode.readerLocalHTMLLoader = { content in
+            reads += 1
+            XCTAssertTrue(content === row, "Routing must use its captured row")
             await Task.yield()
             if !duringProcessing {
                 try self.renameWithFreshWrapper(row, in: realm, reader: reader)
@@ -194,6 +225,7 @@ extension ReaderContentHTMLLifetimeTests {
             return content.html
         }
         mode.swiftReadabilityProcessor = { _, _, _, _ in
+            processingCalls += 1
             await Task.yield()
             if duringProcessing {
                 do {
@@ -204,13 +236,15 @@ extension ReaderContentHTMLLifetimeTests {
                 }
                 renamed = true
             }
-            return "<html><body><div id='reader-content'>Processed snippet.</div></body></html>"
+            return processedHTML
         }
         await render(mode, reader: reader)
         XCTAssertTrue(renamed)
+        XCTAssertEqual(reads, 1, "Same-row wrapper replacement must not reread HTML")
+        XCTAssertEqual(processingCalls, 1)
         XCTAssertEqual(reader.currentSelectionID, selectionID)
         XCTAssertEqual(reader.content?.title, "Renamed snippet")
-        XCTAssertNotNil(mode.readabilityContent)
+        XCTAssertEqual(mode.readabilityContent, processedHTML)
         XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, url.absoluteString)
         XCTAssertTrue(mode.isReaderModeLoading, "Dispatch awaits the normal document-ready signal")
         XCTAssertEqual(mode.pendingReaderModeURL, url)
@@ -322,7 +356,8 @@ extension ReaderContentHTMLLifetimeTests {
                 XCTAssertTrue(mode.isReaderModeLoading, "\(retirement)")
                 XCTAssertTrue(reader.isRenderingReaderHTML, "\(retirement)")
                 XCTAssertEqual(mode.pendingReaderModeURL, reader.pageURL, "\(retirement)")
-                XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, reader.pageURL.absoluteString)
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL,
+                               retirement == .newGeneration ? "nil" : reader.pageURL.absoluteString)
                 XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL,
                                retirement == .newGeneration ? url.absoluteString : "nil")
                 XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
