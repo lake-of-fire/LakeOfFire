@@ -195,9 +195,11 @@ final class ReaderSnippetTitleTests: XCTestCase {
         let successor = URL(string: "https://example.com/successor")!
         let entered = expectation(description: "Old resolution suspended")
         var continuation: CheckedContinuation<URL?, Never>?
+        var dispatchCount = 0
         let task = Task { @MainActor in
             try await navigator.loadResolvedContent(
                 content: original, readerModeViewModel: mode, shouldLoad: { true },
+                willDispatchLoad: { dispatchCount += 1 },
                 resolveURL: {
                     await withCheckedContinuation {
                         continuation = $0
@@ -211,6 +213,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
         continuation?.resume(returning: original.url)
         try await task.value
         XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, successor.absoluteString)
+        XCTAssertEqual(dispatchCount, 0)
         XCTAssertFalse(mode.isReaderModeLoading)
         XCTAssertNil(mode.lastRenderedURL)
     }
@@ -222,10 +225,13 @@ final class ReaderSnippetTitleTests: XCTestCase {
         let content = HistoryRecord()
         content.url = URL(string: "https://example.com/current")!
         content.isReaderModeByDefault = true
+        var dispatchCount = 0
         try await navigator.loadResolvedContent(
             content: content, readerModeViewModel: mode, shouldLoad: { true },
+            willDispatchLoad: { dispatchCount += 1 },
             resolveURL: { content.url }
         )
+        XCTAssertEqual(dispatchCount, 1)
         XCTAssertTrue(mode.isReaderModeLoading)
         XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, content.url.absoluteString)
     }

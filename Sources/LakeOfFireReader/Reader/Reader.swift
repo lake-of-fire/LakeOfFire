@@ -1033,10 +1033,12 @@ public extension WebViewNavigator {
         content: any ReaderContentProtocol,
         readerFileManager: ReaderFileManager = ReaderFileManager.shared,
         readerModeViewModel: ReaderModeViewModel?,
-        shouldLoad: @MainActor () -> Bool = { true }
+        shouldLoad: @MainActor () -> Bool = { true },
+        willDispatchLoad: @MainActor () -> Void = {}
     ) async throws {
         try await loadResolvedContent(
             content: content, readerModeViewModel: readerModeViewModel, shouldLoad: shouldLoad,
+            willDispatchLoad: willDispatchLoad,
             resolveURL: {
                 try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager)
             }
@@ -1050,6 +1052,7 @@ public extension WebViewNavigator {
         content: any ReaderContentProtocol,
         readerModeViewModel: ReaderModeViewModel?,
         shouldLoad: @MainActor () -> Bool,
+        willDispatchLoad: @MainActor () -> Void = {},
         resolveURL: @MainActor () async throws -> URL?
     ) async throws {
         let beginSnapshot = debugLoadSnapshot
@@ -1084,6 +1087,7 @@ public extension WebViewNavigator {
                url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
                 readerModeViewModel.readerModeLoading(content.isReaderModeByDefault || url.isReaderURLLoaderURL)
             }
+            willDispatchLoad()
             load(URLRequest(url: url))
         } else {
         }
