@@ -353,3 +353,259 @@ add('close retains its captured frame when page code redirects document frame lo
         cleanup(f)
     }
 })
+
+// Physical browser lifetime is independent of the paginator's cached entry.
+// Keep that entry unchanged deliberately; no fake closed flag or throwing
+// getter stands in for iframe removal/navigation in these regressions.
+const discardChapterFrame = doc => {
+    const frame = doc.defaultView.frameElement, window = doc.defaultView
+    frame.remove()
+    expect(window.closed && doc.defaultView === null, 'The browser did not discard the original frame')
+    return frame
+}
+const recoveryPacket = (f, request, revision = 2) => ({ ...f.result(revision),
+    location: { sectionURL: request.sectionURL, isEndPage: request.isEndPage,
+        locationRevision: request.locationRevision },
+    historyRecoveryObservation: request.historyRecoveryObservation })
+
+add('discarded iframe cannot retain or issue chapter scope and history receipts', async () => {
+    const f = await make()
+    try {
+        const scope = f.runtime.captureScope(f.doc), event = f.runtime.captureEvent(f.doc)
+        expect(scope && event && f.runtime.captureHistoryReadingStatus(), 'Live chapter capture failed')
+        discardChapterFrame(f.doc)
+        expect(!f.runtime.state.ready, 'A discarded iframe kept Book Actions ready')
+        expect(!f.runtime.isScopeCurrent(scope, f.doc), 'Discarded chapter retained its old scope')
+        expect(!f.runtime.isEventCurrent(event), 'Discarded chapter retained its old event')
+        expect(f.runtime.captureScope(f.doc) === null && f.runtime.captureEvent(f.doc) === null,
+            'Discarded chapter acquired fresh authoring receipts')
+        expect(f.runtime.captureHistoryReadingStatus() === null, 'Discarded chapter acquired a history receipt')
+        let refused = false
+        try { f.runtime.state.captureContext() } catch (_) { refused = true }
+        expect(refused, 'Discarded chapter still exposed the cached action context')
+        expect(f.runtime.state.state.revision === 1, 'Observing departure rewrote accepted native facts')
+        expect(f.commands.length === 0 && f.requests.length === 1, 'Receipt checks posted new native work')
+    } finally { cleanup(f) }
+})
+
+for (const delivery of ['requested', 'native-refresh', 'history-receipt']) {
+    add(`discarded iframe rejects late ${delivery} publication without repainting the shell`, async () => {
+        const f = await make()
+        try {
+            const receipt = f.runtime.captureHistoryReadingStatus()
+            f.runtime.state.refresh()
+            const request = f.requests.at(-1), packet = f.result(2)
+            discardChapterFrame(f.doc)
+            const accepted = delivery === 'requested'
+                ? f.runtime.state.apply(request.requestID, packet)
+                : delivery === 'native-refresh' ? f.native(packet)
+                : f.runtime.applyHistoryReadingStatus(packet.state, receipt)
+            expect(accepted === false, 'A reply for a discarded chapter was acknowledged')
+            expect(f.projections.length === 1, 'The shell was repainted from a discarded frame')
+            expect(f.runtime.state.state.revision === 1, 'Rejected reply advanced the accepted projection')
+        } finally { cleanup(f) }
+    })
+}
+
+add('discarded iframe cannot begin a new read-only recovery from its retained chapter', async () => {
+    const f = await make()
+    try {
+        const scope = f.runtime.captureScope(f.doc)
+        discardChapterFrame(f.doc)
+        const proof = { requestID: 'old-command', observationToken: 'old-observation' }
+        expect(!f.runtime.state.beginHistoryReadingStatusRecovery(proof, scope),
+            'A dead chapter prepared a new recovery')
+        expect(await f.runtime.state.recoverHistoryReadingStatus(proof) === false,
+            'A dead chapter admitted a new read-only query')
+        expect(f.requests.length === 1, 'Dead chapter recovery posted a query')
+    } finally { cleanup(f) }
+})
+
+add('discarded iframe declines its in-flight recovery sample and settles the original observer', async () => {
+    const f = await make()
+    try {
+        const scope = f.runtime.captureScope(f.doc)
+        const proof = { requestID: 'old-command', observationToken: 'old-observation' }
+        expect(f.runtime.state.beginHistoryReadingStatusRecovery(proof, scope), 'Live recovery not prepared')
+        const recovery = f.runtime.state.recoverHistoryReadingStatus(proof)
+        const request = f.requests.at(-1)
+        expect(f.requests.length === 2, 'Live recovery did not post exactly one read')
+        discardChapterFrame(f.doc)
+        expect(!f.runtime.state.apply(request.requestID, recoveryPacket(f, request)),
+            'Discarded frame acknowledged a recovery projection')
+        expect(await recovery === false, 'Original recovery observer did not reject the stale display')
+        expect(!f.runtime.state.reacknowledgeHistoryReadingStatus(proof), 'Old proof regained acknowledgement')
+        expect(f.projections.length === 1 && f.commands.length === 0, 'Recovery repainted or replayed a mutation')
+    } finally { cleanup(f) }
+})
+
+add('discarded iframe cannot reacknowledge a previously accepted recovery display', async () => {
+    const f = await make()
+    try {
+        const scope = f.runtime.captureScope(f.doc)
+        const proof = { requestID: 'old-command', observationToken: 'old-observation' }
+        expect(f.runtime.state.beginHistoryReadingStatusRecovery(proof, scope), 'Live recovery not prepared')
+        const recovery = f.runtime.state.recoverHistoryReadingStatus(proof)
+        const request = f.requests.at(-1)
+        expect(f.runtime.state.apply(request.requestID, recoveryPacket(f, request)), 'Live recovery reply rejected')
+        expect(await recovery === true && f.runtime.state.reacknowledgeHistoryReadingStatus(proof),
+            'Live recovery did not acknowledge its own display')
+        discardChapterFrame(f.doc)
+        expect(!f.runtime.state.reacknowledgeHistoryReadingStatus(proof), 'Dead display kept an acknowledgement')
+        expect(!f.runtime.state.failHistoryReadingStatusRecovery(proof), 'Old final rejection reacquired dead display')
+        expect(f.runtime.state.state.revision === 2, 'Departure erased an accepted native result')
+    } finally { cleanup(f) }
+})
+
+for (const action of ['startChapterOver', 'startBookOver']) {
+    add(`discarded iframe cannot admit a fresh ${action} through the real Book bridge`, async () => {
+        const f = await make()
+        try {
+            discardChapterFrame(f.doc)
+            let failure
+            try { await f.runtime.bridge.perform(action) } catch (error) { failure = error }
+            expect(failure && failure.outcomeUnknown !== true, 'Dead frame was treated as a submitted command')
+            expect(f.commands.length === 0, 'Dead frame sent a fresh native mutation')
+            expect(f.runtime.bridge.recoveryInfo === null, 'Never-submitted command created recovery work')
+        } finally { cleanup(f) }
+    })
+}
+
+for (const success of [true, false]) {
+    add(`discarded display preserves an already-submitted Book action's native success=${success}`, async () => {
+        const f = await make()
+        try {
+            window.webkit.messageHandlers.ebookBookAction.postMessage = packet => f.commands.push(packet)
+            const completion = f.runtime.bridge.perform('startChapterOver')
+            expect(f.commands.length === 1, 'Original command was not submitted')
+            const packet = f.commands[0]
+            discardChapterFrame(f.doc)
+            expect(f.runtime.bridge.acknowledge(packet.deliveryID, {
+                requestID: packet.requestID, accountPresentation: '1:1', ok: success, committed: success,
+                ...(success ? { navigation: { status: 'completed' } } : { error: 'native rejection' }),
+            }), 'Original correlated outcome was rejected because its display departed')
+            const result = await completion
+            expect(result.ok === success && result.committed === success, 'Display retirement rewrote native truth')
+            expect(f.commands.length === 1, 'Original action was replayed')
+            expect(!f.runtime.state.ready, 'Joined native truth revived a discarded display')
+        } finally { cleanup(f) }
+    })
+}
+
+add('discarded iframe cannot start restart navigation or persist its destination', async () => {
+    const f = await make()
+    try {
+        const target = targetFor(f)
+        let moves = 0, persisted = 0
+        f.view.renderer.goTo = async () => { moves++; return true }
+        discardChapterFrame(f.doc)
+        const result = await f.runtime.navigate(target, { onCompleted: () => persisted++ })
+        expect(result.status !== 'completed' && moves === 0 && persisted === 0,
+            'A cached discarded chapter authorized navigation or a position save')
+    } finally { cleanup(f) }
+})
+
+add('navigation completion cannot persist a destination discarded before the awaiting continuation', async () => {
+    const f = await make()
+    try {
+        const target = targetFor(f)
+        let persisted = 0
+        f.view.renderer.goTo = async (_target, { relocationID }) => {
+            f.view.lastLocation = { relocationID }
+            discardChapterFrame(f.doc)
+            return true
+        }
+        await f.runtime.navigate(target, { onCompleted: () => persisted++ })
+        expect(persisted === 0, 'A discarded destination retained position-persistence authority')
+    } finally { cleanup(f) }
+})
+
+add('same iframe reattachment cannot revive old receipts before its new Document is selected', async () => {
+    const f = await make()
+    try {
+        const event = f.runtime.captureEvent(f.doc)
+        const iframe = discardChapterFrame(f.doc)
+        const loaded = new Promise(resolve => { iframe.onload = resolve })
+        f.view.append(iframe)
+        await loaded
+        const replacement = iframe.contentDocument
+        expect(replacement !== f.doc, 'Reattachment did not create a new Document')
+        expect(!f.runtime.isEventCurrent(event) && !f.runtime.state.ready,
+            'Same iframe element revived the old Document receipt')
+        f.view.renderer.getContents = () => [{ index: 0, doc: replacement }]
+        expect(f.runtime.updateLocation(), 'Replacement Document was not selected')
+        expect(!f.runtime.state.ready, 'Replacement borrowed the discarded native publication')
+        expect(f.apply(f.result(2)) && !!f.runtime.captureEvent(replacement), 'New Document could not obtain its own state')
+        expect(!f.runtime.isEventCurrent(event), 'New equal-URL publication revived an old event')
+    } finally { cleanup(f) }
+})
+
+add('actual iframe navigation retires the old Document even while its renderer entry is retained', async () => {
+    const f = await make()
+    try {
+        const event = f.runtime.captureEvent(f.doc), iframe = f.doc.defaultView.frameElement
+        const loaded = new Promise(resolve => { iframe.onload = resolve })
+        iframe.srcdoc = '<!doctype html><p id="state">Replacement chapter</p>'
+        await loaded
+        const replacement = iframe.contentDocument
+        expect(replacement !== f.doc && f.doc.defaultView === null, 'Native Document replacement did not occur')
+        expect(!f.runtime.state.ready && !f.runtime.isEventCurrent(event), 'Retained old entry adopted the navigated Window')
+        f.view.renderer.getContents = () => [{ index: 0, document: replacement }]
+        expect(f.runtime.updateLocation() && f.apply(f.result(2)), 'Compatible document entry did not recover')
+        expect(f.runtime.isEventCurrent(f.runtime.captureEvent(replacement)), 'Current replacement receipt unavailable')
+    } finally { cleanup(f) }
+})
+
+add('same-Document reconstruction keeps its live frame and recovers the rewritten location normally', async () => {
+    const f = await make()
+    try {
+        const frame = f.doc.defaultView, previousURL = f.doc.URL
+        f.doc.open(); f.doc.write('<!doctype html><p id="state">Rewritten</p>'); f.doc.close()
+        expect(frame.document === f.doc && f.doc.defaultView === frame && !frame.closed, 'Rewrite discarded the frame')
+        // document.open() on srcdoc can inherit the opener URL. That is a
+        // location change, not frame disposal, and uses ordinary relocation.
+        if (f.doc.URL !== previousURL) {
+            expect(f.runtime.updateLocation(), 'Rewritten URL did not trigger normal location selection')
+        } else f.runtime.state.refresh()
+        expect(f.apply(f.result(2)) && f.visible() === 'Revision 2', 'Live rewritten Document could not publish')
+        expect(f.runtime.isEventCurrent(f.runtime.captureEvent(f.doc)), 'Rewritten live Document cannot capture events')
+    } finally { cleanup(f) }
+})
+
+add('same-Document body replacement without a URL change preserves the current live event', async () => {
+    const f = await make()
+    try {
+        const event = f.runtime.captureEvent(f.doc), url = f.doc.URL
+        f.doc.body.innerHTML = '<p id="state">Reconstructed</p>'
+        expect(f.doc.URL === url && f.runtime.isEventCurrent(event), 'Body replacement was treated as frame disposal')
+        f.runtime.state.refresh()
+        expect(f.apply(f.result(2)) && f.visible() === 'Revision 2', 'Current body could not receive native projection')
+    } finally { cleanup(f) }
+})
+
+add('discarding a hidden iframe does not revoke the live visible chapter', async () => {
+    const f = await make(), hidden = await makeChapter('hidden-disposal')
+    try {
+        const event = f.runtime.captureEvent(f.doc)
+        f.view.renderer.getContents = () => [{ index: 0, doc: f.doc }, { index: 1, doc: hidden, isDisplayed: false }]
+        discardChapterFrame(hidden)
+        expect(f.runtime.isEventCurrent(event), 'Hidden-frame disposal revoked the visible event')
+        f.runtime.state.refresh()
+        expect(f.apply(f.result(2)) && f.visible() === 'Revision 2', 'Hidden-frame disposal blocked visible publication')
+    } finally { cleanup(f) }
+})
+
+add('scope-less endcap remains usable after the old chapter iframe is discarded', async () => {
+    const f = await make()
+    try {
+        discardChapterFrame(f.doc)
+        expect(f.runtime.endcap.enter(), 'Endcap could not enter without a chapter frame')
+        expect(f.apply(f.result(2)) && f.runtime.state.ready, 'Scope-less terminal state was incorrectly rejected')
+        expect(f.runtime.state.captureContext().isEndPage && f.runtime.captureScope(f.doc) === null,
+            'Endcap inherited a discarded chapter scope')
+        expect(await f.runtime.endcap.activate(), 'Real endcap Finish could not settle')
+        expect(f.commands.length === 1 && f.commands[0].action === 'finishBook', 'Endcap submitted an incorrect action')
+        f.close()
+        expect(!f.view.inert && !f.runtime.endcap.element.isConnected, 'Teardown retained inaccessible terminal UI')
+    } finally { cleanup(f) }
+})
