@@ -40,6 +40,7 @@ function fixture() {
     const requests = [], shell = [], mutations = [], controls = [], notices = [], timers = new Map()
     const rendered = []
     let handler = state => { rendered.push(state.revision); return true }, shellHandler = state => shell.push(state.revision)
+    let invalidationHandler = () => {}
     a.defaultView.manabi_applyBookReadingPresentation = (...args) => handler(...args)
     a.defaultView.manabi_invalidateBookReadingScope = () => { a.defaultView.manabi_bookReadingScope = null }
     b.defaultView.manabi_invalidateBookReadingScope = () => { b.defaultView.manabi_bookReadingScope = null }
@@ -54,7 +55,7 @@ function fixture() {
     } } }
     const runtime = installBookReadingRuntime({ reader, view, document: documentFixture, window: windowFixture,
         documentStartedAtMs: 42, applyProjection: (...args) => shellHandler(...args),
-        invalidateProjection: () => {}, onVisibility: () => {} })
+        invalidateProjection: () => invalidationHandler(), onVisibility: () => {} })
     reader.bookReadingRuntime = runtime
     runtime.updateLocation()
     const scope = { articleProgressID: 'book', articleEpochID: 'pass', chapterKey: 'a'.repeat(64), chapterEpochID: null }
@@ -96,6 +97,7 @@ function fixture() {
     }
     return { runtime, coordinator, a, b, view, requests, shell, rendered, mutations, controls, notices, scope, reply, publish, begin,
         setFrame: callback => { handler = callback }, setShell: callback => { shellHandler = callback },
+        setInvalidation: callback => { invalidationHandler = callback },
         cleanup() { coordinator.close(); runtime.close(); root.remove(); equal(timers.size, 0, 'no retained timers') } }
 }
 export const bookReadingDeliveryCases = []
@@ -122,7 +124,7 @@ for (const desired of ['marked', 'unmarked']) {
             const original = await f.begin(kind, desired)
             f.setFrame(() => false)
             equal(f.publish(2), false, 'failed frame cannot acknowledge')
-            equal(await original.recovery, false, 'recovery declined')
+            equal(await original.recovery, false, 'read-only recovery fails')
             equal(await f.coordinator.recoverHistoryReadingStatus(original.proof), false, 'duplicate cannot retry')
             equal(await original.completion, original.outcome, 'original outcome object retained')
             equal(original.outcome.outcomeKnown, kind !== 'unavailable', 'native outcome knowledge retained')
@@ -268,3 +270,79 @@ for (const failure of ['false', 'throw']) {
 
 import { bookRecoveryFinalWithdrawalCases } from './book-recovery-final-withdrawal-cases.mjs'
 bookReadingDeliveryCases.push(...bookRecoveryFinalWithdrawalCases)
+
+// Run final withdrawal through the actual runtime invalidation adapter, not
+// only a replaced controller callback. Native final rejection is controlled;
+// the real runtime retires its frame scopes and previously captured events.
+for (const kind of ['success', 'cancelled', 'unavailable']) {
+    add(`runtime final withdrawal survives shell cleanup failure after native ${kind}`, async f => {
+        const original = await f.begin(kind)
+        equal(f.publish(2), true, 'original status delivered through the real frame adapter')
+        equal(await original.recovery, true, 'original recovery acknowledged')
+        const oldEvent = f.runtime.captureEvent(f.a)
+        equal(f.runtime.isEventCurrent(oldEvent), true, 'accepted frame event is initially current')
+        let cleanups = 0
+        f.setInvalidation(() => {
+            cleanups++
+            equal(f.runtime.state.context, null, 'private Book context is already withdrawn')
+            equal(f.a.defaultView.manabi_bookReadingScope, null, 'real runtime retired the active frame scope')
+            equal(f.runtime.isEventCurrent(oldEvent), false, 'real runtime retired the captured event')
+            throw new Error('Final shell cleanup failed')
+        })
+        equal(f.coordinator.ownsHistoryReadingStatusRecovery(original.proof), true, 'original coordinator proof retained')
+        const withdrawn = f.runtime.state.failHistoryReadingStatusRecovery(original.proof)
+        equal(withdrawn, true, 'owned Book withdrawal survives the shell failure')
+        equal(withdrawn && f.coordinator.failHistoryReadingStatusRecovery(original.proof), true, 'coordinator receives final failure')
+        equal(await f.coordinator.recoverHistoryReadingStatus(original.proof), false, 'cached positive result stays rejected')
+        equal(f.notices.at(-1).phase, 'recovery-failed', 'failure guidance remains selected')
+        equal(f.runtime.state.ready, false, 'no failed Book action context')
+        equal(f.runtime.captureScope(f.a), null, 'no new authoring scope')
+        equal(await original.completion, original.outcome, 'original native command outcome object preserved')
+        equal(original.outcome.outcomeKnown, kind !== 'unavailable', 'native knowledge retained')
+        equal(original.outcome.success, kind === 'unavailable' ? undefined : kind === 'success', 'native truth retained')
+        equal(f.runtime.state.failHistoryReadingStatusRecovery(original.proof), true, 'repeated Book withdrawal is idempotent')
+        equal(cleanups, 1, 'broken shell cleanup is not retried')
+        equal(f.requests.length, 2, 'no extra native read')
+        equal(f.mutations.length, 1, 'no mutation replay')
+        equal(f.controls.length, 0, 'no cancellation for observed outcome')
+    })
+}
+
+for (const replacement of ['renderer publication', 'recovery query']) {
+    add(`runtime final withdrawal preserves a ${replacement} created by throwing shell cleanup`, async f => {
+        const original = await f.begin()
+        equal(f.publish(2), true, 'original status accepted')
+        equal(await original.recovery, true, 'original status acknowledged')
+        const oldEvent = f.runtime.captureEvent(f.a)
+        const nextProof = { requestID: 'replacement-status', observationToken: 'b'.repeat(32) }
+        let successor = null, cleanups = 0
+        f.setInvalidation(() => {
+            cleanups++
+            f.setInvalidation(() => {})
+            if (replacement === 'renderer publication') {
+                f.view.renderer = { ...f.view.renderer }
+                equal(f.runtime.updateLocation(), true, 'real renderer replacement is observed')
+                equal(f.publish(3), true, 'replacement renderer receives its own native sample')
+            } else {
+                equal(f.runtime.state.beginHistoryReadingStatusRecovery(nextProof, f.scope), true, 'new recovery prepared')
+                successor = f.runtime.state.recoverHistoryReadingStatus(nextProof)
+            }
+            throw new Error('Retired shell cleanup failed after replacement')
+        })
+        equal(f.runtime.state.failHistoryReadingStatusRecovery(original.proof), false, 'old failure cannot acknowledge successor withdrawal')
+        equal(cleanups, 1, 'one original failing cleanup')
+        equal(f.runtime.isEventCurrent(oldEvent), false, 'old runtime event remains retired')
+        if (successor) {
+            equal(f.runtime.state.ready, false, 'new query still needs native state')
+            equal(f.runtime.state.recoverHistoryReadingStatus(nextProof), successor, 'new query completion retained')
+            equal(f.publish(3), true, 'new recovery sample accepted')
+            equal(await successor, true, 'new recovery receives its own result')
+        }
+        equal(f.runtime.state.ready, true, 'new publication remains usable')
+        equal(f.runtime.state.state.revision, 3, 'new revision preserved')
+        equal(f.runtime.isEventCurrent(f.runtime.captureEvent(f.a)), true, 'newly captured runtime event is current')
+        equal(f.requests.length, 3, 'only explicitly selected replacement read')
+        equal(f.mutations.length, 1, 'no replay of original Unmark')
+        equal(f.controls.length, 0, 'no spurious cancellation')
+    })
+}
