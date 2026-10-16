@@ -18,7 +18,11 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         if (closed || reader.view !== view || view.renderer !== renderer) return null
         try {
             const content = getPrimaryRendererContent(renderer)
-            return content?.doc ?? content?.document ?? null
+            const doc = content?.doc ?? content?.document ?? null
+            const frame = doc?.defaultView
+            // A renderer can retain a Document after its iframe is discarded.
+            // Its cached URL/index cannot keep that chapter's scope current.
+            return frame && frame.closed !== true ? doc : null
         } catch (_) { return null }
     }
     const isPrimaryDocument = doc => !!doc && doc === primaryDocument()
