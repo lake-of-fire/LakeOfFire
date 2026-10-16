@@ -23,7 +23,7 @@ NAMES = ['cryptographic-uuid.js', 'book-reading-state.js', 'page-turn-coordinati
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--state-source', type=Path, default=SOURCES / NAMES[0])
+    parser.add_argument('--state-source', type=Path, default=SOURCES / 'book-reading-state.js')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
@@ -31,7 +31,7 @@ def main() -> int:
     executable = shutil.which('chromium') or shutil.which('google-chrome')
     if not executable:
         parser.error('An installed Chromium executable is required')
-    paths = {name: args.state_source if name == NAMES[0] else SOURCES / name for name in NAMES}
+    paths = {name: args.state_source if name == 'book-reading-state.js' else SOURCES / name for name in NAMES}
     originals = {name: path.read_text() for name, path in paths.items()}
     modules = {}
     for name in NAMES:
