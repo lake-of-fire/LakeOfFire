@@ -280,7 +280,7 @@ extension ReaderContentHTMLLifetimeTests {
                         replacement.compoundKey += "-different-row"
                         try realm.write { realm.add(replacement) }
                     case .differentStore:
-                        let other = try Realm(configuration: Realm.Configuration(
+                        let other = try await Realm(configuration: Realm.Configuration(
                             inMemoryIdentifier: UUID().uuidString, objectTypes: [HistoryRecord.self]
                         ))
                         replacement = HistoryRecord(value: row)
