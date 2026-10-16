@@ -5,6 +5,7 @@ import RealmSwiftGaps
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 import SwiftUIWebView
+import SwiftSoup
 
 final class ReaderSnippetTitleTests: XCTestCase {
     private func makeRealmConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {
@@ -73,6 +74,136 @@ final class ReaderSnippetTitleTests: XCTestCase {
         let result = try await body(configuration)
         await ReaderContentLoader.resetTransientCachesForTesting()
         return result
+    }
+
+    // Exact input from ManabiReaderUITestFixtures.paragraphLookupSnippet.
+    // Keep the single paragraph and absent viewport metadata: both distinguish
+    // this startup input from the passing retarget/dismiss fixture.
+    private var paragraphLookupHTML: String {
+        """
+        <!doctype html>
+        <html lang="ja">
+          <head>
+            <meta charset="utf-8">
+            <title>Reader Paragraph Lookup Fixture</title>
+            <style>body { font-size: 28px; line-height: 1.8; min-height: 900px; }</style>
+          </head>
+          <body>
+            <p>大きな犬が歩いています。桃を食べました。</p>
+          </body>
+        </html>
+        """
+    }
+
+    @MainActor
+    func testParagraphLookupStartupIngestionReloadsPersistedSourceAndNativeContent() async throws {
+        try await withSnippetRealm { configuration in
+            let ingestionID = UUID()
+            let loaded = try await ReaderContentLoader.load(
+                html: self.paragraphLookupHTML,
+                allowContentMatch: false,
+                snippetIdentifier: ingestionID
+            )
+            let imported = try XCTUnwrap(loaded)
+            let key = imported.compoundKey
+            let canonicalURL = imported.url
+            let sourceHTML = try XCTUnwrap(imported.html)
+            let sourceData = try XCTUnwrap(imported.content)
+            XCTAssertEqual(key, ingestionID.uuidString.uppercased())
+            XCTAssertEqual(canonicalURL, ReaderContentLoader.snippetURL(key: key))
+            XCTAssertTrue(imported.isReaderModeByDefault)
+            XCTAssertTrue(imported.rssContainsFullContent)
+            XCTAssertTrue(imported.hasHTML)
+            XCTAssertFalse(imported.isDeleted)
+            XCTAssertFalse(imported.isDemoted)
+
+            // Inspect persisted HTML as a document, rather than relying on a
+            // source-text match or reproducing the normalizer in this test.
+            let document = try SwiftSoup.parse(sourceHTML)
+            XCTAssertEqual(try document.select("html").attr("lang"), "ja")
+            XCTAssertEqual(try document.title(), "Reader Paragraph Lookup Fixture")
+            XCTAssertEqual(try document.select("meta[charset]").attr("charset"), "utf-8")
+            XCTAssertTrue(try document.select("meta[name=viewport]").isEmpty())
+            XCTAssertEqual(try document.select("style").html(),
+                           "body { font-size: 28px; line-height: 1.8; min-height: 900px; }")
+            XCTAssertEqual(try document.select("body > div.mnb-snippet > p").count, 1)
+            XCTAssertEqual(try document.select("body p").text(), "大きな犬が歩いています。桃を食べました。")
+
+            let realm = try await Realm(configuration: configuration)
+            try await realm.asyncRefresh()
+            let persisted = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+            XCTAssertEqual(persisted.url, canonicalURL)
+            XCTAssertEqual(persisted.content, sourceData)
+            XCTAssertEqual(persisted.html, sourceHTML)
+            XCTAssertTrue(persisted.isReaderModeByDefault)
+            XCTAssertTrue(persisted.rssContainsFullContent)
+            XCTAssertEqual(realm.objects(HistoryRecord.self).count, 1)
+            let mutationKey = persisted.objectSchema.className + "." + key
+            XCTAssertNotNil(realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: mutationKey))
+
+            let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: canonicalURL))
+            XCTAssertEqual(ReaderContentLoader.getContentURL(fromLoaderURL: loaderURL), canonicalURL)
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            let resolved = try await ReaderContentLoader.getContent(forURL: loaderURL)
+            let reloaded = try XCTUnwrap(resolved)
+            XCTAssertEqual(reloaded.compoundKey, key)
+            XCTAssertEqual(reloaded.url, canonicalURL)
+            XCTAssertEqual(reloaded.content, sourceData)
+            XCTAssertEqual(reloaded.html, sourceHTML)
+            XCTAssertTrue(reloaded.isReaderModeByDefault)
+            XCTAssertTrue(reloaded.rssContainsFullContent)
+
+            // Exercise the same native preload/load boundary as startup,
+            // without creating a WebView or manufacturing a readiness signal.
+            let reader = ReaderContent()
+            reader.preloadResolvedContent(reloaded, for: loaderURL)
+            try await reader.load(url: loaderURL)
+            XCTAssertEqual(reader.pageURL, canonicalURL)
+            XCTAssertEqual(reader.validCachedContent?.compoundKey, key)
+            XCTAssertEqual(reader.validCachedContent?.html, sourceHTML)
+            XCTAssertTrue(reader.validCachedContent?.isReaderModeByDefault == true)
+            XCTAssertNotNil(reader.currentSelectionID)
+        }
+    }
+
+    @MainActor
+    func testParagraphLookupStartupRetryPreservesIdentitySourceAndJournalGeneration() async throws {
+        try await withSnippetRealm { configuration in
+            let ingestionID = UUID()
+            let initial = try await ReaderContentLoader.load(
+                html: self.paragraphLookupHTML,
+                allowContentMatch: false,
+                snippetIdentifier: ingestionID
+            )
+            let first = try XCTUnwrap(initial)
+            let key = first.compoundKey
+            let url = first.url
+            let sourceData = try XCTUnwrap(first.content)
+            let sourceHTML = try XCTUnwrap(first.html)
+            let realm = try await Realm(configuration: configuration)
+            try await realm.asyncRefresh()
+            let mutationKey = first.objectSchema.className + "." + key
+            let generation = try XCTUnwrap(realm.object(
+                ofType: BigSyncPendingMutation.self, forPrimaryKey: mutationKey)?.generation)
+
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            let retry = try await ReaderContentLoader.load(
+                html: self.paragraphLookupHTML,
+                allowContentMatch: false,
+                snippetIdentifier: ingestionID
+            )
+            let second = try XCTUnwrap(retry)
+            XCTAssertEqual(second.compoundKey, key)
+            XCTAssertEqual(second.url, url)
+            XCTAssertEqual(second.content, sourceData)
+            XCTAssertEqual(second.html, sourceHTML)
+            XCTAssertTrue(second.isReaderModeByDefault)
+            try await realm.asyncRefresh()
+            XCTAssertEqual(realm.objects(HistoryRecord.self).count, 1)
+            XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 1)
+            XCTAssertEqual(realm.object(ofType: BigSyncPendingMutation.self,
+                                        forPrimaryKey: mutationKey)?.generation, generation)
+        }
     }
 
     @MainActor
