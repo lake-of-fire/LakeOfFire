@@ -256,4 +256,51 @@ extension ReaderContentHTMLLifetimeTests {
         XCTAssertFalse(row.isInvalidated)
         XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, fileURL.absoluteString)
     }
+
+    func testSameURLReplacementDuringHTMLReadDoesNotResolveOrCleanUpSuccessor() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        let successor = HistoryRecord()
+        successor.url = fileURL
+        var reads = 0
+        mode.readerLocalHTMLLoader = { content in
+            reads += 1
+            XCTAssertTrue(content === row, "Old route must not start a read for its successor")
+            await Task.yield()
+            reader.content = successor
+            mode.beginReaderModeLoad(for: self.fileURL)
+            reader.isRenderingReaderHTML = true
+            mode.readabilityContent = "Successor capture"
+            return nil
+        }
+        await render(mode, reader: reader)
+        XCTAssertEqual(reads, 1)
+        XCTAssertFalse(row.isInvalidated)
+        XCTAssertEqual(mode.readabilityContent, "Successor capture")
+        XCTAssertTrue(mode.isReaderModeLoading)
+        XCTAssertTrue(reader.isRenderingReaderHTML)
+        XCTAssertEqual(mode.pendingReaderModeURL, fileURL)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+    }
+
+    func testSameURLReplacementDuringProcessingDoesNotPublishOrCleanUpSuccessor() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        let successor = HistoryRecord()
+        successor.url = fileURL
+        mode.swiftReadabilityProcessor = { _, _, _, _ in
+            await Task.yield()
+            reader.content = successor
+            mode.beginReaderModeLoad(for: self.fileURL)
+            reader.isRenderingReaderHTML = true
+            mode.readabilityContent = "Successor capture"
+            return "Retired processing output"
+        }
+        await render(mode, reader: reader)
+        XCTAssertFalse(row.isInvalidated)
+        XCTAssertEqual(mode.readabilityContent, "Successor capture")
+        XCTAssertTrue(mode.isReaderModeLoading)
+        XCTAssertTrue(reader.isRenderingReaderHTML)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+    }
 }
