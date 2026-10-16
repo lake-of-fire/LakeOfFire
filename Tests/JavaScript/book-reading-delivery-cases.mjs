@@ -265,3 +265,6 @@ for (const failure of ['false', 'throw']) {
         equal(f.requests.length, 3, 'no extra read needed to recover ordinary presentation')
     })
 }
+
+import { bookRecoveryFinalWithdrawalCases } from './book-recovery-final-withdrawal-cases.mjs'
+bookReadingDeliveryCases.push(...bookRecoveryFinalWithdrawalCases)

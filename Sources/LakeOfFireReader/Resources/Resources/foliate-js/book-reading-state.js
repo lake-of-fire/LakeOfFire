@@ -155,7 +155,10 @@ export class BookReadingStateController {
             this.#acknowledgedHistoryRecovery = null
             this.#pending = null; this.#context = null; this.#state = null
             ownsFailure = this.#captureAdmission()
-            this.#notify('onInvalidate', [], ownsFailure)
+            // The native sample is already withdrawn. Optional UI cleanup
+            // cannot prevent the coordinator from observing that failure.
+            // A callback-installed successor still owns its own disposition.
+            try { this.#notify('onInvalidate', [], ownsFailure) } catch (_) {}
             if (!this.#locationIsCurrent(ownsFailure)) return false
         }
         if (this.#historyRecovery !== recovery || !recovery
