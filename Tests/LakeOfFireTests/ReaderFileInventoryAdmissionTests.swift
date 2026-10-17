@@ -294,6 +294,14 @@ final class ReaderFileInventoryAdmissionTests: XCTestCase {
     }
 
     func testSingleFileStartupIndexScansOnlyContainingDirectory() async throws {
+        try await assertSingleFileStartupIndexPublishesInventory(mappedToEbook: false)
+    }
+
+    func testSingleFileStartupIndexReturnsMappedEbookAndPublishesInventory() async throws {
+        try await assertSingleFileStartupIndexPublishesInventory(mappedToEbook: true)
+    }
+
+    private func assertSingleFileStartupIndexPublishesInventory(mappedToEbook: Bool) async throws {
         let directories = InventoryDirectoryRecorder()
         try await withFixture(directoryContentsProvider: { url in
             await directories.record(url.lastPathComponent)
@@ -310,14 +318,52 @@ final class ReaderFileInventoryAdmissionTests: XCTestCase {
             try Data("startup fixture".utf8).write(to: books.appendingPathComponent("startup.txt"))
             try Data("unrelated".utf8).write(to: unrelated.appendingPathComponent("other.txt"))
 
-            let readerURL = try XCTUnwrap(URL(string: "reader-file://file/load/local/Books/startup.txt"))
-            let indexed = try await f.manager.refreshContentFileMetadata(forReaderFileURL: readerURL)
+            let retained = try self.seed("Unrelated/other", in: f)
+            let retainedID = retained.compoundKey
+            f.manager.files = [retained]
+            let priorJournal = self.journals(f)
 
-            XCTAssertEqual(indexed?.url, readerURL)
+            if mappedToEbook {
+                // Exercise the ebook URL contract with a text payload so this
+                // tests indexing and publication without EPUB enrichment.
+                ReaderFileManager.readerFileURLProcessors = [{ _, encodedPath in
+                    URL(string: "ebook://ebook/load/" + encodedPath)
+                }]
+            }
+
+            let readerURL = try XCTUnwrap(URL(string: "reader-file://file/load/local/Books/startup.txt"))
+            let expectedURL = mappedToEbook
+                ? try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/startup.txt"))
+                : readerURL
+            let indexed = try await f.manager.refreshContentFileMetadata(forReaderFileURL: expectedURL)
+
+            XCTAssertEqual(indexed?.url, expectedURL)
             let scannedDirectories = await directories.snapshot()
             XCTAssertEqual(scannedDirectories, ["Books"])
             f.realm.refresh()
-            XCTAssertEqual(f.realm.objects(ContentFile.self).map(\.url.absoluteString), [readerURL.absoluteString])
+            XCTAssertEqual(Set(f.realm.objects(ContentFile.self).map(\.url.absoluteString)),
+                           [retained.url.absoluteString, expectedURL.absoluteString])
+            let discovered = try XCTUnwrap(f.realm.objects(ContentFile.self).first {
+                $0.url == expectedURL
+            })
+            XCTAssertEqual(indexed?.compoundKey, discovered.compoundKey)
+            XCTAssertFalse(discovered.isDeleted)
+            XCTAssertEqual(f.manager.canonicalReaderBackingURL(for: discovered.url), readerURL)
+            XCTAssertEqual(f.manager.canonicalReaderBackingURL(for: expectedURL), readerURL)
+            XCTAssertEqual(try f.manager.localFileURL(forReaderFileURL: readerURL),
+                           books.appendingPathComponent("startup.txt"))
+
+            let published = try XCTUnwrap(f.manager.files)
+            XCTAssertEqual(published.count, 2)
+            XCTAssertEqual(Set(published.map(\.compoundKey)), [retainedID, discovered.compoundKey])
+            XCTAssertFalse(retained.isDeleted, "A targeted scan must preserve unrelated inventory")
+
+            let afterJournal = self.journals(f)
+            XCTAssertEqual(afterJournal.count, priorJournal.count + 1)
+            for (recordName, generation) in priorJournal {
+                XCTAssertEqual(afterJournal[recordName], generation,
+                               "Publishing a targeted scan must not rewrite unrelated durable work")
+            }
         }
     }
 

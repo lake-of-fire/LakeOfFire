@@ -856,6 +856,7 @@ public class ReaderFileManager: ObservableObject {
     }
 
     @MainActor
+    @discardableResult
     private func publishDiscoveredFiles(
         _ discoveredFileRefs: [ThreadSafeReference<ContentFile>],
         selection: MetadataRefreshSelection,
@@ -863,9 +864,9 @@ public class ReaderFileManager: ObservableObject {
         openRealm: @MainActor (Realm.Configuration) async throws -> Realm = {
             try await Realm.open(configuration: $0)
         }
-    ) async throws {
+    ) async throws -> [ContentFile] {
         try validateMetadataRefreshSelection(selection)
-        guard !discoveredFileRefs.isEmpty else { return }
+        guard !discoveredFileRefs.isEmpty else { return [] }
         let realm = try await openRealm(selection.realmConfiguration)
         try validateMetadataRefreshSelection(selection)
         guard Self.sameHistoryRealm(realm.configuration, selection.realmConfiguration) else {
@@ -878,12 +879,14 @@ public class ReaderFileManager: ObservableObject {
             return Self.sameHistoryRealm(sourceRealm.configuration, selection.realmConfiguration)
                 && !file.isDeleted
         }
+        var discoveredFiles = [ContentFile]()
         for discoveredFileRef in discoveredFileRefs {
             guard let discoveredFile = realm.resolve(discoveredFileRef),
                   !discoveredFile.isInvalidated, !discoveredFile.isDeleted else {
                 if requireComplete { throw ReaderFileManagerError.incompleteMetadataScan }
                 continue
             }
+            discoveredFiles.append(discoveredFile)
             if let existingIndex = mergedFiles.firstIndex(where: { $0.url == discoveredFile.url }) {
                 mergedFiles[existingIndex] = discoveredFile
             } else {
@@ -892,6 +895,7 @@ public class ReaderFileManager: ObservableObject {
         }
         try validateMetadataRefreshSelection(selection)
         files = mergedFiles
+        return discoveredFiles
     }
     
     @MainActor
@@ -1066,24 +1070,23 @@ public class ReaderFileManager: ObservableObject {
             ? nil : RootRelativePath(path: parentPath)
 
         try Task.checkCancellation()
-        _ = try await refreshFilesMetadata(
+        let discoveredFileRefs = try await refreshFilesMetadata(
             drive: drive,
             relativePath: scanPath,
             selection: selection
         )
         try validateMetadataRefreshSelection(selection)
 
-        let realm = try await Realm.open(configuration: selection.realmConfiguration)
-        guard let contentFile = realm.objects(ContentFile.self)
-            .filter(NSPredicate(
-                format: "isDeleted == %@ AND url == %@",
-                NSNumber(value: false),
-                canonicalURL.absoluteString as CVarArg
-            ))
-            .first else {
-            return nil
+        let discoveredFiles = try await publishDiscoveredFiles(
+            discoveredFileRefs ?? [], selection: selection
+        )
+        try validateMetadataRefreshSelection(selection)
+        // Processors retain their own reader URLs (for example ebook://).
+        // Match the backing identity among this scan's published rows only.
+        return discoveredFiles.first { contentFile in
+            !contentFile.isInvalidated && !contentFile.isDeleted
+                && canonicalReaderBackingURL(for: contentFile.url) == canonicalURL
         }
-        return contentFile
     }
 
     @MainActor

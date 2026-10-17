@@ -142,6 +142,230 @@ extension ReaderContentHTMLLifetimeTests {
         await mode.waitForReaderModeRender(for: url)
     }
 
+    private func prepareSnippet(_ row: HistoryRecord, in realm: Realm, reader: ReaderContent) async throws {
+        try realm.write {
+            row.url = URL(string: "internal://local/snippet?key=render-rename")!
+            row.title = "Original title"
+            row.html = "<html><body><p>Original readable body.</p></body></html>"
+            row.rssContainsFullContent = true
+            row.isReaderModeByDefault = true
+            row.isReaderModeAvailable = false
+            row.isReaderModeOfferHidden = false
+        }
+        reader.content = nil
+        reader.preloadResolvedContent(row, for: row.url)
+        try await reader.load(url: row.url)
+    }
+
+    private func renameWithFreshWrapper(_ row: HistoryRecord, in realm: Realm, reader: ReaderContent) throws {
+        try realm.write { row.title = "Renamed snippet" }
+        let replacement = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: row.compoundKey))
+        XCTAssertFalse(replacement === row, "The regression requires a fresh Swift wrapper")
+        XCTAssertTrue(row.isSameObject(as: replacement))
+        reader.content = replacement
+        reader.refreshObservedContentState()
+    }
+
+    func testSameRowSnippetRenameDuringRouteReadStillDispatchesAndCompletes() async throws {
+        try await assertSameRowSnippetRenameCompletes(duringProcessing: false)
+    }
+
+    func testSameRowSnippetRenameDuringProcessingStillDispatchesAndCompletes() async throws {
+        try await assertSameRowSnippetRenameCompletes(duringProcessing: true)
+    }
+
+    func testSameRowSnippetRenameKeepsBothLocalHTMLRoutesAvailable() async throws {
+        for readerByDefault in [false, true] {
+            let (realm, row, reader, mode, _) = try renderFixture()
+            defer {
+                mode.readerLocalHTMLLoader = nil
+                withExtendedLifetime(realm) {}
+            }
+            try await prepareSnippet(row, in: realm, reader: reader)
+            try realm.write { row.isReaderModeByDefault = readerByDefault }
+            let selectionID = try XCTUnwrap(reader.currentSelectionID)
+            var reads = 0
+            mode.readerLocalHTMLLoader = { content in
+                reads += 1
+                XCTAssertTrue(content === row)
+                await Task.yield()
+                try self.renameWithFreshWrapper(row, in: realm, reader: reader)
+                return content.html
+            }
+            let route = await mode.readerModeRouteForTesting(readerContent: reader)
+            XCTAssertEqual(route, "swiftFinalLoad", "readerByDefault=\(readerByDefault)")
+            XCTAssertEqual(reads, 1, "The route must retain its captured local HTML")
+            XCTAssertEqual(reader.currentSelectionID, selectionID)
+            XCTAssertEqual(reader.content?.title, "Renamed snippet")
+        }
+    }
+
+    private func assertSameRowSnippetRenameCompletes(duringProcessing: Bool) async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer {
+            mode.readerLocalHTMLLoader = nil
+            mode.swiftReadabilityProcessor = nil
+            withExtendedLifetime(realm) {}
+        }
+        try await prepareSnippet(row, in: realm, reader: reader)
+        let url = row.url
+        let selectionID = try XCTUnwrap(reader.currentSelectionID)
+        var renamed = false
+        var reads = 0
+        var processingCalls = 0
+        let processedHTML = "<html><body><div id='reader-content'>Processed snippet.</div></body></html>"
+        mode.readerLocalHTMLLoader = { content in
+            reads += 1
+            XCTAssertTrue(content === row, "Routing must use its captured row")
+            await Task.yield()
+            if !duringProcessing {
+                try self.renameWithFreshWrapper(row, in: realm, reader: reader)
+                renamed = true
+            }
+            return content.html
+        }
+        mode.swiftReadabilityProcessor = { _, _, _, _ in
+            processingCalls += 1
+            await Task.yield()
+            if duringProcessing {
+                do {
+                    try self.renameWithFreshWrapper(row, in: realm, reader: reader)
+                } catch {
+                    XCTFail("Could not replace the snippet wrapper: \(error)")
+                    return nil
+                }
+                renamed = true
+            }
+            return processedHTML
+        }
+        await render(mode, reader: reader)
+        XCTAssertTrue(renamed)
+        XCTAssertEqual(reads, 1, "Same-row wrapper replacement must not reread HTML")
+        XCTAssertEqual(processingCalls, 1)
+        XCTAssertEqual(reader.currentSelectionID, selectionID)
+        XCTAssertEqual(reader.content?.title, "Renamed snippet")
+        XCTAssertEqual(mode.readabilityContent, processedHTML)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, url.absoluteString)
+        XCTAssertTrue(mode.isReaderModeLoading, "Dispatch awaits the normal document-ready signal")
+        XCTAssertEqual(mode.pendingReaderModeURL, url)
+        // Model the ready signal only after proving the renderer dispatched.
+        mode.markReaderModeLoadComplete(for: url)
+        XCTAssertFalse(mode.isReaderModeLoading)
+        XCTAssertNil(mode.pendingReaderModeURL)
+    }
+
+    private enum RetiredSnippetOwner: CaseIterable, Equatable {
+        case differentRow, differentStore, recreatedRow, newSelection, newGeneration, cancelledGeneration, changedURL
+    }
+
+    func testSnippetWrapperReplacementDoesNotTransferRetiredRenderOwnership() async throws {
+        for duringProcessing in [false, true] {
+            for retirement in RetiredSnippetOwner.allCases {
+                let (realm, row, reader, mode, navigator) = try renderFixture()
+                defer {
+                    mode.readerLocalHTMLLoader = nil
+                    mode.swiftReadabilityProcessor = nil
+                }
+                try await prepareSnippet(row, in: realm, reader: reader)
+                let url = row.url
+                var retainedStore: Realm?
+                var retired = false
+                let successorHTML = "<html><body><div id='reader-content'>Successor capture</div></body></html>"
+                let retire = { @MainActor in
+                    await Task.yield()
+                    let replacement: HistoryRecord
+                    switch retirement {
+                    case .differentRow:
+                        replacement = HistoryRecord(value: row)
+                        replacement.compoundKey += "-different-row"
+                        try realm.write { realm.add(replacement) }
+                    case .differentStore:
+                        let other = try await Realm(configuration: Realm.Configuration(
+                            inMemoryIdentifier: UUID().uuidString, objectTypes: [HistoryRecord.self]
+                        ))
+                        replacement = HistoryRecord(value: row)
+                        try other.write { other.add(replacement) }
+                        retainedStore = other
+                    case .recreatedRow:
+                        replacement = HistoryRecord(value: row)
+                        try realm.write { realm.delete(row); realm.add(replacement) }
+                        XCTAssertTrue(row.isInvalidated)
+                    case .newSelection, .newGeneration, .cancelledGeneration, .changedURL:
+                        replacement = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: row.compoundKey))
+                        XCTAssertFalse(replacement === row)
+                        XCTAssertTrue(row.isSameObject(as: replacement))
+                    }
+                    if retirement == .differentRow || retirement == .differentStore {
+                        XCTAssertEqual(row.url, replacement.url)
+                        XCTAssertFalse(row.isSameObject(as: replacement))
+                    }
+                    if retirement == .differentStore {
+                        XCTAssertEqual(row.compoundKey, replacement.compoundKey)
+                    }
+                    if retirement == .newSelection {
+                        let priorSelection = reader.currentSelectionID
+                        reader.content = nil
+                        reader.preloadResolvedContent(replacement, for: url)
+                        try await reader.load(url: url)
+                        XCTAssertNotEqual(reader.currentSelectionID, priorSelection)
+                    } else {
+                        reader.content = replacement
+                    }
+                    if retirement == .cancelledGeneration || retirement == .newGeneration {
+                        mode.cancelReaderModeLoad(for: url)
+                    }
+                    if retirement == .changedURL {
+                        try realm.write { row.url = URL(string: "internal://local/snippet?key=successor")! }
+                        reader.pageURL = row.url
+                    }
+                    mode.beginReaderModeLoad(for: reader.pageURL)
+                    reader.isRenderingReaderHTML = true
+                    mode.readabilityContent = successorHTML
+                    navigator.load(URLRequest(url: reader.pageURL))
+                    if retirement == .newGeneration {
+                        // Let a real successor generation dispatch before the
+                        // old suspended callback returns with obsolete output.
+                        mode.readabilityContent = nil
+                        mode.readerLocalHTMLLoader = { _ in
+                            "<html><body><p>Successor readable body.</p></body></html>"
+                        }
+                        mode.swiftReadabilityProcessor = { _, _, _, _ in successorHTML }
+                        mode.showReaderView(readerContent: reader, scriptCaller: WebViewScriptCaller())
+                        await mode.waitForReaderModeRender(for: url)
+                    }
+                    retired = true
+                }
+                mode.readerLocalHTMLLoader = { _ in
+                    if !duringProcessing { try await retire() }
+                    return "<html><body><p>Original readable body.</p></body></html>"
+                }
+                mode.swiftReadabilityProcessor = { _, _, _, _ in
+                    if duringProcessing {
+                        do {
+                            try await retire()
+                        } catch {
+                            XCTFail("Could not retire the render owner: \(error)")
+                            return nil
+                        }
+                    }
+                    return "Retired processing output"
+                }
+                await render(mode, reader: reader)
+                XCTAssertTrue(retired, "Suspension seam was not reached: \(retirement)")
+                XCTAssertEqual(mode.readabilityContent, successorHTML, "\(retirement)")
+                XCTAssertTrue(mode.isReaderModeLoading, "\(retirement)")
+                XCTAssertTrue(reader.isRenderingReaderHTML, "\(retirement)")
+                XCTAssertEqual(mode.pendingReaderModeURL, reader.pageURL, "\(retirement)")
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL,
+                               retirement == .newGeneration ? "nil" : reader.pageURL.absoluteString)
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL,
+                               retirement == .newGeneration ? url.absoluteString : "nil")
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+                withExtendedLifetime((realm, retainedStore)) {}
+            }
+        }
+    }
+
     func testRouteRejectsRowPhysicallyInvalidatedDuringHTMLRead() async throws {
         let (realm, row, reader, mode, _) = try renderFixture()
         mode.readerLocalHTMLLoader = { content in
