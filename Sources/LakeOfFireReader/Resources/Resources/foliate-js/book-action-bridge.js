@@ -96,6 +96,7 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
         deliveries.set(deliveryID, delivery)
         const mayPost = () => ownsRequest(request) && !delivery.settled
             && request.active === delivery && deliveries.get(deliveryID) === delivery
+        let postEntered = false
         try {
             const timer = setTimer(() => settle(delivery, null, new BookActionUnacknowledgedError(
                 'The action has not been acknowledged. Check its status before starting another reading pass.', request)), timeoutMilliseconds)
@@ -119,11 +120,23 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
             const semantic = prepared && Object.fromEntries(fields.map(key => [key, prepared[key]]))
             if (!mayPost()) return promise
             if (!semantic || fingerprint(semantic) !== expected) throw new Error('The book action changed before dispatch.')
+            postEntered = true
             postMessage(prepared)
         } catch (error) {
-            // Preserve a terminal reply received synchronously before a wrapper
-            // throws. Otherwise retain the original status-only recovery path.
-            settle(delivery, null, unknown(request, error))
+            if (kind === 'command' && !postEntered && mayPost()) {
+                // This fresh operation never reached native. Remove its local
+                // reservation before timer cleanup can admit another action;
+                // Check Status cannot recover a command which was never sent.
+                deliveries.delete(deliveryID)
+                if (current === request) current = null
+                request.active = null
+                settle(delivery, null, new Error('The book action could not be sent. Try again.'))
+            } else {
+                // Entering transport can leave the outcome unknown even when
+                // its wrapper throws. Recovery preparation also retains the
+                // original submitted operation. A synchronous reply still wins.
+                settle(delivery, null, unknown(request, error))
+            }
         }
         return promise
     }
