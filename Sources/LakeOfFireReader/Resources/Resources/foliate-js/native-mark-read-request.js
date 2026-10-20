@@ -366,12 +366,17 @@ export const createNativeMarkReadRequestCoordinator = ({
             if (!ownsQuery()) return false
             activeRecoveryQuery = recovery
             prepareRecovery(recovery, true)
-            if (!ownsQuery() || !recovery.ready) {
+            if (!ownsQuery()) {
                 if (activeRecoveryQuery === recovery) activeRecoveryQuery = null
                 return false
             }
+            // Refused or throwing preparation is a completed display failure,
+            // not a pending read. Use the same owner-checked notice settlement
+            // as a failed query without dispatching that unprepared query.
             let accepted = false
-            try { accepted = await onRecoveryQuery(recovery.proof) === true } catch (_) {}
+            if (recovery.ready) {
+                try { accepted = await onRecoveryQuery(recovery.proof) === true } catch (_) {}
+            }
             if (activeRecoveryQuery === recovery) activeRecoveryQuery = null
             if (!ownsQuery()) return false
             const ownsRecovery = present(recovery.pending, () => onRecoveryIsCurrent({
