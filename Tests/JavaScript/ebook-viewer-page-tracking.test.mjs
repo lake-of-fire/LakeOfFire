@@ -11,7 +11,7 @@ import { refreshNativeMarkReadBookStateForRecovery } from '../../Sources/LakeOfF
 // Evaluate the complete shipping Reader class. Only the module/startup adapter
 // and DOM/native collaborators are replaced; no command or render method is
 // copied into a second implementation.
-const source = readFileSync(new URL(
+const source = readFileSync(process.env.MANABI_EBOOK_VIEWER_SOURCE || new URL(
     '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer.js', import.meta.url
 ), 'utf8')
 const classStart = source.indexOf('class Reader {')
@@ -1124,5 +1124,23 @@ for (const succeeded of [false, true]) {
         assert.equal(await operation, succeeded ? 1 : 0)
         assert.deepEqual(Array.from(f.reader.optimisticSentenceIdentifiersRead), [])
         assert.deepEqual(f.moves, [])
+    })
+}
+
+for (const cancelled of [false, true]) {
+    test(`native Mark ${cancelled ? 'Cancel losing the commit race' : 'without cancellation'} preserves saved state ${cancelled ? 'without' : 'with'} automatic advance`, async t => {
+        const f = pendingNativeMark(t)
+        if (cancelled) {
+            assert.equal(f.reader.nativeMarkReadRequestCoordinator.cancel(f.requests[0].message.requestID), true)
+            assert.equal(f.controls.at(-1).manualReadPendingOperation, 'cancel')
+        }
+        assert.equal(f.deliver(), true)
+        const result = await f.join({ publish: true })
+        assert.equal(result.error, undefined)
+        assert.equal(result.value, true, 'Cancel cannot change an authenticated committed success')
+        assert.equal(f.reader.lastNativeMarkReadRequestOutcome, 'committed')
+        assert.deepEqual(Array.from(f.reader.articleReadingProgress.readSegmentIdentifiers), ['current-page-segment'])
+        assert.deepEqual(Array.from(f.reader.articleReadingProgress.sentenceIdentifiersRead), ['native-completed-current-page'])
+        assert.deepEqual(f.moves, cancelled ? [] : ['right'])
     })
 }

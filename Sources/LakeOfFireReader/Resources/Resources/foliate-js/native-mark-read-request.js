@@ -272,6 +272,9 @@ export const createNativeMarkReadRequestCoordinator = ({
     const finish = (pending, outcome) => {
         if (pendingByRequestID.get(pending.requestID) !== pending) return false
         pendingByRequestID.delete(pending.requestID)
+        // Cancellation can lose the native commit race. Retain that user
+        // intent for optional effects without changing the committed outcome.
+        outcome.cancellationRequested = pending.cancelling === true
         const timer = pending.timeoutHandle
         pending.timeoutHandle = null
         try {

@@ -7349,11 +7349,14 @@ class Reader {
             if (refreshCommittedVisibleState) {
                 owner.minimumReadSnapshotSequence = outcome.nativeResult?.stateSnapshotSequence;
                 owner.committedVisibleStableSegmentIDs = outcome.context.payload.segments.map(segment => segment.stableSegmentID);
-                completed.mayAdvance = refreshCommittedVisibleMarkReadState({
+                const refreshedVisibleState = refreshCommittedVisibleMarkReadState({
                     outcome,
                     state: this.bookReadingRuntime?.state,
                     isOwnerCurrent: () => this.#isMarkReadOwnerCurrent(owner),
                 });
+                // A successful native commit still paints after Cancel, but
+                // the user's cancellation withdraws optional page advancement.
+                completed.mayAdvance = refreshedVisibleState && outcome.cancellationRequested !== true;
             } else {
                 if (this.bookReadingRuntime && !this.bookReadingRuntime.state.noteManualReadSnapshot(outcome.nativeResult?.stateSnapshotSequence)) return completed;
                 if (!this.#isMarkReadOwnerCurrent(owner)) return completed;
