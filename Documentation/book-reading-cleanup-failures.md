@@ -16,6 +16,8 @@ After the existing account-change callback succeeds, tolerate failure of the out
 
 The failure handler performs no native mutation, replay, automatic retry loop, new timer or ownership recapture. A callback-selected newer account, location, query or closed controller wins. Sending or admitting a read does not make Book actions ready; only an accepted native state and successful `onState` publication do. Explicit projection refusal and exceptions remain unsuccessful delivery.
 
+The native account stamp distinguishes transition (`generation:0`) from settlement (`generation:1`). A transition notification clears the old context; it does not supply a ready replacement. The current account's accepted state restores availability. An earlier transition cannot replace an already-settled stamp, and the prior account's pending reply cannot be revived by the cleanup tolerance.
+
 ## Focused regressions
 
 The two Node suites import the complete production state module and its real UUID module, with native responses and callback errors controlled at their public seams:
@@ -25,4 +27,6 @@ node --test Tests/JavaScript/book-state-relocation-cleanup.test.mjs \
   Tests/JavaScript/book-state-account-cleanup.test.mjs
 ```
 
-The new eight-case account suite reproduces four assertion failures on the preceding source and passes all eight cases after the account fix. It includes chapter/end-page admission, a failing callback getter, notification-driven refresh, preservation of nested queries and newer accounts, closing, and refusal of a new projection. Native writer, actual renderer, browser/WKWebView, account transitions and complete app acceptance are separate qualification. Controlled callback failure is not an observed customer incident or a claim of native data corruption.
+The ten-case account suite reproduces five assertion failures on the preceding source and passes all ten after the account fix. It includes settled-account chapter/end-page admission, a failing callback getter, notification-driven refresh, preservation of nested queries and newer accounts, closing, refusal of a new projection, the two-phase native account protocol, and continued rejection when the account-change callback itself fails. Together with the unchanged nine relocation cases, the final focused run passes 19 cases with no failures, skips or cancellations.
+
+Native writer, actual renderer, browser/WKWebView, account transitions and complete app acceptance are separate qualification. Controlled callback failure is not an observed customer incident or a claim of native data corruption.
