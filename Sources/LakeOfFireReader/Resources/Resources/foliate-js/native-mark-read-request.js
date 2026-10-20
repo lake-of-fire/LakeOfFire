@@ -60,6 +60,13 @@ const readerClosedError = requestID => Object.assign(new Error('Reader closed be
     code: 'readerClosed', outcomeUnknown: true, requestID,
 })
 
+// Transport failures may be arbitrary page-realm values. Diagnostics must not
+// interrupt command settlement or the observation of an already-sent command.
+const nativeMarkReadTransportError = (error, fallback) => {
+    try { return String(error?.message || error || fallback) }
+    catch (_) { return fallback }
+}
+
 /**
  * Projects renderer-owned semantic facts onto the lightweight native command
  * boundary. Native reconstructs and validates those facts from its current
@@ -214,7 +221,9 @@ export const createNativeMarkReadRequestCoordinator = ({
                 topWindowURL: pending.message.topWindowURL,
                 documentStartedAtMs: pending.message.documentStartedAtMs,
             })
-        } catch (error) { pending.lastTransportError = String(error) }
+        } catch (error) {
+            pending.lastTransportError = nativeMarkReadTransportError(error, 'nativeControlPostFailed')
+        }
     }
     const observe = (pending, delay = 5000) => {
         const observation = {}
@@ -562,7 +571,7 @@ export const createNativeMarkReadRequestCoordinator = ({
             finish(pending, {
                 success: false,
                 presentationAllowed: false,
-                errorCode: String(error?.message || error || 'nativePostFailed'),
+                errorCode: nativeMarkReadTransportError(error, 'nativePostFailed'),
             })
         }
         return completion
