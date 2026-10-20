@@ -4801,7 +4801,11 @@ export class Paginator extends HTMLElement {
             range,
             index
         }
-        const relocationID = this.#directNavigationOwner?.relocationID ?? null
+        // Layout-driven reanchoring can run while a section request is loading.
+        // Only navigation-scoped scroll work may publish that request's receipt.
+        const relocationID = typeof requireCurrent === 'function'
+            ? (this.#directNavigationOwner?.relocationID ?? null)
+            : null
         if (
             typeof relocationID === 'string'
             && relocationID.length > 0
