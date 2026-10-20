@@ -625,7 +625,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         if (!pending) {
             // An ordinary terminal can arrive after pagehide and consume the
             // pending slot before native answers our history status request.
-            // Acknowledge only that retained exact outcome so native can start
+            // Acknowledge only that retained exact capability so native can start
             // its single recovery attempt. Do not settle or prepare it twice,
             // and never recreate a completed/retired recovery barrier.
             const recovery = recoveryByRequestID.get(result?.requestID)
@@ -634,18 +634,21 @@ export const createNativeMarkReadRequestCoordinator = ({
                 || result.manualReadPendingHistoryRecovery !== true
                 || result.manualReadPendingOutcomeOnly !== true
                 || result.manualReadPendingPresentationAllowed !== false) return false
-            const sameOutcome = recovery.outcome.outcomeKnown === true
-                ? result.manualReadPendingState === 'finished'
-                    && typeof result.success === 'boolean'
-                    && result.success === recovery.outcome.success
-                    && (result.success || (result.errorCode || 'nativeCommitFailed') === recovery.outcome.errorCode)
+            const acknowledgesRecovery = recovery.outcome.outcomeKnown === true
+                ? isUnavailableHistoryOutcome(result)
+                    || (result.manualReadPendingState === 'finished'
+                        && typeof result.success === 'boolean'
+                        && result.success === recovery.outcome.success
+                        && (result.success || (result.errorCode || 'nativeCommitFailed') === recovery.outcome.errorCode))
                 : recovery.outcome.outcomeKnown === false
                     && recovery.outcome.errorCode === 'outcomeUnavailable'
                     && isUnavailableHistoryOutcome(result)
-            // Unavailable remains unknown, not failed. Its exact terminal can
-            // acknowledge a retained barrier after return without settling a
-            // command twice or manufacturing another native recovery attempt.
-            if (!sameOutcome) return false
+            // Native may expire or evict its retained outcome after this page
+            // already received it. A canonical unavailable response acknowledges
+            // only the existing recovery barrier: keep the proven local outcome,
+            // original promise and single read attempt unchanged. A contradictory
+            // known terminal is still rejected; originally unknown stays unknown.
+            if (!acknowledgesRecovery) return false
             return present(recovery.pending, () => onRecoveryIsCurrent({
                 owner: recovery.pending.owner, context: recovery.pending.context,
                 message: recovery.pending.message,
