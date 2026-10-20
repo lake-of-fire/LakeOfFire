@@ -32,9 +32,9 @@ function fixture({ endPage = false } = {}) {
                 sectionLocation: request.sectionURL },
         }
     }
-    assert.equal(state.setAccountPresentation('1:0'), true)
+    assert.equal(state.setAccountPresentation('1:1'), true)
     state.relocate(endPage ? { isEndPage: true } : { sectionURL: chapter })
-    assert.equal(state.apply(requests[0].requestID, response('1:0', 50)), true)
+    assert.equal(state.apply(requests[0].requestID, response('1:1', 50)), true)
     return { state, requests, published, accounts, response }
 }
 
@@ -45,17 +45,17 @@ for (const endPage of [false, true]) {
         const request = f.requests.at(-1)
         f.state.onInvalidate = failCleanup
         let accepted, error
-        try { accepted = f.state.apply(request.requestID, f.response('2:0')) }
+        try { accepted = f.state.apply(request.requestID, f.response('2:1')) }
         catch (caught) { error = caught }
         assert.equal(f.state.ready, true, 'The correlated current-account sample must remain deliverable')
         assert.equal(error, undefined)
         assert.equal(accepted, true)
-        assert.equal(f.state.accountPresentation, '2:0')
+        assert.equal(f.state.accountPresentation, '2:1')
         assert.equal(f.state.state.revision, 1, 'The new account owns a fresh snapshot sequence')
-        assert.equal(f.state.captureContext().articleProgressID, 'article-2:0')
-        assert.deepEqual(f.accounts, ['1:0', '2:0'])
+        assert.equal(f.state.captureContext().articleProgressID, 'article-2:1')
+        assert.deepEqual(f.accounts, ['1:1', '2:1'])
         assert.equal(f.requests.length, 2, 'Cleanup failure must not issue extra reads or mutations')
-        assert.equal(f.state.apply(request.requestID, f.response('2:0')), false)
+        assert.equal(f.state.apply(request.requestID, f.response('2:1')), false)
     })
 }
 
@@ -64,22 +64,22 @@ test('a failing invalidation getter cannot consume new-account reply admission',
     f.state.refresh()
     Object.defineProperty(f.state, 'onInvalidate', { configurable: true, get: failCleanup })
     let accepted = false
-    try { accepted = f.state.apply(f.requests.at(-1).requestID, f.response('2:0')) } catch (_) {}
+    try { accepted = f.state.apply(f.requests.at(-1).requestID, f.response('2:1')) } catch (_) {}
     assert.equal(accepted, true)
     assert.equal(f.state.ready, true)
-    assert.equal(f.state.captureContext().articleProgressID, 'article-2:0')
+    assert.equal(f.state.captureContext().articleProgressID, 'article-2:1')
 })
 
 test('direct account notification remains admitted for the runtime-owned refresh', () => {
     const f = fixture()
     f.state.onInvalidate = failCleanup
     let changed
-    try { changed = f.state.setAccountPresentation('2:0') } catch (_) {}
+    try { changed = f.state.setAccountPresentation('2:1') } catch (_) {}
     assert.equal(changed, true, 'The runtime refresh is conditional on this returned admission')
     assert.equal(f.state.ready, false, 'Account notification alone is not a native sample')
     assert.equal(f.requests.length, 1)
     assert.equal(f.state.refresh(), true)
-    assert.equal(f.state.apply(f.requests.at(-1).requestID, f.response('2:0')), true)
+    assert.equal(f.state.apply(f.requests.at(-1).requestID, f.response('2:1')), true)
 })
 
 test('a nested replacement read retains its reply slot when cleanup throws', () => {
@@ -91,13 +91,13 @@ test('a nested replacement read retains its reply slot when cleanup throws', () 
         failCleanup()
     }
     let accepted = false
-    try { accepted = f.state.apply(old.requestID, f.response('2:0')) } catch (_) {}
+    try { accepted = f.state.apply(old.requestID, f.response('2:1')) } catch (_) {}
     assert.equal(accepted, false)
     assert.equal(f.state.ready, false)
     assert.equal(f.requests.length, 3)
     const next = f.requests.at(-1)
-    assert.equal(f.state.apply(next.requestID, f.response('2:0')), true)
-    assert.equal(f.state.apply(old.requestID, f.response('2:0', 2)), false)
+    assert.equal(f.state.apply(next.requestID, f.response('2:1')), true)
+    assert.equal(f.state.apply(old.requestID, f.response('2:1', 2)), false)
 })
 
 test('a newer account published during failing cleanup cannot be overwritten', () => {
@@ -106,19 +106,19 @@ test('a newer account published during failing cleanup cannot be overwritten', (
     const old = f.requests.at(-1)
     f.state.onInvalidate = () => {
         f.state.onInvalidate = () => {}
-        f.state.setAccountPresentation('3:0')
+        f.state.setAccountPresentation('3:1')
         f.state.refresh()
         const next = f.requests.at(-1)
-        assert.equal(f.state.apply(next.requestID, f.response('3:0')), true)
+        assert.equal(f.state.apply(next.requestID, f.response('3:1')), true)
         failCleanup()
     }
     let accepted = false
-    try { accepted = f.state.apply(old.requestID, f.response('2:0')) } catch (_) {}
+    try { accepted = f.state.apply(old.requestID, f.response('2:1')) } catch (_) {}
     assert.equal(accepted, false)
-    assert.equal(f.state.accountPresentation, '3:0')
+    assert.equal(f.state.accountPresentation, '3:1')
     assert.equal(f.state.ready, true)
-    assert.equal(f.state.captureContext().articleProgressID, 'article-3:0')
-    assert.deepEqual(f.published.map(value => value.articleProgressID), ['article-1:0', 'article-3:0'])
+    assert.equal(f.state.captureContext().articleProgressID, 'article-3:1')
+    assert.deepEqual(f.published.map(value => value.articleProgressID), ['article-1:1', 'article-3:1'])
 })
 
 test('closing during failing cleanup cannot restore the new-account reply', () => {
@@ -130,7 +130,7 @@ test('closing during failing cleanup cannot restore the new-account reply', () =
         failCleanup()
     }
     let accepted = false
-    try { accepted = f.state.apply(f.requests.at(-1).requestID, f.response('2:0')) } catch (_) {}
+    try { accepted = f.state.apply(f.requests.at(-1).requestID, f.response('2:1')) } catch (_) {}
     assert.equal(accepted, false)
     assert.equal(f.state.ready, false)
     assert.equal(f.state.state, null)
@@ -144,11 +144,48 @@ test('cleanup tolerance does not accept a refused new-account projection', () =>
     f.state.onInvalidate = failCleanup
     f.state.onState = () => false
     let accepted = false
-    try { accepted = f.state.apply(f.requests.at(-1).requestID, f.response('2:0')) } catch (_) {}
+    try { accepted = f.state.apply(f.requests.at(-1).requestID, f.response('2:1')) } catch (_) {}
     assert.equal(accepted, false)
     assert.equal(f.state.ready, false)
     assert.equal(f.state.state, null)
     f.state.onState = projection => f.published.push(projection)
     assert.equal(f.state.refresh(), true)
-    assert.equal(f.state.apply(f.requests.at(-1).requestID, f.response('2:0', 2)), true)
+    assert.equal(f.state.apply(f.requests.at(-1).requestID, f.response('2:1', 2)), true)
+})
+
+
+test('transition and settlement retain native ordering without reviving an old-account reply', () => {
+    const f = fixture()
+    f.state.refresh()
+    const old = f.requests.at(-1)
+    f.state.onInvalidate = failCleanup
+    let admitted
+    try { admitted = f.state.setAccountPresentation('2:0') } catch (_) {}
+    assert.equal(admitted, true)
+    assert.equal(f.state.ready, false, 'A transition stamp alone supplies no current Book context')
+    assert.equal(f.state.state, null)
+    assert.equal(f.state.refresh(), true)
+    const current = f.requests.at(-1)
+    assert.equal(f.state.apply(old.requestID, f.response('1:1', 51, old)), false)
+    assert.equal(f.state.apply(current.requestID, f.response('2:1', 1, current)), true)
+    assert.equal(f.state.accountPresentation, '2:1')
+    assert.equal(f.state.captureContext().articleProgressID, 'article-2:1')
+    assert.equal(f.state.setAccountPresentation('2:0'), false, 'The earlier transition cannot retire settled state')
+    assert.deepEqual(f.accounts, ['1:1', '2:0', '2:1'])
+    assert.equal(f.requests.length, 3)
+})
+
+test('failure of the account-change callback still rejects reply admission', () => {
+    const f = fixture()
+    f.state.refresh()
+    const current = f.requests.at(-1)
+    let invalidations = 0
+    f.state.onInvalidate = () => { invalidations += 1 }
+    f.state.onAccountChange = () => { throw new Error('Account bridge retirement failed') }
+    assert.throws(() => f.state.apply(current.requestID, f.response('2:1')),
+        /Account bridge retirement failed/)
+    assert.equal(invalidations, 0, 'Account ownership failure is not optional presentation cleanup')
+    assert.equal(f.state.ready, false)
+    assert.equal(f.state.context, null)
+    assert.equal(f.published.length, 1)
 })
