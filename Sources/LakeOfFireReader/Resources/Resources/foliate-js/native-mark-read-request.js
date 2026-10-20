@@ -491,8 +491,18 @@ export const createNativeMarkReadRequestCoordinator = ({
             return Promise.resolve({ requestID: null, context, success: false,
                 stale: false, errorCode: 'invalidMessage', presentationAllowed: false })
         }
-        let fingerprint
-        try { fingerprint = intentKey({ ...message, sectionId: sectionID }) }
+        let semanticMessage, fingerprint
+        try {
+            // Capture caller getters/serializers once, before coalescing or
+            // admission. The fingerprint and native packet must describe the
+            // same desired state, subjects and Book pass.
+            const captured = JSON.parse(JSON.stringify({ ...message, sectionId: sectionID }))
+            if (!captured || typeof captured !== 'object' || Array.isArray(captured)) {
+                throw new TypeError('Invalid native command snapshot')
+            }
+            semanticMessage = { ...captured, sectionId: sectionID }
+            fingerprint = intentKey(semanticMessage)
+        }
         catch {
             if (closed) return rejectClosedRequest()
             return Promise.resolve({ requestID: null, context, success: false,
@@ -524,12 +534,14 @@ export const createNativeMarkReadRequestCoordinator = ({
         const requestID = `${requestNamespace}-${++requestSequence}`
         const bytes = new Uint8Array(16)
         globalThis.crypto.getRandomValues(bytes)
-        const frozenMessage = JSON.parse(JSON.stringify({
-            ...message, requestID, sectionId: sectionID,
+        // Add transport-owned correlation only after caller serialization.
+        // A root toJSON must not remove or replace the observation capability.
+        const frozenMessage = {
+            ...semanticMessage, requestID, sectionId: sectionID,
             manualReadPendingProtocol: 1,
             manualReadPendingObservationToken: Array.from(bytes,
                 byte => byte.toString(16).padStart(2, '0')).join(''),
-        }))
+        }
         const freeze = value => {
             if (value && typeof value === 'object') {
                 Object.values(value).forEach(freeze)
