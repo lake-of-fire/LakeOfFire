@@ -11,7 +11,7 @@ import { refreshNativeMarkReadBookStateForRecovery } from '../../Sources/LakeOfF
 // Evaluate the complete shipping Reader class. Only the module/startup adapter
 // and DOM/native collaborators are replaced; no command or render method is
 // copied into a second implementation.
-const source = readFileSync(new URL(
+const source = readFileSync(process.env.MANABI_EBOOK_VIEWER_SOURCE || new URL(
     '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer.js', import.meta.url
 ), 'utf8')
 const classStart = source.indexOf('class Reader {')
@@ -795,7 +795,7 @@ test('a current page and independent completion action retain their presentation
     assert.equal(f.packets.at(-1).isBusy, true)
 })
 
-async function successfulMarkAwaitingAdvance(f) {
+async function successfulMarkAwaitingAdvance(f, { expectAdvance = true } = {}) {
     f.seedPage('current-page')
     f.reader.nativeMarkReadRequestCoordinator.request = async request => {
         f.requests.push(request)
@@ -808,7 +808,8 @@ async function successfulMarkAwaitingAdvance(f) {
     // timer without firing that timer or introducing a wall-clock delay.
     await new Promise(resolve => setImmediate(resolve))
     const advance = [...f.timers.values()].filter(timer => timer.delay === 430).at(-1)
-    assert.ok(advance, 'Successful Mark must reach its existing delayed advance')
+    if (expectAdvance) assert.ok(advance, 'A current Mark must retain its delayed advance')
+    else assert.equal(advance, undefined, 'Unavailable navigation authority retires the optional timer immediately')
     assert.equal(f.book.publish(f.nextMarkSequence, ['current-page-segment'], ['native-completed-current-page']), true)
     return { operation, advance }
 }
@@ -847,10 +848,14 @@ for (const unavailable of ['missing', 'throwing']) {
         t.after(() => book.runtime.close())
         f.doc.defaultView.manabiCaptureAutomaticScrollNavigation = unavailable === 'missing'
             ? undefined : () => { throw new Error('capture unavailable') }
-        const { operation, advance } = await successfulMarkAwaitingAdvance(f)
-        advance.callback()
+        const { operation } = await successfulMarkAwaitingAdvance(f, { expectAdvance: false })
         assert.equal(await operation, true)
-        assert.deepEqual(f.moves, [])
+        assert.equal(f.reader.lastNativeMarkReadRequestOutcome, 'committed')
+        assert.deepEqual(Array.from(f.reader.articleReadingProgress.readSegmentIdentifiers), ['current-page-segment'])
+        assert.deepEqual(Array.from(f.reader.articleReadingProgress.sentenceIdentifiersRead), ['native-completed-current-page'])
+        assert.equal(book.native(3), true)
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(f.moves, [], 'Later publication cannot restore unavailable navigation authority')
         assert.equal(f.requests.length, 1)
     })
 }
@@ -1195,4 +1200,66 @@ test('explicit native turn admission revokes an in-flight Mark before asynchrono
     assert.equal(f.book.native(3), true)
     await new Promise(resolve => setImmediate(resolve))
     assert.deepEqual(f.moves, [], 'Finishing preparation cannot revive the old navigation receipt')
+})
+
+for (const timing of ['before animation', 'after animation']) {
+    test(`full native coverage withdrawal ${timing} permanently consumes the original Mark turn`, async t => {
+        const f = pendingNativeMark(t)
+        assert.equal(f.deliver(), true)
+        await new Promise(resolve => setImmediate(resolve))
+        const animation = [...f.timers.values()].find(timer => timer.delay === 430)
+        assert.ok(animation)
+        if (timing === 'after animation') animation.callback()
+        assert.equal(f.book.publish(2, [], []), true,
+            'A full native cut withdraws the originally submitted page subjects')
+        await new Promise(resolve => setImmediate(resolve))
+        animation.callback()
+        assert.equal((await f.join()).value, true, 'Withdrawal cannot change native Mark success')
+        assert.deepEqual(f.moves, [])
+        assert.equal(f.book.runtime.state.refresh(), true)
+        assert.equal(f.book.publish(3, ['current-page-segment'], ['native-completed-current-page']), true,
+            'An independent later read restores coverage in the same chapter pass')
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(f.moves, [], 'Restored coverage cannot revive the withdrawn turn')
+    })
+}
+
+for (const timing of ['before animation', 'after animation']) {
+    test(`a partial receipt overtaking full state ${timing} is not definite coverage withdrawal`, async t => {
+        const f = pendingNativeMark(t)
+        assert.equal(f.deliver(), true)
+        await new Promise(resolve => setImmediate(resolve))
+        const animation = [...f.timers.values()].find(timer => timer.delay === 430)
+        assert.ok(animation)
+        if (timing === 'after animation') animation.callback()
+        assert.equal(f.book.publish(3, [], []), true)
+        // The Core handoff may advance the shell's ordering clock without
+        // replacing the full chapter projection. Resume must compare that
+        // clock before interpreting the cached membership as current absence.
+        assert.equal(f.book.runtime.state.noteManualReadSnapshot(4), true)
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(f.moves, [])
+        assert.equal(f.book.runtime.state.refresh(), true)
+        assert.equal(f.book.publish(4, ['current-page-segment'], ['native-completed-current-page']), true)
+        await new Promise(resolve => setImmediate(resolve))
+        if (timing === 'before animation') animation.callback()
+        await new Promise(resolve => setImmediate(resolve))
+        assert.equal((await f.join()).value, true)
+        assert.deepEqual(f.moves, ['right'], 'Only the current complete sample decides coverage')
+    })
+}
+
+
+test('full native withdrawal already present when the Mark reply arrives consumes advance immediately', async t => {
+    const f = pendingNativeMark(t)
+    assert.equal(f.book.runtime.state.refresh(), true)
+    assert.equal(f.book.publish(2, [], []), true)
+    assert.equal(f.deliver(), true)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal([...f.timers.values()].filter(timer => timer.delay === 430).length, 0,
+        'The already-present full withdrawal retires the new continuation before its timer')
+    assert.equal((await f.join()).value, true)
+    assert.equal(f.book.publish(3, ['current-page-segment'], ['native-completed-current-page']), true)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(f.moves, [], 'A later restored sample cannot hide withdrawal before registration')
 })

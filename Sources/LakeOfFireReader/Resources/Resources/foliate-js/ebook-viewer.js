@@ -8882,6 +8882,9 @@ class Reader {
             pending.animationReady = true;
             void this.#tryMarkReadAdvance().catch(() => {});
         }, 430);
+        // The full sample may have beaten the reply/continuation registration.
+        // Observe its withdrawal now rather than waiting for the animation.
+        void this.#tryMarkReadAdvance().catch(() => {});
     }
     async #tryMarkReadAdvance() {
         const pending = this.#pendingMarkReadAdvance;
@@ -8896,6 +8899,31 @@ class Reader {
         if (!current()) {
             this.#retireMarkReadAdvance(pending);
             return false;
+        }
+        const publication = this.#successfulBookReadPublication;
+        const state = this.bookReadingRuntime?.state;
+        const projection = state?.state;
+        const submittedIDs = owner.committedVisibleStableSegmentIDs;
+        // A current full sample can definitively withdraw this intent even
+        // before the animation ends. A newer partial receipt only makes the
+        // cached full sample stale; it cannot supply evidence of withdrawal.
+        if (state?.ready === true
+            && this.#isMarkReadOwnerCurrent(publication?.owner)
+            && Number.isSafeInteger(projection?.revision)
+            && projection.revision >= owner.minimumReadSnapshotSequence
+            && projection.revision === publication?.revision
+            && Array.isArray(projection.readSegmentIdentifiers)
+            && Array.isArray(submittedIDs) && submittedIDs.length > 0
+            && submittedIDs.every(id => typeof id === 'string' && id.length > 0)
+            && state.noteManualReadSnapshot?.(projection.revision) === true) {
+            const readIDs = new Set(projection.readSegmentIdentifiers);
+            if (submittedIDs.some(id => !readIDs.has(id))) {
+                if (current() && this.#pendingMarkReadAdvance === pending
+                    && this.#successfulBookReadPublication === publication) {
+                    this.#retireMarkReadAdvance(pending);
+                }
+                return false;
+            }
         }
         if (!pending.animationReady
             || !this.#isMarkReadOwnerCurrent(this.#successfulBookReadPublication?.owner)
