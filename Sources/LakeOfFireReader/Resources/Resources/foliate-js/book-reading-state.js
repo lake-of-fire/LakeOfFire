@@ -200,7 +200,12 @@ export class BookReadingStateController {
         this.#retireHistoryRecovery()
         if (changed || replaced) { this.#context = null; this.#state = null }
         const isCurrent = this.#captureAdmission()
-        if (changed || replaced) this.#notify('onInvalidate', [], isCurrent)
+        if (changed || replaced) {
+            // The location has already changed and withdrawn the old context.
+            // Failed outgoing paint cannot suppress its read-only native refresh:
+            // another observation of this same location would be a no-op.
+            try { this.#notify('onInvalidate', [], isCurrent) } catch (_) {}
+        }
         // A nested relocation/refresh already requested its own sample.
         if (isCurrent()) this.refresh()
         return true
