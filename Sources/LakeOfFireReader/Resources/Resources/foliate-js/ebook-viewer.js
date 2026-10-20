@@ -9,7 +9,7 @@ import { bookScopeKey } from './book-reading-state.js'
 import { applyBookReadingProjection } from './book-reading-projection.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import { processedSectionURLForHref } from './ebook-direct-section.js'
-import { visibleMarkReadSidecarSelection } from './ebook-visible-mark-read-selection.js'
+import { visibleMarkReadSidecarSelection, visibleMarkReadSegmentIsRead } from './ebook-visible-mark-read-selection.js'
 import { forwardCustomReaderFontStyleToDocuments } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
@@ -4970,13 +4970,10 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress, visibleRang
             visibleSegmentItemsByIdentifier.set(item.segmentIdentifier, item);
         }
     }
-    const segmentMatchesReadProgress = (segmentIdentifier) => {
-        const item = visibleSegmentItemsByIdentifier.get(segmentIdentifier);
-        const aliases = Array.isArray(item?.segmentIdentifierAliases) && item.segmentIdentifierAliases.length > 0
-            ? item.segmentIdentifierAliases
-            : [segmentIdentifier];
-        return aliases.some((identifier) => readSegmentIdentifiers.has(identifier));
-    };
+    const segmentMatchesReadProgress = (segmentIdentifier) =>
+        visibleMarkReadSegmentIsRead(segmentIdentifier,
+            visibleSegmentItemsByIdentifier.get(segmentIdentifier),
+            readSegmentIdentifiers, readSentenceIdentifiers);
     const visibleSegmentIdentifierList = Array.from(visibleSegmentIdentifiers);
     const unreadVisibleSegmentIdentifiers = visibleSegmentIdentifierList
         .filter((segmentIdentifier) => !segmentMatchesReadProgress(segmentIdentifier));
