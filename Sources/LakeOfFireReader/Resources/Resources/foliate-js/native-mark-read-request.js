@@ -30,10 +30,22 @@ export const refreshCommittedVisibleMarkReadState = ({ outcome, state, isOwnerCu
     const current = () => typeof isOwnerCurrent === 'function' && isOwnerCurrent() === true;
     if (outcome?.success !== true || outcome.stale
         || outcome.presentationAllowed === false || !current()) return false;
-    if (state?.noteManualReadSnapshot?.(outcome.nativeResult?.stateSnapshotSequence) !== true
-        || !current()) return false;
-    if (state.refresh?.() !== true) return false;
-    return current();
+    const sequence = outcome.nativeResult?.stateSnapshotSequence
+    if (!Number.isSafeInteger(sequence) || sequence <= 0) return false
+    if (state?.noteManualReadSnapshot?.(sequence) !== true) {
+        if (!current() || state?.ready !== true) return false
+        const presentedSequence = state.state?.revision
+        // An independently delivered full chapter snapshot may beat this
+        // command's reply. Reuse it without lowering native ordering or
+        // replacing a newer pending read. Rechecking its own sequence rejects
+        // a cached full snapshot overtaken by a still-newer partial reply.
+        // The caller separately requires rendered publication and every subject.
+        return Number.isSafeInteger(presentedSequence) && presentedSequence > sequence
+            && current() && state.noteManualReadSnapshot(presentedSequence) === true
+            && current()
+    }
+    if (!current() || state.refresh?.() !== true) return false
+    return current()
 };
 
 export const committedVisibleMarkReadStateIsPresented = ({ state, minimumSnapshotSequence, stableSegmentIDs, successfulPublicationSequence }) => {
@@ -45,6 +57,10 @@ export const committedVisibleMarkReadStateIsPresented = ({ state, minimumSnapsho
     if (!Number.isSafeInteger(projection?.revision)
         || projection.revision !== successfulPublicationSequence
         || !Array.isArray(projection.readSegmentIdentifiers)) return false;
+    // A later partial Mark/Unmark receipt can advance the native watermark
+    // without replacing the full chapter projection. Do not navigate on that
+    // overtaken cache; noting its own revision cannot lower the watermark.
+    if (state.noteManualReadSnapshot?.(projection.revision) !== true) return false
     const readIDs = new Set(projection.readSegmentIdentifiers);
     return stableSegmentIDs.every(id => typeof id === 'string' && id.length > 0
         && readIDs.has(id));
