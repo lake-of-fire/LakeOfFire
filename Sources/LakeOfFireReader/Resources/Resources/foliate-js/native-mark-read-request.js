@@ -302,7 +302,7 @@ export const createNativeMarkReadRequestCoordinator = ({
                     recovery.retirement = new Promise(resolve => { recovery.retire = () => resolve(false) })
                     recoveryByRequestID.set(pending.requestID, recovery)
                     for (const value of ordinaryRequests()) value.recoveryRequested = true
-                    // An ordinary completion can arrive after pagehide before
+                    // An ordinary terminal can arrive after pagehide before
                     // the restored status poll. Ask native to reconcile that
                     // exact joined capability; never replay its mutation.
                     if (outcome.nativeResult?.manualReadPendingHistoryRecovery !== true) {
@@ -550,6 +550,20 @@ export const createNativeMarkReadRequestCoordinator = ({
         attachLifecycle()
         observe(pending, timeoutMilliseconds)
         if (closed || pendingByRequestID.get(requestID) !== pending) return completion
+        // Lifecycle/timer setup and the owner predicate can synchronously
+        // withdraw this admission. A restored observation may query an already
+        // submitted command, but cannot authorize its first mutation handoff.
+        const maySubmit = () => !closed && observing && !pending.recoveryOnly
+            && !pending.cancelling && pendingByRequestID.get(requestID) === pending
+        if (!maySubmit() || !ownerCurrent(pending) || !maySubmit()) {
+            // No initial transport entry occurred. Release this exact local
+            // waiter without creating a History query for an unsent command.
+            // Keep recoveryRequested so an unrelated joined recovery can drain.
+            pending.recoveryOnly = false
+            finish(pending, { success: false, outcomeKnown: true,
+                presentationAllowed: false, errorCode: 'requestInvalidatedBeforeSubmission' })
+            return completion
+        }
         try {
             // A synchronous native callback may close the Reader from inside
             // postMessage. It then owns an actual attempted handoff, unlike a
