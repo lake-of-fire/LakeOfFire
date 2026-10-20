@@ -284,6 +284,10 @@ export class BookReadingStateController {
         const location = this.#location, revision = this.#revision
         const nativeRefresh = result.nativeRefresh === true
         const responsePending = this.#pending
+        // Native post-commit refreshes reuse an earlier request ID. Their
+        // ordered projection may be current without owning a newer read that
+        // is already in flight. Preserve that read's one reply opportunity.
+        const consumesPending = responsePending !== null && requestID === responsePending.requestID
         const recovery = this.#historyRecovery
         if (recovery) {
             const proof = recoveryObservation(result.historyRecoveryObservation)
@@ -320,7 +324,8 @@ export class BookReadingStateController {
         const ok = result.ok
         if (!admissionIsCurrent()) return false
         if (ok !== true) {
-            this.#pending = null; this.#context = null
+            if (consumesPending) this.#pending = null
+            this.#context = null
             this.#notify('onInvalidate', [], this.#captureProjection())
             return false
         }
@@ -354,7 +359,8 @@ export class BookReadingStateController {
         if (typeof onState !== 'function' || !this.#locationIsCurrent(admissionIsCurrent)) return false
         // All callback-bearing preparation is complete. Publish both copies and
         // their ordering marker together, without an external call between them.
-        this.#pending = null; this.#lastSnapshotSequence = prepared.state.revision
+        if (consumesPending) this.#pending = null
+        this.#lastSnapshotSequence = prepared.state.revision
         this.#acknowledgedHistoryRecovery = null
         if (recovery) this.#historyRecovery = null
         this.#state = prepared.state; this.#context = prepared.context
