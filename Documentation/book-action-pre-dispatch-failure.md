@@ -30,20 +30,32 @@ when their own preparation fails before posting: their original semantic command
 was already submitted and may have committed. Preserve its immutable request ID
 and use the existing status-only recovery path.
 
+Timer expiry uses this same failure handler rather than a separate unconditional
+unknown-outcome path. The injectable scheduler can expire while installing the
+timer or preparing the envelope. Such an unsent fresh command releases its local
+reservation; expiry after submission, or during status/navigation recovery,
+still preserves the original operation. A late timer cannot retire a successor.
+The early-expiry cases exercise the scheduler contract with controlled callbacks;
+they do not claim that the browser's normal setTimeout runs synchronously.
+
 ## Regression coverage
 
 Run:
 
 ```sh
-node --test Tests/JavaScript/book-action-pre-dispatch.test.mjs Tests/JavaScript/book-action-recovery.test.mjs
+node --test Tests/JavaScript/book-action-pre-dispatch.test.mjs \
+  Tests/JavaScript/book-action-bridge-settlement.test.mjs \
+  Tests/JavaScript/book-action-recovery.test.mjs
 ```
 
-The added suite imports the complete shipping bridge and its real dependencies.
-It exercises producer-envelope rejection, adapter exceptions, serialization and
-semantic validation failures, timer setup, local cleanup reentry, ambiguous
-transport failure, timeout, synchronous terminal acknowledgement, and failed
-status/navigation preparation. Native transport and scheduling callbacks are
-controlled collaborators, not a native Realm or WKWebView execution.
+These suites import the complete shipping bridge and its real dependencies.
+They exercise producer-envelope rejection, adapter exceptions, serialization and
+semantic validation failures, timer setup/early expiry, local cleanup reentry,
+ambiguous transport failure, timeout, synchronous terminal acknowledgement, and
+failed status/navigation preparation. The existing settlement suite's throwing-
+timer test now requires local rejection and a deliberate new command, not an
+impossible status query for an operation never sent. Native transport and
+scheduling callbacks are controlled collaborators, not native Realm or WKWebView.
 
 Before release, exercise the actual End of Book and native Book Actions callers
 with producer replacement, then verify that a genuinely submitted reset with a
