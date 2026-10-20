@@ -8867,6 +8867,31 @@ class Reader {
         this.#pendingMarkReadAdvance = null;
         if (pending?.timer != null) clearTimeout(pending.timer);
     }
+    observeNativeNavigationIntent() {
+        if (this.#closed || globalThis.reader !== this) return;
+        const lifetime = this.#pageLifetime, generation = this.#lifecycleGeneration;
+        const renderer = this.view?.renderer, runtime = this.bookReadingRuntime;
+        const account = runtime?.state?.accountPresentation;
+        const markGeneration = this.#markReadDiagnosticGeneration;
+        const pending = this.#pendingMarkReadAdvance;
+        const doc = this.#currentPageTrackingDocument();
+        const frame = doc?.defaultView;
+        let observe;
+        try { observe = frame?.manabiObserveAutomaticScrollNavigation; } catch (_) {}
+        // Frame lookup is caller code. Never let an old lookup revoke a new
+        // Reader, account, document or page-Mark that it installed reentrantly.
+        const ownsIntent = expectedPending => !this.#closed && globalThis.reader === this && this.#pageLifetime === lifetime
+            && this.#lifecycleGeneration === generation && this.view?.renderer === renderer
+            && this.bookReadingRuntime === runtime && runtime?.state?.accountPresentation === account
+            && this.#markReadDiagnosticGeneration === markGeneration
+            && this.#pendingMarkReadAdvance === expectedPending;
+        if (!ownsIntent(pending) || this.#currentPageTrackingDocument() !== doc || !ownsIntent(pending)) return;
+        this.#retireMarkReadAdvance(pending);
+        // Optional timer disposal can also reenter. Preserve a successor Mark's
+        // freshly captured receipt instead of revoking it through the old frame.
+        if (!ownsIntent(null) || this.#currentPageTrackingDocument() !== doc || !ownsIntent(null)) return;
+        try { if (typeof observe === 'function') Reflect.apply(observe, frame, []); } catch (_) {}
+    }
     #advanceAfterMarkRead(owner) {
         if (!this.#isMarkReadOwnerCurrent(owner)
             || owner.diagnosticGeneration !== this.#markReadDiagnosticGeneration) return;
@@ -13845,10 +13870,13 @@ window.manabiCancelScheduledReaderFractionGoTo = () => {
 
 window.manabiBeginReaderProgressScrub = () => {
     markRestorePositionSaveUserInput('bridge.beginReaderProgressScrub');
-    const navHUD = globalThis.reader?.navHUD;
+    const reader = globalThis.reader;
+    const navHUD = reader?.navHUD;
     if (navHUD?.scrubSession?.active) {
         return true;
     }
+    reader?.observeNativeNavigationIntent?.();
+    if (globalThis.reader !== reader || reader?.navHUD !== navHUD) return false;
     const originDescriptor = navHUD?.getCurrentLocationDescriptor?.() ?? null;
     navHUD?.beginProgressScrubSession?.(originDescriptor);
     return true;
