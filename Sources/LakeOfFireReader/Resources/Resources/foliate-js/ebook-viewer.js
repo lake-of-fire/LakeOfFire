@@ -4972,6 +4972,13 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress, visibleRang
     }
     const segmentMatchesReadProgress = (segmentIdentifier) => {
         const item = visibleSegmentItemsByIdentifier.get(segmentIdentifier);
+        // Name-only Marks can persist sentence support without a vocabulary
+        // segment row. Use the native sidecar's sentence identity so every
+        // visible fragment reflects that support without selecting its hidden
+        // remainder or inferring membership from the rendered DOM.
+        const sentenceIdentifier = bootstrap.byID?.get?.(segmentIdentifier)?.sentenceID;
+        if (typeof sentenceIdentifier === 'string'
+            && readSentenceIdentifiers.has(sentenceIdentifier)) return true;
         const aliases = Array.isArray(item?.segmentIdentifierAliases) && item.segmentIdentifierAliases.length > 0
             ? item.segmentIdentifierAliases
             : [segmentIdentifier];
