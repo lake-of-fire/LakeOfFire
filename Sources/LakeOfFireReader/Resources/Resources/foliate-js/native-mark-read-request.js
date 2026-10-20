@@ -649,7 +649,10 @@ export const createNativeMarkReadRequestCoordinator = ({
         })
     }
     const cancelAll = () => {
-        for (const requestID of pendingByRequestID.keys()) cancel(requestID)
+        // Cancellation callbacks can admit a newer command, including a new
+        // request for a just-settled section. This sweep owns only its entry
+        // roster; cancel still revalidates each original request's live owner.
+        for (const requestID of [...pendingByRequestID.keys()]) cancel(requestID)
     }
     const pause = () => {
         if (closed) return
