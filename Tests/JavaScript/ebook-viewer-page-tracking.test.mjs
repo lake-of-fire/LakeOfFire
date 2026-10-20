@@ -21,10 +21,15 @@ const readerClass = source.slice(classStart, classEnd)
 function fixture({ realCoordinator = false, onControl } = {}) {
     const packets = [], requests = [], controls = [], attributes = new Map(), timers = new Map(), moves = []
     const lifecycle = new EventTarget()
-    let coordinatorSequence = 0
+    let coordinatorSequence = 0, timerSequence = 0
     const doc = { location: { href: 'ebook://fixture/chapter.xhtml' }, defaultView: {}, body: {} }
-    let navigationCurrent = true
-    doc.defaultView.manabiCaptureAutomaticScrollNavigation = () => () => navigationCurrent
+    let navigationStamp = {}
+    const retireNavigation = () => { navigationStamp = {} }
+    doc.defaultView.manabiObserveAutomaticScrollNavigation = retireNavigation
+    doc.defaultView.manabiCaptureAutomaticScrollNavigation = () => {
+        const stamp = navigationStamp
+        return () => stamp === navigationStamp
+    }
     const visibleRange = { collapsed: false }
     const producerOwner = { required: false }
     class Element {}
@@ -52,7 +57,7 @@ function fixture({ realCoordinator = false, onControl } = {}) {
                 postMessage: message => requests.push({ message }),
                 postControlMessage: message => { controls.push(message); onControl?.(message) },
                 scheduleTimeout: (callback, delay) => {
-                    const id = timers.size + 1
+                    const id = ++timerSequence
                     timers.set(id, { callback, delay })
                     return id
                 },
@@ -86,12 +91,15 @@ function fixture({ realCoordinator = false, onControl } = {}) {
         }),
         shouldInvalidateVisibleSegmentGeometryForReason: () => true,
         MANABI_ENABLE_EBOOK_PAGE_TRACKING_BUTTONS: false,
-        manabiTimelineMeasure() {}, cancelAnimationFrame() {}, clearTimeout() {},
+        manabiTimelineMeasure() {}, manabiTimelineMark() {}, cancelAnimationFrame() {},
+        clearTimeout: id => timers.delete(id),
+        pageTurnMovementDisposition: result => result?.movementDisposition ?? 'not-owned',
+        shouldRequestConfirmedPageTurnProgress: () => false,
         lastPositionRestoreCoordinator: { current: null },
         resetReaderTransientState() {},
         PAGE_TURN_MOVEMENT_DISPOSITION: { notOwned: 'not-owned' },
         requestAnimationFrame: () => 1,
-        setTimeout: (callback, delay) => { const id = timers.size + 1; timers.set(id, { callback, delay }); return id },
+        setTimeout: (callback, delay) => { const id = ++timerSequence; timers.set(id, { callback, delay }); return id },
     })
     context.window = context
     context.addEventListener = lifecycle.addEventListener.bind(lifecycle)
@@ -106,6 +114,11 @@ function fixture({ realCoordinator = false, onControl } = {}) {
         testRender(reason) { this.#renderPageTrackingButtons(reason) }
         testInvalidate() { this.#invalidateVisiblePageSegmentSnapshot('renderer.relocate') }
         testMarkCluster() { return this.#markPageClusterAsRead('visible-screen') }
+        testRunPageTurn(prepare) {
+            return this.#runPageTurn({ stage: 'fixture-native-turn', prepare,
+                move: () => { throw new Error('held turn must skip movement') },
+                deferVisiblePageResetUntilMovement: true })
+        }
         testCommitDocumentScope(doc) {
             return this.#commitDocumentScope(this.#beginDocumentScope({ doc, index: 0 }), 'fixture-document-committed')
         }
@@ -137,7 +150,7 @@ function fixture({ realCoordinator = false, onControl } = {}) {
         reader.testRender('fixture-current-page')
     }
     return { reader, Reader, packets, requests, controls, attributes, seedPage, installPage, visibleRange,
-        context, doc, timers, moves, lifecycle, retireNavigation: () => { navigationCurrent = false } }
+        context, doc, timers, moves, lifecycle, retireNavigation }
 }
 
 function bookRuntimeFixture(f) {
@@ -1126,3 +1139,60 @@ for (const succeeded of [false, true]) {
         assert.deepEqual(f.moves, [])
     })
 }
+
+
+test('a slow full publication advances once after the animation without holding the committed result', async t => {
+    const f = pendingNativeMark(t)
+    assert.equal(f.deliver(), true)
+    const result = await f.join()
+    assert.equal(result.value, true, 'Native Mark completes before the delayed publication')
+    assert.deepEqual(f.moves, [])
+    assert.equal(f.book.publish(2, ['current-page-segment']), true)
+    assert.deepEqual(f.moves, [], 'onState must finish before optional navigation')
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(f.moves, ['right'])
+    assert.equal(f.book.native(3), true)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(f.moves, ['right'], 'Later publications cannot replay the consumed action')
+})
+
+for (const successor of ['Unmark navigation', 'Mark All', 'new page Mark', 'shell page Mark', 'relocation']) {
+    test(`a slow publication cannot revive automatic advance after ${successor}`, async t => {
+        const f = pendingNativeMark(t)
+        assert.equal(f.deliver(), true)
+        assert.equal((await f.join()).value, true)
+        if (successor === 'Unmark navigation') f.retireNavigation()
+        if (successor === 'relocation') f.reader.testInvalidate()
+        if (successor === 'Mark All') {
+            f.reader.buildMarkAllSectionsAsReadPayload = () => null
+            assert.equal(await f.reader.markAllSectionsAsRead(), 0)
+        }
+        if (successor === 'shell page Mark') {
+            f.reader.pageTrackingStates = []
+            assert.equal(await f.reader.testMarkCluster(), false)
+        }
+        if (successor === 'new page Mark') {
+            assert.equal(await f.reader.markVisiblePageAsRead('native', 'superseded-account'), false)
+        }
+        // Even a later projection still containing the old Mark's subjects
+        // cannot substitute for its withdrawn user/navigation ownership.
+        assert.equal(f.book.publish(2, ['current-page-segment']), true)
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(f.moves, [])
+    })
+}
+
+test('explicit native turn admission revokes an in-flight Mark before asynchronous preparation', async t => {
+    const f = pendingNativeMark(t)
+    let release
+    const turn = f.reader.testRunPageTurn(() => new Promise(resolve => { release = resolve }))
+    assert.equal(typeof release, 'function')
+    assert.equal(f.deliver(), true)
+    assert.equal((await f.join({ publish: true })).value, true)
+    assert.deepEqual(f.moves, [], 'Mark must not steal navigation during native turn preparation')
+    release({ skipMove: true, result: { movementDisposition: 'not-owned' } })
+    await turn
+    assert.equal(f.book.native(3), true)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(f.moves, [], 'Finishing preparation cannot revive the old navigation receipt')
+})
