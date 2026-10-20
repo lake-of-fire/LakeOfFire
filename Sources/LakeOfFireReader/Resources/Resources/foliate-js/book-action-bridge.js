@@ -97,9 +97,27 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
         const mayPost = () => ownsRequest(request) && !delivery.settled
             && request.active === delivery && deliveries.get(deliveryID) === delivery
         let postEntered = false
+        // Preparation errors and timer expiry share the same transport boundary.
+        // An injected scheduler may expire during setup, before any native call.
+        const failDelivery = error => {
+            if (kind === 'command' && !postEntered && mayPost()) {
+                // This fresh operation never reached native. Remove its local
+                // reservation before timer cleanup can admit another action;
+                // Check Status cannot recover a command which was never sent.
+                deliveries.delete(deliveryID)
+                if (current === request) current = null
+                request.active = null
+                settle(delivery, null, new Error('The book action could not be sent. Try again.'))
+            } else {
+                // Entering transport can leave the outcome unknown even when
+                // its wrapper throws. Recovery preparation also retains the
+                // original submitted operation. A synchronous reply still wins.
+                settle(delivery, null, unknown(request, error))
+            }
+        }
         try {
-            const timer = setTimer(() => settle(delivery, null, new BookActionUnacknowledgedError(
-                'The action has not been acknowledged. Check its status before starting another reading pass.', request)), timeoutMilliseconds)
+            const timer = setTimer(() => failDelivery(new Error(
+                'The action has not been acknowledged. Check its status before starting another reading pass.')), timeoutMilliseconds)
             // Installation can synchronously acknowledge, time out or retire
             // the delivery. Its late returned handle must not become an orphan.
             if (!mayPost()) { clearDeliveryTimer(timer); return promise }
@@ -123,20 +141,7 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
             postEntered = true
             postMessage(prepared)
         } catch (error) {
-            if (kind === 'command' && !postEntered && mayPost()) {
-                // This fresh operation never reached native. Remove its local
-                // reservation before timer cleanup can admit another action;
-                // Check Status cannot recover a command which was never sent.
-                deliveries.delete(deliveryID)
-                if (current === request) current = null
-                request.active = null
-                settle(delivery, null, new Error('The book action could not be sent. Try again.'))
-            } else {
-                // Entering transport can leave the outcome unknown even when
-                // its wrapper throws. Recovery preparation also retains the
-                // original submitted operation. A synchronous reply still wins.
-                settle(delivery, null, unknown(request, error))
-            }
+            failDelivery(error)
         }
         return promise
     }
