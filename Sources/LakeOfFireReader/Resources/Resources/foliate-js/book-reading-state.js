@@ -182,7 +182,10 @@ export class BookReadingStateController {
         if (!this.#notify('onAccountChange', [stamp], isCurrent)) return false
         // A queued sample still needs old-frame invalidation. A callback that
         // already published a successor must not have its scopes retired again.
-        if (!this.#notify('onInvalidate', [], isCurrent)) return false
+        // The new stamp has already retired the old account's context. Failed
+        // outgoing paint must not discard this reply's admission or prevent
+        // the runtime's fresh read. Newer callback-owned work still wins below.
+        try { if (!this.#notify('onInvalidate', [], isCurrent)) return false } catch (_) {}
         return isCurrent() && this.#pending === null
     }
     get ready() { return this.#context !== null && this.#locationIsCurrent(this.#captureProjection()) }
