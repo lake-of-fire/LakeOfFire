@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { visibleMarkReadSidecarSelection } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-visible-mark-read-selection.js';
+import { visibleMarkReadSidecarSelection, visibleMarkReadSegmentIsRead } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-visible-mark-read-selection.js';
 
 const a = { i: 'mnb-s1', sid: 'S:A', sentenceID: 'S', j: [123], n: [], s: 'word' };
 const b = { i: 'mnb-s2', sid: 'S:B', sentenceID: 'S', j: [], n: [456], ns: 'name' };
@@ -71,3 +71,37 @@ test('selection never materializes hidden sidecar metadata', () => {
 test('empty visible selection remains empty', () => {
     assert.deepEqual(visibleMarkReadSidecarSelection(fixture({ visibleSegmentIdentifiers: [] })), []);
 });
+
+
+test('native sentence-only read coverage marks every visible member read', () => {
+    const segmentIDs = new Set()
+    const sentenceIDs = new Set(['sentence-one'])
+    const item = { sentenceIdentifier: 'sentence-one',
+        segmentIdentifierAliases: ['runtime-name', 'stable-name'] }
+    assert.equal(visibleMarkReadSegmentIsRead('runtime-name', item, segmentIDs, sentenceIDs), true)
+    assert.equal(visibleMarkReadSegmentIsRead('runtime-punctuation',
+        { sentenceIdentifier: 'sentence-one' }, segmentIDs, sentenceIDs), true)
+    assert.equal(visibleMarkReadSegmentIsRead('different-sentence',
+        { sentenceIdentifier: 'sentence-two' }, segmentIDs, sentenceIDs), false)
+})
+
+test('Unmark withdraws sentence-only coverage without a stale visible-page Read label', () => {
+    const item = { sentenceIdentifier: 'sentence-one',
+        segmentIdentifierAliases: ['runtime-name', 'stable-name'] }
+    const segmentIDs = new Set()
+    const sentenceIDs = new Set(['sentence-one'])
+    assert.equal(visibleMarkReadSegmentIsRead('runtime-name', item, segmentIDs, sentenceIDs), true)
+    sentenceIDs.clear()
+    assert.equal(visibleMarkReadSegmentIsRead('runtime-name', item, segmentIDs, sentenceIDs), false)
+})
+
+test('segment aliases remain independent native read evidence', () => {
+    const item = { sentenceIdentifier: 'sentence-one',
+        segmentIdentifierAliases: ['runtime-name', 'stable-name'] }
+    assert.equal(visibleMarkReadSegmentIsRead('runtime-name', item,
+        new Set(['stable-name']), new Set()), true)
+    assert.equal(visibleMarkReadSegmentIsRead('runtime-name', item,
+        new Set(['other']), new Set(['sentence-two'])), false)
+    assert.equal(visibleMarkReadSegmentIsRead('runtime-name',
+        { sentenceIdentifier: '' }, new Set(), new Set([''])), false)
+})
