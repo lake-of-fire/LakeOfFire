@@ -315,6 +315,26 @@ export const createNativeMarkReadRequestCoordinator = ({
         recovery.retire?.()
         recovery.join?.()
     }
+    // Completed commands no longer appear in the ordinary cancellation map.
+    // Retire only their obsolete display recovery; neither its known outcome
+    // nor native mutation/Undo authority is changed by this local cleanup.
+    const retainRecoveryOwnership = recovery => {
+        const pending = recovery.pending
+        const ownsRecovery = () => !closed
+            && recoveryByRequestID.get(pending.requestID) === recovery
+        if (!ownsRecovery()) return false
+        const current = present(pending, () => onRecoveryIsCurrent({
+            owner: pending.owner, context: pending.context, message: pending.message,
+        })) === true
+        if (!ownsRecovery()) return false
+        if (current) return true
+        recoveryByRequestID.delete(pending.requestID)
+        retireRecoveryWaiters(recovery)
+        present(pending, () => onPending({ requestID: pending.requestID,
+            phase: 'finished', context: pending.context }))
+        detachLifecycle()
+        return false
+    }
     const prepareRecovery = (recovery, force = false) => {
         if (force) recovery.prepared = false
         if (recovery.prepared || ordinaryRequests().length > 0) return
@@ -336,9 +356,7 @@ export const createNativeMarkReadRequestCoordinator = ({
         const pending = recovery.pending
         const mayPost = () => !closed && observing && recovery.completion === null
             && recoveryByRequestID.get(pending.requestID) === recovery
-        if (!mayPost() || present(pending, () => onRecoveryIsCurrent({
-            owner: pending.owner, context: pending.context, message: pending.message,
-        })) !== true || !mayPost()) return false
+        if (!mayPost() || !retainRecoveryOwnership(recovery) || !mayPost()) return false
         present(pending, () => postControlMessage(nativeMarkReadControlMessage(pending, 'status', true)))
         return mayPost()
     }
@@ -575,12 +593,7 @@ export const createNativeMarkReadRequestCoordinator = ({
     }
     const request = ({ sectionID, message, owner = null, context = null }) => {
         if (closed) return rejectClosedRequest()
-        for (const [requestID, recovery] of recoveryByRequestID) {
-            if (present(recovery.pending, () => onRecoveryIsCurrent({ owner: recovery.pending.owner,
-                context: recovery.pending.context, message: recovery.pending.message })) === true) continue
-            recoveryByRequestID.delete(requestID); retireRecoveryWaiters(recovery)
-            present(recovery.pending, () => onPending({ requestID, phase: 'finished', context: recovery.pending.context }))
-        }
+        for (const recovery of [...recoveryByRequestID.values()]) retainRecoveryOwnership(recovery)
         if (closed) return rejectClosedRequest()
         if (typeof sectionID !== 'string' || !sectionID || !message || typeof message !== 'object') {
             return Promise.resolve({ requestID: null, context, success: false,
@@ -765,10 +778,13 @@ export const createNativeMarkReadRequestCoordinator = ({
         })
     }
     const cancelAll = () => {
-        // Cancellation callbacks can admit a newer command, including a new
-        // request for a just-settled section. This sweep owns only its entry
-        // roster; cancel still revalidates each original request's live owner.
-        for (const requestID of [...pendingByRequestID.keys()]) cancel(requestID)
+        // Capture both entry rosters before callbacks can admit successors.
+        // Location/account invalidation also retires completed display recovery;
+        // ordinary cancellation alone cannot find those already-settled writes.
+        const recoveries = [...recoveryByRequestID.values()]
+        const requestIDs = [...pendingByRequestID.keys()]
+        for (const recovery of recoveries) retainRecoveryOwnership(recovery)
+        for (const requestID of requestIDs) cancel(requestID)
     }
     const pause = () => {
         if (closed) return
