@@ -441,7 +441,7 @@ public actor EBookProcessingActor {
     ) async throws -> EBookNativeSectionPrewarmResult {
         try Task.checkCancellation()
         let entryData = try source.readEntry(subpath: sectionHref)
-        let entryText = String(decoding: entryData, as: UTF8.self)
+        let entryText = ReaderPackageEntrySource.decodeText(entryData)
         let processedPayload = try await process(
             contentURL: contentURL,
             location: sectionHref,

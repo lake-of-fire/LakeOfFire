@@ -11,7 +11,7 @@ import { refreshNativeMarkReadBookStateForRecovery } from '../../Sources/LakeOfF
 // Evaluate the complete shipping Reader class. Only the module/startup adapter
 // and DOM/native collaborators are replaced; no command or render method is
 // copied into a second implementation.
-const source = readFileSync(new URL(
+const source = readFileSync(process.env.MANABI_EBOOK_VIEWER_SOURCE || new URL(
     '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer.js', import.meta.url
 ), 'utf8')
 const classStart = source.indexOf('class Reader {')
@@ -21,10 +21,15 @@ const readerClass = source.slice(classStart, classEnd)
 function fixture({ realCoordinator = false, onControl } = {}) {
     const packets = [], requests = [], controls = [], attributes = new Map(), timers = new Map(), moves = []
     const lifecycle = new EventTarget()
-    let coordinatorSequence = 0
+    let coordinatorSequence = 0, timerSequence = 0
     const doc = { location: { href: 'ebook://fixture/chapter.xhtml' }, defaultView: {}, body: {} }
-    let navigationCurrent = true
-    doc.defaultView.manabiCaptureAutomaticScrollNavigation = () => () => navigationCurrent
+    let navigationStamp = {}
+    const retireNavigation = () => { navigationStamp = {} }
+    doc.defaultView.manabiObserveAutomaticScrollNavigation = retireNavigation
+    doc.defaultView.manabiCaptureAutomaticScrollNavigation = () => {
+        const stamp = navigationStamp
+        return () => stamp === navigationStamp
+    }
     const visibleRange = { collapsed: false }
     const producerOwner = { required: false }
     class Element {}
@@ -52,7 +57,7 @@ function fixture({ realCoordinator = false, onControl } = {}) {
                 postMessage: message => requests.push({ message }),
                 postControlMessage: message => { controls.push(message); onControl?.(message) },
                 scheduleTimeout: (callback, delay) => {
-                    const id = timers.size + 1
+                    const id = ++timerSequence
                     timers.set(id, { callback, delay })
                     return id
                 },
@@ -86,12 +91,16 @@ function fixture({ realCoordinator = false, onControl } = {}) {
         }),
         shouldInvalidateVisibleSegmentGeometryForReason: () => true,
         MANABI_ENABLE_EBOOK_PAGE_TRACKING_BUTTONS: false,
-        manabiTimelineMeasure() {}, cancelAnimationFrame() {}, clearTimeout() {},
+        manabiTimelineMeasure() {}, manabiTimelineMark() {}, cancelAnimationFrame() {},
+        clearTimeout: id => timers.delete(id),
+        pageTurnMovementDisposition: result => result?.movementDisposition ?? 'not-owned',
+        shouldRequestConfirmedPageTurnProgress: () => false,
         lastPositionRestoreCoordinator: { current: null },
         resetReaderTransientState() {},
+        markRestorePositionSaveUserInput() {},
         PAGE_TURN_MOVEMENT_DISPOSITION: { notOwned: 'not-owned' },
         requestAnimationFrame: () => 1,
-        setTimeout: (callback, delay) => { const id = timers.size + 1; timers.set(id, { callback, delay }); return id },
+        setTimeout: (callback, delay) => { const id = ++timerSequence; timers.set(id, { callback, delay }); return id },
     })
     context.window = context
     context.addEventListener = lifecycle.addEventListener.bind(lifecycle)
@@ -106,6 +115,11 @@ function fixture({ realCoordinator = false, onControl } = {}) {
         testRender(reason) { this.#renderPageTrackingButtons(reason) }
         testInvalidate() { this.#invalidateVisiblePageSegmentSnapshot('renderer.relocate') }
         testMarkCluster() { return this.#markPageClusterAsRead('visible-screen') }
+        testRunPageTurn(prepare) {
+            return this.#runPageTurn({ stage: 'fixture-native-turn', prepare,
+                move: () => { throw new Error('held turn must skip movement') },
+                deferVisiblePageResetUntilMovement: true })
+        }
         testCommitDocumentScope(doc) {
             return this.#commitDocumentScope(this.#beginDocumentScope({ doc, index: 0 }), 'fixture-document-committed')
         }
@@ -115,6 +129,9 @@ function fixture({ realCoordinator = false, onControl } = {}) {
     }; Reader`, context)
     const reader = new Reader()
     context.reader = reader
+    // Startup adapter for the actual shipping native scrub entrypoint.
+    vm.runInContext(source.slice(source.indexOf('window.manabiBeginReaderProgressScrub ='),
+        source.indexOf('\nwindow.manabiEndReaderProgressScrub =')), context)
     reader.view = { renderer: { displayedIndex: 0, getContents: () => [{ index: 0, doc }] },
         goRight: async () => { moves.push('right'); return true },
         goLeft: async () => { moves.push('left'); return true } }
@@ -137,7 +154,7 @@ function fixture({ realCoordinator = false, onControl } = {}) {
         reader.testRender('fixture-current-page')
     }
     return { reader, Reader, packets, requests, controls, attributes, seedPage, installPage, visibleRange,
-        context, doc, timers, moves, lifecycle, retireNavigation: () => { navigationCurrent = false } }
+        context, doc, timers, moves, lifecycle, retireNavigation }
 }
 
 function bookRuntimeFixture(f) {
@@ -163,7 +180,8 @@ function bookRuntimeFixture(f) {
     f.doc.defaultView.manabi_invalidateBookReadingScope = () => {
         f.doc.defaultView.manabi_bookReadingScope = null
     }
-    f.context.webkit.messageHandlers.ebookBookAction = { postMessage() {} }
+    const actionRequests = []
+    f.context.webkit.messageHandlers.ebookBookAction = { postMessage: request => actionRequests.push(request) }
     f.context.webkit.messageHandlers.ebookBookReadingState = { postMessage: request => requests.push(request) }
     const runtime = installBookReadingRuntime({ reader: f.reader, view: f.reader.view,
         document: { createElement: () => new Element(), getElementById: () => host },
@@ -200,7 +218,7 @@ function bookRuntimeFixture(f) {
     const native = (revision = 2) => runtime.state.apply('native', { ...response(revision), nativeRefresh: true,
         location: { ...runtime.state.location, locationRevision: runtime.state.locationRevision } })
     assert.equal(publish(), true)
-    const book = { runtime, requests, publish, native, response }
+    const book = { runtime, requests, actionRequests, publish, native, response }
     f.book = book
     return book
 }
@@ -782,7 +800,7 @@ test('a current page and independent completion action retain their presentation
     assert.equal(f.packets.at(-1).isBusy, true)
 })
 
-async function successfulMarkAwaitingAdvance(f) {
+async function successfulMarkAwaitingAdvance(f, { expectAdvance = true } = {}) {
     f.seedPage('current-page')
     f.reader.nativeMarkReadRequestCoordinator.request = async request => {
         f.requests.push(request)
@@ -795,7 +813,8 @@ async function successfulMarkAwaitingAdvance(f) {
     // timer without firing that timer or introducing a wall-clock delay.
     await new Promise(resolve => setImmediate(resolve))
     const advance = [...f.timers.values()].filter(timer => timer.delay === 430).at(-1)
-    assert.ok(advance, 'Successful Mark must reach its existing delayed advance')
+    if (expectAdvance) assert.ok(advance, 'A current Mark must retain its delayed advance')
+    else assert.equal(advance, undefined, 'Unavailable navigation authority retires the optional timer immediately')
     assert.equal(f.book.publish(f.nextMarkSequence, ['current-page-segment'], ['native-completed-current-page']), true)
     return { operation, advance }
 }
@@ -834,10 +853,14 @@ for (const unavailable of ['missing', 'throwing']) {
         t.after(() => book.runtime.close())
         f.doc.defaultView.manabiCaptureAutomaticScrollNavigation = unavailable === 'missing'
             ? undefined : () => { throw new Error('capture unavailable') }
-        const { operation, advance } = await successfulMarkAwaitingAdvance(f)
-        advance.callback()
+        const { operation } = await successfulMarkAwaitingAdvance(f, { expectAdvance: false })
         assert.equal(await operation, true)
-        assert.deepEqual(f.moves, [])
+        assert.equal(f.reader.lastNativeMarkReadRequestOutcome, 'committed')
+        assert.deepEqual(Array.from(f.reader.articleReadingProgress.readSegmentIdentifiers), ['current-page-segment'])
+        assert.deepEqual(Array.from(f.reader.articleReadingProgress.sentenceIdentifiersRead), ['native-completed-current-page'])
+        assert.equal(book.native(3), true)
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(f.moves, [], 'Later publication cannot restore unavailable navigation authority')
         assert.equal(f.requests.length, 1)
     })
 }
@@ -1126,3 +1149,201 @@ for (const succeeded of [false, true]) {
         assert.deepEqual(f.moves, [])
     })
 }
+
+
+test('a slow full publication advances once after the animation without holding the committed result', async t => {
+    const f = pendingNativeMark(t)
+    assert.equal(f.deliver(), true)
+    const result = await f.join()
+    assert.equal(result.value, true, 'Native Mark completes before the delayed publication')
+    assert.deepEqual(f.moves, [])
+    assert.equal(f.book.publish(2, ['current-page-segment']), true)
+    assert.deepEqual(f.moves, [], 'onState must finish before optional navigation')
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(f.moves, ['right'])
+    assert.equal(f.book.native(3), true)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(f.moves, ['right'], 'Later publications cannot replay the consumed action')
+})
+
+for (const successor of ['Unmark navigation', 'Mark All', 'new page Mark', 'shell page Mark', 'relocation']) {
+    test(`a slow publication cannot revive automatic advance after ${successor}`, async t => {
+        const f = pendingNativeMark(t)
+        assert.equal(f.deliver(), true)
+        assert.equal((await f.join()).value, true)
+        if (successor === 'Unmark navigation') f.retireNavigation()
+        if (successor === 'relocation') f.reader.testInvalidate()
+        if (successor === 'Mark All') {
+            f.reader.buildMarkAllSectionsAsReadPayload = () => null
+            assert.equal(await f.reader.markAllSectionsAsRead(), 0)
+        }
+        if (successor === 'shell page Mark') {
+            f.reader.pageTrackingStates = []
+            assert.equal(await f.reader.testMarkCluster(), false)
+        }
+        if (successor === 'new page Mark') {
+            assert.equal(await f.reader.markVisiblePageAsRead('native', 'superseded-account'), false)
+        }
+        // Even a later projection still containing the old Mark's subjects
+        // cannot substitute for its withdrawn user/navigation ownership.
+        assert.equal(f.book.publish(2, ['current-page-segment']), true)
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(f.moves, [])
+    })
+}
+
+test('explicit native turn admission revokes an in-flight Mark before asynchronous preparation', async t => {
+    const f = pendingNativeMark(t)
+    let release
+    const turn = f.reader.testRunPageTurn(() => new Promise(resolve => { release = resolve }))
+    assert.equal(typeof release, 'function')
+    assert.equal(f.deliver(), true)
+    assert.equal((await f.join({ publish: true })).value, true)
+    assert.deepEqual(f.moves, [], 'Mark must not steal navigation during native turn preparation')
+    release({ skipMove: true, result: { movementDisposition: 'not-owned' } })
+    await turn
+    assert.equal(f.book.native(3), true)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(f.moves, [], 'Finishing preparation cannot revive the old navigation receipt')
+})
+
+for (const cancelled of [false, true]) {
+    test(`native Mark ${cancelled ? 'Cancel losing the commit race' : 'without cancellation'} preserves saved state ${cancelled ? 'without' : 'with'} automatic advance`, async t => {
+        const f = pendingNativeMark(t)
+        if (cancelled) {
+            assert.equal(f.reader.nativeMarkReadRequestCoordinator.cancel(f.requests[0].message.requestID), true)
+            assert.equal(f.controls.at(-1).manualReadPendingOperation, 'cancel')
+        }
+        assert.equal(f.deliver(), true)
+        const result = await f.join({ publish: true })
+        assert.equal(result.error, undefined)
+        assert.equal(result.value, true, 'Cancel cannot change an authenticated committed success')
+        assert.equal(f.reader.lastNativeMarkReadRequestOutcome, 'committed')
+        assert.deepEqual(Array.from(f.reader.articleReadingProgress.readSegmentIdentifiers), ['current-page-segment'])
+        assert.deepEqual(Array.from(f.reader.articleReadingProgress.sentenceIdentifiersRead), ['native-completed-current-page'])
+        assert.deepEqual(f.moves, cancelled ? [] : ['right'])
+    })
+}
+
+
+for (const timing of ['before animation', 'after animation']) {
+    test(`full native coverage withdrawal ${timing} permanently consumes the original Mark turn`, async t => {
+        const f = pendingNativeMark(t)
+        assert.equal(f.deliver(), true)
+        await new Promise(resolve => setImmediate(resolve))
+        const animation = [...f.timers.values()].find(timer => timer.delay === 430)
+        assert.ok(animation)
+        if (timing === 'after animation') animation.callback()
+        assert.equal(f.book.publish(2, [], []), true,
+            'A full native cut withdraws the originally submitted page subjects')
+        await new Promise(resolve => setImmediate(resolve))
+        animation.callback()
+        assert.equal((await f.join()).value, true, 'Withdrawal cannot change native Mark success')
+        assert.deepEqual(f.moves, [])
+        assert.equal(f.book.runtime.state.refresh(), true)
+        assert.equal(f.book.publish(3, ['current-page-segment'], ['native-completed-current-page']), true,
+            'An independent later read restores coverage in the same chapter pass')
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(f.moves, [], 'Restored coverage cannot revive the withdrawn turn')
+    })
+}
+
+for (const timing of ['before animation', 'after animation']) {
+    test(`a partial receipt overtaking full state ${timing} is not definite coverage withdrawal`, async t => {
+        const f = pendingNativeMark(t)
+        assert.equal(f.deliver(), true)
+        await new Promise(resolve => setImmediate(resolve))
+        const animation = [...f.timers.values()].find(timer => timer.delay === 430)
+        assert.ok(animation)
+        if (timing === 'after animation') animation.callback()
+        assert.equal(f.book.publish(3, [], []), true)
+        // The Core handoff may advance the shell's ordering clock without
+        // replacing the full chapter projection. Resume must compare that
+        // clock before interpreting the cached membership as current absence.
+        assert.equal(f.book.runtime.state.noteManualReadSnapshot(4), true)
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(f.moves, [])
+        assert.equal(f.book.runtime.state.refresh(), true)
+        assert.equal(f.book.publish(4, ['current-page-segment'], ['native-completed-current-page']), true)
+        await new Promise(resolve => setImmediate(resolve))
+        if (timing === 'before animation') animation.callback()
+        await new Promise(resolve => setImmediate(resolve))
+        assert.equal((await f.join()).value, true)
+        assert.deepEqual(f.moves, ['right'], 'Only the current complete sample decides coverage')
+    })
+}
+
+
+test('full native withdrawal already present when the Mark reply arrives consumes advance immediately', async t => {
+    const f = pendingNativeMark(t)
+    assert.equal(f.book.runtime.state.refresh(), true)
+    assert.equal(f.book.publish(2, [], []), true)
+    assert.equal(f.deliver(), true)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal([...f.timers.values()].filter(timer => timer.delay === 430).length, 0,
+        'The already-present full withdrawal retires the new continuation before its timer')
+    assert.equal((await f.join()).value, true)
+    assert.equal(f.book.publish(3, ['current-page-segment'], ['native-completed-current-page']), true)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(f.moves, [], 'A later restored sample cannot hide withdrawal before registration')
+})
+
+
+for (const action of ['finishBook', 'startChapterOver', 'startBookOver']) {
+    test(`admitted native ${action} revokes old Mark movement before its native reply`, async t => {
+        const f = pendingNativeMark(t)
+        const originalNavigation = captureVisibleMarkReadNavigation(f.doc)
+        assert.equal(originalNavigation(), true)
+        const command = f.book.runtime.bridge.perform(action, f.book.runtime.state.captureContext())
+        command.catch(() => {})
+        assert.equal(f.book.actionRequests.length, 1)
+        assert.equal(originalNavigation(), false, 'Native action admission retires the original chapter receipt')
+        assert.equal(f.deliver(), true)
+        assert.equal((await f.join({ publish: true })).value, true)
+        assert.deepEqual(Array.from(f.reader.articleReadingProgress.readSegmentIdentifiers), ['current-page-segment'])
+        assert.deepEqual(f.moves, [], 'Committed Mark still paints while the newer native action waits')
+    })
+}
+
+test('a stale Book Actions menu cannot veto the current page Mark', async t => {
+    const f = pendingNativeMark(t)
+    const originalNavigation = captureVisibleMarkReadNavigation(f.doc)
+    await assert.rejects(f.book.runtime.bridge.perform('startBookOver', { contextID: 'old-book-context' }))
+    assert.equal(f.book.actionRequests.length, 0)
+    assert.equal(originalNavigation(), true)
+    assert.equal(f.deliver(), true)
+    assert.equal((await f.join({ publish: true })).value, true)
+    assert.deepEqual(f.moves, ['right'])
+})
+
+test('Book Action admission observer cannot post an old command after reentrant account replacement', async t => {
+    const f = fixture(), book = bookRuntimeFixture(f)
+    t.after(() => book.runtime.close())
+    const observe = f.reader.observeNativeNavigationIntent.bind(f.reader)
+    f.reader.observeNativeNavigationIntent = () => {
+        observe()
+        book.runtime.accountDidChange('2:1')
+    }
+    await assert.rejects(book.runtime.bridge.perform('startBookOver', book.runtime.state.captureContext()))
+    assert.equal(book.actionRequests.length, 0)
+    assert.equal(book.runtime.bridge.recoveryInfo, null, 'An unsent retired admission cannot reserve status recovery')
+})
+
+test('grabbing native progress scrub without movement revokes old Mark movement and preserves committed paint', async t => {
+    const f = pendingNativeMark(t)
+    const originalNavigation = captureVisibleMarkReadNavigation(f.doc)
+    let beginnings = 0
+    f.reader.navHUD = { scrubSession: { active: false },
+        getCurrentLocationDescriptor: () => ({ fraction: 0.5 }),
+        beginProgressScrubSession() { beginnings++; this.scrubSession.active = true } }
+    assert.equal(f.context.manabiBeginReaderProgressScrub(), true)
+    assert.equal(beginnings, 1)
+    assert.equal(originalNavigation(), false)
+    assert.equal(f.deliver(), true)
+    assert.equal((await f.join({ publish: true })).value, true)
+    assert.deepEqual(Array.from(f.reader.articleReadingProgress.readSegmentIdentifiers), ['current-page-segment'])
+    assert.deepEqual(f.moves, [])
+    const afterBegin = captureVisibleMarkReadNavigation(f.doc)
+    assert.equal(f.context.manabiBeginReaderProgressScrub(), true)
+    assert.equal(afterBegin(), true, 'A duplicate begin does not become a new navigation intent')
+})
