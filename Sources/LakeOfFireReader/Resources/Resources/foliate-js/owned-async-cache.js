@@ -35,7 +35,15 @@ export const createOwnedAsyncCache = ({
             // Every waiter joins the entire settlement, including retention
             // failures and owned cleanup, rather than only the factory result.
             operation.promise = Promise.resolve()
-                .then(() => createValue(controller?.signal ?? null))
+                .then(() => {
+                    // clear() can retire this entry before its first microtask.
+                    // Do not start work whose abort event has already fired.
+                    if (inFlightValues.get(key) !== operation) {
+                        throw controller?.signal.reason ?? Object.assign(
+                            new Error('The cache was cleared before work began.'), { name: 'AbortError' })
+                    }
+                    return createValue(controller?.signal ?? null)
+                })
                 .then(value => {
                     if (inFlightValues.get(key) === operation
                         && shouldRemember(value, key)
