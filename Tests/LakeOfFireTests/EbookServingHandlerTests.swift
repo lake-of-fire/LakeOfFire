@@ -95,6 +95,39 @@ final class EbookServingHandlerTests: XCTestCase {
     }
 
     @MainActor
+    func testProcessedSectionCarriesItsOriginalSnapshotThroughCacheAndProcessor() async throws {
+        let package = try await package("Original processing input")
+        let store = ReaderEBookServingSessionStore(), lease = try store.install(package)
+        let handler = handler(store), webView = WKWebView()
+        let cacheRead = expectation(description: "cache reader retains bound source")
+        let processed = expectation(description: "processor retains bound source")
+        handler.ebookProcessedTextCacheReader = { _, _, _ in
+            let source = try XCTUnwrap(EbookPackageProcessingContext.source)
+            XCTAssertTrue(source.lease === lease)
+            try await source.validate()
+            cacheRead.fulfill()
+            return nil
+        }
+        handler.ebookTextProcessor = { _, _, text, _, _, _, _, _, _ in
+            let source = try XCTUnwrap(EbookPackageProcessingContext.source)
+            XCTAssertTrue(source.lease === lease)
+            XCTAssertEqual(text, "Original processing input")
+            try await source.validate()
+            processed.fulfill()
+            return EbookProcessedSectionPayload(
+                documentHTML: Data("<html><body>processed</body></html>".utf8),
+                segmentSidecar: Data()
+            )
+        }
+        let task = ServingSchemeTask(request(route: "processed-section", session: lease.id))
+        handler.webView(webView, start: task)
+        await fulfillment(of: [cacheRead, processed, task.completed], timeout: 10)
+        XCTAssertEqual(task.finishCount, 1)
+        XCTAssertTrue(task.failures.isEmpty)
+        withExtendedLifetime((handler, store, webView)) {}
+    }
+
+    @MainActor
     func testSamePhysicalURLInTwoReadersKeepsDistinctRevisions() async throws {
         let first = try await package("First"), second = try await package("Second")
         let a = ReaderEBookServingSessionStore(), b = ReaderEBookServingSessionStore()
