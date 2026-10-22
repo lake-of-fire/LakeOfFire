@@ -64,60 +64,12 @@ Viewer observer are reused unchanged. This is independent of #235's Book-state
 History retirement fix and does not include the withdrawn complete-subject
 coverage proposal.
 
-## Focused execution
+## Verification
 
-Node 22.16.0. The new `book-navigation-recovery-intent.test.mjs` imports complete
-production bridge, Book-state, Mark coordinator and actual producer/UUID
-module dependencies. Native messages, frame receipt/Reader observer, timer
-callbacks and lifecycle input are explicit controlled collaborators.
-
-| Identical final fourteen tests | Passed | Failed | Skipped/cancelled |
-| --- | ---: | ---: | ---: |
-| Exact #234 bridge | 8 | 6 | 0 |
-| Corrected bridge | 14 | 0 | 0 |
-
-The six failures are variants of one missing navigation-intent admission, not
-six independent defects. Tests cover chapter/whole-book retry, successful Mark
-and full coverage, cached status, stale location and Article/chapter pass,
-missing projection/producer, duplicate recovery, observer reentry, callback
-account/location replacement, ordinary fresh command and stale-menu controls.
-Negative controls release outstanding deliveries before failing their decisive
-assertions; failures are not test-runner timeouts or missing dependencies.
-
-The final focused selection, using the exact #234 Book-state source, passes
-**45/45**, with zero failures, skips or cancellations: fourteen new cases,
-nineteen unchanged cancellation/recovery-composition cases, and twelve unchanged
-visible-Mark commit cases. Fourteen is included in forty-five. An earlier
-8-case development checkpoint is not an additional test count.
-
-```sh
-node --test --test-concurrency=1 \
-  Tests/JavaScript/book-navigation-recovery-intent.test.mjs \
-  Tests/JavaScript/native-mark-read-cancel-recovery-integration.test.mjs \
-  Tests/JavaScript/ebook-visible-mark-read-commit.test.mjs
-```
-
-Changed production/test JavaScript syntax and diff-whitespace checks pass.
-This is not full Viewer execution, real renderer movement, native menu/transport,
-BFCache, Realm, Swift/XCTest, Safari/WKWebView or device qualification. Native
-acceptance should hold Go to Beginning after a committed failed navigation,
-complete a separately admitted page Mark, and verify that only the explicit
-recovery may move while the Mark remains successfully saved.
-
-## Source and integration
-
-Base: Lake #234, `integration/hotfix-unmark-prs-20261021`,
-`e1ad62c7eff6a136fd12b32cc4eb05bb66608a4d`.
-Original bridge: `74eb5b47c7a7cf2da10f3b8dfef40f61a482f8ee`.
-Unchanged Book state: `b814b9818d2ca026ed8b0e5cd82589d6c68de0cf`.
-Unchanged Mark coordinator: `dfcccb13e68e68360916e6287937b2684014786b`.
-Runtime: `b054c3c7aaa0a7bb05aca92e71111e8803bd38c2`.
-Viewer: `cf95be5063d491a7199af2fbdf31886d2e5fa7f6`.
-Core menu inspected at `1cf0dc99f8d9b3b38a30f5877f6727bab3d73f48`;
-menu blob `ead0a6c119bd13c4373f502b6b403675982736b0`.
-
-The complete original bridge was checked against its Git blob before editing.
-Publish only the bridge, new test file and this note. No existing integration
-head or app gitlink is moved. Keep draft pending native qualification. Commits
-use `[skip ci]`; no hosted workflow dispatch, shipping merge, schema, production
-data operation or release action is part of this fix.
+`Tests/JavaScript/book-navigation-recovery-intent.test.mjs` composes the production
+bridge, Book state and Mark coordinator with controlled native/frame collaborators.
+It covers chapter and whole-book retries, stale pass/location, nested recovery,
+account changes and successful Mark coverage. Run it with the cancellation/recovery
+and visible-Mark suites. Keep actual native menu, Viewer, Realm and device acceptance
+explicit: a late successful Mark must stay saved while its old automatic movement is
+retired by the user's Go to Beginning selection.
