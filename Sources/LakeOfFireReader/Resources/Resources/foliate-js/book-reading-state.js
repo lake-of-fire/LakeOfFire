@@ -211,11 +211,15 @@ export class BookReadingStateController {
         const changed = !sameLocation(next, this.#location)
         if (!changed && !moved && !replaced) return false
         if (this.#revision >= Number.MAX_SAFE_INTEGER) { this.close(); return false }
+        // A same-chapter move also retires location-bound History recovery.
+        // Its failed/completed query no longer polls, so notify the owner now
+        // rather than retaining its notice until another native sample arrives.
+        const withdrawsProjection = changed || replaced || this.#historyRecovery !== null
         this.#revision++; this.#location = next; this.#pending = null
         this.#retireHistoryRecovery()
-        if (changed || replaced) { this.#context = null; this.#state = null }
+        if (withdrawsProjection) { this.#context = null; this.#state = null }
         const isCurrent = this.#captureAdmission()
-        if (changed || replaced) {
+        if (withdrawsProjection) {
             // The location has already changed and withdrawn the old context.
             // Failed outgoing paint cannot suppress its read-only native refresh:
             // another observation of this same location would be a no-op.
