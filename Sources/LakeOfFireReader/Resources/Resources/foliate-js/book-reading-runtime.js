@@ -139,6 +139,7 @@ export const installBookReadingRuntime = ({ reader, view, document, window,
         postMessage: payload => handlers.ebookBookAction.postMessage(payload),
         documentStartedAtMs, topWindowURL: window.location.href,
         captureContext: expected => state.captureContext(expected),
+        onCommandAdmission: () => reader.observeNativeNavigationIntent?.(),
         // Both owners change before timer cleanup may synchronously publish a
         // fresh account sample. It must not be disabled by an older reset.
         onAccountChange: () => endcap?.accountDidChange(),

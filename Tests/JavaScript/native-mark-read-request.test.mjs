@@ -422,6 +422,7 @@ test('publishes success only after the exact pending-protocol native reply', asy
         outcomeKnown: true,
         stale: false,
         presentationAllowed: true,
+        cancellationRequested: false,
         errorCode: null,
         nativeResult,
     })
@@ -1568,3 +1569,20 @@ test('a new tap cannot coalesce into an old command settled during owner validat
     assert.equal(h.coordinator.settle(terminalFor(h.posted[1])), true)
     assert.equal((await second).success, true)
 })
+
+for (const cancelled of [false, true]) {
+    test(`terminal native success retains ${cancelled ? 'requested' : 'absent'} cancellation as effect metadata`, async () => {
+        const h = harness()
+        const completion = h.coordinator.request({ sectionID: 'section-a', message: {} })
+        const message = h.posted[0]
+        if (cancelled) assert.equal(h.coordinator.cancel(message.requestID), true)
+        assert.equal(h.coordinator.settle(terminalFor(message)), true)
+        const outcome = await completion
+        assert.equal(outcome.success, true)
+        assert.equal(outcome.outcomeKnown, true)
+        assert.equal(outcome.presentationAllowed, true, 'Saved state may still be displayed')
+        assert.equal(outcome.cancellationRequested, cancelled)
+        assert.equal(h.coordinator.pendingCount, 0)
+        assert.equal(h.timeouts.size, 0)
+    })
+}

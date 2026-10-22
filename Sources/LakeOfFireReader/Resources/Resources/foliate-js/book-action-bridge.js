@@ -28,6 +28,7 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
     captureProducerOwner = captureReaderArticleProducerOwner,
     carryProducerOwner = carryReaderArticleProducerOwner,
     onAccountChange = () => {},
+    onCommandAdmission = () => {},
 }) => {
     let closed = false, preparing = false, current = null, accountPresentation = null
     const deliveries = new Map(), completed = new Map()
@@ -181,6 +182,20 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
                     throw new Error('The current chapter has no valid Book Actions context.')
                 }
                 if (!preparationIsCurrent()) throw new Error('The reader changed before the action was prepared.')
+                // Native menus do not emit chapter navigation events. Withdraw
+                // optional old page-Mark movement only after this exact action
+                // has passed context, producer and serialization admission.
+                const contextIsCurrent = () => {
+                    if (!preparationIsCurrent()) return false
+                    const latest = captureContext?.(preparedContext)
+                    const matches = latest && fingerprint(copy(latest)) === fingerprint(preparedContext)
+                    return matches && preparationIsCurrent()
+                }
+                if (!contextIsCurrent()) throw new Error('The chapter changed. Reopen Book Actions.')
+                onCommandAdmission()
+                // The observer can synchronously close, replace an account or
+                // relocate. Its return cannot lend admission to that successor.
+                if (!contextIsCurrent()) throw new Error('The reader changed before the action was prepared.')
                 request = { requestID, action, context: preparedContext, producerOwner, accountPresentation: account,
                     sequence: 0, active: null, result: null }
             } catch (error) { return Promise.reject(error) }
