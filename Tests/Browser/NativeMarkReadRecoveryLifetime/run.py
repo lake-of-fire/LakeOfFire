@@ -24,7 +24,7 @@ CASES = ROOT / 'Tests/JavaScript/native-mark-read-recovery-lifetime-cases.mjs'
 IMPORT = re.compile(r'''(?m)^([ \t]*import[ \t]+(?:[\w*{},\s]+[ \t]+from[ \t]+)?)(['"])(\.[^'"]+)\2''')
 
 
-def module_inputs(source: Path) -> tuple[str, dict[str, str]]:
+def module_inputs(source: Path, cases: Path = CASES) -> tuple[str, dict[str, str]]:
     modules: dict[str, str] = {}
 
     def visit(path: Path) -> str:
@@ -44,12 +44,14 @@ def module_inputs(source: Path) -> tuple[str, dict[str, str]]:
         modules[key] = IMPORT.sub(replace, text)
         return key
 
-    return visit(CASES), modules
+    return visit(cases), modules
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, default=SOURCE)
+    parser.add_argument('--cases', type=Path, default=CASES,
+                        help='Local case module exporting recoveryLifetimeCases; default suite is unchanged.')
     parser.add_argument('--browser', default=os.environ.get('CHROMIUM_PATH')
                         or shutil.which('chromium') or shutil.which('chromium-browser'))
     parser.add_argument('--output', type=Path)
@@ -59,7 +61,7 @@ def main() -> int:
         parser.error('Provide --browser or CHROMIUM_PATH for an installed Chromium executable.')
     if args.output and args.output.exists():
         parser.error('Use a fresh --output path; existing results are not overwritten.')
-    entry, modules = module_inputs(source)
+    entry, modules = module_inputs(source, args.cases)
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
