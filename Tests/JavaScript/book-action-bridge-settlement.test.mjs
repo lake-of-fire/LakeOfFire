@@ -82,18 +82,22 @@ for (const boundary of ['close', 'account']) {
     })
 }
 
-test('throwing timer installation retains the existing status-only recovery policy', async t => {
+test('throwing timer installation rejects locally and leaves a deliberate action available', async t => {
     const f = fixture(t, { setTimer: () => { throw new Error('timer installation failed') } })
     let completion
     assert.doesNotThrow(() => { completion = f.perform('finishBook') })
-    assert.equal(f.posts.length, 0)
-    assert.equal((await observe(completion)).status, 'rejected')
+    const outcome = await observe(completion)
+    assert.equal(outcome.status, 'rejected')
+    assert.equal(unknown(outcome.error), false, 'No transport was entered')
+    assert.equal(f.bridge.recoveryInfo, null)
+    assert.equal((await observe(f.recover())).status, 'rejected')
+    assert.equal(f.posts.length, 0, 'There is no native request to check')
     f.hooks.setTimer = null
-    const status = f.recover()
+    const fresh = f.perform('finishBook')
     assert.equal(f.posts.length, 1)
-    assert.equal(f.posts[0].kind, 'status')
-    f.ack(f.posts[0], { ok: false, committed: false })
-    assert.equal((await observe(status)).status, 'fulfilled')
+    assert.equal(f.posts[0].kind, 'command')
+    f.ack()
+    assert.equal((await observe(fresh)).value.committed, true)
     assert.equal(f.bridge.recoveryInfo, null)
 })
 
@@ -487,3 +491,83 @@ test('the actual compatibility producer adapter can attach evidence in place', a
     f.ack()
     assert.equal((await observe(completion)).status, 'fulfilled')
 })
+
+
+for (const action of ['finishBook', 'startChapterOver', 'startBookOver']) {
+    test(`a timer firing during ${action} setup cannot reserve an unsent operation`, async t => {
+        const f = fixture(t)
+        let retiredCallback
+        f.hooks.setTimer = callback => {
+            retiredCallback = callback
+            callback()
+            return 99
+        }
+        const outcome = await observe(f.perform(action))
+        assert.equal(outcome.status, 'rejected')
+        assert.equal(unknown(outcome.error), false)
+        assert.equal(f.posts.length, 0)
+        assert.equal(f.bridge.recoveryInfo, null)
+        assert.ok(f.cleared.includes(99), 'Dispose the handle returned after local settlement')
+        f.hooks.setTimer = null
+        const fresh = f.perform(action)
+        const requestID = f.posts[0].requestID
+        retiredCallback()
+        assert.equal(f.bridge.recoveryInfo.requestID, requestID,
+            'A late old timer cannot retire a deliberate successor')
+        f.ack()
+        assert.equal((await observe(fresh)).value.committed, true)
+        assert.equal(f.timers.size, 0)
+    })
+}
+
+test('timeout reached during envelope preparation releases only the never-sent command', async t => {
+    const f = fixture(t)
+    let abandoned
+    f.hooks.carry = body => {
+        abandoned = body
+        f.timeout()
+        return body
+    }
+    const outcome = await observe(f.perform())
+    assert.equal(outcome.status, 'rejected')
+    assert.equal(unknown(outcome.error), false)
+    assert.equal(f.bridge.recoveryInfo, null)
+    assert.equal(f.posts.length, 0)
+    assert.equal(f.timers.size, 0)
+    assert.equal(f.ack(abandoned), false, 'An aborted local request has no reply capability')
+    f.hooks.carry = null
+    const fresh = f.perform()
+    assert.notEqual(f.posts[0].requestID, abandoned.requestID)
+    f.ack()
+    assert.equal((await observe(fresh)).value.committed, true)
+})
+
+for (const kind of ['status', 'navigate']) {
+    test(`a timer firing during ${kind} setup preserves the original submitted operation`, async t => {
+        const f = fixture(t), original = f.perform()
+        const command = f.posts[0]
+        if (kind === 'status') {
+            f.timeout()
+            assert.equal((await observe(original)).status, 'rejected')
+        } else {
+            f.ack(command, { navigation: { status: 'failed' } })
+            assert.equal((await observe(original)).value.committed, true)
+        }
+        f.hooks.setTimer = callback => { callback(); return 99 }
+        const failedRecovery = await observe(f.recover())
+        assert.equal(failedRecovery.status, 'rejected')
+        assert.equal(unknown(failedRecovery.error), true,
+            'Only this observation was unsent; the original operation remains native-owned')
+        assert.equal(f.bridge.recoveryInfo.requestID, command.requestID)
+        assert.equal(f.posts.length, 1)
+        assert.ok(f.cleared.includes(99))
+        assert.equal((await observe(f.perform())).status, 'rejected')
+        f.hooks.setTimer = null
+        const recovery = f.recover()
+        assert.equal(f.posts[1].kind, 'status')
+        assert.equal(f.posts[1].requestID, command.requestID)
+        f.ack()
+        assert.equal((await observe(recovery)).value.committed, true)
+        assert.equal(f.bridge.recoveryInfo, null)
+    })
+}
