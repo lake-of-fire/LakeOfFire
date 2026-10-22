@@ -613,7 +613,13 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
                 ofType: BigSyncPendingMutation.self, forPrimaryKey: "UserScript.\(original.id)"
             ))
         }
-        XCTAssertEqual(restoredLibrary.getActiveWebViewUserScripts()?.count, 2)
+        // WKContentWorld is initialized on the main thread; use an immutable
+        // Realm snapshot while checking the actual WebKit script projection.
+        let frozenLibrary = restoredLibrary.freeze()
+        let activeScriptCount = await MainActor.run {
+            frozenLibrary.getActiveWebViewUserScripts()?.count
+        }
+        XCTAssertEqual(activeScriptCount, 2)
         let generations = Dictionary(uniqueKeysWithValues: restoredRealm.objects(BigSyncPendingMutation.self)
             .map { ($0.recordName, $0.generation) })
         try await LibraryDataManager.shared.importOPML(
