@@ -176,8 +176,11 @@ test('the status observation retires a same-chapter move without another invalid
     const f = fixture(t)
     const r = await f.finishHidden()
     f.show()
-    // A page move changes the revision without clearing the same-chapter cache.
+    // Exercise the status fallback independently of relocation invalidation.
+    // Otherwise immediate cleanup would make this original regression vacuous.
+    f.state.onInvalidate = () => {}
     assert.equal(f.state.relocate({ sectionURL: chapterURL('a') }, { moved: true }), true)
+    assert.equal(f.visibleNotices.has(r.command.requestID), true)
     const controls = f.controls.length
     f.fireTimers()
     assert.equal(f.visibleNotices.has(r.command.requestID), false)
