@@ -1346,7 +1346,7 @@ export class NavigationHUD {
         }
         if (this.isProcessingRelocateJump) {
             this.currentLocationDescriptor = descriptor;
-            this._finalizePendingRelocateJump(descriptor);
+            this._finalizePendingRelocateJump(detail);
             if (this.isProcessingRelocateJump || this.pendingRelocateJump) {
                 return;
             }
@@ -1888,7 +1888,7 @@ export class NavigationHUD {
     }
     
     _pruneBackStackIfReturnedToOrigin(detail) {
-        if (!detail) return;
+        if (!detail || this.pendingRelocateJump) return;
         const descriptor = this._makeLocationDescriptor(detail);
         if (!descriptor) return;
         const reason = (detail.reason || '').toLowerCase();
@@ -1932,12 +1932,15 @@ export class NavigationHUD {
         return !!result?.entry;
     }
     
-    _finalizePendingRelocateJump() {
+    _finalizePendingRelocateJump(detail) {
         const pending = this.pendingRelocateJump;
         if (!pending) {
             this.isProcessingRelocateJump = false;
             return;
         }
+        // Layout and older relocation updates can arrive while this jump is
+        // loading. Only the jump's own receipt confirms history.
+        if (!pending.relocationID || detail?.relocationID !== pending.relocationID) return;
         const direction = pending.direction;
         if (!direction) {
             this.pendingRelocateJump = null;
@@ -1995,6 +1998,7 @@ export class NavigationHUD {
 
         this.pendingRelocateJump = {
             direction,
+            relocationID: explicitRelocateOwnership?.relocationID ?? null,
             targetDescriptor: descriptor,
             preJumpDescriptor,
         };
