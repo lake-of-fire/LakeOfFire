@@ -473,6 +473,214 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
     }
 
+    @RealmBackgroundActor
+    func testOPMLRoundTripPreservesEmptyCategoriesAndNestedDirectories() async throws {
+        let sourceConfiguration = makeOPMLConfiguration()
+        let restoredConfiguration = makeOPMLConfiguration()
+        let sourceRealm = try await RealmBackgroundActor.shared.cachedRealm(for: sourceConfiguration)
+        let restoredRealm = try await RealmBackgroundActor.shared.cachedRealm(for: restoredConfiguration)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: sourceConfiguration)
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: restoredConfiguration)
+        }
+        let library = LibraryConfiguration()
+        let emptyCategory = FeedCategory()
+        emptyCategory.title = "Empty category"
+        let category = FeedCategory()
+        category.title = "Directories"
+        let parent = FeedDirectory()
+        parent.title = "Parent"
+        parent.categoryID = category.id
+        parent.ordinal = 1
+        let nestedEmpty = FeedDirectory()
+        nestedEmpty.title = "Nested empty directory"
+        nestedEmpty.categoryID = category.id
+        nestedEmpty.parentDirectoryID = parent.id
+        nestedEmpty.ordinal = 0
+        let empty = FeedDirectory()
+        empty.title = "Empty directory"
+        empty.categoryID = category.id
+        empty.ordinal = 0
+        library.categoryIDs.append(objectsIn: [emptyCategory.id, category.id])
+        try sourceRealm.write {
+            sourceRealm.add([library, emptyCategory, category, parent, nestedEmpty, empty])
+        }
+
+        let opml = try await LibraryDataManager.shared.exportUserOPML(
+            realmConfiguration: sourceConfiguration
+        )
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("library-roundtrip-\(UUID().uuidString).opml")
+        try opml.xml.write(to: fileURL, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        try await LibraryDataManager.shared.importOPML(
+            fileURL: fileURL, realmConfiguration: restoredConfiguration
+        )
+
+        let restoredLibrary = try XCTUnwrap(restoredRealm.objects(LibraryConfiguration.self).first)
+        XCTAssertEqual(Array(restoredLibrary.categoryIDs), [emptyCategory.id, category.id])
+        XCTAssertEqual(restoredRealm.objects(FeedCategory.self).count, 2)
+        let restoredEmptyCategory = try XCTUnwrap(restoredRealm.object(
+            ofType: FeedCategory.self, forPrimaryKey: emptyCategory.id
+        ))
+        XCTAssertEqual(restoredEmptyCategory.title, emptyCategory.title)
+        XCTAssertTrue(restoredEmptyCategory.isEmpty())
+        for original in [parent, nestedEmpty, empty] {
+            let restored = try XCTUnwrap(restoredRealm.object(
+                ofType: FeedDirectory.self, forPrimaryKey: original.id
+            ))
+            XCTAssertEqual(restored.title, original.title)
+            XCTAssertEqual(restored.categoryID, original.categoryID)
+            XCTAssertEqual(restored.parentDirectoryID, original.parentDirectoryID)
+            XCTAssertEqual(restored.ordinal, original.ordinal)
+            XCTAssertFalse(restored.isDeleted)
+            XCTAssertNotNil(restoredRealm.object(
+                ofType: BigSyncPendingMutation.self, forPrimaryKey: "FeedDirectory.\(original.id)"
+            ))
+        }
+        XCTAssertEqual(restoredRealm.objects(FeedDirectory.self).count, 3)
+        XCTAssertNotNil(restoredRealm.object(
+            ofType: BigSyncPendingMutation.self, forPrimaryKey: "FeedCategory.\(emptyCategory.id)"
+        ))
+        let generations = Dictionary(uniqueKeysWithValues: restoredRealm.objects(BigSyncPendingMutation.self)
+            .map { ($0.recordName, $0.generation) })
+        try await LibraryDataManager.shared.importOPML(
+            fileURL: fileURL, realmConfiguration: restoredConfiguration
+        )
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: restoredRealm.objects(BigSyncPendingMutation.self)
+            .map { ($0.recordName, $0.generation) }), generations)
+    }
+
+    @RealmBackgroundActor
+    func testOPMLRoundTripPreservesDisabledAndEmptyScriptsWithoutRejournaling() async throws {
+        let sourceConfiguration = makeOPMLConfiguration()
+        let restoredConfiguration = makeOPMLConfiguration()
+        let sourceRealm = try await RealmBackgroundActor.shared.cachedRealm(for: sourceConfiguration)
+        let restoredRealm = try await RealmBackgroundActor.shared.cachedRealm(for: restoredConfiguration)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: sourceConfiguration)
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: restoredConfiguration)
+        }
+        let library = LibraryConfiguration()
+        let disabled = UserScript()
+        disabled.title = "Disabled"
+        disabled.script = "window.disabledScript = true;"
+        disabled.isArchived = true
+        let disabledEmpty = UserScript()
+        disabledEmpty.title = "Disabled empty draft"
+        disabledEmpty.isArchived = true
+        let enabledEmpty = UserScript()
+        enabledEmpty.title = "Enabled empty draft"
+        let enabled = UserScript()
+        enabled.title = "Enabled"
+        enabled.script = "window.enabledScript = true;"
+        let deleted = UserScript()
+        deleted.title = "Deleted"
+        deleted.isDeleted = true
+        let scripts = [enabled, disabled, disabledEmpty, enabledEmpty]
+        library.userScriptIDs.append(objectsIn: scripts.map(\.id) + [deleted.id])
+        try sourceRealm.write {
+            sourceRealm.add(library)
+            sourceRealm.add(scripts + [deleted])
+        }
+
+        let opml = try await LibraryDataManager.shared.exportUserOPML(
+            realmConfiguration: sourceConfiguration
+        )
+        XCTAssertEqual(Array(library.userScriptIDs), scripts.map(\.id))
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scripts-roundtrip-\(UUID().uuidString).opml")
+        try opml.xml.write(to: fileURL, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        try await LibraryDataManager.shared.importOPML(
+            fileURL: fileURL, realmConfiguration: restoredConfiguration
+        )
+
+        let restoredLibrary = try XCTUnwrap(restoredRealm.objects(LibraryConfiguration.self).first)
+        XCTAssertEqual(Array(restoredLibrary.userScriptIDs), scripts.map(\.id))
+        XCTAssertEqual(restoredRealm.objects(UserScript.self).count, scripts.count)
+        XCTAssertNil(restoredRealm.object(ofType: UserScript.self, forPrimaryKey: deleted.id))
+        XCTAssertTrue(restoredRealm.objects(FeedCategory.self).isEmpty)
+        for original in scripts {
+            let restored = try XCTUnwrap(restoredRealm.object(
+                ofType: UserScript.self, forPrimaryKey: original.id
+            ))
+            XCTAssertEqual(restored.title, original.title)
+            XCTAssertEqual(restored.script, original.script)
+            XCTAssertEqual(restored.isArchived, original.isArchived)
+            XCTAssertFalse(restored.isDeleted)
+            XCTAssertNotNil(restoredRealm.object(
+                ofType: BigSyncPendingMutation.self, forPrimaryKey: "UserScript.\(original.id)"
+            ))
+        }
+        // WKContentWorld is initialized on the main thread; use an immutable
+        // Realm snapshot while checking the actual WebKit script projection.
+        let frozenLibrary = restoredLibrary.freeze()
+        let activeScriptCount = await MainActor.run {
+            frozenLibrary.getActiveWebViewUserScripts()?.count
+        }
+        XCTAssertEqual(activeScriptCount, 2)
+        let generations = Dictionary(uniqueKeysWithValues: restoredRealm.objects(BigSyncPendingMutation.self)
+            .map { ($0.recordName, $0.generation) })
+        try await LibraryDataManager.shared.importOPML(
+            fileURL: fileURL, realmConfiguration: restoredConfiguration
+        )
+        let consolidated = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: restoredConfiguration
+        )
+        XCTAssertEqual(Array(consolidated.userScriptIDs), scripts.map(\.id))
+        XCTAssertEqual(consolidated.getActiveWebViewUserScripts()?.count, 2)
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: restoredRealm.objects(BigSyncPendingMutation.self)
+            .map { ($0.recordName, $0.generation) }), generations)
+    }
+
+    @RealmBackgroundActor
+    func testOPMLScriptWithoutArchiveAttributeRemainsEnabledAndIdempotent() async throws {
+        let configuration = makeOPMLConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        let script = UserScript()
+        script.isArchived = true
+        let library = LibraryConfiguration()
+        library.userScriptIDs.append(script.id)
+        try realm.write { realm.add([library, script]) }
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <opml version="2.0"><head/><body>
+          <outline text="User Scripts" isUserScriptList="true">
+            <outline text="Legacy script" uuid="\(script.id.uuidString)" script="window.legacy = true;"/>
+          </outline>
+        </body></opml>
+        """
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-script-\(UUID().uuidString).opml")
+        try xml.write(to: fileURL, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        try await LibraryDataManager.shared.importOPML(fileURL: fileURL, realmConfiguration: configuration)
+
+        XCTAssertFalse(script.isArchived)
+        XCTAssertEqual(script.script, "window.legacy = true;")
+        XCTAssertEqual(Array(library.userScriptIDs), [script.id])
+        let generations = Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
+            .map { ($0.recordName, $0.generation) })
+        XCTAssertNotNil(generations["UserScript.\(script.id)"])
+        try await LibraryDataManager.shared.importOPML(fileURL: fileURL, realmConfiguration: configuration)
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
+            .map { ($0.recordName, $0.generation) }), generations)
+    }
+
+    private func makeOPMLConfiguration() -> Realm.Configuration {
+        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        configuration.objectTypes = [
+            LibraryConfiguration.self, FeedCategory.self, FeedDirectory.self, Feed.self,
+            UserScript.self, UserScriptAllowedDomain.self,
+        ]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        return configuration
+    }
+
     private func makeConfiguration() -> Realm.Configuration {
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         configuration.objectTypes = [

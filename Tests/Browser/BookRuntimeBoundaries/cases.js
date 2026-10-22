@@ -609,3 +609,84 @@ add('scope-less endcap remains usable after the old chapter iframe is discarded'
         expect(!f.view.inert && !f.runtime.endcap.element.isConnected, 'Teardown retained inaccessible terminal UI')
     } finally { cleanup(f) }
 })
+
+
+for (const failure of ['native-error', 'held-query']) {
+    add(`same-chapter movement retires ${failure} History recovery before its next native sample`, async () => {
+        let coordinator, visible = true, timerID = 0
+        const f = await make({ onInvalidate: () => coordinator?.cancelAll() })
+        const commands = [], controls = [], timers = new Map(), events = new EventTarget()
+        const notice = document.createElement('output')
+        document.body.append(notice)
+        const state = f.runtime.state, scope = state.context.scope
+        const initialLocation = state.location.sectionURL
+        const owner = { current: true, scope }
+        const recoveryContext = { revision: state.locationRevision }
+        const current = () => state.locationRevision === recoveryContext.revision
+            && state.location.sectionURL === initialLocation && owner.current
+        coordinator = BookStateTestModules.createNativeMarkReadRequestCoordinator({
+            makeRequestID: () => 'browser-history-recovery',
+            lifecycleTarget: events,
+            postMessage: packet => commands.push(packet),
+            postControlMessage: packet => controls.push(packet),
+            isOwnerCurrent: candidate => visible && candidate.current,
+            scheduleTimeout: (callback, delay) => {
+                timers.set(++timerID, { callback, delay }); return timerID
+            },
+            cancelTimeout: id => timers.delete(id),
+            onPending: packet => { notice.textContent = packet.phase === 'finished' ? '' : packet.phase },
+            onRecoveryIsCurrent: current,
+            onRecovery: args => BookStateTestModules.refreshNativeMarkReadBookStateForRecovery(
+                f.runtime, scope, () => args.isCurrent() && current(), args.observation),
+            onRecoveryQuery: proof => state.recoverHistoryReadingStatus(proof),
+        })
+        try {
+            const completion = coordinator.request({ sectionID: 'chapter', owner, context: recoveryContext,
+                message: { desiredState: 'unmarked', stableSegmentIDs: ['segment-1'], sentenceIdentifiers: [],
+                    topWindowURL: location.href, pageURL: initialLocation, documentStartedAtMs: 100,
+                    bookReadingScope: scope } })
+            const command = commands.at(-1)
+            expect(!!command, 'The original Unmark was not dispatched')
+            visible = false; events.dispatchEvent(new Event('pagehide'))
+            expect(coordinator.settle({ requestID: command.requestID, sectionId: command.sectionId,
+                manualReadPendingProtocol: 1,
+                manualReadPendingObservationToken: command.manualReadPendingObservationToken,
+                manualReadPendingState: 'finished', success: true,
+                manualReadPendingHistoryRecovery: true, manualReadPendingOutcomeOnly: true,
+                manualReadPendingPresentationAllowed: false }), 'The native outcome was not accepted')
+            const outcome = await completion
+            expect(outcome.success && outcome.outcomeKnown, 'The original outcome was changed')
+            visible = true; events.dispatchEvent(new Event('pageshow'))
+            const proof = { requestID: command.requestID, observationToken: command.manualReadPendingObservationToken }
+            const recovery = coordinator.recoverHistoryReadingStatus(proof)
+            await f.tick()
+            const oldRequest = f.requests.at(-1)
+            expect(oldRequest.historyRecoveryObservation?.requestID === command.requestID,
+                'The exact native-authorized History read did not start')
+            if (failure === 'native-error') {
+                expect(!state.apply(oldRequest.requestID, { ...f.result(2), ok: false, error: 'native read failed',
+                    historyRecoveryObservation: oldRequest.historyRecoveryObservation,
+                    location: { sectionURL: oldRequest.sectionURL, isEndPage: oldRequest.isEndPage,
+                        locationRevision: oldRequest.locationRevision } }),
+                    'A failed native read was accepted as a projection')
+                expect(await recovery === false && notice.textContent === 'recovery-failed',
+                    'The failed History recovery notice was not retained')
+            }
+            expect(timers.size === 0, 'Admitted recovery still has a status timer')
+            const requestCount = f.requests.length, controlCount = controls.length
+            expect(f.runtime.updateLocation(true), 'Same-chapter movement was not admitted')
+            expect(state.location.sectionURL === initialLocation, 'The regression changed chapters')
+            expect(notice.textContent === '', 'Old History notice survived a same-chapter move')
+            expect(!coordinator.ownsHistoryReadingStatusRecovery(proof), 'The retired observer still owns recovery')
+            expect(await recovery === false, 'The held old read did not settle on departure')
+            expect(f.requests.length === requestCount + 1, 'Movement did not retain exactly one replacement sample')
+            expect(!state.ready && f.visible() === 'Loading', 'A pending replacement exposed stale chapter presentation')
+            expect(!state.apply(oldRequest.requestID, f.result(3)), 'The old reply consumed the new read')
+            expect(f.apply(f.result(4)) && state.ready && f.visible() === 'Revision 4',
+                'The held replacement native reply lost its slot or failed to render')
+            expect(commands.length === 1 && controls.length === controlCount,
+                'Departure replayed Unmark or sent Cancel/status for a completed command')
+            expect(await completion === outcome, 'Cleanup replaced the original native outcome')
+        } finally { coordinator.close(); cleanup(f); notice.remove() }
+    })
+}

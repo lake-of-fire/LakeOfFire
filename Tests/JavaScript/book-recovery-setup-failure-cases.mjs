@@ -294,7 +294,8 @@ for (const boundary of ['negative reply', 'throwing invalidation', 'sample copyi
         try { accepted = f.state.apply(oldRequest.requestID, oldReply) } catch (error) { thrown = error }
         equal(replacementEntered, true, 'controlled boundary entered')
         if (boundary === 'throwing invalidation') {
-            equal(thrown?.message, 'Old invalidation failed after retry', 'existing reply error behavior retained')
+            equal(thrown, undefined, 'Optional invalidation failure is contained')
+            equal(accepted, false, 'Old reply cannot acknowledge the replacement')
         } else {
             equal(thrown, undefined, 'ordinary old reply does not throw')
             equal(accepted, false, 'old reply cannot acknowledge replacement')
@@ -347,9 +348,9 @@ for (const boundary of ['negative reply', 'publication failure', 'location valid
                 try { result = f.state.apply(oldRequest.requestID,
                     f.reply(oldRequest, 2, boundary !== 'negative reply')) }
                 catch (caught) { error = caught }
-                // Publication failures have an existing contained-error contract;
-                // negative/validation callback errors still belong to their caller.
-                if (throwsAfterRetry && boundary !== 'publication failure') equal(error, failure, 'original error preserved')
+                // Optional invalidation and publication errors are contained;
+                // an authorizing location predicate still reports its own error.
+                if (throwsAfterRetry && boundary === 'location validation') equal(error, failure, 'original error preserved')
                 else { equal(error, undefined, 'no unexpected error'); equal(result, false, 'old reply rejected') }
                 equal(callbackCount, 1, 'cleanup entered once')
                 await turn()

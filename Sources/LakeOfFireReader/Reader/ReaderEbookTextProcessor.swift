@@ -93,6 +93,35 @@ public enum EbookProcessingVariantContext {
     @TaskLocal public static var current: EbookProcessingVariant?
 }
 
+/// One existing document package and its original publication admission.
+/// The lease owns immutable bytes; the admission also checks that this reader
+/// still uses that lease, since another reader may legitimately retain it.
+public struct EbookPackageProcessingSource: Sendable {
+    public let lease: ReaderEBookServingLease
+    private let admission: @MainActor @Sendable () throws -> Void
+
+    public init(
+        lease: ReaderEBookServingLease,
+        admission: @escaping @MainActor @Sendable () throws -> Void
+    ) {
+        self.lease = lease
+        self.admission = admission
+    }
+
+    @MainActor
+    public func validate() throws {
+        try Task.checkCancellation()
+        try lease.validate()
+        try admission()
+        try lease.validate()
+        try Task.checkCancellation()
+    }
+}
+
+public enum EbookPackageProcessingContext {
+    @TaskLocal public static var source: EbookPackageProcessingSource?
+}
+
 public typealias EbookProcessingVariantProvider = @Sendable () async -> EbookProcessingVariant
 
 public func ebookTextProcessor(

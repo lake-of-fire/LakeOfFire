@@ -28,6 +28,7 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
     captureProducerOwner = captureReaderArticleProducerOwner,
     carryProducerOwner = carryReaderArticleProducerOwner,
     onAccountChange = () => {},
+    onCommandAdmission = () => {},
 }) => {
     let closed = false, preparing = false, current = null, accountPresentation = null
     const deliveries = new Map(), completed = new Map()
@@ -57,6 +58,34 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
     }
     const requestProducerReadiness = () => {
         try { globalThis.manabiArticleProducer?.ready?.().catch?.(() => {}) } catch (_) {}
+    }
+    const observeRecoveryNavigationIntent = (request, result, mayPost) => {
+        // The original reset may already have published its successor context.
+        // Compare that known result and the original location, not its retired
+        // contextID. Missing projection still needs native publication recovery.
+        let context
+        try { context = copy(captureContext?.()) } catch (_) { return }
+        if (!mayPost() || !context || result?.ok !== true || result.committed !== true
+            || !['startBookOver', 'startChapterOver'].includes(request.action)
+            || context.locationRevision !== request.context.locationRevision
+            || context.articleProgressID !== request.context.articleProgressID
+            || context.articleEpochID !== result.articleEpochID
+            || context.isEndPage !== request.context.isEndPage
+            || (request.action === 'startChapterOver'
+                && (context.sectionLocation !== request.context.sectionLocation
+                    || context.scope?.chapterKey !== request.context.scope?.chapterKey
+                    || context.scope?.chapterEpochID !== result.chapterEpochID))) return
+        const expected = fingerprint(context)
+        const isCurrent = () => {
+            if (!mayPost()) return false
+            const latest = captureContext?.(context)
+            return latest && fingerprint(copy(latest)) === expected && mayPost()
+        }
+        if (!isCurrent()) return
+        // Go to Beginning is a new explicit movement intent, not another reset.
+        // Reuse the Reader's existing page-Mark navigation retirement boundary.
+        onCommandAdmission()
+        if (!isCurrent()) throw new Error('The reader changed before navigation recovery.')
     }
     const deliver = (request, kind) => {
         if (closed) return Promise.reject(new Error('Reader closed'))
@@ -96,9 +125,28 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
         deliveries.set(deliveryID, delivery)
         const mayPost = () => ownsRequest(request) && !delivery.settled
             && request.active === delivery && deliveries.get(deliveryID) === delivery
+        let postEntered = false
+        // Preparation errors and timer expiry share the same transport boundary.
+        // An injected scheduler may expire during setup, before any native call.
+        const failDelivery = error => {
+            if (kind === 'command' && !postEntered && mayPost()) {
+                // This fresh operation never reached native. Remove its local
+                // reservation before timer cleanup can admit another action;
+                // Check Status cannot recover a command which was never sent.
+                deliveries.delete(deliveryID)
+                if (current === request) current = null
+                request.active = null
+                settle(delivery, null, new Error('The book action could not be sent. Try again.'))
+            } else {
+                // Entering transport can leave the outcome unknown even when
+                // its wrapper throws. Recovery preparation also retains the
+                // original submitted operation. A synchronous reply still wins.
+                settle(delivery, null, unknown(request, error))
+            }
+        }
         try {
-            const timer = setTimer(() => settle(delivery, null, new BookActionUnacknowledgedError(
-                'The action has not been acknowledged. Check its status before starting another reading pass.', request)), timeoutMilliseconds)
+            const timer = setTimer(() => failDelivery(new Error(
+                'The action has not been acknowledged. Check its status before starting another reading pass.')), timeoutMilliseconds)
             // Installation can synchronously acknowledge, time out or retire
             // the delivery. Its late returned handle must not become an orphan.
             if (!mayPost()) { clearDeliveryTimer(timer); return promise }
@@ -119,11 +167,12 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
             const semantic = prepared && Object.fromEntries(fields.map(key => [key, prepared[key]]))
             if (!mayPost()) return promise
             if (!semantic || fingerprint(semantic) !== expected) throw new Error('The book action changed before dispatch.')
+            if (kind === 'navigate') observeRecoveryNavigationIntent(request, previousResult, mayPost)
+            if (!mayPost()) return promise
+            postEntered = true
             postMessage(prepared)
         } catch (error) {
-            // Preserve a terminal reply received synchronously before a wrapper
-            // throws. Otherwise retain the original status-only recovery path.
-            settle(delivery, null, unknown(request, error))
+            failDelivery(error)
         }
         return promise
     }
@@ -181,6 +230,20 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
                     throw new Error('The current chapter has no valid Book Actions context.')
                 }
                 if (!preparationIsCurrent()) throw new Error('The reader changed before the action was prepared.')
+                // Native menus do not emit chapter navigation events. Withdraw
+                // optional old page-Mark movement only after this exact action
+                // has passed context, producer and serialization admission.
+                const contextIsCurrent = () => {
+                    if (!preparationIsCurrent()) return false
+                    const latest = captureContext?.(preparedContext)
+                    const matches = latest && fingerprint(copy(latest)) === fingerprint(preparedContext)
+                    return matches && preparationIsCurrent()
+                }
+                if (!contextIsCurrent()) throw new Error('The chapter changed. Reopen Book Actions.')
+                onCommandAdmission()
+                // The observer can synchronously close, replace an account or
+                // relocate. Its return cannot lend admission to that successor.
+                if (!contextIsCurrent()) throw new Error('The reader changed before the action was prepared.')
                 request = { requestID, action, context: preparedContext, producerOwner, accountPresentation: account,
                     sequence: 0, active: null, result: null }
             } catch (error) { return Promise.reject(error) }

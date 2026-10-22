@@ -86,13 +86,28 @@ struct ReaderContentCellLoadIdentity: Hashable {
     let url: URL
     let modifiedAt: Date
     let imageURL: URL?
+    let readingProgressRevision: UInt64
 
-    init(item: any ReaderContentProtocol, includesSource: Bool) {
+    init(item: any ReaderContentProtocol, includesSource: Bool, readingProgressRevision: UInt64 = 0) {
         compoundKey = item.compoundKey
         self.includesSource = includesSource
         url = item.url
         modifiedAt = item.modifiedAt
         imageURL = item.imageUrl
+        self.readingProgressRevision = readingProgressRevision
+    }
+}
+
+private struct ReaderContentCellReadingProgressRevisionKey: EnvironmentKey {
+    static let defaultValue: UInt64 = 0
+}
+
+public extension EnvironmentValues {
+    /// The host observes its reading models once; retained rows only restart
+    /// their metadata load, preserving row, history and annotation ownership.
+    var readerContentCellReadingProgressRevision: UInt64 {
+        get { self[ReaderContentCellReadingProgressRevisionKey.self] }
+        set { self[ReaderContentCellReadingProgressRevisionKey.self] = newValue }
     }
 }
 
@@ -514,6 +529,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
 
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @Environment(\.readerContentCellStyle) private var readerContentCellStyle
+    @Environment(\.readerContentCellReadingProgressRevision) private var readingProgressRevision
     @Environment(\.readerContentCellAnnotationStatusLoader) private var readerContentCellAnnotationStatusLoader
     @Environment(\.readerContentCellAnnotationStatusUpdates) private var readerContentCellAnnotationStatusUpdates
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
@@ -1165,7 +1181,8 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         }
         .task(id: ReaderContentCellLoadIdentity(
             item: item,
-            includesSource: appearance.includeSource
+            includesSource: appearance.includeSource,
+            readingProgressRevision: readingProgressRevision
         )) {
             try? await viewModel.load(item: item, includeSource: appearance.includeSource)
         }

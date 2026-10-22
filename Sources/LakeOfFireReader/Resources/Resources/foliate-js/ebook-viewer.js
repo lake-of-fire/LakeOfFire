@@ -9,7 +9,7 @@ import { bookScopeKey } from './book-reading-state.js'
 import { applyBookReadingProjection } from './book-reading-projection.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import { processedSectionURLForHref } from './ebook-direct-section.js'
-import { visibleMarkReadSidecarSelection } from './ebook-visible-mark-read-selection.js'
+import { visibleMarkReadSidecarSelection, visibleMarkReadSegmentIsRead } from './ebook-visible-mark-read-selection.js'
 import { forwardCustomReaderFontStyleToDocuments } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
@@ -4970,13 +4970,13 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress, visibleRang
             visibleSegmentItemsByIdentifier.set(item.segmentIdentifier, item);
         }
     }
-    const segmentMatchesReadProgress = (segmentIdentifier) => {
-        const item = visibleSegmentItemsByIdentifier.get(segmentIdentifier);
-        const aliases = Array.isArray(item?.segmentIdentifierAliases) && item.segmentIdentifierAliases.length > 0
-            ? item.segmentIdentifierAliases
-            : [segmentIdentifier];
-        return aliases.some((identifier) => readSegmentIdentifiers.has(identifier));
-    };
+    const segmentMatchesReadProgress = (segmentIdentifier) =>
+        visibleMarkReadSegmentIsRead(segmentIdentifier, {
+            ...visibleSegmentItemsByIdentifier.get(segmentIdentifier),
+            // Membership comes from the native sidecar, including fragments
+            // whose rendered sentence wrapper is only a partial view.
+            sentenceIdentifier: bootstrap.byID?.get?.(segmentIdentifier)?.sentenceID,
+        }, readSegmentIdentifiers, readSentenceIdentifiers);
     const visibleSegmentIdentifierList = Array.from(visibleSegmentIdentifiers);
     const unreadVisibleSegmentIdentifiers = visibleSegmentIdentifierList
         .filter((segmentIdentifier) => !segmentMatchesReadProgress(segmentIdentifier));
@@ -5470,6 +5470,7 @@ class Reader {
     #closed = false;
     #pageLifetime = {};
     #successfulBookReadPublication = null;
+    #pendingMarkReadAdvance = null;
     #markReadProducerReadiness = null;
     #markReadDiagnosticGeneration = 0;
     #markReadBusyOwners = new Map();
@@ -5712,6 +5713,7 @@ class Reader {
     close(reason = 'unspecified') {
         if (this.#closed) return false;
         this.#closed = true;
+        this.#retireMarkReadAdvance();
         // Dispose transport while the original generation still identifies
         // the current chapter. The coordinator compares exact ownership and
         // closes its own admissions; reentrant Reader close sees #closed.
@@ -6311,7 +6313,10 @@ class Reader {
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
-        this.#listen(window, 'pagehide', () => { this.#pageLifetime = {}; });
+        this.#listen(window, 'pagehide', () => {
+            this.#pageLifetime = {};
+            this.#retireMarkReadAdvance();
+        });
         const historyRecoveryLocations = new WeakMap()
         const ownsHistoryRecoveryLocation = (context, runtime) => {
             const receipt = historyRecoveryLocations.get(context)
@@ -6709,6 +6714,7 @@ class Reader {
     #invalidateVisiblePageSegmentSnapshot(sourceReason = 'unspecified') {
         const shouldResetVisibleGeometry = shouldInvalidateVisibleSegmentGeometryForReason(sourceReason);
         if (shouldResetVisibleGeometry) {
+            this.#retireMarkReadAdvance();
             this.visiblePageCollectionGeneration += 1;
             if (this.visiblePageSegmentSnapshot) {
                 this.lastInvalidatedVisiblePageSegmentSnapshot = this.visiblePageSegmentSnapshot;
@@ -6929,6 +6935,9 @@ class Reader {
         this.refreshNativeLookupHitTargets?.('chapter-pass-publication');
         if (owner && current()) {
             this.#successfulBookReadPublication = { revision: state.revision, owner };
+            // Let the state controller finish accepting this publication before
+            // optional navigation can invalidate the location it just applied.
+            Promise.resolve().then(() => this.#tryMarkReadAdvance()).catch(() => {});
         }
     }
     applyBookReadingProgress(articleReadingProgress, _reason = 'unspecified', scoped = false) {
@@ -7349,11 +7358,14 @@ class Reader {
             if (refreshCommittedVisibleState) {
                 owner.minimumReadSnapshotSequence = outcome.nativeResult?.stateSnapshotSequence;
                 owner.committedVisibleStableSegmentIDs = outcome.context.payload.segments.map(segment => segment.stableSegmentID);
-                completed.mayAdvance = refreshCommittedVisibleMarkReadState({
+                const refreshedVisibleState = refreshCommittedVisibleMarkReadState({
                     outcome,
                     state: this.bookReadingRuntime?.state,
                     isOwnerCurrent: () => this.#isMarkReadOwnerCurrent(owner),
                 });
+                // A successful native commit still paints after Cancel, but
+                // the user's cancellation withdraws optional page advancement.
+                completed.mayAdvance = refreshedVisibleState && outcome.cancellationRequested !== true;
             } else {
                 if (this.bookReadingRuntime && !this.bookReadingRuntime.state.noteManualReadSnapshot(outcome.nativeResult?.stateSnapshotSequence)) return completed;
                 if (!this.#isMarkReadOwnerCurrent(owner)) return completed;
@@ -7466,6 +7478,8 @@ class Reader {
         return 0;
     }
     async markAllSectionsAsRead() {
+        this.#retireMarkReadAdvance();
+        ++this.#markReadDiagnosticGeneration;
         const producerOwner = this.#captureProducerEvidence();
         const doc = getPrimaryRendererContent(this.view?.renderer)?.doc ?? null;
         const bookEvent = this.bookReadingRuntime?.captureEvent(doc) ?? null;
@@ -7490,8 +7504,14 @@ class Reader {
     async #markPageClusterAsRead(
         stateID, producerOwner = null, bookEvent = null,
         originAccountPresentation = null,
-        diagnosticGeneration = this.#markReadDiagnosticGeneration
+        diagnosticGeneration = null
     ) {
+        // Shell tracking buttons enter here directly; native admission already
+        // supplies its generation before demand hydration.
+        if (diagnosticGeneration === null) {
+            this.#retireMarkReadAdvance();
+            diagnosticGeneration = ++this.#markReadDiagnosticGeneration;
+        }
         producerOwner ??= this.#captureProducerEvidence();
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
         if (!pageTrackingState) {
@@ -7513,6 +7533,7 @@ class Reader {
             requireVisibleGeneration: true,
             bookReadingScope: bookEvent?.scope ?? null,
         });
+        advanceOwner.diagnosticGeneration = diagnosticGeneration;
         advanceOwner.bookEvent = bookEvent;
         advanceOwner.navigationIsCurrent = captureVisibleMarkReadNavigation(doc);
         this.lastNativeMarkReadRequestOutcome = 'pending';
@@ -7549,6 +7570,7 @@ class Reader {
     async markVisiblePageAsRead(
         source = 'native', originAccountPresentation = null
     ) {
+        this.#retireMarkReadAdvance();
         const diagnosticGeneration = ++this.#markReadDiagnosticGeneration;
         const reject = code => this.#rejectNativeMarkRead(code, diagnosticGeneration);
         if (this.#closed || globalThis.reader !== this) return false;
@@ -7911,6 +7933,11 @@ class Reader {
         if (typeof move !== 'function') {
             return { ignored: true, reason: 'missingMoveHandler' };
         }
+        // Revoke even while a native turn is preparing or waiting in the
+        // existing queue: its intent already supersedes optional Mark advance.
+        this.#retireMarkReadAdvance();
+        const frame = this.#currentPageTrackingDocument()?.defaultView;
+        try { frame?.manabiObserveAutomaticScrollNavigation?.(); } catch (_) {}
         const turnOriginScope = this.bookReadingRuntime?.state.state?.scope;
         const turnOrigin = turnOriginScope ? {
             lifecycleGeneration: this.#lifecycleGeneration,
@@ -8838,29 +8865,112 @@ class Reader {
             await this.#settleInitialPaginatorLayout(reason);
         });
     }
-    async #advanceAfterMarkRead(owner) {
-        await new Promise((resolve) => setTimeout(resolve, 430));
-        if (
-            !this.#isMarkReadOwnerCurrent(owner)
-            || typeof owner.navigationIsCurrent !== 'function'
-            || owner.navigationIsCurrent() !== true
-            || (owner.bookEvent && this.bookReadingRuntime?.isEventCurrent(owner.bookEvent) !== true)
+    #retireMarkReadAdvance(pending = this.#pendingMarkReadAdvance) {
+        if (this.#pendingMarkReadAdvance !== pending) return;
+        this.#pendingMarkReadAdvance = null;
+        if (pending?.timer != null) clearTimeout(pending.timer);
+    }
+    observeNativeNavigationIntent() {
+        if (this.#closed || globalThis.reader !== this) return;
+        const lifetime = this.#pageLifetime, generation = this.#lifecycleGeneration;
+        const renderer = this.view?.renderer, runtime = this.bookReadingRuntime;
+        const account = runtime?.state?.accountPresentation;
+        const markGeneration = this.#markReadDiagnosticGeneration;
+        const pending = this.#pendingMarkReadAdvance;
+        const doc = this.#currentPageTrackingDocument();
+        const frame = doc?.defaultView;
+        let observe;
+        try { observe = frame?.manabiObserveAutomaticScrollNavigation; } catch (_) {}
+        // Frame lookup is caller code. Never let an old lookup revoke a new
+        // Reader, account, document or page-Mark that it installed reentrantly.
+        const ownsIntent = expectedPending => !this.#closed && globalThis.reader === this && this.#pageLifetime === lifetime
+            && this.#lifecycleGeneration === generation && this.view?.renderer === renderer
+            && this.bookReadingRuntime === runtime && runtime?.state?.accountPresentation === account
+            && this.#markReadDiagnosticGeneration === markGeneration
+            && this.#pendingMarkReadAdvance === expectedPending;
+        if (!ownsIntent(pending) || this.#currentPageTrackingDocument() !== doc || !ownsIntent(pending)) return;
+        this.#retireMarkReadAdvance(pending);
+        // Optional timer disposal can also reenter. Preserve a successor Mark's
+        // freshly captured receipt instead of revoking it through the old frame.
+        if (!ownsIntent(null) || this.#currentPageTrackingDocument() !== doc || !ownsIntent(null)) return;
+        try { if (typeof observe === 'function') Reflect.apply(observe, frame, []); } catch (_) {}
+    }
+    #advanceAfterMarkRead(owner) {
+        if (!this.#isMarkReadOwnerCurrent(owner)
+            || owner.diagnosticGeneration !== this.#markReadDiagnosticGeneration) return;
+        this.#retireMarkReadAdvance();
+        const pending = { owner, animationReady: false, timer: null };
+        this.#pendingMarkReadAdvance = pending;
+        // This is only the minimum read animation duration. A slower native
+        // publication resumes this exact action through onState, without polling
+        // or delaying the already committed Mark result.
+        pending.timer = setTimeout(() => {
+            if (this.#pendingMarkReadAdvance !== pending) return;
+            pending.timer = null;
+            pending.animationReady = true;
+            void this.#tryMarkReadAdvance().catch(() => {});
+        }, 430);
+        // The full sample may have beaten the reply/continuation registration.
+        // Observe its withdrawal now rather than waiting for the animation.
+        void this.#tryMarkReadAdvance().catch(() => {});
+    }
+    async #tryMarkReadAdvance() {
+        const pending = this.#pendingMarkReadAdvance;
+        if (!pending) return false;
+        const { owner } = pending;
+        const current = () => this.#isMarkReadOwnerCurrent(owner)
+            && owner.diagnosticGeneration === this.#markReadDiagnosticGeneration
+            && !this.#pageTurnInFlight
+            && typeof owner.navigationIsCurrent === 'function'
+            && owner.navigationIsCurrent() === true
+            && (!owner.bookEvent || this.bookReadingRuntime?.isEventCurrent(owner.bookEvent) === true);
+        if (!current()) {
+            this.#retireMarkReadAdvance(pending);
+            return false;
+        }
+        const publication = this.#successfulBookReadPublication;
+        const state = this.bookReadingRuntime?.state;
+        const projection = state?.state;
+        const submittedIDs = owner.committedVisibleStableSegmentIDs;
+        // A current full sample can definitively withdraw this intent even
+        // before the animation ends. A newer partial receipt only makes the
+        // cached full sample stale; it cannot supply evidence of withdrawal.
+        if (state?.ready === true
+            && this.#isMarkReadOwnerCurrent(publication?.owner)
+            && Number.isSafeInteger(projection?.revision)
+            && projection.revision >= owner.minimumReadSnapshotSequence
+            && projection.revision === publication?.revision
+            && Array.isArray(projection.readSegmentIdentifiers)
+            && Array.isArray(submittedIDs) && submittedIDs.length > 0
+            && submittedIDs.every(id => typeof id === 'string' && id.length > 0)
+            && state.noteManualReadSnapshot?.(projection.revision) === true) {
+            const readIDs = new Set(projection.readSegmentIdentifiers);
+            if (submittedIDs.some(id => !readIDs.has(id))) {
+                if (current() && this.#pendingMarkReadAdvance === pending
+                    && this.#successfulBookReadPublication === publication) {
+                    this.#retireMarkReadAdvance(pending);
+                }
+                return false;
+            }
+        }
+        if (!pending.animationReady
             || !this.#isMarkReadOwnerCurrent(this.#successfulBookReadPublication?.owner)
             || !committedVisibleMarkReadStateIsPresented({
                 state: this.bookReadingRuntime?.state,
                 minimumSnapshotSequence: owner.minimumReadSnapshotSequence,
                 stableSegmentIDs: owner.committedVisibleStableSegmentIDs,
                 successfulPublicationSequence: this.#successfulBookReadPublication?.revision,
-            })
-            || !this.#isMarkReadOwnerCurrent(owner)
-        ) {
+            })) return false;
+        if (!current()) {
+            this.#retireMarkReadAdvance(pending);
             return false;
         }
-        if (this.isRTL) {
-            return await this.view?.goLeft?.() === true;
-        } else {
-            return await this.view?.goRight?.() === true;
-        }
+        if (this.#pendingMarkReadAdvance !== pending) return false;
+        // Consume before invoking navigation: relocation and native publications
+        // can reenter, and must never replay the action.
+        this.#retireMarkReadAdvance(pending);
+        return this.isRTL ? await this.view?.goLeft?.() === true
+            : await this.view?.goRight?.() === true;
     }
     #releaseSideNavChevronHoverSuppression(key) {
         const cleanup = this.#chevronHoverSuppressionCleanup[key];
@@ -9110,6 +9220,7 @@ class Reader {
     }
     async open(file, options = {}) {
         if (this.#closed) throw readerOpenSupersededError()
+        this.#retireMarkReadAdvance();
         const lifecycleGeneration = ++this.#lifecycleGeneration
         this.#confirmedTurnAwaitingChapter = null;
         this.#markReadProducerReadiness?.close();
@@ -9148,6 +9259,7 @@ class Reader {
         this.bookReadingRuntime = installBookReadingRuntime({
             reader: this, view, document, window, documentStartedAtMs: readerDocumentStartedAtMs(),
             invalidateProjection: () => {
+                this.#retireMarkReadAdvance();
                 this.#successfulBookReadPublication = null;
                 this.#clearOptimisticMarkReadState('chapter-state-unavailable');
                 this.nativeMarkReadRequestCoordinator?.cancelAll('chapter-state-unavailable');
@@ -13789,10 +13901,13 @@ window.manabiCancelScheduledReaderFractionGoTo = () => {
 
 window.manabiBeginReaderProgressScrub = () => {
     markRestorePositionSaveUserInput('bridge.beginReaderProgressScrub');
-    const navHUD = globalThis.reader?.navHUD;
+    const reader = globalThis.reader;
+    const navHUD = reader?.navHUD;
     if (navHUD?.scrubSession?.active) {
         return true;
     }
+    reader?.observeNativeNavigationIntent?.();
+    if (globalThis.reader !== reader || reader?.navHUD !== navHUD) return false;
     const originDescriptor = navHUD?.getCurrentLocationDescriptor?.() ?? null;
     navHUD?.beginProgressScrubSession?.(originDescriptor);
     return true;

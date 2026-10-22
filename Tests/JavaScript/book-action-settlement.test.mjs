@@ -215,7 +215,7 @@ for (const boundary of ['close', 'account', 'timeout', 'acknowledge']) {
     })
 }
 
-test('throwing timer installation returns a recoverable promise instead of stranding current', async t => {
+test('throwing timer installation rejects the unsent action and permits a fresh action', async t => {
     const f = fixture(t)
     f.hooks.install = id => { f.timers.delete(id); throw new Error('timers unavailable') }
     let promise
@@ -223,14 +223,18 @@ test('throwing timer installation returns a recoverable promise instead of stran
     const observed = observe(promise)
     await drain()
     assert.equal(observed.status, 'rejected')
-    assert.equal(observed.error.outcomeUnknown, true)
+    assert.equal(observed.error.outcomeUnknown, undefined, 'No native transport was entered')
     assert.equal(f.messages.length, 0)
-    delete f.hooks.install
+    assert.equal(f.bridge.recoveryInfo, null)
     const status = observe(f.bridge.recover())
-    assert.equal(f.messages[0].kind, 'status')
-    f.acknowledge(f.messages[0], { ok: false, committed: false })
     await drain()
-    assert.equal(status.status, 'fulfilled')
+    assert.equal(status.status, 'rejected', 'An unsent action has no native status to recover')
+    delete f.hooks.install
+    const fresh = observe(f.bridge.perform('finishBook'))
+    assert.equal(f.messages[0].kind, 'command')
+    f.acknowledge(f.messages[0])
+    await drain()
+    assert.equal(fresh.status, 'fulfilled')
     assert.equal(f.bridge.recoveryInfo, null)
 })
 
@@ -272,7 +276,7 @@ for (const seam of ['context', 'producer', 'identifier', 'copy']) {
         let nested
         const reenter = () => {
             delete f.hooks[seam]
-            if (seam === 'copy') f.hooks.contextValue = { contextID: 'plain' }
+            if (seam === 'copy') f.hooks.contextValue = { contextID: 'copied' }
             nested = observe(f.bridge.perform('finishBook'))
         }
         if (seam === 'copy') {

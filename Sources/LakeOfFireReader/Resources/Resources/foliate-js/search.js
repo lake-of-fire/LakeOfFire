@@ -6,10 +6,10 @@ const normalizeWhitespace = str => str.replace(/\s+/g, ' ')
 const makeExcerpt = (strs, { startIndex, startOffset, endIndex, endOffset }) => {
     const start = strs[startIndex]
     const end = strs[endIndex]
-    const match = start === end
+    const match = startIndex === endIndex
         ? start.slice(startOffset, endOffset)
         : start.slice(startOffset)
-            + strs.slice(start + 1, end).join('')
+            + strs.slice(startIndex + 1, endIndex).join('')
             + end.slice(0, endOffset)
     const trimmedStart = normalizeWhitespace(start.slice(0, startOffset)).trimStart()
     const trimmedEnd = normalizeWhitespace(end.slice(endOffset)).trimEnd()
@@ -21,6 +21,7 @@ const makeExcerpt = (strs, { startIndex, startOffset, endIndex, endOffset }) => 
 }
 
 const simpleSearch = function* (strs, query, options = {}) {
+    if (!query.length) return
     const { locales = 'en', sensitivity } = options
     const matchCase = sensitivity === 'variant'
     const haystack = strs.join('')
@@ -28,18 +29,26 @@ const simpleSearch = function* (strs, query, options = {}) {
     const needle = matchCase ? query : query.toLocaleLowerCase(locales)
     const needleLength = needle.length
     let index = -1
-    let strIndex = -1
+    let strIndex = 0
     let sum = 0
     do {
         index = lowerHaystack.indexOf(needle, index + 1)
         if (index > -1) {
-            while (sum <= index) sum += strs[++strIndex].length
+            while (sum + strs[strIndex].length <= index) {
+                sum += strs[strIndex++].length
+            }
             const startIndex = strIndex
-            const startOffset = index - (sum - strs[strIndex].length)
+            const startOffset = index - sum
             const end = index + needleLength
-            while (sum <= end) sum += strs[++strIndex].length
-            const endIndex = strIndex
-            const endOffset = end - (sum - strs[strIndex].length)
+            // End offsets are exclusive. Keep their cursor separate so a hit
+            // at a node boundary stays in that node and overlapping matches
+            // can still start before this match's final node.
+            let endIndex = startIndex
+            let endSum = sum
+            while (endSum + strs[endIndex].length < end) {
+                endSum += strs[endIndex++].length
+            }
+            const endOffset = end - endSum
             const range = { startIndex, startOffset, endIndex, endOffset }
             yield { range, excerpt: makeExcerpt(strs, range) }
         }
@@ -47,7 +56,8 @@ const simpleSearch = function* (strs, query, options = {}) {
 }
 
 const segmenterSearch = function* (strs, query, options = {}) {
-    const { locales = 'en', granularity = 'word', sensitivity = 'base' } = options
+    if (!strs.length || !query.length) return
+    const { locales = 'en', granularity = 'grapheme', sensitivity = 'base' } = options
     let segmenter, collator
     try {
         segmenter = new Intl.Segmenter(locales, { usage: 'search', granularity })
@@ -100,12 +110,34 @@ const segmenterSearch = function* (strs, query, options = {}) {
     }
 }
 
+// Collation keeps case-folding expansions out of DOM offsets. Segment the
+// joined text so a combining sequence split across inline nodes stays intact,
+// then map the original UTF-16 offsets back to those nodes.
+const collatedGraphemeSearch = function* (strs, query, options) {
+    let startIndex = 0, startSum = 0
+    for (const result of segmenterSearch([strs.join('')], query, options)) {
+        const start = result.range.startOffset, end = result.range.endOffset
+        while (startSum + strs[startIndex].length <= start) {
+            startSum += strs[startIndex++].length
+        }
+        let endIndex = startIndex, endSum = startSum
+        while (endSum + strs[endIndex].length < end) {
+            endSum += strs[endIndex++].length
+        }
+        const range = { startIndex, startOffset: start - startSum,
+            endIndex, endOffset: end - endSum }
+        yield { range, excerpt: makeExcerpt(strs, range) }
+    }
+}
+
 export const search = (strs, query, options) => {
     const { granularity = 'grapheme', sensitivity = 'base' } = options
     if (!Intl?.Segmenter || granularity === 'grapheme'
-    && (sensitivity === 'variant' || sensitivity === 'accent'))
+    && sensitivity === 'variant')
         return simpleSearch(strs, query, options)
-    return segmenterSearch(strs, query, options)
+    return granularity === 'grapheme' && sensitivity === 'accent'
+        ? collatedGraphemeSearch(strs, query, options)
+        : segmenterSearch(strs, query, options)
 }
 
 export const searchMatcher = (textWalker, opts) => {

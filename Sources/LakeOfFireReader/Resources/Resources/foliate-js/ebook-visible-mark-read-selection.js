@@ -19,3 +19,20 @@ export const visibleMarkReadSidecarSelection = ({
     }
     return Array.from(selected.values());
 };
+
+
+// A sentence in the native read projection covers all its segments, even when
+// the projection omits individually enumerated readSegmentIdentifiers. The
+// visible-page label must use both supported forms of native read evidence.
+export const visibleMarkReadSegmentIsRead = (
+    segmentIdentifier, item, readSegmentIdentifiers, readSentenceIdentifiers
+) => {
+    if (typeof item?.sentenceIdentifier === 'string'
+        && item.sentenceIdentifier.length > 0
+        && readSentenceIdentifiers.has(item.sentenceIdentifier)) return true
+    const aliases = Array.isArray(item?.segmentIdentifierAliases)
+        && item.segmentIdentifierAliases.length > 0
+        ? item.segmentIdentifierAliases
+        : [segmentIdentifier]
+    return aliases.some(identifier => readSegmentIdentifiers.has(identifier))
+}

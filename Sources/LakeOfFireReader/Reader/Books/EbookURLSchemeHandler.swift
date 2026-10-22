@@ -332,10 +332,13 @@ actor EBookSectionProcessingDeduper {
                 waiters: [:]
             )
 
-            let producer = Task { [operation] in
+            let processingSource = EbookPackageProcessingContext.source
+            let producer = Task { [operation, processingSource] in
                 let outcome: SectionProcessingOutcome
                 do {
-                    outcome = .success(try await operation())
+                    outcome = .success(try await EbookPackageProcessingContext.$source.withValue(processingSource) {
+                        try await operation()
+                    })
                 } catch is CancellationError {
                     outcome = .cancelled
                 } catch {
@@ -441,7 +444,7 @@ public actor EBookProcessingActor {
     ) async throws -> EBookNativeSectionPrewarmResult {
         try Task.checkCancellation()
         let entryData = try source.readEntry(subpath: sectionHref)
-        let entryText = String(decoding: entryData, as: UTF8.self)
+        let entryText = ReaderPackageEntrySource.decodeText(entryData)
         let processedPayload = try await process(
             contentURL: contentURL,
             location: sectionHref,
@@ -929,6 +932,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     try Task.checkCancellation()
                     let processingVariant = await ebookProcessingVariantProvider?()
                     try Task.checkCancellation()
+                    let processingSource = capturedRead.lease.map { lease in
+                        EbookPackageProcessingSource(lease: lease) {
+                            try capturedRead.validate()
+                        }
+                    }
+                    try await EbookPackageProcessingContext.$source.withValue(processingSource) {
                     try await EbookProcessingVariantContext.$current.withValue(processingVariant) {
                     let isDirectSectionLoad = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                         .queryItems?
@@ -1094,6 +1103,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             data: responseData
                         )
                     }()
+                    }
                     }
                 } catch {
                     await { @MainActor in

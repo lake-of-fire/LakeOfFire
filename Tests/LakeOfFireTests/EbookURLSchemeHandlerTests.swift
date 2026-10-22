@@ -1204,6 +1204,52 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(result.pageStatsOutcome, .unsupported)
     }
 
+    func testNativeSectionPrewarmDecodesUTF16PackageTextBeforeProcessing() async throws {
+        let chapterHTML = "<?xml version=\"1.0\"?><html><body>日本語の章</body></html>"
+        let littleEndian = try XCTUnwrap(chapterHTML.data(using: .utf16LittleEndian))
+        let bigEndian = try XCTUnwrap(chapterHTML.data(using: .utf16BigEndian))
+        let encodings: [(String, Data)] = [
+            ("utf8", Data(chapterHTML.utf8)),
+            ("utf16le-bom", Data([0xFF, 0xFE]) + littleEndian),
+            ("utf16be-bom", Data([0xFE, 0xFF]) + bigEndian),
+            ("utf16le", littleEndian),
+            ("utf16be", bigEndian),
+        ]
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+        let contentURL = URL(string: "ebook://ebook/load/local/Books/encoding.epub")!
+
+        for (name, entryData) in encodings {
+            let sectionHref = name + ".xhtml"
+            try entryData.write(to: temporaryRoot.appendingPathComponent(sectionHref))
+            let source = try ReaderPackageEntrySource(localURL: temporaryRoot)
+            let processed = expectation(description: "processor receives decoded \(name) text")
+            let actor = EBookProcessingActor(
+                ebookTextProcessor: { receivedURL, receivedHref, text, fingerprint, isCacheWarmer, _, _, _, _ in
+                    XCTAssertEqual(receivedURL, contentURL)
+                    XCTAssertEqual(receivedHref, sectionHref)
+                    XCTAssertEqual(text, chapterHTML, name)
+                    XCTAssertEqual(fingerprint, ebookProcessDataFingerprint(entryData))
+                    XCTAssertTrue(isCacheWarmer)
+                    processed.fulfill()
+                    return ebookTestPayload("<html><body>processed</body></html>")
+                },
+                processReadabilityContent: nil,
+                processHTMLDocument: nil,
+                processHTMLBytes: nil,
+                processHTML: nil
+            )
+            let result = try await actor.prewarm(
+                contentURL: contentURL, sectionHref: sectionHref, source: source
+            )
+            await fulfillment(of: [processed], timeout: 1)
+            XCTAssertEqual(result.sectionHref, sectionHref)
+            XCTAssertEqual(result.requestBytes, entryData.count)
+        }
+    }
+
     func testReaderPackageDirectorySourceRejectsSymlinksEscapingThePackageRoot() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

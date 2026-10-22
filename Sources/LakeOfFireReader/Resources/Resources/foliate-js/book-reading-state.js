@@ -84,6 +84,16 @@ export class BookReadingStateController {
         Reflect.apply(callback, this, args)
         return isCurrent()
     }
+    // Retiring an already-withdrawn display is optional cleanup, not admission
+    // of a replacement account, native sample or recovery attempt. Keep this
+    // failure policy in one place; a callback-created successor still wins.
+    #invalidateRetiredProjection(isCurrent) {
+        try {
+            return this.#notify('onInvalidate', [], isCurrent)
+        } catch (_) {
+            return isCurrent()
+        }
+    }
     get accountPresentation() { return this.#accountPresentation }
     #retireHistoryRecovery() {
         const recovery = this.#historyRecovery
@@ -106,8 +116,10 @@ export class BookReadingStateController {
             isCurrent, requested: false, promise: null, resolve: null }
         this.#pending = null; this.#context = null; this.#state = null
         const ownsRecovery = this.#captureAdmission()
-        this.#notify('onInvalidate', [], ownsRecovery)
-        return this.#locationIsCurrent(ownsRecovery) && isCurrent()
+        this.#invalidateRetiredProjection(ownsRecovery)
+        // The final host predicate is a callout too. A true return cannot
+        // acknowledge an observer that it synchronously replaced or closed.
+        return this.#locationIsCurrent(ownsRecovery) && isCurrent() && ownsRecovery()
     }
     // Native is the sole automatic-attempt owner. Merely receiving a terminal
     // outcome cannot authorize this query; native admits its exact running proof.
@@ -162,7 +174,7 @@ export class BookReadingStateController {
             // The native sample is already withdrawn. Optional UI cleanup
             // cannot prevent the coordinator from observing that failure.
             // A callback-installed successor still owns its own disposition.
-            try { this.#notify('onInvalidate', [], ownsFailure) } catch (_) {}
+            this.#invalidateRetiredProjection(ownsFailure)
             if (!this.#locationIsCurrent(ownsFailure)) return false
         }
         if (this.#historyRecovery !== recovery || !recovery
@@ -182,7 +194,10 @@ export class BookReadingStateController {
         if (!this.#notify('onAccountChange', [stamp], isCurrent)) return false
         // A queued sample still needs old-frame invalidation. A callback that
         // already published a successor must not have its scopes retired again.
-        if (!this.#notify('onInvalidate', [], isCurrent)) return false
+        // The new stamp has already retired the old account's context. Failed
+        // outgoing paint must not discard this reply's admission or prevent
+        // the runtime's fresh read. Newer callback-owned work still wins below.
+        if (!this.#invalidateRetiredProjection(isCurrent)) return false
         return isCurrent() && this.#pending === null
     }
     get ready() { return this.#context !== null && this.#locationIsCurrent(this.#captureProjection()) }
@@ -196,11 +211,20 @@ export class BookReadingStateController {
         const changed = !sameLocation(next, this.#location)
         if (!changed && !moved && !replaced) return false
         if (this.#revision >= Number.MAX_SAFE_INTEGER) { this.close(); return false }
+        // A same-chapter move also retires location-bound History recovery.
+        // Its failed/completed query no longer polls, so notify the owner now
+        // rather than retaining its notice until another native sample arrives.
+        const withdrawsProjection = changed || replaced || this.#historyRecovery !== null
         this.#revision++; this.#location = next; this.#pending = null
         this.#retireHistoryRecovery()
-        if (changed || replaced) { this.#context = null; this.#state = null }
+        if (withdrawsProjection) { this.#context = null; this.#state = null }
         const isCurrent = this.#captureAdmission()
-        if (changed || replaced) this.#notify('onInvalidate', [], isCurrent)
+        if (withdrawsProjection) {
+            // The location has already changed and withdrawn the old context.
+            // Failed outgoing paint cannot suppress its read-only native refresh:
+            // another observation of this same location would be a no-op.
+            this.#invalidateRetiredProjection(isCurrent)
+        }
         // A nested relocation/refresh already requested its own sample.
         if (isCurrent()) this.refresh()
         return true
@@ -246,7 +270,7 @@ export class BookReadingStateController {
                 // display facts or consume another request's reply capability.
                 if (projectionIsCurrent()) {
                     this.#context = null
-                    this.#notify('onInvalidate', [], this.#captureProjection())
+                    this.#invalidateRetiredProjection(this.#captureProjection())
                 }
             }
             return false
@@ -284,6 +308,10 @@ export class BookReadingStateController {
         const location = this.#location, revision = this.#revision
         const nativeRefresh = result.nativeRefresh === true
         const responsePending = this.#pending
+        // Native post-commit refreshes reuse an earlier request ID. Their
+        // ordered projection may be current without owning a newer read that
+        // is already in flight. Preserve that read's one reply opportunity.
+        const consumesPending = responsePending !== null && requestID === responsePending.requestID
         const recovery = this.#historyRecovery
         if (recovery) {
             const proof = recoveryObservation(result.historyRecoveryObservation)
@@ -320,8 +348,9 @@ export class BookReadingStateController {
         const ok = result.ok
         if (!admissionIsCurrent()) return false
         if (ok !== true) {
-            this.#pending = null; this.#context = null
-            this.#notify('onInvalidate', [], this.#captureProjection())
+            if (consumesPending) this.#pending = null
+            this.#context = null
+            this.#invalidateRetiredProjection(this.#captureProjection())
             return false
         }
         let prepared, notification
@@ -354,7 +383,8 @@ export class BookReadingStateController {
         if (typeof onState !== 'function' || !this.#locationIsCurrent(admissionIsCurrent)) return false
         // All callback-bearing preparation is complete. Publish both copies and
         // their ordering marker together, without an external call between them.
-        this.#pending = null; this.#lastSnapshotSequence = prepared.state.revision
+        if (consumesPending) this.#pending = null
+        this.#lastSnapshotSequence = prepared.state.revision
         this.#acknowledgedHistoryRecovery = null
         if (recovery) this.#historyRecovery = null
         this.#state = prepared.state; this.#context = prepared.context
@@ -379,7 +409,7 @@ export class BookReadingStateController {
                 recovery.requested = false
             }
             // Do not roll back native ordering, pending reads, or successors.
-            try { this.#notify('onInvalidate', [], this.#captureAdmission()) } catch (_) {}
+            this.#invalidateRetiredProjection(this.#captureAdmission())
         }
         let accepted
         try {
