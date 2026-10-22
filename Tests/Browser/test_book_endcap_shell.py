@@ -144,6 +144,13 @@ class BookEndcapShellTests(unittest.TestCase):
         page.evaluate('loadEBook({url:location.origin+"/missing-spine-entry.epub",layoutMode:"paginated"})')
         wait_for_reader(page, 'reader?.initialDisplaySettled === true')
         first_cfi = page.evaluate('reader.view.lastLocation.cfi')
+        content_cfi = page.evaluate("""() => {
+            const { doc } = reader.view.renderer.getContents()[0]
+            const range = doc.createRange()
+            range.selectNodeContents(doc.body.querySelector('p') || doc.body)
+            range.collapse(true)
+            return reader.view.getCFI(0, range)
+        }""")
         self.assertEqual(page.evaluate('reader.view.book.sections.map(section => section.id)'),
                          ['OPS/one.xhtml', 'OPS/two.xhtml'])
         self.assertEqual(page.evaluate('reader.view.book.sections.map(section => reader.view.book.resources.cfis.indexOf(section.cfi))'),
@@ -154,6 +161,10 @@ class BookEndcapShellTests(unittest.TestCase):
         page.evaluate('reader.goToHref("OPS/two.xhtml", "goToHref")')
         wait_for_reader(page, 'reader.view.renderer.displayedIndex === 1')
         page.evaluate('(cfi) => reader.view.goTo(cfi)', first_cfi)
+        wait_for_reader(page, 'reader.view.renderer.displayedIndex === 0')
+        page.evaluate('reader.goToHref("OPS/two.xhtml", "goToHref")')
+        wait_for_reader(page, 'reader.view.renderer.displayedIndex === 1')
+        page.evaluate('(cfi) => reader.view.goTo(cfi)', content_cfi)
         wait_for_reader(page, 'reader.view.renderer.displayedIndex === 0')
 
     def test_schema14_preserves_visible_scope_text_from_sidecar(self):
