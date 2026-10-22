@@ -304,6 +304,8 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
             }
 
             func normalizedExistingScripts() -> [UUID] {
+                // Disabled scripts remain library members so they can be
+                // re-enabled and exported. Execution filters them separately.
                 orderedUniqueIdentifiers(Array(primary.userScriptIDs)).filter { id in
                     guard let script = realm.object(
                         ofType: UserScript.self,
@@ -311,7 +313,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                     ) else {
                         return true
                     }
-                    return !script.isDeleted && !script.isArchived
+                    return !script.isDeleted
                 }
             }
 
@@ -380,7 +382,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                         ofType: UserScript.self,
                         forPrimaryKey: id
                     ) {
-                        guard !script.isDeleted, !script.isArchived else { continue }
+                        guard !script.isDeleted else { continue }
                         register(
                             id: id,
                             key: LibraryAdmissionKey(
@@ -427,7 +429,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                 )
             }
             for script in realm.objects(UserScript.self).where({
-                !$0.isDeleted && !$0.isArchived
+                !$0.isDeleted
             }) where !existingScriptIDs.contains(script.id) {
                 register(
                     id: script.id,
@@ -1247,7 +1249,8 @@ public class LibraryDataManager: NSObject {
                     importedFeeds.append(feed)
                 }
             }
-        } else if !(opmlEntry.attributeStringValue("script")?.isEmpty ?? true) {
+        } else if opmlEntry.attributeStringValue("script") != nil {
+            // The attribute identifies a script even when its draft source is empty.
             if let uuid = uuid, let script = realm.objects(UserScript.self).filter({ $0.id == uuid }).first {
                 if script.opmlURL == download?.url || script.isDeleted {
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, script: script) {
@@ -1278,7 +1281,8 @@ public class LibraryDataManager: NSObject {
                     importedScripts.append(script)
                 }
             }
-        } else if !(opmlEntry.children?.isEmpty ?? true) {
+        } else if uuid != nil || !(opmlEntry.children?.isEmpty ?? true) {
+            // Exported containers retain their UUID when their last child is removed.
 //            let opmlTitle = opmlEntry.title ?? opmlEntry.text
             if category == nil, !(opmlEntry.attributes?.contains(where: { $0.name == "isUserScriptList" }) ?? false) {
                 if let uuid, let existingCategory = realm.object(ofType: FeedCategory.self, forPrimaryKey: uuid) {
@@ -1445,7 +1449,7 @@ public class LibraryDataManager: NSObject {
         if script.sandboxed != newSandboxed {
             return true
         }
-        let newIsArchived = opmlEntry.attributeBoolValue("isArchived") ?? true
+        let newIsArchived = opmlEntry.attributeBoolValue("isArchived") ?? false
         if script.isArchived != newIsArchived {
             return true
         }
@@ -1458,9 +1462,6 @@ public class LibraryDataManager: NSObject {
             return true
         }
         if script.isDeleted {
-            return true
-        }
-        if script.isArchived {
             return true
         }
         return false
@@ -1494,7 +1495,7 @@ public class LibraryDataManager: NSObject {
             script.sandboxed = newSandboxed
             didChange = true
         }
-        let newIsArchived = opmlEntry.attributeBoolValue("isArchived") ?? true
+        let newIsArchived = opmlEntry.attributeBoolValue("isArchived") ?? false
         if script.isArchived != newIsArchived {
             script.isArchived = newIsArchived
             didChange = true
@@ -1514,11 +1515,6 @@ public class LibraryDataManager: NSObject {
             script.isDeleted = false
             didChange = true
         }
-        if script.isArchived {
-            script.isArchived = false
-            didChange = true
-        }
-        
         if didChange {
             script.refreshChangeMetadata(explicitlyModified: true)
         }

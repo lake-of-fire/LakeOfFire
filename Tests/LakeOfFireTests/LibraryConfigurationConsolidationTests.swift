@@ -543,10 +543,13 @@ final class LibraryConfigurationConsolidationTests: XCTestCase, @unchecked Senda
         let archived = UserScript()
         archived.createdAt = Date(timeIntervalSinceReferenceDate: 500)
         archived.isArchived = true
+        let deleted = UserScript()
+        deleted.createdAt = Date(timeIntervalSinceReferenceDate: 250)
+        deleted.isDeleted = true
         let primary = LibraryConfiguration()
         primary.createdAt = Date(timeIntervalSinceReferenceDate: 100)
         try realm.write {
-            realm.add([first, second, archived])
+            realm.add([first, second, archived, deleted])
             realm.add(primary)
         }
 
@@ -556,9 +559,44 @@ final class LibraryConfigurationConsolidationTests: XCTestCase, @unchecked Senda
 
         XCTAssertEqual(
             Array(consolidated.userScriptIDs),
-            [second.id, first.id]
+            [archived.id, second.id, first.id]
         )
-        XCTAssertFalse(consolidated.userScriptIDs.contains(archived.id))
+        XCTAssertFalse(consolidated.userScriptIDs.contains(deleted.id))
+    }
+
+    @RealmBackgroundActor
+    func testConsolidationRetainsDisabledScriptSlotsAndMergesDisabledDuplicateReferences() async throws {
+        let (configuration, realm) = try await makeRealm()
+        let primary = LibraryConfiguration()
+        primary.createdAt = Date(timeIntervalSinceReferenceDate: 100)
+        let duplicate = LibraryConfiguration()
+        duplicate.createdAt = Date(timeIntervalSinceReferenceDate: 200)
+        let existing = UserScript()
+        existing.isArchived = true
+        let incoming = UserScript()
+        incoming.isArchived = true
+        let deleted = UserScript()
+        deleted.isDeleted = true
+        let unresolvedID = UUID()
+        primary.userScriptIDs.append(objectsIn: [existing.id, unresolvedID, existing.id])
+        duplicate.userScriptIDs.append(objectsIn: [incoming.id, existing.id, deleted.id])
+        try realm.write {
+            realm.add([primary, duplicate, existing, incoming, deleted])
+        }
+
+        let consolidated = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: configuration
+        )
+
+        XCTAssertEqual(consolidated.id, primary.id)
+        XCTAssertEqual(Array(consolidated.userScriptIDs), [existing.id, unresolvedID, incoming.id])
+        XCTAssertTrue(existing.isArchived)
+        XCTAssertTrue(incoming.isArchived)
+        XCTAssertTrue(duplicate.isDeleted)
+        let generation = try XCTUnwrap(pendingMutation(for: primary, in: realm)?.generation)
+        _ = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+        XCTAssertEqual(Array(primary.userScriptIDs), [existing.id, unresolvedID, incoming.id])
+        XCTAssertEqual(pendingMutation(for: primary, in: realm)?.generation, generation)
     }
 
     func testOrderedMergeRetainsLegacyPlacementPolicy() {
