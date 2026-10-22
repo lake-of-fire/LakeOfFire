@@ -45,7 +45,8 @@ Run:
 ```sh
 node --test Tests/JavaScript/book-action-pre-dispatch.test.mjs \
   Tests/JavaScript/book-action-bridge-settlement.test.mjs \
-  Tests/JavaScript/book-action-recovery.test.mjs
+  Tests/JavaScript/book-action-recovery.test.mjs \
+  Tests/JavaScript/book-endcap-bridge-dispatch.test.mjs
 ```
 
 These suites import the complete shipping bridge and its real dependencies.
@@ -57,6 +58,30 @@ timer test now requires local rejection and a deliberate new command, not an
 impossible status query for an operation never sent. Native transport and
 scheduling callbacks are controlled collaborators, not native Realm or WKWebView.
 
+### Endcap caller composition
+
+`book-endcap-bridge-dispatch.test.mjs` joins the complete production `BookEndcap`
+with the real action bridge and default producer capture/carry adapters. Its
+producer service is controlled, so refusal traverses the shipping adapter's
+null/exception handling rather than a replacement bridge implementation.
+
+The fifteen cases check the visible button label, enabled/busy state, retained
+Finished projection, request identity and exact command/status/navigation packet
+sequence. An unsent Finish or Start Book Over must remain explicitly retryable;
+a submitted command whose reply is lost must instead keep Check Status and may
+not issue a second reset. Further controls cover a known rejection, failed
+navigation, acknowledgement before a wrapper error, account replacement and
+caller destruction. No production method bodies are extracted.
+
+The same cases produced eight passes and seven assertion failures with the
+preceding bridge, then fifteen passes with the correction. These are caller
+component results using controlled DOM allocation, timer delivery, producer
+service and native replies. They do not execute trusted WebKit activation,
+native command admission, persistence or actual navigation. They extend, rather
+than replace, the older bridge-only tests; their historical totals are not a
+fresh combined-suite result.
+
 Before release, exercise the actual End of Book and native Book Actions callers
-with producer replacement, then verify that a genuinely submitted reset with a
-lost reply still requires status recovery rather than a second reset.
+in the assembled Reader with producer replacement, then verify that a genuinely
+submitted reset with a lost reply still requires status recovery rather than a
+second reset. Full browser/WKWebView and native qualification remain separate.
