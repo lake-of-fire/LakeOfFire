@@ -16,16 +16,19 @@ from prepared_book_fixture import prepared_chapter
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = ROOT / 'Sources/LakeOfFireReader/Resources/Resources/foliate-js'
 
-def make_epub(chapter_factory=prepared_chapter):
+def make_epub(chapter_factory=prepared_chapter, *, missing_spine_entry=False):
     output = BytesIO()
     with zipfile.ZipFile(output, 'w') as archive:
         archive.writestr('mimetype', 'application/epub+zip')
         archive.writestr('META-INF/container.xml', '''<?xml version="1.0"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>''')
-        archive.writestr('OPS/book.opf', '''<?xml version="1.0"?>
+        opf = '''<?xml version="1.0"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">book-actions-test</dc:identifier><dc:title>Book Actions Test</dc:title><dc:language>ja</dc:language><meta property="dcterms:modified">2026-09-19T00:00:00Z</meta></metadata>
-<manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>''')
+<manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>'''
+        if missing_spine_entry:
+            opf = opf.replace('<spine>', '<spine><itemref idref="missing"/>')
+        archive.writestr('OPS/book.opf', opf)
         archive.writestr('OPS/nav.xhtml', '''<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="one.xhtml">First Chapter</a></li><li><a href="two.xhtml">Last Chapter</a></li></ol></nav></body></html>''')
         for name in ['one', 'two']:
             archive.writestr('OPS/' + name + '.xhtml', chapter_factory(name))
@@ -128,6 +131,41 @@ class BookEndcapShellTests(unittest.TestCase):
         # unittest runs class cleanups even if setup or an earlier cleanup fails.
         # Reverse registration closes the browser before its Playwright runtime.
         cls.addClassCleanup(cls.browser.close)
+
+    def test_skipped_spine_entry_preserves_href_and_cfi_navigation(self):
+        self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+        self.server.epub_fixtures['/missing-spine-entry.epub'] = make_epub(missing_spine_entry=True)
+        self.addCleanup(self.server.epub_fixtures.pop, '/missing-spine-entry.epub')
+        page = self.browser.new_page(viewport={'width':390, 'height':844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/missing-spine-entry.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        first_cfi = page.evaluate('reader.view.lastLocation.cfi')
+        content_cfi = page.evaluate("""() => {
+            const { doc } = reader.view.renderer.getContents()[0]
+            const range = doc.createRange()
+            range.selectNodeContents(doc.body.querySelector('p') || doc.body)
+            range.collapse(true)
+            return reader.view.getCFI(0, range)
+        }""")
+        self.assertEqual(page.evaluate('reader.view.book.sections.map(section => section.id)'),
+                         ['OPS/one.xhtml', 'OPS/two.xhtml'])
+        self.assertEqual(page.evaluate('reader.view.book.sections.map(section => reader.view.book.resources.cfis.indexOf(section.cfi))'),
+                         [1, 2])
+        self.assertEqual(page.evaluate('reader.view.book.sections.map(section => reader.view.resolveCFI(section.cfi).index)'),
+                         [0, 1])
+        self.assertEqual(page.evaluate('reader.view.resolveNavigation("OPS/two.xhtml").index'), 1)
+        page.evaluate('reader.goToHref("OPS/two.xhtml", "goToHref")')
+        wait_for_reader(page, 'reader.view.renderer.displayedIndex === 1')
+        page.evaluate('(cfi) => reader.view.goTo(cfi)', first_cfi)
+        wait_for_reader(page, 'reader.view.renderer.displayedIndex === 0')
+        page.evaluate('reader.goToHref("OPS/two.xhtml", "goToHref")')
+        wait_for_reader(page, 'reader.view.renderer.displayedIndex === 1')
+        page.evaluate('(cfi) => reader.view.goTo(cfi)', content_cfi)
+        wait_for_reader(page, 'reader.view.renderer.displayedIndex === 0')
 
     def test_schema14_preserves_visible_scope_text_from_sidecar(self):
         page = self.browser.new_page(viewport={'width':390, 'height':844})

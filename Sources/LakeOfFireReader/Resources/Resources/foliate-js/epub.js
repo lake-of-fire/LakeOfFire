@@ -563,7 +563,10 @@ class Resources {
         }
         const idref = $itemref?.getAttribute('idref')
         const index = this.spine.findIndex(item => item.idref === idref)
-        const anchor = doc => CFI.toRange(doc, parts)
+        // A section-only CFI is emitted before a rendered range is available.
+        // It still names the section start after its OPF path is consumed.
+        const sectionStart = Array.isArray(parts) && parts.every(path => path.length === 0)
+        const anchor = sectionStart ? () => 0 : doc => CFI.toRange(doc, parts)
         return {
             index,
             anchor
@@ -1270,16 +1273,24 @@ ${doc.querySelector('parsererror').innerText}`)
         const parsed = parseSMIL(doc, url => resolveURL(url, media.href))
         return parsed
     }
+    #sectionIndexFromSpineIndex(spineIndex) {
+        // CFI steps address the original OPF spine. A missing manifest item
+        // can be omitted from sections without changing those persisted steps.
+        const sectionCFI = this.resources.cfis[spineIndex]
+        return sectionCFI == null
+            ? -1
+            : this.sections.findIndex(section => section.cfi === sectionCFI)
+    }
     resolveCFI(cfi) {
-        return this.resources.resolveCFI(cfi)
+        const resolved = this.resources.resolveCFI(cfi)
+        return { ...resolved, index: this.#sectionIndexFromSpineIndex(resolved.index) }
     }
     resolveHref(href) {
         const [path, hash] = href.split('#')
         const item = this.resources.getItemByHref(decodeURI(path))
         if (!item) return null
-        const index = this.resources.spine.findIndex(({
-            idref
-        }) => idref === item.id)
+        const spineIndex = this.resources.spine.findIndex(({ idref }) => idref === item.id)
+        const index = this.#sectionIndexFromSpineIndex(spineIndex)
         const anchor = hash ? doc => getHTMLFragment(doc, hash) : () => 0
         return {
             index,
