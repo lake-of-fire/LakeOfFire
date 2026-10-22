@@ -11,6 +11,23 @@ import UIKit
 import RealmSwiftGaps
 import UniformTypeIdentifiers
 
+public struct ReaderContentMutationOutcome: Sendable {
+    public let matchedObjectCount: Int
+    /// Successfully committed or already-applied object representations.
+    public let committedObjectCount: Int
+    public let mutatedObjectCount: Int
+    public let cancelledBeforeCommit: Bool
+    public let errorMessage: String?
+
+    public init(matchedObjectCount: Int, committedObjectCount: Int, mutatedObjectCount: Int = 0, cancelledBeforeCommit: Bool, errorMessage: String?) {
+        self.matchedObjectCount = matchedObjectCount
+        self.committedObjectCount = committedObjectCount
+        self.mutatedObjectCount = mutatedObjectCount
+        self.cancelledBeforeCommit = cancelledBeforeCommit
+        self.errorMessage = errorMessage
+    }
+}
+
 
 
 fileprivate extension URL {
@@ -77,6 +94,17 @@ public struct ReaderContentLoader {
             identity = DiscoveryStorageIdentity(bookmark: bookmark.scopeIdentity,
                 history: history.scopeIdentity, feed: feed.scopeIdentity)
         }
+        init(mutationStorage: MutationStorage) {
+            bookmarkConfiguration = mutationStorage.bookmarkConfiguration
+            historyConfiguration = mutationStorage.historyConfiguration
+            feedConfiguration = mutationStorage.feedConfiguration
+            bookmarkAdmission = mutationStorage.bookmarkAdmission
+            historyAdmission = mutationStorage.historyAdmission
+            feedAdmission = mutationStorage.feedAdmission
+            identity = DiscoveryStorageIdentity(bookmark: bookmarkAdmission.scopeIdentity,
+                history: historyAdmission.scopeIdentity, feed: feedAdmission.scopeIdentity)
+        }
+
         func validate(includeFeed: Bool = true) throws {
             let actor = RealmBackgroundActor.shared
             for (configuration, admission) in [(historyConfiguration, historyAdmission),
@@ -169,6 +197,38 @@ public struct ReaderContentLoader {
     public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
     public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
     public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
+
+    /// Capture before a download or actor hop. The same admission is shared
+    /// when multiple content representations use one physical store, including
+    /// its first creation. This does not grant account/replica authority.
+    public struct MutationStorage: @unchecked Sendable {
+        let bookmarkConfiguration: Realm.Configuration
+        let historyConfiguration: Realm.Configuration
+        let feedConfiguration: Realm.Configuration
+        let bookmarkAdmission: RealmStorageAdmission
+        let historyAdmission: RealmStorageAdmission
+        let feedAdmission: RealmStorageAdmission
+
+        public init(bookmarkConfiguration: Realm.Configuration,
+            historyConfiguration: Realm.Configuration, feedConfiguration: Realm.Configuration) {
+            let captured = DiscoveryStorage(bookmarkConfiguration: bookmarkConfiguration,
+                historyConfiguration: historyConfiguration, feedConfiguration: feedConfiguration)
+            self.bookmarkConfiguration = captured.bookmarkConfiguration
+            self.historyConfiguration = captured.historyConfiguration
+            self.feedConfiguration = captured.feedConfiguration
+            bookmarkAdmission = captured.bookmarkAdmission
+            historyAdmission = captured.historyAdmission
+            feedAdmission = captured.feedAdmission
+        }
+
+        @MainActor
+        public static func capture() -> Self {
+            Self(bookmarkConfiguration: bookmarkRealmConfiguration,
+                historyConfiguration: historyRealmConfiguration,
+                feedConfiguration: feedEntryRealmConfiguration)
+        }
+
+    }
 
     /// The storage selected when a snippet edit began. A delayed save must not
     /// follow mutable global configurations into another account's Realm.
@@ -510,32 +570,105 @@ public struct ReaderContentLoader {
         skipFeedEntries: Bool = false,
         mutate: (Object & ReaderContentProtocol) -> Bool
     ) async throws {
-        let storage = DiscoveryStorage()
-        let references = try await discoverContentReferences(
-            url: url,
-            skipContentFiles: skipContentFiles,
-            skipFeedEntries: skipFeedEntries,
-            storage: storage
-        )
-        let timestamp = Date()
-        for reference in references {
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
-            try await realm.asyncWritePreservingOwnership {
-                // Realm's async transaction can begin after its caller was
-                // cancelled (for example by a superseding WebView document).
-                // Fence the actual commit, not only the preceding lookup.
-                guard !Task.isCancelled else { return }
-                try reference.validateStorage()
-                guard let object = realm.object(ofType: reference.contentType,
-                    forPrimaryKey: reference.contentKey) as? (Object & ReaderContentProtocol),
-                    !object.isDeleted else { return }
-                if mutate(object) {
-                    object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+        let result = await performContentMutation(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries, mutate: mutate)
+        if let error = result.error { throw error }
+    }
+
+    /// Reports durable outcomes even if cancellation or a later Realm failure
+    /// prevents updating every representation of this content.
+    @RealmBackgroundActor
+    public static func updateContentWithOutcome(
+        url: URL,
+        skipContentFiles: Bool = false,
+        skipFeedEntries: Bool = false,
+        mutate: (Object & ReaderContentProtocol) -> Bool
+    ) async -> ReaderContentMutationOutcome {
+        await performContentMutation(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries, mutate: mutate).outcome
+    }
+
+    @RealmBackgroundActor
+    private static func performContentMutation(
+        url: URL,
+        skipContentFiles: Bool,
+        skipFeedEntries: Bool,
+        storage: DiscoveryStorage = DiscoveryStorage(),
+        validateAuthority: @Sendable () throws -> Void = {},
+        mutate: (Object & ReaderContentProtocol) -> Bool
+    ) async -> (outcome: ReaderContentMutationOutcome, error: Error?) {
+        var matched = 0
+        var committed = 0
+        var mutated = 0
+        do {
+            try Task.checkCancellation()
+            try validateAuthority()
+            try storage.validate(includeFeed: !skipFeedEntries)
+            let references = try await discoverContentReferences(
+                url: url, skipContentFiles: skipContentFiles,
+                skipFeedEntries: skipFeedEntries, storage: storage
+            )
+            try Task.checkCancellation()
+            try validateAuthority()
+            try storage.validate(includeFeed: !skipFeedEntries)
+            matched = references.count
+            let timestamp = Date()
+            for reference in references {
+                try Task.checkCancellation()
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: reference.realmConfiguration, storageAdmission: reference.storageAdmission
+                )
+                let change: Bool? = try await realm.asyncWritePreservingOwnership {
+                    // Resolve on the existing write lane after every suspension.
+                    // Reject cancellation before commit so fields and journal
+                    // roll back together, while earlier commits stay durable.
+                    try Task.checkCancellation()
+                    try validateAuthority()
+                    try storage.validate(includeFeed: !skipFeedEntries)
+                    try reference.validateStorage()
+                    guard let object = realm.object(ofType: reference.contentType,
+                        forPrimaryKey: reference.contentKey) as? (Object & ReaderContentProtocol),
+                        !object.isDeleted else { return nil }
+                    let changed = mutate(object)
+                    if changed { object.refreshChangeMetadata(explicitlyModified: true, at: timestamp) }
+                    try Task.checkCancellation()
+                    try validateAuthority()
+                    try storage.validate(includeFeed: !skipFeedEntries)
+                    try reference.validateStorage()
+                    return changed
+                }
+                if let change {
+                    // Already-applied selections count as successful without
+                    // refreshing metadata or creating another upload generation.
+                    committed += 1
+                    if change { mutated += 1 }
                 }
             }
+            return (ReaderContentMutationOutcome(matchedObjectCount: matched,
+                committedObjectCount: committed, mutatedObjectCount: mutated,
+                cancelledBeforeCommit: false, errorMessage: nil), nil)
+        } catch {
+            return (ReaderContentMutationOutcome(matchedObjectCount: matched,
+                committedObjectCount: committed, mutatedObjectCount: mutated,
+                cancelledBeforeCommit: error is CancellationError || Task.isCancelled,
+                errorMessage: error.localizedDescription), error)
         }
     }
-    
+
+    /// Explicit storage variant for work prepared before asynchronous media
+    /// acquisition. The caller supplies its domain authority validator; Lake
+    /// owns physical storage admission and the existing metadata write lane.
+    /// Commits in earlier stores remain successful if a later store rejects.
+    @RealmBackgroundActor
+    public static func updateContentWithOutcome(
+        url: URL, storage: MutationStorage,
+        skipContentFiles: Bool = false, skipFeedEntries: Bool = false,
+        validateAuthority: @Sendable () throws -> Void,
+        mutate: (Object & ReaderContentProtocol) -> Bool
+    ) async -> ReaderContentMutationOutcome {
+        await performContentMutation(url: url, skipContentFiles: skipContentFiles,
+            skipFeedEntries: skipFeedEntries, storage: DiscoveryStorage(mutationStorage: storage),
+            validateAuthority: validateAuthority, mutate: mutate).outcome
+    }
+
     @MainActor
     public static func load(
         url: URL,
@@ -560,6 +693,11 @@ public struct ReaderContentLoader {
         source: String,
         storage: DiscoveryStorage
     ) async throws -> (any ReaderContentProtocol)? {
+        if url.isTranscriptPageURL {
+            // These are registered, source-bound derived pages. A missing asset
+            // must not create a persisted empty history record for its local URL.
+            return await TranscriptPageRegistry.shared.makeReaderContent(for: url)
+        }
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
             
