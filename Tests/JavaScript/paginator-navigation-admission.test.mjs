@@ -6,6 +6,16 @@ import test from 'node:test'
 class Element extends EventTarget {
     style = {}
     classList = { add() {}, remove() {} }
+    attributes = new Map()
+    getAttribute(name) { return this.attributes.get(name) ?? null }
+    hasAttribute(name) { return this.attributes.has(name) }
+    setAttribute(name, value) {
+        const oldValue = this.getAttribute(name)
+        this.attributes.set(name, String(value))
+        if (this.constructor.observedAttributes?.includes(name)) {
+            this.attributeChangedCallback(name, oldValue, String(value))
+        }
+    }
 }
 globalThis.HTMLElement = class extends Element {
     attachShadow() {
@@ -100,4 +110,69 @@ test('target resolution rechecks a page-turn lock acquired after admission', asy
         await settled
         f.renderer.destroy()
     }
+})
+
+
+test('older asynchronous target never adopts a newer renderer command', async () => {
+    const f = fixture(), target = deferred()
+    const old = f.renderer.goTo(target.promise, { requiresPositionReceipt: true })
+    await assert.rejects(f.renderer.goTo({ index: 0 }), error => error === f.failure)
+    target.resolve({ index: 0, anchor: 0 })
+    assert.equal(await old, null)
+    assert.equal(f.loads, 1)
+    f.renderer.destroy()
+})
+
+test('synchronous goTo observer replacement prevents the old section load', async () => {
+    const f = fixture()
+    let replacement
+    f.renderer.addEventListener('goTo', () => {
+        replacement = f.renderer.goTo({ index: -1 })
+    }, { once: true })
+    assert.equal(await f.renderer.goTo({ index: 0, anchor: 0 }, { requiresPositionReceipt: true }), null)
+    assert.equal(await replacement, null)
+    assert.equal(f.loads, 0)
+    f.renderer.destroy()
+})
+
+test('destroy during asynchronous target resolution rejects before section loading', async () => {
+    const f = fixture(), target = deferred()
+    const pending = f.renderer.goTo(target.promise, { requiresPositionReceipt: true })
+    f.renderer.destroy()
+    target.resolve({ index: 0, anchor: 0 })
+    assert.equal(await pending, null)
+    assert.equal(f.loads, 0)
+    assert.equal(f.renderer.capturePositionProof({ index: 0, anchor: 0 }), null)
+    assert.equal(f.renderer.isPositionProofCurrent({}), false)
+})
+
+test('a failed opted-in navigation does not prevent a later admitted command', async () => {
+    const f = fixture()
+    for (let index = 0; index < 2; index++) {
+        await assert.rejects(f.renderer.goTo({ index: 0, anchor: 0 }, { requiresPositionReceipt: true }),
+            error => error === f.failure)
+    }
+    assert.equal(f.loads, 2)
+    f.renderer.destroy()
+})
+
+
+test('wheel foreground callback supersession stops the original page-turn handler', async () => {
+    const renderer = new Paginator()
+    renderer.open({ dir: 'ltr', sections: [] }, false)
+    let turns = 0
+    let activity = 0
+    let successor
+    renderer.prev = renderer.next = async () => { turns += 1 }
+    renderer.addEventListener('foregroundPageTurnActivity', () => {
+        activity += 1
+        successor = renderer.goTo({ index: -1 })
+    })
+    const wheel = new Event('wheel', { cancelable: true })
+    Object.assign(wheel, { deltaX: 20, deltaY: 0 })
+    renderer.dispatchEvent(wheel)
+    await successor
+    assert.equal(activity, 1)
+    assert.equal(turns, 0)
+    renderer.destroy()
 })

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { SectionProgress } from '../../Sources/LakeOfFireReader/Resources/foliate-js/progress.js'
+import { buildRelocateLocation } from '../../Sources/LakeOfFireReader/Resources/foliate-js/relocate-location.js'
 import { makeNativeEbookSource } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-native-source-request.js'
 import { createEbookLoadHandlers, createNavigationIntentRunner, EbookLoadSupersededError } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-load-coordinator.js'
 
@@ -60,6 +62,7 @@ const fixture = (specs = [], hooks = {}) => {
                 goTo: cfi => { this.events.push(['goTo', cfi]); return this.spec.goTo?.(this, cfi) },
                 goToFraction: fraction => { this.events.push(['goToFraction', fraction]); return this.spec.fraction?.(this, fraction) },
             }
+            this.spec.configureView?.(this.view, this)
         }
         close(reason) {
             if (this.isClosed) return false
@@ -719,4 +722,124 @@ test('a factory returning a different native capability cannot replace the curre
     await assert.rejects(f.loadEBook(boundRequest()), /session was not preserved/)
     assert.equal(f.readers.length, 1)
     assert.equal(f.readers[0].isClosed, false)
+})
+
+
+test('top-level load identity distinguishes absent requests and echoes every terminal', async () => {
+    const f = fixture()
+    const args = { url: 'ebook://reader/book.epub', loadRequestID: 'absent-A' }
+    await f.loadEBook(args)
+    await f.loadEBook({ ...args, loadRequestID: 'absent-B' })
+    assert.equal(f.readers.length, 2)
+    assert.deepEqual(f.messages.map(m => m.initialRestoreResult.loadRequestID), ['absent-A', 'absent-B'])
+    assert.ok(f.messages.every(m => m.initialRestoreResult.terminalState === 'noTarget'))
+})
+
+test('mismatched or malformed load identity cannot retire a valid request', async () => {
+    const f = fixture()
+    await f.loadEBook({ ...request(), loadRequestID: 'A' })
+    for (const loadRequestID of ['B', '', 42, true]) {
+        await assert.rejects(f.loadEBook({ ...request(), loadRequestID }), TypeError)
+    }
+    assert.equal(f.readers.length, 1)
+    assert.equal(f.readers[0].isClosed, false)
+})
+
+
+const paginatedZeroSpec = overrides => {
+    const progress = new SectionProgress([{ size: 100 }, { size: 100 }], 10, 10)
+    const location = buildRelocateLocation({ index: 0, fraction: 0, size: 0.25 }, {
+        sectionCount: 2, sectionProgress: progress,
+    })
+    const receipt = Object.freeze({ index: 0, anchor: 0 })
+    let current = true
+    const proof = Object.freeze({ positionMode: 'paginated',
+        currentFractionalCompletion: location.fraction, handledFractionalCompletion: location.fraction,
+        firstPageGeometry: Object.freeze({ kind: 'paginated-first-page-v1', targetSectionIndex: 0,
+            targetAnchor: 0, ...location.firstPageGeometrySource }),
+    })
+    return {
+        fraction: () => receipt,
+        configureView(view, reader) {
+            view.renderer.localName = 'foliate-paginator'
+            view.renderer.scrolled = false
+            view.lastLocation = location
+            view.capturePositionProof = value => current && value === receipt ? proof : null
+            view.isPositionProofCurrent = value => current && value === proof && view.lastLocation === location
+                && !view.renderer.scrolled
+            reader.retirePosition = () => { current = false }
+        },
+        ...overrides,
+    }
+}
+
+test('production progress flows through owned zero restore without substituting requested zero', async () => {
+    const f = fixture([paginatedZeroSpec()])
+    await f.loadEBook({ ...request('zero', '', 0), loadRequestID: 'zero' })
+    const result = f.messages[0].initialRestoreResult
+    assert.equal(result.restoreSatisfied, true)
+    assert.equal(result.positionMode, 'paginated')
+    assert.equal(result.handledFractionalCompletion, 0.125)
+    assert.equal(result.currentFractionalCompletion, 0.125)
+    assert.equal(count(f.readers[0], 'complete'), 1)
+    assert.equal(f.host.__manabiRestoreInProgress, false)
+})
+
+test('direct motion before settled proof cannot complete a zero restore', async () => {
+    const f = fixture([paginatedZeroSpec()])
+    f.host.pauseFrames = true
+    const load = f.loadEBook(request('zero', '', 0))
+    await until(() => f.frames.size > 0)
+    f.readers[0].retirePosition()
+    f.host.pauseFrames = false
+    for (const [id, callback] of f.frames) { f.frames.delete(id); callback() }
+    await load
+    assert.equal(count(f.readers[0], 'complete'), 0)
+    assert.equal(f.host.manabiLoadEBookReady, false)
+    assert.equal(f.messages[0].initialRestoreResult.restoreSatisfied, false)
+})
+
+test('completion and outer probe keep persistence suppressed across synchronous position replacement', async () => {
+    for (const stage of ['complete', 'probe']) {
+        let f
+        let saves = 0
+        const mutate = reader => {
+            // Same gate used by the real relocate persistence path.
+            if (reader.hasLoadedLastPosition && !f.host.__manabiRestoreInProgress) saves++
+            reader.retirePosition()
+        }
+        const spec = paginatedZeroSpec(stage === 'complete'
+            ? { complete: reader => mutate(reader) }
+            : { probe: () => mutate(f.readers[0]) })
+        f = fixture([spec])
+        await f.loadEBook(request('zero', '', 0))
+        assert.equal(saves, 0)
+        assert.equal(f.readers[0].hasLoadedLastPosition, false)
+        assert.equal(f.host.manabiLoadEBookReady, false)
+        assert.equal(f.messages.length, 0)
+        assert.equal(f.host.__manabiRestoreInProgress, false)
+        assert.deepEqual(f.ended, [1])
+    }
+})
+
+
+test('zero scrolled completion cannot publish after a callback changes actual mode or snapshot', async () => {
+    for (const stage of ['complete', 'probe']) for (const mutation of ['mode', 'snapshot']) {
+        let f
+        const mutate = () => {
+            const view = f.readers[0].view
+            if (mutation === 'mode') view.renderer.scrolled = false
+            else view.lastLocation = { fraction: 0 }
+        }
+        f = fixture([{
+            landing: 0,
+            configureView(view) { view.renderer.localName = 'foliate-paginator'; view.renderer.scrolled = true },
+            ...(stage === 'complete' ? { complete: mutate } : { probe: mutate }),
+        }])
+        await f.loadEBook(request('zero', '', 0))
+        assert.equal(f.messages.length, 0)
+        assert.equal(f.host.manabiLoadEBookReady, false)
+        assert.equal(f.readers[0].hasLoadedLastPosition, false)
+        assert.equal(f.host.__manabiRestoreInProgress, false)
+    }
 })

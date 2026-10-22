@@ -990,10 +990,29 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                       ) else { return }
                 let loaderURL = url
                 let caller = scriptCaller
+                guard let binding = receiptBinding, let sequence = message.receiptSequence,
+                      let attemptID = readerViewModel.reserveEBookRestore(
+                        sequence: sequence, binding: binding, caller: caller,
+                        loaderURL: loaderURL, frameURL: receiptURL
+                      ) else { return }
+                func validateAttempt() throws {
+                    guard scriptCaller === caller,
+                          readerViewModel.isCurrentEBookRestore(
+                            attemptID, caller: caller, loaderURL: readerContent.pageURL
+                          ) else { throw CancellationError() }
+                    try Task.checkCancellation()
+                }
                 do {
                     try await ReaderEBookInitialization.perform(
                         receiptBinding: receiptBinding,
-                        currentBinding: { scriptCaller.currentJavaScriptBindingToken },
+                        currentBinding: {
+                            do {
+                                try validateAttempt()
+                                return caller.currentJavaScriptBindingToken
+                            } catch {
+                                return nil
+                            }
+                        },
                         registerFrame: { _ in
                             registerEbookViewerFrame(message.frameInfo)
                         },
@@ -1006,11 +1025,24 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         },
                         prepare: { _ in () },
                         restore: { _ -> ReaderEBookInitialRestoreBridgeRequest? in
-                            try await ReaderEBookInitialRestoreBridgeRequest.prepare {
+                            try validateAttempt()
+                            let request = try await ReaderEBookInitialRestoreBridgeRequest.prepare(requestID: attemptID) {
                                 try await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
                             }
+                            try validateAttempt()
+                            return request
                         },
                         publish: { bindingToken, _, initialRestoreRequest in
+                            try validateAttempt()
+                            let layoutMode = UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated"
+                            let originalRequest = ReaderEBookRestoreRequest(
+                                loadRequestID: attemptID,
+                                contentURL: ReaderViewModel.restoreContentURL(loaderURL),
+                                cfi: initialRestoreRequest?.cfi ?? "",
+                                fractionalCompletion: initialRestoreRequest?.fractionalCompletion,
+                                requestedLocator: initialRestoreRequest?.requestedLocator ?? "none",
+                                layoutMode: layoutMode
+                            )
                             let defaults = UserDefaults.standard
                             let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16
                             let rawWritingDirection = defaults.string(
@@ -1034,15 +1066,21 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             ]
                             var loadArguments: [String: any Sendable] = [
                                 "url": loaderURL.absoluteString,
-                                "layoutMode": defaults.string(forKey: "ebookViewerLayout") ?? "paginated",
+                                "loadRequestID": attemptID,
+                                "layoutMode": layoutMode,
                                 "readerPresentationState": readerPresentationState,
                             ]
                             loadArguments["initialRestore"] =
                                 initialRestoreRequest?.javaScriptArgument ?? NSNull()
+                            try validateAttempt()
+                            guard readerViewModel.dispatchEBookRestore(
+                                originalRequest, caller: caller, loaderURL: readerContent.pageURL
+                            ) else { throw CancellationError() }
                             try await caller.evaluateJavaScript(
                                 """
                                 window.loadEBook({
                                     url,
+                                    loadRequestID,
                                     layoutMode,
                                     initialRestore,
                                     readerPresentationState
@@ -1055,9 +1093,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         }
                     )
                 } catch is CancellationError {
+                    readerViewModel.retireEBookRestore(attemptID)
                     // Navigation, owner revocation and parent cancellation are
                     // expected terminal outcomes. Do not launch detached retry.
                 } catch {
+                    readerViewModel.retireEBookRestore(attemptID)
                     Logger.shared.logger.error(
                         "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
                     )

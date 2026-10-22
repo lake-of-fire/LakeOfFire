@@ -420,3 +420,128 @@ test('a new book open clears navigation history from the previous book', async t
     assert.equal(view.history.canGoBack, false)
     assert.equal(view.history.canGoForward, false)
 })
+
+
+function proofFixture() {
+    const { view, pushes } = fixture()
+    withFractionResolver(view)
+    let currentReceipt = null
+    let currentRendererProof = null
+    const renderer = view.renderer
+    renderer.localName = 'foliate-paginator'
+    renderer.scrolled = false
+    renderer.goTo = async (target, options) => {
+        assert.equal(options.requiresPositionReceipt, true)
+        currentReceipt = Object.freeze({ ...target })
+        return currentReceipt
+    }
+    renderer.isPositionReceiptCurrent = receipt => receipt != null && receipt === currentReceipt
+    renderer.capturePositionProof = receipt => {
+        if (receipt !== currentReceipt) return null
+        currentRendererProof = Object.freeze({ sectionIndex: 0, fractionInSection: 0, pageFraction: 0.25 })
+        return currentRendererProof
+    }
+    renderer.isPositionProofCurrent = proof => proof != null && proof === currentRendererProof
+    view.lastLocation = { fraction: 0.125, sectionIndex: 0, index: 0,
+        firstPageGeometrySource: { sectionIndex: 0, fractionInSection: 0, pageFraction: 0.25 } }
+    return { view, renderer, pushes, retire: () => { currentReceipt = null; currentRendererProof = null } }
+}
+
+test('opt-in zero proof preserves actual completion and immutable accepted target', async () => {
+    const { view } = proofFixture()
+    const receipt = await view.goToFraction(0, { requiresPositionReceipt: true })
+    const proof = view.capturePositionProof(receipt)
+    assert.ok(Object.isFrozen(receipt))
+    assert.ok(Object.isFrozen(proof))
+    assert.ok(Object.isFrozen(proof.firstPageGeometry))
+    assert.equal(proof.positionMode, 'paginated')
+    assert.equal(proof.currentFractionalCompletion, 0.125)
+    assert.equal(proof.handledFractionalCompletion, 0.125)
+    assert.deepEqual(proof.firstPageGeometry, { kind: 'paginated-first-page-v1',
+        targetSectionIndex: 0, targetAnchor: 0, sectionIndex: 0, fractionInSection: 0, pageFraction: 0.25 })
+    assert.equal(view.isPositionProofCurrent(proof), true)
+    assert.equal(view.isPositionProofCurrent({ ...proof }), false)
+})
+
+test('opt-in receipt never adopts fulfilled void renderer navigation', async () => {
+    const { view, renderer, pushes } = proofFixture()
+    renderer.goTo = async () => undefined
+    assert.equal(await view.goToFraction(0, { requiresPositionReceipt: true }), null)
+    assert.deepEqual(pushes, [])
+})
+
+test('opt-in receipts are unique even when the renderer reuses its result object', async () => {
+    const { view, renderer } = proofFixture()
+    const reused = { index: 0, anchor: 0 }
+    renderer.goTo = async () => reused
+    renderer.isPositionReceiptCurrent = receipt => receipt === reused
+    const first = await view.goToFraction(0, { requiresPositionReceipt: true })
+    const second = await view.goToFraction(0, { requiresPositionReceipt: true })
+    assert.notEqual(first, second)
+    assert.equal(view.capturePositionProof(first), null)
+})
+
+test('history callback direct renderer retirement prevents an accepted View receipt', async () => {
+    const { view, retire } = proofFixture()
+    view.history.pushState = retire
+    assert.equal(await view.goToFraction(0, { requiresPositionReceipt: true }), null)
+})
+
+test('history callback View replacement cannot publish a legacy successful target', async () => {
+    const { view } = fixture()
+    view.history.pushState = () => { view.renderer = {} }
+    assert.equal(await view.goTo('chapter'), null)
+})
+
+test('position proof detects reference replacement and in-place snapshot mutation', async () => {
+    for (const change of [
+        view => { view.lastLocation = { ...view.lastLocation } },
+        view => { view.lastLocation.fraction = 0.001 },
+        view => { view.lastLocation.firstPageGeometrySource.fractionInSection = 0.25 },
+        view => { view.lastLocation.firstPageGeometrySource = { ...view.lastLocation.firstPageGeometrySource } },
+        view => { view.renderer.scrolled = true },
+    ]) {
+        const { view } = proofFixture()
+        const receipt = await view.goToFraction(0, { requiresPositionReceipt: true })
+        const proof = view.capturePositionProof(receipt)
+        assert.ok(proof)
+        change(view)
+        assert.equal(view.isPositionProofCurrent(proof), false)
+    }
+})
+
+test('direct renderer command onset retires the proof before lastLocation changes', async () => {
+    const { view, retire } = proofFixture()
+    const receipt = await view.goToFraction(0, { requiresPositionReceipt: true })
+    const proof = view.capturePositionProof(receipt)
+    const detail = view.lastLocation
+    retire()
+    assert.equal(view.lastLocation, detail)
+    assert.equal(view.isPositionProofCurrent(proof), false)
+})
+
+test('missing contradictory and live-mismatched raw geometry cannot grant zero proof', async () => {
+    for (const change of [
+        view => { delete view.lastLocation.firstPageGeometrySource },
+        view => { view.lastLocation.firstPageGeometrySource.sectionIndex = 1 },
+        view => { view.lastLocation.firstPageGeometrySource.fractionInSection = 0.001 },
+        view => { view.lastLocation.firstPageGeometrySource.pageFraction = 0.5 },
+        view => { view.lastLocation.firstPageGeometrySource.pageFraction = NaN },
+    ]) {
+        const { view } = proofFixture()
+        const receipt = await view.goToFraction(0, { requiresPositionReceipt: true })
+        view.lastLocation.fraction = 0.001
+        change(view)
+        assert.equal(view.capturePositionProof(receipt), null)
+    }
+})
+
+test('opt-in proof is confined to actual paginated pure zero navigation', async () => {
+    const { view, renderer } = proofFixture()
+    assert.equal(await view.goToFraction(0.25, { requiresPositionReceipt: true }), null)
+    renderer.scrolled = true
+    assert.equal(await view.goToFraction(0, { requiresPositionReceipt: true }), null)
+    renderer.scrolled = false
+    renderer.localName = 'foliate-fxl'
+    assert.equal(await view.goToFraction(0, { requiresPositionReceipt: true }), null)
+})

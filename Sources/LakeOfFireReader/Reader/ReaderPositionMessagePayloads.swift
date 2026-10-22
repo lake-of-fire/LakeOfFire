@@ -1,6 +1,40 @@
 import CoreFoundation
 import Foundation
 
+public enum ReaderEBookRestorePositionMode: String, Sendable, Equatable {
+    case paginated
+    case scrolled
+    case other
+}
+
+public struct ReaderEBookFirstPageGeometry: Sendable, Equatable {
+    public let targetSectionIndex: Int
+    public let targetAnchor: Double
+    public let sectionIndex: Int
+    public let fractionInSection: Double
+    public let pageFraction: Double
+
+    public init?(payload: Any?) {
+        guard let value = payload as? [String: Any],
+              value["kind"] as? String == "paginated-first-page-v1",
+              let targetSectionIndex = ReaderMessagePayloadValue.nonnegativeInteger(value["targetSectionIndex"]),
+              let targetAnchor = ReaderMessagePayloadValue.fraction(value["targetAnchor"]),
+              let sectionIndex = ReaderMessagePayloadValue.nonnegativeInteger(value["sectionIndex"]),
+              let fractionInSection = ReaderMessagePayloadValue.fraction(value["fractionInSection"]),
+              let pageFraction = ReaderMessagePayloadValue.fraction(value["pageFraction"]),
+              pageFraction > 0 else { return nil }
+        self.targetSectionIndex = targetSectionIndex
+        self.targetAnchor = targetAnchor
+        self.sectionIndex = sectionIndex
+        self.fractionInSection = fractionInSection
+        self.pageFraction = pageFraction
+    }
+
+    public var matchesFirstPage: Bool {
+        targetSectionIndex == sectionIndex && targetAnchor == 0 && fractionInSection == 0
+    }
+}
+
 public struct ReaderContentEbookInitialRestoreResult: Sendable, Equatable {
     public enum TerminalState: String, Sendable, Equatable {
         case satisfied
@@ -8,6 +42,9 @@ public struct ReaderContentEbookInitialRestoreResult: Sendable, Equatable {
         case noTarget
     }
 
+    public let loadRequestID: String?
+    public let positionMode: ReaderEBookRestorePositionMode?
+    public let firstPageGeometry: ReaderEBookFirstPageGeometry?
     public let requestID: String?
     public let requestedLocator: String
     public let terminalState: TerminalState
@@ -33,7 +70,27 @@ public struct ReaderContentEbookInitialRestoreResult: Sendable, Equatable {
               !restoreSatisfied || (navigationOk && (payload["error"] == nil || payload["error"] is NSNull)) else {
             return nil
         }
-        requestID = payload["requestID"] as? String
+        loadRequestID = payload["loadRequestID"] as? String
+        if let rawMode = payload["positionMode"], !(rawMode is NSNull) {
+            guard let mode = rawMode as? String, let decoded = ReaderEBookRestorePositionMode(rawValue: mode) else {
+                return nil
+            }
+            positionMode = decoded
+        } else {
+            positionMode = nil
+        }
+        if let rawGeometry = payload["firstPageGeometry"], !(rawGeometry is NSNull) {
+            guard let decoded = ReaderEBookFirstPageGeometry(payload: rawGeometry) else { return nil }
+            firstPageGeometry = decoded
+        } else {
+            firstPageGeometry = nil
+        }
+        if let rawRequestID = payload["requestID"], !(rawRequestID is NSNull) {
+            guard let identifier = rawRequestID as? String, !identifier.isEmpty else { return nil }
+            requestID = identifier
+        } else {
+            requestID = nil
+        }
         self.requestedLocator = requestedLocator
         self.terminalState = terminalState
         self.navigationOk = navigationOk

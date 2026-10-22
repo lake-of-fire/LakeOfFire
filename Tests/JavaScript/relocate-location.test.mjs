@@ -75,3 +75,44 @@ test('uses deterministic endpoints for malformed relocation identities', () => {
     assert.equal(build(20).index, 2)
     assert.equal(build(20, 0).index, 0)
 })
+
+
+test('retains raw page geometry separately from measured page-end progress', async () => {
+    const { SectionProgress } = await import('../../Sources/LakeOfFireReader/Resources/foliate-js/progress.js')
+    for (const sections of [
+        [{ size: 100 }, { size: 100 }],
+        [{ size: 0 }, { size: 50, linear: 'no' }, { size: 100 }, { size: 100 }],
+    ]) {
+        const sectionProgress = new SectionProgress(sections, 10, 10)
+        const [index, fraction] = sectionProgress.getSection(0)
+        const location = buildRelocateLocation({ index, fraction, size: 0.25 }, {
+            sectionCount: sections.length, sectionProgress,
+        })
+        assert.equal(location.fraction, 0.125)
+        assert.deepEqual(location.firstPageGeometrySource, {
+            sectionIndex: index, fractionInSection: 0, pageFraction: 0.25,
+        })
+    }
+})
+
+test('preserves contradictory valid geometry for the restore consumer to reject', () => {
+    const location = buildRelocateLocation({ index: 1, fraction: 0.001, size: 1 }, { sectionCount: 2 })
+    assert.deepEqual(location.firstPageGeometrySource, {
+        sectionIndex: 1, fractionInSection: 0.001, pageFraction: 1,
+    })
+})
+
+test('does not manufacture raw geometry from normalized malformed inputs', () => {
+    const valid = { index: 0, fraction: 0, size: 0.25 }
+    const invalid = [
+        ...[-1, 2, 0.5, NaN, Infinity, '0', true].map(index => ({ index })),
+        ...[-1, 1.01, NaN, Infinity, '0', false, undefined].map(fraction => ({ fraction })),
+        ...[-1, 0, 1.01, NaN, Infinity, '0.25', true, undefined].map(size => ({ size })),
+    ]
+    for (const change of invalid) {
+        const location = buildRelocateLocation({ ...valid, ...change }, { sectionCount: 2 })
+        assert.equal(Object.hasOwn(location, 'firstPageGeometrySource'), false)
+    }
+    assert.equal(Object.hasOwn(buildRelocateLocation(valid, { sectionCount: 0 }),
+        'firstPageGeometrySource'), false)
+})
