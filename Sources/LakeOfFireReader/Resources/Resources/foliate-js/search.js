@@ -110,12 +110,34 @@ const segmenterSearch = function* (strs, query, options = {}) {
     }
 }
 
+// Collation keeps case-folding expansions out of DOM offsets. Segment the
+// joined text so a combining sequence split across inline nodes stays intact,
+// then map the original UTF-16 offsets back to those nodes.
+const collatedGraphemeSearch = function* (strs, query, options) {
+    let startIndex = 0, startSum = 0
+    for (const result of segmenterSearch([strs.join('')], query, options)) {
+        const start = result.range.startOffset, end = result.range.endOffset
+        while (startSum + strs[startIndex].length <= start) {
+            startSum += strs[startIndex++].length
+        }
+        let endIndex = startIndex, endSum = startSum
+        while (endSum + strs[endIndex].length < end) {
+            endSum += strs[endIndex++].length
+        }
+        const range = { startIndex, startOffset: start - startSum,
+            endIndex, endOffset: end - endSum }
+        yield { range, excerpt: makeExcerpt(strs, range) }
+    }
+}
+
 export const search = (strs, query, options) => {
     const { granularity = 'grapheme', sensitivity = 'base' } = options
     if (!Intl?.Segmenter || granularity === 'grapheme'
-    && (sensitivity === 'variant' || sensitivity === 'accent'))
+    && sensitivity === 'variant')
         return simpleSearch(strs, query, options)
-    return segmenterSearch(strs, query, options)
+    return granularity === 'grapheme' && sensitivity === 'accent'
+        ? collatedGraphemeSearch(strs, query, options)
+        : segmenterSearch(strs, query, options)
 }
 
 export const searchMatcher = (textWalker, opts) => {

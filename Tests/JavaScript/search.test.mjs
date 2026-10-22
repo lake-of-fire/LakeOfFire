@@ -66,3 +66,37 @@ test('empty text has no matches', () => {
         assert.deepEqual(matches(parts, '猫', { sensitivity: 'variant' }), [])
     }
 })
+
+// Locale folding may expand a code point. Case-insensitive searches must use
+// the collator's original text boundaries rather than folded-string offsets.
+test('accent search retains original offsets after an expanding Unicode fold', () => {
+    assert.deepEqual(matches(['İ', '猫'], '猫', { sensitivity: 'accent', locales: 'en' }), [{
+        range: { startIndex: 1, startOffset: 0, endIndex: 1, endOffset: 1 },
+        excerpt: { pre: '', match: '猫', post: '' },
+    }])
+})
+
+test('accent search preserves a spanning match containing an expanding Unicode fold', () => {
+    assert.deepEqual(matches(['İ', '猫'], 'İ猫', { sensitivity: 'accent', locales: 'en' }), [{
+        range: { startIndex: 0, startOffset: 0, endIndex: 1, endOffset: 1 },
+        excerpt: { pre: '', match: 'İ猫', post: '' },
+    }])
+})
+
+test('accent search retains Lithuanian contextual-casing offsets', () => {
+    assert.deepEqual(matches(['I\u0301', '猫'], '猫', { sensitivity: 'accent', locales: 'lt' }), [{
+        range: { startIndex: 1, startOffset: 0, endIndex: 1, endOffset: 1 },
+        excerpt: { pre: '', match: '猫', post: '' },
+    }])
+})
+
+test('accent search still distinguishes dotted and undotted letters', () => {
+    assert.deepEqual(matches(['İ'], 'i', { sensitivity: 'accent', locales: 'en' }), [])
+})
+
+test('accent search preserves a combining sequence split across inline nodes', () => {
+    assert.deepEqual(matches(['e', '\u0301', '猫'], 'é', { sensitivity: 'accent', locales: 'fr' }), [{
+        range: { startIndex: 0, startOffset: 0, endIndex: 1, endOffset: 1 },
+        excerpt: { pre: '', match: 'e\u0301', post: '' },
+    }])
+})
