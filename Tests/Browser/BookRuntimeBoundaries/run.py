@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 SOURCES = ROOT / 'Sources/LakeOfFireReader/Resources/Resources/foliate-js'
 NAMES = ['cryptographic-uuid.js', 'page-turn-coordination.js', 'book-reading-state.js', 'reader-producer-evidence.js', 'renderer-content.js',
-         'book-action-bridge.js', 'book-endcap.js', 'book-reading-runtime.js']
+         'book-action-bridge.js', 'book-endcap.js', 'native-mark-read-request.js', 'book-reading-runtime.js']
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -58,6 +58,7 @@ def main() -> int:
             if len(set(names)) != len(names) or not names:
                 raise ValueError('Scenario roster is empty or contains duplicate names')
             for name in names:
+                print('Running: ' + name, flush=True)
                 context = browser.new_context()
                 page = context.new_page()
                 page.set_default_timeout(5000)
@@ -65,14 +66,23 @@ def main() -> int:
                 page.route('**/*', lambda route: route.abort())
                 try:
                     page.set_content('<!doctype html><html><body></body></html>')
-                    page.evaluate('async url => { window.BookStateTestModules = await import(url) }', modules[NAMES[-1]])
+                    page.evaluate('''async urls => { window.BookStateTestModules = {
+                        ...await import(urls.runtime), ...await import(urls.coordinator),
+                    } }''', {'runtime': modules[NAMES[-1]], 'coordinator': modules['native-mark-read-request.js']})
                     page.add_script_tag(content=(HERE.parent/'BookStateTransaction/fixture.js').read_text())
                     page.add_script_tag(content=(HERE/'cases.js').read_text())
                     result = page.evaluate('''async name => {
+                        let timeout
                         try {
-                            await bookRuntimeBoundaryCases.find(x => x.name === name).run()
+                            await Promise.race([
+                                bookRuntimeBoundaryCases.find(x => x.name === name).run(),
+                                new Promise((_, reject) => {
+                                    timeout = setTimeout(() => reject(new Error('Scenario timed out after 10 seconds')), 10000)
+                                }),
+                            ])
                             return {name, passed: true}
                         } catch (error) { return {name, passed: false, error: String(error), stack: error.stack} }
+                        finally { clearTimeout(timeout) }
                     }''', name)
                     report['cases'].append(result)
                 except Exception as error:

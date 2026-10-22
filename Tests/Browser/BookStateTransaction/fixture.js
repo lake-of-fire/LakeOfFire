@@ -1,6 +1,6 @@
 // Actual runtime, endcap, action bridge and state controller; only the native
 // message endpoints, Core frame projector and paginator interface are controlled.
-window.makeBookStateRuntimeFixture = async ({ end = false } = {}) => {
+window.makeBookStateRuntimeFixture = async ({ end = false, onInvalidate = () => {} } = {}) => {
     const stage = document.createElement('main')
     stage.id = 'reader-stage'
     const view = document.createElement('div')
@@ -47,7 +47,7 @@ window.makeBookStateRuntimeFixture = async ({ end = false } = {}) => {
     runtime = window.BookStateTestModules.installBookReadingRuntime({
         reader, view, document, window, documentStartedAtMs: 100,
         applyProjection: (state, details) => projections.push({ state, details }),
-        invalidateProjection: () => invalidations.push(true), onVisibility: () => {},
+        invalidateProjection: () => { invalidations.push(true); onInvalidate() }, onVisibility: () => {},
     })
     runtime.state.makeRequestID = () => 'state-' + ++sequence
     runtime.updateLocation()
