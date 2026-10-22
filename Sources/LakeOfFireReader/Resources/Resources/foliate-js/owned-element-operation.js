@@ -11,7 +11,7 @@ export const beginOwnedElementOperation = (element, cleanup) => {
         throw new TypeError('A cleanup function is required')
     }
 
-    finishOwnedElementOperation(element)
+    const previous = operations.get(element)
 
     let active = true
     const operation = {
@@ -30,6 +30,10 @@ export const beginOwnedElementOperation = (element, cleanup) => {
             return true
         },
     }
+    // Publish the replacement before predecessor cleanup can synchronously
+    // admit or finish another operation. That newer action owns the slot;
+    // returning from the older cleanup must never install this owner again.
     operations.set(element, operation)
+    previous?.finish?.()
     return operation
 }
