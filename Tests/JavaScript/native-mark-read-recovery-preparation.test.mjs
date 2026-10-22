@@ -195,7 +195,7 @@ test('failed preparation releases its serial turn and a queued sibling can recov
 
 // Exercise the actual state controller and notice formatter with explicit
 // native-message and DOM collaborators. This is not a browser/Realm fixture.
-test('Book state invalidation failure displays the reopen instruction after a saved Unmark', async t => {
+test('Book status transport failure displays recovery guidance despite optional invalidation failure', async t => {
     class Element {
         children = []
         hidden = false
@@ -213,9 +213,12 @@ test('Book state invalidation failure displays the reopen instruction after a sa
     const dom = { body: new Element(), createElement: () => new Element() }
     Object.defineProperty(globalThis, 'document', { configurable: true, value: dom })
     const stateRequests = []
-    let failInvalidation = false, sequence = 0
+    let failInvalidation = false, failRead = false, sequence = 0
     const state = new BookReadingStateController({
-        postMessage: value => stateRequests.push(value),
+        postMessage: value => {
+            if (failRead) throw new Error('Native status transport unavailable')
+            stateRequests.push(value)
+        },
         makeRequestID: () => `state-${++sequence}`,
         documentStartedAtMs: 123, topWindowURL: 'ebook://book',
         onInvalidate: () => { if (failInvalidation) throw new Error('Frame invalidation failed') },
@@ -238,9 +241,10 @@ test('Book state invalidation failure displays the reopen instruction after a sa
     const outcome = await entry.completion
     assert.match(dom.body.firstElementChild.firstElementChild.textContent, /Refreshing reading status/)
     failInvalidation = true
+    failRead = true
     assert.equal(await f.coordinator.recoverHistoryReadingStatus(entry.proof), false)
     assert.equal(stateRequests.length, 1, 'Only the initial chapter read was posted')
-    assert.equal(f.queries.length, 0, 'Preparation failed before a new native read')
+    assert.equal(f.queries.length, 1, 'Optional invalidation failure does not prevent the authorized native read attempt')
     assert.equal(outcome.success, true, 'A display failure does not undo saved Unmark')
     const notice = dom.body.firstElementChild
     assert.match(notice.firstElementChild.textContent, /The reading change was saved/)

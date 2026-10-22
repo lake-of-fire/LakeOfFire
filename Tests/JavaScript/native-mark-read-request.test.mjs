@@ -871,9 +871,10 @@ for (const success of [true, false]) {
             ...(success ? {} : { errorCode: 'cancelled' }) })
         assert.equal(h.coordinator.settle(terminal), true)
         assert.equal((await completion).success, success)
+        assert.equal(h.controls.length, 0, 'Hidden pages cannot post recovery status')
+        h.coordinator.resume()
         assert.equal(h.controls.length, 1)
         assert.equal(h.controls[0].manualReadPendingHistoryRecovery, true)
-        h.coordinator.resume()
         const history = { ...terminal, manualReadPendingHistoryRecovery: true,
             manualReadPendingOutcomeOnly: true, manualReadPendingPresentationAllowed: false }
         for (const invalid of [terminal,
@@ -968,7 +969,9 @@ test('authenticated unavailable settles exact history truth without inventing fa
     }
     assert.equal(h.coordinator.settle(unavailable), true)
     assert.equal((await completion).outcomeKnown, false)
-    assert.equal(h.coordinator.settle(unavailable), false)
+    assert.equal(h.coordinator.settle(unavailable), true, 'The retained exact recovery can still be acknowledged')
+    h.coordinator.retireHistoryRecoveries()
+    assert.equal(h.coordinator.settle(unavailable), false, 'Retirement makes that acknowledgement unavailable')
 })
 
 test('native retired history success preserves outcome while declining old presentation', async () => {
@@ -1547,7 +1550,7 @@ for (const boundary of ['preparation', 'presentation ownership']) {
         assert.equal(h.pendingStates.at(-1).recoveryOnly, false)
         assert.equal(h.coordinator.ownsHistoryReadingStatusRecovery({ requestID: message.requestID,
             observationToken: message.manualReadPendingObservationToken }), false)
-        assert.equal(h.controls.length, 1, 'Only the existing read-only History status was sent')
+        assert.equal(h.controls.length, 0, 'A hidden or retired recovery never posts status')
     })
 }
 

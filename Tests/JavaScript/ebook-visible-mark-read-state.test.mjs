@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
-import { visibleMarkReadSidecarSelection } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-visible-mark-read-selection.js'
+import { visibleMarkReadSidecarSelection, visibleMarkReadSegmentIsRead } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-visible-mark-read-selection.js'
 
 // Execute the complete production page-state builder. Visibility and the native
 // sidecar are explicit inputs; no second read-coverage algorithm is modeled.
@@ -20,7 +20,7 @@ const buildStates = vm.runInNewContext(
     source.slice(normalizationStart, normalizationEnd)
         + source.slice(builderStart, builderEnd)
         + '\nbuildVisiblePageTrackingStates', {
-        visibleMarkReadSidecarSelection,
+        visibleMarkReadSidecarSelection, visibleMarkReadSegmentIsRead,
         stableEbookSegmentIdentityVersion: 1,
         segmentEntryIDsForMetadata: (metadata, lexicon) =>
             lexicon === 'jmdict' ? metadata.j : metadata.n,

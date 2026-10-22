@@ -283,11 +283,13 @@ for (const boundary of ['context', 'producer', 'id', 'context-copy']) {
                 else if (transition === 'account') f.bridge.setAccountPresentation('2:1')
                 else nested = f.perform('finishBook')
             }
-            if (boundary === 'context') f.hooks.context = () => { change(); return { contextID: 'old' } }
+            if (boundary === 'context') f.hooks.context = () => {
+                change(); f.hooks.context = () => ({ contextID: 'old' }); return { contextID: 'old' }
+            }
             if (boundary === 'producer') f.hooks.producer = () => { change(); return { token: 'old' } }
             if (boundary === 'id') f.hooks.id = () => { change(); return uuid(99) }
             if (boundary === 'context-copy') f.hooks.context = () => ({
-                toJSON() { change(); return { contextID: 'old' } },
+                toJSON() { change(); f.hooks.context = () => ({ contextID: 'old' }); return { contextID: 'old' } },
             })
             const original = f.perform()
             assert.equal(entered, true)
