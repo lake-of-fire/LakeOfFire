@@ -22,4 +22,3 @@ outcomes. The complete shipping Reader harness separately drives Cancel, native
 commit, full publication and the animation clock. Saved read membership and
 committed diagnostics must agree in both cases; only the untouched action turns.
 These are controlled JavaScript behaviors, not native writer or WebKit tests.
-

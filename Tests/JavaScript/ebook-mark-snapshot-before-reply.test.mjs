@@ -270,4 +270,3 @@ test('equal or rejected older partial receipts do not invalidate a current full 
     assert.equal(f.presented(), true)
     assert.equal(f.state.noteManualReadSnapshot(2), false)
 })
-

@@ -83,4 +83,3 @@ late. This repair covers publication before the reply and rejects later-stale
 full evidence. Preserve #218's first-dispatch guard, #219's preparation-failure
 notice and #220's restored-terminal observation when composing this same file.
 No dependency pin or assembled integration is selected by this component fix.
-

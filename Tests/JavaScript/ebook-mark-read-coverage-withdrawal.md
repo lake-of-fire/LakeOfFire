@@ -35,4 +35,3 @@ later current full publication to remain eligible to advance. Existing tests
 retain late publication, native success, navigation and lifecycle behavior.
 Controlled JavaScript state and renderer collaborators do not establish native
 writer or actual WebKit execution.
-

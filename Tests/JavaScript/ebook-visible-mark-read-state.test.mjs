@@ -124,4 +124,3 @@ test('withdrawn sentence support restores Mark Read on the next native projectio
     assert.equal(unmarked.hasAnyMarkedReadContent, false)
     assert.equal(unmarked.payload.segments.length, 1)
 })
-
