@@ -1,87 +1,29 @@
-# Book action preparation and uncertain delivery
+# Book action failures before native dispatch
 
-A new Book action must not enter status-only recovery until its initial native
-transport invocation has been entered. Local envelope or timer preparation can
-fail before that point. Native has no record of such a request, so Check Status
-cannot resolve it; retaining the bridge's current request also rejects every
-subsequent deliberate Finish or Start Over action.
+A fresh Book action reserves its immutable semantic request before preparing its
+timer and native producer envelope. If preparation fails before entering the
+transport callback, native has never received the operation. Keeping it as an
+unknown outcome would strand Endcap and Book Actions on Check Status.
 
-The producer adapter can return null when Core rejects its original owner.
-Serialization, semantic-envelope validation and timer installation are other
-pre-dispatch failure boundaries. These are local admission failures, not native
-mutation failures and not evidence that a submitted operation rolled back.
+The bridge records whether transport entry occurred. Its shared failure handler
+releases the exact fresh reservation on producer refusal, envelope/serialization
+failure or early timer expiry before entry. It withdraws ownership before timer
+cleanup can synchronously admit a successor. A new user action can then proceed.
 
-## Settlement rule
+A failure or timeout after transport entry preserves the original operation for
+status recovery. Preparation failure for status or navigation recovery likewise
+preserves that already-submitted command. A synchronous terminal acknowledgement
+wins over a later wrapper error. Recovery never replays the reset mutation.
 
-The bridge records entry into the existing postMessage callback immediately
-before invoking it. A preparation exception for the fresh command removes only
-that delivery and its exact current request before settling its promise or
-clearing its timer. The caller receives an ordinary local error and may initiate
-a new deliberate action after readiness returns. No automatic mutation retry is
-introduced, and no old command is relabeled with a new producer.
+Maintained behavior owners:
 
-After entering postMessage, an exception remains an unknown native outcome:
-the transport may have delivered before throwing. Its original request remains
-recoverable, and a second mutation stays prohibited until native answers.
-Synchronous terminal acknowledgement still wins over a later wrapper error.
+- `book-action-bridge-settlement.test.mjs`: exact failure boundaries, early timer
+  expiry, successor ownership and posted-operation recovery.
+- `book-action-pre-dispatch.test.mjs`: producer and semantic-envelope admission.
+- `book-action-recovery.test.mjs`: recovery of the original operation.
+- `book-endcap-bridge-dispatch.test.mjs`: complete Endcap, bridge and producer
+  adapter composition, visible controls and exact packet sequence.
 
-Status and navigation recovery are also excluded from local-abort cleanup, even
-when their own preparation fails before posting: their original semantic command
-was already submitted and may have committed. Preserve its immutable request ID
-and use the existing status-only recovery path.
-
-Timer expiry uses this same failure handler rather than a separate unconditional
-unknown-outcome path. The injectable scheduler can expire while installing the
-timer or preparing the envelope. Such an unsent fresh command releases its local
-reservation; expiry after submission, or during status/navigation recovery,
-still preserves the original operation. A late timer cannot retire a successor.
-The early-expiry cases exercise the scheduler contract with controlled callbacks;
-they do not claim that the browser's normal setTimeout runs synchronously.
-
-## Regression coverage
-
-Run:
-
-```sh
-node --test Tests/JavaScript/book-action-pre-dispatch.test.mjs \
-  Tests/JavaScript/book-action-bridge-settlement.test.mjs \
-  Tests/JavaScript/book-action-recovery.test.mjs \
-  Tests/JavaScript/book-endcap-bridge-dispatch.test.mjs
-```
-
-These suites import the complete shipping bridge and its real dependencies.
-They exercise producer-envelope rejection, adapter exceptions, serialization and
-semantic validation failures, timer setup/early expiry, local cleanup reentry,
-ambiguous transport failure, timeout, synchronous terminal acknowledgement, and
-failed status/navigation preparation. The existing settlement suite's throwing-
-timer test now requires local rejection and a deliberate new command, not an
-impossible status query for an operation never sent. Native transport and
-scheduling callbacks are controlled collaborators, not native Realm or WKWebView.
-
-### Endcap caller composition
-
-`book-endcap-bridge-dispatch.test.mjs` joins the complete production `BookEndcap`
-with the real action bridge and default producer capture/carry adapters. Its
-producer service is controlled, so refusal traverses the shipping adapter's
-null/exception handling rather than a replacement bridge implementation.
-
-The fifteen cases check the visible button label, enabled/busy state, retained
-Finished projection, request identity and exact command/status/navigation packet
-sequence. An unsent Finish or Start Book Over must remain explicitly retryable;
-a submitted command whose reply is lost must instead keep Check Status and may
-not issue a second reset. Further controls cover a known rejection, failed
-navigation, acknowledgement before a wrapper error, account replacement and
-caller destruction. No production method bodies are extracted.
-
-The same cases produced eight passes and seven assertion failures with the
-preceding bridge, then fifteen passes with the correction. These are caller
-component results using controlled DOM allocation, timer delivery, producer
-service and native replies. They do not execute trusted WebKit activation,
-native command admission, persistence or actual navigation. They extend, rather
-than replace, the older bridge-only tests; their historical totals are not a
-fresh combined-suite result.
-
-Before release, exercise the actual End of Book and native Book Actions callers
-in the assembled Reader with producer replacement, then verify that a genuinely
-submitted reset with a lost reply still requires status recovery rather than a
-second reset. Full browser/WKWebView and native qualification remain separate.
+These component tests control native replies, timers and DOM allocation. Real
+WebKit activation, Realm/account transitions and device acceptance remain separate
+checks. Store execution logs outside tracked source.
