@@ -494,7 +494,10 @@
                         preview: previewText(content, 512),
                     })
 
-                    const publishedTimeHTML = publishedTime ? `<span id="reader-publication-date">${publishedTime}</span>` : ""
+                    const publicationDateElement = document.createElement('span')
+                    publicationDateElement.id = 'reader-publication-date'
+                    publicationDateElement.textContent = publishedTime || ''
+                    const publishedTimeHTML = publishedTime ? publicationDateElement.outerHTML : ""
                     const metaLine = publishedTimeHTML
                         ? `<div id="reader-meta-line" class="byline-meta-line">${publishedTimeHTML}</div>`
                         : ""
