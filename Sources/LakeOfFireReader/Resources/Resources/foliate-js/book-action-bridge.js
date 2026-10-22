@@ -59,6 +59,34 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
     const requestProducerReadiness = () => {
         try { globalThis.manabiArticleProducer?.ready?.().catch?.(() => {}) } catch (_) {}
     }
+    const observeRecoveryNavigationIntent = (request, result, mayPost) => {
+        // The original reset may already have published its successor context.
+        // Compare that known result and the original location, not its retired
+        // contextID. Missing projection still needs native publication recovery.
+        let context
+        try { context = copy(captureContext?.()) } catch (_) { return }
+        if (!mayPost() || !context || result?.ok !== true || result.committed !== true
+            || !['startBookOver', 'startChapterOver'].includes(request.action)
+            || context.locationRevision !== request.context.locationRevision
+            || context.articleProgressID !== request.context.articleProgressID
+            || context.articleEpochID !== result.articleEpochID
+            || context.isEndPage !== request.context.isEndPage
+            || (request.action === 'startChapterOver'
+                && (context.sectionLocation !== request.context.sectionLocation
+                    || context.scope?.chapterKey !== request.context.scope?.chapterKey
+                    || context.scope?.chapterEpochID !== result.chapterEpochID))) return
+        const expected = fingerprint(context)
+        const isCurrent = () => {
+            if (!mayPost()) return false
+            const latest = captureContext?.(context)
+            return latest && fingerprint(copy(latest)) === expected && mayPost()
+        }
+        if (!isCurrent()) return
+        // Go to Beginning is a new explicit movement intent, not another reset.
+        // Reuse the Reader's existing page-Mark navigation retirement boundary.
+        onCommandAdmission()
+        if (!isCurrent()) throw new Error('The reader changed before navigation recovery.')
+    }
     const deliver = (request, kind) => {
         if (closed) return Promise.reject(new Error('Reader closed'))
         if (!ownsRequest(request)) return Promise.reject(unknown(request))
@@ -139,6 +167,8 @@ export const createBookActionBridge = ({ postMessage, documentStartedAtMs, topWi
             const semantic = prepared && Object.fromEntries(fields.map(key => [key, prepared[key]]))
             if (!mayPost()) return promise
             if (!semantic || fingerprint(semantic) !== expected) throw new Error('The book action changed before dispatch.')
+            if (kind === 'navigate') observeRecoveryNavigationIntent(request, previousResult, mayPost)
+            if (!mayPost()) return promise
             postEntered = true
             postMessage(prepared)
         } catch (error) {
