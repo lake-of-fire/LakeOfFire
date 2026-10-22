@@ -563,7 +563,10 @@ class Resources {
         }
         const idref = $itemref?.getAttribute('idref')
         const index = this.spine.findIndex(item => item.idref === idref)
-        const anchor = doc => CFI.toRange(doc, parts)
+        // A section-only CFI is emitted before a rendered range is available.
+        // It still names the section start after its OPF path is consumed.
+        const sectionStart = Array.isArray(parts) && parts.every(path => path.length === 0)
+        const anchor = sectionStart ? () => 0 : doc => CFI.toRange(doc, parts)
         return {
             index,
             anchor
