@@ -195,3 +195,51 @@ test('top-level load and cache warming actually open through the bound resource 
     assert.equal(f.requests.at(-1).headers['X-Ebook-Package-Session'], secondID)
     warm.destroy(); readers[1].close()
 })
+
+
+for (const stage of ['chapter', 'stylesheet', 'import']) {
+    test(`destroy aborts pending direct-section ${stage} fetch through the native loader`, async () => {
+        const stylesheet = 'B/style.css', importedStylesheet = 'B/imported.css'
+        const requested = deferred(), responseGate = deferred()
+        const pendingPath = stage === 'chapter' ? chapter : stage === 'stylesheet' ? stylesheet : importedStylesheet
+        let observedSignal
+        const f = fixture({ fetch: async (parsed, options) => {
+            if (parsed.pathname === '/entries') return { ok: true, json: async () => ({
+                entries: [...entries, { path: stylesheet }, { path: importedStylesheet }],
+                packageDocumentPath: opf,
+            }) }
+            const subpath = parsed.searchParams.get('subpath')
+            if (subpath === pendingPath) {
+                observedSignal = options.signal
+                requested.resolve()
+                return new Promise((resolve, reject) => {
+                    responseGate.promise.then(resolve, reject)
+                    const abort = () => { const error = new Error('aborted'); error.name = 'AbortError'; reject(error) }
+                    if (observedSignal?.aborted) abort()
+                    else observedSignal?.addEventListener('abort', abort, { once: true })
+                })
+            }
+            return new Response(subpath === chapter
+                ? '<html><head><link rel="stylesheet" href="style.css"></head><body>本文</body></html>'
+                : '@import "imported.css"; body { writing-mode: vertical-rl; }')
+        } })
+        const loader = await createNativeEpubLoader(f.source, false, f.options)
+        const result = loader.replaceURL(chapter, 'application/xhtml+xml').then(
+            value => ({ value }), error => ({ error }),
+        )
+        try {
+            await requested.promise
+            assert.equal(loader.destroy(), true)
+            assert.equal(observedSignal?.aborted, true)
+            const outcome = await result
+            if (stage === 'chapter') assert.equal(outcome.error?.name, 'AbortError')
+            else assert.deepEqual(outcome, { value: null })
+            assert.equal(await loader.replaceURL(chapter, 'application/xhtml+xml'), null)
+            assert.equal(f.requests.at(-1).headers['X-Ebook-Package-Session'], firstID)
+        } finally {
+            loader.destroy()
+            responseGate.resolve(new Response(''))
+            await result
+        }
+    })
+}
