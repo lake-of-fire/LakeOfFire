@@ -873,6 +873,9 @@ for (const success of [true, false]) {
         assert.equal((await completion).success, success)
         assert.equal(h.controls.length, 0, 'Hidden pages cannot post recovery status')
         h.coordinator.resume()
+        assert.equal(h.controls.length, 0, 'Resume first schedules the existing observation')
+        assert.equal(h.timeouts.size, 1)
+        ;[...h.timeouts.values()][0]()
         assert.equal(h.controls.length, 1)
         assert.equal(h.controls[0].manualReadPendingHistoryRecovery, true)
         const history = { ...terminal, manualReadPendingHistoryRecovery: true,
