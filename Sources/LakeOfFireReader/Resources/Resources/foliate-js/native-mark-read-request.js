@@ -781,14 +781,13 @@ export const createNativeMarkReadRequestCoordinator = ({
         })
     }
     const cancelAll = () => {
-        // Reader invalidation also reaches completed History recoveries. Keep
-        // a still-current null-context recovery, but release old chapter/account
-        // notices and waits. Snapshot both rosters before any callback can admit
-        // successor work; a completed command is never cancelled or replayed.
-        const requests = [...pendingByRequestID.keys()]
+        // Capture both entry rosters before callbacks can admit successors.
+        // Location/account invalidation also retires completed display recovery;
+        // ordinary cancellation alone cannot find those already-settled writes.
         const recoveries = [...recoveryByRequestID.values()]
-        for (const requestID of requests) cancel(requestID)
+        const requestIDs = [...pendingByRequestID.keys()]
         for (const recovery of recoveries) retainRecoveryOwnership(recovery)
+        for (const requestID of requestIDs) cancel(requestID)
     }
     const pause = () => {
         if (closed) return
