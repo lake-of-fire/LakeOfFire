@@ -33,6 +33,19 @@ test('separate owners never reuse a same-key value', async () => {
     assert.equal(await replacementCache.getOrCreate('chapter.xhtml', async () => 'horizontal'), 'horizontal')
 })
 
+test('clearing one owner permits a fresh value without affecting another owner', async () => {
+    const firstCache = createOwnedAsyncCache()
+    const secondCache = createOwnedAsyncCache()
+
+    assert.equal(await firstCache.getOrCreate('chapter.xhtml', async () => 'old'), 'old')
+    assert.equal(await secondCache.getOrCreate('chapter.xhtml', async () => 'other'), 'other')
+
+    firstCache.clear()
+
+    assert.equal(await firstCache.getOrCreate('chapter.xhtml', async () => 'reloaded'), 'reloaded')
+    assert.equal(await secondCache.getOrCreate('chapter.xhtml', async () => 'wrong'), 'other')
+})
+
 test('a rejected operation is not retained as the owner result', async () => {
     const cache = createOwnedAsyncCache({ limit: 2 })
     await assert.rejects(
