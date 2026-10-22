@@ -147,3 +147,50 @@ test('reentrant document closure during blob creation releases it without publis
     assert.deepEqual(revoked, ['blob:closing']);
     assert.equal(audio.src, sessionURL('voice.m4a'));
 });
+
+test('page hide while response blob is pending prevents late object URL creation', async () => {
+    const audio = makeElement(packageURL('voice.m4a'));
+    let hide, releaseBlob, enteredBlob;
+    let created = 0, loaded = 0;
+    const blob = new Promise(resolve => { releaseBlob = resolve; });
+    const blobEntered = new Promise(resolve => { enteredBlob = resolve; });
+    audio.load = () => { loaded += 1; };
+    const result = hydratePackageMedia({
+        document: { querySelectorAll: () => [audio] },
+        fetch: async () => ({
+            ok: true,
+            blob: () => { enteredBlob(); return blob; },
+        }),
+        addPageHideListener: listener => { hide = listener; },
+        createObjectURL: () => { created += 1; return 'blob:unexpected'; },
+    });
+    await blobEntered;
+    hide();
+    releaseBlob({});
+    assert.deepEqual(await result, [false]);
+    assert.equal(audio.src, packageURL('voice.m4a'));
+    assert.equal(created, 0);
+    assert.equal(loaded, 0);
+});
+
+test('late response cannot publish to a detached media element', async () => {
+    const audio = makeElement(packageURL('voice.m4a'));
+    let release, hide, loaded = 0;
+    const revoked = [];
+    audio.isConnected = true;
+    audio.load = () => { loaded += 1; };
+    const result = hydratePackageMedia({
+        document: { querySelectorAll: () => [audio] },
+        fetch: () => new Promise(resolve => { release = resolve; }),
+        createObjectURL: () => 'blob:detached',
+        revokeObjectURL: url => revoked.push(url),
+        addPageHideListener: listener => { hide = listener; },
+    });
+    audio.isConnected = false;
+    release({ ok: true, blob: async () => ({}) });
+    assert.deepEqual(await result, [false]);
+    assert.equal(audio.src, packageURL('voice.m4a'));
+    assert.equal(loaded, 0);
+    hide();
+    assert.deepEqual(revoked, ['blob:detached']);
+});
