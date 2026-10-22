@@ -34,6 +34,7 @@ class FakeNode extends EventTarget {
 
     append(...nodes) { this.children.push(...nodes) }
     appendChild(node) { this.children.push(node); return node }
+    replaceChildren(...nodes) { this.children = [...nodes] }
     prepend(node) { this.children.unshift(node); return node }
     remove() {}
     querySelector() { return null }
@@ -127,6 +128,43 @@ globalThis.requestAnimationFrame = callback =>
 globalThis.cancelAnimationFrame = clearTimeout
 globalThis.CSS = { escape: value => String(value) }
 
+// A small loaded-document fixture lets the real paginator render and reanchor;
+// dimensions are controlled, while loading, expansion and relocation stay real.
+const makeLayoutNode = () => {
+    const node = new FakeHTMLElement()
+    const properties = new Map()
+    node.style = {
+        setProperty(name, value) { properties.set(name, String(value)) },
+        getPropertyValue(name) { return properties.get(name) ?? '' },
+        getPropertyPriority() { return '' },
+        removeProperty(name) { properties.delete(name) },
+    }
+    node.isConnected = true
+    node.clientWidth = 800
+    node.clientHeight = 1000
+    node.matches = () => false
+    node.getElementsByTagName = () => []
+    return node
+}
+
+const makeLayoutDocument = () => {
+    const doc = new EventTarget()
+    doc.body = makeLayoutNode()
+    doc.documentElement = makeLayoutNode()
+    doc.body.setAttribute('data-mnb-writing-direction', 'horizontal')
+    doc.location = { href: 'ebook://ebook/processed-section?subpath=current.xhtml' }
+    doc.querySelector = () => null
+    doc.querySelectorAll = () => []
+    doc.getElementById = () => null
+    doc.hasFocus = () => false
+    doc.defaultView = { getComputedStyle: globalThis.getComputedStyle }
+    doc.createRange = () => ({
+        selectNodeContents() {},
+        getBoundingClientRect: () => ({ width: 3200, height: 1000, left: 0, top: 0 }),
+    })
+    return doc
+}
+
 const {
     Paginator,
     manabiAnimate,
@@ -142,6 +180,69 @@ test('animation-frame operations reject instead of stranding their caller', asyn
         manabiRunAnimationFrameOperation(() => { throw failure }),
         failure
     )
+})
+
+test('layout reanchoring during a suspended section load cannot borrow its relocation receipt', { timeout: 5000 }, async () => {
+    const originalCreateElement = document.createElement
+    const originalCreateRange = document.createRange
+    const doc = makeLayoutDocument()
+    document.createRange = doc.createRange
+    document.createElement = name => {
+        const node = makeLayoutNode()
+        if (name === 'iframe') {
+            node.contentDocument = doc
+            Object.defineProperty(node, 'src', {
+                set() { setImmediate(() => node.dispatchEvent(new Event('load'))) },
+            })
+        }
+        return node
+    }
+    const paginator = new Paginator()
+    const container = paginator.shadowRoot.nodes.get('container')
+    container.clientWidth = 800
+    container.clientHeight = 1000
+    const resizeObserver = resizeObservers.at(-1)
+    let releaseSection
+    let sectionLoadStarted
+    const loadStarted = new Promise(resolve => { sectionLoadStarted = resolve })
+    let pendingNavigation
+    const relocations = []
+    paginator.addEventListener('relocate', event => { relocations.push(event.detail) })
+    paginator.open({ dir: 'ltr', sections: [
+        { id: 'current.xhtml', linear: 'yes', load: async () => 'current-document', unload() {} },
+        { id: 'destination.xhtml', linear: 'yes', load: () => new Promise(resolve => {
+            releaseSection = resolve
+            sectionLoadStarted()
+        }), unload() {} },
+    ] })
+    try {
+        assert.equal(await paginator.goTo({ index: 0, anchor: 0 }, {
+            relocationID: 'initial-navigation',
+        }), true)
+        assert.ok(relocations.some(detail => detail.relocationID === 'initial-navigation'))
+        relocations.length = 0
+        pendingNavigation = paginator.goTo({ index: 1, anchor: 0 }, {
+            relocationID: 'pending-history-jump',
+        })
+        await loadStarted
+
+        const layoutRelocation = new Promise(resolve => {
+            paginator.addEventListener('relocate', event => resolve(event.detail), { once: true })
+        })
+        container.clientWidth = 600
+        resizeObserver.callback([{ contentRect: { width: 600, height: 1000, top: 0, left: 0 } }])
+        const detail = await layoutRelocation
+        assert.equal(detail.reason, 'anchor')
+        assert.equal(detail.index, 0)
+        assert.equal(detail.relocationID, undefined)
+        assert.equal(paginator.navigationInFlight, true)
+    } finally {
+        paginator.destroy()
+        if (pendingNavigation) await pendingNavigation
+        releaseSection?.('late-destination-document')
+        document.createElement = originalCreateElement
+        document.createRange = originalCreateRange
+    }
 })
 
 test('animated operations reject when a render step throws', async () => {

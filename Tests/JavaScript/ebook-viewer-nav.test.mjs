@@ -9,6 +9,98 @@ const { NavigationHUD } = await import(
     '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-viewer-nav.js'
 )
 
+const historyHUD = onJumpRequest => {
+    const hud = new NavigationHUD({ onJumpRequest })
+    // Leave location and history transitions real; this fixture has no chrome.
+    hud._applyPageTurnNavigationVisibility = () => {}
+    hud._updatePrimaryLine = () => {}
+    hud._toggleCompletionStack = () => {}
+    hud._updateSectionProgress = async () => {}
+    hud._updateRelocateButtons = () => {}
+    hud._updateRendererSnapshotFromDetail = () => null
+    hud._refreshRendererSnapshot = async () => null
+    return hud
+}
+
+test('a relocation awaiting its snapshot cannot confirm a later failed history jump', async () => {
+    let releaseSnapshot
+    let snapshotStarted
+    const started = new Promise(resolve => { snapshotStarted = resolve })
+    const snapshot = new Promise(resolve => { releaseSnapshot = resolve })
+    let finishJump
+    const jumpResult = new Promise(resolve => { finishJump = resolve })
+    const hud = historyHUD(() => jumpResult)
+    const origin = { sectionIndex: 0, fraction: 0.1, cfi: 'origin' }
+    hud.relocateStacks.back.push(origin)
+    hud.currentLocationDescriptor = { sectionIndex: 2, fraction: 0.8, cfi: 'current' }
+    hud._updateRendererSnapshotFromDetail = () => null
+    hud._refreshRendererSnapshot = async () => {
+        snapshotStarted()
+        await snapshot
+    }
+
+    const olderRelocation = hud.handleRelocate({
+        sectionIndex: 2, fraction: 0.81, cfi: 'current-adjusted', reason: 'anchor',
+    })
+    await started
+    const jump = hud._handleRelocateJump('back')
+    const pending = hud.pendingRelocateJump
+    try {
+        releaseSnapshot()
+        await olderRelocation
+        assert.equal(hud.pendingRelocateJump, pending)
+        assert.deepEqual(hud.relocateStacks.back, [origin])
+        assert.deepEqual(hud.relocateStacks.forward, [])
+    } finally {
+        finishJump(false)
+        await jump
+    }
+    assert.equal(hud.pendingRelocateJump, null)
+    assert.deepEqual(hud.relocateStacks.back, [origin])
+    assert.deepEqual(hud.relocateStacks.forward, [])
+})
+
+for (const direction of ['back', 'forward']) {
+    test(`${direction} history commits only the matching relocation receipt`, async () => {
+        let finishJump
+        let relocationID
+        const jumpResult = new Promise(resolve => { finishJump = resolve })
+        const hud = historyHUD((_descriptor, options) => {
+            relocationID = options.relocationID
+            return jumpResult
+        })
+        const target = { sectionIndex: 0, fraction: 0.1, cfi: 'target' }
+        const current = { sectionIndex: 2, fraction: 0.8, cfi: 'current' }
+        hud.relocateStacks[direction].push(target)
+        hud.currentLocationDescriptor = current
+        const jump = hud._handleRelocateJump(direction)
+        const pending = hud.pendingRelocateJump
+        try {
+            for (const receipt of [undefined, 'unrelated-relocation']) {
+                await hud.handleRelocate({
+                    ...target, reason: 'anchor', relocationID: receipt,
+                })
+                assert.equal(hud.pendingRelocateJump, pending)
+                assert.deepEqual(hud.relocateStacks[direction], [target])
+                assert.deepEqual(hud.relocateStacks[direction === 'back' ? 'forward' : 'back'], [])
+            }
+            await hud.handleRelocate({
+                ...target, reason: 'navigation', relocationID,
+            })
+            assert.equal(hud.pendingRelocateJump, null)
+            assert.equal(hud.isProcessingRelocateJump, false)
+            assert.deepEqual(hud.relocateStacks[direction], [])
+            const opposite = hud.relocateStacks[direction === 'back' ? 'forward' : 'back']
+            assert.equal(opposite.length, 1)
+            assert.equal(opposite[0].fraction, current.fraction)
+            assert.equal(hud.currentLocationDescriptor.fraction, target.fraction)
+        } finally {
+            finishJump(true)
+            await jump
+        }
+    })
+}
+
 test('RTL paginator progress uses logical reading-order page numbers', () => {
     const hud = new NavigationHUD({
         getRenderer: () => ({ scrolled: false, bookDir: 'rtl' }),
