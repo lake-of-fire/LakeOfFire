@@ -579,7 +579,7 @@ export class Loader {
         //.filter(({ mediaType }) => ![MIME.XHTML, MIME.HTML].includes(mediaType))
     }
     createURL(href, data, type, parent, cacheKey = href) {
-        if (this.#destroyed || !data) return ''
+        if (this.#destroyed || data == null) return ''
         const url = URL.createObjectURL(new Blob([data], {
             type
         }))
@@ -756,11 +756,20 @@ export class Loader {
     }
     async loadHref(href, base, parents = []) {
         if (this.#destroyed) return null
-        if (isExternal(href)) return href
-        const path = resolveURL(href, base)
+        if (typeof href !== 'string' || !href || isExternal(href)) return href
+        const fragmentIndex = href.indexOf('#')
+        const queryIndex = href.indexOf('?')
+        const resourceEnd = Math.min(
+            fragmentIndex < 0 ? href.length : fragmentIndex,
+            queryIndex < 0 ? href.length : queryIndex,
+        )
+        if (resourceEnd === 0) return href
+        const path = resolveURL(href.slice(0, resourceEnd), base)
         const item = this.manifest.find(item => item.href === path)
         if (!item) return href
-        return this.loadItem(item, parents.concat(base))
+        const url = await this.loadItem(item, parents.concat(base))
+        if (this.#destroyed) return null
+        return url && fragmentIndex >= 0 ? url + href.slice(fragmentIndex) : url
     }
     async loadReplaced(item, parents = []) {
         if (this.#destroyed) return null
@@ -771,7 +780,7 @@ export class Loader {
         const parent = parents[parents.length - 1]
         const str = await this.loadText(href)
         if (this.#destroyed) return null
-        if (!str) return null
+        if (str == null) return null
 
         // note that one can also just use `replaceString` for everything:
         // ```
@@ -789,22 +798,23 @@ export class Loader {
             if (this.#destroyed) return null
         }
 
-        if (!replacedStr) {
+        if (replacedStr == null) {
             return null
         }
 
         // parse and replace in HTML
         if ([MIME.XHTML, MIME.HTML, MIME.SVG].includes(mediaType)) {
-            let doc = new DOMParser().parseFromString(replacedStr, mediaType)
+            let effectiveMediaType = mediaType
+            let doc = new DOMParser().parseFromString(replacedStr, effectiveMediaType)
             // change to HTML if it's not valid XHTML
             if (mediaType === MIME.XHTML && doc.querySelector('parsererror')) {
                 console.warn(doc.querySelector('parsererror').innerText)
-                item.mediaType = MIME.HTML
-                doc = new DOMParser().parseFromString(replacedStr, item.mediaType)
+                effectiveMediaType = MIME.HTML
+                doc = new DOMParser().parseFromString(replacedStr, effectiveMediaType)
             }
             // replace hrefs in XML processing instructions
             // this is mainly for SVGs that use xml-stylesheet
-            if ([MIME.XHTML, MIME.SVG].includes(item.mediaType)) {
+            if ([MIME.XHTML, MIME.SVG].includes(effectiveMediaType)) {
                 let child = doc.firstChild
                 while (child instanceof ProcessingInstruction) {
                     if (child.data) {
@@ -839,7 +849,9 @@ export class Loader {
                     await this.replaceCSS(el.getAttribute('style'), href, parents))
             // TODO: replace inline scripts? probably not worth the trouble
             const textResult = new XMLSerializer().serializeToString(doc)
-            return this.createURL(href, textResult, item.mediaType, parent)
+            const url = this.createURL(href, textResult, effectiveMediaType, parent)
+            if (url && effectiveMediaType !== mediaType) item.mediaType = effectiveMediaType
+            return url
         }
 
         const result = mediaType === MIME.CSS ?

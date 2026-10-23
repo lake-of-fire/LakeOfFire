@@ -80,6 +80,34 @@ try {
             check(calls===1&&ownerCloses===1,'native replacement ownership not coalesced/retired')
             results.push({name:'native direct section stays on its route and retires once',status:'passed',calls,ownerCloses})
         }
+        {
+            const files = source()
+            files.set('book.opf', files.get('book.opf').replace('</manifest>',
+                '<item id="icons" href="icons.svg" media-type="image/svg+xml"/><item id="empty" href="empty.css" media-type="text/css"/></manifest>'))
+            files.set('icons.svg', '<svg xmlns="http://www.w3.org/2000/svg"><symbol id="shape"><rect width="4" height="4"/></symbol></svg>')
+            files.set('empty.css', '')
+            files.set('a.xhtml', '<html><head><link rel="stylesheet" href="empty.css"></head><body><p>fallback<img src="icons.svg?v=2#shape"></body></html>')
+            const reads = []
+            const book = await new EPUB({loadText:async path=>{reads.push(path);return files.get(path)??null},
+                loadBlob:async()=>new Uint8Array([1]),getSize:()=>100}).init()
+            try {
+                const url = await book.sections[0].load()
+                const response = await fetch(url)
+                check(response.headers.get('content-type') === 'text/html', 'fallback MIME not published as HTML')
+                const document = new DOMParser().parseFromString(await response.text(), 'text/html')
+                const image = document.querySelector('img').getAttribute('src')
+                const stylesheet = document.querySelector('link').getAttribute('href')
+                check(image.startsWith('blob:') && image.endsWith('#shape'), 'SVG fragment not attached to owned resource')
+                const svg = new DOMParser().parseFromString(await (await fetch(image)).text(), 'image/svg+xml')
+                check(svg.getElementById('shape')?.localName === 'symbol', 'rewritten SVG target missing')
+                check(stylesheet.startsWith('blob:'), 'empty stylesheet missing owned URL')
+                check(await (await fetch(stylesheet)).text() === '', 'empty stylesheet content changed')
+                check(reads.includes('icons.svg') && reads.includes('empty.css'), 'manifest resource reads missing')
+                const recreated = await book.sections[0].createDocument()
+                check(recreated.contentType === 'text/html', 'successful fallback MIME not retained for document loading')
+                results.push({name:'actual parsed chapter preserves SVG fragment, empty CSS and HTML fallback MIME',status:'passed'})
+            } finally {book.destroy()}
+        }
         return results
     }), new Promise((_, reject) => {
         deadline = setTimeout(() => reject(new Error('EPUB resource fixture timed out')), 15000)
