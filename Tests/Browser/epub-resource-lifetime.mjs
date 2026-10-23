@@ -167,6 +167,108 @@ try {
                 } finally { book.destroy() }
             }
         }
+        {
+            const { hydratePackageMedia } = await import('/ebook-package-media.js')
+            const mediaURL = `ebook://ebook/entry-session/source/g1-${'b'.repeat(64)}/371cf379-d180-449d-bca2-13b902c3634d/OPS/Media/voice.m4a`
+            const fixture = () => {
+                const host = document.createElement('div')
+                const audio = document.createElement('audio')
+                audio.preload = 'none'
+                let loads = 0
+                audio.load = () => { loads++ }
+                host.append(audio)
+                document.body.append(host)
+                return { host, audio, loadCount: () => loads }
+            }
+            const canFetch = async url => {
+                try { await fetch(url); return true } catch { return false }
+            }
+            {
+                const { host, audio, loadCount } = fixture()
+                const nested = document.createElement('source')
+                audio.src = `${mediaURL}#t=1`
+                nested.src = `${mediaURL}#t=2`
+                audio.append(nested)
+                const requests = [], owned = [], revoked = []
+                try {
+                    const outcomes = await hydratePackageMedia({
+                        document,
+                        fetch: async url => { requests.push(url); return new Response(new Blob(['media'])) },
+                        createObjectURL: blob => { const url = URL.createObjectURL(blob); owned.push(url); return url },
+                        revokeObjectURL: url => { revoked.push(url); URL.revokeObjectURL(url) },
+                    })
+                    check(outcomes.length === 2 && outcomes.every(Boolean), 'connected package media did not hydrate')
+                    check(requests.length === 1 && requests[0] === mediaURL, 'session capability changed or shared fetch duplicated')
+                    check(owned.length === 1, 'fragment peers did not share one Blob URL')
+                    check(audio.src === `${owned[0]}#t=1` && nested.src === `${owned[0]}#t=2`, 'media fragments changed')
+                    check(loadCount() === 1, 'owning media reloaded more than once')
+                    check(await (await fetch(owned[0])).text() === 'media', 'published media blob inaccessible')
+                    window.dispatchEvent(new PageTransitionEvent('pagehide'))
+                    check(revoked.length === 1 && revoked[0] === owned[0], 'pagehide did not retire shared media once')
+                    check(!await canFetch(owned[0]), 'pagehide left media URL live')
+                    results.push({name:'connected media shares exact native session URL and preserves per-source fragments',status:'passed'})
+                } finally {
+                    window.dispatchEvent(new PageTransitionEvent('pagehide'))
+                    for (const url of owned) URL.revokeObjectURL(url)
+                    host.remove()
+                }
+            }
+            for (const phase of ['response', 'blob']) {
+                const { host, audio, loadCount } = fixture()
+                const gate = deferred(), entered = deferred()
+                audio.src = mediaURL
+                let created = 0
+                try {
+                    const pending = hydratePackageMedia({
+                        document,
+                        fetch: async url => {
+                            check(url === mediaURL, 'held media capability changed')
+                            if (phase === 'response') { entered.resolve(); await gate.promise }
+                            return { ok: true, blob: async () => {
+                                if (phase === 'blob') { entered.resolve(); await gate.promise }
+                                return new Blob(['late media'])
+                            } }
+                        },
+                        createObjectURL: blob => { created++; return URL.createObjectURL(blob) },
+                    })
+                    await entered.promise
+                    window.dispatchEvent(new PageTransitionEvent('pagehide'))
+                    gate.resolve()
+                    check(JSON.stringify(await pending) === '[false]', 'closed page accepted late media')
+                    check(created === 0 && loadCount() === 0 && audio.src === mediaURL, 'closed page published late media')
+                    results.push({name:`package media pagehide during held ${phase} prevents Blob publication`,status:'passed'})
+                } finally { gate.resolve(); host.remove() }
+            }
+            for (const change of ['disconnect', 'replace']) {
+                const { host, audio, loadCount } = fixture()
+                const gate = deferred(), entered = deferred(), owned = [], revoked = []
+                audio.src = mediaURL
+                try {
+                    const pending = hydratePackageMedia({
+                        document,
+                        fetch: async () => { entered.resolve(); await gate.promise; return new Response(new Blob(['stale media'])) },
+                        createObjectURL: blob => { const url = URL.createObjectURL(blob); owned.push(url); return url },
+                        revokeObjectURL: url => { revoked.push(url); URL.revokeObjectURL(url) },
+                    })
+                    await entered.promise
+                    if (change === 'disconnect') audio.remove()
+                    else audio.src = 'https://example.invalid/replacement.m4a'
+                    const retainedSource = audio.src
+                    gate.resolve()
+                    check(JSON.stringify(await pending) === '[false]', 'retired media source accepted stale response')
+                    check(audio.src === retainedSource && loadCount() === 0, 'late media overwrote or reloaded retired source')
+                    window.dispatchEvent(new PageTransitionEvent('pagehide'))
+                    check(owned.length === 1 && revoked.length === 1 && revoked[0] === owned[0], 'retired source blob cleanup incorrect')
+                    check(!await canFetch(owned[0]), 'retired source leaked media Blob URL')
+                    results.push({name:`late package media response preserves ${change === 'disconnect' ? 'disconnected' : 'replaced'} DOM source`,status:'passed'})
+                } finally {
+                    gate.resolve()
+                    window.dispatchEvent(new PageTransitionEvent('pagehide'))
+                    for (const url of owned) URL.revokeObjectURL(url)
+                    host.remove()
+                }
+            }
+        }
         return results
     }), new Promise((_, reject) => {
         deadline = setTimeout(() => reject(new Error('EPUB resource fixture timed out')), 15000)
