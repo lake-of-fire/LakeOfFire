@@ -32,14 +32,14 @@ export const createNativeEpubLoader = async (value, isCacheWarmer, {
     }
     let destroyed = false
     const isActive = () => !destroyed && isCurrent()
-    const responseFor = async name => {
+    const responseFor = async (name, { signal } = {}) => {
         if (!isActive() || !entryNames.has(name)) return null
         const request = nativeEbookRequest('entry', source.url, { ...source, subpath: name })
-        const response = await fetchResource(request.url, { headers: request.headers })
+        const response = await fetchResource(request.url, { headers: request.headers, signal })
         return isActive() && response.ok ? response : null
     }
-    const loadText = async name => {
-        const response = await responseFor(name)
+    const loadText = async (name, options) => {
+        const response = await responseFor(name, options)
         if (!response) return null
         const data = await response.arrayBuffer()
         if (!isActive()) return null

@@ -14,6 +14,15 @@ const server = createServer(async (request,response) => {
     try {
         const path = new URL(request.url,'http://localhost').pathname
         if (path === '/') { response.setHeader('Content-Type','text/html'); response.end('<!doctype html><title>EPUB resource lifetime</title>'); return }
+        if (path === '/held-resource') {
+            if (new URL(request.url, 'http://localhost').searchParams.get('phase') === 'body') {
+                response.setHeader('Content-Type', 'text/plain')
+                response.writeHead(200)
+                response.flushHeaders()
+                response.write('partial ')
+            }
+            return
+        }
         const file = await realpath(resolve(sourceRoot,'.'+path))
         assert.ok(file.startsWith(sourceRoot+sep))
         response.setHeader('Content-Type','text/javascript')
@@ -31,6 +40,7 @@ try {
     await page.goto(`http://127.0.0.1:${server.address().port}/`)
     const results = await Promise.race([page.evaluate(async () => {
         const { EPUB } = await import('/epub.js')
+        const { createNativeEpubLoader } = await import('/ebook-native-loader.js')
         const check=(ok,message)=>{if(!ok) throw new Error(message)}
         const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve}}
         const source = () => new Map([
@@ -108,12 +118,61 @@ try {
                 results.push({name:'actual parsed chapter preserves SVG fragment, empty CSS and HTML fallback MIME',status:'passed'})
             } finally {book.destroy()}
         }
+        for (const stage of ['chapter', 'stylesheet', 'import']) {
+            for (const phase of ['response', 'body']) {
+                const files = source(), entered = deferred()
+                const pendingPath = stage === 'chapter' ? 'a.xhtml' : stage === 'stylesheet' ? 'style.css' : 'imported.css'
+                files.set('a.xhtml', '<html><head><link rel="stylesheet" href="style.css"></head><body>本文</body></html>')
+                files.set('style.css', '@import "imported.css";')
+                files.set('imported.css', 'body { writing-mode: vertical-rl; }')
+                const requests = []
+                let observedSignal
+                const native = await createNativeEpubLoader({url:'ebook://ebook/load/local/book.epub',
+                    packageSessionID:'371cf379-d180-449d-bca2-13b902c3634d'}, false, {
+                    makeReplaceText: () => async (_href, text) => text,
+                    fetch: async (url, options) => {
+                        const request = new URL(url)
+                        if (request.pathname === '/entries') return new Response(JSON.stringify({
+                            entries:[...files.keys()].map(path => ({path})), packageDocumentPath:'book.opf',
+                        }))
+                        requests.push(options.headers)
+                        const path = request.searchParams.get('subpath')
+                        if (path !== pendingPath) return new Response(files.get(path) ?? '')
+                        observedSignal = options.signal
+                        if (phase === 'response') entered.resolve()
+                        const response = await fetch(`/held-resource?phase=${phase}`, {signal:observedSignal})
+                        const read = response.arrayBuffer.bind(response)
+                        response.arrayBuffer = () => {
+                            const pending = read()
+                            entered.resolve()
+                            return pending
+                        }
+                        return response
+                    },
+                })
+                const book = await new EPUB(native).init()
+                const retainedSection = book.sections[0]
+                const pending = retainedSection.load().then(value => ({value}), error => ({error:error.name}))
+                try {
+                    await entered.promise
+                    check(book.destroy() === true, 'first EPUB destroy failed')
+                    check(observedSignal?.aborted === true, `${stage}/${phase} did not abort browser fetch`)
+                    const outcome = await pending
+                    if (stage === 'chapter') check(outcome.error === 'AbortError', 'chapter abort was not propagated')
+                    else check(outcome.value === null, 'optional CSS abort published a section')
+                    check(await retainedSection.load() === null, 'retained section revived closed source')
+                    check(book.destroy() === false && native.destroy() === false, 'source teardown was not idempotent')
+                    check(requests.every(headers => headers['X-Ebook-Package-Session'] === '371cf379-d180-449d-bca2-13b902c3634d'), 'source capability changed')
+                    results.push({name:`EPUB teardown aborts ${stage} browser fetch during ${phase}`,status:'passed'})
+                } finally { book.destroy() }
+            }
+        }
         return results
     }), new Promise((_, reject) => {
         deadline = setTimeout(() => reject(new Error('EPUB resource fixture timed out')), 15000)
     })])
     assert.deepEqual(errors,[])
-    const report={cases:results,errors,browser:browser.version(),scope:'Actual EPUB init, XML/HTML parser, section loading, browser Blob URL lifetime; native section endpoint controlled; no WKWebView/native storage.'}
+    const report={cases:results,errors,browser:browser.version(),scope:'Actual EPUB init, XML/HTML parser, section loading, browser Blob URL lifetime; native endpoint adapted to held HTTP fetch for cancellation; no WKWebView/native storage.'}
     if(reportPath) await writeFile(reportPath,JSON.stringify(report,null,2)+'\n',{flag:'wx'})
     console.log(JSON.stringify(report))
 } finally {

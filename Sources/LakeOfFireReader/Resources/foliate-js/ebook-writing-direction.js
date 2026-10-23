@@ -475,9 +475,9 @@ export const makeRawSectionWritingDirectionResolver = ({ loadText }) => {
             return rawSectionWritingDirection({
                 href,
                 html,
-                loadText: async (...loadArguments) => {
+                loadText: async (resourceHref, options) => {
                     if (destroyed || signal?.aborted) return null
-                    const value = await loadText(...loadArguments)
+                    const value = await loadText(resourceHref, { ...options, signal })
                     return destroyed || signal?.aborted ? null : value
                 },
             })
