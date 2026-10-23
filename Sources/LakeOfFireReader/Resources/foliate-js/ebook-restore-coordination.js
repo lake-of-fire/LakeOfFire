@@ -68,8 +68,26 @@ export const restoreFractionValidationTolerance = 0.003
 
 const validFraction = value => Number.isFinite(value) && value >= 0 && value <= 1
 
+export const isPureZeroRestore = request => request?.requestedLocator === 'fraction'
+    && request.cfi === '' && request.fractionalCompletion === 0
+
+const validFirstPageGeometry = geometry => geometry?.kind === 'paginated-first-page-v1'
+    && Number.isSafeInteger(geometry.targetSectionIndex) && geometry.targetSectionIndex >= 0
+    && Number.isSafeInteger(geometry.sectionIndex) && geometry.sectionIndex >= 0
+    && geometry.targetSectionIndex === geometry.sectionIndex
+    && geometry.targetAnchor === 0 && geometry.fractionInSection === 0
+    && Number.isFinite(geometry.pageFraction) && geometry.pageFraction > 0 && geometry.pageFraction <= 1
+
 const restoredPositionMatches = (request, snapshot) => {
     if (!request) return false
+    if (isPureZeroRestore(request)) {
+        if (!['paginated', 'scrolled', 'other'].includes(snapshot.positionMode)) return false
+        if (snapshot.positionMode === 'paginated') {
+            return validFirstPageGeometry(snapshot.firstPageGeometry)
+                && validFraction(snapshot.handledFractionalCompletion)
+                && validFraction(snapshot.currentFractionalCompletion)
+        }
+    }
     // Positive fractions follow the hotfix contract. An explicit fraction-zero
     // request also validates zero, for callers using the newer zero-locator API.
     const hasSavedFraction = validFraction(request.fractionalCompletion)
@@ -83,7 +101,7 @@ const restoredPositionMatches = (request, snapshot) => {
         && snapshot.handledCFI === request.cfi
 }
 
-export const makeInitialRestoreTerminalResult = ({ request, snapshot, error = null }) => {
+export const makeInitialRestoreTerminalResult = ({ request, snapshot, error = null, loadRequestID = null }) => {
     const navigationOk = error == null
     const currentFractionalCompletion = validFraction(snapshot?.currentFractionalCompletion)
         ? snapshot.currentFractionalCompletion
@@ -99,12 +117,17 @@ export const makeInitialRestoreTerminalResult = ({ request, snapshot, error = nu
         handledFractionalCompletion,
         currentFractionalCompletion,
         handledCFI,
+        positionMode: snapshot?.positionMode,
+        firstPageGeometry: snapshot?.firstPageGeometry,
     })
     const validationError = request && navigationOk && !restoreSatisfied
         ? 'Saved restore position was not reached'
         : null
 
     return {
+        ...(loadRequestID != null ? { loadRequestID } : {}),
+        ...(snapshot?.positionMode != null ? { positionMode: snapshot.positionMode } : {}),
+        ...(snapshot?.firstPageGeometry != null ? { firstPageGeometry: snapshot.firstPageGeometry } : {}),
         requestID: request?.requestID ?? null,
         requestedLocator: request?.requestedLocator ?? 'none',
         terminalState: request ? (restoreSatisfied ? 'satisfied' : 'failed') : 'noTarget',

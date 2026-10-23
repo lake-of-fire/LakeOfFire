@@ -19,8 +19,17 @@ export const buildRelocateLocation = ({
     const tocItem = tocProgress?.getProgress(sectionIndex, range)
     const pageItem = pageProgress?.getProgress(sectionIndex, range)
     const cfi = cfiProvider?.getCFI(sectionIndex, range)
+    // Keep raw page coordinates separate from clamped page-end completion.
+    // These values alone do not prove navigation ownership or settlement.
+    const firstPageGeometrySource = Number.isSafeInteger(index)
+        && index >= 0 && index < sectionCount
+        && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1
+        && Number.isFinite(size) && size > 0 && size <= 1
+        ? Object.freeze({ sectionIndex: index, fractionInSection: fraction, pageFraction: size })
+        : null
     return {
         ...progress,
+        ...(firstPageGeometrySource ? { firstPageGeometrySource } : {}),
         index: sectionIndex,
         sectionIndex,
         tocItem,

@@ -213,3 +213,44 @@ test('nonfinite and absent local pages do not invent a synthetic restore intent'
         }), true)
     }
 })
+
+
+test('paginated pure zero uses strict raw geometry while preserving measured completion', () => {
+    const request = { requestID: 'zero', requestedLocator: 'fraction', cfi: '', fractionalCompletion: 0 }
+    const geometry = { kind: 'paginated-first-page-v1', targetSectionIndex: 2,
+        targetAnchor: 0, sectionIndex: 2, fractionInSection: 0, pageFraction: 0.25 }
+    const snapshot = { positionMode: 'paginated', firstPageGeometry: geometry,
+        handledFractionalCompletion: 0.125, currentFractionalCompletion: 0.125 }
+    const result = makeInitialRestoreTerminalResult({ request, snapshot, loadRequestID: 'zero' })
+    assert.equal(result.restoreSatisfied, true)
+    assert.equal(result.handledFractionalCompletion, 0.125)
+    assert.equal(result.currentFractionalCompletion, 0.125)
+    assert.equal(result.loadRequestID, 'zero')
+    assert.deepEqual(result.firstPageGeometry, geometry)
+    for (const change of [
+        { sectionIndex: 1 }, { fractionInSection: 0.001 }, { targetAnchor: 0.001 },
+        { sectionIndex: true }, { targetSectionIndex: 2.5 }, { pageFraction: 0 },
+        { pageFraction: Infinity }, { kind: 'unknown' },
+    ]) {
+        assert.equal(makeInitialRestoreTerminalResult({ request, snapshot: {
+            ...snapshot, handledFractionalCompletion: 0.001, currentFractionalCompletion: 0.001,
+            firstPageGeometry: { ...geometry, ...change },
+        } }).restoreSatisfied, false)
+    }
+    for (const firstPageGeometry of [null, undefined, {}, false]) {
+        assert.equal(makeInitialRestoreTerminalResult({ request, snapshot: {
+            ...snapshot, handledFractionalCompletion: 0, currentFractionalCompletion: 0, firstPageGeometry,
+        } }).restoreSatisfied, false)
+    }
+    for (const positionMode of [undefined, null, 'unknown']) {
+        assert.equal(makeInitialRestoreTerminalResult({ request, snapshot: {
+            ...snapshot, positionMode,
+        } }).restoreSatisfied, false)
+    }
+    for (const positionMode of ['scrolled', 'other']) {
+        assert.equal(makeInitialRestoreTerminalResult({ request, snapshot: {
+            ...snapshot, positionMode, firstPageGeometry: undefined,
+            handledFractionalCompletion: 0.001, currentFractionalCompletion: 0.001,
+        } }).restoreSatisfied, true)
+    }
+})

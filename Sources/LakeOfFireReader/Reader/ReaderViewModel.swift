@@ -79,6 +79,10 @@ public struct ReaderReadingProgressState: Equatable, Sendable {
 public class ReaderViewModel: NSObject, ObservableObject {
     private static var inFlightContentTasks: [String: Task<(any ReaderContentProtocol)?, Error>] = [:]
 
+    var ebookRestoreAttempt = ReaderEBookRestoreAttemptState<ReaderEBookRestoreNativeOwner>()
+    weak var ebookRestoreCaller: WebViewScriptCaller?
+    var ebookRestoreOwner: ReaderEBookRestoreNativeOwner?
+
     public var navigator: WebViewNavigator?
     @Published public var state: WebViewState = .empty
     @Published public private(set) var ebookViewerLoadedProbeSummary: String?

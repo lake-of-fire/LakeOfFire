@@ -7328,7 +7328,7 @@ class Reader {
                 currentPage: reader.navHUD?.rendererPageSnapshot?.current ?? null,
                 totalPages: reader.navHUD?.rendererPageSnapshot?.total ?? null,
             });
-            if (sameVisiblePage) {
+            if (sameVisiblePage && args[0]?.requiresPositionReceipt !== true) {
                 return Promise.resolve();
             }
             return originalGoTo.call(this, target, ...args);
