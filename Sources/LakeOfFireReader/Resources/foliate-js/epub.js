@@ -467,6 +467,7 @@ class Encryption {
 }
 
 class Resources {
+    #spineItemrefs
     constructor({
         opf,
         resolveHref
@@ -481,6 +482,7 @@ class Resources {
         const $manifest = $(opf.documentElement, 'manifest')
         const $spine = $(opf.documentElement, 'spine')
         const $$itemref = $$($spine, 'itemref')
+        this.#spineItemrefs = $$itemref
 
         this.manifest = $$($manifest, 'item')
             .map(getAttributes('href', 'id', 'media-type', 'properties', 'media-overlay'))
@@ -536,16 +538,19 @@ class Resources {
         const parts = CFI.parse(cfi)
         const top = (parts.parent ?? parts).shift()
         let $itemref = CFI.toElement(this.opf, top)
-        // make sure it's an idref; if not, try again without the ID assertion
-        // mainly because Epub.js used to generate wrong ID assertions
+        // Preserve authored assertions that resolve to a captured spine itemref.
+        // Otherwise retry without the ID assertion for legacy manifest-ID CFIs.
         // https://github.com/futurepress/epub.js/issues/1236
-        if ($itemref && $itemref.nodeName !== 'idref') {
+        if ($itemref && !this.#spineItemrefs.includes($itemref)) {
             top[top.length - 1].id = null
             $itemref = CFI.toElement(this.opf, top)
         }
-        const idref = $itemref?.getAttribute('idref')
-        const index = this.spine.findIndex(item => item.idref === idref)
-        const anchor = doc => CFI.toRange(doc, parts)
+        // Each retained occurrence has its own OPF position, even if idrefs repeat.
+        const index = this.#spineItemrefs.indexOf($itemref)
+        // A section-only CFI is emitted before a rendered range is available.
+        // It still names the section start after its OPF path is consumed.
+        const sectionStart = Array.isArray(parts) && parts.every(path => path.length === 0)
+        const anchor = sectionStart ? () => 0 : doc => CFI.toRange(doc, parts)
         return {
             index,
             anchor
@@ -1002,16 +1007,24 @@ ${doc.querySelector('parsererror').innerText}`)
         const parsed = parseSMIL(doc, url => resolveURL(url, media.href))
         return parsed
     }
+    #sectionIndexFromSpineIndex(spineIndex) {
+        // CFI steps address the original OPF spine. A missing manifest item
+        // can be omitted from sections without changing those persisted steps.
+        const sectionCFI = this.resources.cfis[spineIndex]
+        return sectionCFI == null
+            ? -1
+            : this.sections.findIndex(section => section.cfi === sectionCFI)
+    }
     resolveCFI(cfi) {
-        return this.resources.resolveCFI(cfi)
+        const resolved = this.resources.resolveCFI(cfi)
+        return { ...resolved, index: this.#sectionIndexFromSpineIndex(resolved.index) }
     }
     resolveHref(href) {
         const [path, hash] = href.split('#')
         const item = this.resources.getItemByHref(decodeURI(path))
         if (!item) return null
-        const index = this.resources.spine.findIndex(({
-            idref
-        }) => idref === item.id)
+        const spineIndex = this.resources.spine.findIndex(({ idref }) => idref === item.id)
+        const index = this.#sectionIndexFromSpineIndex(spineIndex)
         const anchor = hash ? doc => getHTMLFragment(doc, hash) : () => 0
         return {
             index,

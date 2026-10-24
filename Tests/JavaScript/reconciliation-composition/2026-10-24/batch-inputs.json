@@ -1,0 +1,469 @@
+{
+  "components": {
+    "281": {
+      "head": "3c7cbbe522ac5ef78dbc73001d7bd7a6f9b28b94",
+      "base": "7c620c00c08129fbc47a97c0156949da3045f036",
+      "state": "open",
+      "files": [
+        {
+          "path": "Sources/LakeOfFireReader/Resources/foliate-js/fixed-layout.js",
+          "sha": "aed5b6d80d637c2ab750c5583d147fd65d2e3fed",
+          "status": "modified"
+        },
+        {
+          "path": "Tests/JavaScript/fixed-layout-content-descriptor.test.mjs",
+          "sha": "f365afc2bb6de813650b4e0e09dd0cc68ff1e978",
+          "status": "modified"
+        }
+      ]
+    },
+    "288": {
+      "head": "72ab8b1b5802e093b4b26029293a7b2ec01522e7",
+      "base": "7c620c00c08129fbc47a97c0156949da3045f036",
+      "state": "open"
+    },
+    "293": {
+      "head": "1690e95eac31cf75070c61db23a92c58a350d368",
+      "base": "72ab8b1b5802e093b4b26029293a7b2ec01522e7",
+      "state": "open",
+      "files": [
+        {
+          "path": "Sources/LakeOfFireReader/Resources/foliate-js/epub.js",
+          "sha": "89b4510144d4e1d9a763a427816393371871d287",
+          "status": "modified"
+        },
+        {
+          "path": "Tests/JavaScript/epub-view-cfi-identity.test.mjs",
+          "sha": "d0510f5335c3c89927a60f66f242bfb13c20b646",
+          "status": "added"
+        }
+      ]
+    },
+    "326": {
+      "head": "870265838aeaa74066ffede651eb44232d3b9917",
+      "base": "cba181b664ae8f2d9b528ec23470ecb06773a3aa",
+      "state": "open",
+      "files": [
+        {
+          "path": "Sources/LakeOfFireReader/Resources/foliate-js/paginator.js",
+          "sha": "5147383c486bbc5087afed2df405cb3d403e4bcf",
+          "status": "modified"
+        },
+        {
+          "path": "Tests/JavaScript/paginator-rendered-restore.test.mjs",
+          "sha": "06cb81b43050f9e3408899b55eba92bbf0f2c208",
+          "status": "modified"
+        }
+      ]
+    },
+    "340": {
+      "head": "5489c6b64d221ca03d116f910dab97206775fd67",
+      "base": "7c620c00c08129fbc47a97c0156949da3045f036",
+      "state": "open",
+      "files": [
+        {
+          "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-viewer.js",
+          "sha": "43f2039354474fe75e519b3128dd4dd3961a94ca",
+          "status": "modified"
+        },
+        {
+          "path": "Sources/LakeOfFireReader/Resources/foliate-js/owned-async-cache.js",
+          "sha": "fd38f8b3cedfd3b07e4ba306bbcee0cb25e1c01c",
+          "status": "modified"
+        },
+        {
+          "path": "Tests/JavaScript/ebook-replace-text-cache.test.mjs",
+          "sha": "972bb36d88c06114e4916308bb1e95fe75811811",
+          "status": "added"
+        },
+        {
+          "path": "Tests/JavaScript/ebook-writing-direction.test.mjs",
+          "sha": "9a693c1697e752ccd7540e7468118d9fb203ce14",
+          "status": "modified"
+        },
+        {
+          "path": "Tests/JavaScript/owned-async-cache-settlement.test.mjs",
+          "sha": "7e417d54ed5b477b9ae6af7ebae87e55d5a5cd2d",
+          "status": "added"
+        },
+        {
+          "path": "Tests/JavaScript/owned-async-cache.test.mjs",
+          "sha": "983868974188391bd82f847ebf2bf3f1797ba454",
+          "status": "modified"
+        }
+      ]
+    },
+    "341": {
+      "head": "2929647f7c1ace9deb426a58924c1f5c3f4a26d2",
+      "base": "1d0424dfc3225419ea8c06d30e4bc7f2da626d1b",
+      "state": "open",
+      "files": [
+        {
+          "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-viewer.js",
+          "sha": "b63de19e1123815c619edff3dea83aa18ce1a1bc",
+          "status": "modified"
+        },
+        {
+          "path": "Sources/LakeOfFireReader/Resources/foliate-js/nav-button-refresh-ownership.js",
+          "sha": "c4fee998c251e4c830d9b0156acba89fe049b744",
+          "status": "added"
+        },
+        {
+          "path": "Tests/JavaScript/nav-button-refresh-ownership.test.mjs",
+          "sha": "7744adf85b21008366d3773ff61db5ac06d91fbe",
+          "status": "added"
+        },
+        {
+          "path": "Tests/JavaScript/nav-button-refresh-runtime.test.mjs",
+          "sha": "2f1c21fd9654bcd78d2ec78b005f5ff59ec42d0f",
+          "status": "added"
+        },
+        {
+          "path": "Tests/JavaScript/package.json",
+          "sha": "b998ee8f7443c8428cf45703531df10f0eaba330",
+          "status": "modified"
+        }
+      ]
+    },
+    "347": {
+      "head": "d50551c6a2630e684c98f8a5b885846a4f89bf8b",
+      "base": "1d0424dfc3225419ea8c06d30e4bc7f2da626d1b",
+      "state": "open",
+      "files": [
+        {
+          "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-viewer-nav.js",
+          "sha": "8cb972dda6b45ed453a2eb97d35a3ecf146d96fb",
+          "status": "modified"
+        },
+        {
+          "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-viewer.js",
+          "sha": "bc5d49734b40f54955951ec552026c3047d51228",
+          "status": "modified"
+        },
+        {
+          "path": "Tests/JavaScript/ebook-history-jump.test.mjs",
+          "sha": "266258da6a8efa7abcea46dd1c38f16b956b55da",
+          "status": "added"
+        },
+        {
+          "path": "Tests/JavaScript/ebook-history-reader-transport.test.mjs",
+          "sha": "8d23b2738bd93af46fc395feb261959385d07edf",
+          "status": "added"
+        },
+        {
+          "path": "Tests/JavaScript/package.json",
+          "sha": "192aea30d4f044345fc1b3276c8726107219abcf",
+          "status": "modified"
+        }
+      ]
+    }
+  },
+  "graph": [
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/book-content-style.js",
+      "blob": "82f436dad2aeead9db02f6f60032062e238f7486",
+      "sha256": "bc2acf918cfc6410bce3b361ba69e0cb619d964f1b89b2c5a2402de6394d89dc",
+      "bytes": 1189
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/deferred-open-work.js",
+      "blob": "bad6ef97a5f059fe58396e60678c4f9c6d58ac11",
+      "sha256": "20ec741a88ea3fd8afe21f844a57ead874a5a9a97fb655da1196df03b6f595fb",
+      "bytes": 2712
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-load-coordinator.js",
+      "blob": "c27c7782adf32f5abcc62bcb2028b22b62e6a457",
+      "sha256": "c6bb4cd8bdb6e277b45c25f839d206c6c61a1e1344e62732f077cb0d47ad3804",
+      "bytes": 37431
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-load-resources.js",
+      "blob": "c6fa5ead2ee5262d836a64596838dcd9838c0ffb",
+      "sha256": "7bf09caaf1fbc3df4a860f94974ad6b7fa76197d406f7bc6a0d7a8f15420d9a9",
+      "bytes": 1365
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-paginator-writing-direction.js",
+      "blob": "c498f8f53b3efaadae914083070c2a6fefb2e391",
+      "sha256": "02152c26dfe8d309704656a0774cc7636eaf543cdd72f098ea9804b60a7bf93b",
+      "bytes": 4149
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-process-text-response.js",
+      "blob": "94b6f69574fac33c39e001e0f23860037f40cdfb",
+      "sha256": "312065269980936a9ccd338f0d1efedb8d3c4a03cc4c2cfbe7ad91aa3a23d1b1",
+      "bytes": 148
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-reading-progress.js",
+      "blob": "d93d5cf598a6842ef3aa9fea7074ec66e0db7d13",
+      "sha256": "daa68b1c7615c95554a75e8022b47e3ab26f1a604b004fffe18d2d8d83b910ac",
+      "bytes": 2000
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-render-readiness.js",
+      "blob": "c949a0dc1d9836877c13db9cacd60efa602394bf",
+      "sha256": "03296ce1a0a0ef38d429a3a18bd6e0713e99ea40d315e4cbc29227d4079b5e40",
+      "bytes": 6560
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-restore-coordination.js",
+      "blob": "a4530dd6e20423b6618b0e1ff388544aeece8cc6",
+      "sha256": "37755429b7fd5edbd81e5d85cc129fcae5ef50d95b2d238d6f0e1cc2cd92d5d5",
+      "bytes": 10046
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-viewer-nav.js",
+      "blob": "8cb972dda6b45ed453a2eb97d35a3ecf146d96fb",
+      "sha256": "f5bb408f2d35164edbf0ed2afc7b063690962d7b63032c89c34c979da8a217ac",
+      "bytes": 93960
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-viewer.js",
+      "blob": "d479b3748d20a0cd3e705caf6cb59fe4e2e46c3c",
+      "sha256": "0f87a57788820747e58c15213d873f24625eb38348fc7fba8d7a6c8e45a3309c",
+      "bytes": 396572
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/ebook-writing-direction.js",
+      "blob": "76053fb7efa3abd10dfbdbbe9107d57f52287c2a",
+      "sha256": "d15c8b5b56f728d8c39add2fa87eaa8a418b49a8309e97101c44e5aa779d29d6",
+      "bytes": 18782
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/epub.js",
+      "blob": "89b4510144d4e1d9a763a427816393371871d287",
+      "sha256": "5fb31f9cca8db34e10ce0e4ee4c22402a87cf06ddfdf5af5e17afd72bdda2be4",
+      "bytes": 38600
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/epubcfi.js",
+      "blob": "7ad413fb80fad42c6eabef4d1842bcfd74c156a2",
+      "sha256": "1a3756cafc5c36ca9c28541d4fca5b1d344ce3b55e35363d0352a2af4e998013",
+      "bytes": 15718
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/fixed-layout.js",
+      "blob": "aed5b6d80d637c2ab750c5583d147fd65d2e3fed",
+      "sha256": "6f74b40c965c278dec475175eab65a2f930f9f748f60a1ceae81e5a7b5ae6d4d",
+      "bytes": 19888
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/frame-timeout-scheduler.js",
+      "blob": "f44195c1f738a56be5b221beacbbc273a983d55c",
+      "sha256": "499e3cea41555b94f365bcda143f9f3674284b9b24f596fffaa495636b803d94",
+      "bytes": 1544
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/nav-button-refresh-ownership.js",
+      "blob": "c4fee998c251e4c830d9b0156acba89fe049b744",
+      "sha256": "220f10b1e16e7c8d113ede7ce500859b896472e9072660afd93d64a7667556c1",
+      "bytes": 546
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/overlayer.js",
+      "blob": "dedf195bd92b120a81bb63bdf9c5e415727878ab",
+      "sha256": "3c122d3ec5e6183d6618f6934a8467472569a64151142c21b4b3e60be5a2e4c4",
+      "bytes": 6947
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/owned-async-cache.js",
+      "blob": "fd38f8b3cedfd3b07e4ba306bbcee0cb25e1c01c",
+      "sha256": "057bd68ff37d8da20039a102e669a59cb0b4dc02edb8d43666bb22ba887e37b8",
+      "bytes": 3222
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/owned-element-operation.js",
+      "blob": "2b78dd13fc03477c5e0ce6e5c78c14ccc326b3ba",
+      "sha256": "2b30e964d0f64070a4c43eaad00e10f729dfe13be4cebe6d50ae66fc8bed0c8f",
+      "bytes": 1000
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/owned-event-bindings.js",
+      "blob": "dc5a7323dc4fc418cf51e6a270149f107635ea24",
+      "sha256": "76dc527a77c0d7365f35d3f28f5baddcaec3890268ef2ba7f5e0fee59d06f048",
+      "bytes": 4713
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/owned-object-url.js",
+      "blob": "ba1c833449fb8fa55473e75bf0f7a34e34ce79db",
+      "sha256": "2fc34fa3e68fa37ea1856e37c26ee700a6ece95b02484bb950cfb1124fc2a0f6",
+      "bytes": 694
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/paginator-decisions.js",
+      "blob": "014fbf8acfe345687a251edaa229853d95f1fc2c",
+      "sha256": "3d2ee6d390306a3d69b28aa6f86f9b3419ec90942aa2fb3a179455f2af80a3cc",
+      "bytes": 4764
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/paginator.js",
+      "blob": "a50ace04be7fc27019f25847f01c48b04c0de336",
+      "sha256": "a071c86a7256cc25d8542aa1e786d50de28385ceaa868ea28098a1e34c53019b",
+      "bytes": 156168
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/progress.js",
+      "blob": "1456d3170239255c989cd7daf4ef917bd75212de",
+      "sha256": "987aec7908edab7ede70fcf47b52768f70a949e90a35ef80f71f99aa9367a308",
+      "bytes": 5826
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/relocate-location.js",
+      "blob": "155dcdd08a5e4d722723b9de762770ed78ca8503",
+      "sha256": "476362cd8e9d919b5b0f80870769da8a04cd46c24e35081671b3d6a6fa4fd4ad",
+      "bytes": 1402
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/renderer-content.js",
+      "blob": "fae30f9c1f839ac4b4bae4955bf8c256c885a6ca",
+      "sha256": "685a4c94827d1e6bba82667e0d412e53e3a66a696d11c1bb79d21fdbd2bcd965",
+      "bytes": 2573
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/renderer-operation-ownership.js",
+      "blob": "67a9bdc33d6c141603531510895db797be52fd9a",
+      "sha256": "e51c8f441aaba74996e6b4496c24fee700ae5d0a0e77b29e87ca2befc81b1c6a",
+      "bytes": 599
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/view-history.js",
+      "blob": "2f38d0008464a1f68fca721161f7a21db29c5054",
+      "sha256": "32a7c82f4b9e929e80992e2ce9c46fe9ae293575765635848b195393c9095c2b",
+      "bytes": 1363
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Resources/foliate-js/view.js",
+      "blob": "db26baf9e1751f5a7ec4fb1351abaa2b6bdcd166",
+      "sha256": "5f81a50090503a5d19a25da377b3e5d638a28b0432b2d99a60e8c8157ceed920",
+      "bytes": 33052
+    },
+    {
+      "path": "Tests/JavaScript/ebook-history-jump.test.mjs",
+      "blob": "266258da6a8efa7abcea46dd1c38f16b956b55da",
+      "sha256": "97a107de4c56b23cab9b55d8a1eeeb0632437666fe2a2407859b2cef13dc8cbf",
+      "bytes": 14511
+    },
+    {
+      "path": "Tests/JavaScript/ebook-history-reader-transport.test.mjs",
+      "blob": "8d23b2738bd93af46fc395feb261959385d07edf",
+      "sha256": "e648d1cd796314d766afe3e399248070c712685b4e27c48916f90f38121b2930",
+      "bytes": 4831
+    },
+    {
+      "path": "Tests/JavaScript/ebook-load-coordinator.test.mjs",
+      "blob": "655a5bf068adaa987101a9bfc2d7d74febd23cb9",
+      "sha256": "a50d18363cf6a489cf7b6ff32af692a5a307fccc6dff6ea24fe236dcf8f9517f",
+      "bytes": 87223
+    },
+    {
+      "path": "Tests/JavaScript/ebook-navigation-hud-lifecycle.test.mjs",
+      "blob": "236e2e81eb063436b76e986e3d3b31d75829360f",
+      "sha256": "5b2624ac49df639e91d387accc94e985506663a6b1f09fe91967b6e9af604eca",
+      "bytes": 1766
+    },
+    {
+      "path": "Tests/JavaScript/ebook-process-text-response.test.mjs",
+      "blob": "8013c0046991aae9f12bcddce12f9a4796c6a141",
+      "sha256": "6eac0b39b07fcfdcaf787bdb7b4fcceaa201a87d40044c485aae8b714f271aea",
+      "bytes": 885
+    },
+    {
+      "path": "Tests/JavaScript/ebook-replace-text-cache.test.mjs",
+      "blob": "972bb36d88c06114e4916308bb1e95fe75811811",
+      "sha256": "5014085040fd3376083683258e78a57ad7c68ced32361dd830bd5e1476f1b1b8",
+      "bytes": 13718
+    },
+    {
+      "path": "Tests/JavaScript/ebook-writing-direction.test.mjs",
+      "blob": "9a693c1697e752ccd7540e7468118d9fb203ce14",
+      "sha256": "b3f1de70817b5481fa46d00556e11ba99e646ebef5deb0dcfb0bbd7d8cd38cf8",
+      "bytes": 11675
+    },
+    {
+      "path": "Tests/JavaScript/epub-source-lifecycle.test.mjs",
+      "blob": "b96fbd93e7008cbdd19695dce5745fd1b0fef2f6",
+      "sha256": "006b6053fd24b814b2eaa5b813f88b4a5734cb56c0ac0b77437287033387fcb1",
+      "bytes": 955
+    },
+    {
+      "path": "Tests/JavaScript/epub-spine-cfi-dom.test.mjs",
+      "blob": "f650396d214c8cc129ba3ab878afa4cc446a416b",
+      "sha256": "0de13b3d6b9c7e96fb8b0a951e47464de6b311c4569d52127241f1bc4f639e25",
+      "bytes": 6516
+    },
+    {
+      "path": "Tests/JavaScript/epub-spine-navigation.test.mjs",
+      "blob": "83e29671f0cb1e26a72275ffbf7e732f697daec2",
+      "sha256": "32c8271770bf501b80ca2393fdbdb0c068020a80b3fb3a1b750c53992b8eaf28",
+      "bytes": 3062
+    },
+    {
+      "path": "Tests/JavaScript/epub-view-cfi-identity.test.mjs",
+      "blob": "d0510f5335c3c89927a60f66f242bfb13c20b646",
+      "sha256": "a4522903f84d4d376f97a2a9fd5db30d3b32686d403731874e53a007de3d272d",
+      "bytes": 10945
+    },
+    {
+      "path": "Tests/JavaScript/fixed-layout-content-descriptor.test.mjs",
+      "blob": "f365afc2bb6de813650b4e0e09dd0cc68ff1e978",
+      "sha256": "612d1dafdd92d7989b55d5cef7a5ff1304c0fba828afbf332d38d0532dcfd5a4",
+      "bytes": 46032
+    },
+    {
+      "path": "Tests/JavaScript/nav-button-refresh-ownership.test.mjs",
+      "blob": "7744adf85b21008366d3773ff61db5ac06d91fbe",
+      "sha256": "ae0f227d4fdbdca381c735cc442e7a9675240610f3cb1901896c693c47d0070d",
+      "bytes": 1992
+    },
+    {
+      "path": "Tests/JavaScript/nav-button-refresh-runtime.test.mjs",
+      "blob": "2f1c21fd9654bcd78d2ec78b005f5ff59ec42d0f",
+      "sha256": "471c484a0eb829e3979e16c7d20fa47216f73d706c5aa5e233bd9d4f856d9994",
+      "bytes": 18180
+    },
+    {
+      "path": "Tests/JavaScript/owned-async-cache-settlement.test.mjs",
+      "blob": "7e417d54ed5b477b9ae6af7ebae87e55d5a5cd2d",
+      "sha256": "8e979d5c03fc34009c4dcf3fc23578c8cccd561db61925c816e618d56d304178",
+      "bytes": 15590
+    },
+    {
+      "path": "Tests/JavaScript/owned-async-cache.test.mjs",
+      "blob": "983868974188391bd82f847ebf2bf3f1797ba454",
+      "sha256": "11d607eb119e152f8f4e986cda6d28a6809b48e24ece2c7ae7d7816116bf01f4",
+      "bytes": 5458
+    },
+    {
+      "path": "Tests/JavaScript/package.json",
+      "blob": "bfaa5c0d2e944d59f265dc72aae722018f1f731d",
+      "sha256": "ba6ed12d15d2eeb58fb04e8a61c281224b2fb0206d5b5d1c89f5c1b880913cd0",
+      "bytes": 734
+    },
+    {
+      "path": "Tests/JavaScript/paginator-rendered-restore.test.mjs",
+      "blob": "282ec559d56657e9cc8545e2dfa4b2dbd9722239",
+      "sha256": "9dff757f1636f98656d188ce1e4efdfb4955ee520951d405b4d10af1f5b8ccfb",
+      "bytes": 25581
+    },
+    {
+      "path": "Tests/JavaScript/view-fixed-layout-composition.test.mjs",
+      "blob": "afb4aa2bba410148206400fbf143994836d20b28",
+      "sha256": "deece5cf5c6f92857b8e3a21664993c7906dba647745afdaa77251dbe1666e58",
+      "bytes": 9713
+    },
+    {
+      "path": "Tests/JavaScript/view-navigation-port.test.mjs",
+      "blob": "0c5a2658eff6337e9f5e2aa6a9ae07c9ea1b2590",
+      "sha256": "d0d26ff823fff53533f1bd00e35fa64e5543f8ea4dc11e22aa6605f68a80cf91",
+      "bytes": 22704
+    }
+  ],
+  "node": "v24.22.1",
+  "jsdom": "26.1.0",
+  "local_fixture": "Tests/JavaScript/view-fixed-layout-composition.test.mjs",
+  "whitespace_diagnostics": 0,
+  "composed_viewer_syntax_exit": 0,
+  "qualification": "controlled Node/jsdom behavior; no real browser, WebKit, native or CI execution"
+}

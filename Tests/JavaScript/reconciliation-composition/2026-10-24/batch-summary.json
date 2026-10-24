@@ -1,0 +1,451 @@
+{
+  "fixtures": 19,
+  "totals": {
+    "tests": 333,
+    "pass": 333,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0
+  },
+  "all_exit_zero": true,
+  "results": [
+    {
+      "fixture": "epub-spine-navigation.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/epub-spine-navigation.test.mjs"
+      ],
+      "duration_seconds": 0.062,
+      "summary": {
+        "tests": 3,
+        "pass": 3,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/epub-spine-navigation.test.mjs.tap",
+      "log_sha256": "6d41ba75064ecc2dcb775362f4e40590c3114520c175c89ba51bc4d6e97b62e5",
+      "failures": []
+    },
+    {
+      "fixture": "fixed-layout-content-descriptor.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/fixed-layout-content-descriptor.test.mjs"
+      ],
+      "duration_seconds": 0.085,
+      "summary": {
+        "tests": 41,
+        "pass": 41,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/fixed-layout-content-descriptor.test.mjs.tap",
+      "log_sha256": "adccf6acc17ff671b6635da53beb132822a0a282f473a9844aa6945b97478659",
+      "failures": []
+    },
+    {
+      "fixture": "epub-source-lifecycle.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/epub-source-lifecycle.test.mjs"
+      ],
+      "duration_seconds": 0.068,
+      "summary": {
+        "tests": 2,
+        "pass": 2,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/epub-source-lifecycle.test.mjs.tap",
+      "log_sha256": "1d6ff88d840b8dd85a2d6133a323c701c949878d24714ee2417361f64f3bdec3",
+      "failures": []
+    },
+    {
+      "fixture": "owned-async-cache.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/owned-async-cache.test.mjs"
+      ],
+      "duration_seconds": 0.072,
+      "summary": {
+        "tests": 8,
+        "pass": 8,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/owned-async-cache.test.mjs.tap",
+      "log_sha256": "8e6a77a9fea71fa9807748d3854e51aae90b0c1f91e3fc4b8ec025dd5f8323ec",
+      "failures": []
+    },
+    {
+      "fixture": "ebook-process-text-response.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/ebook-process-text-response.test.mjs"
+      ],
+      "duration_seconds": 0.048,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/ebook-process-text-response.test.mjs.tap",
+      "log_sha256": "3efd1c9fedefec7e4c5c65f9618dcb1ed19e41702b645400248235fab51b5c46",
+      "failures": []
+    },
+    {
+      "fixture": "owned-async-cache-settlement.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/owned-async-cache-settlement.test.mjs"
+      ],
+      "duration_seconds": 0.082,
+      "summary": {
+        "tests": 20,
+        "pass": 20,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/owned-async-cache-settlement.test.mjs.tap",
+      "log_sha256": "2df3d92e65dc5249c06d450bca7f0855a8cbf5ed7a9673ba115b33506bee821a",
+      "failures": []
+    },
+    {
+      "fixture": "ebook-replace-text-cache.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/ebook-replace-text-cache.test.mjs"
+      ],
+      "duration_seconds": 0.079,
+      "summary": {
+        "tests": 13,
+        "pass": 13,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/ebook-replace-text-cache.test.mjs.tap",
+      "log_sha256": "8ad147f84ccba63e9602b54bd19d9e08f6b48fede341f33d1097ce943cacc64a",
+      "failures": []
+    },
+    {
+      "fixture": "ebook-writing-direction.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/ebook-writing-direction.test.mjs"
+      ],
+      "duration_seconds": 0.098,
+      "summary": {
+        "tests": 13,
+        "pass": 13,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/ebook-writing-direction.test.mjs.tap",
+      "log_sha256": "bb20681e5a15a7ce93484c938828765f1a327fd5028566b5dd13856726bccd76",
+      "failures": []
+    },
+    {
+      "fixture": "ebook-history-reader-transport.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/ebook-history-reader-transport.test.mjs"
+      ],
+      "duration_seconds": 0.066,
+      "summary": {
+        "tests": 10,
+        "pass": 10,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/ebook-history-reader-transport.test.mjs.tap",
+      "log_sha256": "0e306e595800aead5d036d9cc6b925099eb97475cc28bee2da0e8b38fdc99e6c",
+      "failures": []
+    },
+    {
+      "fixture": "epub-spine-cfi-dom.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/epub-spine-cfi-dom.test.mjs"
+      ],
+      "duration_seconds": 0.383,
+      "summary": {
+        "tests": 8,
+        "pass": 8,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/epub-spine-cfi-dom.test.mjs.tap",
+      "log_sha256": "119c21e724e3eeb032d9fb607f85524b40dcdffc90171f895410416d95ec691a",
+      "failures": []
+    },
+    {
+      "fixture": "ebook-history-jump.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/ebook-history-jump.test.mjs"
+      ],
+      "duration_seconds": 0.095,
+      "summary": {
+        "tests": 21,
+        "pass": 21,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/ebook-history-jump.test.mjs.tap",
+      "log_sha256": "8413b577e5e7b8fe7dc70554a64d5f47e4b2573450e91e6cd0a1c8432d60084b",
+      "failures": []
+    },
+    {
+      "fixture": "ebook-navigation-hud-lifecycle.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/ebook-navigation-hud-lifecycle.test.mjs"
+      ],
+      "duration_seconds": 0.052,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/ebook-navigation-hud-lifecycle.test.mjs.tap",
+      "log_sha256": "a13148ac4dc397c0b8ece6d987857c8a2e4cc7371eaa908583d30266fdbac13f",
+      "failures": []
+    },
+    {
+      "fixture": "epub-view-cfi-identity.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/epub-view-cfi-identity.test.mjs"
+      ],
+      "duration_seconds": 0.453,
+      "summary": {
+        "tests": 11,
+        "pass": 11,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/epub-view-cfi-identity.test.mjs.tap",
+      "log_sha256": "e5e0c79453a53e3242679ff7b6a13e8cf65c9ea9072a59d17a0ef864d3c78cff",
+      "failures": []
+    },
+    {
+      "fixture": "view-navigation-port.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/view-navigation-port.test.mjs"
+      ],
+      "duration_seconds": 0.09,
+      "summary": {
+        "tests": 40,
+        "pass": 40,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/view-navigation-port.test.mjs.tap",
+      "log_sha256": "6ebfbcb3f7c39eab6063d746f7e9a835915f32db6852a710f170734cf4b0fb07",
+      "failures": []
+    },
+    {
+      "fixture": "nav-button-refresh-ownership.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/nav-button-refresh-ownership.test.mjs"
+      ],
+      "duration_seconds": 0.059,
+      "summary": {
+        "tests": 4,
+        "pass": 4,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/nav-button-refresh-ownership.test.mjs.tap",
+      "log_sha256": "fff96a5e18f8a2f02e115c76513bd3372b5e6f0373c5141c9018db16c04aa600",
+      "failures": []
+    },
+    {
+      "fixture": "view-fixed-layout-composition.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/view-fixed-layout-composition.test.mjs"
+      ],
+      "duration_seconds": 0.067,
+      "summary": {
+        "tests": 3,
+        "pass": 3,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/view-fixed-layout-composition.test.mjs.tap",
+      "log_sha256": "bd6e3031dff2e14c49d45b035f66b75c6a72fba071081690f474e47eede00214",
+      "failures": []
+    },
+    {
+      "fixture": "ebook-load-coordinator.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/ebook-load-coordinator.test.mjs"
+      ],
+      "duration_seconds": 0.179,
+      "summary": {
+        "tests": 106,
+        "pass": 106,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/ebook-load-coordinator.test.mjs.tap",
+      "log_sha256": "5f00c810e28438430c4147dbe37c4d0b872d2bcbb6100ddd9085896851db3f8f",
+      "failures": []
+    },
+    {
+      "fixture": "nav-button-refresh-runtime.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/nav-button-refresh-runtime.test.mjs"
+      ],
+      "duration_seconds": 0.113,
+      "summary": {
+        "tests": 12,
+        "pass": 12,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/nav-button-refresh-runtime.test.mjs.tap",
+      "log_sha256": "aae946e62d058ec4e3fe20ad37a5e5b46106aec23c70cfb8f63003424853484e",
+      "failures": []
+    },
+    {
+      "fixture": "paginator-rendered-restore.test.mjs",
+      "exit": 0,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        "/workspace/scratch/6de674e7884c/js-composition-review/graph/Tests/JavaScript/paginator-rendered-restore.test.mjs"
+      ],
+      "duration_seconds": 2.368,
+      "summary": {
+        "tests": 16,
+        "pass": 16,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "log": "logs/paginator-rendered-restore.test.mjs.tap",
+      "log_sha256": "225e6176cc1cac481bf0c1a650c7dbbe0db1c3a7d219c740447df825c5ed2a8f",
+      "failures": []
+    }
+  ]
+}

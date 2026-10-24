@@ -2453,15 +2453,18 @@ export class Paginator extends HTMLElement {
                 source: 'paginator.wheel',
             });
             if (!foregroundActivity) { this.#wheelCooldown = false; return; }
-            if (e.deltaX > 0) {
-                await this.prev(undefined, { foregroundActivity });
-            } else {
-                await this.next(undefined, { foregroundActivity });
+            try {
+                if (e.deltaX > 0) {
+                    await this.prev(undefined, { foregroundActivity });
+                } else {
+                    await this.next(undefined, { foregroundActivity });
+                }
+                this.#updateSwipeChevron(e.deltaX, TRIGGER_THRESHOLD, { input: 'wheel' })
+            } finally {
+                setTimeout(() => {
+                    this.#wheelCooldown = false;
+                }, 100);
             }
-            this.#updateSwipeChevron(e.deltaX, TRIGGER_THRESHOLD, { input: 'wheel' })
-            setTimeout(() => {
-                this.#wheelCooldown = false;
-            }, 100);
         } else if (!this.#wheelArmed && !this.#wheelCooldown && Math.abs(e.deltaX) < RESET_THRESHOLD) {
             this.#wheelArmed = true;
         }
