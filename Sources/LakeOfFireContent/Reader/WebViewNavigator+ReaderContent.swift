@@ -20,10 +20,47 @@ public extension WebViewNavigator {
         content: any ReaderContentProtocol,
         readerFileManager: ReaderFileManager = ReaderFileManager.shared,
         readerModeViewModel: (any ReaderModeLoadHandling)?,
-        forceReaderModeForSnippets: Bool = false
+        forceReaderModeForSnippets: Bool = false,
+        shouldLoad: @MainActor () -> Bool = { true },
+        willDispatchLoad: @MainActor () -> Void = {}
     ) async throws {
+        try await loadResolvedContent(
+            content: content,
+            readerModeViewModel: readerModeViewModel,
+            forceReaderModeForSnippets: forceReaderModeForSnippets,
+            shouldLoad: shouldLoad,
+            willDispatchLoad: willDispatchLoad,
+            resolveURL: {
+                try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager)
+            },
+            resolvePreviousContent: { navigationURL in
+                try await ReaderContentLoader.load(
+                    url: navigationURL,
+                    persist: false,
+                    countsAsHistoryVisit: false,
+                    source: "WebViewNavigator.load.prefetchPrevious"
+                )
+            }
+        )
+    }
+
+    /// The public load and deterministic suspension regressions share this path.
+    /// Resolution is injectable; presentation and navigation remain real effects.
+    @MainActor
+    internal func loadResolvedContent(
+        content: any ReaderContentProtocol,
+        readerModeViewModel: (any ReaderModeLoadHandling)?,
+        forceReaderModeForSnippets: Bool = false,
+        shouldLoad: @MainActor () -> Bool = { true },
+        willDispatchLoad: @MainActor () -> Void = {},
+        resolveURL: @MainActor () async throws -> URL?,
+        resolvePreviousContent: @MainActor (URL) async throws -> (any ReaderContentProtocol)?
+    ) async throws {
+        guard !Task.isCancelled, shouldLoad() else { return }
         debugPrint("# FLASH WebViewNavigator.load begin", content.url)
-        if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
+        let resolvedURL = try await resolveURL()
+        guard !Task.isCancelled, shouldLoad() else { return }
+        if let url = resolvedURL {
             let navigationURL: URL
             if forceReaderModeForSnippets, content.url.isSnippetURL {
                 navigationURL = ReaderContentLoader.readerLoaderURL(for: content.url) ?? url
@@ -36,13 +73,10 @@ public extension WebViewNavigator {
                 if navigationURL.isEBookURL || navigationURL.isReaderFileURL {
                     previouslyLoadedContent = nil
                 } else {
-                    previouslyLoadedContent = try await ReaderContentLoader.load(
-                        url: navigationURL,
-                        persist: false,
-                        countsAsHistoryVisit: false,
-                        source: "WebViewNavigator.load.prefetchPrevious"
-                    )
+                    previouslyLoadedContent = try await resolvePreviousContent(navigationURL)
+                    guard !Task.isCancelled, shouldLoad() else { return }
                 }
+                guard !Task.isCancelled, shouldLoad() else { return }
                 if navigationURL.isHTTP || navigationURL.isFileURL || navigationURL.isSnippetURL || navigationURL.isReaderURLLoaderURL {
                     let trackingContent = (previouslyLoadedContent ?? content)
                     let loaderBaseURL = navigationURL.isReaderURLLoaderURL ? ReaderContentLoader.getContentURL(fromLoaderURL: navigationURL) : nil
@@ -82,6 +116,10 @@ public extension WebViewNavigator {
                     )
                 }
             }
+            guard !Task.isCancelled, shouldLoad() else { return }
+            // Consumption belongs to this final accepted dispatch. A caller may
+            // retire its receipt here, so do not re-admit the consumed receipt.
+            willDispatchLoad()
             load(URLRequest(url: navigationURL))
             debugPrint("# FLASH WebViewNavigator.load request issued", navigationURL)
         } else {

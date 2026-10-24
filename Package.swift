@@ -298,6 +298,7 @@ let package = Package(
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
                 .product(name: "SwiftUIDownloads", package: "SwiftUIDownloads"),
                 .product(name: "WebMedia", package: "swift-brave"),
+                .product(name: "SwiftUIWebView", package: "swiftui-webview"),
             ],
             path: "Tests/LakeOfFireTests",
             resources: [
