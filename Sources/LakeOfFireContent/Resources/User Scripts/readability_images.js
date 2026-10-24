@@ -232,9 +232,9 @@
             if (img.width > 0) {
                 setImageMargins(img);
             } else {
-                img.onload = function() {
-                    setImageMargins(this);
-                };
+                // Loading can outlive this layout pass. Keep Core's restoration
+                // callback intact and recheck the current document and candidates.
+                img.addEventListener('load', updateImageMargins)
             }
         }
     };
@@ -254,7 +254,8 @@
         var observer = new MutationObserver(function (mutations) {
             mutations.forEach(function (mutation) {
                 mutation.addedNodes.forEach(addedNode => {
-                    if (addedNode.tagName?.toUpperCase() === 'IMG') {
+                    if (addedNode.tagName?.toUpperCase() === 'IMG'
+                        || addedNode.querySelector?.('img')) {
                         debouncedUpdateImageMargins()
                     }
                 });
