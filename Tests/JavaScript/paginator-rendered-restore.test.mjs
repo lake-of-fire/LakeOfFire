@@ -55,7 +55,9 @@ Object.assign(globalThis, {
         unobserve() {} disconnect() {}
     },
 })
-const { Paginator } = await import('../../Sources/LakeOfFireReader/Resources/foliate-js/paginator.js')
+const { Paginator } = await import(process.env.PAGINATOR_MODULE ?? new URL(
+    '../../Sources/LakeOfFireReader/Resources/foliate-js/paginator.js', import.meta.url,
+))
 
 // Full production rendering/navigation code executes with deterministic DOM
 // geometry and browser host doubles. This suite does not verify CSS layout or
@@ -88,6 +90,251 @@ const cleanup = renderer => {
     for (const frame of frames.splice(0)) frame.window.close()
     nextSidecars = []
 }
+
+const holdNextFrame = () => {
+    const entered = deferred()
+    const requestFrame = globalThis.requestAnimationFrame
+    let held
+    globalThis.requestAnimationFrame = callback => {
+        globalThis.requestAnimationFrame = requestFrame
+        held = callback
+        entered.resolve()
+        return -1
+    }
+    return {
+        entered: entered.promise,
+        restore: () => { globalThis.requestAnimationFrame = requestFrame },
+        release: async () => {
+            const callback = held
+            held = null
+            await callback?.(performance.now())
+        },
+    }
+}
+
+test('lifecycle: a newer render releases the held old layout and retains a current position proof', async () => {
+    const renderer = fixture(1)
+    let held, previous
+    try {
+        const receipt = await bounded(renderer.goTo({ index: 0, anchor: 0 }, { requiresPositionReceipt: true }))
+        const originalProof = renderer.capturePositionProof(receipt)
+        assert.equal(renderer.isPositionProofCurrent(originalProof), true)
+        held = holdNextFrame()
+        previous = renderer.render()
+        await bounded(held.entered)
+        assert.equal(renderer.capturePositionProof(receipt), null, 'unfinished layout owns position activity')
+        await bounded(renderer.render())
+        await bounded(previous)
+        const currentProof = renderer.capturePositionProof(receipt)
+        assert.equal(renderer.isPositionProofCurrent(originalProof), false)
+        assert.equal(renderer.isPositionProofCurrent(currentProof), true)
+        await held.release()
+        assert.equal(renderer.isPositionProofCurrent(currentProof), true, 'a stale frame cannot invalidate the successor proof')
+        assert.equal((await renderer.pageMetrics()).page, 1)
+    } finally {
+        held?.restore()
+        await held?.release()
+        await previous?.catch(() => {})
+        cleanup(renderer)
+    }
+})
+
+test('lifecycle: destroy settles a held anchor frame without another relocation', async () => {
+    const renderer = fixture(1)
+    let held, moving, relocations = 0
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await renderer.pageMetrics()
+        renderer.addEventListener('relocate', () => { relocations += 1 })
+        held = holdNextFrame()
+        moving = renderer.scrollToAnchor(1)
+        await bounded(held.entered)
+        renderer.destroy()
+        await bounded(moving)
+        assert.equal(relocations, 0)
+        await held.release()
+        assert.equal(relocations, 0)
+        assert.deepEqual(renderer.getContents(), [])
+    } finally {
+        held?.restore()
+        await held?.release()
+        await moving?.catch(() => {})
+        cleanup(renderer)
+    }
+})
+
+test('layout owner: same-section navigation uses current geometry after a held anchor frame is retired', async () => {
+    const renderer = fixture(1)
+    let held, moving
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await renderer.pageMetrics()
+        held = holdNextFrame()
+        moving = renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true })
+        await bounded(held.entered)
+        fixtureTextWidth = 2400
+        await bounded(renderer.render())
+        const reflowed = await renderer.pageMetrics()
+        assert.equal(reflowed.page, reflowed.pages - 2)
+        await held.release()
+        const receipt = await bounded(moving)
+        const final = await renderer.pageMetrics()
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+        assert.equal(final.page, final.pages - 2)
+        assert.equal(final.start, reflowed.start)
+    } finally {
+        held?.restore()
+        await held?.release()
+        await moving?.catch(() => {})
+        fixtureTextWidth = 1200
+        cleanup(renderer)
+    }
+})
+
+test('layout owner: a retired relative page frame cannot move reflowed content or grant a receipt', async () => {
+    const renderer = fixture(1)
+    let held, moving
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await renderer.pageMetrics()
+        held = holdNextFrame()
+        moving = renderer.next(1, { requiresNavigationReceipt: true })
+        await bounded(held.entered)
+        fixtureTextWidth = 2400
+        await bounded(renderer.render())
+        const reflowed = await renderer.pageMetrics()
+        await held.release()
+        const result = await bounded(moving)
+        assert.equal(result, null)
+        assert.equal(renderer.isNavigationReceiptCurrent(result), false)
+        assert.equal((await renderer.pageMetrics()).start, reflowed.start)
+    } finally {
+        held?.restore()
+        await held?.release()
+        await moving?.catch(() => {})
+        fixtureTextWidth = 1200
+        cleanup(renderer)
+    }
+})
+
+test('layout owner: replacement during reflow prevents the old absolute target from retrying', async () => {
+    const renderer = fixture(2)
+    let oldFrame, layoutFrame, moving, reflow
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await renderer.pageMetrics()
+        let displays = 0
+        renderer.addEventListener('didDisplay', () => { displays += 1 })
+        oldFrame = holdNextFrame()
+        moving = renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true })
+        await bounded(oldFrame.entered)
+        layoutFrame = holdNextFrame()
+        reflow = renderer.render()
+        await bounded(layoutFrame.entered)
+        const current = await bounded(renderer.goTo({ index: 1, anchor: 0 }, { requiresPositionReceipt: true }))
+        assert.equal(await bounded(moving), null)
+        await bounded(reflow)
+        const currentProof = renderer.capturePositionProof(current)
+        assert.equal(renderer.isPositionProofCurrent(currentProof), true)
+        await oldFrame.release()
+        await layoutFrame.release()
+        assert.equal(renderer.getContents()[0].index, 1)
+        assert.equal(renderer.isPositionProofCurrent(currentProof), true)
+        assert.equal(displays, 1)
+    } finally {
+        oldFrame?.restore()
+        layoutFrame?.restore()
+        await oldFrame?.release()
+        await layoutFrame?.release()
+        await moving?.catch(() => {})
+        await reflow?.catch(() => {})
+        cleanup(renderer)
+    }
+})
+
+test('layout owner: a joined current render failure rejects navigation and permits a fresh retry', async () => {
+    const renderer = fixture(1)
+    let held, moving, rendering
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await renderer.pageMetrics()
+        held = holdNextFrame()
+        moving = renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true })
+            .then(value => ({ value }), error => ({ error }))
+        await bounded(held.entered)
+        const doc = renderer.getContents()[0].doc
+        const failure = new Error('Controlled viewport publication failure')
+        doc.defaultView.manabi_seedViewportMetrics = () => { throw failure }
+        rendering = renderer.render().then(value => ({ value }), error => ({ error }))
+        assert.equal((await bounded(rendering)).error, failure)
+        assert.equal((await bounded(moving)).error, failure)
+        delete doc.defaultView.manabi_seedViewportMetrics
+        await held.release()
+        const retry = await bounded(renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true }))
+        assert.equal(renderer.isNavigationReceiptCurrent(retry), true)
+        const current = await renderer.pageMetrics()
+        assert.equal(current.page, current.pages - 2)
+    } finally {
+        held?.restore()
+        await held?.release()
+        await moving?.catch(() => {})
+        await rendering?.catch(() => {})
+        cleanup(renderer)
+    }
+})
+
+test('layout owner: a held scrollBy frame retires without applying its previous bounds', async () => {
+    const renderer = fixture(1)
+    let held, moving
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        held = holdNextFrame()
+        moving = renderer.scrollBy(600, 0)
+        await bounded(held.entered)
+        fixtureTextWidth = 2400
+        await bounded(renderer.render())
+        const current = await renderer.pageMetrics()
+        assert.equal(await bounded(moving), null)
+        await held.release()
+        assert.equal((await renderer.pageMetrics()).start, current.start)
+    } finally {
+        held?.restore()
+        await held?.release()
+        await moving?.catch(() => {})
+        fixtureTextWidth = 1200
+        cleanup(renderer)
+    }
+})
+
+test('layout owner: a snap awaiting metrics cannot use the previous layout to enter another section', async () => {
+    const renderer = fixture(2)
+    const entered = deferred(), gate = deferred()
+    let moving
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 1 }))
+        const pageMetrics = renderer.pageMetrics.bind(renderer)
+        const previous = await pageMetrics()
+        renderer.pageMetrics = () => {
+            renderer.pageMetrics = pageMetrics
+            entered.resolve()
+            return gate.promise
+        }
+        moving = renderer.snap(2, 0)
+        await bounded(entered.promise)
+        fixtureTextWidth = 2400
+        await bounded(renderer.render())
+        const current = await renderer.pageMetrics()
+        gate.resolve(previous)
+        assert.equal(await bounded(moving), null)
+        assert.equal(renderer.getContents()[0].index, 0)
+        assert.equal((await renderer.pageMetrics()).start, current.start)
+    } finally {
+        gate.resolve({})
+        await moving?.catch(() => {})
+        fixtureTextWidth = 1200
+        cleanup(renderer)
+    }
+})
 
 test('actual paginator renders first-page metrics and owns its measured proof without an injected feature flag', async () => {
     const renderer = fixture()
