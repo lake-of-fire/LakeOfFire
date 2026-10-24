@@ -23,9 +23,11 @@ final class ReaderSnippetTitleTests: XCTestCase {
         let nestedLoader = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: webURL))
         let executableURL = try XCTUnwrap(URL(string: "javascript:alert(1)"))
         let dataURL = try XCTUnwrap(URL(string: "data:text/html,hello"))
+        let invalidReaderFile = try XCTUnwrap(URL(string: "reader-file://other/load/local/book.html"))
         XCTAssertNil(ReaderContentLoader.readerLoaderURL(for: nestedLoader))
         XCTAssertNil(ReaderContentLoader.readerLoaderURL(for: executableURL))
         XCTAssertNil(ReaderContentLoader.readerLoaderURL(for: dataURL))
+        XCTAssertNil(ReaderContentLoader.readerLoaderURL(for: invalidReaderFile))
     }
 
     private func makeRealmConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {

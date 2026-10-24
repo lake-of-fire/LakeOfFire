@@ -37,11 +37,19 @@ public extension URL {
                !contentURL.isReaderLoaderTransportURL {
                 let isWebURL = (contentScheme == "http" || contentScheme == "https")
                     && contentURL.host?.isEmpty == false
+                let readerFilePath = URLComponents(url: contentURL, resolvingAgainstBaseURL: false)?.percentEncodedPath
+                let isReaderFileURL = contentScheme == "reader-file"
+                    && contentURL.host?.lowercased() == "file"
+                    && contentURL.user == nil
+                    && contentURL.password == nil
+                    && contentURL.port == nil
+                    && (readerFilePath?.hasPrefix("/load/local/") == true
+                        || readerFilePath?.hasPrefix("/load/icloud/") == true)
                 let isLocalContent = contentURL.isSnippetURL
                     || (contentScheme == "about"
                         && contentURL.absoluteString.hasPrefix("about:snippet?key=")
                         && contentURL.snippetKey != nil)
-                    || contentScheme == "reader-file"
+                    || isReaderFileURL
                 if isWebURL || isLocalContent {
                     // A same-document fragment on the loader belongs to the
                     // visible source, never to the private transport URL.
