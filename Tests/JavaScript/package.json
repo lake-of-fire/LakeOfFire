@@ -2,7 +2,8 @@
   "name": "lakeoffire-javascript-tests",
   "private": true,
   "scripts": {
-    "test:ebook-restore": "node ebook-restore-coordination.test.mjs && node ebook-load-coordinator.test.mjs && node view-navigation-port.test.mjs && node relocate-location.test.mjs && node paginator-navigation-admission.test.mjs && node paginator-display-lifetime.test.mjs && node paginator-rendered-restore.test.mjs && node synthetic-restore-runtime.test.mjs"
+    "test:ebook-restore": "node ebook-restore-coordination.test.mjs && node ebook-load-coordinator.test.mjs && node view-navigation-port.test.mjs && node relocate-location.test.mjs && node paginator-navigation-admission.test.mjs && node paginator-display-lifetime.test.mjs && node paginator-rendered-restore.test.mjs && node synthetic-restore-runtime.test.mjs && npm run test:nav-button-refresh",
+    "test:nav-button-refresh": "node nav-button-refresh-ownership.test.mjs && node nav-button-refresh-runtime.test.mjs"
   },
   "devDependencies": {
     "jsdom": "26.1.0"
