@@ -114,7 +114,7 @@ public final class BookmarkStatusCache: ObservableObject {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(
                 for: configuration, storageAdmission: storageAdmission
             )
-            realm.refresh()
+            await realm.asyncRefresh()
             try Task.checkCancellation()
             let keys = Set(realm.objects(Bookmark.self).where { !$0.isDeleted }.map(\.compoundKey))
             await BookmarkStatusRefreshObservation.afterSnapshot?()
