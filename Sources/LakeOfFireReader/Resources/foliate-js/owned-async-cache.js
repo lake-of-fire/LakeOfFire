@@ -31,20 +31,38 @@ export const createOwnedAsyncCache = ({
             const controller = typeof AbortController === 'function'
                 ? new AbortController()
                 : null
-            const promise = Promise.resolve().then(() => createValue(controller?.signal ?? null))
-            const operation = { promise, controller }
+            const operation = { controller, promise: null }
+            // Every waiter joins the entire settlement, including retention
+            // failures and owned cleanup, rather than only the factory result.
+            operation.promise = Promise.resolve()
+                .then(() => {
+                    // clear() can retire this entry before its first microtask.
+                    // Do not start work whose abort event has already fired.
+                    if (inFlightValues.get(key) !== operation) {
+                        throw controller?.signal.reason ?? Object.assign(
+                            new Error('The cache was cleared before work began.'), { name: 'AbortError' })
+                    }
+                    return createValue(controller?.signal ?? null)
+                })
+                .then(value => {
+                    if (inFlightValues.get(key) === operation
+                        && shouldRemember(value, key)
+                        // The retention callback (or a result getter it reads)
+                        // may clear the cache and start a replacement producer.
+                        && inFlightValues.get(key) === operation) {
+                        remember(key, value)
+                    }
+                    // Clearing retires cache publication, not the original
+                    // callers' result if their producer ignores cancellation.
+                    return value
+                })
+                .finally(() => {
+                    if (inFlightValues.get(key) === operation) {
+                        inFlightValues.delete(key)
+                    }
+                })
             inFlightValues.set(key, operation)
-            try {
-                const value = await promise
-                if (inFlightValues.get(key) === operation && shouldRemember(value, key)) {
-                    remember(key, value)
-                }
-                return value
-            } finally {
-                if (inFlightValues.get(key) === operation) {
-                    inFlightValues.delete(key)
-                }
-            }
+            return await operation.promise
         },
         clear() {
             resolvedValues.clear()

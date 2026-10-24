@@ -234,3 +234,55 @@ test('destroy aborts pending direction work and rejects later resolution', async
     await assert.rejects(pending, error => error?.name === 'AbortError')
     assert.equal(await resolver('OPS/chapter.xhtml'), null)
 })
+
+test('destroy before a direction factory starts rejects its waiters without loading the retired archive', async () => {
+    let retiredLoads = 0
+    const retired = makeRawSectionWritingDirectionResolver({
+        loadText: async () => {
+            retiredLoads += 1
+            return '<html><body style="writing-mode: vertical-rl"></body></html>'
+        },
+    })
+    const first = retired('OPS/chapter.xhtml')
+    const follower = retired('OPS/chapter.xhtml')
+    const settled = Promise.allSettled([first, follower])
+    assert.equal(retired.destroy(), true)
+
+    const results = await settled
+    assert.equal(retiredLoads, 0)
+    assert.deepEqual(results.map(result => result.status), ['rejected', 'rejected'])
+    assert.ok(results.every(result => result.reason?.name === 'AbortError'))
+    assert.equal(results[0].reason, results[1].reason)
+    assert.equal(await retired('OPS/chapter.xhtml'), null)
+
+    let replacementLoads = 0
+    const replacement = makeRawSectionWritingDirectionResolver({
+        loadText: async () => {
+            replacementLoads += 1
+            return '<html><body style="writing-mode: horizontal-tb"></body></html>'
+        },
+    })
+    const expected = { direction: 'horizontal', writingMode: 'horizontal-tb' }
+    assert.deepEqual(await replacement('OPS/chapter.xhtml'), expected)
+    assert.deepEqual(await replacement('OPS/chapter.xhtml'), expected)
+    assert.equal(replacementLoads, 1)
+})
+
+test('destroyed direction work that ignores abort cannot publish its late source result', async () => {
+    let releaseSource
+    let started
+    const startedPromise = new Promise(resolve => { started = resolve })
+    const resolver = makeRawSectionWritingDirectionResolver({
+        loadText: () => new Promise(resolve => {
+            releaseSource = resolve
+            started()
+        }),
+    })
+    const pending = resolver('OPS/chapter.xhtml')
+    await startedPromise
+    assert.equal(resolver.destroy(), true)
+    releaseSource('<html><body style="writing-mode: vertical-rl"></body></html>')
+
+    assert.equal(await pending, null)
+    assert.equal(await resolver('OPS/chapter.xhtml'), null)
+})
