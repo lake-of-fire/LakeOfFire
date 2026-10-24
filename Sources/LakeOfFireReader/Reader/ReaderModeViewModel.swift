@@ -1460,6 +1460,12 @@ public class ReaderModeViewModel: ObservableObject {
         let task = activeRendersByURL[canonicalRenderKey(url)]?.task
         await task?.value
     }
+
+    // Tests retain the exact predecessor before replacement removes its slot.
+    // Waiting through the URL registry afterward could observe a successor or nil.
+    internal func readerModeRenderTaskForTesting(for url: URL) -> Task<Void, Never>? {
+        activeRendersByURL[canonicalRenderKey(url)]?.task
+    }
     private var isBatchingProcessingDependencyChanges = false
     internal private(set) var processingDependencyRevision: UInt64 = 0
     private func processingDependencyWillChange() {
@@ -1557,6 +1563,13 @@ public class ReaderModeViewModel: ObservableObject {
     @Published public private(set) var expectedSyntheticReaderLoaderURL: URL? {
         didSet { updateLoadingStateSnapshot() }
     }
+    private struct SyntheticReaderLoaderExpectation {
+        let receipt: UUID
+        let url: URL?
+    }
+    private var syntheticReaderLoaderExpectation = SyntheticReaderLoaderExpectation(receipt: UUID(), url: nil)
+    private var isPublishingSyntheticReaderLoaderExpectation = false
+    private var authoritativeSyntheticReaderLoaderURL: URL? { syntheticReaderLoaderExpectation.url }
     @Published public private(set) var pendingReaderModeURL: URL? {
         didSet { updateLoadingStateSnapshot() }
     }
@@ -1571,7 +1584,7 @@ public class ReaderModeViewModel: ObservableObject {
         loadingState.set(
             isReaderModeLoading: isReaderModeLoading,
             lastRenderedURL: lastRenderedURL,
-            expectedSyntheticReaderLoaderURL: expectedSyntheticReaderLoaderURL,
+            expectedSyntheticReaderLoaderURL: authoritativeSyntheticReaderLoaderURL,
             pendingReaderModeURL: pendingReaderModeURL
         )
     }
@@ -1609,6 +1622,7 @@ public class ReaderModeViewModel: ObservableObject {
         let task: Task<Void, Never>
         let generation: UUID
         let originatingContentIsCurrent: @MainActor () -> Bool
+        var hasDispatchedHTML = false
         let accountSession: AccountSessionSnapshot?
         let accountBoundaryID: AccountSessionBoundaryID?
     }
@@ -1649,9 +1663,9 @@ public class ReaderModeViewModel: ObservableObject {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
         if !pendingMatches {
-            if let expectedSyntheticReaderLoaderURL,
+            if let expectedSyntheticReaderLoaderURL = authoritativeSyntheticReaderLoaderURL,
                !urlsMatchWithoutHashForHotfix(expectedSyntheticReaderLoaderURL, canonicalURL) {
-                self.expectedSyntheticReaderLoaderURL = nil
+                publishSyntheticReaderLoaderExpectation(for: nil)
             }
             updatePendingReaderModeURL(canonicalURL)
             lastFallbackLoaderURL = nil
@@ -1676,7 +1690,7 @@ public class ReaderModeViewModel: ObservableObject {
             cancelOtherActiveRenders(except: nil)
         }
         updatePendingReaderModeURL(nil)
-        expectedSyntheticReaderLoaderURL = nil
+        publishSyntheticReaderLoaderExpectation(for: nil)
         lastRenderedURL = nil
         if let completedURL,
            completedRenderOwner?.key == canonicalRenderKey(completedURL) {
@@ -1705,7 +1719,7 @@ public class ReaderModeViewModel: ObservableObject {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let matchesPending = pendingKeysMatch(pendingReaderModeURL, canonicalURL)
         let matchesLastRendered = pendingKeysMatch(lastRenderedURL, canonicalURL)
-        let matchesExpected = expectedSyntheticReaderLoaderURL.map {
+        let matchesExpected = authoritativeSyntheticReaderLoaderURL.map {
             urlsMatchWithoutHashForHotfix($0, canonicalURL)
         } ?? false
         guard matchesPending || matchesLastRendered || matchesExpected else {
@@ -1717,7 +1731,7 @@ public class ReaderModeViewModel: ObservableObject {
             }
         }
         updatePendingReaderModeURL(nil)
-        expectedSyntheticReaderLoaderURL = nil
+        publishSyntheticReaderLoaderExpectation(for: nil)
         readerModeLoading(false)
         let renderKey = canonicalRenderKey(canonicalURL)
         if let activeRender = activeRendersByURL[renderKey] {
@@ -1749,7 +1763,7 @@ public class ReaderModeViewModel: ObservableObject {
         readabilityContent = nil
         readabilityContainerSelector = nil
         readabilityContainerFrameInfo = nil
-        expectedSyntheticReaderLoaderURL = nil
+        publishSyntheticReaderLoaderExpectation(for: nil)
         if matchesLastRendered {
             lastRenderedURL = nil
             if completedRenderOwner?.key == canonicalRenderKey(canonicalURL) {
@@ -1773,7 +1787,7 @@ public class ReaderModeViewModel: ObservableObject {
         guard hasReaderContent, !pageURL.isReaderURLLoaderURL else { return false }
 
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
-        let expectedMatches = expectedSyntheticReaderLoaderURL.map { urlsMatchWithoutHashForHotfix($0, pageURL) } ?? false
+        let expectedMatches = authoritativeSyntheticReaderLoaderURL.map { urlsMatchWithoutHashForHotfix($0, pageURL) } ?? false
         let completedMatches = urlMatchesLastRendered(canonicalURL)
         guard pendingMatches || expectedMatches || completedMatches,
               isCurrentOrCompletedRenderReady(
@@ -1789,7 +1803,7 @@ public class ReaderModeViewModel: ObservableObject {
         )
 
         if expectedMatches {
-            expectedSyntheticReaderLoaderURL = nil
+            publishSyntheticReaderLoaderExpectation(for: nil)
         }
         markReaderModeLoadComplete(for: canonicalURL)
         return true
@@ -1807,14 +1821,14 @@ public class ReaderModeViewModel: ObservableObject {
 
         if canonicalURL.isSnippetURL {
             updatePendingReaderModeURL(nil)
-            expectedSyntheticReaderLoaderURL = nil
+            publishSyntheticReaderLoaderExpectation(for: nil)
             lastFallbackLoaderURL = canonicalURL
             readerModeLoading(false)
             readerModeLoadCompletionHandler?(canonicalURL)
             return true
         }
 
-        if expectedSyntheticReaderLoaderURL != nil {
+        if authoritativeSyntheticReaderLoaderURL != nil {
             return true
         }
 
@@ -2261,11 +2275,35 @@ public class ReaderModeViewModel: ObservableObject {
     public init() { }
 
     func expectSyntheticReaderLoaderCommit(for baseURL: URL?) {
-        expectedSyntheticReaderLoaderURL = baseURL
+        _ = publishSyntheticReaderLoaderExpectation(for: baseURL)
+    }
+
+    @discardableResult
+    private func publishSyntheticReaderLoaderExpectation(for baseURL: URL?) -> UUID {
+        let receipt = UUID()
+        syntheticReaderLoaderExpectation = SyntheticReaderLoaderExpectation(receipt: receipt, url: baseURL)
+        // @Published sends from willSet. Reentrant updates replace authority
+        // immediately; only the outer publisher drains the latest projection.
+        guard !isPublishingSyntheticReaderLoaderExpectation else { return receipt }
+        isPublishingSyntheticReaderLoaderExpectation = true
+        defer { isPublishingSyntheticReaderLoaderExpectation = false }
+        while true {
+            let latest = syntheticReaderLoaderExpectation
+            if expectedSyntheticReaderLoaderURL != latest.url {
+                expectedSyntheticReaderLoaderURL = latest.url
+            }
+            if syntheticReaderLoaderExpectation.receipt == latest.receipt { break }
+        }
+        return receipt
+    }
+
+    private func clearSyntheticReaderLoaderExpectation(ifOwnedBy receipt: UUID) {
+        guard syntheticReaderLoaderExpectation.receipt == receipt else { return }
+        publishSyntheticReaderLoaderExpectation(for: nil)
     }
 
     func expectsSyntheticReaderLoaderCommit(for url: URL) -> Bool {
-        guard let expectedSyntheticReaderLoaderURL else { return false }
+        guard let expectedSyntheticReaderLoaderURL = authoritativeSyntheticReaderLoaderURL else { return false }
         return urlsMatchWithoutHashForHotfix(
             expectedSyntheticReaderLoaderURL,
             url
@@ -2275,7 +2313,7 @@ public class ReaderModeViewModel: ObservableObject {
     @discardableResult
     private func consumeSyntheticReaderLoaderExpectationIfNeeded(for url: URL) -> Bool {
         if expectsSyntheticReaderLoaderCommit(for: url) {
-            self.expectedSyntheticReaderLoaderURL = nil
+            publishSyntheticReaderLoaderExpectation(for: nil)
             return true
         }
         return false
@@ -2376,6 +2414,20 @@ public class ReaderModeViewModel: ObservableObject {
         activeRendersByURL[canonicalRenderKey(url)]?.generation == generation
     }
 
+    private func retireRender(forKey key: String, ifOwnedBy generation: UUID? = nil) {
+        if let generation, activeRendersByURL[key]?.generation != generation { return }
+        let retired = activeRendersByURL.removeValue(forKey: key)
+        if let retired, completedRenderOwner?.generation == retired.generation {
+            completedRenderOwner = nil
+        }
+        retired?.task.cancel()
+    }
+
+    private func recordOwnedHTMLDispatch(for url: URL, generation: UUID) {
+        guard isCurrentRender(for: url, generation: generation) else { return }
+        activeRendersByURL[canonicalRenderKey(url)]?.hasDispatchedHTML = true
+    }
+
     private func isCurrentRender(for url: URL, generation: UUID) -> Bool {
         guard let render = activeRendersByURL[canonicalRenderKey(url)],
               render.originatingContentIsCurrent() else { return false }
@@ -2392,8 +2444,14 @@ public class ReaderModeViewModel: ObservableObject {
         readerContent: ReaderContent,
         originatingContentIsCurrent: @MainActor () -> Bool
     ) {
-        guard originatingContentIsCurrent(),
-              ownsRender(for: url, generation: generation) else { return }
+        guard ownsRender(for: url, generation: generation) else { return }
+        guard originatingContentIsCurrent() else {
+            let key = canonicalRenderKey(url)
+            if activeRendersByURL[key]?.hasDispatchedHTML != true {
+                retireRender(forKey: key, ifOwnedBy: generation)
+            }
+            return
+        }
         ReaderSnippetFinalDocumentDiagnostics.record("render-cancel", contentURL: url, generation: generation)
         cancelReaderModeLoad(for: url, readerContent: readerContent)
     }
@@ -2426,12 +2484,16 @@ public class ReaderModeViewModel: ObservableObject {
         guard let render = activeRendersByURL[key], render.generation == generation else {
             return
         }
-        if !render.task.isCancelled, render.originatingContentIsCurrent() {
+        let completedExplicitly = completedRenderOwner?.key == key
+            && completedRenderOwner?.generation == generation
+        if completedExplicitly || render.hasDispatchedHTML {
             completedRenderOwner = CompletedRenderOwner(
                 key: key, generation: generation,
                 accountSession: render.accountSession,
                 accountBoundaryID: render.accountBoundaryID
             )
+        } else if completedRenderOwner?.generation == generation {
+            completedRenderOwner = nil
         }
         activeRendersByURL.removeValue(forKey: key)
     }
@@ -2459,6 +2521,7 @@ public class ReaderModeViewModel: ObservableObject {
         processingAccount: ReaderModeProcessingAccount?,
         operation: @escaping @ReaderViewModelActor (_ generation: UUID) async -> Void
     ) -> Bool {
+        guard originatingContentIsCurrent() else { return false }
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let key = canonicalRenderKey(canonicalURL)
         cancelOtherActiveRenders(except: key)
@@ -2630,7 +2693,6 @@ public class ReaderModeViewModel: ObservableObject {
         let cachedContainerSelector = readabilityContainerSelector
         let cachedContainerFrameInfo = readabilityContainerFrameInfo
         let renderBinding = scriptCaller.currentJavaScriptBindingToken
-        let requiresOriginalFrameBinding = cachedContainerFrameInfo?.isMainFrame == false
         let initialContent = readerContent.content
         let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
         let processingAccount = readerAccountSessionAccess.map(ReaderModeProcessingAccount.init(access:))
@@ -2644,8 +2706,7 @@ public class ReaderModeViewModel: ObservableObject {
                 && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
                 && (initialContent.map { self.readerModeContentIsCurrent($0, readerContent: readerContent) } ?? true)
                 && initialContent?.isInvalidated != true
-                && (!requiresOriginalFrameBinding
-                    || scriptCaller.currentJavaScriptBindingToken == renderBinding)
+                && self.ownsReaderDocumentBinding(renderBinding, scriptCaller: scriptCaller)
         }
         let publicationDateLoader = readerPublicationDateLoader
         beginReaderModeLoad(for: contentURL)
@@ -2934,6 +2995,7 @@ public class ReaderModeViewModel: ObservableObject {
             let directHTML = prepareHTMLForDirectLoad(html)
             guard ownsContent() else { return }
             let displayURL = readerContent.pageURL.canonicalReaderContentURLForHotfix()
+            recordOwnedHTMLDispatch(for: contentURL, generation: renderGeneration)
             if let htmlData = directHTML.data(using: .utf8) {
                 navigator.load(
                     htmlData,
@@ -2948,7 +3010,7 @@ public class ReaderModeViewModel: ObservableObject {
             // Retired work has no authority to clean up a newer selection.
             return
         } catch {
-            guard selectionIsCurrent(), resolvedContentIsCurrent?() ?? true,
+            guard originatingContentIsCurrent(), selectionIsCurrent(), resolvedContentIsCurrent?() ?? true,
                   urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL) else { return }
             print(error)
             cancelReaderModeLoad(
@@ -2976,6 +3038,8 @@ public class ReaderModeViewModel: ObservableObject {
         originatingContentIsCurrent: @escaping @MainActor () -> Bool
     ) async throws {
         let requestedURL = renderURL
+        guard let active = activeRendersByURL[canonicalRenderKey(requestedURL)],
+              active.generation == renderGeneration else { return }
         let frameReplacementHook = readerModeWillReplaceFrameContent
         let frameReplacementBinding = renderBinding
         ReaderSnippetFinalDocumentDiagnostics.record("readability-start", contentURL: requestedURL, generation: renderGeneration)
@@ -3482,7 +3546,15 @@ public class ReaderModeViewModel: ObservableObject {
                     // The row keeps its stable backing identity, while the
                     // mounted location may carry a requested or newer anchor.
                     let displayURL = readerContent.pageURL.canonicalReaderContentURLForHotfix()
-                    expectSyntheticReaderLoaderCommit(for: displayURL)
+                    let expectationReceipt = publishSyntheticReaderLoaderExpectation(for: displayURL)
+                    // Publishing the expectation can synchronously reenter.
+                    // Revalidate before granting handoff or loading any bytes.
+                    guard ownsContent() else {
+                        clearSyntheticReaderLoaderExpectation(ifOwnedBy: expectationReceipt)
+                        retireRender(forKey: canonicalRenderKey(requestedURL), ifOwnedBy: renderGeneration)
+                        return
+                    }
+                    recordOwnedHTMLDispatch(for: requestedURL, generation: renderGeneration)
                     ReaderSnippetFinalDocumentDiagnostics.record("html-dispatch", contentURL: requestedURL, generation: renderGeneration)
                     navigator.load(
                         transformedHTMLData,
@@ -3677,6 +3749,14 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
 
+        // Retire a replaced preparation without withdrawing a dispatched HTML
+        // handoff, whose readiness belongs to the newly mounted document.
+        let renderKey = canonicalRenderKey(newState.pageURL)
+        if let render = activeRendersByURL[renderKey],
+           !render.hasDispatchedHTML, !render.originatingContentIsCurrent() {
+            retireRender(forKey: renderKey, ifOwnedBy: render.generation)
+        }
+
         // The processed document commits as a second navigation. Its canonical
         // readability state still belongs to this load and must survive that
         // callback; reset only when processing a different, live document.
@@ -3840,11 +3920,11 @@ public class ReaderModeViewModel: ObservableObject {
             }
         }
 
-        if expectedSyntheticReaderLoaderURL != nil {
+        if authoritativeSyntheticReaderLoaderURL != nil {
             let pageURL = newState.pageURL
             let pageMatchesPending = pendingKeysMatch(pendingReaderModeURL, pageURL)
             if hasRenderedReadabilityContent && pageMatchesPending {
-                self.expectedSyntheticReaderLoaderURL = nil
+                publishSyntheticReaderLoaderExpectation(for: nil)
             } else {
                 return .synthetic
             }
@@ -3858,7 +3938,7 @@ public class ReaderModeViewModel: ObservableObject {
             let pageURL = newState.pageURL
             let pageMatchesPending = pendingKeysMatch(pendingReaderModeURL, pageURL)
             let pageIsRealPendingContent = pageMatchesPending && !pageURL.isReaderURLLoaderURL
-            if !pageIsRealPendingContent || expectedSyntheticReaderLoaderURL != nil {
+            if !pageIsRealPendingContent || authoritativeSyntheticReaderLoaderURL != nil {
                 return .pending
             }
         }
