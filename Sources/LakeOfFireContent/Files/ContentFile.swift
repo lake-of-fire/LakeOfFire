@@ -42,8 +42,82 @@ public class ContentFile: Bookmark {
     
     @MainActor
     public override func delete() async throws {
-        try await ReaderFileManager.shared.delete(readerFileURL: url)
-        try await super.delete()
+        // Capture from the presented row before any actor hop. A late
+        // ContentReference after physical removal can identify a replacement.
+        guard let identity = DeletionIdentity(self) else { return }
+        let manager = ReaderFileManager.shared
+        let deletionContext = try manager.captureDeletionContext(source: identity)
+        let transcriptContext = ReaderContentLoader.TranscriptDeletionContext(
+            historyRealmConfiguration: identity.configuration,
+            ownerHistoryRealmConfiguration: deletionContext.ownerConfiguration
+        )
+        try await manager.delete(readerFileURL: identity.url, context: deletionContext)
+        // An already-tombstoned row may retry cleanup after an earlier failure.
+        try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(
+            contentURL: identity.url, context: transcriptContext
+        )
+    }
+
+    /// Value identity only; managed objects are resolved on their owning actor.
+    /// The public Realm row ID distinguishes same-key/same-date replacements.
+    struct DeletionIdentity: @unchecked Sendable {
+        let contentType: RealmSwift.Object.Type
+        let key: String
+        let objectID: UInt64
+        let createdAt: Date
+        let url: URL
+        let wasDeleted: Bool
+        let configuration: Realm.Configuration
+        let storageAdmission: RealmStorageAdmission
+
+        init?(_ content: ContentFile) {
+            guard !content.isInvalidated, let realm = content.realm,
+                  !realm.isInWriteTransaction else { return nil }
+            contentType = type(of: content)
+            key = content.compoundKey
+            objectID = content.id
+            createdAt = content.createdAt
+            url = content.url
+            wasDeleted = content.isDeleted
+            configuration = realm.configuration
+            storageAdmission = RealmBackgroundActor.shared.captureStorageAdmission(
+                for: configuration
+            )
+        }
+
+        func matches(_ content: ContentFile) -> Bool {
+            guard !content.isInvalidated, let candidateRealm = content.realm,
+                  Self.sameStore(configuration, candidateRealm.configuration) else { return false }
+            return type(of: content) == contentType
+                && content.compoundKey == key && content.id == objectID
+                && content.createdAt == createdAt && content.url == url
+        }
+
+        private static func sameStore(_ first: Realm.Configuration, _ second: Realm.Configuration) -> Bool {
+            if first.inMemoryIdentifier != nil || second.inMemoryIdentifier != nil {
+                return first.inMemoryIdentifier == second.inMemoryIdentifier
+            }
+            guard let firstURL = first.fileURL, let secondURL = second.fileURL else { return false }
+            return firstURL.standardizedFileURL == secondURL.standardizedFileURL
+        }
+
+        func validateStorage() throws {
+            try Task.checkCancellation()
+            guard storageAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: configuration)
+            }) else {
+                throw RealmBackgroundActorError.realmFileChangedDuringOpen
+            }
+        }
+
+        @RealmBackgroundActor
+        func resolve(in realm: Realm) throws -> ContentFile? {
+            try validateStorage()
+            guard let content = realm.object(ofType: contentType, forPrimaryKey: key)
+                    as? ContentFile, matches(content),
+                  !wasDeleted || content.isDeleted else { return nil }
+            return content
+        }
     }
     
     @MainActor

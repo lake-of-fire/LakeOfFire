@@ -329,6 +329,187 @@ public struct ReaderContentLoader {
         return try await resolveContentReferences(references)
     }
 
+    /// Captured by a file deletion before its first suspension. The source
+    /// history Realm can have a narrower schema than the selected inventory.
+    /// Preserve both configurations; an omitted owner class is not proof of absence.
+    struct TranscriptDeletionContext: @unchecked Sendable {
+        struct Store: @unchecked Sendable {
+            let configuration: Realm.Configuration
+            let admission: RealmStorageAdmission
+
+            init(configuration: Realm.Configuration) {
+                self.configuration = configuration
+                admission = RealmBackgroundActor.shared.captureStorageAdmission(for: configuration)
+            }
+
+            func validate() throws {
+                guard admission.matchesCurrentStorageIdentity({
+                    RealmBackgroundActor.shared.realmCacheKey(for: configuration)
+                }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+            }
+
+            @RealmBackgroundActor
+            func open() async throws -> Realm {
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: configuration, storageAdmission: admission
+                )
+                await realm.asyncRefresh()
+                try Task.checkCancellation()
+                try validate()
+                return realm
+            }
+        }
+
+        let sourceHistoryStore: Store
+        let historyStore: Store
+        let feedStore: Store
+        let transcriptStore: Store
+        let providers: [ReaderContentAdditionalProvider]
+        private let selectedHistory: String
+        private let selectedFeed: String
+        private let selectedTranscript: String
+        private let sharesHistoryStorage: Bool
+
+        init(
+            historyRealmConfiguration: Realm.Configuration,
+            ownerHistoryRealmConfiguration: Realm.Configuration
+        ) {
+            sourceHistoryStore = Store(configuration: historyRealmConfiguration)
+            historyStore = Store(configuration: ownerHistoryRealmConfiguration)
+            feedStore = Store(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+            transcriptStore = Store(configuration: ReaderContentLoader.transcriptRealmConfiguration)
+            providers = ReaderContentLoader.additionalContentProviders
+            selectedHistory = Self.selectionKey(ReaderContentLoader.historyRealmConfiguration)
+            selectedFeed = Self.selectionKey(feedStore.configuration)
+            selectedTranscript = Self.selectionKey(transcriptStore.configuration)
+            if let identifier = historyRealmConfiguration.inMemoryIdentifier {
+                sharesHistoryStorage = identifier == ownerHistoryRealmConfiguration.inMemoryIdentifier
+            } else {
+                sharesHistoryStorage = ownerHistoryRealmConfiguration.inMemoryIdentifier == nil
+                    && historyRealmConfiguration.fileURL != nil
+                    && historyRealmConfiguration.fileURL?.standardizedFileURL
+                        == ownerHistoryRealmConfiguration.fileURL?.standardizedFileURL
+            }
+        }
+
+        private static func selectionKey(_ configuration: Realm.Configuration) -> String {
+            // A pending store may be created only by its captured admission.
+            // That changes its resource ID, not the selected configuration.
+            RealmBackgroundActor.shared.realmCacheKey(
+                for: configuration, includingFileResourceIdentifier: false
+            )
+        }
+
+        func validate() throws {
+            try Task.checkCancellation()
+            guard sharesHistoryStorage,
+                  selectedHistory == Self.selectionKey(ReaderContentLoader.historyRealmConfiguration),
+                  selectedFeed == Self.selectionKey(ReaderContentLoader.feedEntryRealmConfiguration),
+                  selectedTranscript == Self.selectionKey(ReaderContentLoader.transcriptRealmConfiguration)
+            else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+            try sourceHistoryStore.validate()
+            try historyStore.validate()
+            try feedStore.validate()
+            try transcriptStore.validate()
+        }
+    }
+
+    /// The file and index have already settled on their captured owner. Cleanup
+    /// must not switch to newly selected stores after those awaits.
+    @RealmBackgroundActor
+    static func softDeleteTranscriptsIfNoRemainingOwners(
+        contentURL: URL,
+        context: TranscriptDeletionContext,
+        explicitlyModified: Bool = true
+    ) async throws {
+        try context.validate()
+        let canonicalContentURL = MediaTranscript.canonicalContentURL(from: contentURL)
+        let ownerURLs = relatedURLStrings(for: canonicalContentURL)
+        recentLoadAllCache.removeAll()
+        let ownerRealm = try await context.historyStore.open()
+        try context.validate()
+        let feedRealm = try await context.feedStore.open()
+        try context.validate()
+        func canQuery(_ type: RealmSwift.Object.Type, in realm: Realm) -> Bool {
+            realm.schema.objectSchema.contains { $0.className == type.className() }
+        }
+        // The native actor/path cache may already hold a narrower schema view.
+        // Retain derived data until a complete owner inventory can be queried.
+        guard [Bookmark.self, HistoryRecord.self, ContentFile.self].allSatisfy({
+            canQuery($0, in: ownerRealm)
+        }), canQuery(FeedEntry.self, in: feedRealm) else { return }
+
+        func hasBuiltInOwner() -> Bool {
+            hasLiveOwner(in: ownerRealm, type: Bookmark.self, ownerURLs: ownerURLs)
+                || hasLiveOwner(in: ownerRealm, type: HistoryRecord.self, ownerURLs: ownerURLs)
+                || hasLiveOwner(in: ownerRealm, type: ContentFile.self, ownerURLs: ownerURLs)
+                || hasLiveOwner(in: feedRealm, type: FeedEntry.self, ownerURLs: ownerURLs)
+        }
+        guard !hasBuiltInOwner() else { return }
+
+        var providerOwners: [(reference: ContentReference, realm: Realm, store: TranscriptDeletionContext.Store)] = []
+        for provider in context.providers {
+            let references = try await provider.load(canonicalContentURL)
+            try context.validate()
+            for reference in references {
+                let store = TranscriptDeletionContext.Store(configuration: reference.realmConfiguration)
+                let providerRealm = try await store.open()
+                try context.validate()
+                guard canQuery(reference.contentType, in: providerRealm) else { return }
+                let content = try await reference.resolveOnBackgroundActor()
+                try context.validate()
+                try store.validate()
+                if let content, !content.isInvalidated, !content.isDeleted { return }
+                // A missing reference can acquire a live owner while the
+                // transcript write queues. Retain its store/key for that check.
+                providerOwners.append((reference, providerRealm, store))
+            }
+        }
+
+        let realm = try await context.transcriptStore.open()
+        try context.validate()
+        guard canQuery(MediaTranscript.self, in: realm) else { return }
+        try await realm.asyncWritePreservingOwnership {
+            try context.validate()
+            for owner in providerOwners { try owner.store.validate() }
+
+            // Refresh known owner stores after queued write admission. Do not
+            // treat another transaction's tentative deletions as committed
+            // absence. A later deletion retry can perform this cleanup.
+            var refreshedRealms: [Realm] = []
+            for owner in [ownerRealm, feedRealm] + providerOwners.map(\.realm) {
+                guard owner != realm, !refreshedRealms.contains(owner) else { continue }
+                guard !owner.isInWriteTransaction else { return }
+                owner.refresh()
+                refreshedRealms.append(owner)
+            }
+            try context.validate()
+            for owner in providerOwners { try owner.store.validate() }
+            guard !hasBuiltInOwner() else { return }
+            for owner in providerOwners {
+                if let content = owner.realm.object(
+                    ofType: owner.reference.contentType, forPrimaryKey: owner.reference.contentKey
+                ) as? any ReaderContentProtocol, !content.isInvalidated, !content.isDeleted {
+                    return
+                }
+            }
+
+            // Query after admission so a tombstone retry is a metadata no-op.
+            let transcripts = realm.objects(MediaTranscript.self)
+                .where { $0.isDeleted == false }
+                .filter(NSPredicate(format: "contentURL == %@", canonicalContentURL.absoluteString))
+            guard !transcripts.isEmpty else { return }
+            let timestamp = Date()
+            for transcript in Array(transcripts) {
+                guard !transcript.isInvalidated, !transcript.isDeleted else { continue }
+                transcript.isDeleted = true
+                transcript.refreshChangeMetadata(explicitlyModified: explicitlyModified, at: timestamp)
+            }
+            for owner in providerOwners { try owner.store.validate() }
+            try context.validate()
+        }
+    }
+
     @RealmBackgroundActor
     public static func softDeleteTranscriptsIfNoRemainingOwners(
         contentURLs: [URL],
