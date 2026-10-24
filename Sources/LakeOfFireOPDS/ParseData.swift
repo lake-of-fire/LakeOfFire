@@ -27,6 +27,10 @@ public struct ParseData {
     /// The URLResponse got after fetching the ressource
     var response: URLResponse
 
+    /// The final response URL for document identity. This does not change the
+    /// parser's existing request-based relative-link resolution.
+    public var documentURL: URL { response.url ?? url }
+
     /// The OPDS version
     var version: Version
 
