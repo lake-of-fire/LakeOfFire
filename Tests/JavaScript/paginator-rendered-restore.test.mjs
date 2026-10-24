@@ -60,11 +60,12 @@ const { Paginator } = await import('../../Sources/LakeOfFireReader/Resources/fol
 // Full production rendering/navigation code executes with deterministic DOM
 // geometry and browser host doubles. This suite does not verify CSS layout or
 // WKWebView behavior. Supply JSDOM_MODULE when jsdom is installed externally.
-const fixture = (sectionCount = 2) => {
+const fixture = (sectionCount = 2, sectionOverrides = []) => {
     const renderer = new Paginator()
     document.body.append(renderer)
     renderer.open({ dir: 'ltr', sections: Array.from({ length: sectionCount }, (_, index) => ({
         id: `section-${index}`, load: async () => `fixture:${index}`, unload() {},
+        ...sectionOverrides[index],
     })) }, false)
     return renderer
 }
@@ -260,5 +261,156 @@ test('actual paginator queued replacement grants only the final accepted command
         await Promise.allSettled([first, replaced, current].filter(Boolean).map(operation => bounded(operation)))
     }
 })
+
+const acquisitionFixture = loaders => {
+    const loads = [], unloads = []
+    const renderer = fixture(loaders.length, loaders.map((load, index) => ({
+        // Explicit navigation supports non-linear sections. Excluding these
+        // from neighbor prefetch makes the producer schedules deterministic.
+        linear: 'no',
+        async load() { loads.push(index); return await load() },
+        unload() { unloads.push(index) },
+    })))
+    const loaded = [], relocated = [], displayed = []
+    renderer.addEventListener('load', event => loaded.push(event.detail.index))
+    renderer.addEventListener('relocate', event => relocated.push(event.detail.index))
+    renderer.addEventListener('didDisplay', () => displayed.push(renderer.getContents()[0]?.index))
+    return { renderer, loads, unloads, loaded, relocated, displayed }
+}
+
+test('missing required source preserves the visible document, same-index reposition, and a later retry', async () => {
+    let missing = true
+    const state = acquisitionFixture([
+        async () => 'fixture:original',
+        async () => missing ? null : 'fixture:retry',
+    ])
+    const { renderer } = state
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }, { requiresNavigationReceipt: true }))
+        const originalDocument = renderer.getContents()[0].doc
+        const frameCount = frames.length
+        assert.equal(renderer.style.visibility, 'visible')
+
+        await assert.rejects(
+            bounded(renderer.goTo({ index: 1, anchor: 0 }, { requiresNavigationReceipt: true })),
+            /Missing paginator source for section 1/,
+        )
+        assert.equal(renderer.getContents()[0].index, 0)
+        assert.equal(renderer.getContents()[0].doc, originalDocument)
+        assert.equal(renderer.style.visibility, 'visible')
+        assert.equal(frames.length, frameCount)
+        assert.deepEqual(state.unloads, [])
+        assert.deepEqual(state.loaded, [0])
+        assert.deepEqual(state.displayed, [0])
+        assert.equal(state.relocated.includes(1), false)
+
+        const repositioned = await bounded(renderer.goTo(
+            { index: 0, anchor: 1 }, { requiresNavigationReceipt: true },
+        ))
+        assert.equal(renderer.isNavigationReceiptCurrent(repositioned), true)
+        assert.equal(renderer.getContents()[0].doc, originalDocument)
+        assert.deepEqual(state.loads, [0, 1], 'same-index reposition must not reacquire the original section')
+        assert.deepEqual(state.unloads, [])
+
+        missing = false
+        const retried = await bounded(renderer.goTo(
+            { index: 1, anchor: 0 }, { requiresNavigationReceipt: true },
+        ))
+        assert.equal(renderer.isNavigationReceiptCurrent(retried), true)
+        assert.equal(renderer.getContents()[0].index, 1)
+        assert.notEqual(renderer.getContents()[0].doc, originalDocument)
+        assert.equal(renderer.style.visibility, 'visible')
+        assert.deepEqual(state.unloads, [0])
+        assert.deepEqual(state.loaded, [0, 1])
+        assert.equal(state.relocated.includes(1), true)
+    } finally { cleanup(renderer) }
+})
+
+test('initial missing source publishes no rendered section and a valid retry remains possible', async () => {
+    let missing = true
+    const state = acquisitionFixture([async () => missing ? null : 'fixture:first-valid'])
+    const { renderer } = state
+    try {
+        await assert.rejects(
+            bounded(renderer.goTo({ index: 0, anchor: 0 }, { requiresPositionReceipt: true })),
+            /Missing paginator source for section 0/,
+        )
+        assert.deepEqual(renderer.getContents(), [])
+        assert.deepEqual(state.loaded, [])
+        assert.deepEqual(state.relocated, [])
+        assert.deepEqual(state.displayed, [])
+        assert.deepEqual(state.unloads, [])
+
+        missing = false
+        const receipt = await bounded(renderer.goTo(
+            { index: 0, anchor: 0 }, { requiresPositionReceipt: true },
+        ))
+        assert.equal(renderer.isPositionReceiptCurrent(receipt), true)
+        assert.equal(renderer.getContents()[0].index, 0)
+        assert.equal(renderer.style.visibility, 'visible')
+        assert.deepEqual(state.loaded, [0])
+        assert.deepEqual(state.displayed, [0])
+        assert.equal(renderer.capturePositionProof(receipt).sectionIndex, 0)
+    } finally { cleanup(renderer) }
+})
+
+for (const terminal of ['missing', 'rejected']) {
+    test(`obsolete ${terminal} acquisition cannot change the successor's visible frame or publication`, async () => {
+        const gate = deferred(), entered = deferred()
+        const lateError = new Error('Obsolete section producer failed')
+        const state = acquisitionFixture([
+            async () => 'fixture:original',
+            async () => {
+                entered.resolve()
+                await gate.promise
+                if (terminal === 'rejected') throw lateError
+                return null
+            },
+            async () => 'fixture:successor',
+        ])
+        const { renderer } = state
+        let oldOutcome
+        try {
+            await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+            const originalDocument = renderer.getContents()[0].doc
+            oldOutcome = renderer.goTo({ index: 1, anchor: 0 }, { requiresNavigationReceipt: true })
+                .then(value => ({ value }), error => ({ error }))
+            await bounded(entered.promise)
+            assert.equal(renderer.getContents()[0].doc, originalDocument)
+            assert.equal(renderer.style.visibility, 'visible', 'pending acquisition must keep the current page visible')
+
+            const successor = await bounded(renderer.goTo(
+                { index: 2, anchor: 0 }, { requiresNavigationReceipt: true },
+            ))
+            const successorDocument = renderer.getContents()[0].doc
+            const successorMetrics = await renderer.pageMetrics()
+            const published = {
+                loaded: [...state.loaded], relocated: [...state.relocated],
+                displayed: [...state.displayed], unloads: [...state.unloads],
+            }
+            gate.resolve()
+            const outcome = await bounded(oldOutcome)
+            if (terminal === 'rejected') assert.equal(outcome.error, lateError)
+            else assert.equal(outcome.value, null)
+
+            assert.equal(renderer.isNavigationReceiptCurrent(successor), true)
+            assert.equal(renderer.getContents()[0].index, 2)
+            assert.equal(renderer.getContents()[0].doc, successorDocument)
+            assert.equal(renderer.style.visibility, 'visible')
+            assert.equal((await renderer.pageMetrics()).start, successorMetrics.start)
+            assert.deepEqual(state.loaded, published.loaded)
+            assert.deepEqual(state.relocated, published.relocated)
+            assert.deepEqual(state.displayed, published.displayed)
+            assert.deepEqual(state.unloads, published.unloads)
+            assert.equal(state.loaded.includes(1), false)
+            assert.equal(state.relocated.includes(1), false)
+        } finally {
+            gate.resolve()
+            try {
+                if (oldOutcome) await bounded(oldOutcome)
+            } finally { cleanup(renderer) }
+        }
+    })
+}
 
 test.after(() => dom.window.close())
