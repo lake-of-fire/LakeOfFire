@@ -100,6 +100,9 @@ globalThis.document = {
                     this.contentDocument = document
                     listeners.get('load')?.()
                 },
+                failLoading() {
+                    listeners.get('error')?.()
+                },
             }
         }
         throw new Error(`Unexpected element ${tagName}`)
@@ -903,3 +906,412 @@ test('falls through empty viewport metadata to the book viewport', async () => {
     assert.equal(content.iframe.style.width, '600px')
     assert.equal(content.iframe.style.height, '800px')
 })
+
+const nextTurn = () => new Promise(resolve => setImmediate(resolve))
+
+const trackNavigation = promise => {
+    const navigation = { promise, state: 'pending' }
+    promise.then(
+        () => { navigation.state = 'resolved' },
+        error => {
+            navigation.state = 'rejected'
+            navigation.error = error
+        },
+    )
+    return navigation
+}
+
+const displayedFixture = async (prefix, { paired = false, portrait = false } = {}) => {
+    const sources = Array.from({ length: paired ? 6 : 3 }, (_, index) =>
+        `${prefix}-${index}.xhtml`)
+    const layout = new FixedLayout()
+    if (portrait) layout.boundsForTesting = { width: 600, height: 800 }
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            ...(paired ? {} : { spread: 'none' }),
+            viewport: { width: 600, height: 800 },
+        },
+        sections: sources.map(source => ({ load: async () => source })),
+    })
+    const initialNavigation = layout.goTo({ index: 0 })
+    for (const source of sources.slice(0, paired ? 2 : 1)) {
+        const iframe = await nextPendingIframe(source)
+        iframe.finishLoading(fixedLayoutDocument(source))
+    }
+    await initialNavigation
+    layout.events = []
+    return {
+        layout,
+        sources,
+        initialContents: layout.getContents(),
+        resizeObserver: resizeObservers.at(-1),
+    }
+}
+
+const finishFixture = async (layout, ...navigations) => {
+    layout.destroy()
+    await Promise.allSettled(navigations.map(navigation => navigation?.promise))
+}
+
+test('retains and resizes the displayed spread while a hidden destination loads', async () => {
+    const { layout, sources, initialContents, resizeObserver } =
+        await displayedFixture('pending-destination')
+    const navigation = trackNavigation(layout.goTo({ index: 1 }))
+    try {
+        const destination = await nextPendingIframe(sources[1])
+        assert.deepEqual(layout.getContents(), initialContents)
+        assert.equal(layout.index, 0)
+        const activeElement = initialContents[0].element
+        const stagedElement = layout.shadowRootForTesting.children.find(
+            element => element.iframe === destination,
+        )
+        assert.equal(activeElement.parent, layout.shadowRootForTesting)
+        assert.equal(stagedElement.parent, layout.shadowRootForTesting)
+        assert.equal(stagedElement.style.visibility, 'hidden')
+        assert.equal(stagedElement.style.position, 'absolute')
+        assert.equal(stagedElement.style.pointerEvents, 'none')
+        const previousTransform = initialContents[0].iframe.style.transform
+        layout.boundsForTesting = { width: 900, height: 500 }
+        resizeObserver.trigger()
+        assert.notEqual(initialContents[0].iframe.style.transform, previousTransform)
+        assert.equal(destination.style.display, 'none')
+        assert.deepEqual(layout.events, [])
+    } finally {
+        await finishFixture(layout, navigation)
+    }
+})
+
+for (const failure of ['iframe error', 'missing document', 'viewport error']) {
+    test(`rejects a current ${failure}, preserves the spread, and permits retry`, async () => {
+        const { layout, sources, initialContents } = await displayedFixture(failure)
+        const navigation = trackNavigation(layout.goTo({ index: 1 }))
+        let retry
+        try {
+            const destination = await nextPendingIframe(sources[1])
+            assert.doesNotThrow(() => {
+                if (failure === 'iframe error') destination.failLoading()
+                else if (failure === 'missing document') destination.finishLoading(null)
+                else destination.finishLoading({
+                    get documentElement() { throw new Error('viewport unavailable') },
+                })
+            })
+            await nextTurn()
+            assert.equal(navigation.state, 'rejected')
+            assert.ok(navigation.error instanceof Error)
+            assert.deepEqual(layout.getContents(), initialContents)
+            assert.equal(layout.index, 0)
+            assert.deepEqual(layout.events, [])
+            assert.deepEqual(
+                layout.shadowRootForTesting.children,
+                initialContents.map(content => content.element),
+            )
+
+            retry = trackNavigation(layout.goTo({ index: 1 }))
+            const retryIframe = await nextPendingIframe(sources[1])
+            retryIframe.finishLoading(fixedLayoutDocument('retried destination'))
+            await retry.promise
+            assert.equal(layout.index, 1)
+            assert.equal(layout.getContents()[0].iframe, retryIframe)
+            assert.equal(initialContents[0].element.parent, null)
+            assert.deepEqual(layout.events.map(event => event.type), ['load', 'relocate'])
+        } finally {
+            await finishFixture(layout, navigation, retry)
+        }
+    })
+}
+
+test('publishes no partial spread when a loaded destination frame loses its sibling', async () => {
+    const { layout, sources, initialContents } = await displayedFixture('partial', { paired: true })
+    const navigation = trackNavigation(layout.goTo({ index: 2 }))
+    try {
+        const left = await nextPendingIframe(sources[2])
+        const right = await nextPendingIframe(sources[3])
+        left.finishLoading(fixedLayoutDocument('partial left'))
+        await nextTurn()
+        assert.deepEqual(layout.events, [])
+        assert.deepEqual(layout.getContents(), initialContents)
+        right.failLoading()
+        await nextTurn()
+        assert.equal(navigation.state, 'rejected')
+        assert.deepEqual(layout.events, [])
+        assert.deepEqual(layout.getContents(), initialContents)
+        assert.deepEqual(
+            layout.shadowRootForTesting.children,
+            initialContents.map(content => content.element),
+        )
+    } finally {
+        await finishFixture(layout, navigation)
+    }
+})
+
+test('cleans the pending sibling after frame failure and ignores its late load', async () => {
+    const { layout, sources, initialContents } = await displayedFixture('late-sibling', { paired: true })
+    const navigation = trackNavigation(layout.goTo({ index: 2 }))
+    try {
+        const left = await nextPendingIframe(sources[2])
+        const right = await nextPendingIframe(sources[3])
+        left.failLoading()
+        await nextTurn()
+        assert.equal(navigation.state, 'rejected')
+        right.finishLoading(fixedLayoutDocument('late sibling'))
+        await nextTurn()
+        assert.deepEqual(layout.events, [])
+        assert.deepEqual(layout.getContents(), initialContents)
+        assert.equal(layout.shadowRootForTesting.children.length, 2)
+    } finally {
+        await finishFixture(layout, navigation)
+    }
+})
+
+for (const action of ['destroy', 'open']) {
+    test(`commits the complete spread before load observers and stops publication on ${action}`, async () => {
+        const { layout, sources } = await displayedFixture(`load-${action}`, { paired: true })
+        const observedContents = []
+        const dispatchEvent = layout.dispatchEvent.bind(layout)
+        layout.dispatchEvent = event => {
+            dispatchEvent(event)
+            if (event.type !== 'load') return
+            observedContents.push(layout.getContents().map(content => content.index))
+            assert.equal(layout.index, 2)
+            if (action === 'destroy') layout.destroy()
+            else layout.open({ sections: [], rendition: { spread: 'none' } })
+        }
+        const navigation = trackNavigation(layout.goTo({ index: 2 }))
+        try {
+            const left = await nextPendingIframe(sources[2])
+            const right = await nextPendingIframe(sources[3])
+            left.finishLoading(fixedLayoutDocument('committed left'))
+            right.finishLoading(fixedLayoutDocument('committed right'))
+            await navigation.promise
+            assert.deepEqual(observedContents, [[2, 3]])
+            assert.deepEqual(layout.events.map(event => event.type), ['load'])
+            assert.deepEqual(layout.getContents(), [])
+        } finally {
+            await finishFixture(layout, navigation)
+        }
+    })
+}
+
+test('publishes both committed documents when a load observer turns to the retained side', async () => {
+    const { layout, sources } = await displayedFixture('load-side', { paired: true, portrait: true })
+    let sideNavigation
+    const dispatchEvent = layout.dispatchEvent.bind(layout)
+    layout.dispatchEvent = event => {
+        dispatchEvent(event)
+        if (event.type === 'load' && event.detail.index === 2) {
+            sideNavigation = trackNavigation(layout.next())
+        }
+    }
+    const navigation = trackNavigation(layout.goTo({ index: 2 }))
+    try {
+        const left = await nextPendingIframe(sources[2])
+        const right = await nextPendingIframe(sources[3])
+        left.finishLoading(fixedLayoutDocument('side left'))
+        right.finishLoading(fixedLayoutDocument('side right'))
+        await navigation.promise
+        await nextTurn()
+        assert.equal(layout.index, 3)
+        await sideNavigation.promise
+        assert.deepEqual(
+            layout.events.filter(event => event.type === 'load').map(event => event.detail.index),
+            [2, 3],
+        )
+        assert.deepEqual(
+            layout.events.filter(event => event.type === 'relocate').map(event => event.detail.index),
+            [3],
+        )
+    } finally {
+        await finishFixture(layout, navigation, sideNavigation)
+    }
+})
+
+test('publishes both retained documents when a load observer starts a destination that fails', async () => {
+    const { layout, sources } = await displayedFixture('load-pending', { paired: true })
+    let successor
+    const dispatchEvent = layout.dispatchEvent.bind(layout)
+    layout.dispatchEvent = event => {
+        dispatchEvent(event)
+        if (event.type === 'load' && event.detail.index === 2) {
+            successor = trackNavigation(layout.goToSpread(2, 'left'))
+        }
+    }
+    const navigation = trackNavigation(layout.goTo({ index: 2 }))
+    try {
+        const left = await nextPendingIframe(sources[2])
+        const right = await nextPendingIframe(sources[3])
+        left.finishLoading(fixedLayoutDocument('retained left'))
+        right.finishLoading(fixedLayoutDocument('retained right'))
+        await navigation.promise
+        const failed = await nextPendingIframe(sources[4])
+        const sibling = await nextPendingIframe(sources[5])
+        failed.failLoading()
+        await nextTurn()
+        assert.equal(successor.state, 'rejected')
+        sibling.finishLoading(fixedLayoutDocument('obsolete sibling'))
+        assert.deepEqual(layout.getContents().map(content => content.iframe), [left, right])
+        assert.deepEqual(layout.events.map(event => [event.type, event.detail.index]), [
+            ['load', 2], ['load', 3],
+        ])
+    } finally {
+        await finishFixture(layout, navigation, successor)
+    }
+})
+
+test('a no-op boundary turn from a load observer preserves the committed relocation', async () => {
+    const { layout, sources } = await displayedFixture('load-boundary')
+    const middle = trackNavigation(layout.goTo({ index: 1 }))
+    const middleIframe = await nextPendingIframe(sources[1])
+    middleIframe.finishLoading(fixedLayoutDocument('middle'))
+    await middle.promise
+    layout.events = []
+    let boundary
+    const dispatchEvent = layout.dispatchEvent.bind(layout)
+    layout.dispatchEvent = event => {
+        dispatchEvent(event)
+        if (event.type === 'load') boundary = trackNavigation(layout.prev())
+    }
+    const navigation = trackNavigation(layout.goTo({ index: 0 }))
+    try {
+        const first = await nextPendingIframe(sources[0])
+        first.finishLoading(fixedLayoutDocument('first'))
+        await navigation.promise
+        await boundary.promise
+        assert.equal(layout.index, 0)
+        assert.deepEqual(layout.events.map(event => [event.type, event.detail.index]), [
+            ['load', 0], ['relocate', 0],
+        ])
+    } finally {
+        await finishFixture(layout, navigation, boundary)
+    }
+})
+
+test('returning to the displayed spread cancels a staged iframe without replacing its document', async () => {
+    const { layout, sources, initialContents } = await displayedFixture('return-from-frame')
+    const navigation = trackNavigation(layout.goTo({ index: 1 }))
+    try {
+        const destination = await nextPendingIframe(sources[1])
+        await layout.goTo({ index: 0 })
+        const retained = layout.getContents()
+        assert.equal(retained[0]?.iframe, initialContents[0].iframe)
+        assert.ok(retained[0].generation > initialContents[0].generation)
+        destination.finishLoading(fixedLayoutDocument('obsolete destination'))
+        await navigation.promise
+        assert.equal(layout.getContents()[0].iframe, initialContents[0].iframe)
+        assert.deepEqual(layout.events, [])
+        assert.equal(layout.shadowRootForTesting.children.length, 1)
+    } finally {
+        await finishFixture(layout, navigation)
+    }
+})
+
+test('a retained portrait-side turn supersedes a pending destination frame', async () => {
+    const { layout, sources, initialContents } = await displayedFixture('retained-side', { paired: true, portrait: true })
+    const navigation = trackNavigation(layout.goTo({ index: 2 }))
+    let sideNavigation
+    try {
+        const left = await nextPendingIframe(sources[2])
+        const right = await nextPendingIframe(sources[3])
+        sideNavigation = trackNavigation(layout.next())
+        assert.equal(layout.index, 1)
+        left.finishLoading(fixedLayoutDocument('obsolete left'))
+        right.finishLoading(fixedLayoutDocument('obsolete right'))
+        await Promise.all([navigation.promise, sideNavigation.promise])
+        assert.deepEqual(
+            layout.getContents().map(content => content.iframe),
+            initialContents.map(content => content.iframe),
+        )
+        assert.ok(layout.getContents()[0].generation > initialContents[0].generation)
+        assert.equal(layout.index, 1)
+        assert.deepEqual(layout.events.map(event => [event.type, event.detail.index]), [['relocate', 1]])
+        assert.equal(layout.shadowRootForTesting.children.length, 2)
+    } finally {
+        await finishFixture(layout, navigation, sideNavigation)
+    }
+})
+
+test('an old frame failure cannot cancel the successor destination', async () => {
+    const { layout, sources } = await displayedFixture('failed-successor')
+    const navigation = trackNavigation(layout.goTo({ index: 1 }))
+    let successor
+    try {
+        const failed = await nextPendingIframe(sources[1])
+        failed.failLoading()
+        successor = trackNavigation(layout.goTo({ index: 2 }))
+        const current = await nextPendingIframe(sources[2])
+        current.finishLoading(fixedLayoutDocument('successor'))
+        await Promise.all([navigation.promise, successor.promise])
+        assert.equal(layout.index, 2)
+        assert.equal(layout.getContents()[0].iframe, current)
+        assert.deepEqual(layout.events.map(event => [event.type, event.detail.index]), [
+            ['load', 2], ['relocate', 2],
+        ])
+    } finally {
+        await finishFixture(layout, navigation, successor)
+    }
+})
+
+test('cleans staged siblings after frame construction failure without discarding the active spread', async () => {
+    const { layout, initialContents } = await displayedFixture('construction', { paired: true })
+    const createElement = document.createElement
+    let iframeCount = 0
+    document.createElement = tagName => {
+        if (tagName === 'iframe' && ++iframeCount === 2) throw new Error('frame construction failed')
+        return createElement(tagName)
+    }
+    const navigation = trackNavigation(layout.goTo({ index: 2 }))
+    try {
+        await nextTurn()
+        assert.equal(navigation.state, 'rejected')
+        assert.match(navigation.error.message, /frame construction failed/)
+        assert.deepEqual(layout.getContents(), initialContents)
+        assert.deepEqual(layout.events, [])
+        assert.deepEqual(
+            layout.shadowRootForTesting.children,
+            initialContents.map(content => content.element),
+        )
+    } finally {
+        document.createElement = createElement
+        await finishFixture(layout, navigation)
+    }
+})
+
+test('preserves the active spread when destination layout fails after loading', async () => {
+    const { layout, sources, initialContents } = await displayedFixture('layout-failure')
+    const navigation = trackNavigation(layout.goTo({ index: 1 }))
+    try {
+        const destination = await nextPendingIframe(sources[1])
+        layout.getBoundingClientRect = () => { throw new Error('layout unavailable') }
+        destination.finishLoading(fixedLayoutDocument('unlaid destination'))
+        await nextTurn()
+        assert.equal(navigation.state, 'rejected')
+        assert.match(navigation.error.message, /layout unavailable/)
+        assert.deepEqual(layout.getContents(), initialContents)
+        assert.deepEqual(layout.events, [])
+        assert.deepEqual(
+            layout.shadowRootForTesting.children,
+            initialContents.map(content => content.element),
+        )
+    } finally {
+        await finishFixture(layout, navigation)
+    }
+})
+
+for (const source of [null, '']) {
+    test(`rejects an empty source for a real section (${source === null ? 'null' : 'empty string'})`, async () => {
+        const { layout, initialContents } = await displayedFixture(`empty-source-${source}`)
+        layout.book.sections[1].load = async () => source
+        const navigation = trackNavigation(layout.goTo({ index: 1 }))
+        try {
+            await nextTurn()
+            assert.equal(navigation.state, 'rejected')
+            assert.ok(navigation.error instanceof Error)
+            assert.deepEqual(layout.getContents(), initialContents)
+            assert.equal(layout.index, 0)
+            assert.deepEqual(layout.events, [])
+            assert.equal(layout.shadowRootForTesting.children.length, 1)
+        } finally {
+            await finishFixture(layout, navigation)
+        }
+    })
+}
