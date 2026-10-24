@@ -145,6 +145,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     // removal succeeds or the filesystem confirms the path is absent.
     private var failedOPMLExportFileURLs = Set<URL>()
     private let realmConfiguration: Realm.Configuration
+    private let realmStorageAdmission: RealmStorageAdmission
     var exportUserOPML: @Sendable () async throws -> OPML
     var writeOPMLFile: @MainActor (Data, URL) throws -> Void = { data, url in
         try data.write(to: url, options: [.atomic])
@@ -172,9 +173,17 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     public override init() {
         let realmConfiguration = LibraryDataManager.realmConfiguration
         self.realmConfiguration = realmConfiguration
+        let realmStorageAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
+        self.realmStorageAdmission = realmStorageAdmission
         self.exportUserOPML = {
-            try await LibraryDataManager.shared.exportUserOPML(
-                realmConfiguration: realmConfiguration
+            // Advance owned first creation before shared's observers can open it.
+            try await RealmBackgroundActor.shared.prepareStorage(
+                for: realmConfiguration,
+                storageAdmission: realmStorageAdmission
+            )
+            return try await LibraryDataManager.shared.exportUserOPML(
+                realmConfiguration: realmConfiguration,
+                storageAdmission: realmStorageAdmission
             )
         }
         super.init()
@@ -184,9 +193,16 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     init(observesRealm: Bool) {
         let realmConfiguration = LibraryDataManager.realmConfiguration
         self.realmConfiguration = realmConfiguration
+        let realmStorageAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
+        self.realmStorageAdmission = realmStorageAdmission
         self.exportUserOPML = {
-            try await LibraryDataManager.shared.exportUserOPML(
-                realmConfiguration: realmConfiguration
+            try await RealmBackgroundActor.shared.prepareStorage(
+                for: realmConfiguration,
+                storageAdmission: realmStorageAdmission
+            )
+            return try await LibraryDataManager.shared.exportUserOPML(
+                realmConfiguration: realmConfiguration,
+                storageAdmission: realmStorageAdmission
             )
         }
         super.init()
@@ -197,10 +213,12 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
 
     private func observeRealm() {
         let realmConfiguration = self.realmConfiguration
+        let realmStorageAdmission = self.realmStorageAdmission
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                for: realmConfiguration
+                for: realmConfiguration,
+                storageAdmission: realmStorageAdmission
             )
 
             let exportableTypes: [ObjectBase.Type] = [
@@ -258,7 +276,8 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                             let currentConfigurationID = self.libraryConfiguration?.id
                             let newLibraryConfigurationID = try await { @RealmBackgroundActor in
                                 try await LibraryConfiguration.getConsolidatedOrCreate(
-                                    realmConfiguration: realmConfiguration
+                                    realmConfiguration: realmConfiguration,
+                                    storageAdmission: realmStorageAdmission
                                 ).id
                             }()
                             if newLibraryConfigurationID != currentConfigurationID {
@@ -425,11 +444,20 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                         guard FileManager.default.fileExists(atPath: resultURL.path) else {
                             throw CocoaError(.fileNoSuchFile)
                         }
+                        guard self.exportOPMLGeneration == exportGeneration else {
+                            throw CancellationError()
+                        }
+                        guard self.realmStorageAdmission.matchesCurrentStorageIdentity({
+                            RealmBackgroundActor.shared.realmCacheKey(for: self.realmConfiguration)
+                        }) else {
+                            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+                        }
                         self.preparedOPMLExport = (opml, resultURL, data)
                         self.opmlExportFailed = false
                     } catch {
                         self.failedOPMLExportFileURLs.insert(resultURL)
                         self.removeFailedOPMLExportFiles()
+                        guard self.exportOPMLGeneration == exportGeneration else { return }
                         self.preparedOPMLExport = nil
                         self.opmlExportFailed = true
                     }

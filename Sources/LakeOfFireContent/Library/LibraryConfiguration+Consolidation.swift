@@ -58,15 +58,24 @@ private func replaceLibraryListIfNeeded<T: RealmCollectionValue>(
 extension LibraryConfiguration {
     @RealmBackgroundActor
     public static func getConsolidatedOrCreate(
-        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration,
+        storageAdmission: RealmStorageAdmission? = nil
     ) async throws -> LibraryConfiguration {
         try Task.checkCancellation()
+        let storageAdmission = storageAdmission
+            ?? RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
-            for: realmConfiguration
+            for: realmConfiguration,
+            storageAdmission: storageAdmission
         )
 
         let primaryID: UUID = try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
+            guard storageAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+            }) else {
+                throw RealmBackgroundActorError.realmFileChangedDuringOpen
+            }
             let configurations = Array(
                 realm.objects(LibraryConfiguration.self).where { !$0.isDeleted }
             ).sorted(by: libraryConfigurationPrecedes)
@@ -179,6 +188,11 @@ extension LibraryConfiguration {
             return primary.id
         }
 
+        guard storageAdmission.matchesCurrentStorageIdentity({
+            RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+        }) else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+        }
         guard let primary = realm.object(
             ofType: LibraryConfiguration.self,
             forPrimaryKey: primaryID

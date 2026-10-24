@@ -10,7 +10,7 @@ import XCTest
 @MainActor
 final class LibraryOPMLPreparedFilePortTests: XCTestCase {
     func testFailedFileWriteNeverPublishesShareableStateAndRequiresExplicitRetry() async throws {
-        let manager = LibraryManagerViewModel(observesRealm: false)
+        let manager = makeUnobservedExportManager()
         manager.exportUserOPML = {
             OPML(entries: [OPMLEntry(text: "Prepared after retry")])
         }
@@ -63,7 +63,7 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
     }
 
     func testVisibleInvalidationPublishesNewImmutableFileWithoutMutatingOldConsumer() async throws {
-        let manager = LibraryManagerViewModel(observesRealm: false)
+        let manager = makeUnobservedExportManager()
         let exporter = SequencedOPMLExporter([
             "First immutable export",
             "Second immutable export",
@@ -176,7 +176,7 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
     }
 
     func testRetiredExportRemainsReadableUntilLastVisibleOwnerLeaves() async throws {
-        let manager = LibraryManagerViewModel(observesRealm: false)
+        let manager = makeUnobservedExportManager()
         let exporter = SequencedOPMLExporter([
             "Retained first export",
             "Fresh second export",
@@ -224,7 +224,7 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
     }
 
     func testFailedWriteCleanupOwnershipSurvivesRemovalFailureUntilRetry() async throws {
-        let manager = LibraryManagerViewModel(observesRealm: false)
+        let manager = makeUnobservedExportManager()
         manager.exportUserOPML = {
             OPML(entries: [OPMLEntry(text: "Cleanup retry")])
         }
@@ -277,7 +277,7 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
 
 
     func testWriterReturningWithoutAFileCannotPublishShareableState() async throws {
-        let manager = LibraryManagerViewModel(observesRealm: false)
+        let manager = makeUnobservedExportManager()
         manager.exportUserOPML = {
             OPML(entries: [OPMLEntry(text: "Never written")])
         }
@@ -297,7 +297,7 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
     }
 
     func testShareSnapshotSurvivesReplacementAndFileCleanup() async throws {
-        let manager = LibraryManagerViewModel(observesRealm: false)
+        let manager = makeUnobservedExportManager()
         let exporter = SequencedOPMLExporter(["Original share bytes", "Replacement share bytes"])
         manager.exportUserOPML = {
             OPML(entries: [OPMLEntry(text: await exporter.next())])
@@ -339,7 +339,7 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
                 entered: entered,
                 staleFails: staleFails
             )
-            let manager = LibraryManagerViewModel(observesRealm: false)
+            let manager = makeUnobservedExportManager()
             manager.exportUserOPML = { try await gate.export() }
             var staleWrites = 0
             manager.writeOPMLFile = { data, url in
@@ -382,6 +382,15 @@ final class LibraryOPMLPreparedFilePortTests: XCTestCase {
             XCTAssertEqual(manager.exportedOPMLShareItem?.data, freshBytes)
             XCTAssertFalse(manager.opmlExportFailed)
         }
+    }
+
+    private func makeUnobservedExportManager() -> LibraryManagerViewModel {
+        let previousConfiguration = LibraryDataManager.realmConfiguration
+        LibraryDataManager.realmConfiguration = Realm.Configuration(
+            inMemoryIdentifier: "opml-prepared-owner-\(UUID())"
+        )
+        defer { LibraryDataManager.realmConfiguration = previousConfiguration }
+        return LibraryManagerViewModel(observesRealm: false)
     }
 
     private func waitUntil(

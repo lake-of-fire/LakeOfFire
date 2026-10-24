@@ -1448,10 +1448,15 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     
     @RealmBackgroundActor
     public func exportUserOPML(
-        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration,
+        storageAdmission: RealmStorageAdmission? = nil
     ) async throws -> OPML {
+        try Task.checkCancellation()
+        let storageAdmission = storageAdmission
+            ?? RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
         let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(
-            realmConfiguration: realmConfiguration
+            realmConfiguration: realmConfiguration,
+            storageAdmission: storageAdmission
         )
         let userCategories = (configuration.getCategories() ?? []).filter { $0.opmlOwnerName == nil && $0.opmlURL == nil }
         
@@ -1511,6 +1516,11 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             ownerName: (Self.currentUsername?.isEmpty ?? true) ? nil : Self.currentUsername,
             entries: [scriptEntries] + categoryEntries
         )
+        guard storageAdmission.matchesCurrentStorageIdentity({
+            RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+        }) else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+        }
         return opml
     }
 }
