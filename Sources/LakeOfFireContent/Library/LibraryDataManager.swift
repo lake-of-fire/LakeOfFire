@@ -194,6 +194,12 @@ extension OPMLEntry {
     }
 }
 
+// Task-scoped rollback observation of the actual import transaction. No hook is
+// installed during normal imports, and no alternate mutation path is provided.
+enum LibraryOPMLImportObservation {
+    @TaskLocal static var beforeCommit: (@RealmBackgroundActor @Sendable () throws -> Void)? = nil
+}
+
 public class LibraryDataManager: NSObject, @unchecked Sendable {
     nonisolated(unsafe) public static let shared = LibraryDataManager()
     
@@ -216,8 +222,13 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         DownloadController.shared
     }
     
-    public override init() {
+    public override convenience init() {
+        self.init(observesChanges: true)
+    }
+
+    public init(observesChanges: Bool) {
         super.init()
+        guard observesChanges else { return }
 
         guard Self.observesDownloadController else { return }
         
@@ -491,30 +502,94 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         }.value
     }
     
-    public func importOPML(fileURLs: [URL]) async {
+    public func importOPML(
+        fileURLs: [URL],
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+    ) async {
+        let storageAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
         for fileURL in fileURLs {
             do {
-                try await importOPML(fileURL: fileURL)
+                _ = try await performOPMLImport(
+                    fileURL: fileURL, downloadURL: nil,
+                    realmConfiguration: realmConfiguration, storageAdmission: storageAdmission,
+                    recordsDownloadCompletion: false
+                )
             } catch {
+                if error is CancellationError { return }
                 print("Failed to import OPML from local file \(fileURL.absoluteString). Error: \(error.localizedDescription)")
+                guard storageAdmission.matchesCurrentStorageIdentity({
+                    RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+                }) else { return }
             }
         }
     }
     
     @RealmBackgroundActor
     public func importOPML(fileURL: URL, fromDownload download: Downloadable? = nil, realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration) async throws {
+        let storageAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
+        _ = try await performOPMLImport(
+            fileURL: fileURL, downloadURL: download?.url,
+            realmConfiguration: realmConfiguration, storageAdmission: storageAdmission,
+            recordsDownloadCompletion: false
+        )
+    }
+
+    @RealmBackgroundActor
+    private func performOPMLImport(
+        fileURL: URL,
+        downloadURL: URL?,
+        realmConfiguration: Realm.Configuration,
+        storageAdmission: RealmStorageAdmission,
+        recordsDownloadCompletion: Bool
+    ) async throws -> Date {
+        try Task.checkCancellation()
+        // This timestamp describes the file read, not a delayed publication.
+        // A later completed download must still compare newer than this import.
+        let readAt = Date()
         let text = try String(contentsOf: fileURL)
         let opml = try OPML(Data(text.utf8))
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: realmConfiguration, storageAdmission: storageAdmission
+        )
+        try await realm.asyncWritePreservingOwnership {
+            try Task.checkCancellation()
+            guard storageAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+            }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+            let timestamp = Date()
+            let configuration = try LibraryConfiguration.consolidateOrCreate(in: realm, at: timestamp)
+            try applyOPML(opml, downloadURL: downloadURL, in: realm,
+                          configuration: configuration, at: timestamp)
+            if recordsDownloadCompletion, configuration.opmlLastImportedAt != readAt {
+                configuration.opmlLastImportedAt = readAt
+                configuration.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+            }
+            try LibraryOPMLImportObservation.beforeCommit?()
+            try Task.checkCancellation()
+            guard storageAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+            }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+        }
+        return readAt
+    }
+
+    @RealmBackgroundActor
+    private func applyOPML(
+        _ opml: OPML,
+        downloadURL: URL?,
+        in realm: Realm,
+        configuration: LibraryConfiguration,
+        at timestamp: Date
+    ) throws {
+        precondition(realm.isInWriteTransaction)
         var allImportedCategories = OrderedSet<FeedCategory>()
         var allImportedDirectories = OrderedSet<FeedDirectory>()
         var allImportedFeeds = OrderedSet<Feed>()
         var allImportedScripts = OrderedSet<UserScript>()
-        let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: realmConfiguration)
-        guard let realm = configuration.realm else { return }
         
         for entry in opml.entries {
             try Task.checkCancellation()
-            let (importedCategories, importedDirectories, importedFeeds, importedScripts) = try await importOPMLEntry(entry, opml: opml, download: download, realmConfiguration: realmConfiguration)
+            let (importedCategories, importedDirectories, importedFeeds, importedScripts) = try applyOPMLEntry(entry, opml: opml, downloadURL: downloadURL, in: realm, at: timestamp)
             allImportedCategories.formUnion(importedCategories)
             allImportedDirectories.formUnion(importedDirectories)
             allImportedFeeds.formUnion(importedFeeds)
@@ -528,84 +603,25 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         
         // Delete orphan scripts
         try Task.checkCancellation()
-        if let downloadURL = download?.url {
+        if let downloadURL = downloadURL {
             let filteredScripts = Array(realm.objects(UserScript.self).filter({ !$0.isDeleted && $0.opmlURL == downloadURL }))
             for script in filteredScripts {
                 if !allImportedScriptIDs.contains(script.id) {
-//                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
-                        script.isDeleted = true
-                        script.refreshChangeMetadata(explicitlyModified: true)
-                    }
+                    script.isDeleted = true
+                    script.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 }
                 try Task.checkCancellation()
             }
         }
         
-        // Add new scripts
-        try Task.checkCancellation()
-        for script in allImportedScripts {
-            if !configuration.userScriptIDs.contains(where: { $0 != script.id }) {
-                var lastNeighborIdx = configuration.userScriptIDs.count - 1
-                if let downloadURL = download?.url, let userScripts = configuration.getUserScripts() {
-                    lastNeighborIdx = userScripts.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
-                }
-//                await realm.asyncRefresh()
-                try await realm.asyncWrite {
-                    configuration.userScriptIDs.insert(script.id, at: lastNeighborIdx + 1)
-                    configuration.refreshChangeMetadata(explicitlyModified: true)
-                }
-            }
-            try Task.checkCancellation()
-        }
-        
-        // Move scripts
-        try Task.checkCancellation()
-        var desiredScripts = allImportedScripts
-        for (idx, script) in (configuration.getUserScripts() ?? []).enumerated() {
-            if let downloadURL = download?.url, script.opmlURL == downloadURL, !desiredScripts.isEmpty {
-                let desiredScript = desiredScripts.removeFirst()
-                if let fromIdx = configuration.userScriptIDs.firstIndex(where: { $0 == desiredScript.id }), fromIdx != idx {
-//                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
-                        configuration.userScriptIDs.move(from: fromIdx, to: idx)
-                        configuration.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
-            }
-            try Task.checkCancellation()
-        }
-        
-        // De-dupe scripts from library configuration (due to some bug...)
-        try Task.checkCancellation()
-        var scriptIDsSeen = Set<UUID>()
-        var scriptsToRemove = IndexSet()
-        for (idx, scriptID) in configuration.userScriptIDs.enumerated() {
-            if scriptIDsSeen.contains(scriptID) {
-                scriptsToRemove.insert(idx)
-            } else {
-                scriptIDsSeen.insert(scriptID)
-            }
-        }
-        if !scriptsToRemove.isEmpty {
-//            await realm.asyncRefresh()
-            try await realm.asyncWrite {
-                configuration.userScriptIDs.remove(atOffsets: scriptsToRemove)
-                configuration.refreshChangeMetadata(explicitlyModified: true)
-            }
-        }
-        
         // Delete orphan categories
         try Task.checkCancellation()
-        if let downloadURL = download?.url {
+        if let downloadURL = downloadURL {
             let filteredCategories = Array(realm.objects(FeedCategory.self).filter({ !$0.isDeleted && $0.opmlURL == downloadURL }))
             for category in filteredCategories {
                 if !allImportedCategoryIDs.contains(category.id) {
-//                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
-                        category.isDeleted = true
-                        category.refreshChangeMetadata(explicitlyModified: true)
-                    }
+                    category.isDeleted = true
+                    category.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 }
             }
             try Task.checkCancellation()
@@ -613,15 +629,12 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         
         // Delete orphan feeds
         try Task.checkCancellation()
-        if let downloadURL = download?.url {
+        if let downloadURL = downloadURL {
             let filteredFeeds = Array(realm.objects(Feed.self).filter({ !$0.isDeleted && $0.getCategory()?.opmlURL == downloadURL }))
             for feed in filteredFeeds {
                 if !allImportedFeedIDs.contains(feed.id) {
-//                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
-                        feed.isDeleted = true
-                        feed.refreshChangeMetadata(explicitlyModified: true)
-                    }
+                    feed.isDeleted = true
+                    feed.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 }
             }
             try Task.checkCancellation()
@@ -629,105 +642,131 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
 
         // Delete orphan directories
         try Task.checkCancellation()
-        if let downloadURL = download?.url {
+        if let downloadURL = downloadURL {
             let filteredDirectories = Array(realm.objects(FeedDirectory.self).filter({ !$0.isDeleted && $0.opmlURL == downloadURL }))
             for directory in filteredDirectories {
                 if !allImportedDirectoryIDs.contains(directory.id) {
-                    try await realm.asyncWrite {
-                        directory.isDeleted = true
-                        directory.refreshChangeMetadata(explicitlyModified: true)
-                    }
+                    directory.isDeleted = true
+                    directory.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 }
             }
             try Task.checkCancellation()
         }
        
-        // Add new categories
-        try Task.checkCancellation()
-        for category in allImportedCategories {
-            if !configuration.categoryIDs.contains(category.id) {
-                var lastNeighborIdx = configuration.categoryIDs.count - 1
-                if let downloadURL = download?.url {
-                    lastNeighborIdx = configuration.getCategories()?.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
-                }
-//                await realm.asyncRefresh()
-                try await realm.asyncWrite {
-                    configuration.categoryIDs.insert(category.id, at: lastNeighborIdx + 1)
-                    configuration.refreshChangeMetadata(explicitlyModified: true)
-                }
-            }
-            try Task.checkCancellation()
-        }
-        
-        // Move categories
-        try Task.checkCancellation()
-        var desiredCategories = allImportedCategories
-        for (idx, categoryID) in Array(configuration.categoryIDs).enumerated() {
-            if allImportedCategories.map({ $0.id }).contains(categoryID), !desiredCategories.isEmpty {
-                let desiredCategory = desiredCategories.removeFirst()
-                if let fromIdx = configuration.categoryIDs.firstIndex(of: desiredCategory.id), fromIdx != idx {
-//                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
-                        configuration.categoryIDs.move(from: fromIdx, to: idx)
-                        configuration.refreshChangeMetadata(explicitlyModified: true)
-                    }
+        // Resolve list placement from the same transaction that imported and
+        // tombstoned the rows. Filtered model arrays do not share Realm-list indexes.
+        func reconciledIdentifiers(
+            current: [UUID],
+            imported: [UUID],
+            sourceNeighborIDs: Set<UUID>,
+            reorderImported: Bool
+        ) -> [UUID] {
+            var result = orderedUniqueLibraryIdentifiers(current)
+            let desired = orderedUniqueLibraryIdentifiers(imported)
+            let present = Set(result)
+            let additions = desired.filter { !present.contains($0) }
+            let insertion = result.lastIndex(where: {
+                sourceNeighborIDs.contains($0)
+            }).map { $0 + 1 } ?? result.count
+            result.insert(contentsOf: additions, at: insertion)
+            if reorderImported {
+                let desiredSet = Set(desired)
+                let positions = result.indices.filter { desiredSet.contains(result[$0]) }
+                for (position, identifier) in zip(positions, desired) {
+                    result[position] = identifier
                 }
             }
-            try Task.checkCancellation()
+            return result
         }
-        
-        // De-dupe categories from library configuration (due to some bug...)
+
+        let currentCategoryIDs = Array(configuration.categoryIDs)
+        let currentScriptIDs = Array(configuration.userScriptIDs)
+        // Missing rows may still be in transit. Remove only known tombstones,
+        // and preserve #286's disabled-script membership policy.
+        let retainedCategoryIDs = currentCategoryIDs.filter {
+            guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: $0) else {
+                return true
+            }
+            return !category.isDeleted && !category.isArchived
+        }
+        let retainedScriptIDs = currentScriptIDs.filter {
+            realm.object(ofType: UserScript.self, forPrimaryKey: $0)
+                .map { !$0.isDeleted } ?? true
+        }
+        let categoryNeighbors = Set(retainedCategoryIDs.filter {
+            guard let downloadURL,
+                  let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: $0) else {
+                return false
+            }
+            return category.opmlURL == downloadURL
+        })
+        let scriptNeighbors = Set(retainedScriptIDs.filter {
+            guard let downloadURL,
+                  let script = realm.object(ofType: UserScript.self, forPrimaryKey: $0) else {
+                return false
+            }
+            return script.opmlURL == downloadURL
+        })
+        let finalCategoryIDs = reconciledIdentifiers(
+            current: retainedCategoryIDs,
+            imported: allImportedCategories.filter { !$0.isDeleted && !$0.isArchived }.map(\.id),
+            sourceNeighborIDs: categoryNeighbors,
+            reorderImported: true
+        )
+        let finalScriptIDs = reconciledIdentifiers(
+            current: retainedScriptIDs,
+            imported: allImportedScriptIDs,
+            sourceNeighborIDs: scriptNeighbors,
+            reorderImported: downloadURL != nil
+        )
         try Task.checkCancellation()
-        var idsSeen = Set<UUID>()
-        var toRemove = IndexSet()
-        for (idx, categoryID) in configuration.categoryIDs.enumerated() {
-            if idsSeen.contains(categoryID) {
-                toRemove.insert(idx)
-            } else {
-                idsSeen.insert(categoryID)
-            }
+        guard finalCategoryIDs != currentCategoryIDs || finalScriptIDs != currentScriptIDs else {
+            return
         }
-        if !toRemove.isEmpty {
-//            await realm.asyncRefresh()
-            try await realm.asyncWrite {
-                configuration.categoryIDs.remove(atOffsets: toRemove)
-                configuration.refreshChangeMetadata(explicitlyModified: true)
-            }
+        if finalCategoryIDs != currentCategoryIDs {
+            configuration.categoryIDs.removeAll()
+            configuration.categoryIDs.append(objectsIn: finalCategoryIDs)
         }
-    }
-    
-    @RealmBackgroundActor
-    public func importOPML(download: Downloadable) async throws {
-        let realmConfiguration = LibraryDataManager.realmConfiguration
-        try Task.checkCancellation()
-        try await importOPML(fileURL: download.localDestination, fromDownload: download, realmConfiguration: realmConfiguration)
-        await { @MainActor in
-            download.finishedLoadingDuringCurrentLaunchAt = Date()
-        }()
-        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: realmConfiguration)
-        if let realm = libraryConfiguration.realm {
-//            await realm.asyncRefresh()
-            try await realm.asyncWrite {
-                libraryConfiguration.opmlLastImportedAt = Date()
-                libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
-            }
+        if finalScriptIDs != currentScriptIDs {
+            configuration.userScriptIDs.removeAll()
+            configuration.userScriptIDs.append(objectsIn: finalScriptIDs)
         }
+        configuration.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
     }
 
     @RealmBackgroundActor
-    func importOPMLEntry(
+    public func importOPML(download: Downloadable) async throws {
+        let realmConfiguration = LibraryDataManager.realmConfiguration
+        let storageAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
+        let readAt = try await performOPMLImport(
+            fileURL: download.localDestination, downloadURL: download.url,
+            realmConfiguration: realmConfiguration, storageAdmission: storageAdmission,
+            recordsDownloadCompletion: true
+        )
+        await { @MainActor in
+            guard !Task.isCancelled,
+                  storageAdmission.matchesCurrentStorageIdentity({
+                      RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+                  }) else { return }
+            download.finishedLoadingDuringCurrentLaunchAt = readAt
+        }()
+    }
+
+    @RealmBackgroundActor
+    private func applyOPMLEntry(
         _ opmlEntry: OPMLEntry,
         opml: OPML,
-        download: Downloadable?,
+        downloadURL: URL?,
         category: FeedCategory? = nil,
         directory: FeedDirectory? = nil,
         ordinal: Int? = nil,
-        realmConfiguration: Realm.Configuration,
+        in realm: Realm,
+        at timestamp: Date,
         importedCategories: OrderedSet<FeedCategory> = OrderedSet(),
         importedDirectories: OrderedSet<FeedDirectory> = OrderedSet(),
         importedFeeds: OrderedSet<Feed> = OrderedSet(),
         importedScripts: OrderedSet<UserScript> = OrderedSet()
-    ) async throws -> (OrderedSet<FeedCategory>, OrderedSet<FeedDirectory>, OrderedSet<Feed>, OrderedSet<UserScript>) {
+    ) throws -> (OrderedSet<FeedCategory>, OrderedSet<FeedDirectory>, OrderedSet<Feed>, OrderedSet<UserScript>) {
         var category = category
         var directory = directory
         let categoryID = category?.id
@@ -744,14 +783,14 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
            !Self.isCurrentAppVersionAtLeast(minimumVersion) {
             return (importedCategories, importedDirectories, importedFeeds, importedScripts)
         }
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        precondition(realm.isInWriteTransaction)
 
         if opmlEntry.feedURL != nil {
             if let uuid = uuid, let feed = realm.object(ofType: Feed.self, forPrimaryKey: uuid) {
                 let feedCategory = feed.getCategory()
                 let feedURLChangedInManagedOPML = opmlEntry.feedURL.map { feed.rssUrl != $0 } == true
-                    && download.map { LibraryConfiguration.opmlURLs.contains($0.url) } == true
-                if feedCategory == nil || feedCategory?.opmlURL == download?.url || feed.isDeleted || feedURLChangedInManagedOPML {
+                    && downloadURL.map { LibraryConfiguration.opmlURLs.contains($0) } == true
+                if feedCategory == nil || feedCategory?.opmlURL == downloadURL || feed.isDeleted || feedURLChangedInManagedOPML {
                     if feedURLChangedInManagedOPML,
                        feed.title.localizedCaseInsensitiveContains("niponica")
                         || feed.rssUrl.absoluteString.localizedCaseInsensitiveContains("niponica")
@@ -764,16 +803,13 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                             "newRSSURL=\(opmlEntry.feedURL?.absoluteString ?? "nil")",
                             "categoryID=\(feedCategory?.id.uuidString ?? "nil")",
                             "categoryOpmlURL=\(feedCategory?.opmlURL?.absoluteString ?? "nil")",
-                            "downloadURL=\(download?.url.absoluteString ?? "nil")"
+                            "downloadURL=\(downloadURL?.absoluteString ?? "nil")"
                         )
                     }
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal) {
                         try Task.checkCancellation()
                         let categoryID = categoryID ?? feedCategory?.id
-//                        await realm.asyncRefresh()
-                        try await realm.asyncWrite {
-                            try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal)
-                        }
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal, at: timestamp)
                     }
                     importedFeeds.append(feed)
                 }
@@ -782,25 +818,19 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                 if let uuid = uuid, feed.realm == nil {
                     feed.id = uuid
                     try Task.checkCancellation()
-//                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal)
-                        realm.add(feed, update: .modified)
-                        feed.refreshChangeMetadata(explicitlyModified: true)
-                    }
+                    try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal, at: timestamp)
+                    realm.add(feed, update: .modified)
+                    feed.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                     importedFeeds.append(feed)
                 }
             }
-        } else if !(opmlEntry.attributeStringValue("script")?.isEmpty ?? true) {
+        } else if opmlEntry.attributeStringValue("script") != nil {
             if let uuid = uuid, let script = realm.objects(UserScript.self).filter({ $0.id == uuid }).first {
-                if script.opmlURL == download?.url || script.isDeleted {
+                if script.opmlURL == downloadURL || script.isDeleted {
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, script: script) {
                         try Task.checkCancellation()
-//                        await realm.asyncRefresh()
-                        try await realm.asyncWrite {
-                            try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
-                            try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
-                        }
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script, at: timestamp)
+                        try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script, at: timestamp)
                     }
                     importedScripts.append(script)
                 }
@@ -808,32 +838,26 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                 let script = UserScript()
                 if let uuid = uuid, script.realm == nil {
                     script.id = uuid
-                    if let downloadURL = download?.url {
+                    if let downloadURL = downloadURL {
                         script.opmlURL = downloadURL
                     }
                     try Task.checkCancellation()
-//                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
-                        realm.add(script, update: .modified)
-                        script.refreshChangeMetadata(explicitlyModified: true)
-                        try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
-                    }
+                    try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script, at: timestamp)
+                    realm.add(script, update: .modified)
+                    script.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                    try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script, at: timestamp)
                     importedScripts.append(script)
                 }
             }
-        } else if !(opmlEntry.children?.isEmpty ?? true) {
+        } else if uuid != nil || !(opmlEntry.children?.isEmpty ?? true) {
 //            let opmlTitle = opmlEntry.title ?? opmlEntry.text
             if category == nil, !(opmlEntry.attributes?.contains(where: { $0.name == "isUserScriptList" }) ?? false) {
                 if let uuid, let existingCategory = realm.object(ofType: FeedCategory.self, forPrimaryKey: uuid) {
                     category = existingCategory
-                    let hasChanges = Self.hasChanges(opml: opml, opmlEntry: opmlEntry, category: existingCategory, downloadURL: download?.url)
+                    let hasChanges = Self.hasChanges(opml: opml, opmlEntry: opmlEntry, category: existingCategory, downloadURL: downloadURL)
                     if hasChanges {
-                        //                        if existingCategory.opmlURL == download?.url || existingCategory.isDeleted {
-//                        await realm.asyncRefresh()
-                        try await realm.asyncWrite {
-                            try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, category: existingCategory, downloadURL: download?.url)
-                        }
+                        //                        if existingCategory.opmlURL == downloadURL || existingCategory.isDeleted {
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, category: existingCategory, downloadURL: downloadURL, at: timestamp)
                     }
                     importedCategories.append(existingCategory)
                     //                        }
@@ -841,15 +865,12 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                     category = FeedCategory()
                     if let category = category {
                         category.id = uuid
-                        if let downloadURL = download?.url {
+                        if let downloadURL = downloadURL {
                             category.opmlURL = downloadURL
                         }
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, category: category, downloadURL: download?.url)
-//                        await realm.asyncRefresh()
-                        try await realm.asyncWrite {
-                            realm.add(category, update: .modified)
-                            category.refreshChangeMetadata(explicitlyModified: true)
-                        }
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, category: category, downloadURL: downloadURL, at: timestamp)
+                        realm.add(category, update: .modified)
+                        category.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                         importedCategories.append(category)
                     }
                 }
@@ -857,17 +878,16 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                 if let uuid, let existingDirectory = realm.object(ofType: FeedDirectory.self, forPrimaryKey: uuid) {
                     directory = existingDirectory
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, directory: existingDirectory, categoryID: categoryID, parentDirectoryID: directoryID, ordinal: ordinal) {
-                        try await realm.asyncWrite {
-                            try Self.applyAttributes(
-                                opml: opml,
-                                opmlEntry: opmlEntry,
-                                directory: existingDirectory,
-                                categoryID: categoryID,
-                                parentDirectoryID: directoryID,
-                                ordinal: ordinal,
-                                downloadURL: download?.url
-                            )
-                        }
+                        try Self.applyAttributes(
+                            opml: opml,
+                            opmlEntry: opmlEntry,
+                            directory: existingDirectory,
+                            categoryID: categoryID,
+                            parentDirectoryID: directoryID,
+                            ordinal: ordinal,
+                            downloadURL: downloadURL,
+                            at: timestamp
+                        )
                     }
                     importedDirectories.append(existingDirectory)
                 } else if let uuid {
@@ -881,12 +901,11 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                             categoryID: categoryID,
                             parentDirectoryID: directoryID,
                             ordinal: ordinal,
-                            downloadURL: download?.url
+                            downloadURL: downloadURL,
+                            at: timestamp
                         )
-                        try await realm.asyncWrite {
-                            realm.add(directory, update: .modified)
-                            directory.refreshChangeMetadata(explicitlyModified: true)
-                        }
+                        realm.add(directory, update: .modified)
+                        directory.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                         importedDirectories.append(directory)
                     }
                 }
@@ -895,14 +914,15 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         
         for (childIndex, childEntry) in (opmlEntry.children ?? []).enumerated() {
             try Task.checkCancellation()
-            let (newCategories, newDirectories, newFeeds, newScripts) = try await importOPMLEntry(
+            let (newCategories, newDirectories, newFeeds, newScripts) = try applyOPMLEntry(
                 childEntry,
                 opml: opml,
-                download: download,
+                downloadURL: downloadURL,
                 category: category,
                 directory: directory,
                 ordinal: childIndex,
-                realmConfiguration: realmConfiguration,
+                in: realm,
+                at: timestamp,
                 importedCategories: importedCategories,
                 importedDirectories: importedDirectories,
                 importedFeeds: importedFeeds,
@@ -935,7 +955,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         return .orderedSame
     }
     
-    static func applyScriptDomains(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) throws {
+    static func applyScriptDomains(opml: OPML, opmlEntry: OPMLEntry, script: UserScript, at timestamp: Date = Date()) throws {
         guard let realm = script.realm else { return }
         let domains: [String] = opmlEntry.attributeStringValue("allowedDomains")?.split(separator: ",").compactMap { $0.removingPercentEncoding } ?? []
 //        script.allowedDomains.removeAll()
@@ -951,13 +971,13 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             if !domains.contains(existingDomain.domain) {
                 if !existingDomain.isDeleted {
                     existingDomain.isDeleted = true
-                    existingDomain.refreshChangeMetadata(explicitlyModified: true)
+                    existingDomain.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 }
                 script.allowedDomainIDs.remove(at: index)
                 didChangeScript = true
             } else if existingDomain.isDeleted {
                 existingDomain.isDeleted = false
-                existingDomain.refreshChangeMetadata(explicitlyModified: true)
+                existingDomain.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
             }
         }
         let existingDomains = script.getAllowedDomains()?.map { $0.domain } ?? []
@@ -966,13 +986,13 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                 let newDomain = UserScriptAllowedDomain()
                 newDomain.domain = domain
                 realm.add(newDomain, update: .modified)
-                newDomain.refreshChangeMetadata(explicitlyModified: true)
+                newDomain.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 script.allowedDomainIDs.append(newDomain.id)
                 didChangeScript = true
             }
         }
         if didChangeScript {
-            script.refreshChangeMetadata(explicitlyModified: true)
+            script.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
         }
         // TODO: Clean up orphan domain objects that appear due to some bug...
     }
@@ -1001,7 +1021,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         if script.sandboxed != newSandboxed {
             return true
         }
-        let newIsArchived = opmlEntry.attributeBoolValue("isArchived") ?? true
+        let newIsArchived = opmlEntry.attributeBoolValue("isArchived") ?? false
         if script.isArchived != newIsArchived {
             return true
         }
@@ -1016,13 +1036,10 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         if script.isDeleted {
             return true
         }
-        if script.isArchived {
-            return true
-        }
         return false
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) throws {
+    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, script: UserScript, at timestamp: Date = Date()) throws {
         // Must be kept in sync with respective hasChanges
         var didChange = false
         
@@ -1050,7 +1067,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             script.sandboxed = newSandboxed
             didChange = true
         }
-        let newIsArchived = opmlEntry.attributeBoolValue("isArchived") ?? true
+        let newIsArchived = opmlEntry.attributeBoolValue("isArchived") ?? false
         if script.isArchived != newIsArchived {
             script.isArchived = newIsArchived
             didChange = true
@@ -1070,13 +1087,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             script.isDeleted = false
             didChange = true
         }
-        if script.isArchived {
-            script.isArchived = false
-            didChange = true
-        }
         
         if didChange {
-            script.refreshChangeMetadata(explicitlyModified: true)
+            script.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
         }
     }
     
@@ -1112,7 +1125,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         return false
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, category: FeedCategory, downloadURL: URL? = nil) throws {
+    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, category: FeedCategory, downloadURL: URL? = nil, at timestamp: Date = Date()) throws {
         // Must be kept in sync with the respective hasChanges
         var didChange = false
         
@@ -1158,7 +1171,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         }
         
         if didChange {
-            category.refreshChangeMetadata(explicitlyModified: true)
+            category.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
         }
     }
 
@@ -1215,7 +1228,8 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         categoryID: UUID?,
         parentDirectoryID: UUID?,
         ordinal: Int? = nil,
-        downloadURL: URL?
+        downloadURL: URL?,
+        at timestamp: Date = Date()
     ) throws {
         var didChange = false
 
@@ -1273,7 +1287,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         }
 
         if didChange {
-            directory.refreshChangeMetadata(explicitlyModified: true)
+            directory.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
         }
     }
     
@@ -1346,7 +1360,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         return false
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, feed: Feed, categoryID: UUID?, directoryID: UUID?, ordinal: Int? = nil) throws {
+    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, feed: Feed, categoryID: UUID?, directoryID: UUID?, ordinal: Int? = nil, at timestamp: Date = Date()) throws {
         // Must be kept in sync with the respective hasChanges
         guard let feedURL = opmlEntry.feedURL else { return }
         
@@ -1381,6 +1395,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         }
         if feed.rssUrl != feedURL {
             feed.rssUrl = feedURL
+            feed.lastFetchedETag = nil
+            feed.lastFetchedModifiedAt = nil
+            feed.lastRefreshedEntriesAt = nil
             didChange = true
         }
         if let newIconURL = newIconURL, feed.iconUrl != newIconURL {
@@ -1438,13 +1455,17 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         }
         
         if didChange {
-            feed.refreshChangeMetadata(explicitlyModified: true)
+            feed.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
         }
     }
     
     @RealmBackgroundActor
-    public func exportUserOPML() async throws -> OPML {
-        let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
+    public func exportUserOPML(
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+    ) async throws -> OPML {
+        let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: realmConfiguration
+        )
         let userCategories = (configuration.getCategories() ?? []).filter { $0.opmlOwnerName == nil && $0.opmlURL == nil }
         
         let scriptEntries = OPMLEntry(text: "User Scripts", attributes: [
@@ -1462,10 +1483,51 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             ])
         }))
         
+        func exportFeed(_ feed: Feed) -> OPMLEntry {
+            var attributes = [
+                Attribute(name: "uuid", value: feed.id.uuidString),
+                Attribute(name: "type", value: "rss"),
+                Attribute(name: "xmlUrl", value: feed.rssUrl.absoluteString),
+                Attribute(name: "extractImageFromContent", value: feed.extractImageFromContent ? "true" : "false"),
+                Attribute(name: "isReaderModeByDefault", value: feed.isReaderModeByDefault ? "true" : "false"),
+                Attribute(name: "iconUrl", value: feed.iconUrl.absoluteString),
+            ]
+            if let markdownDescription = feed.markdownDescription, !markdownDescription.isEmpty {
+                attributes.append(Attribute(name: "markdownDescription", value: markdownDescription))
+            }
+            attributes.append(Attribute(name: "rssContainsFullContent", value: feed.rssContainsFullContent ? "true" : "false"))
+            attributes.append(Attribute(name: "injectEntryImageIntoHeader", value: feed.injectEntryImageIntoHeader ? "true" : "false"))
+            attributes.append(Attribute(name: "displayPublicationDate", value: feed.displayPublicationDate ? "true" : "false"))
+            attributes.append(Attribute(name: "meaningfulContentMinLength", value: String(feed.meaningfulContentMinLength)))
+            return OPMLEntry(
+                text: feed.title,
+                title: feed.title,
+                attributes: attributes
+            )
+        }
+        func exportChildren(_ children: [FeedCollectionChild], ancestors: Set<UUID> = []) throws -> [OPMLEntry] {
+            try children.compactMap { child in
+                try Task.checkCancellation()
+                switch child {
+                case .feed(let feed):
+                    guard !feed.isArchived else { return nil }
+                    return exportFeed(feed)
+                case .directory(let directory):
+                    guard !directory.isArchived, !ancestors.contains(directory.id) else { return nil }
+                    return OPMLEntry(
+                        text: directory.title,
+                        attributes: [Attribute(name: "uuid", value: directory.id.uuidString)],
+                        children: try exportChildren(
+                            directory.getCollectionChildren() ?? [],
+                            ancestors: ancestors.union([directory.id])
+                        )
+                    )
+                }
+            }
+        }
+
         let categoryEntries: [OPMLEntry] = try userCategories.map { category in
             try Task.checkCancellation()
-
-            let feeds = try category.getFeeds() ?? []
             return OPMLEntry(
                 text: category.title,
                 attributes: [
@@ -1473,29 +1535,8 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                     Attribute(name: "backgroundImageUrl", value: category.backgroundImageUrl.absoluteString),
                     Attribute(name: "isFeedCategory", value: "true"),
                 ],
-                children: try feeds.filter({ !$0.isArchived }).map { feed in
-                    try Task.checkCancellation()
-
-                    var attributes = [
-                        Attribute(name: "uuid", value: feed.id.uuidString),
-                        Attribute(name: "type", value: "rss"),
-                        Attribute(name: "xmlUrl", value: feed.rssUrl.absoluteString),
-                        Attribute(name: "extractImageFromContent", value: feed.extractImageFromContent ? "true" : "false"),
-                        Attribute(name: "isReaderModeByDefault", value: feed.isReaderModeByDefault ? "true" : "false"),
-                        Attribute(name: "iconUrl", value: feed.iconUrl.absoluteString),
-                    ]
-                    if let markdownDescription = feed.markdownDescription, !markdownDescription.isEmpty {
-                        attributes.append(Attribute(name: "markdownDescription", value: markdownDescription))
-                    }
-                    attributes.append(Attribute(name: "rssContainsFullContent", value: feed.rssContainsFullContent ? "true" : "false"))
-                    attributes.append(Attribute(name: "injectEntryImageIntoHeader", value: feed.injectEntryImageIntoHeader ? "true" : "false"))
-                    attributes.append(Attribute(name: "displayPublicationDate", value: feed.displayPublicationDate ? "true" : "false"))
-                    attributes.append(Attribute(name: "meaningfulContentMinLength", value: String(feed.meaningfulContentMinLength)))
-                    return OPMLEntry(
-                        text: feed.title,
-                        title: feed.title,
-                        attributes: attributes)
-                })
+                children: try exportChildren(category.getCollectionChildren() ?? [])
+            )
         }
 
         let opml = OPML(
