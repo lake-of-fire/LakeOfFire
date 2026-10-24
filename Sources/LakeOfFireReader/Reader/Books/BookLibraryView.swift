@@ -475,12 +475,38 @@ public class BookLibraryViewModel: ObservableObject {
         readerModeViewModel: ReaderModeViewModel,
         onNavigateToReader: (() -> Void)? = nil
     ) async throws {
+        try await openDownloaded(
+            publication: publication,
+            readerFileManager: readerFileManager,
+            readerContent: readerContent,
+            navigator: navigator,
+            readerModeViewModel: readerModeViewModel,
+            onNavigateToReader: onNavigateToReader,
+            importDownloaded: { downloadable in
+                try await readerFileManager.ensureImported(downloadable: downloadable)
+            }
+        )
+    }
+
+    @MainActor
+    static func openDownloaded(
+        publication: Publication,
+        readerFileManager: ReaderFileManager,
+        readerContent: ReaderContent,
+        navigator: WebViewNavigator,
+        readerModeViewModel: ReaderModeViewModel,
+        onNavigateToReader: (() -> Void)? = nil,
+        importDownloaded: @MainActor (Downloadable) async throws -> URL?
+    ) async throws {
         guard
             let downloadURL = publication.downloadURL,
             let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title),
-            await downloadable.existsLocally(),
-            let importedURL = try await readerFileManager.ensureImported(downloadable: downloadable)
+            await downloadable.existsLocally()
         else { return }
+
+        guard let importedURL = try await importDownloaded(downloadable) else {
+            throw ReaderFileImportError.missingResult(downloadable.localDestination)
+        }
 
         guard let content = try await ReaderContentLoader.load(
             url: importedURL,

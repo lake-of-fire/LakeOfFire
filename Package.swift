@@ -288,6 +288,7 @@ let package = Package(
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
+                .product(name: "SwiftUIWebView", package: "swiftui-webview"),
                 "LakeOfFireContent",
                 "LakeOfFireContentUI",
                 "LakeOfFireCore",

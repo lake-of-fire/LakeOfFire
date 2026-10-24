@@ -2,6 +2,7 @@ import XCTest
 import RealmSwift
 import SwiftCloudDrive
 import SwiftUIDownloads
+import SwiftUIWebView
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
@@ -122,6 +123,113 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 fixture.manager.files(ofTypes: [.epub, .epubZip])?.map(\.url),
                 [fixture.expectedReaderURL]
             )
+        }
+    }
+
+    @MainActor
+    func testOpenDownloadedMissingImportThrowsBeforeNavigation() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            let readerContent = ReaderContent()
+            let navigator = WebViewNavigator()
+            var imports = 0
+            var callbacks = 0
+            do {
+                try await BookLibraryViewModel.openDownloaded(
+                    publication: Publication(title: fixture.downloadable.name, downloadURL: fixture.downloadable.url),
+                    readerFileManager: fixture.manager,
+                    readerContent: readerContent,
+                    navigator: navigator,
+                    readerModeViewModel: ReaderModeViewModel(),
+                    onNavigateToReader: { callbacks += 1 },
+                    importDownloaded: { downloadable in
+                        imports += 1
+                        XCTAssertEqual(downloadable.localDestination, fixture.downloadable.localDestination)
+                        return nil
+                    }
+                )
+                XCTFail("Missing import must produce an actionable error")
+            } catch let error as ReaderFileImportError {
+                XCTAssertEqual(error, .missingResult(fixture.downloadable.localDestination))
+                XCTAssertEqual(error.localizedDescription, ReaderFileImportPresentation.missingResult(for: fixture.downloadable.localDestination))
+            }
+            XCTAssertEqual(imports, 1)
+            XCTAssertEqual(callbacks, 0)
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, "nil")
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+            XCTAssertNil(readerContent.content)
+        }
+    }
+
+    @MainActor
+    func testOpenDownloadedPreservesImportErrorBeforeNavigation() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            let readerContent = ReaderContent()
+            let navigator = WebViewNavigator()
+            var imports = 0
+            var callbacks = 0
+            do {
+                try await BookLibraryViewModel.openDownloaded(
+                    publication: Publication(title: fixture.downloadable.name, downloadURL: fixture.downloadable.url),
+                    readerFileManager: fixture.manager,
+                    readerContent: readerContent,
+                    navigator: navigator,
+                    readerModeViewModel: ReaderModeViewModel(),
+                    onNavigateToReader: { callbacks += 1 },
+                    importDownloaded: { _ in
+                        imports += 1
+                        throw ReaderFileAccessError.notAvailableOffline
+                    }
+                )
+                XCTFail("The importer failure must reach the row's error presentation")
+            } catch ReaderFileAccessError.notAvailableOffline {
+            }
+            XCTAssertEqual(imports, 1)
+            XCTAssertEqual(callbacks, 0)
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, "nil")
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+        }
+    }
+
+    @MainActor
+    func testOpenDownloadedPublicPathKeepsCurrentBookWithoutDuplicateNavigation() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            let previousFeedConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+            let previousProviders = ReaderContentLoader.additionalContentProviders
+            defer {
+                ReaderContentLoader.feedEntryRealmConfiguration = previousFeedConfiguration
+                ReaderContentLoader.additionalContentProviders = previousProviders
+            }
+            ReaderContentLoader.feedEntryRealmConfiguration = ReaderContentLoader.historyRealmConfiguration
+            ReaderContentLoader.additionalContentProviders = []
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            do {
+                let readerContent = ReaderContent()
+                readerContent.pageURL = fixture.expectedReaderURL
+                let navigator = WebViewNavigator()
+                var callbacks = 0
+                try await BookLibraryViewModel.openDownloaded(
+                    publication: Publication(title: fixture.downloadable.name, downloadURL: fixture.downloadable.url),
+                    readerFileManager: fixture.manager,
+                    readerContent: readerContent,
+                    navigator: navigator,
+                    readerModeViewModel: ReaderModeViewModel(),
+                    onNavigateToReader: { callbacks += 1 }
+                )
+                XCTAssertEqual(fixture.manager.files(ofTypes: [.epub, .epubZip])?.map(\.url), [fixture.expectedReaderURL])
+                let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+                XCTAssertEqual(realm.objects(HistoryRecord.self).count, 1, "The successful import must reach the real content loader")
+                XCTAssertEqual(readerContent.pageURL, fixture.expectedReaderURL)
+                XCTAssertEqual(callbacks, 0)
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, "nil")
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+            } catch {
+                await ReaderContentLoader.resetTransientCachesForTesting()
+                throw error
+            }
+            await ReaderContentLoader.resetTransientCachesForTesting()
         }
     }
 
