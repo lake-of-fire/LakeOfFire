@@ -65,7 +65,7 @@ extension LibraryConfiguration {
             for: realmConfiguration
         )
 
-        let primaryID: UUID = try await realm.asyncWrite {
+        let primaryID: UUID = try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             let configurations = Array(
                 realm.objects(LibraryConfiguration.self).where { !$0.isDeleted }
@@ -102,7 +102,9 @@ extension LibraryConfiguration {
                     ) else {
                         return true
                     }
-                    return !script.isDeleted && !script.isArchived
+                    // Disabled scripts remain in the Library for re-enabling;
+                    // execution filters their archive state separately.
+                    return !script.isDeleted
                 }
             }
 
@@ -139,7 +141,7 @@ extension LibraryConfiguration {
             let referencedScriptIDs = Set(scriptIDs)
             let orphanScriptIDs = Array(
                 realm.objects(UserScript.self).where {
-                    !$0.isDeleted && !$0.isArchived
+                    !$0.isDeleted
                 }
             ).filter {
                 !referencedScriptIDs.contains($0.id)

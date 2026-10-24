@@ -1,6 +1,6 @@
 import BigSyncKit
 import RealmSwift
-import RealmSwiftGaps
+@testable import RealmSwiftGaps
 import XCTest
 @testable import LakeOfFireContent
 
@@ -222,12 +222,12 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
         XCTAssertEqual(consolidated.getUserScripts()?.map(\.id), [userScriptID])
     }
 
-    func testConsolidationAdmitsActiveOrphanScriptsDeterministically() async throws {
-        try await verifyConsolidationAdmitsActiveOrphanScriptsDeterministically()
+    func testConsolidationAdmitsNonDeletedOrphanScriptsDeterministically() async throws {
+        try await verifyConsolidationAdmitsNonDeletedOrphanScriptsDeterministically()
     }
 
     @RealmBackgroundActor
-    private func verifyConsolidationAdmitsActiveOrphanScriptsDeterministically() async throws {
+    private func verifyConsolidationAdmitsNonDeletedOrphanScriptsDeterministically() async throws {
         let (configuration, realm) = try await makeRealm()
         let first = UserScript()
         first.id = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
@@ -249,8 +249,59 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
             realmConfiguration: configuration
         )
 
-        XCTAssertEqual(Array(consolidated.userScriptIDs), [second.id, first.id])
-        XCTAssertFalse(consolidated.userScriptIDs.contains(archived.id))
+        XCTAssertEqual(Array(consolidated.userScriptIDs), [archived.id, second.id, first.id])
+        XCTAssertTrue(consolidated.userScriptIDs.contains(archived.id))
+    }
+
+    func testDisabledScriptKeepsItsExistingSlotAndRepeatedConsolidationIsANoOp() async throws {
+        let (configuration, realm) = try await makeRealm()
+        let first = UserScript()
+        let disabled = UserScript()
+        disabled.isArchived = true
+        let deleted = UserScript()
+        deleted.isDeleted = true
+        let last = UserScript()
+        let primary = LibraryConfiguration()
+        primary.userScriptIDs.append(objectsIn: [first.id, disabled.id, deleted.id, last.id])
+        try realm.write {
+            realm.add([first, disabled, deleted, last])
+            realm.add(primary)
+        }
+
+        let consolidated = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: configuration
+        )
+        XCTAssertEqual(Array(consolidated.userScriptIDs), [first.id, disabled.id, last.id])
+        XCTAssertEqual(consolidated.getUserScripts()?.map(\.id), [first.id, disabled.id, last.id])
+        XCTAssertEqual(consolidated.getActiveWebViewUserScriptDescriptors()?.map(\.id), [first.id, last.id])
+        let settledModifiedAt = consolidated.modifiedAt
+        let settledExplicitlyModifiedAt = consolidated.explicitlyModifiedAt
+        let settledMutation = try XCTUnwrap(pendingMutation(for: consolidated, in: realm))
+        let settledGeneration = settledMutation.generation
+        let settledChangedAt = settledMutation.changedAt
+        for _ in 0..<3 {
+            let repeated = try await LibraryConfiguration.getConsolidatedOrCreate(
+                realmConfiguration: configuration
+            )
+            XCTAssertEqual(Array(repeated.userScriptIDs), [first.id, disabled.id, last.id])
+            XCTAssertEqual(repeated.modifiedAt, settledModifiedAt)
+            XCTAssertEqual(repeated.explicitlyModifiedAt, settledExplicitlyModifiedAt)
+            XCTAssertEqual(pendingMutation(for: repeated, in: realm)?.generation, settledGeneration)
+            XCTAssertEqual(pendingMutation(for: repeated, in: realm)?.changedAt, settledChangedAt)
+        }
+
+        try realm.write {
+            disabled.isArchived = false
+            disabled.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let enabled = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: configuration
+        )
+        XCTAssertEqual(Array(enabled.userScriptIDs), [first.id, disabled.id, last.id])
+        XCTAssertEqual(enabled.modifiedAt, settledModifiedAt)
+        XCTAssertEqual(enabled.getActiveWebViewUserScriptDescriptors()?.map(\.id), [first.id, disabled.id, last.id])
+        XCTAssertEqual(pendingMutation(for: enabled, in: realm)?.generation, settledGeneration)
+        XCTAssertEqual(pendingMutation(for: enabled, in: realm)?.changedAt, settledChangedAt)
     }
 
     func testConsolidationAdmitsActiveOrphanCategoriesDeterministically() async throws {
@@ -383,6 +434,81 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
         XCTAssertTrue(higherConfiguration.isDeleted)
     }
 
+    func testPreCancelledConsolidationDoesNotCreateConfigurationOrJournal() async throws {
+        let (configuration, realm) = try await makeRealm()
+        let task = Task { @RealmBackgroundActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+                return false
+            } catch is CancellationError { return true }
+            catch {
+                XCTFail("Unexpected error: \(error)")
+                return false
+            }
+        }
+        let cancelled = await task.value
+        XCTAssertTrue(cancelled)
+        XCTAssertTrue(realm.objects(LibraryConfiguration.self).isEmpty)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    func testCommitSubmissionCancellationStillReturnsDurablePrimary() async throws {
+        let (configuration, realm) = try await makeRealm()
+        let task = Task { @RealmBackgroundActor in
+            try await RealmWriteCommitObservation.$didSubmit.withValue({
+                withUnsafeCurrentTask { $0?.cancel() }
+            }) {
+                let result = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+                return result.id
+            }
+        }
+        let primaryID = try await task.value
+        XCTAssertTrue(task.isCancelled)
+        let primary = try XCTUnwrap(realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: primaryID))
+        XCTAssertFalse(primary.isDeleted)
+        XCTAssertEqual(realm.objects(LibraryConfiguration.self).count, 1)
+        XCTAssertNotNil(pendingMutation(for: primary, in: realm))
+    }
+
+    func testQueuedConsolidationCancellationPreservesAnotherOwnersWrite() async throws {
+        let (configuration, realm) = try await makeRealm()
+        try realm.beginWrite()
+        defer { if realm.isInWriteTransaction { realm.cancelWrite() } }
+        let primary = LibraryConfiguration()
+        let category = FeedCategory()
+        realm.add(primary)
+        realm.add(category)
+        primary.categoryIDs.append(category.id)
+        primary.refreshChangeMetadata(explicitlyModified: true)
+        let pendingGeneration = try XCTUnwrap(pendingMutation(for: primary, in: realm)).generation
+
+        let submitted = expectation(description: "consolidation submitted its own SDK begin ticket")
+        let task = Task { @RealmBackgroundActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+                let result = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+                return result.id
+            }
+        }
+        addTeardownBlock { task.cancel(); _ = await task.result }
+        await fulfillment(of: [submitted], timeout: 2)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("A cancelled queued consolidation must not acquire the foreign transaction")
+        } catch is CancellationError { }
+
+        XCTAssertTrue(realm.isInWriteTransaction)
+        guard realm.isInWriteTransaction else { return }
+        XCTAssertFalse(primary.isInvalidated)
+        XCTAssertEqual(Array(primary.categoryIDs), [category.id])
+        XCTAssertEqual(pendingMutation(for: primary, in: realm)?.generation, pendingGeneration)
+        try realm.commitWrite()
+        XCTAssertEqual(realm.objects(LibraryConfiguration.self).count, 1)
+        XCTAssertEqual(Array(primary.categoryIDs), [category.id])
+        XCTAssertEqual(pendingMutation(for: primary, in: realm)?.generation, pendingGeneration)
+    }
+
     @RealmBackgroundActor
     private func makeRealm() async throws -> (Realm.Configuration, Realm) {
         var configuration = Realm.Configuration(
@@ -392,12 +518,14 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
             LibraryConfiguration.self,
             FeedCategory.self,
             UserScript.self,
+            UserScriptAllowedDomain.self,
         ]
         configureLakeOfFireMutationTrackingForTesting(&configuration)
-        let realm = try await Realm(
-            configuration: configuration,
-            actor: RealmBackgroundActor.shared
-        )
+        let capturedConfiguration = configuration
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: capturedConfiguration)
+        }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
         return (configuration, realm)
     }
 
