@@ -2,7 +2,10 @@ import Foundation
 
 public extension URL {
     var isSnippetURL: Bool {
-        return absoluteString.hasPrefix("internal://local/snippet?key=")
+        scheme?.lowercased() == "internal"
+            && host?.lowercased() == "local"
+            && path == "/snippet"
+            && snippetKey != nil
     }
 
     var readerLoaderContentURL: URL? {
@@ -45,21 +48,21 @@ public extension URL {
             return readerLoaderContentURL?.snippetKey
         }
 
-        let eligiblePrefix = absolute.hasPrefix("internal://local/snippet")
-            || absolute.hasPrefix("about:snippet")
-        guard eligiblePrefix else { return nil }
-
-        if let components = URLComponents(string: absolute),
-           let key = components.queryItems?.first(where: { $0.name == "key" })?.value,
-           !key.isEmpty {
-            return key
+        guard let scheme = scheme?.lowercased(),
+              let parts = URLComponents(url: self, resolvingAgainstBaseURL: false),
+              parts.user == nil, parts.password == nil, parts.port == nil,
+              let items = parts.queryItems, items.count == 1,
+              items[0].name == "key", let key = items[0].value, !key.isEmpty else {
+            return nil
         }
-
-        if let range = absolute.range(of: "key=") {
-            let key = String(absolute[range.upperBound...])
-            return key.isEmpty ? nil : key
+        switch scheme {
+        case "internal":
+            guard parts.host?.lowercased() == "local", parts.path == "/snippet" else { return nil }
+        case "about":
+            guard parts.host == nil, parts.path == "snippet" else { return nil }
+        default:
+            return nil
         }
-
-        return nil
+        return key
     }
 }
