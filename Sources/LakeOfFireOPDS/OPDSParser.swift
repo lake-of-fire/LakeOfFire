@@ -20,7 +20,16 @@ public enum OPDSParser {
     /// Feed can be v1 (XML) or v2 (JSON).
     /// - parameter url: The feed URL
     public static func parseURL(url: URL, completion: @escaping (ParseData?, Error?) -> Void) {
-        URLSession.shared.dataTask(with: url) { data, response, error in
+        parseURL(url: url, session: .shared, completion: completion)
+    }
+
+    /// Uses the supplied session with the same callback and parsing policy.
+    public static func parseURL(
+        url: URL,
+        session: URLSession,
+        completion: @escaping (ParseData?, Error?) -> Void
+    ) {
+        session.dataTask(with: url) { data, response, error in
             guard let data = data, let response = response else {
                 completion(nil, error ?? OPDSParserError.documentNotFound)
                 return
