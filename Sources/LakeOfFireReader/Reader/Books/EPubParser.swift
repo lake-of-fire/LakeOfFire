@@ -292,8 +292,12 @@ struct EPubParser {
                     } else if namespaceURI == packageNamespaceURI, elementName == "meta" {
                         if attributeDict["property"] == "title-type",
                            let refines = attributeDict["refines"],
-                           refines.hasPrefix("#"), refines.count > 1 {
-                            beginTextField(.titleType, id: String(refines.dropFirst()))
+                           refines.hasPrefix("#"),
+                           let titleID = String(refines.dropFirst()).removingPercentEncoding,
+                           !titleID.isEmpty {
+                            // refines is a URL fragment; XMLParser only removed
+                            // XML escaping. Decode once before exact ID matching.
+                            beginTextField(.titleType, id: titleID)
                         }
                         if coverID == nil,
                            attributeDict["name"]?.lowercased() == "cover",

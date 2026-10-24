@@ -92,6 +92,67 @@ final class EPubMetadataSelectionTests: XCTestCase {
         """) { result in XCTAssertEqual(result?.title, "First title") }
     }
 
+    func testPercentEncodedMainTitleReferenceSelectsDecodedXMLID() throws {
+        for reference in ["#%6dain", "#%6Dain", "#ma%69n"] {
+            try withPackage(metadata: """
+            <meta refines="\(reference)" property="title-type">main</meta>
+            <dc:title id="subtitle">Subtitle</dc:title><dc:title id="main">Main title</dc:title>
+            """) { result in
+                XCTAssertEqual(result?.title, "Main title", reference)
+            }
+        }
+    }
+
+    func testPercentEncodedJapaneseMainTitleReferenceSelectsXMLID() throws {
+        try withPackage(metadata: """
+        <dc:title id="subtitle">Subtitle</dc:title><dc:title id="題名">日本語の本</dc:title>
+        <meta refines="#%E9%A1%8C%E5%90%8D" property="title-type">main</meta>
+        """) { result in XCTAssertEqual(result?.title, "日本語の本") }
+    }
+
+    func testPercentDecodedRefinementsPreserveDistinctUnicodeIDSpellings() throws {
+        try withPackage(metadata: """
+        <dc:title id="caf&#xE9;">Subtitle</dc:title>
+        <dc:title id="cafe&#x301;">Main title</dc:title>
+        <meta refines="#cafe%CC%81" property="title-type">main</meta>
+        """) { result in XCTAssertEqual(result?.title, "Main title") }
+
+        try withPackage(metadata: """
+        <dc:title id="cafe&#x301;">Subtitle</dc:title>
+        <dc:title id="caf&#xE9;">Main title</dc:title>
+        <meta refines="#caf%C3%A9" property="title-type">main</meta>
+        """) { result in XCTAssertEqual(result?.title, "Main title") }
+    }
+
+    func testRefinementPercentDecodingOccursOnlyOnce() throws {
+        try withPackage(metadata: """
+        <dc:title id="first">First title</dc:title><dc:title id="main">Other title</dc:title>
+        <meta refines="#%256Dain" property="title-type">main</meta>
+        """) { result in XCTAssertEqual(result?.title, "First title") }
+    }
+
+    func testMalformedRefinementEncodingCannotSelectMainTitle() throws {
+        for reference in ["#main%", "#main%2", "#main%GG", "#main%C3%28"] {
+            try withPackage(metadata: """
+            <dc:title id="first">First title</dc:title><dc:title id="main">Other title</dc:title>
+            <meta refines="\(reference)" property="title-type">main</meta>
+            """) { result in
+                XCTAssertEqual(result?.title, "First title", reference)
+            }
+        }
+    }
+
+    func testNonlocalAndEmptyRefinementsKeepLocalFallback() throws {
+        for reference in ["other.opf#%6Dain", "https://example.test/book.opf#main", "#"] {
+            try withPackage(metadata: """
+            <dc:title id="first">First title</dc:title><dc:title id="main">Other title</dc:title>
+            <meta refines="\(reference)" property="title-type">main</meta>
+            """) { result in
+                XCTAssertEqual(result?.title, "First title", reference)
+            }
+        }
+    }
+
     func testForeignAndNestedRefinementsCannotSelectAlternativeTitle() throws {
         try withPackage(metadata: """
         <dc:title id="first">First title</dc:title><dc:title id="other">Other title</dc:title>
