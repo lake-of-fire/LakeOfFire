@@ -45,7 +45,7 @@ class CloudDriveSyncStatusModel: ObservableObject {
         item: ContentFile,
         matchingBackingURLString: String? = nil
     ) -> Task<Void, Never>? {
-        guard !Task.isCancelled, !item.isInvalidated else { return nil }
+        guard !Task.isCancelled, !item.isInvalidated, !item.isDeleted else { return nil }
         let contentURL = item.url
         if let matchingBackingURLString {
             guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentURL),
@@ -107,7 +107,7 @@ class CloudDriveSyncStatusModel: ObservableObject {
         createdAt: Date
     ) -> Bool {
         activeRefreshID == refreshID && !Task.isCancelled
-            && !item.isInvalidated && item.compoundKey == key
+            && !item.isInvalidated && !item.isDeleted && item.compoundKey == key
             && item.url == url && item.createdAt == createdAt
     }
 
