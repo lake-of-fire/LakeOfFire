@@ -170,6 +170,7 @@ public struct LibraryManagerView: View {
     @State private var detailPath = NavigationPath()
     @State private var contentRoute: ContentPaneRoute? = nil
     @State private var sidebarPath = NavigationPath()
+    @State private var hasSynchronizedInitialSelection = false
     
 #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -178,46 +179,39 @@ public struct LibraryManagerView: View {
     
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarColumn(contentRoute: $contentRoute, sidebarPath: $sidebarPath)
+            SidebarColumn(contentRoute: sidebarContentRoute, sidebarPath: $sidebarPath)
         } detail: {
-            ContentColumn(contentRoute: $contentRoute, detailPath: $detailPath)
+            ContentColumn(contentRoute: $contentRoute, detailPath: userDetailPath)
         }
         .navigationSplitViewStyle(.balanced)
-        .onChange(of: contentRoute) { _ in
-            detailPath = NavigationPath()
-            viewModel.selectedFeed = nil
-            viewModel.selectedScript = nil
+        .onAppear {
+            viewModel.synchronizeInitialDetailSelection(
+                hasSynchronized: $hasSynchronizedInitialSelection,
+                contentRoute: $contentRoute,
+                detailPath: $detailPath
+            )
         }
-        .onChange(of: viewModel.selectedFeed) { feed in
-            Task { @MainActor in
-                if feed != nil {
-                    viewModel.selectedScript = nil
-                    syncDetailNavigationPath()
-                } else if viewModel.selectedScript == nil {
-                    detailPath = NavigationPath()
-                }
-            }
-        }
-        .onChange(of: viewModel.selectedScript) { script in
-            Task { @MainActor in
-                if script != nil {
-                    viewModel.selectedFeed = nil
-                    syncDetailNavigationPath()
-                } else if viewModel.selectedFeed == nil {
-                    detailPath = NavigationPath()
-                }
-            }
+        .onChange(of: viewModel.detailSelectionRequest) { request in
+            viewModel.applyDetailSelectionRequest(request, contentRoute: $contentRoute, detailPath: $detailPath)
         }
     }
 
-    private func syncDetailNavigationPath() {
-        var path = NavigationPath()
-        if let feed = viewModel.selectedFeed {
-            path.append(feed)
-        } else if let script = viewModel.selectedScript {
-            path.append(script)
-        }
-        detailPath = path
+    private var sidebarContentRoute: Binding<ContentPaneRoute?> {
+        Binding(
+            get: { contentRoute },
+            set: { route in
+                viewModel.selectContentRoute(route, contentRoute: $contentRoute, detailPath: $detailPath)
+            }
+        )
+    }
+
+    private var userDetailPath: Binding<NavigationPath> {
+        Binding(
+            get: { detailPath },
+            set: { path in
+                viewModel.selectDetailPath(path, detailPath: $detailPath)
+            }
+        )
     }
     
     public init() {

@@ -112,7 +112,25 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @Published var exportedOPMLFileURL: URL?
     
 //    @AppStorage("LibraryManagerViewModel.presentedCategories") var presentedCategories = [LibraryRoute]()
-    @Published var selectedFeed: Feed?
+    @Published var selectedFeed: Feed? {
+        didSet {
+            if let selectedFeed {
+                duplicateRequestID = nil
+                if let request = captureDetailSelection(feed: selectedFeed) {
+                    detailSelectionRequest = request
+                } else {
+                    self.selectedFeed = nil
+                    if case .feed = detailSelectionRequest.target {
+                        detailSelectionRequest = .init(target: .none)
+                    }
+                }
+            } else if case .feed = detailSelectionRequest.target {
+                duplicateRequestID = nil
+                detailSelectionRequest = .init(target: .none)
+            }
+        }
+    }
+    @Published private(set) var detailSelectionRequest = LibraryDetailSelectionRequest(target: .none)
     
     private var exportOPMLTask: Task<Void, Never>?
     private var exportOPMLGeneration = 0
@@ -120,7 +138,24 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
     
-    @Published var selectedScript: UserScript?
+    @Published var selectedScript: UserScript? {
+        didSet {
+            if let selectedScript {
+                duplicateRequestID = nil
+                if let request = captureDetailSelection(script: selectedScript) {
+                    detailSelectionRequest = request
+                } else {
+                    self.selectedScript = nil
+                    if case .script = detailSelectionRequest.target {
+                        detailSelectionRequest = .init(target: .none)
+                    }
+                }
+            } else if case .script = detailSelectionRequest.target {
+                duplicateRequestID = nil
+                detailSelectionRequest = .init(target: .none)
+            }
+        }
+    }
     @Published public var navigationPath = NavigationPath()
     // The library presentation change publishes the initial value. Avoid invalidating
     // the off-screen library graph when its configuration loads during app startup.
@@ -153,6 +188,205 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         if observesRealm {
             observeRealm()
         }
+    }
+
+    private func selectionRealmIsCurrent(_ realm: Realm) -> Bool {
+        let actor = RealmBackgroundActor.shared
+        guard actor.realmCacheKey(for: realm.configuration)
+                == actor.realmCacheKey(for: realmConfiguration) else { return false }
+        return realmStorageAdmission.matchesCurrentStorageIdentity {
+            actor.realmCacheKey(for: realmConfiguration)
+        }
+    }
+
+    private func liveSelectionObject<T: Object>(_ object: T) -> T? {
+        guard !object.isInvalidated, !object.isFrozen,
+              let realm = object.realm,
+              selectionRealmIsCurrent(realm) else { return nil }
+        return object
+    }
+
+    private func refreshedSelectionObject<T: Object>(
+        _ object: T, for request: LibraryDetailSelectionRequest
+    ) -> T? {
+        guard detailSelectionRequest == request,
+              let live = liveSelectionObject(object),
+              let realm = live.realm else { return nil }
+        if !realm.isInWriteTransaction {
+            _ = realm.refresh()
+        }
+        // Refresh may synchronously deliver a notification selecting another
+        // row. Never let that older callback publish or clear its successor.
+        guard detailSelectionRequest == request else { return nil }
+        return liveSelectionObject(live)
+    }
+
+    private func captureDetailSelection(feed: Feed) -> LibraryDetailSelectionRequest? {
+        guard let feed = liveSelectionObject(feed), !feed.isDeleted,
+              let categoryID = feed.categoryID,
+              let category = feed.realm?.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+              !category.isInvalidated, !category.isDeleted else { return nil }
+        return .init(target: .feed(
+            id: feed.id, createdAt: feed.createdAt,
+            categoryID: categoryID, categoryCreatedAt: category.createdAt
+        ))
+    }
+
+    private func captureDetailSelection(script: UserScript) -> LibraryDetailSelectionRequest? {
+        guard let script = liveSelectionObject(script), !script.isDeleted else { return nil }
+        return .init(target: .script(id: script.id, createdAt: script.createdAt))
+    }
+
+    private func selectedFeed(for request: LibraryDetailSelectionRequest) -> Feed? {
+        guard detailSelectionRequest == request,
+              case .feed(let id, let createdAt, let categoryID, let categoryCreatedAt) = request.target,
+              let candidate = selectedFeed,
+              let feed = refreshedSelectionObject(candidate, for: request), !feed.isDeleted,
+              feed.id == id, feed.createdAt == createdAt, feed.categoryID == categoryID,
+              let category = feed.realm?.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+              !category.isInvalidated, !category.isDeleted,
+              category.createdAt == categoryCreatedAt else { return nil }
+        return feed
+    }
+
+    private func selectedScript(for request: LibraryDetailSelectionRequest) -> UserScript? {
+        guard detailSelectionRequest == request,
+              case .script(let id, let createdAt) = request.target,
+              let candidate = selectedScript,
+              let script = refreshedSelectionObject(candidate, for: request), !script.isDeleted,
+              script.id == id, script.createdAt == createdAt else { return nil }
+        return script
+    }
+
+    /// Retire only the request being handled. Clearing an inactive peer must
+    /// neither replace another kind's request nor cancel a newer duplicate.
+    private func clearDetailSelection(
+        ifCurrent request: LibraryDetailSelectionRequest
+    ) -> LibraryDetailSelectionRequest? {
+        guard detailSelectionRequest == request else { return nil }
+        switch request.target {
+        case .feed:
+            selectedFeed = nil
+        case .script:
+            selectedScript = nil
+        case .navigation:
+            detailSelectionRequest = .init(target: .none)
+        case .none:
+            break
+        }
+        let cleared = detailSelectionRequest
+        guard case .none = cleared.target else { return nil }
+        selectedFeed = nil
+        guard detailSelectionRequest == cleared else { return nil }
+        selectedScript = nil
+        return detailSelectionRequest == cleared ? cleared : nil
+    }
+
+    /// The actual typed host and its production-model regressions share this
+    /// boundary. A delayed callback cannot apply an older selection or clear
+    /// a newer other-kind selection through its cleanup.
+    func applyDetailSelectionRequest(
+        _ request: LibraryDetailSelectionRequest,
+        contentRoute: Binding<ContentPaneRoute?>,
+        detailPath: Binding<NavigationPath>
+    ) {
+        guard detailSelectionRequest == request else { return }
+        switch request.target {
+        case .feed:
+            guard selectedFeed(for: request) != nil else {
+                if let cleared = clearDetailSelection(ifCurrent: request),
+                   detailSelectionRequest == cleared {
+                    detailPath.wrappedValue = NavigationPath()
+                }
+                return
+            }
+            selectedScript = nil
+            guard detailSelectionRequest == request else { return }
+            contentRoute.wrappedValue = request.contentRoute
+            guard detailSelectionRequest == request else { return }
+            guard let feed = selectedFeed(for: request) else {
+                if let cleared = clearDetailSelection(ifCurrent: request),
+                   detailSelectionRequest == cleared {
+                    detailPath.wrappedValue = NavigationPath()
+                }
+                return
+            }
+            var path = NavigationPath()
+            path.append(feed)
+            detailPath.wrappedValue = path
+        case .script:
+            guard selectedScript(for: request) != nil else {
+                if let cleared = clearDetailSelection(ifCurrent: request),
+                   detailSelectionRequest == cleared {
+                    detailPath.wrappedValue = NavigationPath()
+                }
+                return
+            }
+            selectedFeed = nil
+            guard detailSelectionRequest == request else { return }
+            contentRoute.wrappedValue = request.contentRoute
+            guard detailSelectionRequest == request else { return }
+            guard let script = selectedScript(for: request) else {
+                if let cleared = clearDetailSelection(ifCurrent: request),
+                   detailSelectionRequest == cleared {
+                    detailPath.wrappedValue = NavigationPath()
+                }
+                return
+            }
+            var path = NavigationPath()
+            path.append(script)
+            detailPath.wrappedValue = path
+        case .none:
+            if let cleared = clearDetailSelection(ifCurrent: request),
+               detailSelectionRequest == cleared {
+                detailPath.wrappedValue = NavigationPath()
+            }
+        case .navigation:
+            break // The host already installed this user-selected path.
+        }
+    }
+
+    func synchronizeInitialDetailSelection(
+        hasSynchronized: Binding<Bool>,
+        contentRoute: Binding<ContentPaneRoute?>,
+        detailPath: Binding<NavigationPath>
+    ) {
+        guard !hasSynchronized.wrappedValue else { return }
+        hasSynchronized.wrappedValue = true
+        applyDetailSelectionRequest(detailSelectionRequest, contentRoute: contentRoute, detailPath: detailPath)
+    }
+
+    /// Sidebar intent is synchronous, including nil-to-nil selection. It
+    /// retires a committed duplicate still awaiting publication before the
+    /// user-selected route is installed.
+    func selectContentRoute(
+        _ route: ContentPaneRoute?,
+        contentRoute: Binding<ContentPaneRoute?>,
+        detailPath: Binding<NavigationPath>
+    ) {
+        duplicateRequestID = nil
+        guard clearDetailSelection(ifCurrent: detailSelectionRequest) != nil else { return }
+        let request = LibraryDetailSelectionRequest(target: .none)
+        detailSelectionRequest = request
+        guard detailSelectionRequest == request else { return }
+        contentRoute.wrappedValue = route
+        guard detailSelectionRequest == request else { return }
+        detailPath.wrappedValue = NavigationPath()
+    }
+
+    /// NavigationLink pushes and user pops use this host binding without
+    /// assigning selectedFeed/selectedScript. Retire older publication while
+    /// preserving the typed path the user just chose and its existing route.
+    func selectDetailPath(
+        _ path: NavigationPath,
+        detailPath: Binding<NavigationPath>
+    ) {
+        duplicateRequestID = nil
+        guard clearDetailSelection(ifCurrent: detailSelectionRequest) != nil else { return }
+        let request = LibraryDetailSelectionRequest(target: .navigation)
+        detailSelectionRequest = request
+        guard detailSelectionRequest == request else { return }
+        detailPath.wrappedValue = path
     }
 
     private func observeRealm() {
@@ -374,8 +608,6 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                   let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: result.categoryID),
                   category.createdAt == result.categoryCreatedAt,
                   !category.isDeleted, category.isUserEditable else { return }
-            navigationPath.removeLast(navigationPath.count)
-            navigationPath.append(category)
             selectedFeed = newFeed
         }()
     }

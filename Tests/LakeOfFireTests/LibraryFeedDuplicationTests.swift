@@ -64,6 +64,26 @@ private struct FeedDuplicationSnapshot: Equatable, Sendable {
 
 @available(iOS 16.0, macOS 13.0, *)
 @MainActor
+private final class TypedLibraryHostBindings {
+    var contentRoute: ContentPaneRoute?
+    var detailPath = NavigationPath()
+    var hasSynchronizedInitialSelection = false
+
+    var route: Binding<ContentPaneRoute?> {
+        Binding(get: { self.contentRoute }, set: { self.contentRoute = $0 })
+    }
+
+    var path: Binding<NavigationPath> {
+        Binding(get: { self.detailPath }, set: { self.detailPath = $0 })
+    }
+
+    var initialSelection: Binding<Bool> {
+        Binding(get: { self.hasSynchronizedInitialSelection }, set: { self.hasSynchronizedInitialSelection = $0 })
+    }
+}
+
+@available(iOS 16.0, macOS 13.0, *)
+@MainActor
 final class LibraryFeedDuplicationTests: XCTestCase, @unchecked Sendable {
     private struct Fixture {
         let realm: Realm
@@ -180,6 +200,23 @@ final class LibraryFeedDuplicationTests: XCTestCase, @unchecked Sendable {
         try XCTUnwrap(fixture.realm.object(ofType: FeedCategory.self, forPrimaryKey: fixture.categoryID))
     }
 
+    private func addScript(_ fixture: Fixture) async throws -> UserScript {
+        let id = UUID()
+        try await Self.write(fixture.realm.configuration) { writer in
+            let script = UserScript()
+            script.id = id
+            script.createdAt = Date(timeIntervalSinceReferenceDate: 600)
+            script.title = "Selected script"
+            writer.add(script)
+            script.refreshChangeMetadata(explicitlyModified: true)
+            let library = try XCTUnwrap(writer.objects(LibraryConfiguration.self).first)
+            library.userScriptIDs.append(id)
+            library.refreshChangeMetadata(explicitlyModified: true)
+        }
+        fixture.realm.refresh()
+        return try XCTUnwrap(fixture.realm.object(ofType: UserScript.self, forPrimaryKey: id))
+    }
+
     private func state(_ feed: Feed) -> DuplicatedFeedState {
         DuplicatedFeedState(
             id: feed.id, createdAt: feed.createdAt, categoryID: feed.categoryID,
@@ -222,9 +259,11 @@ final class LibraryFeedDuplicationTests: XCTestCase, @unchecked Sendable {
         )
     }
 
-    func testManagerForwardsNonOverwriteAndAwaitsSelectionWithoutChangingExistingDuplicate() async throws {
+    func testManagerForwardsNonOverwriteAndRoutesSelectedCopyThroughTypedHost() async throws {
         let fixture = try await makeFixture()
         let model = manager(fixture.realm.configuration)
+        let host = TypedLibraryHostBindings()
+        host.contentRoute = .contentCategory(try XCTUnwrap(source(fixture).categoryID))
         let before = snapshot(fixture.realm)
         let existing = try XCTUnwrap(fixture.realm.object(ofType: Feed.self, forPrimaryKey: fixture.existingID))
         let originalExisting = state(existing)
@@ -239,7 +278,12 @@ final class LibraryFeedDuplicationTests: XCTestCase, @unchecked Sendable {
         XCTAssertNotEqual(selected.id, fixture.existingID)
         XCTAssertEqual(selected.categoryID, fixture.categoryID)
         XCTAssertEqual(selected.title, try source(fixture).title)
-        XCTAssertEqual(model.navigationPath.count, 1, "The awaited method publishes navigation before returning")
+        model.applyDetailSelectionRequest(model.detailSelectionRequest, contentRoute: host.route, detailPath: host.path)
+        var expectedPath = NavigationPath()
+        expectedPath.append(selected)
+        XCTAssertEqual(host.contentRoute, .contentCategory(fixture.categoryID))
+        XCTAssertEqual(host.detailPath, expectedPath, "Use the bindings consumed by the real typed host")
+        XCTAssertEqual(model.selectedFeed?.id, selected.id)
         XCTAssertEqual(state(existing), originalExisting)
         let after = snapshot(fixture.realm)
         XCTAssertEqual(after.feeds.count, before.feeds.count + 1)
@@ -249,6 +293,438 @@ final class LibraryFeedDuplicationTests: XCTestCase, @unchecked Sendable {
             XCTAssertEqual(after.generations[recordName], generation)
         }
         XCTAssertEqual(after.generations.count, before.generations.count + 1)
+    }
+
+    func testRepeatedManagerOverwriteReopensSameFeedWithoutRejournal() async throws {
+        let fixture = try await makeFixture()
+        let model = manager(fixture.realm.configuration)
+        let host = TypedLibraryHostBindings()
+        try await model.duplicate(
+            feed: ThreadSafeReference(to: source(fixture)),
+            inCategory: ThreadSafeReference(to: category(fixture)), overwriteExisting: true
+        )
+        fixture.realm.refresh()
+        let selected = try XCTUnwrap(model.selectedFeed)
+        let firstRequest = model.detailSelectionRequest
+        model.applyDetailSelectionRequest(firstRequest, contentRoute: host.route, detailPath: host.path)
+        var expectedPath = NavigationPath()
+        expectedPath.append(selected)
+        XCTAssertEqual(host.detailPath, expectedPath)
+        let committed = snapshot(fixture.realm)
+
+        model.selectDetailPath(NavigationPath(), detailPath: host.path)
+        XCTAssertTrue(host.detailPath.isEmpty, "The actual host pop preserves an empty detail path")
+        try await model.duplicate(
+            feed: ThreadSafeReference(to: source(fixture)),
+            inCategory: ThreadSafeReference(to: category(fixture)), overwriteExisting: true
+        )
+        fixture.realm.refresh()
+        XCTAssertEqual(model.selectedFeed?.id, selected.id)
+        XCTAssertNotEqual(model.detailSelectionRequest.id, firstRequest.id, "Reopening the row is a new command")
+        model.applyDetailSelectionRequest(model.detailSelectionRequest, contentRoute: host.route, detailPath: host.path)
+        XCTAssertEqual(host.contentRoute, .contentCategory(fixture.categoryID))
+        XCTAssertEqual(host.detailPath, expectedPath)
+        XCTAssertEqual(snapshot(fixture.realm), committed, "Reopening an exact overwrite must not create a mutation")
+
+        let reopenedRequest = model.detailSelectionRequest
+        try await model.duplicate(
+            feed: ThreadSafeReference(to: source(fixture)),
+            inCategory: ThreadSafeReference(to: category(fixture)), overwriteExisting: true
+        )
+        fixture.realm.refresh()
+        XCTAssertEqual(model.selectedFeed?.id, selected.id)
+        XCTAssertNotEqual(model.detailSelectionRequest.id, reopenedRequest.id, "Assigning the still-selected row is a new command")
+        model.applyDetailSelectionRequest(model.detailSelectionRequest, contentRoute: host.route, detailPath: host.path)
+        XCTAssertEqual(host.detailPath, expectedPath)
+        XCTAssertEqual(snapshot(fixture.realm), committed)
+    }
+
+    func testInitialFeedAndScriptSelectionsSynchronizeOncePerHostMount() async throws {
+        let fixture = try await makeFixture()
+        let script = try await addScript(fixture)
+        let before = snapshot(fixture.realm)
+        for opensScript in [false, true] {
+            let model = manager(fixture.realm.configuration)
+            let host = TypedLibraryHostBindings()
+            var expectedPath = NavigationPath()
+            if opensScript {
+                model.selectedScript = script
+                expectedPath.append(script)
+            } else {
+                model.selectedFeed = try source(fixture)
+                expectedPath.append(try source(fixture))
+            }
+            let expectedRoute: ContentPaneRoute = opensScript
+                ? .userScripts : .contentCategory(try XCTUnwrap(source(fixture).categoryID))
+            model.synchronizeInitialDetailSelection(
+                hasSynchronized: host.initialSelection, contentRoute: host.route, detailPath: host.path
+            )
+            XCTAssertEqual(host.contentRoute, expectedRoute)
+            XCTAssertEqual(host.detailPath, expectedPath)
+            XCTAssertTrue(host.hasSynchronizedInitialSelection)
+
+            model.selectDetailPath(NavigationPath(), detailPath: host.path)
+            model.synchronizeInitialDetailSelection(
+                hasSynchronized: host.initialSelection, contentRoute: host.route, detailPath: host.path
+            )
+            XCTAssertTrue(host.detailPath.isEmpty, "A later onAppear must not reopen a popped detail")
+            XCTAssertEqual(host.contentRoute, expectedRoute)
+        }
+        XCTAssertEqual(snapshot(fixture.realm), before)
+    }
+
+    func testOldOtherKindCallbacksCannotClearNewerDetailSelection() async throws {
+        let fixture = try await makeFixture()
+        let script = try await addScript(fixture)
+        let model = manager(fixture.realm.configuration)
+        let host = TypedLibraryHostBindings()
+        let before = snapshot(fixture.realm)
+        host.contentRoute = .contentCategory(try XCTUnwrap(source(fixture).categoryID))
+        model.selectedFeed = try source(fixture)
+        let olderFeedRequest = model.detailSelectionRequest
+        model.selectedScript = script
+        let scriptRequest = model.detailSelectionRequest
+        model.applyDetailSelectionRequest(scriptRequest, contentRoute: host.route, detailPath: host.path)
+        model.applyDetailSelectionRequest(olderFeedRequest, contentRoute: host.route, detailPath: host.path)
+        var expectedScriptPath = NavigationPath()
+        expectedScriptPath.append(script)
+        XCTAssertNil(model.selectedFeed)
+        XCTAssertEqual(model.selectedScript?.id, script.id)
+        XCTAssertEqual(model.detailSelectionRequest, scriptRequest)
+        XCTAssertEqual(host.contentRoute, .userScripts)
+        XCTAssertEqual(host.detailPath, expectedScriptPath)
+
+        let feed = try source(fixture)
+        model.selectedFeed = feed
+        let latestFeedRequest = model.detailSelectionRequest
+        model.applyDetailSelectionRequest(latestFeedRequest, contentRoute: host.route, detailPath: host.path)
+        model.applyDetailSelectionRequest(scriptRequest, contentRoute: host.route, detailPath: host.path)
+        var expectedFeedPath = NavigationPath()
+        expectedFeedPath.append(feed)
+        XCTAssertNil(model.selectedScript)
+        XCTAssertEqual(model.selectedFeed?.id, feed.id)
+        XCTAssertEqual(model.detailSelectionRequest, latestFeedRequest)
+        XCTAssertEqual(host.contentRoute, .contentCategory(try XCTUnwrap(feed.categoryID)))
+        XCTAssertEqual(host.detailPath, expectedFeedPath)
+        model.selectContentRoute(.userScripts, contentRoute: host.route, detailPath: host.path)
+        let sidebarRequest = model.detailSelectionRequest
+        model.applyDetailSelectionRequest(latestFeedRequest, contentRoute: host.route, detailPath: host.path)
+        XCTAssertEqual(model.detailSelectionRequest, sidebarRequest)
+        XCTAssertNil(model.selectedFeed)
+        XCTAssertNil(model.selectedScript)
+        XCTAssertEqual(host.contentRoute, .userScripts)
+        XCTAssertTrue(host.detailPath.isEmpty)
+        XCTAssertEqual(snapshot(fixture.realm), before)
+    }
+
+    func testRouteBindingReentryCannotOverwriteNewerOtherKindDetail() async throws {
+        let fixture = try await makeFixture()
+        let script = try await addScript(fixture)
+        let model = manager(fixture.realm.configuration)
+        let host = TypedLibraryHostBindings()
+        let before = snapshot(fixture.realm)
+        model.selectedFeed = try source(fixture)
+        let olderRequest = model.detailSelectionRequest
+        let reentrantRoute = Binding<ContentPaneRoute?>(
+            get: { host.contentRoute },
+            set: { route in
+                host.contentRoute = route
+                model.selectedScript = script
+                model.applyDetailSelectionRequest(
+                    model.detailSelectionRequest, contentRoute: host.route, detailPath: host.path
+                )
+            }
+        )
+        model.applyDetailSelectionRequest(olderRequest, contentRoute: reentrantRoute, detailPath: host.path)
+        var expectedPath = NavigationPath()
+        expectedPath.append(script)
+        XCTAssertNil(model.selectedFeed)
+        XCTAssertEqual(model.selectedScript?.id, script.id)
+        XCTAssertNotEqual(model.detailSelectionRequest.id, olderRequest.id)
+        XCTAssertEqual(host.contentRoute, .userScripts)
+        XCTAssertEqual(host.detailPath, expectedPath)
+        XCTAssertEqual(snapshot(fixture.realm), before)
+    }
+
+    func testSynchronousRealmRefreshCannotPublishAnOlderSelection() async throws {
+        let fixture = try await makeFixture()
+        let script = try await addScript(fixture)
+        let feed = try source(fixture)
+        let model = manager(fixture.realm.configuration)
+        let host = TypedLibraryHostBindings()
+        fixture.realm.autorefresh = false
+        defer { fixture.realm.autorefresh = true }
+        var didChangeCount = 0
+        let token = fixture.realm.observe { notification, _ in
+            guard notification == .didChange else { return }
+            didChangeCount += 1
+            model.selectedScript = script
+        }
+        defer { token.invalidate() }
+        let sourceID = fixture.sourceID
+        try await Self.write(fixture.realm.configuration) { writer in
+            let source = try XCTUnwrap(writer.object(ofType: Feed.self, forPrimaryKey: sourceID))
+            source.title = "Authoritative newer title"
+            source.refreshChangeMetadata(explicitlyModified: true)
+        }
+        XCTAssertEqual(didChangeCount, 0)
+        model.selectedFeed = feed
+        let olderRequest = model.detailSelectionRequest
+        XCTAssertEqual(didChangeCount, 0, "Capturing the assigned row must not refresh and reenter selection")
+        model.applyDetailSelectionRequest(olderRequest, contentRoute: host.route, detailPath: host.path)
+        XCTAssertEqual(didChangeCount, 1, "The host's real Realm refresh delivers the intervening selection")
+        XCTAssertEqual(model.selectedScript?.id, script.id)
+        XCTAssertNotEqual(model.detailSelectionRequest.id, olderRequest.id)
+        XCTAssertTrue(host.detailPath.isEmpty, "The superseded feed request cannot publish a partial path")
+        let afterRefresh = snapshot(fixture.realm)
+        model.applyDetailSelectionRequest(model.detailSelectionRequest, contentRoute: host.route, detailPath: host.path)
+        var expectedPath = NavigationPath()
+        expectedPath.append(script)
+        XCTAssertEqual(host.contentRoute, .userScripts)
+        XCTAssertEqual(host.detailPath, expectedPath)
+        XCTAssertEqual(snapshot(fixture.realm), afterRefresh)
+    }
+
+    func testTypedHostRejectsRetiredFeedOrCategoryIdentitiesWithoutMutation() async throws {
+        enum Retirement: CaseIterable, Sendable {
+            case recreatedFeed, recreatedCategory, changedCreation, movedFeed, deletedFeed, deletedCategory
+        }
+        for retirement in Retirement.allCases {
+            let fixture = try await makeFixture()
+            let model = manager(fixture.realm.configuration)
+            let host = TypedLibraryHostBindings()
+            let feed = try source(fixture)
+            let sourceID = feed.id
+            let sourceCategoryID = try XCTUnwrap(feed.categoryID)
+            let destinationID = fixture.categoryID
+            model.selectedFeed = feed
+            let request = model.detailSelectionRequest
+            host.contentRoute = .contentCategory(sourceCategoryID)
+            host.detailPath.append(feed)
+            try await Self.write(fixture.realm.configuration) { writer in
+                let row = try XCTUnwrap(writer.object(ofType: Feed.self, forPrimaryKey: sourceID))
+                let category = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: sourceCategoryID))
+                switch retirement {
+                case .recreatedFeed:
+                    let replacement = Feed(value: row)
+                    replacement.createdAt = row.createdAt.addingTimeInterval(1)
+                    writer.delete(row)
+                    writer.add(replacement)
+                    replacement.refreshChangeMetadata(explicitlyModified: true)
+                case .recreatedCategory:
+                    let replacement = FeedCategory(value: category)
+                    replacement.createdAt = category.createdAt.addingTimeInterval(1)
+                    writer.delete(category)
+                    writer.add(replacement)
+                    replacement.refreshChangeMetadata(explicitlyModified: true)
+                case .changedCreation:
+                    row.createdAt = row.createdAt.addingTimeInterval(1)
+                    row.refreshChangeMetadata(explicitlyModified: true)
+                case .movedFeed:
+                    row.categoryID = destinationID
+                    row.refreshChangeMetadata(explicitlyModified: true)
+                case .deletedFeed:
+                    row.isDeleted = true
+                    row.refreshChangeMetadata(explicitlyModified: true)
+                case .deletedCategory:
+                    category.isDeleted = true
+                    category.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+            fixture.realm.refresh()
+            let afterMutation = snapshot(fixture.realm)
+            model.applyDetailSelectionRequest(request, contentRoute: host.route, detailPath: host.path)
+            XCTAssertNil(model.selectedFeed, "Retired selection: \(retirement)")
+            XCTAssertTrue(host.detailPath.isEmpty, "Retired selection: \(retirement)")
+            XCTAssertEqual(model.detailSelectionRequest.target, .none)
+            XCTAssertEqual(snapshot(fixture.realm), afterMutation)
+        }
+    }
+
+    func testTypedHostRejectsRetiredScriptsAndInvalidatedInputPreservesOtherKind() async throws {
+        for recreates in [false, true] {
+            let fixture = try await makeFixture()
+            let script = try await addScript(fixture)
+            let scriptID = script.id
+            let model = manager(fixture.realm.configuration)
+            let host = TypedLibraryHostBindings()
+            model.selectedScript = script
+            let request = model.detailSelectionRequest
+            host.contentRoute = .userScripts
+            host.detailPath.append(script)
+            try await Self.write(fixture.realm.configuration) { writer in
+                let row = try XCTUnwrap(writer.object(ofType: UserScript.self, forPrimaryKey: scriptID))
+                if recreates {
+                    let replacement = UserScript(value: row)
+                    replacement.createdAt = row.createdAt.addingTimeInterval(1)
+                    writer.delete(row)
+                    writer.add(replacement)
+                    replacement.refreshChangeMetadata(explicitlyModified: true)
+                } else {
+                    row.isDeleted = true
+                    row.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+            fixture.realm.refresh()
+            let afterMutation = snapshot(fixture.realm)
+            model.applyDetailSelectionRequest(request, contentRoute: host.route, detailPath: host.path)
+            XCTAssertNil(model.selectedScript)
+            XCTAssertTrue(host.detailPath.isEmpty)
+            XCTAssertEqual(model.detailSelectionRequest.target, .none)
+
+            let feed = try source(fixture)
+            model.selectedFeed = feed
+            let feedRequest = model.detailSelectionRequest
+            model.selectedScript = script
+            XCTAssertNil(model.selectedScript, "Rejected input must not access invalidated persisted fields")
+            XCTAssertEqual(model.detailSelectionRequest, feedRequest)
+            model.applyDetailSelectionRequest(feedRequest, contentRoute: host.route, detailPath: host.path)
+            var expectedPath = NavigationPath()
+            expectedPath.append(feed)
+            XCTAssertEqual(host.detailPath, expectedPath)
+            XCTAssertEqual(model.selectedFeed?.id, feed.id)
+            XCTAssertEqual(snapshot(fixture.realm), afterMutation)
+        }
+
+        let fixture = try await makeFixture()
+        let feed = try source(fixture)
+        let script = try await addScript(fixture)
+        let model = manager(fixture.realm.configuration)
+        let sourceID = fixture.sourceID
+        try await Self.write(fixture.realm.configuration) { writer in
+            writer.delete(try XCTUnwrap(writer.object(ofType: Feed.self, forPrimaryKey: sourceID)))
+        }
+        fixture.realm.refresh()
+        XCTAssertTrue(feed.isInvalidated)
+        model.selectedScript = script
+        let scriptRequest = model.detailSelectionRequest
+        let afterMutation = snapshot(fixture.realm)
+        model.selectedFeed = feed
+        XCTAssertNil(model.selectedFeed)
+        XCTAssertEqual(model.selectedScript?.id, script.id)
+        XCTAssertEqual(model.detailSelectionRequest, scriptRequest)
+        XCTAssertEqual(snapshot(fixture.realm), afterMutation)
+    }
+
+    func testSidebarNilToNilIntentRetiresCommittedDuplicatePublication() async throws {
+        let fixture = try await makeFixture()
+        let model = manager(fixture.realm.configuration)
+        let host = TypedLibraryHostBindings()
+        let feedReference = ThreadSafeReference(to: try source(fixture))
+        let categoryReference = ThreadSafeReference(to: try category(fixture))
+        let gate = FeedDuplicationGate()
+        let committed = expectation(description: "Duplicate committed before sidebar replacement")
+        let operation = Task { @RealmBackgroundActor in
+            try await model.duplicate(
+                feed: feedReference, inCategory: categoryReference, overwriteExisting: false,
+                beforePublication: { await gate.wait(onSuspension: { committed.fulfill() }) }
+            )
+        }
+        addTeardownBlock { operation.cancel(); await gate.release(); _ = await operation.result }
+        await fulfillment(of: [committed], timeout: 5)
+        fixture.realm.refresh()
+        let committedSnapshot = snapshot(fixture.realm)
+        XCTAssertEqual(committedSnapshot.feeds.count, 3)
+        XCTAssertNil(host.contentRoute)
+        let priorRequest = model.detailSelectionRequest
+        model.selectContentRoute(nil, contentRoute: host.route, detailPath: host.path)
+        let sidebarRequest = model.detailSelectionRequest
+        XCTAssertNotEqual(sidebarRequest.id, priorRequest.id)
+        await gate.release()
+        try await operation.value
+        fixture.realm.refresh()
+        model.applyDetailSelectionRequest(priorRequest, contentRoute: host.route, detailPath: host.path)
+        XCTAssertEqual(model.detailSelectionRequest, sidebarRequest)
+        XCTAssertNil(model.selectedFeed)
+        XCTAssertNil(model.selectedScript)
+        XCTAssertNil(host.contentRoute)
+        XCTAssertTrue(host.detailPath.isEmpty)
+        XCTAssertEqual(snapshot(fixture.realm), committedSnapshot, "Presentation retirement preserves the committed copy")
+    }
+
+    func testNewScriptSelectionRetiresCommittedDuplicatePublication() async throws {
+        let fixture = try await makeFixture()
+        let script = try await addScript(fixture)
+        let model = manager(fixture.realm.configuration)
+        let host = TypedLibraryHostBindings()
+        let feedReference = ThreadSafeReference(to: try source(fixture))
+        let categoryReference = ThreadSafeReference(to: try category(fixture))
+        let gate = FeedDuplicationGate()
+        let committed = expectation(description: "Duplicate committed before direct script selection")
+        let operation = Task { @RealmBackgroundActor in
+            try await model.duplicate(
+                feed: feedReference, inCategory: categoryReference, overwriteExisting: false,
+                beforePublication: { await gate.wait(onSuspension: { committed.fulfill() }) }
+            )
+        }
+        addTeardownBlock { operation.cancel(); await gate.release(); _ = await operation.result }
+        await fulfillment(of: [committed], timeout: 5)
+        fixture.realm.refresh()
+        let committedSnapshot = snapshot(fixture.realm)
+        XCTAssertEqual(committedSnapshot.feeds.count, 3)
+        model.selectedScript = script
+        let scriptRequest = model.detailSelectionRequest
+        model.applyDetailSelectionRequest(scriptRequest, contentRoute: host.route, detailPath: host.path)
+        var expectedPath = NavigationPath()
+        expectedPath.append(script)
+        await gate.release()
+        try await operation.value
+        fixture.realm.refresh()
+        XCTAssertEqual(model.detailSelectionRequest, scriptRequest)
+        XCTAssertNil(model.selectedFeed)
+        XCTAssertEqual(model.selectedScript?.id, script.id)
+        XCTAssertEqual(host.contentRoute, .userScripts)
+        XCTAssertEqual(host.detailPath, expectedPath)
+        XCTAssertEqual(snapshot(fixture.realm), committedSnapshot)
+    }
+
+    func testDirectTypedNavigationPushOrPopRetiresCommittedDuplicatePublication() async throws {
+        for pushesDetail in [true, false] {
+            let fixture = try await makeFixture()
+            let model = manager(fixture.realm.configuration)
+            let host = TypedLibraryHostBindings()
+            let feed = try source(fixture)
+            let route = ContentPaneRoute.contentCategory(try XCTUnwrap(feed.categoryID))
+            host.contentRoute = route
+            if !pushesDetail {
+                model.selectedFeed = feed
+                model.applyDetailSelectionRequest(
+                    model.detailSelectionRequest, contentRoute: host.route, detailPath: host.path
+                )
+            }
+            let priorRequest = model.detailSelectionRequest
+            let feedReference = ThreadSafeReference(to: feed)
+            let categoryReference = ThreadSafeReference(to: try category(fixture))
+            let gate = FeedDuplicationGate()
+            let committed = expectation(description: "Duplicate committed before direct typed navigation")
+            let operation = Task { @RealmBackgroundActor in
+                try await model.duplicate(
+                    feed: feedReference, inCategory: categoryReference, overwriteExisting: false,
+                    beforePublication: { await gate.wait(onSuspension: { committed.fulfill() }) }
+                )
+            }
+            addTeardownBlock { operation.cancel(); await gate.release(); _ = await operation.result }
+            await fulfillment(of: [committed], timeout: 5)
+            fixture.realm.refresh()
+            let committedSnapshot = snapshot(fixture.realm)
+            XCTAssertEqual(committedSnapshot.feeds.count, 3)
+            var userPath = NavigationPath()
+            if pushesDetail { userPath.append(feed) }
+            model.selectDetailPath(userPath, detailPath: host.path)
+            let userRequest = model.detailSelectionRequest
+            XCTAssertNotEqual(userRequest.id, priorRequest.id)
+            model.applyDetailSelectionRequest(priorRequest, contentRoute: host.route, detailPath: host.path)
+            model.applyDetailSelectionRequest(userRequest, contentRoute: host.route, detailPath: host.path)
+            await gate.release()
+            try await operation.value
+            fixture.realm.refresh()
+            XCTAssertEqual(model.detailSelectionRequest, userRequest)
+            XCTAssertNil(model.selectedFeed)
+            XCTAssertNil(model.selectedScript)
+            XCTAssertEqual(host.contentRoute, route, "Detail navigation must not write the category route")
+            XCTAssertEqual(host.detailPath, userPath)
+            XCTAssertEqual(snapshot(fixture.realm), committedSnapshot)
+        }
     }
 
     func testOverwriteRetainsDestinationCreationAndExactReplayDoesNotRejournal() async throws {
@@ -423,8 +899,12 @@ final class LibraryFeedDuplicationTests: XCTestCase, @unchecked Sendable {
     func testRecreatedCategoryBeforePublicationDoesNotReplaceCurrentSelection() async throws {
         let fixture = try await makeFixture()
         let model = manager(fixture.realm.configuration)
+        let host = TypedLibraryHostBindings()
         model.selectedFeed = try source(fixture)
         let originalSelection = try source(fixture).id
+        let originalRequest = model.detailSelectionRequest
+        model.applyDetailSelectionRequest(originalRequest, contentRoute: host.route, detailPath: host.path)
+        let originalPath = host.detailPath
         let configuration = fixture.realm.configuration
         let categoryID = fixture.categoryID
         try await model.duplicate(
@@ -445,13 +925,18 @@ final class LibraryFeedDuplicationTests: XCTestCase, @unchecked Sendable {
         fixture.realm.refresh()
         XCTAssertEqual(fixture.realm.objects(Feed.self).count, 3, "The committed duplicate remains durable")
         XCTAssertEqual(model.selectedFeed?.id, originalSelection)
-        XCTAssertEqual(model.navigationPath.count, 0)
+        XCTAssertEqual(model.detailSelectionRequest, originalRequest)
+        XCTAssertEqual(host.detailPath, originalPath)
     }
 
     func testRecreatedDuplicatedFeedBeforePublicationDoesNotReplaceCurrentSelection() async throws {
         let fixture = try await makeFixture()
         let model = manager(fixture.realm.configuration)
+        let host = TypedLibraryHostBindings()
         model.selectedFeed = try source(fixture)
+        let originalRequest = model.detailSelectionRequest
+        model.applyDetailSelectionRequest(originalRequest, contentRoute: host.route, detailPath: host.path)
+        let originalPath = host.detailPath
         let configuration = fixture.realm.configuration
         let sourceID = fixture.sourceID
         let existingID = fixture.existingID
@@ -475,7 +960,8 @@ final class LibraryFeedDuplicationTests: XCTestCase, @unchecked Sendable {
         )
         fixture.realm.refresh()
         XCTAssertEqual(model.selectedFeed?.id, sourceID)
-        XCTAssertEqual(model.navigationPath.count, 0)
+        XCTAssertEqual(model.detailSelectionRequest, originalRequest)
+        XCTAssertEqual(host.detailPath, originalPath)
         XCTAssertEqual(fixture.realm.objects(Feed.self).count, 3)
     }
 
@@ -545,6 +1031,7 @@ final class LibraryFeedDuplicationTests: XCTestCase, @unchecked Sendable {
     func testNewerDuplicationKeepsSelectionWhenOlderCommittedPublicationResumes() async throws {
         let fixture = try await makeFixture()
         let model = manager(fixture.realm.configuration)
+        let host = TypedLibraryHostBindings()
         let firstFeed = ThreadSafeReference(to: try source(fixture))
         let firstCategory = ThreadSafeReference(to: try category(fixture))
         let gate = FeedDuplicationGate()
@@ -566,18 +1053,25 @@ final class LibraryFeedDuplicationTests: XCTestCase, @unchecked Sendable {
             overwriteExisting: false
         )
         let newerSelection = try XCTUnwrap(model.selectedFeed?.id)
-        let navigationCount = model.navigationPath.count
+        let newerRequest = model.detailSelectionRequest
+        model.applyDetailSelectionRequest(newerRequest, contentRoute: host.route, detailPath: host.path)
+        let newerPath = host.detailPath
         await gate.release()
         try await first.value
         fixture.realm.refresh()
         XCTAssertEqual(model.selectedFeed?.id, newerSelection)
-        XCTAssertEqual(model.navigationPath.count, navigationCount)
+        XCTAssertEqual(model.detailSelectionRequest, newerRequest)
+        XCTAssertEqual(host.contentRoute, .contentCategory(fixture.categoryID))
+        XCTAssertEqual(host.detailPath, newerPath)
         XCTAssertEqual(fixture.realm.objects(Feed.self).count, 4, "Both committed copies survive")
     }
 
     func testAlreadyCancelledNewcomerDoesNotRetireCommittedPublication() async throws {
         let fixture = try await makeFixture()
         let model = manager(fixture.realm.configuration)
+        let host = TypedLibraryHostBindings()
+        model.selectedFeed = try source(fixture)
+        let initialSelection = model.detailSelectionRequest
         let firstFeed = ThreadSafeReference(to: try source(fixture))
         let firstCategory = ThreadSafeReference(to: try category(fixture))
         let gate = FeedDuplicationGate()
@@ -602,6 +1096,8 @@ final class LibraryFeedDuplicationTests: XCTestCase, @unchecked Sendable {
             try await newcomer.value
             XCTFail("The cancelled newcomer must stop before claiming publication")
         } catch is CancellationError {}
+        model.applyDetailSelectionRequest(initialSelection, contentRoute: host.route, detailPath: host.path)
+        XCTAssertEqual(model.detailSelectionRequest, initialSelection, "Inactive peer cleanup preserves the newer pending duplicate")
         await gate.release()
         try await first.value
         fixture.realm.refresh()
@@ -609,7 +1105,11 @@ final class LibraryFeedDuplicationTests: XCTestCase, @unchecked Sendable {
         XCTAssertNotEqual(selected.id, fixture.sourceID)
         XCTAssertNotEqual(selected.id, fixture.existingID)
         XCTAssertEqual(selected.categoryID, fixture.categoryID)
-        XCTAssertEqual(model.navigationPath.count, 1)
+        model.applyDetailSelectionRequest(model.detailSelectionRequest, contentRoute: host.route, detailPath: host.path)
+        var expectedPath = NavigationPath()
+        expectedPath.append(selected)
+        XCTAssertEqual(host.contentRoute, .contentCategory(fixture.categoryID))
+        XCTAssertEqual(host.detailPath, expectedPath)
         XCTAssertEqual(fixture.realm.objects(Feed.self).count, 3)
     }
 
