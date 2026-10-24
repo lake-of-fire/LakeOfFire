@@ -64,9 +64,7 @@ struct LibraryScriptEditorIdentity: Hashable, Sendable {
         scriptID = owner.scriptID
         createdAt = owner.scriptCreatedAt
         let configuration = owner.realmConfiguration
-        storage = configuration.inMemoryIdentifier.map { "memory:" + $0 }
-            ?? configuration.fileURL.map { "file:" + $0.resolvingSymlinksInPath().standardizedFileURL.path }
-            ?? "default"
+        storage = owner.storageAdmission.scopeIdentity
         encryptionKey = configuration.encryptionKey
         schemaVersion = configuration.schemaVersion
     }
@@ -124,12 +122,14 @@ struct LibraryScriptFieldCommand: Sendable {
     @RealmBackgroundActor
     func write(beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil) async throws {
         try Task.checkCancellation()
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: owner.realmConfiguration)
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: owner.realmConfiguration, storageAdmission: owner.storageAdmission
+        )
         try await beforeWrite?()
         try Task.checkCancellation()
         try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
-            guard let script = owner.resolve(in: realm) else { return }
+            guard let script = try owner.resolve(in: realm) else { return }
             ordering.withAdmission(field: edit.field, intent: intent) {
                 guard edit.apply(to: script) else { return }
                 script.refreshChangeMetadata(explicitlyModified: true)

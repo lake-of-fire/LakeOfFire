@@ -1,3 +1,4 @@
+import Foundation
 import BigSyncKit
 import RealmSwift
 @testable import RealmSwiftGaps
@@ -122,7 +123,8 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
     func testReplacementFlushesBufferedTitleTextAndPreviewToOriginalScript() async throws {
         let (original, script) = try await fixture()
         let (replacement, otherScript) = try await fixture(scriptID: script.id)
-        let editor = model(script)
+        let retired = expectation(description: "all buffered original commands settled")
+        let editor = model(script, retirementDidFinish: { retired.fulfill() })
         editor.scriptTitle = "Leading title"
         editor.scriptTitle = "Final title"
         editor.scriptText = "leading();"
@@ -135,6 +137,7 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(editor.scriptPreviewURL, "https://original.example/")
         let otherGenerations = generations(replacement)
         try await editor.finishEditing().value
+        await fulfillment(of: [retired], timeout: 5)
         original.refresh()
         replacement.refresh()
         XCTAssertEqual(script.title, "Final title")
@@ -575,6 +578,246 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(script.title, "Final after release")
         XCTAssertNotNil(script.explicitlyModifiedAt)
         XCTAssertNil(releasedEditor)
+    }
+
+    // File replacement deliberately preserves model IDs and creation dates. A
+    // configuration path plus row incarnation cannot identify the original store.
+    private enum DiskMutation: CaseIterable, Sendable { case field, domainText, addDomain, deleteDomain }
+
+    private struct DiskCommands: Sendable {
+        let owner: LibraryScriptDomainOwner
+        let field: LibraryScriptFieldCommand
+        let domain: UserScriptAllowedDomainEditor
+        let domainEdit: UserScriptAllowedDomainEdit
+
+        @RealmBackgroundActor
+        func write(_ mutation: DiskMutation, beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil) async throws {
+            switch mutation {
+            case .field: try await field.write(beforeWrite: { await beforeWrite?() })
+            case .domainText: try await domainEdit.write(beforeWrite: beforeWrite)
+            case .addDomain: try await owner.write(.add, beforeWrite: beforeWrite)
+            case .deleteDomain: try await owner.write(.delete([domain.selection]), beforeWrite: beforeWrite)
+            }
+        }
+    }
+
+    private struct DiskState: Equatable, Sendable {
+        let title: String
+        let domainIDs: [UUID]
+        let domains: [String]
+        let deletedDomains: [Bool]
+        let modifiedAt: [Date]
+        let explicitlyModifiedAt: [Date?]
+        let generations: [String: String]
+    }
+
+    private struct DiskFixture: Sendable {
+        let current: Realm.Configuration
+        let replacement: Realm.Configuration
+        let retired: Realm.Configuration
+        let commands: DiskCommands
+        let originalState: DiskState
+        let replacementState: DiskState
+    }
+
+    private func diskCommands(_ configuration: Realm.Configuration, title: String = "Retired title") throws -> DiskCommands {
+        try autoreleasepool {
+            let realm = try Realm(configuration: configuration)
+            defer { realm.invalidate() }
+            let script = try XCTUnwrap(realm.objects(UserScript.self).first)
+            let domainID = try XCTUnwrap(script.allowedDomainIDs.first)
+            let domain = try XCTUnwrap(UserScriptAllowedDomainEditor(script: script, domainID: domainID))
+            return DiskCommands(
+                owner: try XCTUnwrap(LibraryScriptDomainOwner(script: script)),
+                field: try command(script, .title(title)),
+                domain: domain, domainEdit: domain.makeEdit("retired.example")
+            )
+        }
+    }
+
+    private func diskState(_ configuration: Realm.Configuration) throws -> DiskState {
+        try autoreleasepool {
+            let realm = try Realm(configuration: configuration)
+            defer { realm.invalidate() }
+            let script = try XCTUnwrap(realm.objects(UserScript.self).first)
+            let domains = Array(realm.objects(UserScriptAllowedDomain.self).sorted(byKeyPath: "createdAt"))
+            return DiskState(
+                title: script.title, domainIDs: Array(script.allowedDomainIDs),
+                domains: domains.map(\.domain), deletedDomains: domains.map(\.isDeleted),
+                modifiedAt: [script.modifiedAt] + domains.map(\.modifiedAt),
+                explicitlyModifiedAt: [script.explicitlyModifiedAt] + domains.map(\.explicitlyModifiedAt),
+                generations: generations(realm)
+            )
+        }
+    }
+
+    @RealmBackgroundActor
+    private static func releaseDiskCache(_ configuration: Realm.Configuration) {
+        // A replaced path has two cache keys. Retire only this fixture's keys,
+        // including the old inode; the public current-identity eviction is narrower.
+        let actor = RealmBackgroundActor.shared
+        let keys = actor.cachedRealms.keys.filter {
+            actor.cachedRealms[$0]?.configuration.fileURL == configuration.fileURL
+        }
+        for key in keys {
+            guard let realm = actor.cachedRealms[key], !realm.isInWriteTransaction else { continue }
+            actor.cachedRealms.removeValue(forKey: key)
+            realm.invalidate()
+        }
+    }
+
+    private func diskFixture() throws -> DiskFixture {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("script-storage-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var current = Realm.Configuration(fileURL: directory.appendingPathComponent("current.realm"))
+        current.objectTypes = [UserScript.self, UserScriptAllowedDomain.self]
+        configureLakeOfFireMutationTrackingForTesting(&current)
+        var replacement = current
+        replacement.fileURL = directory.appendingPathComponent("replacement.realm")
+        configureLakeOfFireMutationTrackingForTesting(&replacement)
+        var retired = current
+        retired.fileURL = directory.appendingPathComponent("retired.realm")
+        let captured = current
+        addTeardownBlock {
+            await Self.releaseDiskCache(captured)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let scriptID = UUID()
+        let domainID = UUID()
+        for (configuration, title) in [(current, "Original"), (replacement, "Replacement")] {
+            try autoreleasepool {
+                let realm = try Realm(configuration: configuration)
+                defer { realm.invalidate() }
+                try realm.write {
+                    let domain = UserScriptAllowedDomain()
+                    domain.id = domainID
+                    domain.createdAt = Date(timeIntervalSinceReferenceDate: 200)
+                    domain.domain = "original.example"
+                    realm.add(domain)
+                    domain.refreshChangeMetadata(explicitlyModified: true)
+                    let script = UserScript()
+                    script.id = scriptID
+                    script.createdAt = Date(timeIntervalSinceReferenceDate: 100)
+                    script.title = title
+                    script.allowedDomainIDs.append(domainID)
+                    realm.add(script)
+                    script.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+        }
+        let originalState = try diskState(current)
+        let replacementState = try diskState(replacement)
+        let expectedRecords: Set<String> = [
+            UserScript.className() + "." + scriptID.uuidString,
+            UserScriptAllowedDomain.className() + "." + domainID.uuidString
+        ]
+        XCTAssertEqual(Set(originalState.generations.keys), expectedRecords)
+        XCTAssertEqual(Set(replacementState.generations.keys), expectedRecords)
+        return DiskFixture(
+            current: current, replacement: replacement, retired: retired,
+            commands: try diskCommands(current),
+            originalState: originalState, replacementState: replacementState
+        )
+    }
+
+    private func replaceDiskFile(_ fixture: DiskFixture) throws {
+        let current = try XCTUnwrap(fixture.current.fileURL)
+        let replacement = try XCTUnwrap(fixture.replacement.fileURL)
+        let retired = try XCTUnwrap(fixture.retired.fileURL)
+        try FileManager.default.moveItem(at: current, to: retired)
+        try FileManager.default.moveItem(at: replacement, to: current)
+    }
+
+    func testCapturedCommandsRejectSamePathReplacementBeforeOpening() async throws {
+        for mutation in DiskMutation.allCases {
+            let fixture = try diskFixture()
+            try replaceDiskFile(fixture)
+            do {
+                try await fixture.commands.write(mutation)
+                XCTFail("A retained command adopted the replacement store: \(mutation)")
+            } catch RealmBackgroundActorError.realmFileChangedDuringOpen {}
+            await Self.releaseDiskCache(fixture.current)
+            XCTAssertEqual(try diskState(fixture.current), fixture.replacementState)
+            XCTAssertEqual(try diskState(fixture.retired), fixture.originalState)
+        }
+    }
+
+    func testCapturedCommandsRejectSamePathReplacementAfterOpening() async throws {
+        for mutation in DiskMutation.allCases {
+            let fixture = try diskFixture()
+            let gate = LibraryScriptFieldGate()
+            let opened = expectation(description: "Actual command opened original storage and suspended")
+            let writer = Task { @RealmBackgroundActor in
+                try await fixture.commands.write(mutation, beforeWrite: {
+                    await gate.wait(onSuspension: { opened.fulfill() })
+                })
+            }
+            addTeardownBlock { await gate.release(); _ = await writer.result }
+            await fulfillment(of: [opened], timeout: 5)
+            try replaceDiskFile(fixture)
+            await gate.release()
+            do {
+                try await writer.value
+                XCTFail("The transaction did not revalidate physical storage: \(mutation)")
+            } catch RealmBackgroundActorError.realmFileChangedDuringOpen {}
+            await Self.releaseDiskCache(fixture.current)
+            XCTAssertEqual(try diskState(fixture.current), fixture.replacementState)
+            XCTAssertEqual(try diskState(fixture.retired), fixture.originalState)
+        }
+    }
+
+    func testRetirementRetryKeepsTheOriginalPhysicalStorageAdmission() async throws {
+        let fixture = try diskFixture()
+        let gate = LibraryScriptFieldGate()
+        let opened = expectation(description: "Failed attempt registered after opening original storage")
+        let command = fixture.commands.field
+        let attempt = Task { @RealmBackgroundActor in
+            try await command.write(beforeWrite: {
+                await gate.wait(onSuspension: { opened.fulfill() })
+                throw InjectedFailure.write
+            })
+        }
+        let retirement = LibraryScriptFieldRetirement(commands: [command], activeWrites: [command.intent: attempt])
+        let finishing = Task { @RealmBackgroundActor in try await retirement.finish() }
+        addTeardownBlock { await gate.release(); _ = await attempt.result; _ = await finishing.result }
+        await fulfillment(of: [opened], timeout: 5)
+        try replaceDiskFile(fixture)
+        await gate.release()
+        do { try await attempt.value; XCTFail("Expected the injected failure") }
+        catch InjectedFailure.write {}
+        do { try await finishing.value; XCTFail("Retirement retry adopted the replacement") }
+        catch RealmBackgroundActorError.realmFileChangedDuringOpen {}
+        await Self.releaseDiskCache(fixture.current)
+        XCTAssertEqual(try diskState(fixture.current), fixture.replacementState)
+        XCTAssertEqual(try diskState(fixture.retired), fixture.originalState)
+    }
+
+    func testReplacementStoreHasIndependentFieldAndDomainInputOrdering() async throws {
+        let fixture = try diskFixture()
+        try replaceDiskFile(fixture)
+        let fresh = try diskCommands(fixture.current, title: "Successor title")
+        let freshDomain = fresh.domain.makeEdit("successor.example")
+        XCTAssertNotEqual(LibraryScriptEditorIdentity(owner: fixture.commands.owner), LibraryScriptEditorIdentity(owner: fresh.owner))
+        XCTAssertNotEqual(fixture.commands.domain.identity, fresh.domain.identity)
+
+        // Retained controls can reserve old input after the new editor's input.
+        // Such input must not revoke the successor's admission.
+        let oldField = fixture.commands.field
+        _ = oldField.ordering.issueIntent(field: oldField.edit.field)
+        _ = fixture.commands.domain.makeEdit("retired.example")
+        try await fresh.field.write()
+        try await freshDomain.write()
+        await Self.releaseDiskCache(fixture.current)
+        let after = try diskState(fixture.current)
+        XCTAssertEqual(after.title, "Successor title")
+        XCTAssertEqual(after.domains, ["successor.example"])
+        XCTAssertNotEqual(after.generations, fixture.replacementState.generations)
+        XCTAssertEqual(try diskState(fixture.retired), fixture.originalState)
+        try await fresh.field.write()
+        try await freshDomain.write()
+        await Self.releaseDiskCache(fixture.current)
+        XCTAssertEqual(try diskState(fixture.current), after, "Same-value replays must not re-journal")
     }
 
 }
