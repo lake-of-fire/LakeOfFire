@@ -14,11 +14,36 @@ public extension ReaderContentLoader {
         fileprivate let providers: [ReaderContentAdditionalProvider]
 
         public init(primaryContent: any ReaderContentProtocol) {
-            primaryReference = ContentReference(content: primaryContent)
+            self.init(primaryReference: ContentReference(content: primaryContent))
+        }
+
+        /// Mutations without a selected primary still capture the same stores
+        /// and provider registrations before discovery suspends.
+        public init() {
+            self.init(primaryReference: nil)
+        }
+
+        private init(primaryReference: ContentReference?) {
+            self.primaryReference = primaryReference
             historyStore = ReaderModePropagationStore(configuration: ReaderContentLoader.historyRealmConfiguration)
             feedStore = ReaderModePropagationStore(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
             providers = ReaderContentLoader.additionalContentProviders
         }
+    }
+
+    /// Share uncached discovery with generic mutations while preserving each
+    /// caller's content-file and feed-entry exclusions.
+    @RealmBackgroundActor
+    internal static func contentMutationReferences(
+        for url: URL,
+        context: ReaderModePropagationContext,
+        skipContentFiles: Bool,
+        skipFeedEntries: Bool
+    ) async throws -> [ContentReference] {
+        try await readerModePropagationReferences(
+            for: url, context: context,
+            skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries
+        )
     }
 
     /// Updates related stored representations without excluding another class
@@ -107,18 +132,26 @@ private extension ReaderContentLoader {
     @RealmBackgroundActor
     static func readerModePropagationReferences(
         for url: URL,
-        context: ReaderModePropagationContext
+        context: ReaderModePropagationContext,
+        skipContentFiles: Bool = false,
+        skipFeedEntries: Bool = false
     ) async throws -> [ContentReference] {
         // Authoritative propagation must not consume the URL-only completed
         // loadAll cache or a task that captured another account's configuration.
         let historyRealm = try await context.historyStore.open()
-        let feedRealm = try await context.feedStore.open()
+        let feedRealm: Realm?
+        if skipFeedEntries {
+            feedRealm = nil
+        } else {
+            feedRealm = try await context.feedStore.open()
+        }
         try Task.checkCancellation()
         try context.historyStore.validate()
-        try context.feedStore.validate()
+        if !skipFeedEntries { try context.feedStore.validate() }
 
         var references = readerModeBuiltInPropagationReferences(
-            for: url, context: context, historyRealm: historyRealm, feedRealm: feedRealm
+            for: url, context: context, historyRealm: historyRealm, feedRealm: feedRealm,
+            skipContentFiles: skipContentFiles
         )
         for provider in context.providers {
             try Task.checkCancellation()
@@ -136,14 +169,15 @@ private extension ReaderContentLoader {
         for url: URL,
         context: ReaderModePropagationContext,
         historyRealm: Realm,
-        feedRealm: Realm
+        feedRealm: Realm?,
+        skipContentFiles: Bool
     ) -> [ContentReference] {
         // Preserve the selected history-store discovery policy, canonical
         // history matching, and HTTPS feed fallback. Snapshot before providers
         // suspend so a replacement cannot acquire the original row's identity.
         var references = [ContentReference]()
         let historyCandidates: [any ReaderContentProtocol] = [
-            ContentFile.get(forURL: url, realm: historyRealm),
+            skipContentFiles ? nil : ContentFile.get(forURL: url, realm: historyRealm),
             Bookmark.get(forURL: url, realm: historyRealm),
             HistoryRecord.getOpenedRecord(forURL: url, in: historyRealm),
         ].compactMap { $0 }
@@ -152,6 +186,7 @@ private extension ReaderContentLoader {
                              storageAdmission: context.historyStore.admission)
         })
 
+        guard let feedRealm else { return references }
         let feeds = feedRealm.objects(FeedEntry.self)
             .where { !$0.isDeleted }
             .sorted(by: \.createdAt, ascending: false)
