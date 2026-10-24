@@ -977,6 +977,15 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         return realm.object(ofType: Feed.self, forPrimaryKey: feedID)
     }
     
+    /// Import reads display metadata without starting a separate feed-cache write.
+    @RealmBackgroundActor
+    func importImageURLWithoutCaching() -> URL? {
+        if let imageUrl { return imageUrl }
+        guard extractImageFromContent, let html else { return nil }
+        return Self.imageURLExtractedFromContent(htmlContent: html)
+    }
+
+
     @MainActor
     public func imageURLToDisplay() async throws -> URL? {
         if let imageUrl {
