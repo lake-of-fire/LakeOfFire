@@ -11,7 +11,7 @@ private enum CloudDriveStatusFixtureError: Error {
 /// Only the I/O boundary is controlled; the production model owns all polling,
 /// task cancellation, replacement admission and status publication.
 private actor CloudDriveStatusProbe {
-    private let immediateResult: CloudDriveSyncStatus?
+    private var immediateResult: CloudDriveSyncStatus?
     private var requestedURLs: [URL] = []
     private var reads: [Int: CheckedContinuation<CloudDriveSyncStatus, Error>] = [:]
     private var observers: [Int: [CheckedContinuation<Void, Never>]] = [:]
@@ -54,6 +54,10 @@ private actor CloudDriveStatusProbe {
 
     func fail(_ index: Int) {
         reads.removeValue(forKey: index)?.resume(throwing: CloudDriveStatusFixtureError.unavailable)
+    }
+
+    func returnImmediatelyForFutureReads(with status: CloudDriveSyncStatus) {
+        immediateResult = status
     }
 
     func urls() -> [URL] { requestedURLs }
@@ -130,6 +134,50 @@ final class CloudDriveSyncStatusModelTests: XCTestCase {
         let urls = await probe.urls()
         XCTAssertEqual(urls, [])
         XCTAssertTrue(model.status == .loadingStatus)
+    }
+
+    func testAlreadyTombstonedRowDoesNotStartStatusIO() async throws {
+        let fixture = try CloudDriveStatusFixture()
+        try fixture.realm.write { fixture.file.isDeleted = true }
+        XCTAssertFalse(fixture.file.isInvalidated)
+        let probe = CloudDriveStatusProbe(immediateResult: .availableLocally)
+        let model = makeModel(probe: probe)
+
+        await model.refreshAsync(item: fixture.file)
+
+        let urls = await probe.urls()
+        XCTAssertEqual(urls, [])
+        XCTAssertTrue(model.status == .loadingStatus)
+    }
+
+    func testTombstonedNotificationDoesNotReplaceLiveRefresh() async throws {
+        let live = try CloudDriveStatusFixture()
+        let removed = try CloudDriveStatusFixture()
+        try removed.realm.write { removed.file.isDeleted = true }
+        XCTAssertFalse(removed.file.isInvalidated)
+        let probe = CloudDriveStatusProbe()
+        let model = makeModel(probe: probe)
+        let current = try XCTUnwrap(model.requestRefresh(item: live.file))
+        await probe.waitForRequest(0)
+
+        let rejected = model.requestRefresh(
+            item: removed.file,
+            matchingBackingURLString: "reader-file://file/load/local/status.epub"
+        )
+        XCTAssertNil(rejected)
+        // If entry admission regresses, cancel its returned handle before it
+        // can start controlled I/O. The original request's cancellation and
+        // publication below still expose the regression without hanging.
+        rejected?.cancel()
+        await rejected?.value
+        await probe.succeed(0, with: .availableLocally)
+        await current.value
+
+        let urls = await probe.urls()
+        let wasCancelled = await probe.wasCancelled(0)
+        XCTAssertEqual(urls.count, 1)
+        XCTAssertEqual(wasCancelled, false)
+        XCTAssertTrue(model.status == .availableLocally)
     }
 
     func testInvalidatedNotificationDoesNotReadManagedURLOrStartIO() async throws {
@@ -309,6 +357,13 @@ final class CloudDriveSyncStatusModelTests: XCTestCase {
         }
     }
 
+    func testTombstoneRejectsPendingStatusResponse() async throws {
+        try await assertReadRejectedAfterRowChange { fixture in
+            try fixture.realm.write { fixture.file.isDeleted = true }
+            XCTAssertFalse(fixture.file.isInvalidated)
+        }
+    }
+
     func testChangedCreationIdentityRejectsOriginalStatusResponse() async throws {
         try await assertReadRejectedAfterRowChange { fixture in
             try fixture.realm.write {
@@ -362,6 +417,29 @@ final class CloudDriveSyncStatusModelTests: XCTestCase {
         await delay.waitUntilStarted(0)
 
         try fixture.realm.write { fixture.realm.delete(fixture.file) }
+        await delay.resume(0)
+        await request.value
+
+        let urls = await probe.urls()
+        XCTAssertEqual(urls.count, 1)
+        XCTAssertTrue(model.status == .downloading)
+    }
+
+    func testTombstonedRowStopsBeforeTheNextPollingRead() async throws {
+        let fixture = try CloudDriveStatusFixture()
+        let probe = CloudDriveStatusProbe()
+        let delay = CloudDriveRefreshDelay()
+        let model = makeModel(probe: probe, delay: delay)
+        let request = Task { @MainActor in await model.refreshAsync(item: fixture.file) }
+        await probe.waitForRequest(0)
+        await probe.succeed(0, with: .downloading)
+        await delay.waitUntilStarted(0)
+
+        try fixture.realm.write { fixture.file.isDeleted = true }
+        XCTAssertFalse(fixture.file.isInvalidated)
+        // A regressed second read completes instead of hanging in the I/O
+        // fixture. Its extra request and publication both fail below.
+        await probe.returnImmediatelyForFutureReads(with: .availableLocally)
         await delay.resume(0)
         await request.value
 
