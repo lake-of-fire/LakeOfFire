@@ -441,21 +441,18 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     }
     
     @RealmBackgroundActor
-    public func duplicateFeed(_ feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws -> UUID? {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration)
-        guard let category = realm.resolve(category), let feed = realm.resolve(feed) else { return nil }
-        let existing = category.getFeeds()?.filter { $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
-        let value = try JSONDecoder().decode(Feed.self, from: JSONEncoder().encode(feed))
-        value.id = (overwriteExisting ? existing?.id : nil) ?? UUID()
-        value.isDeleted = false
-        value.isArchived = false
-        value.categoryID = category.id
-//        await realm.asyncRefresh()
-        try await realm.asyncWrite {
-            let duplicatedFeed = realm.create(Feed.self, value: value, update: .modified)
-            duplicatedFeed.refreshChangeMetadata(explicitlyModified: true)
-        }
-        return value.id
+    public func duplicateFeed(
+        _ feed: ThreadSafeReference<Feed>,
+        inCategory category: ThreadSafeReference<FeedCategory>,
+        overwriteExisting: Bool,
+        realmConfiguration: Realm.Configuration = ReaderContentLoader.feedEntryRealmConfiguration
+    ) async throws -> UUID? {
+        try await duplicateFeedWithIdentity(
+            feed,
+            inCategory: category,
+            overwriteExisting: overwriteExisting,
+            realmConfiguration: realmConfiguration
+        )?.feedID
     }
     
     @RealmBackgroundActor
