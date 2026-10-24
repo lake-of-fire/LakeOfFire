@@ -1,6 +1,6 @@
 import BigSyncKit
 import RealmSwift
-import RealmSwiftGaps
+@testable import RealmSwiftGaps
 import XCTest
 @testable import LakeOfFireContent
 
@@ -383,6 +383,43 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
         XCTAssertTrue(higherConfiguration.isDeleted)
     }
 
+    func testPreCancelledConsolidationDoesNotCreateConfigurationOrJournal() async throws {
+        let (configuration, realm) = try await makeRealm()
+        let task = Task { @RealmBackgroundActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+                return false
+            } catch is CancellationError { return true }
+            catch {
+                XCTFail("Unexpected error: \(error)")
+                return false
+            }
+        }
+        let cancelled = await task.value
+        XCTAssertTrue(cancelled)
+        XCTAssertTrue(realm.objects(LibraryConfiguration.self).isEmpty)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    func testCommitSubmissionCancellationStillReturnsDurablePrimary() async throws {
+        let (configuration, realm) = try await makeRealm()
+        let task = Task { @RealmBackgroundActor in
+            try await RealmWriteCommitObservation.$didSubmit.withValue({
+                withUnsafeCurrentTask { $0?.cancel() }
+            }) {
+                let result = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+                return result.id
+            }
+        }
+        let primaryID = try await task.value
+        XCTAssertTrue(task.isCancelled)
+        let primary = try XCTUnwrap(realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: primaryID))
+        XCTAssertFalse(primary.isDeleted)
+        XCTAssertEqual(realm.objects(LibraryConfiguration.self).count, 1)
+        XCTAssertNotNil(pendingMutation(for: primary, in: realm))
+    }
+
     @RealmBackgroundActor
     private func makeRealm() async throws -> (Realm.Configuration, Realm) {
         var configuration = Realm.Configuration(
@@ -394,6 +431,10 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
             UserScript.self,
         ]
         configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let capturedConfiguration = configuration
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: capturedConfiguration)
+        }
         let realm = try await Realm(
             configuration: configuration,
             actor: RealmBackgroundActor.shared

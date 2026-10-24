@@ -65,7 +65,7 @@ extension LibraryConfiguration {
             for: realmConfiguration
         )
 
-        let primaryID: UUID = try await realm.asyncWrite {
+        let primaryID: UUID = try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             let configurations = Array(
                 realm.objects(LibraryConfiguration.self).where { !$0.isDeleted }
