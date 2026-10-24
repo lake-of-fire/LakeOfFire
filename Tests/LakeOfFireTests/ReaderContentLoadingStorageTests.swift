@@ -1505,4 +1505,149 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         XCTAssertNotEqual(try journalState(for: record, in: realm).generation, changed.generation)
     }
 
+
+    @RealmBackgroundActor
+    func testReaderModePropagationMutatesOtherRepresentationsOnlyOnce() async throws {
+        let configuration = makeConfiguration()
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeed
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        addTeardownBlock {
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        let url = URL(string: "https://example.com/reader-defaults/\(UUID().uuidString)")!
+        let primary = HistoryRecord()
+        primary.url = url
+        primary.title = "Primary"
+        primary.updateCompoundKey()
+        let related = Bookmark()
+        related.url = url
+        related.title = ""
+        related.isReaderModeAvailable = true
+        related.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(primary)
+            primary.refreshChangeMetadata(explicitlyModified: true)
+            realm.add(related)
+            related.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let primarySeeded = primary.explicitlyModifiedAt
+        let seeded = try journalState(for: related, in: realm)
+        let html = "<article><p>Complete captured article.</p></article>"
+
+        try await ReaderContentLoader.propagateReaderModeDefaults(
+            for: url,
+            excludingPrimaryKey: primary.compoundKey,
+            readabilityHTML: html,
+            resolvedTitle: "Inferred title",
+            permitsCommit: { true }
+        )
+        XCTAssertTrue(related.isReaderModeByDefault)
+        XCTAssertFalse(related.isReaderModeAvailable)
+        XCTAssertEqual(related.html, html)
+        XCTAssertEqual(related.title, "Inferred title")
+        XCTAssertTrue(related.rssContainsFullContent)
+        XCTAssertEqual(primary.explicitlyModifiedAt, primarySeeded)
+        let changed = try journalState(for: related, in: realm)
+        XCTAssertNotEqual(changed.generation, seeded.generation)
+
+        try await ReaderContentLoader.propagateReaderModeDefaults(
+            for: url,
+            excludingPrimaryKey: primary.compoundKey,
+            readabilityHTML: html,
+            resolvedTitle: "Inferred title",
+            permitsCommit: { true }
+        )
+        XCTAssertEqual(try journalState(for: related, in: realm), changed,
+                       "A repeated render must not publish another BigSync mutation")
+    }
+
+    @MainActor
+    func testRetiredReaderSelectionCannotPropagateHTMLAfterDiscoverySuspends() async throws {
+        let configuration = makeConfiguration()
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeed
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let url = URL(string: "https://example.com/retired-reader-defaults/\(UUID().uuidString)")!
+        let primary = try managedReaderRecord(in: realm, url: url, title: "Primary")
+        let related = Bookmark()
+        related.url = url
+        related.title = "Original related title"
+        related.updateCompoundKey()
+        try realm.write {
+            realm.add(related)
+            related.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let seeded = try XCTUnwrap(pendingMutation(for: related, in: realm)).generation
+
+        let reader = ReaderContent()
+        try await reader.load(url: url, resolveContent: { _ in primary })
+        let fence = reader.makeSelectionCommitFence(requiring: reader.currentSelectionID)
+        XCTAssertTrue(fence())
+
+        let gate = ReaderContentLoadingDiscoveryGate()
+        await { @RealmBackgroundActor in
+            ReaderContentLoader.loadAllDiscoveryGateForTesting = { await gate.pause() }
+        }()
+        let primaryKey = primary.compoundKey
+        let propagation = Task { @RealmBackgroundActor in
+            try await ReaderContentLoader.propagateReaderModeDefaults(
+                for: url,
+                excludingPrimaryKey: primaryKey,
+                readabilityHTML: "<p>Stale reader document</p>",
+                resolvedTitle: "Stale title",
+                permitsCommit: fence
+            )
+        }
+        let entered = expectation(description: "reader-mode propagation discovery suspended")
+        let arrival = Task {
+            if await gate.waitForArrivals(1) { entered.fulfill() }
+        }
+        addTeardownBlock {
+            await gate.releaseAll()
+            _ = await propagation.result
+            _ = await arrival.result
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        await fulfillment(of: [entered], timeout: 2)
+
+        let successorURL = URL(string: "https://example.com/reader-successor/\(UUID().uuidString)")!
+        let successor = HistoryRecord()
+        successor.url = successorURL
+        successor.updateCompoundKey()
+        try await reader.load(url: successorURL, resolveContent: { _ in successor })
+        XCTAssertFalse(fence())
+        await gate.releaseAll()
+        try await propagation.value
+        await realm.asyncRefresh()
+
+        XCTAssertEqual(related.title, "Original related title")
+        XCTAssertFalse(related.isReaderModeByDefault)
+        XCTAssertNil(related.html)
+        XCTAssertEqual(try XCTUnwrap(pendingMutation(for: related, in: realm)).generation, seeded)
+    }
 }

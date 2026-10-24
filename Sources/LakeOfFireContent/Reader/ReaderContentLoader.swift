@@ -508,6 +508,55 @@ public struct ReaderContentLoader {
         return try await task.value
     }
 
+    /// Propagate prepared Reader HTML only while its originating selection remains
+    /// live. Discovery and queued Realm writes can each suspend; the lifetime
+    /// fence must be checked by the final, storage-admitted transaction.
+    @RealmBackgroundActor
+    public static func propagateReaderModeDefaults(
+        for url: URL,
+        excludingPrimaryKey primaryKey: String,
+        readabilityHTML: String,
+        resolvedTitle: String?,
+        permitsCommit: @escaping @Sendable () -> Bool
+    ) async throws {
+        guard permitsCommit() else { return }
+        try Task.checkCancellation()
+        try await updateContent(url: url) { record in
+            guard permitsCommit(), !Task.isCancelled,
+                  record.compoundKey != primaryKey else { return false }
+
+            var changed = false
+            if !record.isReaderModeByDefault {
+                record.isReaderModeByDefault = true
+                changed = true
+            }
+            if record.isReaderModeAvailable {
+                record.isReaderModeAvailable = false
+                changed = true
+            }
+            if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                if !url.isReaderFileURL,
+                   (record.content?.isEmpty ?? true),
+                   record.html != readabilityHTML {
+                    record.html = readabilityHTML
+                    changed = true
+                }
+                if let resolvedTitle,
+                   record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   record.title != resolvedTitle {
+                    record.title = resolvedTitle
+                    changed = true
+                }
+                if !record.rssContainsFullContent {
+                    record.rssContainsFullContent = true
+                    changed = true
+                }
+            }
+            // updateContent journals just once, and only for an actual change.
+            return changed
+        }
+    }
+
     /// Update all reader-content objects that share the given URL. The updater returns true if it mutated the object.
     @RealmBackgroundActor
     public static func updateContent(
