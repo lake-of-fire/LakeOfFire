@@ -13,7 +13,10 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
     }
     
     public func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
-        guard let url = urlSchemeTask.request.url, url.host == "local" else {
+        guard let url = urlSchemeTask.request.url,
+              url.scheme?.lowercased() == "internal",
+              url.host?.lowercased() == "local",
+              url.user == nil, url.password == nil, url.port == nil else {
             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.notFound)
             return
         }
@@ -37,6 +40,11 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
             urlSchemeTask.didReceive(sidecar.response)
             urlSchemeTask.didReceive(sidecar.data)
             urlSchemeTask.didFinish()
+            return
+        }
+        if url.path.hasPrefix("/load/reader"),
+           !url.isReaderURLLoaderURL || url.readerContentURL == nil {
+            urlSchemeTask.didFailWithError(CustomSchemeHandlerError.notFound)
             return
         }
         let response = URLResponse(

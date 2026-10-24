@@ -237,6 +237,13 @@ public struct ReaderContentLoader {
         pageURL.isReaderURLLoaderURL ? pageURL.readerContentURL : nil
     }
 
+    // The fragment on a loader document belongs to same-page navigation.
+    // Look up the stable URL encoded in its query; never create a new stored
+    // content record for each anchor in the rendered document.
+    static func backingContentURL(fromLoaderURL pageURL: URL) -> URL? {
+        getContentURL(fromLoaderURL: pageURL.removingFragmentIfNeeded())
+    }
+
     @RealmBackgroundActor
     private static func resolveContentReferences(
         _ references: [ContentReference]
@@ -400,7 +407,9 @@ public struct ReaderContentLoader {
         url: URL,
         storage: DiscoveryStorage
     ) async throws -> (any ReaderContentProtocol)? {
-        let resolvedURL = getContentURL(fromLoaderURL: url) ?? url
+        let backingURL = backingContentURL(fromLoaderURL: url)
+        guard !url.isReaderURLLoaderURL || backingURL != nil else { return nil }
+        let resolvedURL = backingURL ?? url
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try await storedContentReference(for: resolvedURL, storage: storage)
         }()
@@ -453,7 +462,9 @@ public struct ReaderContentLoader {
         countsAsHistoryVisit: Bool = false,
         source: String = "ReaderContentLoader.getContent"
     ) async throws -> (any ReaderContentProtocol)? {
-        let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL) ?? pageURL
+        let backingURL = backingContentURL(fromLoaderURL: pageURL)
+        guard !pageURL.isReaderURLLoaderURL || backingURL != nil else { return nil }
+        let resolvedURL = backingURL ?? pageURL
         let storage = DiscoveryStorage()
         getContentObservationForTesting?(.capturedStorage)
         let taskKey = GetContentTaskKey(
@@ -467,17 +478,18 @@ public struct ReaderContentLoader {
         }
 
         let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor in
-            if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL),
-               let content = try await ReaderContentLoader.load(
-                url: contentURL,
-                persist: true,
-                countsAsHistoryVisit: countsAsHistoryVisit,
-                source: "\(source).loaderRedirect",
-                storage: storage
-               ) {
+            if let contentURL = backingURL {
+                let content = try await ReaderContentLoader.load(
+                    url: contentURL,
+                    persist: true,
+                    countsAsHistoryVisit: countsAsHistoryVisit,
+                    source: "\(source).loaderRedirect",
+                    storage: storage
+                )
                 try Task.checkCancellation()
                 return content
-            } else if let content = try await ReaderContentLoader.load(
+            }
+            if let content = try await ReaderContentLoader.load(
                 url: pageURL,
                 persist: !pageURL.isNativeReaderView,
                 countsAsHistoryVisit: countsAsHistoryVisit,
@@ -969,7 +981,9 @@ public struct ReaderContentLoader {
               let encodedURL = contentURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
             return nil
         }
-        return URL(string: "internal://local/load/reader?reader-url=\(encodedURL)")
+        guard let loaderURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)"),
+              loaderURL.readerContentURL == contentURL else { return nil }
+        return loaderURL
     }
     
     @MainActor

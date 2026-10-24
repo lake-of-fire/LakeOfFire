@@ -326,7 +326,24 @@ public extension URL {
         }
         let lhsContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: self) ?? self
         let rhsContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
-        return lhsContentURL == rhsContentURL
+        if lhsContentURL == rhsContentURL {
+            return true
+        }
+        // A fragment-only WebKit navigation changes the document location,
+        // not the Reader content selection. Keep the existing selection and
+        // render owner for web articles and reader-file documents. Other
+        // schemes (for example ebook chapter routes) retain exact matching.
+        guard let lhsScheme = lhsContentURL.scheme?.lowercased(),
+              lhsScheme == rhsContentURL.scheme?.lowercased() else {
+            return false
+        }
+        switch lhsScheme {
+        case "http", "https", "reader-file":
+            break
+        default:
+            return false
+        }
+        return urlsMatchWithoutHash(lhsContentURL, rhsContentURL)
     }
 }
 

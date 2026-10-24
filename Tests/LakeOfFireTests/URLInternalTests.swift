@@ -2,6 +2,122 @@ import XCTest
 @testable import LakeOfFireCore
 
 final class URLInternalTests: XCTestCase {
+    func testReaderLoaderFragmentPreservesEscapedReservedCharacters() throws {
+        let source = try XCTUnwrap(URL(string: "https://example.org/article#old"))
+        var loader = try XCTUnwrap(URLComponents(string: "internal://local/load/reader"))
+        loader.queryItems = [URLQueryItem(name: "reader-url", value: source.absoluteString)]
+        loader.percentEncodedFragment = "section%2Ftwo%2523tail"
+        XCTAssertEqual(try XCTUnwrap(loader.url).readerContentURL?.absoluteString,
+                       "https://example.org/article#section%2Ftwo%2523tail")
+    }
+
+    func testReaderLoaderFragmentResolvesAgainstOriginalArticle() throws {
+        let original = try XCTUnwrap(URL(string: "https://example.com/a%2Fb?next=x%26y#old"))
+        let encoded = try XCTUnwrap(original.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics))
+        let loader = try XCTUnwrap(URL(string: "internal://local/load/reader?reader-url=\(encoded)#next"))
+
+        XCTAssertEqual(
+            loader.readerLoaderContentURL?.absoluteString,
+            "https://example.com/a%2Fb?next=x%26y#next"
+        )
+        XCTAssertEqual(
+            loader.removingFragmentIfNeeded().readerLoaderContentURL,
+            original
+        )
+    }
+
+    func testReaderLoaderRejectsMalformedAndUnexpectedDestinations() throws {
+        let cases = [
+            "internal://local/load/reader?reader-url=javascript%3Aalert%281%29",
+            "internal://local/load/reader?reader-url=data%3Atext%2Fhtml%2Ctest",
+            "internal://local/load/reader?reader-url=internal%3A%2F%2Flocal%2Fload%2Freader",
+            "internal://local/load/reader?reader-url=https%3A%2F%2Fexample.com&reader-url=https%3A%2F%2Fother.com",
+            "internal://local/load/reader?other=reader-url%3Dhttps%3A%2F%2Fexample.com",
+            "internal://local/load/reader?reader-url=%2Frelative%2Fpath",
+        ]
+        for value in cases {
+            let loader = try XCTUnwrap(URL(string: value))
+            // The canonical resolver validates the complete nested destination;
+            // readerLoaderContentURL intentionally unwraps only one layer.
+            XCTAssertNil(loader.readerContentURL, value)
+            XCTAssertNil(loader.snippetKey, value)
+        }
+    }
+
+    func testReaderLoaderRoundTripsSourceQueryFragmentAndEscapedUnicode() throws {
+        let sourceURL = try XCTUnwrap(URL(
+            string: "https://example.org/article?title=%E6%97%A5%E6%9C%AC%E8%AA%9E&mode=reader%26notes#start"
+        ))
+        let encodedSource = try XCTUnwrap(
+            sourceURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+        )
+        let loaderURL = try XCTUnwrap(URL(
+            string: "internal://local/load/reader?reader-url=\(encodedSource)"
+        ))
+
+        XCTAssertTrue(loaderURL.isReaderLoaderTransportURL)
+        XCTAssertEqual(loaderURL.readerLoaderContentURL, sourceURL)
+        XCTAssertEqual(
+            URL(string: loaderURL.absoluteString + "#next")?.readerLoaderContentURL,
+            URL(string: "https://example.org/article?title=%E6%97%A5%E6%9C%AC%E8%AA%9E&mode=reader%26notes#next")
+        )
+    }
+
+    func testReaderLoaderRejectsAmbiguousOrUnsafeTargets() throws {
+        let unsafeURLs = [
+            "internal://local/load/reader?reader-url=javascript%3Aalert%281%29",
+            "internal://local/load/reader?reader-url=data%3Atext%2Fhtml%2Chello",
+            "internal://local/load/reader?reader-url=file%3A%2F%2F%2Fprivate%2Fstory.html",
+            "internal://local/load/reader?reader-url=internal%3A%2F%2Flocal%2Fload%2Freader%3Freader-url%3Djavascript%253Aalert%25281%2529",
+            "internal://local/load/reader?reader-url=https%3A%2F%2Fexample.org&reader-url=https%3A%2F%2Fevil.example",
+            "internal://local/load/reader?reader-url=https%3A%2F%2Fexample.org&source=other",
+        ]
+        for string in unsafeURLs {
+            let loaderURL = try XCTUnwrap(URL(string: string))
+            XCTAssertNil(loaderURL.readerContentURL, string)
+        }
+    }
+
+    func testReaderLoaderRequiresExactLocalEndpoint() throws {
+        let misplacedURLs = [
+            "internal://local/load/reader-extra?reader-url=https%3A%2F%2Fexample.org",
+            "internal://elsewhere/load/reader?reader-url=https%3A%2F%2Fexample.org",
+            "internal://local:123/load/reader?reader-url=https%3A%2F%2Fexample.org",
+            "internal://user@local/load/reader?reader-url=https%3A%2F%2Fexample.org",
+        ]
+        for string in misplacedURLs {
+            let candidate = try XCTUnwrap(URL(string: string))
+            XCTAssertFalse(candidate.isReaderLoaderTransportURL, string)
+            XCTAssertNil(candidate.readerLoaderContentURL, string)
+        }
+    }
+
+    func testReaderLoaderPreservesLegacyEbookSource() throws {
+        let source = try XCTUnwrap(URL(string:
+            "ebook://book/chapter%2Fpart.xhtml?literal=%2523#selection"))
+        let encoded = try XCTUnwrap(
+            source.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+        )
+        let loader = try XCTUnwrap(URL(string:
+            "internal://local/load/reader?reader-url=\(encoded)"))
+
+        XCTAssertEqual(loader.readerContentURL, source)
+        XCTAssertEqual(loader.readerLoaderContentURL, source)
+    }
+
+    func testReaderLoaderPreservesLegacyAboutSnippetSource() throws {
+        let legacySnippet = try XCTUnwrap(URL(string: "about:snippet?key=legacy%252Fnote"))
+        let encoded = try XCTUnwrap(
+            legacySnippet.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+        )
+        let loader = try XCTUnwrap(URL(
+            string: "internal://local/load/reader?reader-url=\(encoded)"
+        ))
+
+        XCTAssertEqual(loader.readerLoaderContentURL, legacySnippet)
+        XCTAssertEqual(loader.snippetKey, legacySnippet.snippetKey)
+    }
+
     func testReaderContentURLPreservesEscapedSourceURLAndFragment() throws {
         let sourceURL = try XCTUnwrap(URL(
             string: "https://example.com/a%2Fb?query=C%2B%2B&literal=%2523&value=a%26b#part%202"

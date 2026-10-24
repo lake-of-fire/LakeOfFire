@@ -13,19 +13,22 @@ public extension URL {
             && path == "/load/reader"
     }
 
+    /// The endpoint and authority required for a valid loader transport.
+    var isReaderLoaderTransportURL: Bool {
+        isReaderURLLoaderURL && user == nil && password == nil && port == nil
+    }
+
     /// The content identity carried by one reader-loader transport URL.
     /// URLComponents has already decoded the query value once; only legacy
     /// double-encoded values without an absolute URL need another decoding pass.
     var readerLoaderContentURL: URL? {
-        guard isReaderURLLoaderURL,
+        guard isReaderLoaderTransportURL,
               let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
-              components.user == nil,
-              components.password == nil,
-              components.port == nil else {
+              let items = components.queryItems, items.count == 1 else {
             return nil
         }
 
-        let contentItems = components.queryItems?.filter { $0.name == "reader-url" } ?? []
+        let contentItems = items.filter { $0.name == "reader-url" }
         guard contentItems.count == 1,
               let value = contentItems.first?.value,
               !value.isEmpty else {
@@ -33,14 +36,20 @@ public extension URL {
         }
 
         func absoluteURL(from value: String) -> URL? {
-            URL(string: value).flatMap { $0.isAbsoluteReaderContentURL ? $0 : nil }
+            URL(string: value).flatMap { $0.isSupportedReaderLoaderTarget ? $0 : nil }
         }
 
-        if let contentURL = URL(string: value), contentURL.scheme != nil {
-            return contentURL.isAbsoluteReaderContentURL ? contentURL : nil
+        let contentURL: URL?
+        if let parsed = URL(string: value), parsed.scheme != nil {
+            contentURL = parsed.isSupportedReaderLoaderTarget ? parsed : nil
+        } else {
+            contentURL = value.removingPercentEncoding.flatMap(absoluteURL(from:))
         }
-        guard let decodedValue = value.removingPercentEncoding else { return nil }
-        return absoluteURL(from: decodedValue)
+        guard let contentURL else { return nil }
+        guard let fragment = components.percentEncodedFragment else { return contentURL }
+        var source = URLComponents(url: contentURL, resolvingAgainstBaseURL: false)
+        source?.percentEncodedFragment = fragment
+        return source?.url
     }
 
     /// Resolves transport wrappers at content and presentation boundaries.
@@ -94,6 +103,35 @@ public extension URL {
 }
 
 private extension URL {
+    var isSupportedReaderLoaderTarget: Bool {
+        guard let scheme = scheme?.lowercased() else { return false }
+        switch scheme {
+        case "http", "https":
+            return host?.isEmpty == false
+        case "reader-file":
+            guard let parts = URLComponents(url: self, resolvingAgainstBaseURL: false) else { return false }
+            return parts.host?.lowercased() == "file"
+                && parts.user == nil && parts.password == nil && parts.port == nil
+                && (parts.percentEncodedPath.hasPrefix("/load/local/")
+                    || parts.percentEncodedPath.hasPrefix("/load/icloud/"))
+        case "ebook", "ebook-url", "epub", "pdf", "pdf-url":
+            // Older local-content transports include ebook chapters. Keep
+            // their original source identity while excluding script, data and
+            // file URLs from the privileged internal reader wrapper.
+            return true
+        case "internal", "about":
+            if isReaderURLLoaderURL { return true } // Resolve legacy nested wrappers below.
+            guard let parts = URLComponents(url: self, resolvingAgainstBaseURL: false),
+                  parts.user == nil, parts.password == nil, parts.port == nil,
+                  let items = parts.queryItems, items.count == 1,
+                  items[0].name == "key", items[0].value?.isEmpty == false else { return false }
+            return scheme == "about" ? parts.path == "snippet"
+                : parts.host?.lowercased() == "local" && parts.path == "/snippet"
+        default:
+            return false
+        }
+    }
+
     var isAbsoluteReaderContentURL: Bool {
         guard let scheme = scheme?.lowercased() else { return false }
         if scheme == "http" || scheme == "https" {

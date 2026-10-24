@@ -61,6 +61,58 @@ private func requestWithoutURL() -> URLRequest {
 }
 
 final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
+    @MainActor
+    func testInternalReaderLoaderRejectsMalformedOrAmbiguousSource() throws {
+        let handler = InternalURLSchemeHandler()
+        let webView = WKWebView()
+        for string in [
+            "internal://local/load/reader?reader-url=javascript%3Aalert%281%29",
+            "internal://local/load/reader?reader-url=https%3A%2F%2Fexample.org&other=1",
+            "internal://local/load/reader-extra?reader-url=https%3A%2F%2Fexample.org",
+            "internal://user@local/snippet?key=some-key",
+            "internal://local:8080/snippet?key=some-key",
+        ] {
+            let task = TestURLSchemeTask(request: URLRequest(url: try XCTUnwrap(URL(string: string))))
+            handler.webView(webView, start: task)
+            XCTAssertEqual(task.failures.count, 1, string)
+            XCTAssertEqual(task.finishCount, 0, string)
+            XCTAssertTrue(task.responses.isEmpty, string)
+        }
+    }
+
+    @MainActor
+    func testInternalReaderLoaderAcceptsValidatedSource() throws {
+        let handler = InternalURLSchemeHandler()
+        let webView = WKWebView()
+        let url = try XCTUnwrap(URL(
+            string: "internal://local/load/reader?reader-url=https%3A%2F%2Fexample.org%2Farticle"
+        ))
+        let task = TestURLSchemeTask(request: URLRequest(url: url))
+
+        handler.webView(webView, start: task)
+
+        XCTAssertTrue(task.failures.isEmpty)
+        XCTAssertEqual(task.finishCount, 1)
+        XCTAssertEqual(task.responses.count, 1)
+        XCTAssertEqual(task.responses.first?.mimeType, "text/html")
+    }
+
+    @MainActor
+    func testInternalReaderLoaderHostIsCaseInsensitive() throws {
+        let handler = InternalURLSchemeHandler()
+        let webView = WKWebView()
+        let url = try XCTUnwrap(URL(
+            string: "internal://LOCAL/load/reader?reader-url=https%3A%2F%2Fexample.org%2Farticle"
+        ))
+        let task = TestURLSchemeTask(request: URLRequest(url: url))
+
+        handler.webView(webView, start: task)
+
+        XCTAssertTrue(task.failures.isEmpty)
+        XCTAssertEqual(task.finishCount, 1)
+        XCTAssertEqual(task.responses.first?.mimeType, "text/html")
+    }
+
     func testCancellationRejectsLaterCompletion() {
         let ownership = URLSchemeTaskCompletionOwnership()
         let task = NSObject()
