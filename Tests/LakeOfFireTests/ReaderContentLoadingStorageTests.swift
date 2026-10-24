@@ -1543,6 +1543,8 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
             realm.add(related)
             related.refreshChangeMetadata(explicitlyModified: true)
         }
+        XCTAssertEqual(primary.compoundKey, related.compoundKey,
+                       "Different Realm model classes may share the same URL key")
         let primarySeeded = primary.explicitlyModifiedAt
         let seeded = try journalState(for: related, in: realm)
         let html = "<article><p>Complete captured article.</p></article>"
@@ -1550,6 +1552,7 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         try await ReaderContentLoader.propagateReaderModeDefaults(
             for: url,
             excludingPrimaryKey: primary.compoundKey,
+            primaryClassName: primary.objectSchema.className,
             readabilityHTML: html,
             resolvedTitle: "Inferred title",
             permitsCommit: { true }
@@ -1566,6 +1569,7 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         try await ReaderContentLoader.propagateReaderModeDefaults(
             for: url,
             excludingPrimaryKey: primary.compoundKey,
+            primaryClassName: primary.objectSchema.className,
             readabilityHTML: html,
             resolvedTitle: "Inferred title",
             permitsCommit: { true }
@@ -1613,10 +1617,13 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
             ReaderContentLoader.loadAllDiscoveryGateForTesting = { await gate.pause() }
         }()
         let primaryKey = primary.compoundKey
+        let primaryClassName = primary.objectSchema.className
+        XCTAssertEqual(primaryKey, related.compoundKey)
         let propagation = Task { @RealmBackgroundActor in
             try await ReaderContentLoader.propagateReaderModeDefaults(
                 for: url,
                 excludingPrimaryKey: primaryKey,
+                primaryClassName: primaryClassName,
                 readabilityHTML: "<p>Stale reader document</p>",
                 resolvedTitle: "Stale title",
                 permitsCommit: fence

@@ -515,6 +515,7 @@ public struct ReaderContentLoader {
     public static func propagateReaderModeDefaults(
         for url: URL,
         excludingPrimaryKey primaryKey: String,
+        primaryClassName: String,
         readabilityHTML: String,
         resolvedTitle: String?,
         permitsCommit: @escaping @Sendable () -> Bool
@@ -523,7 +524,10 @@ public struct ReaderContentLoader {
         try Task.checkCancellation()
         try await updateContent(url: url) { record in
             guard permitsCommit(), !Task.isCancelled,
-                  record.compoundKey != primaryKey else { return false }
+                  !(record.compoundKey == primaryKey
+                    && record.objectSchema.className == primaryClassName) else {
+                return false
+            }
 
             var changed = false
             if !record.isReaderModeByDefault {
