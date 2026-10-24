@@ -105,6 +105,11 @@ private struct LibraryFeedMenu: View {
 @MainActor
 class LibraryFeedFormSectionsViewModel: ObservableObject {
     let feed: Feed
+    private let feedID: UUID
+    private let feedCreatedAt: Date
+    private let categoryID: UUID?
+    private let categoryCreatedAt: Date?
+    private let realmConfiguration: Realm.Configuration
     
     @Published var feedTitle = ""
     @Published var feedDescription = ""
@@ -134,13 +139,23 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     @RealmBackgroundActor
     private var objectNotificationToken: NotificationToken?
     
-    init(feed: Feed) {
+    init(feed: Feed, observesRealm: Bool = true) {
         self.feed = feed
-        // TODO: only resolve this once instead of repeatedly below...
         let feedID = feed.id
+        self.feedID = feedID
+        feedCreatedAt = feed.createdAt
+        categoryID = feed.categoryID
+        categoryCreatedAt = feed.getCategory()?.createdAt
+        let realmConfiguration = feed.realm?.configuration ?? LibraryDataManager.realmConfiguration
+        self.realmConfiguration = realmConfiguration
+        guard observesRealm else {
+            refresh()
+            hasInitializedValues = true
+            return
+        }
         Task { @RealmBackgroundActor [weak self] in
             guard let self else { return }
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
             objectNotificationToken = feed
                 .observe { [weak self] change in
@@ -166,7 +181,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
-                        let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                        let realm = try await Realm.open(configuration: realmConfiguration)
                         self.feedEntries = realm.objects(FeedEntry.self).where { $0.feedID == feedID } .map { $0 }
                     }
                 })
@@ -183,7 +198,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     .sink { [weak self] feedTitle in
                         guard let self else { return }
                         writeFeedAsync { feed in
+                            guard feed.title != feedTitle else { return false }
                             feed.title = feedTitle
+                            return true
                         }
                     }
                     .store(in: &cancellables)
@@ -194,7 +211,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     .sink { [weak self] feedDescription in
                         guard let self else { return }
                         writeFeedAsync { feed in
+                            guard feed.markdownDescription != feedDescription else { return false }
                             feed.markdownDescription = feedDescription
+                            return true
                         }
                     }
                     .store(in: &cancellables)
@@ -204,7 +223,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     .sink { [weak self] feedEnabled in
                         guard let self else { return }
                         writeFeedAsync { feed in
+                            guard feed.isArchived == feedEnabled else { return false }
                             feed.isArchived = !feedEnabled
+                            return true
                         }
                     }
                     .store(in: &cancellables)
@@ -215,11 +236,10 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     .sink { [weak self] feedURL in
                         guard let self else { return }
                         writeFeedAsync { feed in
-                            if feedURL.isEmpty {
-                                feed.rssUrl = URL(string: "about:blank")!
-                            } else if let url = URL(string: feedURL) {
-                                feed.rssUrl = url
-                            }
+                            guard let url = URL(string: feedURL.isEmpty ? "about:blank" : feedURL),
+                                  feed.rssUrl != url else { return false }
+                            feed.rssUrl = url
+                            return true
                         }
                     }
                     .store(in: &cancellables)
@@ -230,11 +250,10 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     .sink { [weak self] feedIconURL in
                         guard let self else { return }
                         writeFeedAsync { feed in
-                            if feedIconURL.isEmpty {
-                                feed.iconUrl = URL(string: "about:blank")!
-                            } else if let url = URL(string: feedIconURL) {
-                                feed.iconUrl = url
-                            }
+                            guard let url = URL(string: feedIconURL.isEmpty ? "about:blank" : feedIconURL),
+                                  feed.iconUrl != url else { return false }
+                            feed.iconUrl = url
+                            return true
                         }
                     }
                     .store(in: &cancellables)
@@ -244,7 +263,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     .sink { [weak self] feedIsReaderModeByDefault in
                         guard let self else { return }
                         writeFeedAsync { feed in
+                            guard feed.isReaderModeByDefault != feedIsReaderModeByDefault else { return false }
                             feed.isReaderModeByDefault = feedIsReaderModeByDefault
+                            return true
                         }
                     }
                     .store(in: &cancellables)
@@ -254,7 +275,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     .sink { [weak self] feedInjectEntryImageIntoHeader in
                         guard let self else { return }
                         writeFeedAsync { feed in
+                            guard feed.injectEntryImageIntoHeader != feedInjectEntryImageIntoHeader else { return false }
                             feed.injectEntryImageIntoHeader = feedInjectEntryImageIntoHeader
+                            return true
                         }
                     }
                     .store(in: &cancellables)
@@ -264,7 +287,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     .sink { [weak self] feedExtractImageFromContent in
                         guard let self else { return }
                         writeFeedAsync { feed in
+                            guard feed.extractImageFromContent != feedExtractImageFromContent else { return false }
                             feed.extractImageFromContent = feedExtractImageFromContent
+                            return true
                         }
                     }
                     .store(in: &cancellables)
@@ -274,7 +299,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     .sink { [weak self] feedRssContainsFullContent in
                         guard let self else { return }
                         writeFeedAsync { feed in
+                            guard feed.rssContainsFullContent != feedRssContainsFullContent else { return false }
                             feed.rssContainsFullContent = feedRssContainsFullContent
+                            return true
                         }
                     }
                     .store(in: &cancellables)
@@ -284,7 +311,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     .sink { [weak self] feedDisplayPublicationDate in
                         guard let self else { return }
                         writeFeedAsync { feed in
+                            guard feed.displayPublicationDate != feedDisplayPublicationDate else { return false }
                             feed.displayPublicationDate = feedDisplayPublicationDate
+                            return true
                         }
                     }
                     .store(in: &cancellables)
@@ -298,15 +327,38 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         }
     }
     
-    func writeFeedAsync(_ block: @escaping @Sendable (Feed) -> Void) {
-        let feedID = feed.id
-        let writeBlock = block
-        Task { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-            guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
+    @discardableResult
+    func writeFeedAsync(
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
+        _ block: @escaping @Sendable (Feed) -> Bool
+    ) -> Task<Void, Error> {
+        let feedID = feedID
+        let feedCreatedAt = feedCreatedAt
+        let categoryID = categoryID
+        let categoryCreatedAt = categoryCreatedAt
+        let realmConfiguration = realmConfiguration
+        return Task { @RealmBackgroundActor in
+            try Task.checkCancellation()
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             await realm.asyncRefresh()
-            try await realm.asyncWrite {
-                writeBlock(feed)
+            try await beforeWrite?()
+            try Task.checkCancellation()
+            try await realm.asyncWritePreservingOwnership {
+                try Task.checkCancellation()
+                guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
+                      !feed.isDeleted, feed.createdAt == feedCreatedAt,
+                      feed.categoryID == categoryID,
+                      let categoryID, let categoryCreatedAt,
+                      let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                      category.createdAt == categoryCreatedAt,
+                      !category.isDeleted, !category.isArchived, category.opmlURL == nil else { return }
+                let previousRSSURL = feed.rssUrl
+                guard block(feed) else { return }
+                if feed.rssUrl != previousRSSURL {
+                    feed.lastFetchedETag = nil
+                    feed.lastFetchedModifiedAt = nil
+                    feed.lastRefreshedEntriesAt = nil
+                }
                 feed.refreshChangeMetadata(explicitlyModified: true)
             }
         }
@@ -314,6 +366,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     
     @MainActor
     func refresh() {
+        guard !feed.isInvalidated else { return }
         feedTitle = feed.title
         feedDescription = feed.markdownDescription ?? ""
         feedEnabled = !(feed.isArchived || feed.isDeleted)
@@ -326,14 +379,21 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         feedDisplayPublicationDate = feed.displayPublicationDate
     }
     
-    func pasteRSSURL(strings: [String]) {
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: feed), configuration: LibraryDataManager.realmConfiguration) { _, feed in
-                feed.rssUrl = URL(string: strings.first ?? "") ?? URL(string: "about:blank")!
-                feed.refreshChangeMetadata(explicitlyModified: true)
+    @discardableResult
+    func pasteRSSURL(strings: [String]) -> Task<Void, Error> {
+        let url = URL(string: strings.first ?? "") ?? URL(string: "about:blank")!
+        let writer = writeFeedAsync { feed in
+            guard feed.rssUrl != url else { return false }
+            feed.rssUrl = url
+            return true
+        }
+        return Task { @MainActor [weak self] in
+            try await withTaskCancellationHandler {
+                try await writer.value
+            } onCancel: {
+                writer.cancel()
             }
-            refresh()
+            self?.refresh()
         }
     }
 }
@@ -427,7 +487,9 @@ struct LibraryFeedFormSections: View {
             if viewModel.feedDescription.isEmpty && viewModel.feed.markdownDescription == nil {
                 Button {
                     viewModel.writeFeedAsync { feed in
+                        guard feed.markdownDescription != "" else { return false }
                         feed.markdownDescription = ""
+                        return true
                     }
                 } label: {
                     Label("Add Description", systemImage: "plus")

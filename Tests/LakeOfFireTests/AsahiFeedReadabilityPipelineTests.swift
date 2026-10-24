@@ -213,6 +213,161 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
     }
 
     @MainActor
+    func testChangedHEADTagFetchesBodyDespiteEqualOrOlderModificationDate() async throws {
+        for modificationDate in [
+            "Wed, 01 Jan 2020 00:00:00 GMT",
+            "Tue, 31 Dec 2019 00:00:00 GMT",
+        ] {
+            try await assertHTTPRefresh(
+                headStatus: 200,
+                headHeaders: [
+                    "ETag": "\"head-version\"", "Last-Modified": modificationDate,
+                ],
+                getHeaders: ["ETag": "\"get-version\""],
+                expectedETag: "\"get-version\"", expectedModifiedAt: nil
+            )
+        }
+    }
+
+    @MainActor
+    func testUnsupportedHEADFallsBackToConditionalGET() async throws {
+        for status in [405, 501] {
+            try await assertHTTPRefresh(
+                headStatus: status, getHeaders: ["ETag": "\"get-version\""],
+                expectedETag: "\"get-version\"", expectedModifiedAt: nil
+            )
+        }
+    }
+
+    @MainActor
+    func testFetchedBodyDoesNotInheritHEADOrStoredValidators() async throws {
+        try await assertHTTPRefresh(headStatus: 200, expectedETag: nil, expectedModifiedAt: nil)
+    }
+
+    @MainActor
+    func testGETPartialValidatorsDescribeOnlyFetchedRepresentation() async throws {
+        try await assertHTTPRefresh(
+            headStatus: 200, getHeaders: ["ETag": "\"get-version\""],
+            expectedETag: "\"get-version\"", expectedModifiedAt: nil
+        )
+        try await assertHTTPRefresh(
+            headStatus: 200, getHeaders: ["Last-Modified": "Fri, 01 Jan 2021 00:00:00 GMT"],
+            expectedETag: nil, expectedModifiedAt: Date(timeIntervalSince1970: 1609459200)
+        )
+    }
+
+    @MainActor
+    func testGET304DoesNotBorrowNewHEADValidators() async throws {
+        try await assertHTTPRefresh(
+            headStatus: 200, getStatus: 304,
+            expectedETag: "\"stored-version\"", expectedModifiedAt: Date(timeIntervalSince1970: 1577836800)
+        )
+    }
+
+    @MainActor
+    func testHEAD304PreservesStoredValidatorsAndSkipsGET() async throws {
+        try await assertHTTPRefresh(
+            headStatus: 304, headHeaders: [:],
+            expectedETag: "\"stored-version\"", expectedModifiedAt: Date(timeIntervalSince1970: 1577836800),
+            expectsGET: false
+        )
+    }
+
+    @MainActor
+    func testHEADAuthorizationAndGETFailureRemainErrors() async throws {
+        try await assertHTTPRefresh(
+            headStatus: 401, expectedETag: "\"stored-version\"",
+            expectedModifiedAt: Date(timeIntervalSince1970: 1577836800),
+            expectsGET: false, expectsFailure: true
+        )
+        try await assertHTTPRefresh(
+            headStatus: 405, getStatus: 500, expectedETag: "\"stored-version\"",
+            expectedModifiedAt: Date(timeIntervalSince1970: 1577836800), expectsFailure: true
+        )
+    }
+
+    @MainActor
+    private func assertHTTPRefresh(
+        headStatus: Int,
+        headHeaders: [String: String] = [
+            "ETag": "\"head-version\"", "Last-Modified": "Sat, 01 Jan 2022 00:00:00 GMT"
+        ],
+        getStatus: Int = 200,
+        getHeaders: [String: String] = [:],
+        expectedETag: String?, expectedModifiedAt: Date?,
+        expectsGET: Bool = true, expectsFailure: Bool = false
+    ) async throws {
+        let rssURL = URL(string: "https://example.com/\(UUID().uuidString)/feed.xml")!
+        let entryURL = rssURL.deletingLastPathComponent().appendingPathComponent("new-entry")
+        let data = Data("""
+            <rss version="2.0"><channel><title>Test</title><link>https://example.com/</link>
+            <description>Test</description><item><guid>new-entry</guid><title>New body</title>
+            <link>\(entryURL.absoluteString)</link><description>New body content</description>
+            </item></channel></rss>
+            """.utf8)
+        let configuration = makeRealmConfiguration()
+        let previousLibrary = LibraryDataManager.realmConfiguration
+        let previousBookmarks = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousEntries = ReaderContentLoader.feedEntryRealmConfiguration
+        let previousSession = makeFeedSessionOverrideForTesting
+        let previousHandler = FeedURLProtocol.requestHandler
+        defer {
+            LibraryDataManager.realmConfiguration = previousLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmarks
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousEntries
+            makeFeedSessionOverrideForTesting = previousSession
+            FeedURLProtocol.requestHandler = previousHandler
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = rssURL
+        feed.lastFetchedETag = "\"stored-version\""
+        feed.lastFetchedModifiedAt = Date(timeIntervalSince1970: 1577836800)
+        let cached = FeedEntry()
+        cached.feedID = feed.id
+        cached.url = rssURL.appendingPathComponent("cached-entry")
+        cached.compoundKey = feed.id.uuidString + "-cached-entry"
+        try await realm.asyncWrite { realm.add(feed); realm.add(cached) }
+        var requests = [URLRequest]()
+        FeedURLProtocol.requestHandler = { request in
+            requests.append(request)
+            return request.httpMethod == "HEAD"
+                ? (headStatus, headHeaders, Data()) : (getStatus, getHeaders, data)
+        }
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        do {
+            try await feed.fetch(realmConfiguration: configuration)
+            XCTAssertFalse(expectsFailure, "Refresh unexpectedly succeeded")
+        } catch FeedError.downloadFailed {
+            XCTAssertTrue(expectsFailure, "Refresh unexpectedly rejected HEAD/GET")
+        }
+        await realm.asyncRefresh()
+        XCTAssertEqual(requests.map(\.httpMethod), expectsGET ? ["HEAD", "GET"] : ["HEAD"])
+        for request in requests {
+            XCTAssertEqual(request.value(forHTTPHeaderField: "If-None-Match"), "\"stored-version\"")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "If-Modified-Since"), "Wed, 01 Jan 2020 00:00:00 GMT")
+        }
+        XCTAssertEqual(feed.lastFetchedETag, expectedETag)
+        XCTAssertEqual(feed.lastFetchedModifiedAt, expectedModifiedAt)
+        if !expectsFailure, expectsGET, getStatus == 200 {
+            XCTAssertEqual(realm.objects(FeedEntry.self).where { $0.url == entryURL && !$0.isDeleted }.count, 1)
+        }
+        if expectsFailure { XCTAssertNil(feed.lastRefreshedEntriesAt) }
+    }
+
+    @MainActor
     func testAsahiOPMLFeedArticleReadabilityDoesNotRepeatTitleOrBylineInReaderContent() async throws {
         let opmlURL = try fixtureURL("asahi-defaults.opml")
         let rssURL = URL(string: "https://www.asahi.com/rss/asahi/newsheadlines.rdf")!
