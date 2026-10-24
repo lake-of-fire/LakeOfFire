@@ -793,6 +793,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                 }
             }
         } else if !(opmlEntry.attributeStringValue("script")?.isEmpty ?? true) {
+            // A malformed restricted-domain list must never become the empty
+            // list, which the WebView treats as unrestricted script execution.
+            _ = try Self.decodedScriptDomains(from: opmlEntry)
             if let uuid = uuid, let script = realm.objects(UserScript.self).filter({ $0.id == uuid }).first {
                 if script.opmlURL == download?.url || script.isDeleted {
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, script: script) {
@@ -936,9 +939,18 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         return .orderedSame
     }
     
+    static func decodedScriptDomains(from entry: OPMLEntry) throws -> [String] {
+        try (entry.attributeStringValue("allowedDomains")?.split(separator: ",") ?? []).map {
+            guard let domain = $0.removingPercentEncoding else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return domain
+        }
+    }
+
     static func applyScriptDomains(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) throws {
         guard let realm = script.realm else { return }
-        let domains: [String] = opmlEntry.attributeStringValue("allowedDomains")?.split(separator: ",").compactMap { $0.removingPercentEncoding } ?? []
+        let domains = try Self.decodedScriptDomains(from: opmlEntry)
 //        script.allowedDomains.removeAll()
         let allowedDomainIDs = Array(script.allowedDomainIDs)
         var didChangeScript = false
@@ -986,8 +998,8 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         if script.script != newScript {
             return true
         }
-        let newAllowedDomains = opmlEntry.attributeStringValue("allowedDomains")?.split(separator: ",").compactMap { $0.removingPercentEncoding }
-        if Set(script.getAllowedDomains()?.map({ $0.domain }) ?? []) != Set(newAllowedDomains ?? []) {
+        guard let newAllowedDomains = try? Self.decodedScriptDomains(from: opmlEntry) else { return true }
+        if Set(script.getAllowedDomains()?.map({ $0.domain }) ?? []) != Set(newAllowedDomains) {
             return true
         }
         let newInjectAtStart = opmlEntry.attributeBoolValue("injectAtStart") ?? false
