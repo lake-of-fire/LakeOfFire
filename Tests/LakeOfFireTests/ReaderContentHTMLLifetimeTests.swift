@@ -1,6 +1,6 @@
 import Foundation
 import RealmSwift
-import SwiftUIWebView
+@testable import SwiftUIWebView
 import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
