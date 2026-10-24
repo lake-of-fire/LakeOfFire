@@ -303,10 +303,16 @@ public class ReaderContent: ObservableObject {
                     // Retire this consuming intent without cancelling the shared resolver.
                     handoff?.withdraw()
                 }
+                try Task.checkCancellation()
                 guard selectionID == loadID, joinedLifetime.permitsCommit() else { throw CancellationError() }
                 if handoff != nil {
                     try Task.checkCancellation()
                     guard handoff?.permitsCapture != false else { throw CancellationError() }
+                }
+                if let currentContent = content, !currentContent.isInvalidated,
+                   matchesResolvedContentURL(currentContent.url, resolvedContentURL: resolvedContentURL),
+                   pageURL != displayURL {
+                    pageURL = displayURL
                 }
                 completeSelectionHandoff(handoff, selectionID: loadID, url: resolvedContentURL)
                 return
@@ -324,6 +330,9 @@ public class ReaderContent: ObservableObject {
            let existingContent = content, !existingContent.isInvalidated,
            matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL),
            matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
+            if pageURL != displayURL {
+                pageURL = displayURL
+            }
             completeSelectionHandoff(handoff, selectionID: selectionID, url: resolvedContentURL)
             return
         }
@@ -374,6 +383,10 @@ public class ReaderContent: ObservableObject {
                     pageURL, resolvedContentURL: displayURL
                 )
                 if pageAlreadyMatchesDisplay {
+                    if pageURL != displayURL {
+                        pageURL = displayURL
+                        try validatePublication()
+                    }
                     return
                 }
                 if !pageURL.matchesReaderURL(url) {

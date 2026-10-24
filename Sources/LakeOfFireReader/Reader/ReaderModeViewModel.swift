@@ -3482,6 +3482,19 @@ public class ReaderModeViewModel: ObservableObject {
         }
         try Task.checkCancellation()
 
+        // A hash-only change within an already rendered Reader document is
+        // just a location update. Preserve its completed render and cached
+        // readability state; there is no replacement document to initialize.
+        let canonicalNavigationURL = newState.pageURL.canonicalReaderContentURLForHotfix()
+        if !newState.isLoading,
+           isReaderMode,
+           hasRenderedReadabilityContent,
+           canonicalNavigationURL != committedURL,
+           urlsMatchWithoutHashForHotfix(canonicalNavigationURL, committedURL),
+           lastRenderedURL?.matchesReaderURL(committedURL) == true {
+            return
+        }
+
         ReaderSnippetFinalDocumentDiagnostics.record("font-injection-start", contentURL: newState.pageURL)
         await injectSharedFontIfNeeded(
             scriptCaller: scriptCaller,
