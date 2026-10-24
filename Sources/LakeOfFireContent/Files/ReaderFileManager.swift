@@ -21,6 +21,16 @@ public enum ReaderFileManagerError: Swift.Error {
     case refreshSuperseded
 }
 
+// Task-scoped observations and clock at the real refresh boundaries. The
+// default clock uses wall time; observation hooks are unset in production.
+enum ReaderFileMetadataRefreshObservation {
+    @TaskLocal static var now: @MainActor @Sendable () -> Date = { Date() }
+    @TaskLocal static var didJoin: (@MainActor @Sendable (_ force: Bool) -> Void)? = nil
+    @TaskLocal static var didFinishPass: (@MainActor @Sendable () -> Void)? = nil
+    @TaskLocal static var didScheduleResume: (@MainActor @Sendable (Task<Void, Never>) -> Void)? = nil
+    @TaskLocal static var beforeCompletion: (@MainActor @Sendable () async -> Void)? = nil
+}
+
 //public extension RootRelativePath {
 //    static let documents = Self(path: "Documents")
 //}
@@ -168,7 +178,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     // TODO: Pull these from callbacks per above
     public var readerContentMimeTypes: [UTType] = [.plainText, .html, UTType(filenameExtension: "md") ?? UTType(importedAs: "net.daringfireball.markdown"), .zip]
     
-    @MainActor @Published public var files: [ContentFile]?
+    @MainActor @Published public var files: [ContentFile]? {
+        didSet {
+            filesPublicationGeneration &+= 1
+            lastRefreshAllFilesMetadataCompletedAt.removeAll()
+        }
+    }
     
     @MainActor public var readerContentFiles: [ContentFile]? {
         let ebookMimeTypes = Set([UTType.epub, .epubZip].compactMap { $0.preferredMIMEType?.lowercased() })
@@ -214,7 +229,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     }
     
     @MainActor private var refreshAllFilesMetadataTasks = [RefreshMetadataIdentity: Task<Void, any Swift.Error>]()
-    @MainActor private var lastRefreshAllFilesMetadataStartedAt = [RefreshMetadataIdentity: Date]()
+    @MainActor private var metadataRefreshResumeGeneration: UInt64 = 0
+    @MainActor private var filesPublicationGeneration: UInt64 = 0
+    @MainActor private var lastRefreshAllFilesMetadataCompletedAt = [RefreshMetadataIdentity: Date]()
     @MainActor private var refreshAllFilesMetadataNeedsFollowUp = Set<RefreshMetadataIdentity>()
     private let driveInventoryGeneration = DriveInventoryGeneration()
     private static let refreshAllFilesMetadataDebounceInterval: TimeInterval = 2
@@ -286,14 +303,36 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     
     @MainActor
     public func appSuspendedDidChange(isSuspended: Bool) {
+        metadataRefreshResumeGeneration &+= 1
+        let resumeGeneration = metadataRefreshResumeGeneration
         if isSuspended {
             for task in refreshAllFilesMetadataTasks.values {
                 task.cancel()
             }
         } else {
-            Task { @MainActor in
-                try? await refreshAllFilesMetadata()
+            let resumeTask = Task { @MainActor [weak self] in
+                guard !Task.isCancelled,
+                      self?.metadataRefreshResumeGeneration == resumeGeneration else { return }
+                let predecessor = self.flatMap { manager in
+                    let identity = manager.refreshMetadataIdentity(for: manager.resolvedHistoryRealmConfiguration)
+                    return manager.refreshAllFilesMetadataTasks[identity]
+                }
+                if let predecessor, predecessor.isCancelled {
+                    // A suspended owner cannot satisfy this resumed activation.
+                    // Let its owned cleanup settle before ordinary admission.
+                    ReaderFileMetadataRefreshObservation.didJoin?(false)
+                    _ = await predecessor.result
+                }
+                guard !Task.isCancelled,
+                      let self,
+                      self.metadataRefreshResumeGeneration == resumeGeneration else { return }
+                try? await self.refreshAllFilesMetadata(
+                    force: false,
+                    realmConfiguration: self.resolvedHistoryRealmConfiguration,
+                    resumeGeneration: resumeGeneration
+                )
             }
+            ReaderFileMetadataRefreshObservation.didScheduleResume?(resumeTask)
         }
     }
     
@@ -663,27 +702,36 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     @MainActor
     private func refreshAllFilesMetadata(
         force: Bool,
-        realmConfiguration: Realm.Configuration
+        realmConfiguration: Realm.Configuration,
+        resumeGeneration: UInt64? = nil
     ) async throws {
+        if let resumeGeneration {
+            guard !Task.isCancelled,
+                  metadataRefreshResumeGeneration == resumeGeneration else { return }
+        }
         let refreshIdentity = refreshMetadataIdentity(for: realmConfiguration)
         if let refreshAllFilesMetadataTask = refreshAllFilesMetadataTasks[refreshIdentity] {
             if force {
                 refreshAllFilesMetadataNeedsFollowUp.insert(refreshIdentity)
             }
+            ReaderFileMetadataRefreshObservation.didJoin?(force)
             try await refreshAllFilesMetadataTask.value
             return
         }
         if !force,
            files != nil,
-           let lastRefreshAllFilesMetadataStartedAt = lastRefreshAllFilesMetadataStartedAt[refreshIdentity],
-           Date().timeIntervalSince(lastRefreshAllFilesMetadataStartedAt)
+           let completedAt = lastRefreshAllFilesMetadataCompletedAt[refreshIdentity],
+           ReaderFileMetadataRefreshObservation.now().timeIntervalSince(completedAt)
                 < Self.refreshAllFilesMetadataDebounceInterval {
             return
         }
 
         refreshAllFilesMetadataNeedsFollowUp.remove(refreshIdentity)
-        lastRefreshAllFilesMetadataStartedAt[refreshIdentity] = Date()
+        // `files` is one shared snapshot. Once replacement work is admitted,
+        // no earlier identity may debounce a retry or a switch back to its drive.
+        lastRefreshAllFilesMetadataCompletedAt.removeAll()
         let refreshTask = Task { @MainActor in
+            var publishedGeneration: UInt64?
             defer {
                 refreshAllFilesMetadataTasks.removeValue(forKey: refreshIdentity)
                 refreshAllFilesMetadataNeedsFollowUp.remove(refreshIdentity)
@@ -720,6 +768,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             return realm.resolve($0)
                         }
                         self.files = files
+                        publishedGeneration = self.filesPublicationGeneration
                         let discoveredURLs = try files.map {
                             try Task.checkCancellation()
                             return $0.url
@@ -764,7 +813,23 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     }
                     throw error
                 }
+                ReaderFileMetadataRefreshObservation.didFinishPass?()
             } while refreshAllFilesMetadataNeedsFollowUp.contains(refreshIdentity) && !Task.isCancelled
+            if let beforeCompletion = ReaderFileMetadataRefreshObservation.beforeCompletion {
+                await beforeCompletion()
+            }
+            // A committed pass remains durable, but cancellation must not
+            // acknowledge a forced follow-up that this loop abandoned.
+            try Task.checkCancellation()
+            // Orphan reconciliation can suspend after publishing `files`.
+            // Only that still-current snapshot may authorize a later debounce.
+            if let publishedGeneration,
+               filesPublicationGeneration == publishedGeneration,
+               refreshMetadataIdentity(for: realmConfiguration) == refreshIdentity,
+               Self.realmConfigurationIdentity(resolvedHistoryRealmConfiguration)
+                    == refreshIdentity.realmConfiguration {
+                lastRefreshAllFilesMetadataCompletedAt = [refreshIdentity: ReaderFileMetadataRefreshObservation.now()]
+            }
         }
         refreshAllFilesMetadataTasks[refreshIdentity] = refreshTask
         try await refreshTask.value
