@@ -337,19 +337,34 @@ public class BookLibraryViewModel: ObservableObject {
     @Published public var onNavigateToReader: (() -> Void)?
     private var cancellables = Set<AnyCancellable>()
 
+    var publicationFetcher: @MainActor (URL) async -> ([Publication], String?) = {
+        await BookLibraryViewModel.fetchPublications(from: $0)
+    }
+    private let editorsPicksRefresh = BookCatalogRefresh()
+
     func fetchAllData() async {
-        fetchEditorsPicks()
+        let fetcher = publicationFetcher
+        let url = opdsURL
+        await editorsPicksRefresh.load(
+            fetch: { await fetcher(url) },
+            publish: { [weak self] in self?.publishEditorsPicks($0, error: $1) }
+        )
     }
 
-    func fetchEditorsPicks() {
-        Task {
-            let (publications, errorMessage) = await Self.fetchPublications(from: opdsURL)
-            await MainActor.run {
-                self.editorsPicks = publications
-                self.errorMessage = errorMessage.map { _ in
-                    "\(mediaTypeTitle) editor's picks are unavailable. Pull to refresh or try again later."
-                }
-            }
+    @discardableResult
+    func fetchEditorsPicks() -> Task<Void, Never>? {
+        let fetcher = publicationFetcher
+        let url = opdsURL
+        return editorsPicksRefresh.start(
+            fetch: { await fetcher(url) },
+            publish: { [weak self] in self?.publishEditorsPicks($0, error: $1) }
+        )
+    }
+
+    private func publishEditorsPicks(_ publications: [Publication], error: String?) {
+        editorsPicks = publications
+        errorMessage = error.map { _ in
+            "\(mediaTypeTitle) editor's picks are unavailable. Pull to refresh or try again later."
         }
     }
 
