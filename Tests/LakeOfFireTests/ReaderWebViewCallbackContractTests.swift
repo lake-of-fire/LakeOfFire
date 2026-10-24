@@ -96,6 +96,170 @@ private func makeReaderWebViewHandlerFixture() -> (
 
 @MainActor
 final class ReaderWebViewCallbackContractTests: XCTestCase {
+    func testSettledReaderAnchorRoundTripPreservesCacheAndSelection() async throws {
+        for sourceText in ["https://example.com/article", "https://example.com/article#original"] {
+            for usesLoaderTransport in [false, true] {
+                let fixture = makeReaderWebViewHandlerFixture()
+                fixture.handler.readerViewModel = ReaderCallbackViewModel(
+                    realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: []
+                )
+                let source = try XCTUnwrap(URL(string: sourceText))
+                let transport = usesLoaderTransport
+                    ? try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: source)) : source
+                let record = HistoryRecord()
+                record.url = source
+                record.title = "Article"
+                record.isReaderModeByDefault = true
+                record.updateCompoundKey()
+                fixture.readerContent.preloadResolvedContent(record, for: transport)
+                try await fixture.readerContent.load(url: transport)
+                let selectionID = fixture.readerContent.currentSelectionID
+                let mode = fixture.readerModeViewModel
+                let html = "<html><body>Canonical reader cache</body></html>"
+                mode.isReaderMode = true
+                mode.beginReaderModeLoad(for: source)
+                mode.readabilityContent = html
+                mode.readabilityContainerSelector = "#reader-content"
+                mode.markReaderModeLoadComplete(for: source)
+
+                for fragment in ["next", "third", source.fragment] {
+                    var parts = try XCTUnwrap(URLComponents(url: transport, resolvingAgainstBaseURL: false))
+                    // The source's persisted fragment is inside a loader's query.
+                    // Removing the outer fragment returns to that original identity.
+                    parts.fragment = usesLoaderTransport && fragment == source.fragment ? nil : fragment
+                    var state = WebViewState.empty
+                    state.pageURL = try XCTUnwrap(parts.url)
+                    state.isLoading = false
+                    try await fixture.handler.handleURLChanged(state: state)
+
+                    XCTAssertEqual(mode.readabilityContent, html, "Lost cache returning to \(state.pageURL)")
+                    XCTAssertEqual(mode.readabilityContainerSelector, "#reader-content")
+                    XCTAssertEqual(mode.lastRenderedURL, source)
+                    XCTAssertFalse(mode.isReaderModeLoading)
+                    XCTAssertEqual(fixture.readerContent.currentSelectionID, selectionID)
+                    XCTAssertTrue(fixture.readerContent.content === record)
+                }
+            }
+        }
+    }
+
+    func testRealReplacementAtDifferentAnchorDoesNotInheritReaderCache() async throws {
+        for destination in ["https://example.com/article", "https://example.com/article#new-document"] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            fixture.handler.readerViewModel = ReaderCallbackViewModel(
+                realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: []
+            )
+            let source = try XCTUnwrap(URL(string: "https://example.com/article"))
+            let record = HistoryRecord()
+            record.url = source
+            record.isReaderModeByDefault = true
+            record.updateCompoundKey()
+            fixture.readerContent.preloadResolvedContent(record, for: source)
+            try await fixture.readerContent.load(url: source)
+            let mode = fixture.readerModeViewModel
+            mode.isReaderMode = true
+            mode.beginReaderModeLoad(for: source)
+            mode.readabilityContent = "Old document cache"
+            mode.readabilityContainerSelector = "#old-document"
+            mode.markReaderModeLoadComplete(for: source)
+
+            var state = WebViewState.empty
+            state.pageURL = try XCTUnwrap(URL(string: destination))
+            state.isLoading = false
+            try await fixture.handler.handleNavigationCommitted(state: state)
+
+            XCTAssertNil(mode.readabilityContent)
+            XCTAssertNil(mode.readabilityContainerSelector)
+        }
+    }
+
+    func testURLChangeToDifferentPathOrQueryDoesNotPreserveReaderCache() async throws {
+        for destination in ["https://example.com/other", "https://example.com/article?chapter=2"] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            fixture.handler.readerViewModel = ReaderCallbackViewModel(
+                realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: []
+            )
+            let source = try XCTUnwrap(URL(string: "https://example.com/article"))
+            let original = HistoryRecord()
+            original.url = source
+            original.isReaderModeByDefault = true
+            original.updateCompoundKey()
+            fixture.readerContent.preloadResolvedContent(original, for: source)
+            try await fixture.readerContent.load(url: source)
+            let mode = fixture.readerModeViewModel
+            mode.isReaderMode = true
+            mode.beginReaderModeLoad(for: source)
+            mode.readabilityContent = "Old document cache"
+            mode.readabilityContainerSelector = "#old-document"
+            mode.markReaderModeLoadComplete(for: source)
+
+            let target = try XCTUnwrap(URL(string: destination))
+            let replacement = HistoryRecord()
+            replacement.url = target
+            replacement.isReaderModeByDefault = true
+            replacement.updateCompoundKey()
+            fixture.readerContent.preloadResolvedContent(replacement, for: target)
+            var state = WebViewState.empty
+            state.pageURL = target
+            state.isLoading = false
+            try await fixture.handler.handleURLChanged(state: state)
+
+            XCTAssertTrue(fixture.readerContent.content === replacement)
+            XCTAssertEqual(fixture.readerContent.pageURL, target)
+            XCTAssertNil(mode.readabilityContent)
+            XCTAssertNil(mode.readabilityContainerSelector)
+        }
+    }
+
+    func testDeferredURLChangeCannotAdoptReplacementDocumentBinding() async throws {
+        for queuesBehindCommit in [false, true] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            let gate = ReaderCallbackGate()
+            fixture.taskManager.startOnNavigationCommitted { await gate.wait() }
+            fixture.taskManager.startOnNavigationFinished {}
+            if !queuesBehindCommit {
+                await gate.release()
+                try await fixture.taskManager.onNavigationFinishedTask?.value
+            }
+            let source = try XCTUnwrap(URL(string: "https://example.com/article"))
+            let record = HistoryRecord()
+            record.url = source
+            record.updateCompoundKey()
+            fixture.readerContent.preloadResolvedContent(record, for: source)
+            try await fixture.readerContent.load(url: source)
+            fixture.readerContent.isRenderingReaderHTML = true
+            let selectionID = fixture.readerContent.currentSelectionID
+            let caller = fixture.handler.scriptCaller
+            var evaluations = 0
+            let oldOwner = UUID()
+            caller.installBinding(ownedBy: oldOwner,
+                                  asyncCaller: { _, _, _, _ in evaluations += 1; return .init(nil) },
+                                  unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil })
+            var state = WebViewState.empty
+            state.pageURL = try XCTUnwrap(URL(string: source.absoluteString + "#section"))
+            fixture.handler.onURLChanged(state: state)
+            // Do not suspend: replace the binding before the scheduled task runs.
+            _ = caller.clearBinding(ownedBy: oldOwner)
+            let newOwner = UUID()
+            caller.installBinding(ownedBy: newOwner,
+                                  asyncCaller: { _, _, _, _ in evaluations += 1; return .init(nil) },
+                                  unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil })
+            defer { _ = caller.clearBinding(ownedBy: newOwner) }
+            if queuesBehindCommit {
+                await gate.release()
+                try await fixture.taskManager.onNavigationFinishedTask?.value
+            }
+            do {
+                try await fixture.taskManager.onURLChangedTask?.value
+                XCTFail("The old receipt must fail before selecting on the new document")
+            } catch is CancellationError { }
+            XCTAssertEqual(evaluations, 0)
+            XCTAssertEqual(fixture.readerContent.pageURL, source)
+            XCTAssertEqual(fixture.readerContent.currentSelectionID, selectionID)
+            XCTAssertTrue(fixture.readerContent.isRenderingReaderHTML)
+        }
+    }
+
     private func cachedHistoryRecord(url: URL) throws -> (Realm, HistoryRecord) {
         let realm = try Realm(configuration: .init(
             inMemoryIdentifier: UUID().uuidString, objectTypes: [HistoryRecord.self]

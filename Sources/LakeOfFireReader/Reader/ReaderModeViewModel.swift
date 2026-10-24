@@ -2802,15 +2802,16 @@ public class ReaderModeViewModel: ObservableObject {
             readabilityContent = nil
             let directHTML = prepareHTMLForDirectLoad(html)
             guard ownsContent() else { return }
+            let displayURL = readerContent.pageURL.canonicalReaderContentURLForHotfix()
             if let htmlData = directHTML.data(using: .utf8) {
                 navigator.load(
                     htmlData,
                     mimeType: "text/html",
                     characterEncodingName: "UTF-8",
-                    baseURL: resolvedContentURL
+                    baseURL: displayURL
                 )
             } else {
-                navigator.loadHTML(directHTML, baseURL: resolvedContentURL)
+                navigator.loadHTML(directHTML, baseURL: displayURL)
             }
         } catch is CancellationError {
             // Retired work has no authority to clean up a newer selection.
@@ -2888,14 +2889,8 @@ public class ReaderModeViewModel: ObservableObject {
                 && content.url == url
                 && url.matchesReaderURL(readerContent.pageURL)
         }
-        let renderBaseURL: URL
-        if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" || url.isSnippetURL {
-            renderBaseURL = url
-        } else if url.absoluteString == "about:blank" {
-            renderBaseURL = readerContent.pageURL
-        } else {
-            renderBaseURL = url
-        }
+        let usesInternalReaderScheme = (url.absoluteString == "about:blank" ? readerContent.pageURL : url)
+            .scheme?.lowercased() == "internal"
         let shouldStoreReaderHTML = !url.isEBookURL
             && !url.isFileURL
             && !url.isNativeReaderView
@@ -3167,7 +3162,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
             }
 
-            if renderBaseURL.scheme?.lowercased() == "internal",
+            if usesInternalReaderScheme,
                frameInfo?.isMainFrame != false {
                 transformedHTMLBytes = Array(externalizingCanonicalReaderSegmentSidecar(
                     in: transformedHTMLBytes,
@@ -3328,13 +3323,16 @@ public class ReaderModeViewModel: ObservableObject {
                     guard ownsContent() else {
                         return
                     }
-                    expectSyntheticReaderLoaderCommit(for: renderBaseURL)
+                    // The row keeps its stable backing identity, while the
+                    // mounted location may carry a requested or newer anchor.
+                    let displayURL = readerContent.pageURL.canonicalReaderContentURLForHotfix()
+                    expectSyntheticReaderLoaderCommit(for: displayURL)
                     ReaderSnippetFinalDocumentDiagnostics.record("html-dispatch", contentURL: requestedURL, generation: renderGeneration)
                     navigator.load(
                         transformedHTMLData,
                         mimeType: "text/html",
                         characterEncodingName: "UTF-8",
-                        baseURL: renderBaseURL
+                        baseURL: displayURL
                     )
                 }
 //                try await { @MainActor in
@@ -3412,6 +3410,31 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller,
         navigator: WebViewNavigator
     ) async throws {
+        try await handleNavigationCommitted(readerContent: readerContent, newState: newState,
+                                            scriptCaller: scriptCaller, navigator: navigator,
+                                            isSameDocumentNavigation: false)
+    }
+
+    @MainActor
+    func onSameDocumentURLChanged(
+        readerContent: ReaderContent,
+        newState: WebViewState,
+        scriptCaller: WebViewScriptCaller,
+        navigator: WebViewNavigator
+    ) async throws {
+        try await handleNavigationCommitted(readerContent: readerContent, newState: newState,
+                                            scriptCaller: scriptCaller, navigator: navigator,
+                                            isSameDocumentNavigation: true)
+    }
+
+    @MainActor
+    private func handleNavigationCommitted(
+        readerContent: ReaderContent,
+        newState: WebViewState,
+        scriptCaller: WebViewScriptCaller,
+        navigator: WebViewNavigator,
+        isSameDocumentNavigation: Bool
+    ) async throws {
         ReaderSnippetFinalDocumentDiagnostics.record("commit-start", contentURL: newState.pageURL)
         // A cancelled or retired callback has no authority to clear the
         // successor's captured HTML, frame, or loading state.
@@ -3457,10 +3480,9 @@ public class ReaderModeViewModel: ObservableObject {
         // just a location update. Preserve its completed render and cached
         // readability state; there is no replacement document to initialize.
         let canonicalNavigationURL = newState.pageURL.canonicalReaderContentURLForHotfix()
-        if !newState.isLoading,
+        if isSameDocumentNavigation,
            isReaderMode,
            hasRenderedReadabilityContent,
-           canonicalNavigationURL != committedURL,
            urlsMatchWithoutHashForHotfix(canonicalNavigationURL, committedURL),
            lastRenderedURL?.matchesReaderURL(committedURL) == true {
             return
