@@ -538,10 +538,10 @@ class Resources {
         const parts = CFI.parse(cfi)
         const top = (parts.parent ?? parts).shift()
         let $itemref = CFI.toElement(this.opf, top)
-        // make sure it's an idref; if not, try again without the ID assertion
-        // mainly because Epub.js used to generate wrong ID assertions
+        // Preserve authored assertions that resolve to a captured spine itemref.
+        // Otherwise retry without the ID assertion for legacy manifest-ID CFIs.
         // https://github.com/futurepress/epub.js/issues/1236
-        if ($itemref && $itemref.nodeName !== 'idref') {
+        if ($itemref && !this.#spineItemrefs.includes($itemref)) {
             top[top.length - 1].id = null
             $itemref = CFI.toElement(this.opf, top)
         }
