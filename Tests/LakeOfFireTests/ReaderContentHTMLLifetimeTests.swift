@@ -544,8 +544,20 @@ extension ReaderContentHTMLLifetimeTests {
         XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
     }
 
+    // Begin with reader metadata already persisted so these fixtures reach the
+    // final transform without requiring an unrelated synchronized metadata write.
+    private func prepareFinalTransformMetadata(_ row: HistoryRecord, in realm: Realm) throws {
+        try realm.write {
+            row.isReaderModeByDefault = true
+            row.isReaderModeAvailable = false
+            row.isReaderModeOfferHidden = false
+            row.rssContainsFullContent = true
+        }
+    }
+
     func testFinalHTMLTransformRejectsPhysicallyInvalidatedContent() async throws {
         let (realm, row, reader, mode, navigator) = try renderFixture()
+        try prepareFinalTransformMetadata(row, in: realm)
         mode.swiftReadabilityProcessor = { _, _, _, _ in
             "<html><body><div id='reader-content'>Readable body.</div></body></html>"
         }
@@ -568,6 +580,7 @@ extension ReaderContentHTMLLifetimeTests {
 
     func testFinalHTMLTransformDoesNotDispatchOrCleanUpSameURLSuccessor() async throws {
         let (realm, row, reader, mode, navigator) = try renderFixture()
+        try prepareFinalTransformMetadata(row, in: realm)
         defer { withExtendedLifetime(realm) {} }
         let successor = HistoryRecord()
         successor.url = fileURL
