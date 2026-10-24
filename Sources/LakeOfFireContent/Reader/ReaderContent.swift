@@ -22,6 +22,29 @@ private final class ReaderContentSelectionLifetime: @unchecked Sendable {
     }
 }
 
+/// Admission to the exact selection and content result used by a load.
+/// A later selection permanently retires the grant. The actual content result
+/// must also remain selected when the receipt is checked.
+public struct ReaderContentLoadReceipt: Sendable {
+    private let admission: @MainActor @Sendable () -> Bool
+
+    fileprivate init(admission: @escaping @MainActor @Sendable () -> Bool) {
+        self.admission = admission
+    }
+
+    @MainActor
+    public var isCurrent: Bool { admission() }
+
+    @MainActor
+    fileprivate func requiringCurrent() throws -> Self {
+        try Task.checkCancellation()
+        guard isCurrent else { throw CancellationError() }
+        return self
+    }
+
+    fileprivate static var rejected: Self { .init(admission: { false }) }
+}
+
 private func logReaderLoad(_ message: String) {
 #if DEBUG
     debugPrint("# READERLOAD \(message)")
@@ -267,7 +290,34 @@ public class ReaderContent: ObservableObject {
 
     @MainActor
     public func load(url: URL) async throws {
+        // Keep the established Void API's quiet retirement settlement.
+        _ = try await loadCapturingSelection(url: url)
+    }
+
+    /// Continuations which publish must retain the actual load's receipt rather
+    /// than capturing whichever selection is current when they resume.
+    @MainActor
+    public func loadWithSelectionReceipt(url: URL) async throws -> ReaderContentLoadReceipt {
+        let receipt = try await loadCapturingSelection(url: url)
+        return try receipt.requiringCurrent()
+    }
+
+    private func makeLoadReceipt(
+        selectionFence: @escaping @Sendable () -> Bool,
+        expectedContent: (any ReaderContentProtocol)?
+    ) -> ReaderContentLoadReceipt {
+        let expectedIdentity = expectedContent.map { ObjectIdentifier($0) }
+        return .init(admission: { [weak self] in
+            guard selectionFence(), let self else { return false }
+            let currentContent = content
+            guard currentContent?.isInvalidated != true else { return false }
+            return currentContent.map { ObjectIdentifier($0) } == expectedIdentity
+        })
+    }
+
+    private func loadCapturingSelection(url: URL) async throws -> ReaderContentLoadReceipt {
         try Task.checkCancellation()
+        let entryFence = makeSelectionCommitFence(requiring: selectionID)
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
         let displayURL = resolvedContentURL
         logReaderLoad(
@@ -280,7 +330,7 @@ public class ReaderContent: ObservableObject {
             logReaderLoad(
                 "stage=readerContent.load.skipTransientAboutBlank requestURL=\(url.absoluteString) targetURL=\(suppressedTargetURL.absoluteString)"
             )
-            return
+            return makeLoadReceipt(selectionFence: entryFence, expectedContent: content)
         }
 
         if resolvedContentURL.absoluteString == "about:blank",
@@ -288,7 +338,7 @@ public class ReaderContent: ObservableObject {
             logReaderLoad(
                 "stage=readerContent.load.skipActiveInternalLoaderAboutBlank requestURL=\(url.absoluteString)"
             )
-            return
+            return makeLoadReceipt(selectionFence: entryFence, expectedContent: content)
         }
 
         if resolvedContentURL.absoluteString != "about:blank",
@@ -305,11 +355,11 @@ public class ReaderContent: ObservableObject {
             logReaderLoad(
                 "stage=readerContent.load.reuseLoadingTask requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) loadingResolvedContentURL=\(loadingResolvedContentURL.absoluteString) currentPageURL=\(pageURL.absoluteString) currentContentURL=\(validReaderContent(content)?.url.absoluteString ?? "nil")"
             )
-            _ = try await loadingTask.value
+            let loadedContent = try await loadingTask.value
             logReaderLoad(
                 "stage=readerContent.load.awaitExistingTask requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) loadingResolvedContentURL=\(loadingResolvedContentURL.absoluteString) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
             )
-            return
+            return makeLoadReceipt(selectionFence: entryFence, expectedContent: loadedContent)
         }
 
         // Reusing an accepted display without pending work is not a new selection.
@@ -318,7 +368,7 @@ public class ReaderContent: ObservableObject {
            matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL),
            matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
             consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
-            return
+            return makeLoadReceipt(selectionFence: entryFence, expectedContent: existingContent)
         }
 
         // Retire the previous selection before cached or preloaded content can publish.
@@ -327,11 +377,12 @@ public class ReaderContent: ObservableObject {
         selectionLifetime.withdraw()
         selectionLifetime = ReaderContentSelectionLifetime()
         selectionID = requestID
+        let requestFence = makeSelectionCommitFence(requiring: requestID)
         loadingTask = nil
         loadingResolvedContentURL = nil
         defer { finishLoading(ifOwnedBy: requestID) }
         retiredTask?.cancel()
-        guard selectionID == requestID else { return }
+        guard selectionID == requestID else { return .rejected }
 
         if let existingContent = validReaderContent(content),
            matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL) {
@@ -342,7 +393,7 @@ public class ReaderContent: ObservableObject {
                 logReaderLoad(
                     "stage=readerContent.load.reuseExistingContent.sameDisplay requestURL=\(url.absoluteString) existingContentURL=\(existingContent.url.absoluteString) displayURL=\(displayURL.absoluteString) currentPageURL=\(pageURL.absoluteString)"
                 )
-                return
+                return makeLoadReceipt(selectionFence: requestFence, expectedContent: existingContent)
             }
             consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
             if !pageURL.matchesReaderURL(url) {
@@ -351,7 +402,7 @@ public class ReaderContent: ObservableObject {
                 )
                 pageURL = displayURL
             }
-            return
+            return makeLoadReceipt(selectionFence: requestFence, expectedContent: existingContent)
         }
 
         if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL) {
@@ -360,26 +411,26 @@ public class ReaderContent: ObservableObject {
                 "stage=readerContent.load.usePreloadedContent requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) contentURL=\(preloadedContent.url.absoluteString) key=\(preloadedContent.compoundKey)"
             )
             currentSectionIndex = nil
-            guard selectionID == requestID, !preloadedContent.isInvalidated else { return }
+            guard selectionID == requestID, !preloadedContent.isInvalidated else { return .rejected }
             content = preloadedContent
             guard selectionID == requestID, !preloadedContent.isInvalidated,
-                  content === preloadedContent else { return }
+                  content === preloadedContent else { return .rejected }
             pageURL = displayURL
             logReaderLoad(
                 "stage=readerContent.load.finish requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString) contentURL=\(validReaderContent(preloadedContent)?.url.absoluteString ?? "nil")"
             )
-            return
+            return makeLoadReceipt(selectionFence: requestFence, expectedContent: preloadedContent)
         }
 
         logReaderLoad(
             "stage=readerContent.load.clearState requestURL=\(url.absoluteString) newPageURL=\(displayURL.absoluteString)"
         )
         content = nil
-        guard selectionID == requestID else { return }
+        guard selectionID == requestID else { return .rejected }
         currentSectionIndex = nil
-        guard selectionID == requestID else { return }
+        guard selectionID == requestID else { return .rejected }
         pageURL = displayURL
-        guard selectionID == requestID else { return }
+        guard selectionID == requestID else { return .rejected }
 
         loadingResolvedContentURL = resolvedContentURL
         let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor [weak self] in
@@ -422,6 +473,7 @@ public class ReaderContent: ObservableObject {
         logReaderLoad(
             "stage=readerContent.load.finish requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString) contentURL=\(finalContentURL)"
         )
+        return makeLoadReceipt(selectionFence: requestFence, expectedContent: loadedContent)
     }
 
     private func finishLoading(ifOwnedBy requestID: UUID) {

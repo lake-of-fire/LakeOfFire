@@ -102,6 +102,21 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published public private(set) var readingProgressState: ReaderReadingProgressState?
 
     public var scriptCaller = WebViewScriptCaller()
+    private typealias SettingsAdmission = @MainActor () -> Bool
+    private var settingsAdmissionProvider: (@MainActor (any ReaderContentProtocol) -> SettingsAdmission)?
+
+    func bindSettingsOwner(_ owner: NavigationTaskManager) {
+        settingsAdmissionProvider = { [weak owner, weak self] content in
+            guard let owner, let self else { return { false } }
+            return owner.makeSettingsCommitFence(content: content, readerViewModel: self)
+        }
+    }
+
+    private func captureSettingsAdmission(content: any ReaderContentProtocol) -> SettingsAdmission {
+        // Standalone callers retain the public API's caller/page/binding checks.
+        // Mounted readers additionally require their original content selection.
+        settingsAdmissionProvider?(content) ?? { true }
+    }
     @Published var webViewUserScripts: [WebViewUserScript]? = nil
     @Published var webViewSystemScripts: [WebViewUserScript]? = nil
     private let baseSystemScripts: [WebViewUserScript]
@@ -305,13 +320,20 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
 
     public func onNavigationFinished(content: any ReaderContentProtocol, newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            try Task.checkCancellation()
-            refreshSettingsInWebView(content: content, newState: newState)
+        onNavigationFinished(content: content, newState: newState,
+                             documentIsCurrent: captureSettingsAdmission(content: content), completion: completion)
+    }
 
-            completion?(newState)
-        }
+    @discardableResult
+    func onNavigationFinished(
+        content: any ReaderContentProtocol,
+        newState: WebViewState,
+        documentIsCurrent: @escaping @MainActor () -> Bool,
+        completion: ((WebViewState) -> Void)? = nil
+    ) -> Task<Void, Never>? {
+        scheduleSettingsRefresh(content: content, newState: newState,
+                                documentIsCurrent: documentIsCurrent,
+                                completion: completion)
     }
 
     // TODO: Move to Loader probably
@@ -329,8 +351,16 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
-    private func refreshTitleInWebView(content: (any ReaderContentProtocol), newState: WebViewState? = nil) async throws {
+    private func refreshTitleInWebView(
+        content: any ReaderContentProtocol,
+        newState: WebViewState? = nil,
+        requiring expectedBinding: WebViewScriptCaller.JavaScriptBindingToken? = nil
+    ) async throws {
         let state = newState ?? self.state
+        guard !Task.isCancelled, !content.isInvalidated,
+              self.state.pageURL.matchesReaderURL(state.pageURL),
+              let binding = expectedBinding ?? scriptCaller.currentJavaScriptBindingToken,
+              scriptCaller.currentJavaScriptBindingToken == binding else { return }
         logTitleTrace(
             "stage=readerViewModel.refreshTitleInWebView pageURL=\(state.pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) contentTitle=\(content.title.debugTitleFragment) rssContainsFullContent=\(content.rssContainsFullContent) isLoading=\(state.isLoading) isProvisionallyNavigating=\(state.isProvisionallyNavigating)"
         )
@@ -347,7 +377,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
                         }
                     })()
                     """,
-                    arguments: ["title": content.title]
+                    arguments: ["title": content.title],
+                    requiring: binding
                 )
             }
         }
@@ -402,10 +433,55 @@ public class ReaderViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil) {
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        refreshSettingsInWebView(content: content, newState: newState,
+                                 documentIsCurrent: captureSettingsAdmission(content: content))
+    }
+
+    @discardableResult
+    func refreshSettingsInWebView(
+        content: any ReaderContentProtocol,
+        newState: WebViewState? = nil,
+        documentIsCurrent: @escaping @MainActor () -> Bool
+    ) -> Task<Void, Never>? {
+        scheduleSettingsRefresh(content: content, newState: newState ?? state,
+                                documentIsCurrent: documentIsCurrent)
+    }
+
+    private func scheduleSettingsRefresh(
+        content: any ReaderContentProtocol,
+        newState: WebViewState,
+        documentIsCurrent: @escaping @MainActor () -> Bool,
+        completion: ((WebViewState) -> Void)? = nil
+    ) -> Task<Void, Never>? {
+        guard !Task.isCancelled, !content.isInvalidated else { return nil }
+        let caller = scriptCaller
+        let binding = caller.currentJavaScriptBindingToken
+        guard binding != nil || completion != nil else { return nil }
+        let contentURL = content.url
+        let ownsCandidate = { @MainActor [weak self] in
+            guard let self, !Task.isCancelled, !content.isInvalidated else { return false }
+            return self.scriptCaller === caller
+                && caller.currentJavaScriptBindingToken == binding
+                && (binding != nil || !caller.canEvaluateJavaScript)
+                && content.url == contentURL
+                && contentURL.matchesReaderURL(newState.pageURL)
+                && self.state.pageURL.matchesReaderURL(newState.pageURL)
+        }
+        // A collaborator may synchronously replace the selection or invalidate
+        // the row. Recheck safe access after invoking its admission predicate.
+        let isCurrent = { @MainActor in
+            ownsCandidate() && documentIsCurrent() && ownsCandidate()
+        }
+        guard isCurrent() else { return nil }
+        return Task { @MainActor [weak self] in
+            guard let self, isCurrent() else { return }
+            // Preserve completion-before-JavaScript ordering without handing
+            // the settings/title continuation to a second unowned task.
+            completion?(newState)
+            guard isCurrent(), let binding else { return }
             let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
-            try await self.scriptCaller.evaluateJavaScript("""
+            do {
+                try await caller.evaluateJavaScript("""
                 if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
                     document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme)');
                 }
@@ -413,8 +489,14 @@ public class ReaderViewModel: NSObject, ObservableObject {
                     document.body?.setAttribute('data-mnb-dark-theme', '\(darkModeTheme)');
                 }
                 document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');
-                """, duplicateInMultiTargetFrames: true)
-            try await self.refreshTitleInWebView(content: content, newState: newState)
+                """, duplicateInMultiTargetFrames: true, requiring: binding)
+                guard isCurrent() else { return }
+                try await self.refreshTitleInWebView(content: content, newState: newState,
+                                                     requiring: binding)
+            } catch {
+                // A failed or retired settings command cannot publish a title.
+                // A later current refresh remains free to retry.
+            }
         }
     }
 }
