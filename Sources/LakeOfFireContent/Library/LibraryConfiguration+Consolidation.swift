@@ -61,130 +61,146 @@ extension LibraryConfiguration {
         realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
     ) async throws -> LibraryConfiguration {
         try Task.checkCancellation()
+        let storageAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
-            for: realmConfiguration
+            for: realmConfiguration, storageAdmission: storageAdmission
         )
+        let (primary, createdAt) = try await realm.asyncWritePreservingOwnership {
+            guard storageAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+            }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+            let primary = try consolidateOrCreate(in: realm)
+            guard storageAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+            }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+            return (primary, primary.createdAt)
+        }
+        guard storageAdmission.matchesCurrentStorageIdentity({
+            RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+        }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+        guard !primary.isInvalidated, !primary.isDeleted,
+              primary.createdAt == createdAt else {
+            throw LibraryConfigurationConsolidationError.missingPrimaryAfterConsolidation
+        }
+        return primary
+    }
 
-        let primaryID: UUID = try await realm.asyncWritePreservingOwnership {
-            try Task.checkCancellation()
-            let configurations = Array(
-                realm.objects(LibraryConfiguration.self).where { !$0.isDeleted }
-            ).sorted(by: libraryConfigurationPrecedes)
+    /// Reuse the selected consolidation policy inside a caller's owned write.
+    /// No managed configuration is selected before that transaction is admitted.
+    @RealmBackgroundActor
+    static func consolidateOrCreate(
+        in realm: Realm,
+        at timestamp: Date = Date()
+    ) throws -> LibraryConfiguration {
+        precondition(realm.isInWriteTransaction)
+        try Task.checkCancellation()
+        let configurations = Array(
+            realm.objects(LibraryConfiguration.self).where { !$0.isDeleted }
+        ).sorted(by: libraryConfigurationPrecedes)
 
-            guard let primary = configurations.first else {
-                let configuration = LibraryConfiguration()
-                realm.add(configuration)
-                configuration.refreshChangeMetadata(
-                    explicitlyModified: true,
-                    at: Date()
-                )
-                return configuration.id
-            }
-
-            func retainedCategoryIDs(_ identifiers: [UUID]) -> [UUID] {
-                orderedUniqueLibraryIdentifiers(identifiers).filter { identifier in
-                    guard let category = realm.object(
-                        ofType: FeedCategory.self,
-                        forPrimaryKey: identifier
-                    ) else {
-                        // A missing object may still be in transit from CloudKit.
-                        return true
-                    }
-                    return !category.isDeleted && !category.isArchived
-                }
-            }
-
-            func retainedScriptIDs(_ identifiers: [UUID]) -> [UUID] {
-                orderedUniqueLibraryIdentifiers(identifiers).filter { identifier in
-                    guard let script = realm.object(
-                        ofType: UserScript.self,
-                        forPrimaryKey: identifier
-                    ) else {
-                        return true
-                    }
-                    // Disabled scripts remain in the Library for re-enabling;
-                    // execution filters their archive state separately.
-                    return !script.isDeleted
-                }
-            }
-
-            var categoryIDs = retainedCategoryIDs(Array(primary.categoryIDs))
-            var scriptIDs = retainedScriptIDs(Array(primary.userScriptIDs))
-            let duplicates = configurations.dropFirst()
-
-            for duplicate in duplicates {
-                categoryIDs = mergeLibraryConfigurationIdentifiers(
-                    primary: categoryIDs,
-                    incoming: retainedCategoryIDs(Array(duplicate.categoryIDs))
-                )
-                scriptIDs = mergeLibraryConfigurationIdentifiers(
-                    primary: scriptIDs,
-                    incoming: retainedScriptIDs(Array(duplicate.userScriptIDs))
-                )
-            }
-
-            let referencedCategoryIDs = Set(categoryIDs)
-            let orphanCategoryIDs = Array(
-                realm.objects(FeedCategory.self).where {
-                    !$0.isDeleted && !$0.isArchived
-                }
-            ).filter {
-                !referencedCategoryIDs.contains($0.id)
-            }.sorted {
-                if $0.createdAt != $1.createdAt {
-                    return $0.createdAt < $1.createdAt
-                }
-                return $0.id.uuidString < $1.id.uuidString
-            }.map(\.id)
-            categoryIDs.append(contentsOf: orphanCategoryIDs)
-
-            let referencedScriptIDs = Set(scriptIDs)
-            let orphanScriptIDs = Array(
-                realm.objects(UserScript.self).where {
-                    !$0.isDeleted
-                }
-            ).filter {
-                !referencedScriptIDs.contains($0.id)
-            }.sorted {
-                if $0.createdAt != $1.createdAt {
-                    return $0.createdAt < $1.createdAt
-                }
-                return $0.id.uuidString < $1.id.uuidString
-            }.map(\.id)
-            scriptIDs.append(contentsOf: orphanScriptIDs)
-
-            let categoryIDsChanged = replaceLibraryListIfNeeded(
-                primary.categoryIDs,
-                with: categoryIDs
+        guard let primary = configurations.first else {
+            let configuration = LibraryConfiguration()
+            realm.add(configuration)
+            configuration.refreshChangeMetadata(
+                explicitlyModified: true,
+                at: timestamp
             )
-            let scriptIDsChanged = replaceLibraryListIfNeeded(
-                primary.userScriptIDs,
-                with: scriptIDs
-            )
-            let timestamp = Date()
-            if categoryIDsChanged || scriptIDsChanged {
-                primary.refreshChangeMetadata(
-                    explicitlyModified: true,
-                    at: timestamp
-                )
-            }
-
-            for duplicate in duplicates where !duplicate.isDeleted {
-                duplicate.isDeleted = true
-                duplicate.refreshChangeMetadata(
-                    explicitlyModified: true,
-                    at: timestamp
-                )
-            }
-            return primary.id
+            return configuration
         }
 
-        guard let primary = realm.object(
-            ofType: LibraryConfiguration.self,
-            forPrimaryKey: primaryID
-        ), !primary.isDeleted else {
-            throw LibraryConfigurationConsolidationError
-                .missingPrimaryAfterConsolidation
+        func retainedCategoryIDs(_ identifiers: [UUID]) -> [UUID] {
+            orderedUniqueLibraryIdentifiers(identifiers).filter { identifier in
+                guard let category = realm.object(
+                    ofType: FeedCategory.self,
+                    forPrimaryKey: identifier
+                ) else {
+                    // A missing object may still be in transit from CloudKit.
+                    return true
+                }
+                return !category.isDeleted && !category.isArchived
+            }
+        }
+
+        func retainedScriptIDs(_ identifiers: [UUID]) -> [UUID] {
+            orderedUniqueLibraryIdentifiers(identifiers).filter { identifier in
+                guard let script = realm.object(
+                    ofType: UserScript.self,
+                    forPrimaryKey: identifier
+                ) else {
+                    return true
+                }
+                // Disabled scripts remain in the Library for re-enabling;
+                // execution filters their archive state separately.
+                return !script.isDeleted
+            }
+        }
+
+        var categoryIDs = retainedCategoryIDs(Array(primary.categoryIDs))
+        var scriptIDs = retainedScriptIDs(Array(primary.userScriptIDs))
+        let duplicates = configurations.dropFirst()
+
+        for duplicate in duplicates {
+            categoryIDs = mergeLibraryConfigurationIdentifiers(
+                primary: categoryIDs,
+                incoming: retainedCategoryIDs(Array(duplicate.categoryIDs))
+            )
+            scriptIDs = mergeLibraryConfigurationIdentifiers(
+                primary: scriptIDs,
+                incoming: retainedScriptIDs(Array(duplicate.userScriptIDs))
+            )
+        }
+
+        let referencedCategoryIDs = Set(categoryIDs)
+        let orphanCategoryIDs = Array(
+            realm.objects(FeedCategory.self).where {
+                !$0.isDeleted && !$0.isArchived
+            }
+        ).filter {
+            !referencedCategoryIDs.contains($0.id)
+        }.sorted {
+            if $0.createdAt != $1.createdAt {
+                return $0.createdAt < $1.createdAt
+            }
+            return $0.id.uuidString < $1.id.uuidString
+        }.map(\.id)
+        categoryIDs.append(contentsOf: orphanCategoryIDs)
+
+        let referencedScriptIDs = Set(scriptIDs)
+        let orphanScriptIDs = Array(
+            realm.objects(UserScript.self).where {
+                !$0.isDeleted
+            }
+        ).filter {
+            !referencedScriptIDs.contains($0.id)
+        }.sorted {
+            if $0.createdAt != $1.createdAt {
+                return $0.createdAt < $1.createdAt
+            }
+            return $0.id.uuidString < $1.id.uuidString
+        }.map(\.id)
+        scriptIDs.append(contentsOf: orphanScriptIDs)
+
+        let categoryIDsChanged = replaceLibraryListIfNeeded(
+            primary.categoryIDs,
+            with: categoryIDs
+        )
+        let scriptIDsChanged = replaceLibraryListIfNeeded(
+            primary.userScriptIDs,
+            with: scriptIDs
+        )
+        if categoryIDsChanged || scriptIDsChanged {
+            primary.refreshChangeMetadata(
+                explicitlyModified: true,
+                at: timestamp
+            )
+        }
+
+        for duplicate in duplicates where !duplicate.isDeleted {
+            duplicate.isDeleted = true
+            duplicate.refreshChangeMetadata(
+                explicitlyModified: true,
+                at: timestamp
+            )
         }
         return primary
     }
