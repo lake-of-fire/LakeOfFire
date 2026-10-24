@@ -3,6 +3,7 @@ import BigSyncKit
 import RealmSwift
 import RealmSwiftGaps
 @testable import LakeOfFireContent
+import LakeOfFireCore
 @testable import LakeOfFireReader
 import SwiftUIWebView
 import SwiftSoup
