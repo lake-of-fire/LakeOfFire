@@ -8,35 +8,6 @@ import LakeKit
 import LakeOfFireContent
 import LakeOfFireCore
 
-private struct ReaderEBookInitialRestoreBridgeRequest {
-    let requestID = UUID().uuidString
-    let cfi: String
-    let fractionalCompletion: Double?
-    let requestedLocator: String
-
-    init?(restore: ReaderContentEbookInitialRestore?) {
-        guard let restore else { return nil }
-        cfi = restore.cfi
-        fractionalCompletion = restore.fractionalCompletion.map(Double.init)
-        let hasCFI = !cfi.isEmpty
-        let hasFraction = (fractionalCompletion ?? 0) > 0
-        guard hasCFI || hasFraction else { return nil }
-        requestedLocator = hasCFI ? "cfi" : "fraction"
-    }
-
-    var javaScriptArgument: [String: any Sendable] {
-        var argument: [String: any Sendable] = [
-            "requestID": requestID,
-            "requestedLocator": requestedLocator,
-            "cfi": cfi,
-        ]
-        if let fractionalCompletion {
-            argument["fractionalCompletion"] = fractionalCompletion
-        }
-        return argument
-    }
-}
-
 public typealias ReaderShowOriginalWillBeginHandler = @MainActor @Sendable (_ contentURL: URL, _ pageURL: URL) async -> Void
 public struct ReaderNavigationVisibilityChange: Sendable {
     public let shouldHide: Bool
@@ -958,29 +929,75 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
             }),
             ("ebookViewerInitialized", { @MainActor [weak self] message in
-                guard let self else { return }
-                registerEbookViewerFrame(message.frameInfo)
+                guard let self, message.isMainFrame else { return }
+                // Use the framework's immutable receipt, never the current
+                // document sampled after acknowledgment or restore lookup.
+                let receiptBinding = message.javaScriptBindingToken
                 let stateURL = readerViewModel.state.pageURL
                 let url = stateURL.isEBookURL ? stateURL : readerContent.pageURL
-                if let scheme = url.scheme,
-                   (scheme == "ebook" || scheme == "ebook-url"),
-                   url.absoluteString.hasPrefix("\(scheme)://"),
-                   url.isEBookURL,
-                   let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))") {
-                    debugPrint(
-                        "# EPUB  ebookViewerInitialized",
-                        "page=\(url.absoluteString)",
-                        "frame=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")"
-                    )
-                    _ = try? await scriptCaller.evaluateJavaScript(
-                        "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
-                        in: message.frameInfo
-                    )
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        do {
-                            let initialRestore = try? await ReaderContentReadingProgressLoader
-                                .ebookInitialRestoreLoader?(url)
+                guard url.isEBookURL,
+                      let scheme = url.scheme,
+                      scheme == "ebook" || scheme == "ebook-url",
+                      let receiptURL = message.requestURL ?? message.mainDocumentURL,
+                      urlsMatchIgnoringFragment(
+                        ReaderContentLoader.getContentURL(fromLoaderURL: receiptURL) ?? receiptURL,
+                        ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+                      ) else { return }
+                let loaderURL = url
+                let caller = scriptCaller
+                guard let binding = receiptBinding, let sequence = message.receiptSequence,
+                      let attemptID = readerViewModel.reserveEBookRestore(
+                        sequence: sequence, binding: binding, caller: caller,
+                        loaderURL: loaderURL, frameURL: receiptURL
+                      ) else { return }
+                func validateAttempt() throws {
+                    guard scriptCaller === caller,
+                          readerViewModel.isCurrentEBookRestore(
+                            attemptID, caller: caller, loaderURL: readerContent.pageURL
+                          ) else { throw CancellationError() }
+                    try Task.checkCancellation()
+                }
+                do {
+                    try await ReaderEBookInitialization.perform(
+                        receiptBinding: receiptBinding,
+                        currentBinding: {
+                            do {
+                                try validateAttempt()
+                                return caller.currentJavaScriptBindingToken
+                            } catch {
+                                return nil
+                            }
+                        },
+                        registerFrame: { _ in
+                            registerEbookViewerFrame(message.frameInfo)
+                        },
+                        acknowledge: { bindingToken in
+                            _ = try await caller.evaluateJavaScript(
+                                "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
+                                in: message.frameInfo,
+                                requiring: bindingToken
+                            )
+                        },
+                        prepare: { _ in () },
+                        restore: { _ -> ReaderEBookInitialRestoreBridgeRequest? in
+                            try validateAttempt()
+                            let request = try await ReaderEBookInitialRestoreBridgeRequest.prepare(requestID: attemptID) {
+                                try await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
+                            }
+                            try validateAttempt()
+                            return request
+                        },
+                        publish: { bindingToken, _, initialRestoreRequest in
+                            try validateAttempt()
+                            let layoutMode = UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated"
+                            let originalRequest = ReaderEBookRestoreRequest(
+                                loadRequestID: attemptID,
+                                contentURL: ReaderViewModel.restoreContentURL(loaderURL),
+                                cfi: initialRestoreRequest?.cfi ?? "",
+                                fractionalCompletion: initialRestoreRequest?.fractionalCompletion,
+                                requestedLocator: initialRestoreRequest?.requestedLocator ?? "none",
+                                layoutMode: layoutMode
+                            )
                             let defaults = UserDefaults.standard
                             let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16
                             let rawWritingDirection = defaults.string(
@@ -1004,32 +1021,41 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             ]
                             var loadArguments: [String: any Sendable] = [
                                 "url": loaderURL.absoluteString,
-                                "layoutMode": defaults.string(forKey: "ebookViewerLayout") ?? "paginated",
+                                "loadRequestID": attemptID,
+                                "layoutMode": layoutMode,
                                 "readerPresentationState": readerPresentationState,
                             ]
-                            let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(
-                                restore: initialRestore
-                            )
                             loadArguments["initialRestore"] =
                                 initialRestoreRequest?.javaScriptArgument ?? NSNull()
-                            try await scriptCaller.evaluateJavaScript(
+                            try validateAttempt()
+                            guard readerViewModel.dispatchEBookRestore(
+                                originalRequest, caller: caller, loaderURL: readerContent.pageURL
+                            ) else { throw CancellationError() }
+                            try await caller.evaluateJavaScript(
                                 """
                                 window.loadEBook({
                                     url,
+                                    loadRequestID,
                                     layoutMode,
                                     initialRestore,
                                     readerPresentationState
                                 });
                                 """,
                                 arguments: loadArguments,
-                                in: message.frameInfo
-                            )
-                        } catch {
-                            Logger.shared.logger.error(
-                                "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
+                                in: message.frameInfo,
+                                requiring: bindingToken
                             )
                         }
-                    }
+                    )
+                } catch is CancellationError {
+                    readerViewModel.retireEBookRestore(attemptID)
+                    // Navigation, owner revocation and parent cancellation are
+                    // expected terminal outcomes. Do not launch detached retry.
+                } catch {
+                    readerViewModel.retireEBookRestore(attemptID)
+                    Logger.shared.logger.error(
+                        "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
+                    )
                 }
             }),
             ("updateReadingProgress", { @MainActor [weak self] message in

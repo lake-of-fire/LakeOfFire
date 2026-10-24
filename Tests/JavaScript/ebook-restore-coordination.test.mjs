@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+    installVisibleRendererGoToGuard,
     makeInitialRestoreTerminalResult,
     makeSyntheticRestoreLocator,
     normalizeInitialRestoreRequest,
@@ -9,7 +10,49 @@ import {
     restoreLocatorKind,
     runRequiredRestoreNavigation,
     shouldSkipScheduledReaderFractionGoTo,
+    shouldSkipVisibleRendererGoTo,
 } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-restore-coordination.js'
+
+test('normalized saved command cannot be changed through a published diagnostic alias', () => {
+    const input = { requestID: 'immutable', cfi: '', fractionalCompletion: 0 }
+    const request = normalizeInitialRestoreRequest(input)
+    input.fractionalCompletion = 0.5
+    assert.equal(Object.isFrozen(request), true)
+    assert.throws(() => { request.fractionalCompletion = 0.5 }, TypeError)
+    assert.equal(request.fractionalCompletion, 0)
+})
+
+test('installed visible-page wrapper reaches the actual renderer for a required position receipt', async () => {
+    const receipt = Object.freeze({ index: 0, anchor: 0 })
+    let calls = 0, receivedThis, receivedOptions
+    const renderer = { goTo(target, options) {
+        calls += 1; receivedThis = this; receivedOptions = options
+        assert.deepEqual(target, { index: 0, anchor: 0 })
+        return Promise.resolve(receipt)
+    } }
+    installVisibleRendererGoToGuard({ renderer,
+        getCurrentIndex: () => 0, getPageSnapshot: () => ({ current: 1, total: 4 }) })
+    const options = { requiresPositionReceipt: true }
+    assert.equal(await renderer.goTo({ index: 0, anchor: 0 }, options), receipt)
+    assert.equal(calls, 1)
+    assert.equal(receivedThis, renderer)
+    assert.equal(receivedOptions, options)
+})
+
+test('installed wrapper preserves ordinary visible-page skipping and synthetic local-page dispatch', async () => {
+    const calls = []
+    const renderer = { goTo: target => { calls.push(target); return Promise.resolve('applied') } }
+    const configuration = { renderer, getCurrentIndex: () => 0,
+        getPageSnapshot: () => ({ current: 1, total: 4 }) }
+    assert.equal(installVisibleRendererGoToGuard(configuration), true)
+    const wrapper = renderer.goTo
+    assert.equal(installVisibleRendererGoToGuard(configuration), false)
+    assert.equal(renderer.goTo, wrapper)
+    assert.equal(await renderer.goTo({ index: 0, anchor: 0 }), undefined)
+    assert.equal(await renderer.goTo({ index: 0, localPage: 0 }), 'applied')
+    assert.equal(await renderer.goTo({ index: 0, anchor: 0.7 }), 'applied')
+    assert.equal(calls.length, 2)
+})
 
 test('initial restore requests derive locator identity from validated content', () => {
     assert.deepEqual(normalizeInitialRestoreRequest({
@@ -24,7 +67,27 @@ test('initial restore requests derive locator identity from validated content', 
         fractionalCompletion: 0.7,
     })
     assert.equal(normalizeInitialRestoreRequest({ requestID: '', cfi: 'epubcfi(/6/14!)' }), null)
+    assert.deepEqual(normalizeInitialRestoreRequest({
+        requestID: 'request-zero',
+        cfi: '',
+        fractionalCompletion: 0,
+    }), {
+        requestID: 'request-zero',
+        requestedLocator: 'fraction',
+        cfi: '',
+        fractionalCompletion: 0,
+    })
     assert.equal(normalizeInitialRestoreRequest({ requestID: 'request-2', cfi: '', fractionalCompletion: 2 }), null)
+    assert.equal(normalizeInitialRestoreRequest({
+        requestID: 'request-invalid-with-cfi',
+        cfi: 'epubcfi(/6/14!)',
+        fractionalCompletion: -0.1,
+    }), null)
+    assert.equal(normalizeInitialRestoreRequest({
+        requestID: 'request-nan-with-cfi',
+        cfi: 'epubcfi(/6/14!)',
+        fractionalCompletion: Number.NaN,
+    }), null)
 })
 
 test('initial restore terminal results retain request correlation and snapshot', () => {
@@ -121,7 +184,10 @@ test('restore routing gives explicit locators priority over fractional completio
     assert.equal(restoreLocatorKind({ cfi: 'mnb-loc-v1:7:2:5', fractionalCompletion: 0.7 }), 'synthetic')
     assert.equal(restoreLocatorKind({ cfi: 'epubcfi(/6/14!)', fractionalCompletion: 0.7 }), 'cfi')
     assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0.7 }), 'fraction')
-    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0 }), 'none')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 0 }), 'fraction')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 1 }), 'fraction')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: -0.01 }), 'none')
+    assert.equal(restoreLocatorKind({ cfi: '', fractionalCompletion: 1.01 }), 'none')
 })
 
 test('scheduled fractional navigation waits for restore settling until user input', () => {
@@ -159,4 +225,74 @@ test('required restore navigation returns the successful terminal value', async 
         value,
         error: null,
     })
+})
+
+test('same-section synthetic restore must reach the renderer for every finite local page', () => {
+    for (const localPage of [0, 1, 3, -1, 1.5]) {
+        assert.equal(shouldSkipVisibleRendererGoTo({
+            target: {index: 2, localPage}, currentIndex: 2, currentPage: 1, totalPages: 5,
+        }), false)
+    }
+    // Explicit page intent must win even if an anchor happens to match the HUD.
+    assert.equal(shouldSkipVisibleRendererGoTo({
+        target: {index: 2, localPage: 3, anchor: 0}, currentIndex: 2, currentPage: 1, totalPages: 5,
+    }), false)
+})
+
+test('ordinary same-visible-page and section navigation retain existing decisions', () => {
+    const current = {currentIndex: 2, currentPage: 3, totalPages: 5}
+    assert.equal(shouldSkipVisibleRendererGoTo({...current, target: {index: 2, anchor: 0.5}}), true)
+    assert.equal(shouldSkipVisibleRendererGoTo({...current, target: {index: 2, anchor: 0}}), false)
+    assert.equal(shouldSkipVisibleRendererGoTo({...current, target: {index: 3, anchor: 0.5}}), false)
+    assert.equal(shouldSkipVisibleRendererGoTo({...current, target: {index: 2}}), true)
+    assert.equal(shouldSkipVisibleRendererGoTo({...current, target: null}), false)
+})
+
+test('nonfinite and absent local pages do not invent a synthetic restore intent', () => {
+    for (const localPage of [undefined, null, NaN, Infinity, -Infinity, '3']) {
+        assert.equal(shouldSkipVisibleRendererGoTo({
+            target: {index: 2, localPage}, currentIndex: 2, currentPage: 1, totalPages: 5,
+        }), true)
+    }
+})
+
+
+test('paginated pure zero uses strict raw geometry while preserving measured completion', () => {
+    const request = { requestID: 'zero', requestedLocator: 'fraction', cfi: '', fractionalCompletion: 0 }
+    const geometry = { kind: 'paginated-first-page-v1', targetSectionIndex: 2,
+        targetAnchor: 0, sectionIndex: 2, fractionInSection: 0, pageFraction: 0.25 }
+    const snapshot = { positionMode: 'paginated', firstPageGeometry: geometry,
+        handledFractionalCompletion: 0.125, currentFractionalCompletion: 0.125 }
+    const result = makeInitialRestoreTerminalResult({ request, snapshot, loadRequestID: 'zero' })
+    assert.equal(result.restoreSatisfied, true)
+    assert.equal(result.handledFractionalCompletion, 0.125)
+    assert.equal(result.currentFractionalCompletion, 0.125)
+    assert.equal(result.loadRequestID, 'zero')
+    assert.deepEqual(result.firstPageGeometry, geometry)
+    for (const change of [
+        { sectionIndex: 1 }, { fractionInSection: 0.001 }, { targetAnchor: 0.001 },
+        { sectionIndex: true }, { targetSectionIndex: 2.5 }, { pageFraction: 0 },
+        { pageFraction: Infinity }, { kind: 'unknown' },
+    ]) {
+        assert.equal(makeInitialRestoreTerminalResult({ request, snapshot: {
+            ...snapshot, handledFractionalCompletion: 0.001, currentFractionalCompletion: 0.001,
+            firstPageGeometry: { ...geometry, ...change },
+        } }).restoreSatisfied, false)
+    }
+    for (const firstPageGeometry of [null, undefined, {}, false]) {
+        assert.equal(makeInitialRestoreTerminalResult({ request, snapshot: {
+            ...snapshot, handledFractionalCompletion: 0, currentFractionalCompletion: 0, firstPageGeometry,
+        } }).restoreSatisfied, false)
+    }
+    for (const positionMode of [undefined, null, 'unknown']) {
+        assert.equal(makeInitialRestoreTerminalResult({ request, snapshot: {
+            ...snapshot, positionMode,
+        } }).restoreSatisfied, false)
+    }
+    for (const positionMode of ['scrolled', 'other']) {
+        assert.equal(makeInitialRestoreTerminalResult({ request, snapshot: {
+            ...snapshot, positionMode, firstPageGeometry: undefined,
+            handledFractionalCompletion: 0.001, currentFractionalCompletion: 0.001,
+        } }).restoreSatisfied, true)
+    }
 })

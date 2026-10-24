@@ -102,6 +102,13 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published public private(set) var readingProgressState: ReaderReadingProgressState?
 
     public var scriptCaller = WebViewScriptCaller()
+    /// Optional owner-supplied presentation lifetime, captured before an EPUB
+    /// restore reads saved data. A configured provider returning nil denies a
+    /// new attempt; LakeOfFire does not own the consumer's account model.
+    public var ebookRestoreLifetimeCheckProvider: (@MainActor () -> (@MainActor () -> Bool)?)?
+    var ebookRestoreAttempt = ReaderEBookRestoreAttemptState<ReaderEBookRestoreNativeOwner>()
+    weak var ebookRestoreCaller: WebViewScriptCaller?
+    var ebookRestoreOwner: ReaderEBookRestoreNativeOwner?
     @Published var webViewUserScripts: [WebViewUserScript]? = nil
     @Published var webViewSystemScripts: [WebViewUserScript]? = nil
     private let baseSystemScripts: [WebViewUserScript]
