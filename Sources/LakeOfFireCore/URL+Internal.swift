@@ -38,6 +38,9 @@ public extension URL {
                 let isWebURL = (contentScheme == "http" || contentScheme == "https")
                     && contentURL.host?.isEmpty == false
                 let isLocalContent = contentURL.isSnippetURL
+                    || (contentScheme == "about"
+                        && contentURL.absoluteString.hasPrefix("about:snippet?key=")
+                        && contentURL.snippetKey != nil)
                     || contentScheme == "reader-file"
                 if isWebURL || isLocalContent {
                     // A same-document fragment on the loader belongs to the

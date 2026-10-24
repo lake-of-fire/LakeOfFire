@@ -50,6 +50,19 @@ final class URLInternalTests: XCTestCase {
         }
     }
 
+    func testReaderLoaderPreservesLegacyAboutSnippetSource() throws {
+        let legacySnippet = try XCTUnwrap(URL(string: "about:snippet?key=legacy%252Fnote"))
+        let encoded = try XCTUnwrap(
+            legacySnippet.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+        )
+        let loader = try XCTUnwrap(URL(
+            string: "internal://local/load/reader?reader-url=\(encoded)"
+        ))
+
+        XCTAssertEqual(loader.readerLoaderContentURL, legacySnippet)
+        XCTAssertEqual(loader.snippetKey, legacySnippet.snippetKey)
+    }
+
     func testReaderLoaderSnippetKeyPreservesEscapedReservedCharacters() throws {
         let snippetURL = try XCTUnwrap(URL(
             string: "internal://local/snippet?key=alpha%252Fbeta%2523gamma"
