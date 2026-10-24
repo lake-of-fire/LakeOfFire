@@ -12,6 +12,7 @@ struct LibraryScriptDomainOwner: Sendable {
     let scriptID: UUID
     let scriptCreatedAt: Date
     let realmConfiguration: Realm.Configuration
+    let storageAdmission: RealmStorageAdmission
 
     @MainActor
     init?(script: UserScript) {
@@ -19,10 +20,16 @@ struct LibraryScriptDomainOwner: Sendable {
         scriptID = script.id
         scriptCreatedAt = script.createdAt
         realmConfiguration = script.realm?.configuration ?? LibraryDataManager.realmConfiguration
+        storageAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
     }
 
     @RealmBackgroundActor
-    func resolve(in realm: Realm) -> UserScript? {
+    func resolve(in realm: Realm) throws -> UserScript? {
+        guard storageAdmission.matchesCurrentStorageIdentity({
+            RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+        }) else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+        }
         guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
               script.createdAt == scriptCreatedAt, !script.isDeleted, script.isUserEditable else { return nil }
         return script
@@ -39,12 +46,14 @@ struct LibraryScriptDomainOwner: Sendable {
         beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil
     ) async throws {
         try Task.checkCancellation()
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: realmConfiguration, storageAdmission: storageAdmission
+        )
         await beforeWrite?()
         try Task.checkCancellation()
         try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
-            guard let script = resolve(in: realm) else { return }
+            guard let script = try resolve(in: realm) else { return }
             let now = Date()
             switch mutation {
             case .add:
@@ -146,12 +155,14 @@ struct UserScriptAllowedDomainEdit: Sendable {
     @RealmBackgroundActor
     func write(beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil) async throws {
         try Task.checkCancellation()
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: owner.realmConfiguration)
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: owner.realmConfiguration, storageAdmission: owner.storageAdmission
+        )
         await beforeWrite?()
         try Task.checkCancellation()
         try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
-            guard let script = owner.resolve(in: realm), script.allowedDomainIDs.contains(domainID),
+            guard let script = try owner.resolve(in: realm), script.allowedDomainIDs.contains(domainID),
                   let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID),
                   domain.createdAt == domainCreatedAt, !domain.isDeleted else { return }
             ordering.withAdmission(intent: intent) {
@@ -190,9 +201,7 @@ struct UserScriptAllowedDomainEditor: Sendable {
         identity = UserScriptAllowedDomainIdentity(
             scriptID: owner.scriptID, scriptCreatedAt: owner.scriptCreatedAt,
             domainID: domainID, domainCreatedAt: domain.createdAt,
-            storage: configuration.inMemoryIdentifier.map { "memory:" + $0 }
-                ?? configuration.fileURL.map { "file:" + $0.resolvingSymlinksInPath().standardizedFileURL.path }
-                ?? "default",
+            storage: owner.storageAdmission.scopeIdentity,
             encryptionKey: configuration.encryptionKey, schemaVersion: configuration.schemaVersion
         )
         ordering = .shared(identity: identity)
