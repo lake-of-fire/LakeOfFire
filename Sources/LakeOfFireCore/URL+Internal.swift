@@ -5,43 +5,64 @@ public extension URL {
         return absoluteString.hasPrefix("internal://local/snippet?key=")
     }
 
+    /// Identifies the transport route even when its content query is malformed.
+    /// Do not use this URL as a user-facing address or a stored content identity.
+    var isReaderURLLoaderURL: Bool {
+        scheme?.lowercased() == "internal"
+            && host?.lowercased() == "local"
+            && path == "/load/reader"
+    }
+
+    /// The content identity carried by one reader-loader transport URL.
+    /// URLComponents has already decoded the query value once; only legacy
+    /// double-encoded values without an absolute URL need another decoding pass.
     var readerLoaderContentURL: URL? {
-        guard scheme?.lowercased() == "internal",
-              host?.lowercased() == "local",
-              path == "/load/reader" else {
+        guard isReaderURLLoaderURL,
+              let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
+              components.user == nil,
+              components.password == nil,
+              components.port == nil else {
+            return nil
+        }
+
+        let contentItems = components.queryItems?.filter { $0.name == "reader-url" } ?? []
+        guard contentItems.count == 1,
+              let value = contentItems.first?.value,
+              !value.isEmpty else {
             return nil
         }
 
         func absoluteURL(from value: String) -> URL? {
-            URL(string: value).flatMap { $0.scheme == nil ? nil : $0 }
+            URL(string: value).flatMap { $0.isAbsoluteReaderContentURL ? $0 : nil }
         }
 
-        if let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
-           let readerURLString = components.queryItems?.first(where: { $0.name == "reader-url" })?.value {
-            if let readerURL = absoluteURL(from: readerURLString) {
-                return readerURL
-            }
-            if let decodedReaderURL = readerURLString.removingPercentEncoding,
-               let readerURL = absoluteURL(from: decodedReaderURL) {
-                return readerURL
-            }
+        if let contentURL = URL(string: value), contentURL.scheme != nil {
+            return contentURL.isAbsoluteReaderContentURL ? contentURL : nil
         }
+        guard let decodedValue = value.removingPercentEncoding else { return nil }
+        return absoluteURL(from: decodedValue)
+    }
 
-        guard let range = absoluteString.range(of: "reader-url=") else {
-            return nil
+    /// Resolves transport wrappers at content and presentation boundaries.
+    /// Physical WebKit document/frame identity must continue to use the original
+    /// URL. Invalid wrappers have no content URL and must not escape as addresses.
+    var readerContentURL: URL? {
+        var contentURL = self
+        var visited = Set<URL>()
+        while contentURL.isReaderURLLoaderURL {
+            guard visited.insert(contentURL).inserted,
+                  let nextURL = contentURL.readerLoaderContentURL else {
+                return nil
+            }
+            contentURL = nextURL
         }
-        let rawReaderURL = String(absoluteString[range.upperBound...])
-        if let decodedReaderURL = rawReaderURL.removingPercentEncoding,
-           let readerURL = absoluteURL(from: decodedReaderURL) {
-            return readerURL
-        }
-        return absoluteURL(from: rawReaderURL)
+        return contentURL.isAbsoluteReaderContentURL ? contentURL : nil
     }
 
     var snippetKey: String? {
         let absolute = absoluteString
-        if absolute.hasPrefix("internal://local/load/reader") {
-            return readerLoaderContentURL?.snippetKey
+        if isReaderURLLoaderURL {
+            return readerContentURL?.snippetKey
         }
 
         let eligiblePrefix = absolute.hasPrefix("internal://local/snippet")
@@ -69,6 +90,16 @@ public extension URL {
         }
         components.fragment = nil
         return components.url ?? self
+    }
+}
+
+private extension URL {
+    var isAbsoluteReaderContentURL: Bool {
+        guard let scheme = scheme?.lowercased() else { return false }
+        if scheme == "http" || scheme == "https" {
+            return host?.isEmpty == false
+        }
+        return true
     }
 }
 

@@ -2887,7 +2887,16 @@ public class ReaderModeViewModel: ObservableObject {
             )
             return
         }
-        guard let content = try await readerContent.getContent() else {
+        let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
+        let resolvedContent: (any ReaderContentProtocol)?
+        do {
+            resolvedContent = try await readerContent.getContent()
+        } catch {
+            guard selectionIsCurrent() else { return }
+            throw error
+        }
+        guard selectionIsCurrent() else { return }
+        guard let content = resolvedContent else {
             print("No content set to show in reader mode")
             cancelReaderModeLoad(
                 for: requestedURL,
@@ -2899,7 +2908,18 @@ public class ReaderModeViewModel: ObservableObject {
         guard isCurrentRender(for: requestedURL, generation: renderGeneration) else {
             return
         }
+        guard selectionIsCurrent(), readerModeContentIsCurrent(content, readerContent: readerContent) else { return }
         let url = content.url
+        // A render job may remain current while its row is removed or replaced.
+        // Keep the original selection and live row while preparing HTML;
+        // a fresh wrapper for the same Realm row retains its authority.
+        let ownsContent = { @MainActor in
+            self.isCurrentRender(for: requestedURL, generation: renderGeneration)
+                && selectionIsCurrent()
+                && self.readerModeContentIsCurrent(content, readerContent: readerContent)
+                && content.url == url
+                && url.matchesReaderURL(readerContent.pageURL)
+        }
         let renderBaseURL: URL
         if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" || url.isSnippetURL {
             renderBaseURL = url
@@ -2937,7 +2957,7 @@ public class ReaderModeViewModel: ObservableObject {
             || (resolvedStoredHTML != nil && content.html != resolvedStoredHTML)
             || (resolvedTitleIfNeeded != nil && content.title != resolvedTitleIfNeeded)
 
-        guard isCurrentRender(for: requestedURL, generation: renderGeneration) else {
+        guard ownsContent() else {
             return
         }
         if needsAsyncWrite {
@@ -2958,7 +2978,7 @@ public class ReaderModeViewModel: ObservableObject {
             }
         }
 
-        guard isCurrentRender(for: requestedURL, generation: renderGeneration) else {
+        guard ownsContent() else {
             return
         }
         
@@ -2968,7 +2988,7 @@ public class ReaderModeViewModel: ObservableObject {
 
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
         let imageURLToDisplay = try await content.imageURLToDisplay()
-        guard isCurrentRender(for: requestedURL, generation: renderGeneration) else {
+        guard ownsContent() else {
             return
         }
         let processReadabilityContent = processReadabilityContent
@@ -2981,14 +3001,11 @@ public class ReaderModeViewModel: ObservableObject {
         let snippetNeedsClipboardIndicator = content.needsClipboardIndicator
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
         let tracksReadingProgress = content.tracksReadingProgress
-        let primaryRecordCompoundKey = await MainActor.run { content.compoundKey }
+        let primaryRecordCompoundKey = content.compoundKey
         
         try await { @ReaderViewModelActor [weak self] in
             guard let self,
-                  await self.isCurrentRender(
-                      for: requestedURL,
-                      generation: renderGeneration
-                  ) else {
+                  await ownsContent() else {
                 return
             }
             var doc: SwiftSoup.Document?
@@ -3025,10 +3042,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
             }
 
-            guard await self.isCurrentRender(
-                for: requestedURL,
-                generation: renderGeneration
-            ) else {
+            guard await ownsContent() else {
                 return
             }
 
@@ -3063,10 +3077,7 @@ public class ReaderModeViewModel: ObservableObject {
                         }
                     }
                 )
-                guard await self.isCurrentRender(
-                    for: requestedURL,
-                    generation: renderGeneration
-                ) else {
+                guard await ownsContent() else {
                     return
                 }
             }
@@ -3078,10 +3089,7 @@ public class ReaderModeViewModel: ObservableObject {
                 fallbackTitle: titleForDisplay,
                 derivedTitle: derivedTitle
             )
-            guard await self.isCurrentRender(
-                for: requestedURL,
-                generation: renderGeneration
-            ) else {
+            guard await ownsContent() else {
                 return
             }
             try await processForReaderMode(
@@ -3095,10 +3103,7 @@ public class ReaderModeViewModel: ObservableObject {
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
                 defaultFontSize: defaultFontSize ?? 21
             )
-            guard await self.isCurrentRender(
-                for: requestedURL,
-                generation: renderGeneration
-            ) else {
+            guard await ownsContent() else {
                 return
             }
             normalizeReadabilityBodyOrder(doc)
@@ -3174,10 +3179,7 @@ public class ReaderModeViewModel: ObservableObject {
                     transformedHTMLBytes,
                     false
                 )
-                guard await self.isCurrentRender(
-                    for: requestedURL,
-                    generation: renderGeneration
-                ) else {
+                guard await ownsContent() else {
                     return
                 }
             }
@@ -3189,10 +3191,7 @@ public class ReaderModeViewModel: ObservableObject {
                 )
                 transformedHTMLString = processedHTML
                 transformedHTMLBytes = Array(processedHTML.utf8)
-                guard await self.isCurrentRender(
-                    for: requestedURL,
-                    generation: renderGeneration
-                ) else {
+                guard await ownsContent() else {
                     return
                 }
             }
@@ -3251,10 +3250,7 @@ public class ReaderModeViewModel: ObservableObject {
             }
             let transformedHTMLData = Data(transformedHTMLBytes)
             try await { @MainActor in
-                guard isCurrentRender(
-                    for: requestedURL,
-                    generation: renderGeneration
-                ) else {
+                guard ownsContent() else {
                     return
                 }
                 guard url.matchesReaderURL(readerContent.pageURL) else {
@@ -3358,10 +3354,7 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                     markReaderModeLoadComplete(for: url, ifOwnedBy: renderGeneration)
                 } else {
-                    guard isCurrentRender(
-                        for: requestedURL,
-                        generation: renderGeneration
-                    ) else {
+                    guard ownsContent() else {
                         return
                     }
                     expectSyntheticReaderLoaderCommit(for: renderBaseURL)
