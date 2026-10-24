@@ -37,7 +37,9 @@ final class URLInternalTests: XCTestCase {
         ]
         for value in cases {
             let loader = try XCTUnwrap(URL(string: value))
-            XCTAssertNil(loader.readerLoaderContentURL, value)
+            // The canonical resolver validates the complete nested destination;
+            // readerLoaderContentURL intentionally unwraps only one layer.
+            XCTAssertNil(loader.readerContentURL, value)
             XCTAssertNil(loader.snippetKey, value)
         }
     }
