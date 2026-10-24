@@ -2941,13 +2941,14 @@ export class Paginator extends HTMLElement {
             }))
         }
     }
-    async #display(promise, isCurrent) {
+    async #display(promise, isCurrent, { requiresSource = false } = {}) {
         if (!isCurrent()) {
             // Section loaders can synchronously start a successor before they
             // return their promise. Still observe any late rejection.
             void Promise.resolve(promise).catch(() => {})
             return null
         }
+        const previousDisplayOwner = this.#displayOwner
         const owner = { ready: false }
         this.#displayOwner = owner
         let displayView = this.#view
@@ -2960,6 +2961,7 @@ export class Paginator extends HTMLElement {
         this.#setLoading(true, 'display.start')
         const displayStartedAt = manabiPerfNow();
         let displayError = null
+        let sourceAdmitted = false
         if (!this.#isCacheWarmer) {
         }
         try {
@@ -2972,6 +2974,13 @@ export class Paginator extends HTMLElement {
                 select
             } = await promise
         if (!ownsDisplay()) return null
+        if (requiresSource) {
+            if (!src) throw new Error(`Missing paginator source for section ${index}`)
+            sourceAdmitted = true
+            // Retain the visible document until a required source is available.
+            // Same-index reposition intentionally does not acquire a source.
+            if (!this.#isCacheWarmer) this.style.visibility = 'hidden'
+        }
         if (!this.#isCacheWarmer) {
         }
 
@@ -3130,6 +3139,10 @@ export class Paginator extends HTMLElement {
             if (this.#displayOwner === owner) {
                 this.#suspendOnExpandAnchor = false
                 this.#setLoading(false, displayError ? 'display.error.finally' : 'display.complete.finally')
+                if (displayError && requiresSource && !sourceAdmitted
+                    && previousDisplayOwner?.ready && ownsDisplay()) {
+                    this.#displayOwner = previousDisplayOwner
+                }
             }
         }
     }
@@ -3190,10 +3203,6 @@ export class Paginator extends HTMLElement {
             }
             if (!isCurrent()) return null
 
-            // hide visually while preserving layout metrics
-            if (!this.#isCacheWarmer) {
-                this.style.visibility = 'hidden'
-            }
             const oldIndex = this.#index
             const onLoad = async (detail) => {
                 if (!isCurrent()) return
@@ -3239,7 +3248,7 @@ export class Paginator extends HTMLElement {
                     }))
                     .catch(error => {
                         throw error
-                    }), isCurrent);
+                    }), isCurrent, { requiresSource: true });
                 if (result === null || !isCurrent()) return null
             } catch (error) {
                 throw error;

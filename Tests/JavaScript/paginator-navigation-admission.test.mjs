@@ -36,10 +36,17 @@ globalThis.NodeFilter = {
 globalThis.ResizeObserver = class { observe() {} unobserve() {} }
 globalThis.Range = class {}
 globalThis.customElements = { define() {} }
+const sourceURL = 'data:application/xhtml+xml,%3Chtml%3Efixture%3C%2Fhtml%3E'
+globalThis.DOMParser = class {
+    parseFromString(text) {
+        assert.equal(text, '<html>fixture</html>')
+        return { location: { href: sourceURL } }
+    }
+}
 
-const { Paginator } = await import(
-    '../../Sources/LakeOfFireReader/Resources/foliate-js/paginator.js'
-)
+const { Paginator } = await import(process.env.PAGINATOR_MODULE ?? new URL(
+    '../../Sources/LakeOfFireReader/Resources/foliate-js/paginator.js', import.meta.url,
+))
 const { runRequiredRestoreNavigation } = await import(
     '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-restore-coordination.js'
 )
@@ -177,11 +184,11 @@ test('wheel foreground callback supersession stops the original page-turn handle
     renderer.destroy()
 })
 
-// The existing empty-source host admits real commands without creating an
-// iframe. These cases qualify receipt ownership, not rendered page geometry.
+// Cache-warmer commands fetch real nonempty data URLs through a controlled
+// parser endpoint. These cases qualify receipts, not iframe/page geometry.
 const receiptFixture = load => {
     const renderer = new Paginator()
-    renderer.open({ dir: 'ltr', sections: [{ load: load ?? (async () => '') }] }, true)
+    renderer.open({ dir: 'ltr', sections: [{ load: load ?? (async () => sourceURL) }] }, true)
     renderer.pageMetrics = async () => ({ pages: 0 })
     return renderer
 }
@@ -216,7 +223,7 @@ test('navigation receipt: section failure grants no receipt, retry succeeds, and
     let attempts = 0
     const renderer = receiptFixture(async () => {
         if (++attempts === 1) throw failure
-        return ''
+        return sourceURL
     })
     try {
         await assert.rejects(renderer.goTo({ index: 0, anchor: 0.5 }, { requiresNavigationReceipt: true }),
@@ -228,4 +235,67 @@ test('navigation receipt: section failure grants no receipt, retry succeeds, and
         renderer.destroy()
         assert.equal(renderer.isNavigationReceiptCurrent(retried), false)
     } finally { renderer.destroy() }
+})
+
+const boundedSourceSettlement = async operation => {
+    let timer
+    try {
+        return await Promise.race([operation, new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Missing source waited for rendered direction')), 1500)
+        })])
+    } finally { clearTimeout(timer) }
+}
+
+for (const isCacheWarmer of [false, true]) {
+    for (const source of [null, '']) {
+        test(`required source: ${isCacheWarmer ? 'cache' : 'visible'} rejects ${source === null ? 'null' : 'empty'} before frame admission`, async t => {
+            const renderer = new Paginator()
+            let displays = 0, documents = 0, unloads = 0
+            renderer.open({ dir: 'ltr', sections: [{
+                load: async () => source,
+                unload: () => { unloads += 1 },
+            }] }, isCacheWarmer)
+            if (isCacheWarmer) renderer.pageMetrics = async () => ({ pages: 0 })
+            renderer.addEventListener('didDisplay', () => { displays += 1 })
+            renderer.addEventListener('load', () => { documents += 1 })
+            t.after(() => renderer.destroy())
+
+            await assert.rejects(boundedSourceSettlement(renderer.goTo(
+                { index: 0, anchor: 0 }, { requiresNavigationReceipt: true },
+            )), /Missing paginator source for section 0/)
+            assert.deepEqual(renderer.getContents(), [])
+            assert.equal(renderer.getHasNextSection(), true, 'failed acquisition does not advance the section index')
+            assert.equal(displays, 0)
+            assert.equal(documents, 0)
+            assert.equal(unloads, 0, 'a missing source acquired no reference to release')
+        })
+    }
+}
+
+test('required source: a fresh command retries after absence without inheriting acceptance', async t => {
+    let attempts = 0
+    const renderer = receiptFixture(async () => ++attempts === 1 ? null : sourceURL)
+    t.after(() => renderer.destroy())
+    await assert.rejects(renderer.goTo({ index: 0, anchor: 0.5 }, { requiresNavigationReceipt: true }),
+        /Missing paginator source for section 0/)
+    const receipt = await renderer.goTo({ index: 0, anchor: 0.5 }, { requiresNavigationReceipt: true })
+    assert.equal(attempts, 2)
+    assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+})
+
+test('required source: an obsolete missing delivery cannot reject or relabel the accepted successor', async t => {
+    const source = deferred(), entered = deferred(), renderer = new Paginator()
+    renderer.open({ dir: 'ltr', sections: [
+        { load: () => { entered.resolve(); return source.promise } },
+        { load: async () => sourceURL },
+    ] }, true)
+    renderer.pageMetrics = async () => ({ pages: 0 })
+    t.after(() => { source.resolve(null); renderer.destroy() })
+    const old = renderer.goTo({ index: 0, anchor: 0 }, { requiresNavigationReceipt: true })
+    await entered.promise
+    const current = await renderer.goTo({ index: 1, anchor: 0 }, { requiresNavigationReceipt: true })
+    source.resolve(null)
+    assert.equal(await old, null)
+    assert.equal(renderer.isNavigationReceiptCurrent(current), true)
+    assert.equal(renderer.getHasNextSection(), false)
 })

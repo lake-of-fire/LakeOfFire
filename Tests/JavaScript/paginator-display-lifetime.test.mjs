@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 // Browser hosting and page metrics are controlled. Section admission, display,
-// retirement and loading-class changes execute the actual Paginator. Empty
-// sources avoid iframe rendering; this suite does not qualify page geometry.
+// retirement and loading-class changes execute the actual Paginator. Success
+// sources are real data URLs; the parser endpoint is controlled. No iframe
+// rendering or page geometry is qualified.
 class Element extends EventTarget {
     style = {}
     attributes = new Map()
@@ -36,6 +37,13 @@ globalThis.NodeFilter = {
 globalThis.ResizeObserver = class { observe() {} unobserve() {} }
 globalThis.Range = class {}
 globalThis.customElements = { define() {} }
+const sourceURL = 'data:application/xhtml+xml,%3Chtml%3Efixture%3C%2Fhtml%3E'
+globalThis.DOMParser = class {
+    parseFromString(text) {
+        assert.equal(text, '<html>fixture</html>')
+        return { location: { href: sourceURL } }
+    }
+}
 
 const { Paginator } = await import(process.env.PAGINATOR_MODULE ?? new URL(
     '../../Sources/LakeOfFireReader/Resources/foliate-js/paginator.js', import.meta.url,
@@ -70,8 +78,8 @@ const fixture = loaders => {
 
 test('a replaced section source cannot redisplay over the successor section', async t => {
     const source = heldSource()
-    const f = fixture([source.load, async () => ''])
-    t.after(() => { source.resolve(''); f.renderer.destroy() })
+    const f = fixture([source.load, async () => sourceURL])
+    t.after(() => { source.resolve(sourceURL); f.renderer.destroy() })
     const old = observeSettlement(f.goTo(0))
     await source.entered
     const successor = await f.goTo(1)
@@ -80,7 +88,7 @@ test('a replaced section source cannot redisplay over the successor section', as
     assert.equal(f.renderer.getHasNextSection(), false)
     assert.equal(f.displays, 1)
 
-    source.resolve('')
+    source.resolve(sourceURL)
     const result = await old
     assert.equal(result.value, null)
     assert.equal(f.renderer.getHasPrevSection(), true)
@@ -95,19 +103,19 @@ for (const failure of [false, true]) {
         const oldSource = heldSource()
         const newSource = heldSource()
         const f = fixture([oldSource.load, newSource.load])
-        t.after(() => { oldSource.resolve(''); newSource.resolve(''); f.renderer.destroy() })
+        t.after(() => { oldSource.resolve(sourceURL); newSource.resolve(sourceURL); f.renderer.destroy() })
         const old = observeSettlement(f.goTo(0))
         await oldSource.entered
         const successor = f.goTo(1)
         await newSource.entered
         assert.equal(f.loading(), true)
         if (failure) oldSource.reject(new Error('obsolete source failure'))
-        else oldSource.resolve('')
+        else oldSource.resolve(sourceURL)
         await old
         assert.equal(f.loading(), true)
         assert.equal(f.displays, 0)
 
-        newSource.resolve('')
+        newSource.resolve(sourceURL)
         const receipt = await successor
         assert.equal(receipt.index, 1)
         assert.equal(f.displays, 1)
@@ -117,8 +125,8 @@ for (const failure of [false, true]) {
 
 test('destroy while a section source is held prevents late display and preserves cleared loading', async t => {
     const source = heldSource()
-    const f = fixture([source.load, async () => ''])
-    t.after(() => { source.resolve(''); f.renderer.destroy() })
+    const f = fixture([source.load, async () => sourceURL])
+    t.after(() => { source.resolve(sourceURL); f.renderer.destroy() })
     await f.goTo(1)
     const pending = observeSettlement(f.goTo(0))
     await source.entered
@@ -126,7 +134,7 @@ test('destroy while a section source is held prevents late display and preserves
     f.renderer.destroy()
     assert.equal(f.loading(), false)
 
-    source.resolve('')
+    source.resolve(sourceURL)
     const result = await pending
     assert.equal(result.value, null)
     assert.equal(f.renderer.getHasPrevSection(), true)
@@ -142,7 +150,7 @@ test('a current source failure settles loading and allows a successful retry', a
     const f = fixture([async () => {
         attempts += 1
         if (attempts === 1) throw failure
-        return ''
+        return sourceURL
     }])
     t.after(() => f.renderer.destroy())
     await assert.rejects(f.goTo(0), error => error === failure)
@@ -165,7 +173,7 @@ test('a section loader that synchronously starts a successor still observes its 
     const f = fixture([() => {
         successor = f.goTo(1)
         return Promise.reject(failure)
-    }, async () => ''])
+    }, async () => sourceURL])
     t.after(() => {
         process.removeListener('unhandledRejection', onUnhandled)
         f.renderer.destroy()
@@ -188,9 +196,9 @@ test('nextSection rejects a held page-turn lock and succeeds after the failed tu
     let attempts = 0
     const f = fixture([() => {
         attempts += 1
-        return attempts === 1 ? source.load() : Promise.resolve('')
-    }, async () => ''])
-    t.after(() => { source.resolve(''); f.renderer.destroy() })
+        return attempts === 1 ? source.load() : Promise.resolve(sourceURL)
+    }, async () => sourceURL])
+    t.after(() => { source.resolve(sourceURL); f.renderer.destroy() })
     const turn = observeSettlement(f.renderer.next())
     await source.entered
 
