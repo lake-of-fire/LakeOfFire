@@ -103,7 +103,7 @@ export const hydratePackageMedia = async ({
         return promise.then(objectURL => objectURL === null ? null : `${objectURL}${fragment}`);
     };
 
-    const mediaElements = new Map()
+    const mediaSettlements = new Map()
     const pending = Array.from(doc.querySelectorAll(mediaSourceSelector), async element => {
         const sourceURL = element.src;
         if (!isPackageMediaURL(sourceURL)) return false;
@@ -114,25 +114,32 @@ export const hydratePackageMedia = async ({
             isCurrent: () => selection.isCurrent() && (!mediaSelection || mediaSelection.isCurrent())
                 && mediaOwnerFor(element) === media,
         }
-        const objectURL = await objectURLFor(sourceURL);
-        if (closed || objectURL === null || !owner.isCurrent()) return false
-        selection.publish(objectURL)
-        if (media) {
-            const owners = mediaElements.get(media) ?? []
-            owners.push(owner)
-            mediaElements.set(media, owners)
+        const mediaSettlement = media
+            ? mediaSettlements.get(media) || { pendingSourceCount: 0, owners: [] }
+            : null
+        if (mediaSettlement) {
+            mediaSettlement.pendingSourceCount += 1
+            mediaSettlements.set(media, mediaSettlement)
         }
-        return true
+        try {
+            const objectURL = await objectURLFor(sourceURL)
+            if (closed || objectURL === null || !owner.isCurrent()) return false
+            selection.publish(objectURL)
+            if (mediaSettlement) mediaSettlement.owners.push(owner)
+            return true
+        } finally {
+            // Settle each media independently so an unrelated resource failure
+            // cannot bypass a successfully published owner's reload.
+            if (mediaSettlement) {
+                mediaSettlement.pendingSourceCount -= 1
+                if (mediaSettlement.pendingSourceCount === 0 && !closed
+                    && mediaSettlement.owners.some(owner => owner.isCurrent())) media.load?.()
+            }
+        }
     })
 
     try {
-        const results = await Promise.all(pending)
-        // Another resource can keep the batch pending after an earlier src
-        // publication. Revalidate each owner before invoking its media element.
-        for (const [media, owners] of mediaElements) {
-            if (!closed && owners.some(owner => owner.isCurrent())) media.load?.()
-        }
-        return results
+        return await Promise.all(pending)
     } finally {
         // Promise.all can reject while peer fetches still own pending sources.
         // Keep their observations until they settle (or pagehide retires them).
