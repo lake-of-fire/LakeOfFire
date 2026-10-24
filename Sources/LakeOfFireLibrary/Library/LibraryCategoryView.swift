@@ -32,6 +32,7 @@ class LibraryCategoryViewModel: ObservableObject {
     private let ordering: LibraryCategoryFieldWriteOrdering?
     private let beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)?
     private let retirementDidFinish: (@RealmBackgroundActor @Sendable () -> Void)?
+    private let debouncedWriteDidFinish: (@MainActor @Sendable (LibraryCategoryFieldEdit) -> Void)?
     var cancellables = Set<AnyCancellable>()
     @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
     
@@ -65,16 +66,21 @@ class LibraryCategoryViewModel: ObservableObject {
         return isUserEditable && category.isArchived
     }
     
+    /// Scheduled field delivery must target the main queue. Tests may suspend a
+    /// main-targeted queue to stage Done before the queued trailing delivery.
     init(
         category: FeedCategory,
         libraryConfiguration: LibraryConfiguration,
         selectedFeed: Binding<Feed?>,
         observesRealm: Bool = true,
         beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
-        retirementDidFinish: (@RealmBackgroundActor @Sendable () -> Void)? = nil
+        retirementDidFinish: (@RealmBackgroundActor @Sendable () -> Void)? = nil,
+        fieldDebounceScheduler: DispatchQueue = .main,
+        debouncedWriteDidFinish: (@MainActor @Sendable (LibraryCategoryFieldEdit) -> Void)? = nil
     ) {
         self.beforeFieldWrite = beforeFieldWrite
         self.retirementDidFinish = retirementDidFinish
+        self.debouncedWriteDidFinish = debouncedWriteDidFinish
         self.realmConfiguration =
             category.realm?.configuration
             ?? libraryConfiguration.realm?.configuration
@@ -117,23 +123,24 @@ class LibraryCategoryViewModel: ObservableObject {
                     }
             }
         }
-        observe($categoryTitle, edit: LibraryCategoryFieldEdit.title)
-        observe($categoryBackgroundImageURL, edit: LibraryCategoryFieldEdit.imageURL)
+        observe($categoryTitle, edit: LibraryCategoryFieldEdit.title, scheduler: fieldDebounceScheduler)
+        observe($categoryBackgroundImageURL, edit: LibraryCategoryFieldEdit.imageURL, scheduler: fieldDebounceScheduler)
     }
 
     private func observe(
         _ publisher: Published<String>.Publisher,
-        edit: @escaping (String) -> LibraryCategoryFieldEdit
+        edit: @escaping (String) -> LibraryCategoryFieldEdit,
+        scheduler: DispatchQueue
     ) {
         publisher.dropFirst()
             .compactMap { [weak self] value -> LibraryCategoryFieldCommand? in
                 guard let self, !self.isRefreshing else { return nil }
                 return self.capture(edit(value))
             }
-            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
+            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: scheduler)
             .sink { [weak self] command in
                 guard let self else { return }
-                self.observeCompletion(self.submit(command))
+                self.observeCompletion(self.submit(command), edit: command.edit)
             }
             .store(in: &cancellables)
     }
@@ -178,8 +185,10 @@ class LibraryCategoryViewModel: ObservableObject {
         if !isEditing { refresh() }
     }
 
-    private func observeCompletion(_ task: Task<Void, Error>) {
+    private func observeCompletion(_ task: Task<Void, Error>, edit: LibraryCategoryFieldEdit? = nil) {
+        let didFinish = debouncedWriteDidFinish
         Task { @MainActor in
+            defer { if let edit { didFinish?(edit) } }
             do { try await task.value }
             catch { print("# LIBRARYCATEGORYEDITOR write failed: \(error)") }
         }

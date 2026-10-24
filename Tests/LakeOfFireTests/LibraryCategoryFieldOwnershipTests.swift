@@ -375,37 +375,108 @@ final class LibraryCategoryFieldOwnershipTests: XCTestCase, @unchecked Sendable 
         XCTAssertEqual(realm.object(ofType: FeedCategory.self, forPrimaryKey: id)?.title, "Replacement")
     }
 
-    func testSettledTrailingDebouncePreservesInterveningEditAndJournal() async throws {
+    func testDoneRetiresTitleBeforeItsQueuedTrailingDelivery() async throws {
         let (realm, category, library) = try await fixture()
         let attempts = CategoryFieldWriteAttempts()
-        let editor = model(category, library, beforeFieldWrite: { await attempts.record() })
+        let trailingFinished = expectation(description: "settled title trailing delivery completed")
+        // The real Combine operator uses this main-targeted queue. Suspension holds
+        // only its scheduled trailing delivery, not the leading input or Realm work.
+        let scheduler = DispatchQueue(label: "category-title-debounce", target: .main)
+        scheduler.suspend()
+        var schedulerIsSuspended = true
+        defer { if schedulerIsSuspended { scheduler.resume() } }
+        let editor = LibraryCategoryViewModel(
+            category: category, libraryConfiguration: library, selectedFeed: .constant(nil),
+            observesRealm: false, beforeFieldWrite: { await attempts.record() },
+            fieldDebounceScheduler: scheduler,
+            debouncedWriteDidFinish: { edit in
+                if edit == .title("Final local title") { trailingFinished.fulfill() }
+            }
+        )
         editor.isEditing = true
-        editor.categoryTitle = "Intermediate"
-        editor.categoryTitle = "Finished draft"
+        editor.categoryTitle = "Leading local title"
+        editor.categoryTitle = "Final local title"
         try await editor.finishEditing().value
         let finishedAttempts = await attempts.count
+        realm.refresh()
+        XCTAssertEqual(category.title, "Final local title")
+
         let configuration = realm.configuration
         let id = category.id
         try await Task { @RealmBackgroundActor in
             let writer = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
             try await writer.asyncWritePreservingOwnership {
-                let category = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: id))
-                category.title = "Intervening edit"
-                category.refreshChangeMetadata(explicitlyModified: true)
+                let current = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: id))
+                current.title = "Remote after Done"
+                current.refreshChangeMetadata(explicitlyModified: true)
             }
         }.value
+        editor.refresh()
         realm.refresh()
-        let afterInterveningEdit = generations(realm)
+        let afterRemote = generations(realm)
+        XCTAssertEqual(editor.categoryTitle, "Remote after Done")
 
-        // As in the feed continuation fixture, allow the real 350 ms Combine
-        // publisher to deliver its retained trailing value after durable finish.
-        try await Task.sleep(nanoseconds: 500_000_000)
-        try await editor.finishEditing().value
+        schedulerIsSuspended = false
+        scheduler.resume()
+        await fulfillment(of: [trailingFinished], timeout: 5)
         let afterTrailingAttempts = await attempts.count
-        realm.refresh()
         XCTAssertEqual(afterTrailingAttempts, finishedAttempts)
-        XCTAssertEqual(category.title, "Intervening edit")
-        XCTAssertEqual(generations(realm), afterInterveningEdit)
+        realm.refresh()
+        XCTAssertEqual(category.title, "Remote after Done")
+        XCTAssertEqual(editor.categoryTitle, "Remote after Done")
+        XCTAssertEqual(generations(realm), afterRemote)
+    }
+
+    func testDoneRetiresImageBeforeItsQueuedTrailingDelivery() async throws {
+        let (realm, category, library) = try await fixture()
+        let attempts = CategoryFieldWriteAttempts()
+        let trailingFinished = expectation(description: "settled image trailing delivery completed")
+        let finalURL = "https://local.example/final.png"
+        let remoteURL = URL(string: "https://remote.example/after-done.png")!
+        let scheduler = DispatchQueue(label: "category-image-debounce", target: .main)
+        scheduler.suspend()
+        var schedulerIsSuspended = true
+        defer { if schedulerIsSuspended { scheduler.resume() } }
+        let editor = LibraryCategoryViewModel(
+            category: category, libraryConfiguration: library, selectedFeed: .constant(nil),
+            observesRealm: false, beforeFieldWrite: { await attempts.record() },
+            fieldDebounceScheduler: scheduler,
+            debouncedWriteDidFinish: { edit in
+                if edit == .imageURL(finalURL) { trailingFinished.fulfill() }
+            }
+        )
+        editor.isEditing = true
+        editor.categoryBackgroundImageURL = "https://local.example/leading.png"
+        editor.categoryBackgroundImageURL = finalURL
+        try await editor.finishEditing().value
+        let finishedAttempts = await attempts.count
+        realm.refresh()
+        XCTAssertEqual(category.backgroundImageUrl.absoluteString, finalURL)
+
+        let configuration = realm.configuration
+        let id = category.id
+        try await Task { @RealmBackgroundActor in
+            let writer = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await writer.asyncWritePreservingOwnership {
+                let current = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: id))
+                current.backgroundImageUrl = remoteURL
+                current.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }.value
+        editor.refresh()
+        realm.refresh()
+        let afterRemote = generations(realm)
+        XCTAssertEqual(editor.categoryBackgroundImageURL, remoteURL.absoluteString)
+
+        schedulerIsSuspended = false
+        scheduler.resume()
+        await fulfillment(of: [trailingFinished], timeout: 5)
+        let afterTrailingAttempts = await attempts.count
+        XCTAssertEqual(afterTrailingAttempts, finishedAttempts)
+        realm.refresh()
+        XCTAssertEqual(category.backgroundImageUrl, remoteURL)
+        XCTAssertEqual(editor.categoryBackgroundImageURL, remoteURL.absoluteString)
+        XCTAssertEqual(generations(realm), afterRemote)
     }
 
     func testRetirementJoinsSuccessfulActiveAttemptWithoutReplayingIt() async throws {
