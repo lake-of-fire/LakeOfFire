@@ -497,6 +497,47 @@ extension ReaderContentHTMLLifetimeTests {
         XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, fileURL.absoluteString)
     }
 
+    func testRequestedAnchorSurvivesProcessedAndFallbackDataLoads() async throws {
+        for processingSucceeds in [false, true] {
+            for changesAnchorDuringProcessing in [false, true] {
+                let (realm, row, reader, mode, navigator) = try renderFixture()
+                defer { withExtendedLifetime(realm) {} }
+                let backingURL = try XCTUnwrap(URL(string: fileURL.absoluteString + "#original"))
+                try realm.write { row.url = backingURL }
+                var loaderParts = try XCTUnwrap(URLComponents(
+                    url: try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: backingURL)),
+                    resolvingAgainstBaseURL: false
+                ))
+                loaderParts.percentEncodedFragment = "requested%2Fpart%2523tail"
+                let loaderURL = try XCTUnwrap(loaderParts.url)
+                let initialURL = try XCTUnwrap(ReaderContentLoader.getContentURL(fromLoaderURL: loaderURL))
+                var latestParts = try XCTUnwrap(URLComponents(url: backingURL, resolvingAgainstBaseURL: false))
+                latestParts.percentEncodedFragment = "latest%2Fpart%2523tail"
+                let latestURL = try XCTUnwrap(latestParts.url)
+                reader.content = nil
+                reader.preloadResolvedContent(row, for: loaderURL)
+                try await reader.load(url: loaderURL)
+                XCTAssertEqual(reader.pageURL, initialURL)
+                let selectionID = reader.currentSelectionID
+                mode.swiftReadabilityProcessor = { _, url, _, _ in
+                    XCTAssertEqual(url, backingURL, "Processing uses stable backing identity")
+                    if changesAnchorDuringProcessing {
+                        await Task.yield()
+                        reader.pageURL = latestURL
+                    }
+                    return processingSucceeds
+                        ? "<html><body><div id='reader-content'>Processed article.</div></body></html>"
+                        : nil
+                }
+                await render(mode, reader: reader)
+                XCTAssertEqual(row.url, backingURL, "A displayed anchor must not alter the persisted identity")
+                XCTAssertEqual(reader.currentSelectionID, selectionID)
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL,
+                               (changesAnchorDuringProcessing ? latestURL : initialURL).absoluteString)
+            }
+        }
+    }
+
     func testSameURLReplacementDuringHTMLReadDoesNotResolveOrCleanUpSuccessor() async throws {
         let (realm, row, reader, mode, navigator) = try renderFixture()
         defer { withExtendedLifetime(realm) {} }

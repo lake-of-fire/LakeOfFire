@@ -112,10 +112,27 @@ final class ReaderWebViewHandler {
         self.navigator = navigator
     }
     
-    func handleNavigationCommitted(state: WebViewState, selectionIntent: WebViewURLTransitionIntent? = nil) async throws {
+    // Receipt-time document identity survives semantic deferral. The manager's
+    // document generation discards provisional URL callbacks emitted by commits;
+    // this token also prevents deferred URL work from adopting another binding.
+    struct URLChangeContext: Sendable {
+        let binding: WebViewScriptCaller.JavaScriptBindingToken?
+    }
+
+    private func requireCurrentURLChange(_ context: URLChangeContext) throws {
+        try Task.checkCancellation()
+        guard context.binding != nil || !scriptCaller.canEvaluateJavaScript,
+              scriptCaller.currentJavaScriptBindingToken == context.binding else {
+            throw CancellationError()
+        }
+    }
+
+    func handleNavigationCommitted(state: WebViewState, selectionIntent: WebViewURLTransitionIntent? = nil,
+                                   urlChangeContext: URLChangeContext? = nil) async throws {
 //        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
 
         try Task.checkCancellation()
+        if let urlChangeContext { try requireCurrentURLChange(urlChangeContext) }
         let navigationBinding = scriptCaller.currentJavaScriptBindingToken
         var loadedSelectionIsCurrent: (() -> Bool)?
         if !readerModeViewModel.expectsSyntheticReaderLoaderCommit(
@@ -166,12 +183,18 @@ final class ReaderWebViewHandler {
             )
             try Task.checkCancellation()
             guard ownsLoadedSelection() else { throw CancellationError() }
-            try await readerModeViewModel.onNavigationCommitted(
-                readerContent: readerContent,
-                newState: state,
-                scriptCaller: scriptCaller,
-                navigator: navigator
-            )
+            if let urlChangeContext {
+                try requireCurrentURLChange(urlChangeContext)
+                try await readerModeViewModel.onSameDocumentURLChanged(
+                    readerContent: readerContent, newState: state,
+                    scriptCaller: scriptCaller, navigator: navigator
+                )
+            } else {
+                try await readerModeViewModel.onNavigationCommitted(
+                    readerContent: readerContent, newState: state,
+                    scriptCaller: scriptCaller, navigator: navigator
+                )
+            }
             try Task.checkCancellation()
             guard ownsLoadedSelection(),
                   let currentContent = readerContent.validCachedContent,
@@ -242,11 +265,13 @@ final class ReaderWebViewHandler {
         )
     }
 
-    func handleURLChanged(state: WebViewState) async throws {
-        try await handleNavigationCommitted(state: state, selectionIntent: state.urlTransitionIntent)
-        try Task.checkCancellation()
+    func handleURLChanged(state: WebViewState, context: URLChangeContext? = nil) async throws {
+        let context = context ?? URLChangeContext(binding: scriptCaller.currentJavaScriptBindingToken)
+        try await handleNavigationCommitted(state: state, selectionIntent: state.urlTransitionIntent,
+                                             urlChangeContext: context)
+        try requireCurrentURLChange(context)
         await handleNavigationFinished(state: state)
-        try Task.checkCancellation()
+        try requireCurrentURLChange(context)
     }
 
     func onNavigationCommitted(state: WebViewState) {
@@ -317,8 +342,10 @@ final class ReaderWebViewHandler {
     }
 
     func onURLChanged(state: WebViewState) {
+        // Capture at native receipt, not after semantic commit/finish deferral.
+        let context = URLChangeContext(binding: scriptCaller.currentJavaScriptBindingToken)
         navigationTaskManager.startOnURLChanged(state: state, readerContent: readerContent) { @MainActor in
-            try await self.handleURLChanged(state: state)
+            try await self.handleURLChanged(state: state, context: context)
             do {
                 try await self.onURLChanged?(state)
             } catch is CancellationError {
