@@ -1263,8 +1263,7 @@ private func locallyRetrievableReaderHTML(
 
 private func propagateReaderModeDefaults(
     for url: URL,
-    primaryKey: String,
-    primaryClassName: String,
+    primaryReference: ReaderContentLoader.ContentReference?,
     readabilityHTML: String,
     fallbackTitle: String?,
     derivedTitle: String? = nil,
@@ -1276,8 +1275,7 @@ private func propagateReaderModeDefaults(
     do {
         try await ReaderContentLoader.propagateReaderModeDefaults(
             for: url,
-            excludingPrimaryKey: primaryKey,
-            primaryClassName: primaryClassName,
+            excluding: primaryReference,
             readabilityHTML: storageReadabilityHTML,
             resolvedTitle: resolvedTitle,
             permitsCommit: permitsCommit
@@ -2879,6 +2877,7 @@ public class ReaderModeViewModel: ObservableObject {
         }
         guard selectionIsCurrent(), readerModeContentIsCurrent(content, readerContent: readerContent) else { return }
         let url = content.url
+        let primaryReference = ReaderContentLoader.ContentReference(content: content)
         // A render job may remain current while its row is removed or replaced.
         // Keep the original selection and live row while preparing HTML;
         // a fresh wrapper for the same Realm row retains its authority.
@@ -2973,8 +2972,6 @@ public class ReaderModeViewModel: ObservableObject {
         let snippetNeedsClipboardIndicator = content.needsClipboardIndicator
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
         let tracksReadingProgress = content.tracksReadingProgress
-        let primaryRecordCompoundKey = content.compoundKey
-        let primaryRecordClassName = content.objectSchema.className
         
         try await { @ReaderViewModelActor [weak self] in
             guard let self,
@@ -3057,8 +3054,7 @@ public class ReaderModeViewModel: ObservableObject {
             let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
             await propagateReaderModeDefaults(
                 for: url,
-                primaryKey: primaryRecordCompoundKey,
-                primaryClassName: primaryRecordClassName,
+                primaryReference: primaryReference,
                 readabilityHTML: readabilityContent,
                 fallbackTitle: titleForDisplay,
                 derivedTitle: derivedTitle,

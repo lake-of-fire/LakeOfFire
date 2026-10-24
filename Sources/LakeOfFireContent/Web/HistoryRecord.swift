@@ -237,7 +237,7 @@ public extension HistoryRecord {
             // not suppress this request. Keep the cheap committed no-op path,
             // but carry no frozen object across write admission.
             let committed = realm.freeze()
-            guard let record = committed.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey) else {
+            guard let record = reference.resolve(in: committed) as? HistoryRecord else {
                 // The supplied managed row may belong to an uncommitted
                 // creation. Absence is not a no-op receipt: let write admission
                 // settle its owner, then resolve the row without recreating it.
@@ -263,7 +263,7 @@ public extension HistoryRecord {
             // Refresh may notify a writer, retire a store, or cancel this task.
             // Resolve the history row only after that synchronous callout.
             try validateAdmission()
-            guard let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey),
+            guard let record = reference.resolve(in: realm) as? HistoryRecord,
                   !record.isDeleted, record.isDemoted != false || !skipPreviouslyDemoted else { return }
             let bookmarked = admittedBookmarks.objects(Bookmark.self)
                 .filter(NSPredicate(format: "isDeleted == false AND url == %@", record.url.absoluteString)).first != nil
