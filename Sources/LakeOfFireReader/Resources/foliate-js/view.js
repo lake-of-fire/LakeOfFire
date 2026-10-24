@@ -56,18 +56,40 @@ export class View extends HTMLElement {
     #rendererBindings = null
     #documentBindings = new Map()
     #openGeneration = 0
+    #navigationGeneration = 0
+    #positionReceipts = new WeakMap()
+    #positionProofs = new WeakMap()
     isFixedLayout = false
     lastLocation
     history = new ViewHistory()
     constructor() {
         super()
-        this.history.addEventListener('popstate', async ({ detail }) => {
-            const resolved = this.resolveNavigation(detail.state)
-            await this.renderer.goTo(resolved)
+        this.history.addEventListener('popstate', ({ detail }) => {
+            // EventTarget does not consume rejected promises. History traversal
+            // shares command ownership but must not append another history entry.
+            void this.#navigate(detail.state, { recordHistory: false }).catch(error => {
+                console.error(error)
+            })
         })
     }
     async open(book, isCacheWarmer) {
-        this.#openGeneration += 1
+        const openGeneration = ++this.#openGeneration
+        const previousRenderer = this.renderer
+        // Do not let a command pair the incoming book with the old renderer
+        // while the new renderer module is loading.
+        this.renderer = null
+        this.#rendererBindings?.clear()
+        this.#rendererBindings = null
+        for (const bindings of this.#documentBindings.values()) bindings.clear()
+        this.#documentBindings.clear()
+        previousRenderer?.destroy()
+        previousRenderer?.remove()
+        this.#sectionProgress = null
+        this.#tocProgress = null
+        this.#pageProgress = null
+        this.#searchResults = new Map()
+        this.lastLocation = null
+        this.history.clear()
         this.book = book
         this.language = languageInfo(book.metadata?.language)
         this.#isCacheWarmer = isCacheWarmer
@@ -83,19 +105,30 @@ export class View extends HTMLElement {
                 toc: book.pageList ?? [], ids, splitHref, getFragment })
         }
 
-        this.isFixedLayout = this.book.rendition?.layout === 'pre-paginated'
-        if (this.isFixedLayout) {
-            await import('./fixed-layout.js')
-            this.renderer = document.createElement('foliate-fxl')
-        } else {
-            await import('./paginator.js')
-            this.renderer = document.createElement('foliate-paginator')
+        const isFixedLayout = book.rendition?.layout === 'pre-paginated'
+        this.isFixedLayout = isFixedLayout
+        if (isFixedLayout) await import('./fixed-layout.js')
+        else await import('./paginator.js')
+        const isCurrent = () => this.#openGeneration === openGeneration && this.book === book
+        if (!isCurrent()) return
+        const renderer = document.createElement(isFixedLayout ? 'foliate-fxl' : 'foliate-paginator')
+        // A custom-element constructor can synchronously trigger host teardown.
+        if (!isCurrent()) {
+            renderer.destroy()
+            renderer.remove()
+            return
         }
+        this.renderer = renderer
         this.renderer.setAttribute('exportparts', 'head,foot') //,filter')
         this.#rendererBindings?.clear()
         this.#rendererBindings = new OwnedEventBindings()
         this.#rendererBindings.listen(this.renderer, 'load', e => this.#onLoad(e.detail))
-        this.#rendererBindings.listen(this.renderer, 'relocate', e => this.#onRelocate(e.detail))
+        this.#rendererBindings.listen(renderer, 'relocate', e => {
+            if (isCurrent() && this.renderer === renderer) this.#onRelocate(e.detail)
+        })
+        this.#rendererBindings.listen(renderer, 'foregroundPageTurnActivity', () => {
+            if (isCurrent() && this.renderer === renderer) this.#navigationGeneration += 1
+        })
         if (!this.#isCacheWarmer) {
             this.#rendererBindings.listen(this.renderer, 'create-overlayer', e =>
                 e.detail.attach(this.#createOverlayer(e.detail)))
@@ -114,8 +147,8 @@ export class View extends HTMLElement {
             //            });
         }
 
-        this.renderer.open(book, isCacheWarmer)
-        this.#root.append(this.renderer)
+        renderer.open(book, isCacheWarmer)
+        if (isCurrent() && this.renderer === renderer) this.#root.append(renderer)
     }
     close() {
         this.#openGeneration += 1
@@ -149,8 +182,7 @@ export class View extends HTMLElement {
     async init({ lastLocation, showTextStart }) {
         const resolved = lastLocation ? this.resolveNavigation(lastLocation) : null
         if (resolved) {
-            await this.renderer.goTo(resolved)
-            this.history.pushState(lastLocation)
+            await this.goTo(lastLocation)
         }
         else if (showTextStart) await this.goToTextStart()
             else {
@@ -349,51 +381,100 @@ export class View extends HTMLElement {
             console.error(`Could not resolve target ${target}`)
         }
     }
-    async goTo(target) {
-        const resolved = this.resolveNavigation(target)
+    async #navigate(target, { select = false, recordHistory = true, requiresPositionReceipt = false } = {}) {
+        const navigationGeneration = ++this.#navigationGeneration
         const renderer = this.renderer
+        const book = this.book
         const openGeneration = this.#openGeneration
-        if (!renderer || !resolved) return null
-        try {
-            const result = await runCurrentRendererOperation({
-                operation: () => renderer.goTo(resolved),
-                isCurrent: () =>
-                    this.renderer === renderer && this.#openGeneration === openGeneration,
-            })
-            if (result.ignored) return null
-            this.history.pushState(target)
-            return resolved
-        } catch(e) {
-            console.error(e)
-            console.error(`Could not go to ${target}`)
-            throw e
-            //            return
-        }
-        //        this.#emit('is-loading', false)
-        //        return resolved
+        if (!renderer || !book) return null
+        if (requiresPositionReceipt && (target?.fraction !== 0
+            || renderer.localName !== 'foliate-paginator' || renderer.scrolled)) return null
+        const isCurrent = () => this.renderer === renderer && this.book === book
+            && this.#openGeneration === openGeneration
+            && this.#navigationGeneration === navigationGeneration
+        const resolved = this.resolveNavigation(target)
+        // A renderer may silently ignore an invalid section. Never publish that
+        // as successful navigation or an acknowledged saved-position restore.
+        if (!resolved || !Number.isInteger(resolved.index)
+            || resolved.index < 0 || resolved.index >= book.sections.length) return null
+        const result = await runCurrentRendererOperation({
+            operation: () => renderer.goTo(select ? { ...resolved, select: true } : resolved,
+                { requiresPositionReceipt }),
+            isCurrent,
+        })
+        if (result.ignored || result.value === null || result.value === false
+            || result.value?.ignored === true) return null
+        // Successful renderers can return void. Only their explicit rejection
+        // values, or loss of ownership, mean that this command was not applied.
+        if (requiresPositionReceipt && !renderer.isPositionReceiptCurrent?.(result.value)) return null
+        if (recordHistory) this.history.pushState(target)
+        if (!isCurrent()) return null
+        if (!requiresPositionReceipt) return resolved
+        if (!renderer.isPositionReceiptCurrent(result.value)) return null
+        const receipt = Object.freeze({ index: result.value.index, anchor: result.value.anchor })
+        this.#positionReceipts.set(receipt, { renderer, rendererReceipt: result.value, isCurrent })
+        return receipt
     }
-    async goToFraction(frac) {
-        const [index, anchor] = this.#sectionProgress.getSection(frac)
-        await this.renderer.goTo({ index, anchor })
-        this.history.pushState({ fraction: frac })
+    async goTo(target, options) {
+        try {
+            return await this.#navigate(target, options)
+        } catch (error) {
+            console.error(error)
+            console.error(`Could not go to ${target}`)
+            throw error
+        }
+    }
+    async goToFraction(fraction, options) {
+        if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) return null
+        // Use the same renderer/load/command fence as CFI and href navigation.
+        return this.goTo({ fraction }, options)
+    }
+    capturePositionProof(receipt) {
+        const navigation = receipt && this.#positionReceipts.get(receipt)
+        if (!navigation?.isCurrent()) return null
+        const { renderer, rendererReceipt } = navigation
+        const rendererProof = renderer.capturePositionProof?.(rendererReceipt)
+        const detail = this.lastLocation
+        const source = detail?.firstPageGeometrySource
+        if (!rendererProof || !source || renderer.localName !== 'foliate-paginator' || renderer.scrolled
+            || !Number.isFinite(detail.fraction) || detail.fraction < 0 || detail.fraction > 1
+            || receipt.anchor !== 0 || source.sectionIndex !== receipt.index
+            || source.sectionIndex !== rendererProof.sectionIndex
+            || source.fractionInSection !== 0 || rendererProof.fractionInSection !== 0
+            || !Number.isFinite(source.pageFraction) || source.pageFraction <= 0 || source.pageFraction > 1
+            || source.pageFraction !== rendererProof.pageFraction) return null
+        const firstPageGeometry = Object.freeze({ kind: 'paginated-first-page-v1',
+            targetSectionIndex: receipt.index, targetAnchor: receipt.anchor,
+            sectionIndex: source.sectionIndex, fractionInSection: source.fractionInSection,
+            pageFraction: source.pageFraction })
+        const proof = Object.freeze({ positionMode: 'paginated', firstPageGeometry,
+            currentFractionalCompletion: detail.fraction, handledFractionalCompletion: detail.fraction })
+        this.#positionProofs.set(proof, { navigation, rendererProof, detail, source,
+            values: this.#positionValues(detail) })
+        return this.isPositionProofCurrent(proof) ? proof : null
+    }
+    #positionValues(detail) {
+        return [detail.fraction, detail.cfi, detail.sectionIndex, detail.index,
+            detail.section?.current, detail.location?.current, detail.location?.total,
+            detail.firstPageGeometrySource?.sectionIndex,
+            detail.firstPageGeometrySource?.fractionInSection,
+            detail.firstPageGeometrySource?.pageFraction]
+    }
+    isPositionProofCurrent(proof) {
+        const record = proof && this.#positionProofs.get(proof)
+        if (!record || !record.navigation.isCurrent() || this.lastLocation !== record.detail
+            || this.lastLocation.firstPageGeometrySource !== record.source) return false
+        const renderer = record.navigation.renderer
+        if (renderer.localName !== 'foliate-paginator' || renderer.scrolled
+            || !renderer.isPositionProofCurrent?.(record.rendererProof)) return false
+        const values = this.#positionValues(this.lastLocation)
+        return record.values.every((value, index) => Object.is(value, values[index]))
     }
     async select(target) {
-        const renderer = this.renderer
-        const openGeneration = this.#openGeneration
-        if (!renderer) return false
         try {
-            const obj = this.resolveNavigation(target)
-            if (!obj) return false
-            const result = await runCurrentRendererOperation({
-                operation: () => renderer.goTo({ ...obj, select: true }),
-                isCurrent: () =>
-                    this.renderer === renderer && this.#openGeneration === openGeneration,
-            })
-            if (result.ignored) return false
-            this.history.pushState(target)
-            return true
-        } catch(e) {
-            console.error(e)
+            return await this.#navigate(target, { select: true }) != null
+        } catch (error) {
+            console.error(error)
             console.error(`Could not go to ${target}`)
             return false
         }
@@ -456,10 +537,12 @@ export class View extends HTMLElement {
         }
     }
     async prev(distance) {
-        await this.renderer.prev(distance)
+        this.#navigationGeneration += 1
+        await this.renderer?.prev(distance)
     }
     async next(distance) {
-        await this.renderer.next(distance)
+        this.#navigationGeneration += 1
+        await this.renderer?.next(distance)
     }
     async goLeft() {
         return this.book.dir === 'rtl' ? await this.next() : await this.prev()
