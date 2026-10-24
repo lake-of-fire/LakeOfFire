@@ -83,19 +83,77 @@ public struct ReaderContentLoader {
     public struct ContentReference: @unchecked Sendable {
         public let contentType: RealmSwift.Object.Type
         public let contentKey: String
+        public let contentCreatedAt: Date
+        public let contentURL: URL
         public let realmConfiguration: Realm.Configuration
+        public let storageAdmission: RealmStorageAdmission
 
         public init?(content: any ReaderContentProtocol) {
-            guard let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type,
+            guard !content.isInvalidated,
+                  let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type,
                   var config = content.realm?.configuration else { return nil }
             if var objectTypes = config.objectTypes,
                !objectTypes.contains(where: { $0 == contentType }) {
                 objectTypes.append(contentType)
                 config.objectTypes = objectTypes
             }
+            self.init(content: content, configuration: config,
+                      storageAdmission: RealmBackgroundActor.shared.captureStorageAdmission(for: config))
+        }
+
+        /// Keep an admitted open's exact configuration. Realm.configuration
+        /// materializes automatic schemas and need not equal the opening input.
+        init?(content: any ReaderContentProtocol, configuration: Realm.Configuration,
+              storageAdmission: RealmStorageAdmission) {
+            guard !content.isInvalidated,
+                  let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type,
+                  content.realm != nil else { return nil }
             self.contentType = contentType
             contentKey = content.compoundKey
-            realmConfiguration = config
+            contentCreatedAt = content.createdAt
+            contentURL = content.url
+            realmConfiguration = configuration
+            self.storageAdmission = storageAdmission
+        }
+
+        func validateStorage() throws {
+            guard storageAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+            }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+        }
+
+        @RealmBackgroundActor
+        func matchesStoredIdentity(of content: any ReaderContentProtocol) -> Bool {
+            guard !content.isInvalidated,
+                  content.objectSchema.objectClass == contentType,
+                  content.compoundKey == contentKey,
+                  content.createdAt == contentCreatedAt,
+                  content.url == contentURL,
+                  let realm = content.realm else { return false }
+            guard storageAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+            }) else { return false }
+            // Cache configurations may expose different schemas for one store.
+            // Admission validates this reference's original storage identity;
+            // exclusion compares its locator without adopting a candidate's key.
+            let candidateConfiguration = realm.configuration
+            if let identifier = realmConfiguration.inMemoryIdentifier {
+                return candidateConfiguration.inMemoryIdentifier == identifier
+            }
+            guard candidateConfiguration.inMemoryIdentifier == nil,
+                  let fileURL = realmConfiguration.fileURL,
+                  let candidateURL = candidateConfiguration.fileURL else { return false }
+            return fileURL.standardizedFileURL == candidateURL.standardizedFileURL
+        }
+
+        /// Resolve after write admission on the Realm owner. General loading
+        /// keeps its existing resolution policy; mutations require this identity.
+        @RealmBackgroundActor
+        func resolveForMutation(in realm: Realm) -> (any ReaderContentProtocol)? {
+            guard let content = realm.object(ofType: contentType, forPrimaryKey: contentKey)
+                    as? any ReaderContentProtocol,
+                  matchesStoredIdentity(of: content) else { return nil }
+            return content
         }
 
         @RealmBackgroundActor
