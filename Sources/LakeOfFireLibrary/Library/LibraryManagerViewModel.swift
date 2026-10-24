@@ -113,19 +113,40 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
 //    @AppStorage("LibraryManagerViewModel.presentedCategories") var presentedCategories = [LibraryRoute]()
     @Published var selectedFeed: Feed? {
+        willSet {
+            feedSelectionPublication.begin(newValue, commandID: feedCommandRequestID)
+        }
         didSet {
+            let commandID: UUID?
+            let publicationCommandID: UUID?
+            switch feedSelectionPublication.finish(previous: oldValue, commandID: feedCommandRequestID) {
+            case .accept(let capturedCommandID, let producerCommandID):
+                commandID = capturedCommandID
+                publicationCommandID = producerCommandID
+            case .restore(let value):
+                restoreFeedSelection(value)
+                return
+            case .ignore:
+                return
+            }
             if let selectedFeed {
-                duplicateRequestID = nil
+                feedCommandRequestID = nil
                 if let request = captureDetailSelection(feed: selectedFeed) {
+                    if let publicationCommandID {
+                        feedCommandSelection = (publicationCommandID, request)
+                    }
                     detailSelectionRequest = request
                 } else {
-                    self.selectedFeed = nil
-                    if case .feed = detailSelectionRequest.target {
-                        detailSelectionRequest = .init(target: .none)
-                    }
+                    // Rejection is a normal observed assignment. It must
+                    // update the latest value and respect any nested selection
+                    // delivered by the cleanup's own @Published notification.
+                    feedSelectionPublication.rejectPreviousValue()
+                    restoreFeedSelection(nil)
                 }
             } else if case .feed = detailSelectionRequest.target {
-                duplicateRequestID = nil
+                if feedCommandRequestID == commandID {
+                    feedCommandRequestID = nil
+                }
                 detailSelectionRequest = .init(target: .none)
             }
         }
@@ -139,19 +160,32 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     
     @Published var selectedScript: UserScript? {
+        willSet {
+            scriptSelectionPublication.begin(newValue, commandID: feedCommandRequestID)
+        }
         didSet {
+            let commandID: UUID?
+            switch scriptSelectionPublication.finish(previous: oldValue, commandID: feedCommandRequestID) {
+            case .accept(let capturedCommandID, _):
+                commandID = capturedCommandID
+            case .restore(let value):
+                restoreScriptSelection(value)
+                return
+            case .ignore:
+                return
+            }
             if let selectedScript {
-                duplicateRequestID = nil
+                feedCommandRequestID = nil
                 if let request = captureDetailSelection(script: selectedScript) {
                     detailSelectionRequest = request
                 } else {
-                    self.selectedScript = nil
-                    if case .script = detailSelectionRequest.target {
-                        detailSelectionRequest = .init(target: .none)
-                    }
+                    scriptSelectionPublication.rejectPreviousValue()
+                    restoreScriptSelection(nil)
                 }
             } else if case .script = detailSelectionRequest.target {
-                duplicateRequestID = nil
+                if feedCommandRequestID == commandID {
+                    feedCommandRequestID = nil
+                }
                 detailSelectionRequest = .init(target: .none)
             }
         }
@@ -166,7 +200,80 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
 
     private nonisolated let realmConfiguration: Realm.Configuration
     private nonisolated let realmStorageAdmission: RealmStorageAdmission
-    private var duplicateRequestID: UUID?
+    private var feedCommandRequestID: UUID?
+    private var feedCommandSelection: (commandID: UUID, request: LibraryDetailSelectionRequest)?
+    private var feedSelectionPublication = SelectionPublication<Feed>()
+    private var scriptSelectionPublication = SelectionPublication<UserScript>()
+
+    // A direct self-assignment inside didSet bypasses its property observers.
+    // Use the ordinary setter for rejection cleanup, and to consume a marked
+    // restoration before @Published emits. Nested assignments keep their own
+    // admission in either case.
+    private func restoreFeedSelection(_ value: Feed?) {
+        selectedFeed = value
+    }
+
+    private func restoreScriptSelection(_ value: UserScript?) {
+        selectedScript = value
+    }
+
+    /// @Published sends before assigning its backing value. An observer can
+    /// select another row or start a command during that send. Restore the
+    /// newer value (or prior selection for a newer pending command) without
+    /// retiring that command or publishing an older detail request.
+    private struct SelectionPublication<Value> {
+        enum Completion {
+            case accept(UUID?, UUID?)
+            case restore(Value?)
+            case ignore
+        }
+
+        private var revision = UUID()
+        private var latestValue: Value?
+        private var restoresNextAssignment = false
+        private var rejectsPreviousOnNextAssignment = false
+        private var nextPublicationCommandID: UUID?
+        private var changes: [(commandID: UUID?, publicationCommandID: UUID?, revision: UUID, isRestoration: Bool, isRejection: Bool)] = []
+
+        mutating func publishNextAssignment(for commandID: UUID) {
+            nextPublicationCommandID = commandID
+        }
+
+        mutating func rejectPreviousValue() {
+            rejectsPreviousOnNextAssignment = true
+        }
+
+        mutating func begin(_ value: Value?, commandID: UUID?) {
+            let isRestoration = restoresNextAssignment
+            let isRejection = rejectsPreviousOnNextAssignment
+            let publicationCommandID = nextPublicationCommandID
+            restoresNextAssignment = false
+            rejectsPreviousOnNextAssignment = false
+            nextPublicationCommandID = nil
+            if !isRestoration {
+                revision = UUID()
+                latestValue = value
+            }
+            changes.append((commandID, publicationCommandID, revision, isRestoration, isRejection))
+        }
+
+        mutating func finish(previous: Value?, commandID: UUID?) -> Completion {
+            let change = changes.removeLast()
+            guard change.revision == revision else {
+                restoresNextAssignment = true
+                return .restore(latestValue)
+            }
+            guard !change.isRestoration else { return .ignore }
+            // A rejection's prior backing row is known invalid. Clearing it
+            // may start a command, but must never restore that rejected row.
+            guard change.commandID == commandID || change.isRejection else {
+                latestValue = previous
+                restoresNextAssignment = true
+                return .restore(previous)
+            }
+            return .accept(change.commandID, change.publicationCommandID)
+        }
+    }
     
     var exportableOPML: OPML {
         return exportedOPML ?? OPML(entries: [])
@@ -364,7 +471,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         contentRoute: Binding<ContentPaneRoute?>,
         detailPath: Binding<NavigationPath>
     ) {
-        duplicateRequestID = nil
+        feedCommandRequestID = nil
         guard clearDetailSelection(ifCurrent: detailSelectionRequest) != nil else { return }
         let request = LibraryDetailSelectionRequest(target: .none)
         detailSelectionRequest = request
@@ -381,7 +488,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         _ path: NavigationPath,
         detailPath: Binding<NavigationPath>
     ) {
-        duplicateRequestID = nil
+        feedCommandRequestID = nil
         guard clearDetailSelection(ifCurrent: detailSelectionRequest) != nil else { return }
         let request = LibraryDetailSelectionRequest(target: .navigation)
         detailSelectionRequest = request
@@ -447,7 +554,8 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                             let currentConfigurationID = self.libraryConfiguration?.id
                             let newLibraryConfigurationID = try await { @RealmBackgroundActor in
                                 try await LibraryConfiguration.getConsolidatedOrCreate(
-                                    realmConfiguration: realmConfiguration
+                                    realmConfiguration: realmConfiguration,
+                                    storageAdmission: realmStorageAdmission
                                 ).id
                             }()
                             if newLibraryConfigurationID != currentConfigurationID {
@@ -521,50 +629,105 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         }
     }
     
-    @RealmBackgroundActor
-    func add(rssURL: URL, title: String?, toCategory categoryRef: ThreadSafeReference<FeedCategory>? = nil) async throws {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-        var category: FeedCategory?
-        if let categoryRef = categoryRef {
-            category = realm.resolve(categoryRef)
+    /// Capture the rendered destination and command before scheduling. The
+    /// presentation callback runs only for the still-current committed row.
+    @discardableResult
+    func add(
+        rssURL: URL,
+        title: String?,
+        toCategory category: FeedCategory? = nil,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
+        beforePublication: (@MainActor @Sendable () async throws -> Void)? = nil,
+        didPublish: @escaping @MainActor (UUID) -> Void = { _ in }
+    ) -> Task<UUID?, Error>? {
+        guard !Task.isCancelled,
+              realmStorageAdmission.matchesCurrentStorageIdentity({
+                  RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+              }) else { return nil }
+        let destination: LibraryFeedCreationDestination
+        if let category {
+            guard let category = liveSelectionObject(category),
+                  !category.isDeleted, category.isUserEditable else { return nil }
+            destination = .category(id: category.id, createdAt: category.createdAt)
+        } else {
+            destination = .newUserCategory
         }
-        if category == nil {
-            let categoryID = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
-            category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID)
-            
-            if let category {
-                try await realm.asyncWrite {
-                    category.title = "My Library"
-                    category.refreshChangeMetadata(explicitlyModified: true)
-                }
-            }
-        }
-        guard let category = category else { return }
-//        await realm.asyncRefresh()
-        guard let feedID = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ThreadSafeReference(to: category)) else { return }
-//        await realm.asyncRefresh()
-        guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
-        try await realm.asyncWrite {
-            feed.rssUrl = rssURL
-            if let title = title {
-                feed.title = title
-            }
-            feed.refreshChangeMetadata(explicitlyModified: true)
-        }
-        let assignRef = ThreadSafeReference(to: category)
-        try await { @MainActor in
-            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-            await realm.asyncRefresh()
-            if let category = realm.resolve(assignRef) {
-                navigationPath.removeLast(navigationPath.count)
-                navigationPath.append(category)
-                if let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) {
-                    selectedFeed = feed
-                }
-            }
-        }()
+        return add(
+            rssURL: rssURL, title: title, destination: destination,
+            beforeWrite: beforeWrite, beforePublication: beforePublication,
+            didPublish: didPublish
+        )
     }
-    
+
+    @discardableResult
+    func add(
+        rssURL: URL,
+        title: String?,
+        destination: LibraryFeedCreationDestination,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
+        beforePublication: (@MainActor @Sendable () async throws -> Void)? = nil,
+        didPublish: @escaping @MainActor (UUID) -> Void = { _ in }
+    ) -> Task<UUID?, Error>? {
+        guard !Task.isCancelled,
+              realmStorageAdmission.matchesCurrentStorageIdentity({
+                  RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+              }) else { return nil }
+        let requestID = UUID()
+        feedCommandRequestID = requestID
+        return Task<UUID?, Error> { @MainActor in
+            defer {
+                if self.feedCommandRequestID == requestID {
+                    self.feedCommandRequestID = nil
+                }
+            }
+            // Own first creation before shared's observers can open this path.
+            try await RealmBackgroundActor.shared.prepareStorage(
+                for: self.realmConfiguration,
+                storageAdmission: self.realmStorageAdmission
+            )
+            guard let result = try await LibraryDataManager.shared.createFeedWithIdentity(
+                destination: destination,
+                rssURL: rssURL,
+                title: title,
+                realmConfiguration: self.realmConfiguration,
+                storageAdmission: self.realmStorageAdmission,
+                beforeWrite: beforeWrite
+            ) else { return nil }
+            try await beforePublication?()
+            guard !Task.isCancelled, self.feedCommandRequestID == requestID,
+                  self.realmStorageAdmission.matchesCurrentStorageIdentity({
+                      RealmBackgroundActor.shared.realmCacheKey(for: self.realmConfiguration)
+                  }) else { return nil }
+            let realm = try await Realm.open(configuration: self.realmConfiguration)
+            await realm.asyncRefresh()
+            guard !Task.isCancelled, self.feedCommandRequestID == requestID,
+                  self.selectionRealmIsCurrent(realm),
+                  let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: result.categoryID),
+                  category.createdAt == result.categoryCreatedAt,
+                  !category.isDeleted, category.isUserEditable,
+                  let feed = realm.object(ofType: Feed.self, forPrimaryKey: result.feedID),
+                  feed.createdAt == result.feedCreatedAt, !feed.isDeleted,
+                  feed.categoryID == result.categoryID else { return nil }
+            // Only this producer assignment may acknowledge this command.
+            // A nested manual selection of the same row is a different intent.
+            self.feedSelectionPublication.publishNextAssignment(for: requestID)
+            self.selectedFeed = feed
+            // The setter retires the command and records its exact request.
+            // A synchronous observer may install a newer selection or command.
+            guard let publication = self.feedCommandSelection,
+                  publication.commandID == requestID,
+                  self.feedCommandRequestID == nil,
+                  self.detailSelectionRequest == publication.request,
+                  let selected = self.selectedFeed(for: publication.request),
+                  selected.id == result.feedID, selected.createdAt == result.feedCreatedAt,
+                  !Task.isCancelled, self.feedCommandRequestID == nil,
+                  self.detailSelectionRequest == publication.request,
+                  self.selectionRealmIsCurrent(realm) else { return nil }
+            didPublish(result.feedID)
+            return result.feedID
+        }
+    }
+
     @RealmBackgroundActor
     func duplicate(
         feed: ThreadSafeReference<Feed>,
@@ -577,7 +740,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         let requestID = try await { @MainActor in
             try Task.checkCancellation()
             let requestID = UUID()
-            duplicateRequestID = requestID
+            feedCommandRequestID = requestID
             return requestID
         }()
         guard let result = try await LibraryDataManager.shared.duplicateFeedWithIdentity(
@@ -591,14 +754,14 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         try await { @MainActor in
             try await beforePublication?()
             guard !Task.isCancelled,
-                  duplicateRequestID == requestID,
+                  feedCommandRequestID == requestID,
                   realmStorageAdmission.matchesCurrentStorageIdentity({
                       RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
                   }) else { return }
             let realm = try await Realm.open(configuration: realmConfiguration)
             await realm.asyncRefresh()
             guard !Task.isCancelled,
-                  duplicateRequestID == requestID,
+                  feedCommandRequestID == requestID,
                   realmStorageAdmission.matchesCurrentStorageIdentity({
                       RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
                   }),
@@ -608,6 +771,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                   let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: result.categoryID),
                   category.createdAt == result.categoryCreatedAt,
                   !category.isDeleted, category.isUserEditable else { return }
+            feedSelectionPublication.publishNextAssignment(for: requestID)
             selectedFeed = newFeed
         }()
     }

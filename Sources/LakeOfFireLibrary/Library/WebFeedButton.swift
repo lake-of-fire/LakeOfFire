@@ -128,18 +128,11 @@ struct WebFeedMenuAddButtons: View {
     @Environment(\.openWindow) var openWindow
     
     var body: some View {
-        if let userCategories {
+        if let userCategories, !userCategories.isEmpty {
             Group {
                 ForEach(userCategories) { category in
                     Button {
-                        Task { @MainActor in
-                            try await libraryViewModel.add(rssURL: url, title: title, toCategory: ThreadSafeReference(to: category))
-#if os(macOS)
-                            openWindow(id: "user-library")
-#else
-                            libraryViewModel.isLibraryPresented = true
-#endif
-                        }
+                        add(to: category)
                     } label: {
                         Label("Add Feed to \(category.title.isEmpty ? "Untitled" : category.title)", systemImage: "plus")
                     }
@@ -147,16 +140,30 @@ struct WebFeedMenuAddButtons: View {
             }
         } else {
             Button {
-                Task { @MainActor in
-                    try await libraryViewModel.add(rssURL: url, title: title)
-#if os(macOS)
-                    openWindow(id: "user-library")
-#else
-                    libraryViewModel.isLibraryPresented = true
-#endif
-                }
+                add(to: nil)
             } label: {
                 Label("Add Feed to My Library", systemImage: "plus")
+            }
+        }
+    }
+
+    @MainActor
+    private func add(to category: FeedCategory?) {
+        // Admit the destination in the button action, before starting a task.
+        guard let task = libraryViewModel.add(rssURL: url, title: title, toCategory: category, didPublish: { _ in
+#if os(macOS)
+            openWindow(id: "user-library")
+#else
+            libraryViewModel.isLibraryPresented = true
+#endif
+        }) else { return }
+        Task { @MainActor in
+            do {
+                _ = try await task.value
+            } catch is CancellationError {
+                // A retired command does not present the Library.
+            } catch {
+                print("Failed to add web feed: \(error)")
             }
         }
     }
