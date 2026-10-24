@@ -8,34 +8,48 @@ public extension URL {
     var readerLoaderContentURL: URL? {
         guard scheme?.lowercased() == "internal",
               host?.lowercased() == "local",
-              path == "/load/reader" else {
+              path == "/load/reader",
+              let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
+              let readerURLValues = components.queryItems?.filter({ $0.name == "reader-url" }),
+              readerURLValues.count == 1,
+              let readerURLValue = readerURLValues.first?.value else {
             return nil
         }
 
-        func absoluteURL(from value: String) -> URL? {
-            URL(string: value).flatMap { $0.scheme == nil ? nil : $0 }
+        func supportedContentURL(from value: String) -> URL? {
+            guard let url = URL(string: value), let scheme = url.scheme?.lowercased() else {
+                return nil
+            }
+            switch scheme {
+            case "http", "https":
+                guard url.host != nil else { return nil }
+            case "reader-file":
+                break
+            case "internal":
+                guard url.isSnippetURL else { return nil }
+            default:
+                return nil
+            }
+
+            // A same-document #fragment belongs to the loader document in
+            // WebKit. Publish it against the original URL for reader history,
+            // lookup scopes and location-bar links.
+            guard let fragment = components.fragment,
+                  var contentComponents = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+                return url
+            }
+            contentComponents.fragment = fragment
+            return contentComponents.url
         }
 
-        if let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
-           let readerURLString = components.queryItems?.first(where: { $0.name == "reader-url" })?.value {
-            if let readerURL = absoluteURL(from: readerURLString) {
-                return readerURL
-            }
-            if let decodedReaderURL = readerURLString.removingPercentEncoding,
-               let readerURL = absoluteURL(from: decodedReaderURL) {
-                return readerURL
-            }
-        }
-
-        guard let range = absoluteString.range(of: "reader-url=") else {
-            return nil
-        }
-        let rawReaderURL = String(absoluteString[range.upperBound...])
-        if let decodedReaderURL = rawReaderURL.removingPercentEncoding,
-           let readerURL = absoluteURL(from: decodedReaderURL) {
+        // URLComponents decodes the query item exactly once. Do not decode an
+        // already valid URL again: its literal %2F, %23 and %26 are content.
+        if let readerURL = supportedContentURL(from: readerURLValue) {
             return readerURL
         }
-        return absoluteURL(from: rawReaderURL)
+        // Preserve historical loader links that encoded the entire source URL
+        // twice, but never treat an arbitrary scheme as an article URL.
+        return readerURLValue.removingPercentEncoding.flatMap(supportedContentURL(from:))
     }
 
     var snippetKey: String? {
@@ -85,3 +99,4 @@ public func urlsMatchWithoutHash(_ lhs: URL?, _ rhs: URL?) -> Bool {
         return false
     }
 }
+
