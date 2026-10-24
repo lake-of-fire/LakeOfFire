@@ -1148,17 +1148,29 @@ private func locallyRetrievableReaderHTML(
     for content: any ReaderContentProtocol,
     readerFileManager: ReaderFileManager
 ) async throws -> String? {
-    let startedAt = CFAbsoluteTimeGetCurrent()
+    try await locallyRetrievableReaderHTML(for: content) {
+        try await content.htmlToDisplay(readerFileManager: readerFileManager)
+    }
+}
+
+@MainActor
+func locallyRetrievableReaderHTML(
+    for content: any ReaderContentProtocol,
+    loadHTML: @MainActor () async throws -> String?
+) async throws -> String? {
     guard !content.isInvalidated else { return nil }
-    var html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
-    guard !Task.isCancelled, !content.isInvalidated else { return nil }
-    if html == nil, content.url.isSnippetURL {
+    let contentURL = content.url
+    let startedAt = CFAbsoluteTimeGetCurrent()
+    var html = try await loadHTML()
+    try Task.checkCancellation()
+    guard !content.isInvalidated, content.url == contentURL else { return nil }
+    if html == nil, contentURL.isSnippetURL {
         html = content.html
     }
     guard let html else {
         debugPrint(
             "# READERLOAD stage=readerMode.localHTML",
-            "contentURL=\(content.url.absoluteString)",
+            "contentURL=\(contentURL.absoluteString)",
             "hasHTML=false",
             "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
         )
@@ -1168,7 +1180,7 @@ private func locallyRetrievableReaderHTML(
     let result = trimmed.isEmpty ? nil : trimmed
     debugPrint(
         "# READERLOAD stage=readerMode.localHTML",
-        "contentURL=\(content.url.absoluteString)",
+        "contentURL=\(contentURL.absoluteString)",
         "hasHTML=\(result != nil)",
         "bytes=\(result?.utf8.count ?? 0)",
         "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
@@ -2818,7 +2830,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
     }
 
     @MainActor
-    private func showReaderView(
+    func showReaderView(
         readerContent: ReaderContent,
         scriptCaller: WebViewScriptCaller,
         selectionIsCurrent: @escaping @Sendable () -> Bool
@@ -3998,11 +4010,40 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller
     ) async throws {
+        let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
+        try await onNavigationCommitted(
+            readerContent: readerContent,
+            newState: newState,
+            scriptCaller: scriptCaller,
+            selectionFence: selectionIsCurrent,
+            loadHTML: { content, readerFileManager in
+                try await content.htmlToDisplay(readerFileManager: readerFileManager)
+            }
+        )
+    }
+
+    @MainActor
+    func onNavigationCommitted(
+        readerContent: ReaderContent,
+        newState: WebViewState,
+        scriptCaller: WebViewScriptCaller,
+        selectionFence: (@Sendable () -> Bool)? = nil,
+        loadHTML: @MainActor (any ReaderContentProtocol, ReaderFileManager) async throws -> String?
+    ) async throws {
+        let selectionIsCurrent = selectionFence
+            ?? readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
+        let requireCurrentSelection = { @MainActor in
+            try Task.checkCancellation()
+            guard selectionIsCurrent() else { throw CancellationError() }
+        }
+        try requireCurrentSelection()
         readabilityContainerFrameInfo = nil
+        try requireCurrentSelection()
         readabilityContent = nil
+        try requireCurrentSelection()
         readabilityContainerSelector = nil
+        try requireCurrentSelection()
 //        contentRules = nil
-        try Task.checkCancellation()
 
         guard let content = readerContent.content else {
             print("No content to display in ReaderModeViewModel onNavigationCommitted")
@@ -4011,15 +4052,25 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         }
         try Task.checkCancellation()
 
+        guard !content.isInvalidated else { throw CancellationError() }
         let committedURL = content.url
         guard committedURL.matchesReaderURL(newState.pageURL) else {
             print("URL mismatch in ReaderModeViewModel onNavigationCommitted", committedURL, newState.pageURL)
             cancelReaderModeLoad(for: committedURL, reason: "navCommit.urlMismatch")
             return
         }
-        try Task.checkCancellation()
+        let requireCurrentContent = { @MainActor in
+            try requireCurrentSelection()
+            guard !content.isInvalidated,
+                  content.url == committedURL,
+                  committedURL.matchesReaderURL(readerContent.pageURL) else {
+                throw CancellationError()
+            }
+        }
+        try requireCurrentContent()
 
         await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: committedURL)
+        try requireCurrentContent()
         logTrace(.navCommitted, url: committedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         logStateSnapshot("navCommitted", url: committedURL)
         if !scriptCaller.hasAsyncCaller {
@@ -4037,6 +4088,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 debugPrint("# EPUB  paginationBookKey.set.error", error.localizedDescription)
             }
         }
+        try requireCurrentContent()
 
         if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
             return
@@ -4047,16 +4099,19 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         try Task.checkCancellation()
 
         if isReaderMode != isReaderModeVerified && !newState.pageURL.isEBookURL {
-            withAnimation {
+            try withAnimation {
                 readerModeLoading(isReaderModeVerified)
+                try requireCurrentContent()
                 isReaderMode = isReaderModeVerified // Reset and confirm via JS later
             }
             try Task.checkCancellation()
         }
+        try requireCurrentContent()
 
         if newState.pageURL.isReaderURLLoaderURL {
             let loaderStartedAt = Date()
             let duplicateLoaderRender = shouldSkipDuplicateLoaderRender(for: committedURL)
+            try requireCurrentContent()
             debugPrint(
                 "# READERLOAD stage=readerMode.navCommit.loaderBegin",
                 "loaderURL=\(newState.pageURL.absoluteString)",
@@ -4077,16 +4132,24 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 return
             }
             if let readerFileManager {
-                let html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
+                let html: String?
+                do {
+                    html = try await loadHTML(content, readerFileManager)
+                } catch {
+                    try requireCurrentContent()
+                    throw error
+                }
+                // A missing result can also represent a cancelled or retired read.
+                // Admit both outcomes before either HTML presentation or fallback navigation.
+                try requireCurrentContent()
                 if let html {
-                    try Task.checkCancellation()
-
-                    let currentURL = readerContent.pageURL
-                    guard committedURL.matchesReaderURL(currentURL) else {
-                        print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
-                        cancelReaderModeLoad(for: committedURL, reason: "navCommit.currentURLMismatch")
-                        return
+                    let publicationDateFallback: String?
+                    if committedURL.isSnippetURL {
+                        publicationDateFallback = await readerContentPublicationDateFallback(for: committedURL)
+                    } else {
+                        publicationDateFallback = nil
                     }
+                    try requireCurrentContent()
                     let usedSnippetCanonical: Bool
                     let usedCanonicalMarkup: Bool
                     if committedURL.isSnippetURL,
@@ -4094,7 +4157,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                         html: html,
                         contentURL: committedURL,
                         fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
-                        publishedTime: await readerContentPublicationDateFallback(for: committedURL),
+                        publishedTime: publicationDateFallback,
                         preferredTitle: content.title,
                         hideReaderTitleOverride: content.isTitlePrefixOfContent
                        ) {
@@ -4110,10 +4173,13 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                         usedSnippetCanonical = false
                         usedCanonicalMarkup = false
                     }
+                    try requireCurrentContent()
                     readerContent.isRenderingReaderHTML = true
+                    try requireCurrentContent()
                     showReaderView(
                         readerContent: readerContent,
-                        scriptCaller: scriptCaller
+                        scriptCaller: scriptCaller,
+                        selectionIsCurrent: selectionIsCurrent
                     )
                 } else {
                     debugPrint(
@@ -4125,6 +4191,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                         print("Error: No navigator set in ReaderModeViewModel onNavigationCommitted")
                         return
                     }
+                    try requireCurrentContent()
                     navigator.load(URLRequest(url: committedURL))
                 }
             } else {
@@ -4137,6 +4204,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                     print("Error: No navigator set in ReaderModeViewModel onNavigationCommitted")
                     return
                 }
+                try requireCurrentContent()
                 navigator.load(URLRequest(url: committedURL))
             }
 //        } else {
