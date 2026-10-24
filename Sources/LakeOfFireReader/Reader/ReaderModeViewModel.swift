@@ -116,12 +116,13 @@ internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) thr
     }
     """
 
-    let htmlElement = try doc.getElementsByTag("html").first()
+    let htmlElement = ReaderDocumentTree.firstElement(named: "html", in: doc)
     try htmlElement?.attr("data-mnb-font-pending", "1")
     try htmlElement?.attr("data-mnb-font-ready", "0")
 
-    if let existingStyle = try doc.getElementById("mnb-custom-font-gate") {
-        try existingStyle.text(gateCSS)
+    if let existingStyle = try ReaderDocumentTree.elementWithID("mnb-custom-font-gate", in: doc) {
+        guard !ReaderDocumentTree.isInertHTMLTemplate(existingStyle) else { return }
+        try replaceReaderDocumentText(gateCSS, in: existingStyle)
         return
     }
 
@@ -129,14 +130,14 @@ internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) thr
     try styleElement.attr("id", "mnb-custom-font-gate")
     try styleElement.text(gateCSS)
 
-    if let head = doc.head() {
+    if let head = ReaderDocumentTree.firstElement(named: "head", in: doc) {
         try head.appendChild(styleElement)
         return
     }
 
-    if let html = try doc.getElementsByTag("html").first() {
+    if let html = ReaderDocumentTree.firstElement(named: "html", in: doc) {
         try html.prepend("<head></head>")
-        if let head = doc.head() {
+        if let head = ReaderDocumentTree.firstElement(named: "head", in: doc) {
             try head.appendChild(styleElement)
             return
         }
@@ -193,10 +194,10 @@ private struct SwiftReadabilityProcessingResult {
     let outputHTML: String
 }
 
-private func normalizeReadabilityBodyOrder(_ doc: SwiftSoup.Document) {
-    guard let body = doc.body(),
-          let readerHeader = try? doc.getElementById("reader-header"),
-          let readerContent = try? doc.getElementById("reader-content") else {
+internal func normalizeReadabilityBodyOrder(_ doc: SwiftSoup.Document) {
+    guard let body = ReaderDocumentTree.firstElement(named: "body", in: doc),
+          let readerHeader = try? readerDocumentElementWithID("reader-header", in: doc),
+          let readerContent = try? readerDocumentElementWithID("reader-content", in: doc) else {
         return
     }
 
@@ -208,7 +209,7 @@ private func normalizeReadabilityBodyOrder(_ doc: SwiftSoup.Document) {
         if child === readerContent {
             continue
         }
-        nodesToMove.append(child)
+        if !ReaderDocumentTree.isInertHTMLTemplate(child) { nodesToMove.append(child) }
     }
 
     for node in nodesToMove.reversed() {
@@ -217,7 +218,7 @@ private func normalizeReadabilityBodyOrder(_ doc: SwiftSoup.Document) {
 }
 
 private func hasReaderContentMedia(in doc: SwiftSoup.Document) -> Bool {
-    guard let readerContent = try? doc.getElementById("reader-content") else {
+    guard let readerContent = try? readerDocumentElementWithID("reader-content", in: doc) else {
         return false
     }
     let selector = [
@@ -228,28 +229,28 @@ private func hasReaderContentMedia(in doc: SwiftSoup.Document) -> Bool {
         "video",
         "figure",
     ].joined(separator: ",")
-    return ((try? readerContent.select(selector).isEmpty()) == false)
+    return ((try? readerDocumentElements(in: readerContent, matching: selector).isEmpty) == false)
 }
 
 private func logReadabilityCarouselDOMState(_ doc: SwiftSoup.Document, url: URL, stage: String) {
-    let carousels = (try? doc.select("[data-readability-carousel=\"true\"], [data-readability-carousel=true]").array()) ?? []
+    let carousels = (try? readerDocumentElements(in: doc, matching: "[data-readability-carousel=\"true\"], [data-readability-carousel=true]")) ?? []
     guard !carousels.isEmpty else {
         debugPrint("# CAROUSEL \(stage)", "contentURL=\(url.absoluteString)", "count=0")
         return
     }
 
-    let readerContent = try? doc.getElementById("reader-content")
-    let readerHeader = try? doc.getElementById("reader-header")
-    let bodyChildren = doc.body()?.children().array() ?? []
+    let readerContent = try? readerDocumentElementWithID("reader-content", in: doc)
+    let readerHeader = try? readerDocumentElementWithID("reader-header", in: doc)
+    let bodyChildren = ReaderDocumentTree.firstElement(named: "body", in: doc)?.children().array() ?? []
     let headerIndex = readerHeader.flatMap { header in bodyChildren.firstIndex { $0 === header } } ?? -1
     let firstContentChild = (try? readerContent?.children().first()?.tagName()) ?? "nil"
     func containsCarousel(_ container: SwiftSoup.Element?, _ carousel: SwiftSoup.Element) -> Bool {
         guard let container else { return false }
-        let matches = (try? container.select("[data-readability-carousel=\"true\"], [data-readability-carousel=true]").array()) ?? []
+        let matches = (try? readerDocumentElements(in: container, matching: "[data-readability-carousel=\"true\"], [data-readability-carousel=true]")) ?? []
         return matches.contains { match in match === carousel }
     }
     let placements = carousels.enumerated().map { index, carousel -> String in
-        let slideCount = (try? carousel.select("[data-readability-carousel-slide]").size()) ?? 0
+        let slideCount = (try? readerDocumentElements(in: carousel, matching: "[data-readability-carousel-slide]").count) ?? 0
         let inContent = containsCarousel(readerContent, carousel)
         let inHeader = containsCarousel(readerHeader, carousel)
         let bodyIndex = bodyChildren.firstIndex { $0 === carousel } ?? -1
@@ -382,13 +383,14 @@ private func readerWritingDirectionBootstrapStyleHTML() -> String {
 
 private func upsertReaderWritingDirectionBootstrapStyle(in doc: SwiftSoup.Document) throws {
     guard currentReaderWritingDirectionSetting().isVertical else {
-        try doc.getElementById("mnb-writing-direction-bootstrap")?.remove()
+        try removeReaderDocumentElement(readerDocumentElementWithID("mnb-writing-direction-bootstrap", in: doc))
         return
     }
 
     let styleCSS = "body { writing-mode: vertical-rl; }"
-    if let existingStyle = try doc.getElementById("mnb-writing-direction-bootstrap") {
-        try existingStyle.text(styleCSS)
+    if let existingStyle = try ReaderDocumentTree.elementWithID("mnb-writing-direction-bootstrap", in: doc) {
+        guard !ReaderDocumentTree.isInertHTMLTemplate(existingStyle) else { return }
+        try replaceReaderDocumentText(styleCSS, in: existingStyle)
         return
     }
 
@@ -396,14 +398,14 @@ private func upsertReaderWritingDirectionBootstrapStyle(in doc: SwiftSoup.Docume
     try styleElement.attr("id", "mnb-writing-direction-bootstrap")
     try styleElement.text(styleCSS)
 
-    if let head = doc.head() {
+    if let head = ReaderDocumentTree.firstElement(named: "head", in: doc) {
         try head.appendChild(styleElement)
         return
     }
 
-    if let html = try doc.getElementsByTag("html").first() {
+    if let html = ReaderDocumentTree.firstElement(named: "html", in: doc) {
         try html.prepend("<head></head>")
-        if let head = doc.head() {
+        if let head = ReaderDocumentTree.firstElement(named: "head", in: doc) {
             try head.appendChild(styleElement)
             return
         }
@@ -803,54 +805,160 @@ internal func buildCanonicalReadabilityHTML(
 }
 
 internal func bodyInnerHTML(from html: String) -> String? {
-    guard let doc = try? SwiftSoup.parse(html) else {
+    guard let doc = readabilityDocumentForMarkupInspection(html) else {
         return nil
     }
-    return try? doc.body()?.html()
+    return try? ReaderDocumentTree.firstElement(named: "body", in: doc)?.html()
 }
 
 internal func hasReadabilityModeBodyClassMarkup(in html: String) -> Bool {
-    html.range(of: #"<body[^>]*class=['"][^'"]*\breadability-mode\b[^'"]*['"]"#, options: .regularExpression) != nil
+    guard let document = readabilityDocumentForMarkupInspection(html) else { return false }
+    return ReaderDocumentTree.firstElement(named: "body", in: document)?.hasClass("readability-mode") == true
 }
 
 internal func hasReaderContentNodeMarkup(in html: String) -> Bool {
-    html.range(of: #"<[^>]+id=['"]reader-content['"]"#, options: .regularExpression) != nil
+    guard let document = readabilityDocumentForMarkupInspection(html) else { return false }
+    return (try? ReaderDocumentTree.elementWithID("reader-content", in: document)) != nil
 }
 
 internal func hasReaderHeaderNodeMarkup(in html: String) -> Bool {
-    html.range(of: #"<[^>]+id=['"]reader-header['"]"#, options: .regularExpression) != nil
+    guard let document = readabilityDocumentForMarkupInspection(html) else { return false }
+    return (try? ReaderDocumentTree.elementWithID("reader-header", in: document)) != nil
 }
 
 internal func hasCanonicalReadabilityMarkup(in html: String) -> Bool {
-    hasReadabilityModeBodyClassMarkup(in: html)
-        && hasReaderContentNodeMarkup(in: html)
+    guard let document = readabilityDocumentForMarkupInspection(html) else { return false }
+    return isCanonicalReadabilityDocument(document)
 }
 
 internal func hasPublishedReaderSegmentMetadataMarkup(in html: String) -> Bool {
-    guard hasCanonicalReadabilityMarkup(in: html) else { return false }
-    let hasSegments = html.range(
-        of: #"<m-m(?:\s|>)"#,
-        options: [.regularExpression, .caseInsensitive]
-    ) != nil
-    let hasSidecar = html.range(
-        of: #"(?:id|data-mnb-seg-meta)=['\"][^'\"]*mnb-segment-metadata[^'\"]*['\"]"#,
-        options: [.regularExpression, .caseInsensitive]
-    ) != nil
-    return hasSegments && hasSidecar
+    guard let document = readabilityDocumentForMarkupInspection(html),
+          isCanonicalReadabilityDocument(document),
+          (try? readerDocumentElementWithID("reader-content", in: document)) != nil,
+          let segments = try? readerDocumentElements(in: document, matching: "m-m"),
+          !segments.isEmpty,
+          let sidecars = try? readerDocumentElements(in: document, matching: "script") else { return false }
+    return sidecars.contains { sidecar in
+        ["id", "data-mnb-seg-meta"].contains { attribute in
+            ((try? sidecar.attr(attribute)) ?? "")
+                .range(of: "mnb-segment-metadata", options: .caseInsensitive) != nil
+        }
+    }
 }
 
-private func stripRuntimeReadabilityAssets(from html: String) -> String {
-    guard hasCanonicalReadabilityMarkup(in: html),
-          let doc = try? SwiftSoup.parse(html) else {
+private func readabilityDocumentForMarkupInspection(_ html: String) -> SwiftSoup.Document? {
+    // Match the selected presentation parser instead of treating XHTML prefixes
+    // as ordinary colon-named HTML elements during shortcut admission.
+    let isXML = readerReadabilityContentIsXML(html)
+    let parser = isXML ? Parser.xmlParser() : Parser.htmlParser()
+    return try? SwiftSoup.parse(html, "", parser)
+}
+
+internal func readerReadabilityContentIsXML(_ content: String) -> Bool {
+    content.hasPrefix("<?xml") || content.hasPrefix("<?XML")
+}
+
+internal func readerReadabilityMIMEType(isXML: Bool) -> String {
+    isXML ? "application/xhtml+xml" : "text/html"
+}
+
+internal func readerReadabilityHTMLForSyntheticLoad(
+    _ htmlBytes: [UInt8],
+    sidecarStore: ReaderExternalSegmentSidecarStore? = nil
+) -> [UInt8] {
+    let html = String(decoding: htmlBytes, as: UTF8.self)
+    // The existing byte-range externalizer is HTML-only: it neither tracks
+    // template contents nor emits XML void tags. Inline metadata is already a
+    // supported browser transport, so retain it for these document forms.
+    guard !readerReadabilityContentIsXML(html),
+          let document = readabilityDocumentForMarkupInspection(html),
+          !ReaderDocumentTree.containsInertHTMLTemplate(in: document) else { return htmlBytes }
+    return Array(externalizingCanonicalReaderSegmentSidecar(
+        in: htmlBytes,
+        scheme: .internalReader,
+        store: sidecarStore ?? .shared
+    ).documentHTML)
+}
+
+internal let readerReadabilityFrameInjectionScript = """
+var root = document.body
+if (renderToSelector) {
+    root = document.querySelector(renderToSelector)
+}
+var serialized = html
+
+let xmlns = document.body?.getAttribute('xmlns')
+if (xmlns || isXMLContent) {
+    if (!root || !document.head) {
+        throw new Error('Reader frame has no document root or head')
+    }
+    let parser = new DOMParser()
+    let doc = parser.parseFromString(serialized, isXMLContent ? 'application/xhtml+xml' : 'text/html')
+    let readabilityNode = doc.body
+    if (doc.getElementsByTagNameNS('*', 'parsererror').length || !readabilityNode ||
+        readabilityNode.namespaceURI !== 'http://www.w3.org/1999/xhtml') {
+        throw new Error('Reader frame content has no valid XHTML body')
+    }
+    // Import the actual nodes, including HTMLTemplateElement.content. A string
+    // round-trip through innerHTML loses XML prefix and namespace semantics.
+    let targetDocument = root.ownerDocument
+    let replacement = targetDocument.createDocumentFragment()
+    for (let innerNode of Array.from(readabilityNode.childNodes)) {
+        replacement.appendChild(targetDocument.importNode(innerNode, true))
+    }
+    root.replaceChildren(replacement)
+} else if (root) {
+    root.outerHTML = serialized
+}
+
+let existingStyle = document.getElementById('swiftuiwebview-readability-styles')
+if (existingStyle) {
+    existingStyle.textContent = css
+} else {
+    let style = (xmlns || isXMLContent)
+        ? document.createElementNS('http://www.w3.org/1999/xhtml', 'style')
+        : document.createElement('style')
+    style.id = 'swiftuiwebview-readability-styles'
+    style.textContent = css
+    document.head.appendChild(style)
+}
+if (document.body) {
+    document.body.className = bodyClassNames || 'readability-mode'
+}
+if (readerModeScript) {
+    try {
+        new Function(readerModeScript)()
+    } catch (error) {
+        const message = '# CAROUSEL script-error ' + String(error && error.message ? error.message : error)
+        console.log(message)
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(message)
+        } catch (_error) {}
+    }
+}
+"""
+
+private func isCanonicalReadabilityDocument(_ document: SwiftSoup.Document) -> Bool {
+    ReaderDocumentTree.firstElement(named: "body", in: document)?.hasClass("readability-mode") == true
+        && (try? ReaderDocumentTree.elementWithID("reader-content", in: document)) != nil
+}
+
+internal func stripRuntimeReadabilityAssets(from html: String) -> String {
+    guard let doc = readabilityDocumentForMarkupInspection(html),
+          isCanonicalReadabilityDocument(doc) else {
         return html
     }
 
-    try? doc.select("script").remove()
-    try? doc.select([
+    for script in (try? readerDocumentElements(in: doc, matching: "script")) ?? [] {
+        try? removeReaderDocumentElement(script)
+    }
+    for style in (try? readerDocumentElements(in: doc, matching: [
         "style#swiftuiwebview-readability-styles",
         "style#mnb-mark-read-buttons-visibility-style",
         "style#mnb-readability-styles",
-    ].joined(separator: ",")).remove()
+    ].joined(separator: ","))) ?? [] {
+        try? removeReaderDocumentElement(style)
+    }
     return (try? doc.outerHtml()) ?? html
 }
 
@@ -878,22 +986,22 @@ internal func markReaderRenderReady(
     in doc: SwiftSoup.Document,
     renderGeneration: UUID? = nil
 ) {
-    try? doc.select("html").first()?.attr("data-mnb-reader-render-ready", "1")
-    try? doc.body()?.attr("data-mnb-reader-render-ready", "1")
+    try? ReaderDocumentTree.firstElement(named: "html", in: doc)?.attr("data-mnb-reader-render-ready", "1")
+    try? ReaderDocumentTree.firstElement(named: "body", in: doc)?.attr("data-mnb-reader-render-ready", "1")
     if let renderGeneration {
         let value = renderGeneration.uuidString
-        try? doc.select("html").first()?.attr("data-mnb-reader-render-generation", value)
-        try? doc.body()?.attr("data-mnb-reader-render-generation", value)
+        try? ReaderDocumentTree.firstElement(named: "html", in: doc)?.attr("data-mnb-reader-render-generation", value)
+        try? ReaderDocumentTree.firstElement(named: "body", in: doc)?.attr("data-mnb-reader-render-generation", value)
     }
     debugPrint(
         "# READERLOAD stage=readerMode.renderReadyMarkerInserted",
         "baseURL=\(doc.getBaseUri())",
-        "hasBody=\(doc.body() != nil)"
+        "hasBody=\(ReaderDocumentTree.firstElement(named: "body", in: doc) != nil)"
     )
 }
 
 internal func markReaderSubscriptionInactiveByDefault(in doc: SwiftSoup.Document) {
-    guard let body = doc.body(),
+    guard let body = ReaderDocumentTree.firstElement(named: "body", in: doc),
           ((try? body.hasAttr("data-mnb-subscription-is-active")) ?? false) == false else {
         return
     }
@@ -901,9 +1009,11 @@ internal func markReaderSubscriptionInactiveByDefault(in doc: SwiftSoup.Document
 }
 
 internal func titleFromReadabilityHTML(_ html: String) -> String? {
-    if let doc = try? SwiftSoup.parse(html),
-       let title = titleFromReadabilityDocument(doc) {
-        return title
+    if let doc = readabilityDocumentForMarkupInspection(html) {
+        if let title = titleFromReadabilityDocument(doc) { return title }
+        // The selected raw-text fallback remains available for ordinary input;
+        // it cannot distinguish template fragments and would promote drafts.
+        if ReaderDocumentTree.containsInertHTMLTemplate(in: doc) { return nil }
     }
 
     func normalisedTitle(_ raw: String?) -> String? {
@@ -918,6 +1028,30 @@ internal func titleFromReadabilityHTML(_ html: String) -> String? {
     return normalisedTitle(candidate)
 }
 
+internal func normalizeSnippetReaderTitle(in doc: SwiftSoup.Document, title: String) {
+    guard let element = try? readerDocumentElementWithID("reader-title", in: doc) else { return }
+    try? replaceReaderDocumentText(title, in: element)
+}
+
+internal func readerReadabilityStyleText(in doc: SwiftSoup.Document, fallback: String) -> String {
+    guard let style = try? readerDocumentElementWithID("swiftuiwebview-readability-styles", in: doc) else {
+        return fallback
+    }
+    let styleContent: SwiftSoup.Element?
+    if ReaderDocumentTree.containsInertHTMLTemplate(in: style) {
+        styleContent = try? ReaderDocumentTree.copyExcludingInertHTMLTemplates(style)
+    } else {
+        styleContent = style
+    }
+    // XML serialization escapes CSS text. The frame consumer installs this as
+    // textContent, so it needs decoded text rather than serialized entities.
+    let css = doc.outputSettings().syntax() == .xml
+        ? (try? styleContent?.text(trimAndNormaliseWhitespace: false))
+        : (try? styleContent?.html())
+    guard let css, !css.isEmpty else { return fallback }
+    return css
+}
+
 internal func titleFromReadabilityDocument(_ doc: SwiftSoup.Document) -> String? {
     func normalisedTitle(_ raw: String?) -> String? {
         let trimmed = (raw ?? "")
@@ -925,22 +1059,24 @@ internal func titleFromReadabilityDocument(_ doc: SwiftSoup.Document) -> String?
         return trimmed.isEmpty ? nil : trimmed.truncate(36)
     }
 
-    if let readerTitleText = try? doc.getElementById("reader-title")?.text(),
+    if let readerTitle = try? readerDocumentElementWithID("reader-title", in: doc),
+       let readerTitleText = try? ReaderDocumentTree.text(in: readerTitle),
        let title = normalisedTitle(readerTitleText) {
         return title
     }
 
-    if let headingText = try? doc.getElementsByTag("h1").first()?.text(),
+    if let heading = try? readerDocumentElements(in: doc, matching: "h1").first,
+       let headingText = try? ReaderDocumentTree.text(in: heading),
        let title = normalisedTitle(headingText) {
         return title
     }
 
-    if let headTitle = try? doc.title(),
+    if let headTitle = try? ReaderDocumentTree.title(in: doc),
        let title = normalisedTitle(headTitle) {
         return title
     }
 
-    if let body = doc.body(),
+    if let body = ReaderDocumentTree.firstElement(named: "body", in: doc),
        let bodyText = bodyTextExcludingReaderContent(from: body),
        let title = normalisedTitle(bodyText) {
         return title
@@ -951,21 +1087,22 @@ internal func titleFromReadabilityDocument(_ doc: SwiftSoup.Document) -> String?
 private func bodyTextExcludingReaderContent(from body: SwiftSoup.Element) -> String? {
     let children = body.children().array()
     guard !children.isEmpty else {
-        return try? body.text()
+        return try? ReaderDocumentTree.text(in: body)
     }
 
     var candidates: [String] = []
     candidates.reserveCapacity(children.count)
     for child in children {
+        if ReaderDocumentTree.isInertHTMLTemplate(child) { continue }
         if (try? child.attr("id")) == "reader-content" { continue }
-        if (try? child.getElementById("reader-content")) != nil { continue }
-        let text = (try? child.text())?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if (try? ReaderDocumentTree.elementWithID("reader-content", in: child)) != nil { continue }
+        let text = (try? ReaderDocumentTree.text(in: child))?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let text, !text.isEmpty {
             candidates.append(text)
         }
     }
     if candidates.isEmpty {
-        return try? body.text()
+        return try? ReaderDocumentTree.text(in: body)
     }
     return candidates.joined(separator: " ")
 }
@@ -978,6 +1115,7 @@ private func canHaveReadabilityContent(for url: URL) -> Bool {
 }
 
 private func ensureReadabilityBodyExists(_ html: String) -> String {
+    if readerReadabilityContentIsXML(html) { return html }
     if html.range(of: "<body", options: .caseInsensitive) != nil {
         return html
     }
@@ -1015,6 +1153,13 @@ func buildSnippetCanonicalReadabilityHTML(
     preferredTitle: String? = nil,
     hideReaderTitleOverride: Bool? = nil
 ) -> String? {
+    if readerReadabilityContentIsXML(html) {
+        return canonicalXMLSnippetReadabilityHTML(
+            html: html, contentURL: contentURL, fallbackTitle: fallbackTitle,
+            publishedTime: publishedTime, preferredTitle: preferredTitle,
+            hideReaderTitleOverride: hideReaderTitleOverride
+        )
+    }
     let normalizedHTML = ensureReadabilityBodyExists(html)
     if hasCanonicalReadabilityMarkup(in: normalizedHTML) {
         return rebuildCanonicalSnippetReadabilityHTML(
@@ -1034,7 +1179,9 @@ func buildSnippetCanonicalReadabilityHTML(
         ?? trimmedNonEmptyReadabilityText(fallbackTitle)
         ?? ""
     let sanitizedTitle = sanitizeReadabilityFragment(resolvedTitle)
-    let sanitizedContent = sanitizeReadabilityFragment(rawContent)
+    // The document-tree consumers exclude template contents without deleting
+    // author fragments (including foreign elements named template).
+    let sanitizedContent = rawContent
     let shouldHideReaderTitle = hideReaderTitleOverride
         ?? ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
             resolvedTitle,
@@ -1075,7 +1222,7 @@ func buildSnippetCanonicalReadabilityHTML(
     )
 }
 
-private func rebuildCanonicalSnippetReadabilityHTML(
+internal func rebuildCanonicalSnippetReadabilityHTML(
     html: String,
     contentURL: URL,
     fallbackTitle: String?,
@@ -1083,14 +1230,24 @@ private func rebuildCanonicalSnippetReadabilityHTML(
     preferredTitle: String? = nil,
     hideReaderTitleOverride: Bool? = nil
 ) -> String? {
-    guard let document = try? SwiftSoup.parse(html) else {
+    if readerReadabilityContentIsXML(html) {
+        return canonicalXMLSnippetReadabilityHTML(
+            html: html, contentURL: contentURL, fallbackTitle: fallbackTitle,
+            publishedTime: publishedTime, preferredTitle: preferredTitle,
+            hideReaderTitleOverride: hideReaderTitleOverride
+        )
+    }
+    guard let document = readabilityDocumentForMarkupInspection(html) else {
         return nil
     }
-    let extractedTitle = (try? document.getElementById("reader-title")?.text(trimAndNormaliseWhitespace: false))
+    let extractedTitle = (try? readerDocumentElementWithID("reader-title", in: document))
+        .flatMap { try? ReaderDocumentTree.text(in: $0, trimAndNormaliseWhitespace: false) }
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-    let extractedByline = (try? document.getElementById("reader-byline")?.text(trimAndNormaliseWhitespace: false))
+    let extractedByline = (try? readerDocumentElementWithID("reader-byline", in: document))
+        .flatMap { try? ReaderDocumentTree.text(in: $0, trimAndNormaliseWhitespace: false) }
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-    let extractedContent = (try? document.getElementById("reader-content")?.html())
+    let extractedContent = (try? readerDocumentElementWithID("reader-content", in: document))
+        .flatMap { try? $0.html() }
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     guard let extractedContent, !extractedContent.isEmpty else {
         return nil
@@ -1102,7 +1259,7 @@ private func rebuildCanonicalSnippetReadabilityHTML(
         ?? ""
     let sanitizedTitle = sanitizeReadabilityFragment(resolvedTitle)
     let sanitizedByline = sanitizeReadabilityFragment(extractedByline ?? "")
-    let sanitizedContent = sanitizeReadabilityFragment(extractedContent)
+    let sanitizedContent = extractedContent
     let shouldHideReaderTitle = hideReaderTitleOverride
         ?? ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
             resolvedTitle,
@@ -1141,6 +1298,126 @@ private func rebuildCanonicalSnippetReadabilityHTML(
         contentURL: contentURL.canonicalReaderContentURLForHotfix(),
         hideReaderTitle: shouldHideReaderTitle
     )
+}
+
+private func canonicalXMLSnippetReadabilityHTML(
+    html: String,
+    contentURL: URL,
+    fallbackTitle: String?,
+    publishedTime: String?,
+    preferredTitle: String?,
+    hideReaderTitleOverride: Bool?
+) -> String? {
+    // Keep the original XML ancestry and its namespace declarations. Extracting
+    // a fragment into the HTML shell would turn prefixed XHTML templates into
+    // ordinary colon-named HTML elements. Do not invent a shell for XML without
+    // the selected, exact-name XHTML scaffold.
+    guard let document = readabilityDocumentForMarkupInspection(html),
+          let documentElement = ReaderDocumentTree.firstElement(named: "html", in: document),
+          documentElement.namespace() == .html,
+          let body = ReaderDocumentTree.firstElement(named: "body", in: document),
+          body.namespace() == .html else { return nil }
+    do {
+        let content: SwiftSoup.Element
+        if let existing = try ReaderDocumentTree.elementWithID("reader-content", in: document) {
+            guard !ReaderDocumentTree.isInertHTMLTemplate(existing) else { return nil }
+            content = existing
+        } else {
+            content = try document.createElement("div")
+            try content.attr("id", "reader-content")
+            let existingHeader = try ReaderDocumentTree.elementWithID("reader-header", in: document)
+            for child in body.getChildNodes() {
+                if child === existingHeader { continue }
+                try content.appendChild(child)
+            }
+            try body.appendChild(content)
+        }
+        guard !(try content.html()).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        // Existing first-ID owners remain authoritative, including a template
+        // element with a reserved ID. Never create a second usable owner behind
+        // one of those blockers or replace an author subtree to make room.
+        func metadataElement(_ tag: String, id: String, parent: SwiftSoup.Element) throws -> SwiftSoup.Element? {
+            if let existing = try ReaderDocumentTree.elementWithID(id, in: document) {
+                return ReaderDocumentTree.isInertHTMLTemplate(existing) ? nil : existing
+            }
+            let element = try document.createElement(tag)
+            try element.attr("id", id)
+            try parent.appendChild(element)
+            return element
+        }
+
+        let existingTitle = try readerDocumentElementWithID("reader-title", in: document)
+        let extractedTitle = try existingTitle.map {
+            try ReaderDocumentTree.text(in: $0, trimAndNormaliseWhitespace: false)
+        }
+        let resolvedTitle = trimmedNonEmptyReadabilityText(preferredTitle)
+            ?? trimmedNonEmptyReadabilityText(extractedTitle)
+            ?? trimmedNonEmptyReadabilityText(fallbackTitle)
+            ?? ""
+        let header: SwiftSoup.Element?
+        if let existing = try ReaderDocumentTree.elementWithID("reader-header", in: document) {
+            header = ReaderDocumentTree.isInertHTMLTemplate(existing) ? nil : existing
+        } else {
+            let created = try document.createElement("div")
+            try created.attr("id", "reader-header")
+            try created.addClass("header")
+            try body.prependChild(created)
+            header = created
+        }
+        if let header {
+            if let title = try metadataElement("h1", id: "reader-title", parent: header),
+               trimmedNonEmptyReadabilityText(preferredTitle) != nil || trimmedNonEmptyReadabilityText(extractedTitle) == nil {
+                try replaceReaderDocumentText(resolvedTitle, in: title)
+            }
+            if let publishedTime,
+               let byline = try metadataElement("div", id: "reader-byline-container", parent: header),
+               let metaLine = try metadataElement("div", id: "reader-meta-line", parent: byline),
+               let date = try metadataElement("span", id: "reader-publication-date", parent: metaLine) {
+                try metaLine.addClass("byline-meta-line")
+                try replaceReaderDocumentText(publishedTime, in: date)
+                try date.attr("aria-label", "Reader metadata date: \(publishedTime)")
+            }
+        }
+
+        let visibleContent = try ReaderDocumentTree.copyExcludingInertHTMLTemplates(content)?.html()
+        let shouldHideReaderTitle = hideReaderTitleOverride
+            ?? ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(resolvedTitle, sourceHTML: visibleContent)
+        try body.addClass("readability-mode")
+        let suppressionClass = ReaderContentLoader.snippetReaderTitleSuppressionBodyClass
+        if shouldHideReaderTitle {
+            try body.addClass(suppressionClass)
+        } else {
+            try body.removeClass(suppressionClass)
+        }
+        try body.attr("data-mnb-reader-mode-available", "true")
+        try body.attr("data-mnb-reader-mode-available-for", contentURL.canonicalReaderContentURLForHotfix().absoluteString)
+        try body.attr("data-mnb-reader-render-ready", "1")
+
+        let head: SwiftSoup.Element
+        if let existing = ReaderDocumentTree.firstElement(named: "head", in: document) {
+            head = existing
+        } else {
+            head = try document.createElement("head")
+            try documentElement.prependChild(head)
+        }
+        if try ReaderDocumentTree.elementWithID("swiftuiwebview-readability-styles", in: document) == nil {
+            let style = try document.createElement("style")
+            try style.attr("id", "swiftuiwebview-readability-styles")
+            // Text nodes are escaped by XML serialization. Do not paste raw
+            // HTML script/style markup into this document.
+            try style.appendText(readerModeReadabilityCSS + "\nbody.\(suppressionClass) #reader-title { display: none !important; }")
+            try head.appendChild(style)
+        }
+        document.outputSettings().prettyPrint(pretty: false).syntax(syntax: .xml)
+        document.outputSettings().charset(.utf8)
+        document.outputSettings().escapeMode(.xhtml)
+        return try document.outerHtml()
+    } catch {
+        return nil
+    }
 }
 
 @MainActor
@@ -3428,10 +3705,8 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                     snippetRawTitle,
                     needsClipboardIndicator: snippetNeedsClipboardIndicator
                 )
-                if let titleElement = try? doc.getElementById("reader-title") {
-                    try? titleElement.text(cleanedSnippetTitle)
-                }
-                if let body = doc.body() {
+                normalizeSnippetReaderTitle(in: doc, title: cleanedSnippetTitle)
+                if let body = ReaderDocumentTree.firstElement(named: "body", in: doc) {
                     let existingClassNames = ((try? body.className()) ?? "")
                         .split(separator: " ")
                         .map(String.init)
@@ -3451,24 +3726,20 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                     "url=\(url.absoluteString)",
                     "title=\(cleanedSnippetTitle)",
                     "hideReaderTitle=\(hideRedundantSnippetTitle)",
-                    "bodyClasses=\((try? doc.body()?.className()) ?? "")"
+                    "bodyClasses=\((try? ReaderDocumentTree.firstElement(named: "body", in: doc)?.className()) ?? "")"
                 )
             }
 
-            let processedSegmentCount = (try? doc.getElementsByTag("m-m").size()) ?? 0
-            let processedBodyExists = doc.body() != nil
-            let processedBodyClasses = (try? doc.body()?.className()) ?? ""
+            let processedSegmentCount = (try? readerDocumentElements(in: doc, matching: "m-m").count) ?? 0
+            let processedBodyExists = ReaderDocumentTree.firstElement(named: "body", in: doc) != nil
+            let processedBodyClasses = (try? ReaderDocumentTree.firstElement(named: "body", in: doc)?.className()) ?? ""
             let processedBodyClassesForFrameInjection: String = {
                 let trimmed = processedBodyClasses.trimmingCharacters(in: .whitespacesAndNewlines)
                 return trimmed.isEmpty ? "readability-mode" : trimmed
             }()
-            let processedStyleTextForFrameInjection: String = {
-                guard let styleElement = try? doc.getElementById("swiftuiwebview-readability-styles"),
-                      let styleHTML = try? styleElement.html() else {
-                    return readerModeReadabilityCSS
-                }
-                return styleHTML.isEmpty ? readerModeReadabilityCSS : styleHTML
-            }()
+            let processedStyleTextForFrameInjection = readerReadabilityStyleText(
+                in: doc, fallback: readerModeReadabilityCSS
+            )
             if await self.shouldUseDeferredSharedReaderFontGate(for: url) {
                 try? upsertDeferredSharedReaderFontGate(in: doc)
             }
@@ -3525,10 +3796,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
 
             if renderBaseURL.scheme?.lowercased() == "internal",
                frameInfo == nil || frameIsMainFrame {
-                transformedHTMLBytes = Array(externalizingCanonicalReaderSegmentSidecar(
-                    in: transformedHTMLBytes,
-                    scheme: .internalReader
-                ).documentHTML)
+                transformedHTMLBytes = readerReadabilityHTMLForSyntheticLoad(transformedHTMLBytes)
                 transformedHTMLString = nil
             }
 
@@ -3543,6 +3811,9 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 "processHTMLElapsed=\(String(format: "%.3f", processHTMLElapsed))s",
                 "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - transformStart))s"
             )
+            let transformedContentIsXML = readerReadabilityContentIsXML(
+                String(decoding: transformedHTMLBytes.prefix(5), as: UTF8.self)
+            )
             let frameInjectionPrepStartedAt = CFAbsoluteTimeGetCurrent()
             let transformedContentForFrameInjection: String?
             let transformedBodyClassesForFrameInjection: String?
@@ -3554,10 +3825,10 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                     transformedBodyClassesForFrameInjection = processedBodyClassesForFrameInjection
                     transformedStyleTextForFrameInjection = processedStyleTextForFrameInjection
                 } else {
-                    let transformedDocument = try? SwiftSoup.parse(transformedContent)
+                    let transformedDocument = readabilityDocumentForMarkupInspection(transformedContent)
                     let transformedBodyClasses = {
                         guard let transformedDocument,
-                              let bodyElement = transformedDocument.body(),
+                              let bodyElement = ReaderDocumentTree.firstElement(named: "body", in: transformedDocument),
                               let bodyClassNames = try? bodyElement.className() else {
                             return processedBodyClassesForFrameInjection
                         }
@@ -3565,12 +3836,10 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                         return trimmed.isEmpty ? "readability-mode" : trimmed
                     }()
                     let transformedStyleText = {
-                        guard let transformedDocument,
-                              let styleElement = try? transformedDocument.getElementById("swiftuiwebview-readability-styles"),
-                              let styleHTML = try? styleElement.html() else {
-                            return processedStyleTextForFrameInjection
-                        }
-                        return styleHTML.isEmpty ? processedStyleTextForFrameInjection : styleHTML
+                        guard let transformedDocument else { return processedStyleTextForFrameInjection }
+                        return readerReadabilityStyleText(
+                            in: transformedDocument, fallback: processedStyleTextForFrameInjection
+                        )
                     }()
                     transformedBodyClassesForFrameInjection = transformedBodyClasses
                     transformedStyleTextForFrameInjection = transformedStyleText
@@ -3625,56 +3894,11 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                         "styleBytes=\(transformedStyleText.utf8.count)"
                     )
                     try await scriptCaller.evaluateJavaScript(
-                        """
-                        var root = document.body
-                        if (renderToSelector) {
-                            root = document.querySelector(renderToSelector)
-                        }
-                        var serialized = html
-
-                        let xmlns = document.body?.getAttribute('xmlns')
-                        if (xmlns) {
-                            let parser = new DOMParser()
-                            let doc = parser.parseFromString(serialized, 'text/html')
-                            let readabilityNode = doc.body
-                            let replacementNode = root.cloneNode()
-                            replacementNode.innerHTML = ''
-                            for (let innerNode of readabilityNode.childNodes) {
-                                serialized = new XMLSerializer().serializeToString(innerNode)
-                                replacementNode.innerHTML += serialized
-                            }
-                            root.innerHTML = replacementNode.innerHTML
-                        } else if (root) {
-                            root.outerHTML = serialized
-                        }
-
-                        let existingStyle = document.getElementById('swiftuiwebview-readability-styles')
-                        if (existingStyle) {
-                            existingStyle.textContent = css
-                        } else {
-                            let style = document.createElement('style')
-                            style.id = 'swiftuiwebview-readability-styles'
-                            style.textContent = css
-                            document.head.appendChild(style)
-                        }
-                        if (document.body) {
-                            document.body.className = bodyClassNames || 'readability-mode'
-                        }
-                        if (readerModeScript) {
-                            try {
-                                new Function(readerModeScript)()
-                            } catch (error) {
-                                const message = '# CAROUSEL script-error ' + String(error && error.message ? error.message : error)
-                                console.log(message)
-                                try {
-                                    window.webkit?.messageHandlers?.print?.postMessage?.(message)
-                                } catch (_error) {}
-                            }
-                        }
-                        """,
+                        readerReadabilityFrameInjectionScript,
                         arguments: [
                             "renderToSelector": renderToSelector ?? "",
                             "html": transformedContent,
+                            "isXMLContent": transformedContentIsXML,
                             "css": transformedStyleText,
                             "bodyClassNames": transformedBodyClasses,
                             "readerModeScript": Readability.shared.scripts,
@@ -3698,7 +3922,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                     )
                     self.navigator?.load(
                         transformedHTMLData,
-                        mimeType: "text/html",
+                        mimeType: readerReadabilityMIMEType(isXML: transformedContentIsXML),
                         characterEncodingName: "UTF-8",
                         baseURL: renderBaseURL
                     )
@@ -4311,14 +4535,14 @@ public func preprocessWebContentForReaderMode(
     } catch { }
 
     if let fallbackTitle, !fallbackTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        if let titleElement = try doc.getElementById("reader-title") {
-            let currentTitleText = try titleElement.text(trimAndNormaliseWhitespace: false)
+        if let titleElement = try readerDocumentElementWithID("reader-title", in: doc) {
+            let currentTitleText = try ReaderDocumentTree.text(in: titleElement, trimAndNormaliseWhitespace: false)
             if currentTitleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                try titleElement.text(fallbackTitle)
-                if let headTitle = try doc.head()?.getElementsByTag("title").first() {
-                    let currentHeadTitle = try headTitle.text()
+                try replaceReaderDocumentText(fallbackTitle, in: titleElement)
+                if let head = ReaderDocumentTree.firstElement(named: "head", in: doc), let headTitle = try readerDocumentElements(in: head, matching: "title").first {
+                    let currentHeadTitle = try ReaderDocumentTree.text(in: headTitle)
                     if currentHeadTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        try headTitle.text(fallbackTitle)
+                        try replaceReaderDocumentText(fallbackTitle, in: headTitle)
                     }
                 }
             }
@@ -4341,24 +4565,25 @@ nonisolated public func processForReaderMode(
     let processStartedAt = Date()
     // Migrate old cached versions
     // TODO: Update cache, if this is a performance issue.
-    if let oldElement = try doc.getElementsByClass("reader-content").first(), try doc.getElementById("reader-content") == nil {
+    if let oldElement = try readerDocumentElements(in: doc, matching: ".reader-content").first,
+       try ReaderDocumentTree.elementWithID("reader-content", in: doc) == nil {
         try oldElement.attr("id", "reader-content")
         try oldElement.removeAttr("class")
     }
 
     if !isEBook,
-       try doc.getElementById("reader-content") == nil,
-       let snippetElement = try doc.getElementsByClass("mnb-snippet").first() {
+       try ReaderDocumentTree.elementWithID("reader-content", in: doc) == nil,
+       let snippetElement = try readerDocumentElements(in: doc, matching: ".mnb-snippet").first {
         try snippetElement.attr("id", "reader-content")
         try snippetElement.removeClass("mnb-snippet")
     }
 
     if isEBook {
-        try doc.body()?.attr("data-is-ebook", "true")
+        try ReaderDocumentTree.firstElement(named: "body", in: doc)?.attr("data-is-ebook", "true")
     }
 
     if !isCacheWarmer {
-        if let bodyTag = doc.body() {
+        if let bodyTag = ReaderDocumentTree.firstElement(named: "body", in: doc) {
             let bodyAttributesStartedAt = Date()
             markReaderSubscriptionInactiveByDefault(in: doc)
             // TODO: font size and theme set elsewhere already..?
@@ -4395,11 +4620,12 @@ nonisolated public func processForReaderMode(
             )
         }
 
-        if let defaultTitle = defaultTitle, let existing = try? doc.getElementById("reader-title"), !existing.hasText() {
+        if let defaultTitle = defaultTitle,
+           let existing = try? readerDocumentElementWithID("reader-title", in: doc),
+           ((try? ReaderDocumentTree.text(in: existing)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let titleFallbackStartedAt = Date()
-            let escapedTitle = Entities.escape(defaultTitle, OutputSettings().charset(String.Encoding.utf8).escapeMode(Entities.EscapeMode.extended))
             do {
-                try existing.html(escapedTitle)
+                try replaceReaderDocumentText(defaultTitle, in: existing)
             } catch { }
             debugPrint(
                 "# READERLOAD stage=readerMode.processForReaderMode.titleFallback",
@@ -4418,16 +4644,20 @@ nonisolated public func processForReaderMode(
             )
         }
         let readerContentAlreadyHasMedia = hasReaderContentMedia(in: doc)
-        let documentHasImages = try !(doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true)
+        let documentHasImages = try !(ReaderDocumentTree.firstElement(named: "body", in: doc).map { try readerDocumentElements(in: $0, matching: "img").isEmpty } ?? true)
         let shouldInjectHeaderImage = (injectEntryImageIntoHeader && !readerContentAlreadyHasMedia)
             || !documentHasImages
         if shouldInjectHeaderImage,
            let imageURL = imageURL,
-           let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"),
-           existing.isEmpty() {
+           let existing = try? readerDocumentElements(in: doc, matching: "img"),
+           !existing.contains(where: { (try? $0.attr("src")) == imageURL.absoluteString }) {
             let headerImageStartedAt = Date()
             do {
-                try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")
+                if let header = try readerDocumentElementWithID("reader-header", in: doc) {
+                    let image = try doc.createElement("img")
+                    try image.attr("src", imageURL.absoluteString)
+                    try header.prependChild(image)
+                }
             } catch { }
             debugPrint(
                 "# READERLOAD stage=readerMode.processForReaderMode.headerImage",
