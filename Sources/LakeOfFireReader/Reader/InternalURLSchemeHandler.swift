@@ -34,7 +34,8 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
         // The private reader transport must decode to one unambiguous source.
         // Other /load/ endpoints (including optional reader fonts) retain their
         // existing response behavior.
-        if url.path.hasPrefix("/load/reader"), url.readerLoaderContentURL == nil {
+        if url.path.hasPrefix("/load/reader"),
+           (!url.isReaderURLLoaderURL || url.readerContentURL == nil) {
             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.notFound)
             return
         }

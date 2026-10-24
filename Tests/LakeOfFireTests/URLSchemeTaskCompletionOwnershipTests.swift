@@ -69,6 +69,7 @@ final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
             "internal://local/load/reader?reader-url=javascript%3Aalert%281%29",
             "internal://local/load/reader?reader-url=https%3A%2F%2Fexample.org&other=1",
             "internal://local/load/reader-extra?reader-url=https%3A%2F%2Fexample.org",
+            "internal://local/load/reader?reader-url=internal%3A%2F%2Flocal%2Fload%2Freader%3Freader-url%3Djavascript%253Aalert%25281%2529",
             "internal://user@local/snippet?key=some-key",
             "internal://local:8080/snippet?key=some-key",
         ] {

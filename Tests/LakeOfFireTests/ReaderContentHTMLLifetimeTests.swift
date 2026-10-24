@@ -32,6 +32,22 @@ final class ReaderContentHTMLLifetimeTests: XCTestCase {
         XCTAssertNil(result)
     }
 
+    func testRouteRejectsAlreadyInvalidatedContentBeforeReadingManagedURL() async throws {
+        let (realm, record) = try fixture()
+        let manager = ReaderFileManager()
+        try realm.write { realm.delete(record) }
+        XCTAssertTrue(record.isInvalidated)
+
+        do {
+            let route = try await ReaderContentLoader.load(content: record, readerFileManager: manager)
+            XCTFail("Invalidated content must not produce a navigation route: \(String(describing: route))")
+        } catch is CancellationError {
+            // The real route selector must reject before persisted URL access.
+        } catch {
+            XCTFail("Expected cancellation for invalidated content, received \(error)")
+        }
+    }
+
     func testDeletionDuringReadStopsBeforeMetadata() async throws {
         let (realm, record) = try fixture()
         let result = try await record.htmlToDisplay(
@@ -526,5 +542,96 @@ extension ReaderContentHTMLLifetimeTests {
         XCTAssertTrue(mode.isReaderModeLoading)
         XCTAssertTrue(reader.isRenderingReaderHTML)
         XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+    }
+
+    // Begin with reader metadata already persisted so these fixtures reach the
+    // final transform without requiring an unrelated synchronized metadata write.
+    private func prepareFinalTransformMetadata(_ row: HistoryRecord, in realm: Realm) throws {
+        try realm.write {
+            row.isReaderModeByDefault = true
+            row.isReaderModeAvailable = false
+            row.isReaderModeOfferHidden = false
+            row.rssContainsFullContent = true
+        }
+    }
+
+    func testFinalHTMLTransformRejectsPhysicallyInvalidatedContent() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        try prepareFinalTransformMetadata(row, in: realm)
+        mode.swiftReadabilityProcessor = { _, _, _, _ in
+            "<html><body><div id='reader-content'>Readable body.</div></body></html>"
+        }
+        var transformed = false
+        mode.processHTMLBytes = { bytes, _ in
+            await MainActor.run {
+                transformed = true
+                try! realm.write { realm.delete(row) }
+            }
+            return bytes
+        }
+
+        await render(mode, reader: reader)
+
+        XCTAssertTrue(transformed, "The regression must reach the final transform")
+        XCTAssertTrue(row.isInvalidated)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+    }
+
+    func testFinalHTMLTransformDoesNotDispatchOrCleanUpSameURLSuccessor() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        try prepareFinalTransformMetadata(row, in: realm)
+        defer { withExtendedLifetime(realm) {} }
+        let successor = HistoryRecord()
+        successor.url = fileURL
+        mode.swiftReadabilityProcessor = { _, _, _, _ in
+            "<html><body><div id='reader-content'>Original body.</div></body></html>"
+        }
+        var transformed = false
+        mode.processHTML = { html, _ in
+            await MainActor.run {
+                transformed = true
+                reader.content = successor
+                reader.isRenderingReaderHTML = true
+                mode.beginReaderModeLoad(for: self.fileURL)
+                mode.readabilityContent = "Successor capture"
+            }
+            return html
+        }
+
+        await render(mode, reader: reader)
+
+        XCTAssertTrue(transformed)
+        XCTAssertFalse(row.isInvalidated)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+        XCTAssertEqual(mode.readabilityContent, "Successor capture")
+        XCTAssertTrue(reader.isRenderingReaderHTML)
+        XCTAssertTrue(mode.isReaderModeLoading)
+        XCTAssertEqual(mode.pendingReaderModeURL, fileURL)
+    }
+
+    func testFinalHTMLTransformAllowsFreshWrapperForSameLiveSnippet() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        try await prepareSnippet(row, in: realm, reader: reader)
+        let url = row.url
+        mode.swiftReadabilityProcessor = { _, _, _, _ in
+            "<html><body><div id='reader-content'>Snippet body.</div></body></html>"
+        }
+        var transformed = false
+        mode.processHTMLBytes = { bytes, _ in
+            await MainActor.run {
+                transformed = true
+                try! self.renameWithFreshWrapper(row, in: realm, reader: reader)
+            }
+            return bytes
+        }
+
+        await render(mode, reader: reader)
+
+        XCTAssertTrue(transformed)
+        XCTAssertEqual(reader.content?.title, "Renamed snippet")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, url.absoluteString)
+        XCTAssertTrue(mode.isReaderModeLoading, "Normal document readiness still owns completion")
+        XCTAssertEqual(mode.pendingReaderModeURL, url)
     }
 }

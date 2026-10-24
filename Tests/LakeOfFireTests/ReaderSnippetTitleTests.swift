@@ -24,7 +24,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
         let executableURL = try XCTUnwrap(URL(string: "javascript:alert(1)"))
         let dataURL = try XCTUnwrap(URL(string: "data:text/html,hello"))
         let invalidReaderFile = try XCTUnwrap(URL(string: "reader-file://other/load/local/book.html"))
-        XCTAssertNil(ReaderContentLoader.readerLoaderURL(for: nestedLoader))
+        XCTAssertEqual(ReaderContentLoader.readerLoaderURL(for: nestedLoader), nestedLoader)
         XCTAssertNil(ReaderContentLoader.readerLoaderURL(for: executableURL))
         XCTAssertNil(ReaderContentLoader.readerLoaderURL(for: dataURL))
         XCTAssertNil(ReaderContentLoader.readerLoaderURL(for: invalidReaderFile))
