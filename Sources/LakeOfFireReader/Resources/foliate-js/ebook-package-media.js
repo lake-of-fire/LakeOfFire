@@ -4,7 +4,9 @@ const mediaSourceSelector = 'audio[src], video[src], audio source[src], video so
 export const isPackageMediaURL = value => {
     try {
         const url = new URL(value);
-        return url.protocol === 'ebook:' && url.pathname.startsWith(packageEntryPathPrefix);
+        return url.protocol === 'ebook:' && url.hostname === 'ebook'
+            && url.username === '' && url.password === '' && url.port === ''
+            && url.pathname.startsWith(packageEntryPathPrefix)
     } catch {
         return false;
     }
@@ -22,7 +24,9 @@ export const hydratePackageMedia = async ({
 
     const objectURLPromises = new Map();
     const ownedObjectURLs = new Set();
+    let closed = false
     addPageHideListener?.(() => {
+        closed = true
         for (const objectURL of ownedObjectURLs) revokeObjectURL(objectURL);
         ownedObjectURLs.clear();
     });
@@ -41,13 +45,19 @@ export const hydratePackageMedia = async ({
                     return response.blob();
                 })
                 .then(blob => {
+                    if (closed) return null
                     const objectURL = createObjectURL(blob);
                     ownedObjectURLs.add(objectURL);
+                    if (closed) {
+                        ownedObjectURLs.delete(objectURL)
+                        revokeObjectURL(objectURL)
+                        return null
+                    }
                     return objectURL;
                 });
             objectURLPromises.set(resourceURL, promise);
         }
-        return promise.then(objectURL => `${objectURL}${fragment}`);
+        return promise.then(objectURL => objectURL === null ? null : `${objectURL}${fragment}`)
     };
 
     const mediaElements = new Set();
@@ -57,12 +67,16 @@ export const hydratePackageMedia = async ({
         const owningMedia = element.matches?.('audio, video')
             ? element
             : element.closest?.('audio, video');
-        if (owningMedia) mediaElements.add(owningMedia);
-        element.src = await objectURLFor(sourceURL);
+        const objectURL = await objectURLFor(sourceURL)
+        // A retired document or replaced source cannot receive the former load.
+        if (closed || objectURL === null || element.isConnected === false
+            || element.src !== sourceURL) return false
+        element.src = objectURL
+        if (owningMedia) mediaElements.add(owningMedia)
         return true;
     }));
 
-    for (const media of mediaElements) media.load?.();
+    if (!closed) for (const media of mediaElements) media.load?.()
     return results;
 };
 
