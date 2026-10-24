@@ -92,14 +92,61 @@ struct ReaderContentListDeletePresentation: @preconcurrency Identifiable {
 
 @MainActor
 public class ReaderContentListModalsModel: ObservableObject {
+    typealias DeleteEligibilityReader = @MainActor @Sendable (URL) async -> ReaderFileDeleteEligibility
+    typealias DeleteItem = @MainActor @Sendable (any DeletableReaderContent) async throws -> Void
+
+    @MainActor
+    private struct DeleteTarget {
+        // Keep the physical accessor: a new row with equal values must not
+        // inherit a command accepted for the deleted original.
+        let item: any DeletableReaderContent
+        let key: String
+        let url: URL
+        let createdAt: Date
+        let backingURL: URL?
+
+        init?(_ item: any DeletableReaderContent) {
+            guard !item.isInvalidated, !item.isDeleted else { return nil }
+            let url = item.url
+            self.item = item
+            key = item.compoundKey
+            self.url = url
+            createdAt = item.createdAt
+            backingURL = item is ContentFile
+                ? ReaderFileManager.shared.canonicalReaderBackingURL(for: url)
+                : nil
+        }
+
+        var isCurrent: Bool {
+            guard !item.isInvalidated, !item.isDeleted else { return false }
+            return item.compoundKey == key && item.url == url && item.createdAt == createdAt
+        }
+    }
+
     @Published var deleteDialog: ReaderContentListDeleteDialog?
     private(set) var deleteDialogGeneration = UUID()
     private var confirmedDeleteGeneration: UUID?
+    private let readDeleteEligibility: DeleteEligibilityReader
+    private let deleteItem: DeleteItem
 
-    public init() { }
+    public init() {
+        readDeleteEligibility = {
+            await ReaderFileManager.shared.deleteEligibility(forReaderBackingURL: $0)
+        }
+        deleteItem = { try await $0.delete() }
+    }
+
+    init(
+        readDeleteEligibility: @escaping DeleteEligibilityReader,
+        deleteItem: @escaping DeleteItem = { try await $0.delete() }
+    ) {
+        self.readDeleteEligibility = readDeleteEligibility
+        self.deleteItem = deleteItem
+    }
 
     func presentDeleteConfirmation(for items: [any DeletableReaderContent]) {
         deleteDialogGeneration = UUID()
+        let items = items.filter { !$0.isInvalidated && !$0.isDeleted }
         guard let first = items.first else {
             deleteDialog = nil
             return
@@ -170,24 +217,47 @@ public class ReaderContentListModalsModel: ObservableObject {
     ) -> Task<Void, Never>? {
         guard !Task.isCancelled, generation == deleteDialogGeneration,
               confirmedDeleteGeneration != generation else { return nil }
+        let targets = items.compactMap { DeleteTarget($0) }
         confirmedDeleteGeneration = generation
         // Admission happens in the button action, before scheduling. A later
         // dialog can retire presentation authority, not the accepted deletion.
         return Task { @MainActor in
-            await deleteConfirmedItems(items, generation: generation)
+            await deleteConfirmedItems(targets, generation: generation)
         }
     }
 
-    func deleteConfirmedItems(
-        _ items: [any DeletableReaderContent],
-        generation: UUID? = nil
+    private func deleteConfirmedItems(
+        _ targets: [DeleteTarget],
+        generation: UUID
     ) async {
-        await performDeleteAction(generation: generation ?? deleteDialogGeneration, clearOnSuccess: true) {
-            try await preflightDeleteBatch(items)
-            for item in items {
-                try await item.delete()
+        await performDeleteAction(generation: generation, clearOnSuccess: true) {
+            guard try await preflightDeleteBatch(targets) else { return }
+            for target in targets {
+                guard !Task.isCancelled else { return }
+                guard target.isCurrent else { continue }
+                try await deleteItem(target.item)
             }
         }
+    }
+
+    private func preflightDeleteBatch(_ targets: [DeleteTarget]) async throws -> Bool {
+        // Preflight every current file before starting any destructive delegate.
+        for target in targets {
+            guard !Task.isCancelled else { return false }
+            guard target.isCurrent, let backingURL = target.backingURL else { continue }
+            let eligibility = await readDeleteEligibility(backingURL)
+            guard !Task.isCancelled else { return false }
+            guard target.isCurrent else { continue }
+            switch eligibility {
+            case .allowed:
+                continue
+            case .blockedCloudOnly:
+                throw ReaderFileDeleteError.blockedCloudOnly
+            case .blockedLoadingStatus:
+                throw ReaderFileDeleteError.blockedLoadingStatus
+            }
+        }
+        return !Task.isCancelled
     }
 
     @discardableResult
@@ -213,7 +283,7 @@ public class ReaderContentListModalsModel: ObservableObject {
                 clearDeleteDialog(generation: generation)
             }
         } catch {
-            if generation == deleteDialogGeneration {
+            if !Task.isCancelled, generation == deleteDialogGeneration {
                 presentDeleteError(for: error)
             }
         }
@@ -251,24 +321,6 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                     )
                 }
             }
-    }
-}
-
-@MainActor
-private func preflightDeleteBatch(_ items: [any DeletableReaderContent]) async throws {
-    for case let contentFile as ContentFile in items {
-        guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url) else {
-            continue
-        }
-        let eligibility = await ReaderFileManager.shared.deleteEligibility(forReaderBackingURL: readerBackingURL)
-        switch eligibility {
-        case .allowed:
-            continue
-        case .blockedCloudOnly:
-            throw ReaderFileDeleteError.blockedCloudOnly
-        case .blockedLoadingStatus:
-            throw ReaderFileDeleteError.blockedLoadingStatus
-        }
     }
 }
 

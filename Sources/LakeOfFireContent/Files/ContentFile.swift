@@ -42,6 +42,7 @@ public class ContentFile: Bookmark {
     
     @MainActor
     public override func delete() async throws {
+        guard !isInvalidated else { return }
         try await ReaderFileManager.shared.delete(readerFileURL: url)
         try await super.delete()
     }
