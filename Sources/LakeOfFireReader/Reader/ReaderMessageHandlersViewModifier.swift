@@ -175,6 +175,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
     var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
     var ebookOpeningPreparer: ReaderEBookOpeningPreparer?
     var colorScheme: ColorScheme
+    var mediaLanguageIdentifier: String?
 
     private struct NavigationVisibilityEvent {
         let timestamp: Date
@@ -1040,28 +1041,19 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 guard let result = FractionalCompletionMessage(fromMessage: message) else { return }
                 handleNavigationVisibility(for: result)
             }),
+            (ReaderWebMediaBridge.messageHandlerName, { @MainActor [weak self] message in
+                guard let self, let event = ReaderWebMediaBridge.decode(message: message) else { return }
+                switch event {
+                case .readyState: break
+                case .media(let info):
+                    ReaderWebMediaBridge.postCandidateUpdate(info, message: message, scriptCaller: scriptCaller, currentPageURL: readerViewModel.state.pageURL, contentLanguageIdentifier: mediaLanguageIdentifier)
+                case .playback(let event):
+                    ReaderWebMediaBridge.postPlaybackUpdate(event, message: message, scriptCaller: scriptCaller, currentPageURL: readerViewModel.state.pageURL, contentLanguageIdentifier: mediaLanguageIdentifier)
+                }
+            }),
             ("videoStatus", { @MainActor [weak self] message in
                 guard let self else { return }
-                do {
-                    guard let result = VideoStatusMessage(fromMessage: message) else { return }
-                    guard let windowURL = result.windowURL,
-                          let pageURL = result.pageURL,
-                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
-                            claimedURL: windowURL,
-                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
-                            currentPageURL: readerViewModel.state.pageURL,
-                            requiresMainFrame: false,
-                            isMainFrame: message.frameInfo.isMainFrame
-                          ),
-                          ReaderDocumentMutationAdmission.acceptsFrameTarget(
-                            claimedFrameURL: pageURL,
-                            frameRequestURL: message.frameInfo.request.url
-                          ),
-                          documentIsStillCurrent(windowURL) else { return }
-                    _ = try await MediaStatus.getOrCreate(url: pageURL)
-                } catch {
-                    print(error)
-                }
+                ReaderWebMediaBridge.postExternalSubtitlesUpdate(from: message, scriptCaller: scriptCaller, currentPageURL: readerViewModel.state.pageURL, contentLanguageIdentifier: mediaLanguageIdentifier)
             })
         ])
         .requiringTrustedUserAction("showOriginal")
@@ -1078,7 +1070,8 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
         navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
         ebookOpeningPreparer: ReaderEBookOpeningPreparer? = nil,
-        colorScheme: ColorScheme
+        colorScheme: ColorScheme,
+        mediaLanguageIdentifier: String?
     ) {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.scriptCaller = scriptCaller
@@ -1091,6 +1084,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
         self.ebookOpeningPreparer = ebookOpeningPreparer
         self.colorScheme = colorScheme
+        self.mediaLanguageIdentifier = mediaLanguageIdentifier
     }
 
     func update(
@@ -1104,7 +1098,8 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
         navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
         ebookOpeningPreparer: ReaderEBookOpeningPreparer?,
-        colorScheme: ColorScheme
+        colorScheme: ColorScheme,
+        mediaLanguageIdentifier: String?
     ) {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.scriptCaller = scriptCaller
@@ -1117,6 +1112,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
         self.ebookOpeningPreparer = ebookOpeningPreparer
         self.colorScheme = colorScheme
+        self.mediaLanguageIdentifier = mediaLanguageIdentifier
     }
     
     // MARK: Readability
@@ -1260,6 +1256,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.readerNavigationVisibilityWillChangeHandler) internal var navigationVisibilityWillChangeHandler
     @Environment(\.readerEBookOpeningPreparer) internal var ebookOpeningPreparer
     @Environment(\.colorScheme) internal var colorScheme
+    @Environment(\.readerMediaLanguageIdentifier) internal var mediaLanguageIdentifier
     
     func body(content: Content) -> some View {
         ReaderMessageHandlersInstaller(
@@ -1275,6 +1272,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
             navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
             ebookOpeningPreparer: ebookOpeningPreparer,
             colorScheme: colorScheme,
+            mediaLanguageIdentifier: mediaLanguageIdentifier,
             webViewMessageHandlers: webViewMessageHandlers
         )
     }
@@ -1294,6 +1292,7 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
     var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
     var ebookOpeningPreparer: ReaderEBookOpeningPreparer?
     var colorScheme: ColorScheme
+    var mediaLanguageIdentifier: String?
     var webViewMessageHandlers: WebViewMessageHandlers
 
     @StateObject private var readerMessageHandlers: ReaderMessageHandlers
@@ -1313,6 +1312,7 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
         navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
         ebookOpeningPreparer: ReaderEBookOpeningPreparer?,
         colorScheme: ColorScheme,
+        mediaLanguageIdentifier: String?,
         webViewMessageHandlers: WebViewMessageHandlers
     ) {
         self.content = content
@@ -1327,6 +1327,7 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
         self.ebookOpeningPreparer = ebookOpeningPreparer
         self.colorScheme = colorScheme
+        self.mediaLanguageIdentifier = mediaLanguageIdentifier
         self.webViewMessageHandlers = webViewMessageHandlers
         _readerMessageHandlers = StateObject(wrappedValue: ReaderMessageHandlers(
             forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
@@ -1339,7 +1340,8 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
             showOriginalWillBeginHandler: showOriginalWillBeginHandler,
             navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
             ebookOpeningPreparer: ebookOpeningPreparer,
-            colorScheme: colorScheme
+            colorScheme: colorScheme,
+            mediaLanguageIdentifier: mediaLanguageIdentifier
         ))
     }
 
@@ -1358,8 +1360,12 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
                     showOriginalWillBeginHandler: showOriginalWillBeginHandler,
                     navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
                     ebookOpeningPreparer: ebookOpeningPreparer,
-                    colorScheme: colorScheme
+                    colorScheme: colorScheme,
+                    mediaLanguageIdentifier: mediaLanguageIdentifier
                 )
+            }
+            .onChange(of: mediaLanguageIdentifier) { value in
+                readerMessageHandlers.mediaLanguageIdentifier = value
             }
             .task(id: hideNavigationDueToScroll.wrappedValue) {
                 await pushHideNavigationStateToWebView(reason: "binding", force: false)

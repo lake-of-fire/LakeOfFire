@@ -549,6 +549,7 @@ fileprivate struct ReaderWebViewInternal: View {
     let callbackRelay: ReaderWebViewCallbackRelay
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
+    @State private var transcriptURLSchemeHandler = TranscriptURLSchemeHandler()
 #if os(iOS)
     @StateObject private var webViewPrewarmer = WebViewPrewarmer(
         warmUpCount: 1,
@@ -559,6 +560,9 @@ fileprivate struct ReaderWebViewInternal: View {
     
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.readerWebViewConfigurationTransform) private var readerWebViewConfigurationTransform
+    @Environment(\.readerWebViewMessageHandlersTransform) private var readerWebViewMessageHandlersTransform
+    @Environment(\.webViewMessageHandlers) private var webViewMessageHandlers
 
     private var readerThemeBackgroundColor: Color {
         switch colorScheme {
@@ -611,7 +615,7 @@ fileprivate struct ReaderWebViewInternal: View {
             )
         )
         WebView(
-            config: WebViewConfig(
+            config: readerWebViewConfigurationTransform(WebViewConfig(
                 dataDetectorsEnabled: false,
                 backgroundColor: readerThemeBackgroundColor,
                 usesSampledPageTopColorForUnderPageBackground: true,
@@ -619,7 +623,7 @@ fileprivate struct ReaderWebViewInternal: View {
                 adjustsScrollViewContentInsetsForSafeArea: false,
                 hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
                 nativeLookupHitTestingEnabled: state.pageURL.isEBookURL,
-                userScripts: userScripts),
+                userScripts: userScripts)),
             navigator: navigator,
             state: $state,
             scriptCaller: scriptCaller,
@@ -628,6 +632,7 @@ fileprivate struct ReaderWebViewInternal: View {
             bounces: bounces,
             schemeHandlers: [
                 (internalURLSchemeHandler, "internal"),
+                (transcriptURLSchemeHandler, TranscriptReaderProtocol.urlScheme),
                 (readerFileURLSchemeHandler, "reader-file"),
                 (ebookURLSchemeHandler, "ebook"),
             ] + schemeHandlers,
@@ -660,10 +665,7 @@ fileprivate struct ReaderWebViewInternal: View {
             textSelection: $textSelection,
             webViewPrewarmer: webViewPrewarmer
         )
-        .onAppear {
-        }
-        .onDisappear {
-        }
+        .environment(\.webViewMessageHandlers, readerWebViewMessageHandlersTransform(webViewMessageHandlers, scriptCaller))
         .task(id: sharedReaderFontAsset) { @MainActor in
             internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
         }
