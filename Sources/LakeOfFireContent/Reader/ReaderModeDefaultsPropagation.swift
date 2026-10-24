@@ -14,11 +14,31 @@ public extension ReaderContentLoader {
         fileprivate let providers: [ReaderContentAdditionalProvider]
 
         public init(primaryContent: any ReaderContentProtocol) {
-            primaryReference = ContentReference(content: primaryContent)
+            self.init(primaryReference: ContentReference(content: primaryContent))
+        }
+
+        /// Metadata has no selected primary to exclude, but shares the same
+        /// captured stores and provider registrations as Reader propagation.
+        public init() {
+            self.init(primaryReference: nil)
+        }
+
+        private init(primaryReference: ContentReference?) {
+            self.primaryReference = primaryReference
             historyStore = ReaderModePropagationStore(configuration: ReaderContentLoader.historyRealmConfiguration)
             feedStore = ReaderModePropagationStore(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
             providers = ReaderContentLoader.additionalContentProviders
         }
+    }
+
+    /// Reuse uncached selected-target discovery for authoritative metadata.
+    /// Capture the context before the caller suspends or changes accounts.
+    @RealmBackgroundActor
+    static func pageMetadataReferences(
+        for url: URL,
+        context: ReaderModePropagationContext
+    ) async throws -> [ContentReference] {
+        try await readerModePropagationReferences(for: url, context: context)
     }
 
     /// Updates related stored representations without excluding another class

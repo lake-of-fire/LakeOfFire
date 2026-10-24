@@ -930,10 +930,22 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let self else { return }
                 do {
                     guard let result = PageMetadataUpdatedMessage(fromMessage: message) else { return }
-                    guard urlsMatchWithoutHash(result.url, readerViewModel.state.pageURL) else { return }
+                    guard let url = result.url,
+                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                            claimedURL: url,
+                            frameMainDocumentURL: message.mainDocumentURL,
+                            currentPageURL: readerViewModel.state.pageURL,
+                            requiresMainFrame: true,
+                            isMainFrame: message.isMainFrame
+                          ), let admission = ReaderDocumentMutationAdmission.capture(
+                            targetURL: url,
+                            requiring: message.javaScriptBindingToken,
+                            scriptCaller: scriptCaller
+                          ) else { return }
                     try await readerViewModel.pageMetadataUpdated(
                         title: result.title,
-                        author: result.author
+                        author: result.author,
+                        admission: admission
                     )
                 } catch {
                     print(error)
