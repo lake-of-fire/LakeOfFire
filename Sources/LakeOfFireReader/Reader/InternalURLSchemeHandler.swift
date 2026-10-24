@@ -13,7 +13,12 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
     }
     
     public func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
-        guard let url = urlSchemeTask.request.url, url.host == "local" else {
+        guard let url = urlSchemeTask.request.url,
+              url.scheme?.lowercased() == "internal",
+              url.host?.lowercased() == "local",
+              url.port == nil,
+              url.user == nil,
+              url.password == nil else {
             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.notFound)
             return
         }
