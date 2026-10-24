@@ -409,20 +409,8 @@ public class BookLibraryViewModel: ObservableObject {
                     return
                 }
 
-                if let publications = parseData?.feed?.publications, !publications.isEmpty {
-                    let mapped = publications.map { publication -> Publication in
-                        let coverLink = publication.images.first(withRel: .cover) ?? publication.images.first(withRel: .opdsImage) ?? publication.images.first(withRel: .opdsImageThumbnail)
-                        let acquisitionLink = publication.links.first(withRel: .opdsAcquisition)
-                        let summary = publication.metadata.description ?? publication.metadata.subtitle
-                        return Publication(
-                            title: publication.metadata.title,
-                            author: publication.metadata.authors.map(\.name).joined(separator: ", "),
-                            publicationDate: publication.metadata.published,
-                            coverURL: coverLink?.url(relativeTo: url.domainURL),
-                            downloadURL: acquisitionLink?.url(relativeTo: url.domainURL),
-                            summary: summary
-                        )
-                    }
+                if let parseData,
+                   let mapped = BookCatalogPublicationMapper.publications(in: parseData) {
                     continuation.resume(returning: (mapped, nil))
                     return
                 }
