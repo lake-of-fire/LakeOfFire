@@ -1752,11 +1752,16 @@ public extension Feed {
         )
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            if !collectionObjects.isEmpty {
+            if !collectionObjects.isEmpty || deleteOrphans {
                 try await realm.asyncWritePreservingOwnership {
                     try checkFeedRefreshIsCurrent(
                         in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease
                     )
+                    let collectionOrphans: [FeedEntryCollection] = deleteOrphans
+                        ? Array(realm.objects(FeedEntryCollection.self)
+                            .where { $0.feedID == feedID && !$0.isDeleted && !$0.compoundKey.in(incomingCollectionKeys) })
+                        : []
+                    guard !collectionObjects.isEmpty || !collectionOrphans.isEmpty else { return }
                     // Collections commit before entries and the final GET metadata can settle.
                     try retireFeedFetchValidators(in: realm, feedID: feedID)
                     for collection in collectionObjects {
@@ -1765,13 +1770,9 @@ public extension Feed {
                         }
                     }
                     realm.add(collectionObjects, update: .modified)
-                    if deleteOrphans {
-                        let collectionOrphans = realm.objects(FeedEntryCollection.self)
-                            .where { $0.feedID == feedID && !$0.isDeleted && !$0.compoundKey.in(incomingCollectionKeys) }
-                        for orphan in collectionOrphans {
-                            orphan.isDeleted = true
-                            orphan.refreshChangeMetadata(explicitlyModified: true)
-                        }
+                    for orphan in collectionOrphans {
+                        orphan.isDeleted = true
+                        orphan.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }

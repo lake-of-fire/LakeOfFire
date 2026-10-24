@@ -1,3 +1,4 @@
+import BigSyncKit
 import Foundation
 import RealmSwift
 import RealmSwiftGaps
@@ -376,7 +377,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
     private enum RefreshFixtureFormat {
         case rss, atom
 
-        func data(entryURL: URL, title: String) -> Data {
+        func data(entryURL: URL, title: String, includesCollection: Bool = true) -> Data {
             switch self {
             case .rss:
                 return Data("""
@@ -386,13 +387,19 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
                     </item></channel></rss>
                     """.utf8)
             case .atom:
+                let collection = includesCollection
+                    ? "<manabi:collection scheme=\"https://example.com/series\" id=\"series\" title=\"Collection \(title)\"/>"
+                    : ""
+                let category = includesCollection
+                    ? "<category scheme=\"https://example.com/series\" term=\"series\"/>"
+                    : ""
                 return Data("""
                     <feed xmlns="http://www.w3.org/2005/Atom" xmlns:manabi="https://manabi.io/feed">
                     <title>Test</title><id>urn:test:feed</id><updated>2022-01-01T00:00:00Z</updated>
-                    <manabi:collection scheme="https://example.com/series" id="series" title="Collection \(title)"/>
+                    \(collection)
                     <entry><id>urn:test:entry</id><title>\(title)</title>
                     <updated>2022-01-01T00:00:00Z</updated><link href="\(entryURL.absoluteString)"/>
-                    <category scheme="https://example.com/series" term="series"/>
+                    \(category)
                     <content type="html">\(title) body</content></entry></feed>
                     """.utf8)
             }
@@ -500,6 +507,20 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
     }
 
     @MainActor
+    func testSupersededAtomRestoringNoCollectionsJournalsOrphanTombstone() async throws {
+        try await assertInterruptedRefresh(
+            .superseded, format: .atom, restoredAtomIncludesCollection: false, deleteOrphans: true
+        )
+    }
+
+    @MainActor
+    func testSupersededAtomRestoringNoCollectionsPreservesHistoryWhenDeletionDisabled() async throws {
+        try await assertInterruptedRefresh(
+            .superseded, format: .atom, restoredAtomIncludesCollection: false, deleteOrphans: false
+        )
+    }
+
+    @MainActor
     func testCancelledRefreshRetiresValidatorsAfterEntryCommit() async throws {
         try await assertInterruptedRefresh(.cancelled, format: .rss)
     }
@@ -511,7 +532,8 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
 
     @MainActor
     private func assertInterruptedRefresh(
-        _ interruption: InterruptedRefresh, format: RefreshFixtureFormat
+        _ interruption: InterruptedRefresh, format: RefreshFixtureFormat,
+        restoredAtomIncludesCollection: Bool = true, deleteOrphans: Bool = false
     ) async throws {
         let rssURL = URL(string: "https://example.com/\(UUID().uuidString)/feed.xml")!
         let entryURL = rssURL.deletingLastPathComponent().appendingPathComponent("entry")
@@ -540,6 +562,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
         let feed = Feed()
         feed.rssUrl = rssURL
+        feed.deleteOrphans = deleteOrphans
         feed.lastFetchedETag = "\"A\""
         feed.lastFetchedModifiedAt = Date(timeIntervalSince1970: 1577836800)
         feed.lastRefreshedEntriesAt = Date()
@@ -549,11 +572,34 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         cached.title = "A"
         cached.html = "A body"
         cached.updateCompoundKey()
-        try await realm.asyncWrite { realm.add(feed); realm.add(cached) }
+        let unrelatedFeed = Feed()
+        unrelatedFeed.rssUrl = rssURL.appendingPathComponent("other-feed")
+        let unrelatedCollection = FeedEntryCollection()
+        unrelatedCollection.feedID = unrelatedFeed.id
+        unrelatedCollection.scheme = "https://example.com/series"
+        unrelatedCollection.term = "series"
+        unrelatedCollection.title = "Unrelated collection"
+        unrelatedCollection.updateCompoundKey()
+        let unrelatedModifiedAt = Date(timeIntervalSince1970: 1500000000)
+        try await realm.asyncWrite {
+            realm.add(feed)
+            realm.add(cached)
+            if !restoredAtomIncludesCollection {
+                realm.add(unrelatedFeed)
+                realm.add(unrelatedCollection)
+                unrelatedCollection.refreshChangeMetadata(explicitlyModified: true, at: unrelatedModifiedAt)
+            }
+        }
+        let unrelatedGeneration = pendingMutation(for: unrelatedCollection, in: realm)?.generation
+        let collectionKey = FeedEntryCollection.makePrimaryKey(
+            feedID: feed.id, scheme: "https://example.com/series", term: "series"
+        )
         // Keep a same-actor snapshot to exercise a caller that captured A before the partial write.
         let staleFeed = feed.freeze()
         let scenario = RefreshHTTPScenario(
-            originalData: format.data(entryURL: entryURL, title: "A"),
+            originalData: format.data(
+                entryURL: entryURL, title: "A", includesCollection: restoredAtomIncludesCollection
+            ),
             changedData: format.data(entryURL: entryURL, title: "B")
         )
         FeedURLProtocol.requestHandler = { scenario.respond(to: $0) }
@@ -572,6 +618,8 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         ]
         let first = Task { @MainActor in try await feed.fetch(realmConfiguration: configuration) }
         var replacement: Task<Void, Error>?
+        var initialCollectionModifiedAt: Date?
+        var initialCollectionGeneration: String?
         do {
             guard await XCTWaiter.fulfillment(of: [gate.registered], timeout: 2) == .completed else {
                 throw RefreshFixtureError.registrationTimedOut
@@ -582,7 +630,13 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             XCTAssertNil(feed.lastFetchedModifiedAt)
             XCTAssertNil(feed.lastRefreshedEntriesAt)
             if case .atom = format {
-                XCTAssertEqual(realm.objects(FeedEntryCollection.self).first?.title, "Collection B")
+                let collection = try XCTUnwrap(
+                    realm.object(ofType: FeedEntryCollection.self, forPrimaryKey: collectionKey)
+                )
+                XCTAssertEqual(collection.title, "Collection B")
+                XCTAssertFalse(collection.isDeleted)
+                initialCollectionModifiedAt = collection.modifiedAt
+                initialCollectionGeneration = pendingMutation(for: collection, in: realm)?.generation
             }
 
             scenario.restoreOriginalRepresentation()
@@ -623,7 +677,44 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             XCTAssertEqual(feed.lastFetchedModifiedAt, Date(timeIntervalSince1970: 1577836800))
             XCTAssertNotNil(feed.lastRefreshedEntriesAt)
             if case .atom = format {
-                XCTAssertEqual(realm.objects(FeedEntryCollection.self).first?.title, "Collection A")
+                let collection = try XCTUnwrap(
+                    realm.object(ofType: FeedEntryCollection.self, forPrimaryKey: collectionKey),
+                    "Collection removal must retain a synchronized tombstone"
+                )
+                if restoredAtomIncludesCollection {
+                    XCTAssertEqual(collection.title, "Collection A")
+                } else {
+                    XCTAssertEqual(collection.title, "Collection B")
+                    XCTAssertEqual(collection.isDeleted, deleteOrphans)
+                    XCTAssertEqual(
+                        realm.objects(FeedEntryCollection.self)
+                            .where { $0.feedID == feed.id && !$0.isDeleted }.count,
+                        deleteOrphans ? 0 : 1
+                    )
+                    XCTAssertNil(cached.feedEntryCollectionKey)
+                    XCTAssertNil(cached.feedEntryCollectionTitle)
+                    if deleteOrphans {
+                        let deletion = try XCTUnwrap(pendingMutation(for: collection, in: realm))
+                        XCTAssertFalse(deletion.generation.isEmpty)
+                        XCTAssertNotEqual(deletion.generation, initialCollectionGeneration)
+                        XCTAssertEqual(deletion.changedAt, collection.modifiedAt)
+                        XCTAssertEqual(deletion.changedAt, collection.explicitlyModifiedAt)
+                    } else {
+                        XCTAssertEqual(collection.modifiedAt, initialCollectionModifiedAt)
+                        XCTAssertEqual(
+                            pendingMutation(for: collection, in: realm)?.generation,
+                            initialCollectionGeneration
+                        )
+                    }
+                    XCTAssertFalse(unrelatedCollection.isDeleted)
+                    XCTAssertEqual(unrelatedCollection.title, "Unrelated collection")
+                    XCTAssertEqual(unrelatedCollection.modifiedAt, unrelatedModifiedAt)
+                    XCTAssertNotNil(unrelatedGeneration)
+                    XCTAssertEqual(
+                        pendingMutation(for: unrelatedCollection, in: realm)?.generation,
+                        unrelatedGeneration
+                    )
+                }
             }
             let recoveryRequests = Array(scenario.requests.dropFirst(2))
             XCTAssertEqual(
@@ -643,6 +734,32 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             let requestCount = scenario.requests.count
             try await feed.fetch(realmConfiguration: configuration)
             XCTAssertEqual(Array(scenario.requests.dropFirst(requestCount)).map(\.method), ["HEAD"])
+            if !restoredAtomIncludesCollection {
+                let collection = try XCTUnwrap(
+                    realm.object(ofType: FeedEntryCollection.self, forPrimaryKey: collectionKey)
+                )
+                let settledModifiedAt = collection.modifiedAt
+                let settledExplicitlyModifiedAt = collection.explicitlyModifiedAt
+                let settledGeneration = pendingMutation(for: collection, in: realm)?.generation
+                // Force a full-body retry so collection persistence sees the empty set again.
+                try await realm.asyncWrite {
+                    feed.lastFetchedETag = nil
+                    feed.lastFetchedModifiedAt = nil
+                }
+                let retryRequestCount = scenario.requests.count
+                try await feed.fetch(realmConfiguration: configuration)
+                await realm.asyncRefresh()
+                XCTAssertEqual(
+                    Array(scenario.requests.dropFirst(retryRequestCount)).map(\.method), ["HEAD", "GET"]
+                )
+                XCTAssertEqual(collection.isDeleted, deleteOrphans)
+                XCTAssertEqual(collection.modifiedAt, settledModifiedAt)
+                XCTAssertEqual(collection.explicitlyModifiedAt, settledExplicitlyModifiedAt)
+                XCTAssertEqual(pendingMutation(for: collection, in: realm)?.generation, settledGeneration)
+                XCTAssertFalse(unrelatedCollection.isDeleted)
+                XCTAssertEqual(unrelatedCollection.modifiedAt, unrelatedModifiedAt)
+                XCTAssertEqual(pendingMutation(for: unrelatedCollection, in: realm)?.generation, unrelatedGeneration)
+            }
         } catch {
             first.cancel()
             replacement?.cancel()
@@ -653,6 +770,15 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             throw error
         }
         await ReaderContentLoader.resetTransientCachesForTesting()
+    }
+
+    private func pendingMutation(for object: Object, in realm: Realm) -> BigSyncPendingMutation? {
+        let primaryKey = object.objectSchema.primaryKeyProperty!.name
+        let objectIdentifier = String(describing: object[primaryKey]!)
+        return realm.object(
+            ofType: BigSyncPendingMutation.self,
+            forPrimaryKey: object.objectSchema.className + "." + objectIdentifier
+        )
     }
 
     @MainActor
