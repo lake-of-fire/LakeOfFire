@@ -33,6 +33,7 @@ public class HistoryRecord: Bookmark {
 
     @MainActor
     public override func delete() async throws {
+        guard !isInvalidated else { return }
         let historyURL = url
         guard let contentReference = ReaderContentLoader.ContentReference(content: self) else {
             return
@@ -41,7 +42,7 @@ public class HistoryRecord: Bookmark {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(
                 for: contentReference.realmConfiguration
             )
-            try await realm.asyncWrite {
+            try await realm.asyncWritePreservingOwnership {
                 HistoryRecord.markOpenedRecordsDeleted(matching: historyURL, in: realm)
             }
             ReaderContentLoader.invalidateCachedContent(for: historyURL)
@@ -129,39 +130,48 @@ public extension HistoryRecord {
 
     @RealmBackgroundActor
     func refreshDemotedStatus(skipPreviouslyDemoted: Bool = true) async throws {
-        guard isDemoted != false || !skipPreviouslyDemoted else {
-            return
-        }
+        guard !isInvalidated else { return }
         guard let realm else {
             print("Cannot refresh demoted status: no realm")
             return
         }
-        let demoted = try await { @RealmBackgroundActor in
-            if isGoogleSearchURL(url) {
-                return true
-            }
-            if isReaderModeByDefault || isReaderModeAvailable {
-                return false
-            }
-            if rssContainsFullContent {
-                return false
-            }
-            if isFromClipboard || isPhysicalMedia {
-                return false
-            }
-            
-            if let bookmark = Bookmark.get(forURL: url, realm: realm), !bookmark.isDeleted {
-                return false
-            }
-            
-            return true
-        }()
-        if demoted != isDemoted {
-            try await realm.asyncWrite {
-                isDemoted = demoted
-                refreshChangeMetadata(explicitlyModified: true)
-            }
+
+        // A different task may own an open transaction on this actor. Its
+        // tentative fields cannot establish a no-op for this queued refresh.
+        if !realm.isInWriteTransaction {
+            guard !isDeleted, isDemoted != false || !skipPreviouslyDemoted,
+                  currentDemotedStatus(in: realm) != isDemoted else { return }
         }
+
+        try await realm.asyncWritePreservingOwnership {
+            // Admission can retire this accessor or change the demotion inputs.
+            guard !isInvalidated, !isDeleted,
+                  isDemoted != false || !skipPreviouslyDemoted else { return }
+            let demoted = currentDemotedStatus(in: realm)
+            guard demoted != isDemoted else { return }
+            isDemoted = demoted
+            refreshChangeMetadata(explicitlyModified: true)
+        }
+    }
+
+    @RealmBackgroundActor
+    private func currentDemotedStatus(in realm: Realm) -> Bool {
+        if isGoogleSearchURL(url) {
+            return true
+        }
+        if isReaderModeByDefault || isReaderModeAvailable {
+            return false
+        }
+        if rssContainsFullContent {
+            return false
+        }
+        if isFromClipboard || isPhysicalMedia {
+            return false
+        }
+        if let bookmark = Bookmark.get(forURL: url, realm: realm), !bookmark.isDeleted {
+            return false
+        }
+        return true
     }
 }
 
@@ -261,3 +271,4 @@ fileprivate func isGoogleSearchURL(_ url: URL) -> Bool {
 //        }
 //    }
 //}
+
