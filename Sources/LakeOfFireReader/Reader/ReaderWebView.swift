@@ -79,9 +79,99 @@ private func currentWindowTopSafeAreaInset() -> CGFloat {
 }
 #endif
 
+/// One mounted reader's model identity survives SwiftUI's callback-wrapper
+/// reconstruction. A different model tuple gets a different owner, including
+/// a return to the same models after an intervening replacement.
+@MainActor
+final class ReaderNavigationCallbackOwner {
+    let readerContent: ReaderContent
+    let readerViewModel: ReaderViewModel
+    let readerModeViewModel: ReaderModeViewModel
+    let readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
+    let scriptCaller: WebViewScriptCaller
+
+    init(
+        readerContent: ReaderContent,
+        readerViewModel: ReaderViewModel,
+        readerModeViewModel: ReaderModeViewModel,
+        readerMediaPlayerViewModel: ReaderMediaPlayerViewModel,
+        scriptCaller: WebViewScriptCaller
+    ) {
+        self.readerContent = readerContent
+        self.readerViewModel = readerViewModel
+        self.readerModeViewModel = readerModeViewModel
+        self.readerMediaPlayerViewModel = readerMediaPlayerViewModel
+        self.scriptCaller = scriptCaller
+    }
+
+    func matches(_ other: ReaderNavigationCallbackOwner) -> Bool {
+        readerContent === other.readerContent
+            && readerViewModel === other.readerViewModel
+            && readerModeViewModel === other.readerModeViewModel
+            && readerMediaPlayerViewModel === other.readerMediaPlayerViewModel
+            && scriptCaller === other.scriptCaller
+    }
+}
+
+/// Carries the original callback's binding and load receipt. Navigation activity
+/// is separate from authority: ending its token does not retire a live document.
+@MainActor
+final class ReaderNavigationCallbackContext {
+    let owner: ReaderNavigationCallbackOwner
+    weak var taskManager: NavigationTaskManager?
+    let binding: WebViewScriptCaller.JavaScriptBindingToken?
+    let pageURL: URL
+    var documentIsCurrent: @MainActor () -> Bool = { true }
+    private(set) var selectionIsCurrent: (@MainActor () -> Bool)?
+    var navigationActivityToken: UUID?
+
+    var readerContent: ReaderContent { owner.readerContent }
+    var readerViewModel: ReaderViewModel { owner.readerViewModel }
+    var readerModeViewModel: ReaderModeViewModel { owner.readerModeViewModel }
+    var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel { owner.readerMediaPlayerViewModel }
+    var scriptCaller: WebViewScriptCaller { owner.scriptCaller }
+
+    init(owner: ReaderNavigationCallbackOwner, taskManager: NavigationTaskManager, state: WebViewState) {
+        self.owner = owner
+        self.taskManager = taskManager
+        binding = owner.scriptCaller.currentJavaScriptBindingToken
+        pageURL = state.pageURL
+    }
+
+    func captureSelection(using receipt: ReaderContentLoadReceipt) {
+        captureSelection(requiring: { receipt.isCurrent })
+    }
+
+    func captureSelection(requiring fence: @escaping @MainActor () -> Bool) {
+        guard selectionIsCurrent == nil else { return }
+        let content = readerContent.content
+        let pageURL = self.pageURL
+        selectionIsCurrent = { [weak readerContent = readerContent] in
+            guard let readerContent else { return false }
+            return fence() && readerContent.content === content
+                && readerContent.pageURL.matchesReaderURL(pageURL)
+        }
+    }
+
+    func owns(requiringSelection: Bool) -> Bool {
+        guard !Task.isCancelled, documentIsCurrent(), !Task.isCancelled,
+              taskManager?.callbackOwner === owner,
+              readerViewModel.scriptCaller === scriptCaller,
+              scriptCaller.currentJavaScriptBindingToken == binding,
+              binding != nil || !scriptCaller.canEvaluateJavaScript else { return false }
+        return !requiringSelection || selectionIsCurrent?() == true
+    }
+
+    func endNavigationActivity() {
+        let token = navigationActivityToken
+        navigationActivityToken = nil
+        if let token { readerContent.endMainFrameNavigationTask(token) }
+    }
+}
+
 // To avoid redraws...
 @MainActor
-fileprivate class ReaderWebViewHandler {
+final class ReaderWebViewHandler {
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
     var onNavigationFailed: ((WebViewState) -> Void)?
@@ -95,7 +185,7 @@ fileprivate class ReaderWebViewHandler {
     var scriptCaller: WebViewScriptCaller
 
     private let navigationTaskManager: NavigationTaskManager
-    private var activeMainFrameNavigationTokens: [String: UUID] = [:]
+    private let callbackOwner: ReaderNavigationCallbackOwner
 
     init(
         navigationTaskManager: NavigationTaskManager,
@@ -124,103 +214,134 @@ fileprivate class ReaderWebViewHandler {
         self.readerModeViewModel = readerModeViewModel
         self.readerMediaPlayerViewModel = readerMediaPlayerViewModel
         self.scriptCaller = scriptCaller
+        callbackOwner = navigationTaskManager.registerCallbackOwner(.init(
+            readerContent: readerContent, readerViewModel: readerViewModel,
+            readerModeViewModel: readerModeViewModel,
+            readerMediaPlayerViewModel: readerMediaPlayerViewModel,
+            scriptCaller: scriptCaller
+        ))
+        readerViewModel.bindSettingsOwner(navigationTaskManager)
+    }
+
+    private func makeCallbackContext(state: WebViewState) -> ReaderNavigationCallbackContext {
+        .init(owner: callbackOwner, taskManager: navigationTaskManager, state: state)
     }
 
     func handleNavigationCommitted(state: WebViewState) async throws {
-//        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
+        try await handleNavigationCommitted(state: state, context: makeCallbackContext(state: state))
+    }
 
-        try Task.checkCancellation()
-        try await readerContent.load(url: state.pageURL)
-        try Task.checkCancellation()
-        guard let content = readerContent.content else {
-            return
-        }
-        // TODO: Add onURLChanged or rename these view model methods to be more generic...
-        try await readerViewModel.onNavigationCommitted(content: content, newState: state)
-        try Task.checkCancellation()
-        try await readerModeViewModel.onNavigationCommitted(
-            readerContent: readerContent,
-            newState: state,
-            scriptCaller: scriptCaller
-        )
-        try Task.checkCancellation()
-        guard let content = readerContent.content,
-              content.url.matchesReaderURL(state.pageURL) else {
+    private func handleNavigationCommitted(state: WebViewState, context: ReaderNavigationCallbackContext) async throws {
+        guard context.owns(requiringSelection: false) else { throw CancellationError() }
+        let receipt = try await context.readerContent.loadWithSelectionReceipt(url: state.pageURL)
+        guard context.owns(requiringSelection: false), receipt.isCurrent,
+              context.readerContent.pageURL.matchesReaderURL(state.pageURL) else {
             throw CancellationError()
         }
-        try await readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
-        try Task.checkCancellation()
+        context.captureSelection(using: receipt)
+        guard let content = context.readerContent.content, !content.isInvalidated else { return }
+        let contentURL = content.url
+        let requireCurrentContent = { @MainActor in
+            guard context.owns(requiringSelection: true), !content.isInvalidated,
+                  content.url == contentURL, contentURL.matchesReaderURL(state.pageURL) else {
+                throw CancellationError()
+            }
+        }
+        try requireCurrentContent()
+        try await context.readerViewModel.onNavigationCommitted(content: content, newState: state)
+        try requireCurrentContent()
+        try await context.readerModeViewModel.onNavigationCommitted(
+            readerContent: context.readerContent,
+            newState: state,
+            scriptCaller: context.scriptCaller
+        )
+        try requireCurrentContent()
+        try await context.readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
+        try requireCurrentContent()
     }
 
     func handleNavigationFinished(state: WebViewState) async {
-        guard !Task.isCancelled else { return }
-        await readerModeViewModel.onNavigationFinished(
+        let context = makeCallbackContext(state: state)
+        context.captureSelection(requiring: readerContent.makeSelectionCommitFence(
+            requiring: readerContent.currentSelectionID
+        ))
+        await handleNavigationFinished(state: state, context: context)
+    }
+
+    private func handleNavigationFinished(state: WebViewState, context: ReaderNavigationCallbackContext) async {
+        let isCurrent = { @MainActor in context.owns(requiringSelection: true) }
+        guard context.pageURL.matchesReaderURL(state.pageURL), isCurrent() else { return }
+        await context.readerModeViewModel.onNavigationFinished(
             newState: state,
-            scriptCaller: scriptCaller
+            scriptCaller: context.scriptCaller,
+            documentIsCurrent: isCurrent
         )
-        guard !Task.isCancelled,
-              let content = readerContent.content,
-              content.url.matchesReaderURL(state.pageURL) else { return }
-        readerViewModel.onNavigationFinished(content: content, newState: state) { _ in
-            // no external callback here
-        }
+        guard isCurrent(), let content = context.readerContent.content,
+              !content.isInvalidated, content.url.matchesReaderURL(state.pageURL) else { return }
+        context.readerViewModel.onNavigationFinished(
+            content: content, newState: state, documentIsCurrent: isCurrent
+        )
     }
 
     func handleURLChanged(state: WebViewState) async throws {
-        try await handleNavigationCommitted(state: state)
-        try Task.checkCancellation()
-        await handleNavigationFinished(state: state)
-        try Task.checkCancellation()
+        try await handleURLChanged(state: state, context: makeCallbackContext(state: state))
     }
 
-    private func endAllMainFrameNavigationTasks() {
-        let tokens = Array(activeMainFrameNavigationTokens.values)
-        activeMainFrameNavigationTokens.removeAll()
-        for token in tokens {
-            readerContent.endMainFrameNavigationTask(token)
-        }
+    private func handleURLChanged(state: WebViewState, context: ReaderNavigationCallbackContext) async throws {
+        try await handleNavigationCommitted(state: state, context: context)
+        guard context.owns(requiringSelection: true) else { throw CancellationError() }
+        await handleNavigationFinished(state: state, context: context)
+        guard context.owns(requiringSelection: true) else { throw CancellationError() }
     }
 
     func onNavigationCommitted(state: WebViewState) {
-        endAllMainFrameNavigationTasks()
-        let navigationKey = state.pageURL.absoluteString
-        let navigationToken = readerContent.beginMainFrameNavigationTask(to: state.pageURL)
-        activeMainFrameNavigationTokens[navigationKey] = navigationToken
+        guard navigationTaskManager.callbackOwner === callbackOwner else { return }
+        let context = makeCallbackContext(state: state)
+        let previousContext = navigationTaskManager.committedCallbackContext
+        navigationTaskManager.committedCallbackContext = context
+        previousContext?.endNavigationActivity()
+        guard navigationTaskManager.committedCallbackContext === context,
+              context.owns(requiringSelection: false) else { return }
+        context.navigationActivityToken = readerContent.beginMainFrameNavigationTask(to: state.pageURL)
+        guard navigationTaskManager.committedCallbackContext === context,
+              context.owns(requiringSelection: false) else {
+            context.endNavigationActivity()
+            return
+        }
         navigationTaskManager.startOnNavigationCommitted {
             do {
-                try await self.handleNavigationCommitted(state: state)
-                try Task.checkCancellation()
+                try await self.handleNavigationCommitted(state: state, context: context)
+                guard context.owns(requiringSelection: true) else { throw CancellationError() }
             } catch {
-                if self.activeMainFrameNavigationTokens[navigationKey] == navigationToken {
-                    self.activeMainFrameNavigationTokens.removeValue(forKey: navigationKey)
-                    self.readerContent.endMainFrameNavigationTask(navigationToken)
-                }
+                context.endNavigationActivity()
                 throw error
             }
             do {
                 try await self.onNavigationCommitted?(state)
+                guard context.owns(requiringSelection: true) else { throw CancellationError() }
             } catch is CancellationError {
-                if self.activeMainFrameNavigationTokens[navigationKey] == navigationToken {
-                    self.activeMainFrameNavigationTokens.removeValue(forKey: navigationKey)
-                    self.readerContent.endMainFrameNavigationTask(navigationToken)
-                }
+                context.endNavigationActivity()
                 throw CancellationError()
             } catch {
                 print("Error during public onNavigationCommitted: \(error)")
             }
         }
+        let documentFence = navigationTaskManager.makeDocumentCommitFence()
+        context.documentIsCurrent = { [weak navigationTaskManager, weak context] in
+            guard let navigationTaskManager, let context else { return false }
+            return navigationTaskManager.committedCallbackContext === context && documentFence()
+        }
     }
 
     func onNavigationFinished(state: WebViewState) {
-        let navigationKey = state.pageURL.absoluteString
-        let navigationToken = activeMainFrameNavigationTokens.removeValue(forKey: navigationKey)
-        navigationTaskManager.startOnNavigationFinished { @MainActor [weak self] in
-            guard let self else { return }
-            await self.handleNavigationFinished(state: state)
-            if let navigationToken {
-                self.readerContent.endMainFrameNavigationTask(navigationToken)
-            }
-            guard !Task.isCancelled else { return }
+        guard navigationTaskManager.callbackOwner === callbackOwner else { return }
+        guard let context = navigationTaskManager.committedCallbackContext,
+              context.pageURL.matchesReaderURL(state.pageURL) else { return }
+        navigationTaskManager.startOnNavigationFinished { @MainActor in
+            defer { context.endNavigationActivity() }
+            guard context.owns(requiringSelection: true) else { throw CancellationError() }
+            await self.handleNavigationFinished(state: state, context: context)
+            guard context.owns(requiringSelection: true) else { throw CancellationError() }
             self.onNavigationFinished?(state)
         }
     }
@@ -229,18 +350,25 @@ fileprivate class ReaderWebViewHandler {
         state: WebViewState,
         disposition: WebViewNavigationFailureDisposition
     ) {
-        let navigationKey = state.pageURL.absoluteString
-        let navigationToken = activeMainFrameNavigationTokens.removeValue(forKey: navigationKey)
+        guard navigationTaskManager.callbackOwner === callbackOwner else { return }
+        let context = navigationTaskManager.committedCallbackContext
+        let failedContext = context?.pageURL.matchesReaderURL(state.pageURL) == true ? context : nil
         let preservesCommittedDocument = disposition == .preservedCommittedDocument
+        let isCurrent = { @MainActor in
+            !Task.isCancelled
+                && self.navigationTaskManager.callbackOwner === self.callbackOwner
+                && self.navigationTaskManager.committedCallbackContext === (preservesCommittedDocument ? context : nil)
+        }
         navigationTaskManager.startOnNavigationFailed(
             preservingCommittedDocument: preservesCommittedDocument
         ) { @MainActor in
-            if let navigationToken {
-                self.readerContent.endMainFrameNavigationTask(navigationToken)
-            }
+            guard isCurrent() else { return }
+            failedContext?.endNavigationActivity()
+            guard isCurrent() else { return }
             if !preservesCommittedDocument {
                 self.readerModeViewModel.onNavigationFailed(newState: state)
             }
+            guard isCurrent() else { return }
             self.onNavigationFailed?(state)
         }
     }
@@ -249,20 +377,32 @@ fileprivate class ReaderWebViewHandler {
         state: WebViewState,
         reason: WebViewDocumentContextInvalidationReason
     ) {
+        guard navigationTaskManager.callbackOwner === callbackOwner else { return }
         navigationTaskManager.cancelNavigationWork()
-        endAllMainFrameNavigationTasks()
+        let isCurrent = { @MainActor in
+            self.navigationTaskManager.callbackOwner === self.callbackOwner
+                && self.navigationTaskManager.committedCallbackContext == nil
+        }
+        guard isCurrent() else { return }
         if reason == .webContentProcessTerminated {
             readerModeViewModel.onNavigationFailed(newState: state)
+            guard isCurrent() else { return }
             onNavigationFailed?(state)
         }
+        guard isCurrent() else { return }
         onDocumentContextInvalidated?(state, reason)
     }
 
     func onURLChanged(state: WebViewState) {
+        guard navigationTaskManager.callbackOwner === callbackOwner else { return }
+        let context = makeCallbackContext(state: state)
+        context.documentIsCurrent = navigationTaskManager.makeDocumentCommitFence()
         navigationTaskManager.startOnURLChanged { @MainActor in
-            try await self.handleURLChanged(state: state)
+            try await self.handleURLChanged(state: state, context: context)
+            guard context.owns(requiringSelection: true) else { throw CancellationError() }
             do {
                 try await self.onURLChanged?(state)
+                guard context.owns(requiringSelection: true) else { throw CancellationError() }
             } catch is CancellationError {
                 throw CancellationError()
             } catch {

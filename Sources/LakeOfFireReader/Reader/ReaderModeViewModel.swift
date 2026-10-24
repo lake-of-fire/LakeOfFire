@@ -1866,7 +1866,19 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         return sharedReaderFontUsesLocalScheme(for: pageURL)
     }
 
-    func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
+    func injectSharedFontIfNeeded(
+        scriptCaller: WebViewScriptCaller,
+        pageURL: URL,
+        documentIsCurrent: @escaping @MainActor () -> Bool = { true }
+    ) async {
+        let binding = scriptCaller.currentJavaScriptBindingToken
+        let isCurrent = { @MainActor in
+            !Task.isCancelled && documentIsCurrent()
+                && !Task.isCancelled
+                && scriptCaller.currentJavaScriptBindingToken == binding
+                && (binding != nil || !scriptCaller.canEvaluateJavaScript)
+        }
+        guard isCurrent() else { return }
         guard pageURL.absoluteString != "about:blank" else {
             logSharedReaderFontInjectionDecision(
                 mode: sharedReaderFontInjectionMode(for: pageURL),
@@ -2034,17 +2046,19 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 });
             })();
             """
+            guard isCurrent(), let binding else { return }
             try? await scriptCaller.evaluateJavaScript(
                 js,
                 arguments: ["stylesheetURLTemplate": stylesheetURLTemplate],
-                duplicateInMultiTargetFrames: true
+                duplicateInMultiTargetFrames: true,
+                requiring: binding
             )
             return
         }
 
-        guard let blobPayload = readerFontBlobPayloadCache.payload(
-            base64CSS: await resolveSharedReaderFontCSSBase64()
-        ) else {
+        let base64CSS = await resolveSharedReaderFontCSSBase64()
+        guard isCurrent() else { return }
+        guard let blobPayload = readerFontBlobPayloadCache.payload(base64CSS: base64CSS) else {
             logSharedReaderFontInjectionDecision(
                 mode: .blob,
                 pageURL: pageURL,
@@ -2217,13 +2231,15 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             });
         })();
         """
+        guard isCurrent(), let binding else { return }
         try? await scriptCaller.evaluateJavaScript(
             js,
             arguments: [
                 "fontCSSBase64": blobPayload.base64CSS,
                 "fontHash": blobPayload.identity,
             ],
-            duplicateInMultiTargetFrames: true
+            duplicateInMultiTargetFrames: true,
+            requiring: binding
         )
     }
 
@@ -4221,7 +4237,26 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller
     ) async {
-        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: newState.pageURL)
+        await onNavigationFinished(newState: newState, scriptCaller: scriptCaller,
+                                   documentIsCurrent: { true })
+    }
+
+    func onNavigationFinished(
+        newState: WebViewState,
+        scriptCaller: WebViewScriptCaller,
+        documentIsCurrent: @escaping @MainActor () -> Bool
+    ) async {
+        let binding = scriptCaller.currentJavaScriptBindingToken
+        let isCurrent = { @MainActor in
+            !Task.isCancelled && documentIsCurrent()
+                && !Task.isCancelled
+                && scriptCaller.currentJavaScriptBindingToken == binding
+                && (binding != nil || !scriptCaller.canEvaluateJavaScript)
+        }
+        guard isCurrent() else { return }
+        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: newState.pageURL,
+                                      documentIsCurrent: isCurrent)
+        guard isCurrent() else { return }
         if let trackedURL = pendingReaderModeURL {
             logTrace(.navFinished, url: trackedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         } else if loadTraceRecords[traceKey(for: newState.pageURL)] != nil {
@@ -4270,13 +4305,19 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         } else {
             readerModeLoading(false)
         }
-        if !newState.pageURL.isReaderURLLoaderURL {
+        guard isCurrent() else { return }
+        if !newState.pageURL.isReaderURLLoaderURL, let binding {
             do {
-                let isNextReaderMode = try await scriptCaller.evaluateJavaScript("return document.body?.dataset.isNextLoadInReaderMode === 'true'") as? Bool ?? false
+                let isNextReaderMode = try await scriptCaller.evaluateJavaScript(
+                    "return document.body?.dataset.isNextLoadInReaderMode === 'true'",
+                    requiring: binding
+                ) as? Bool ?? false
+                guard isCurrent() else { return }
                 if !isNextReaderMode {
                     readerModeLoading(false)
                 }
             } catch {
+                guard isCurrent() else { return }
                 readerModeLoading(false)
             }
         }

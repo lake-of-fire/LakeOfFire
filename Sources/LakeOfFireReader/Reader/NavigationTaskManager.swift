@@ -1,4 +1,5 @@
 import SwiftUI
+import LakeOfFireContent
 
 /// Owns the semantic commit/finish lifecycle for one mounted reader document.
 @MainActor
@@ -24,6 +25,51 @@ internal final class NavigationTaskManager: Identifiable {
     private var documentPhase: DocumentPhase = .idle
     private var pendingURLChangedOperation: NavigationOperation?
 
+    private(set) var callbackOwner: ReaderNavigationCallbackOwner?
+    var committedCallbackContext: ReaderNavigationCallbackContext?
+
+    func registerCallbackOwner(_ candidate: ReaderNavigationCallbackOwner) -> ReaderNavigationCallbackOwner {
+        if let callbackOwner, callbackOwner.matches(candidate) { return callbackOwner }
+        let hadOwner = callbackOwner != nil
+        callbackOwner = candidate
+        // Retire before cancellation/activity publication can reenter. An
+        // unchanged SwiftUI wrapper reconstruction never takes this path.
+        if hadOwner {
+            let generation = invalidateNavigationWork()
+            if callbackOwner === candidate, documentGeneration == generation {
+                documentPhase = .idle
+            }
+        }
+        return candidate
+    }
+
+    /// The environment's two-argument refresh function captures the mounted
+    /// selection at invocation. A stale peer cannot borrow the current row's
+    /// admission merely because its URL matches.
+    func makeSettingsCommitFence(
+        content: any ReaderContentProtocol,
+        readerViewModel: ReaderViewModel
+    ) -> @MainActor () -> Bool {
+        guard let owner = callbackOwner, owner.readerViewModel === readerViewModel,
+              owner.scriptCaller === readerViewModel.scriptCaller,
+              owner.readerContent.content === content else { return { false } }
+        let selection = owner.readerContent.makeSelectionCommitFence(
+            requiring: owner.readerContent.currentSelectionID
+        )
+        let generation = documentGeneration
+        return { [weak self] in
+            guard let self, callbackOwner === owner,
+                  documentGeneration == generation, selection(),
+                  owner.readerContent.content === content else { return false }
+            switch documentPhase {
+            case .idle, .awaitingFinish, .finishing, .settled:
+                return true
+            case .failed, .invalidated:
+                return false
+            }
+        }
+    }
+
     private func cancelOutstandingTasks() {
         onNavigationCommittedTask?.cancel()
         onNavigationFinishedTask?.cancel()
@@ -37,6 +83,22 @@ internal final class NavigationTaskManager: Identifiable {
 
     private func validateDocumentGeneration(_ generation: UInt64) throws {
         guard documentGeneration == generation else { throw CancellationError() }
+    }
+
+    /// Capture at the native callback, before its operation is queued. This
+    /// keeps later presentation work on the existing document lifetime even
+    /// after the callback's own Task has finished.
+    func makeDocumentCommitFence() -> @MainActor () -> Bool {
+        let generation = documentGeneration
+        return { [weak self] in
+            guard let self, documentGeneration == generation else { return false }
+            switch documentPhase {
+            case .awaitingFinish, .finishing, .settled:
+                return true
+            case .idle, .failed, .invalidated:
+                return false
+            }
+        }
     }
 
     private func logFailure(_ error: Error, stage: String) {
@@ -108,13 +170,15 @@ internal final class NavigationTaskManager: Identifiable {
         preservingCommittedDocument: Bool = false,
         task operation: @escaping @MainActor () async -> Void
     ) {
+        let generation: UInt64
         if preservingCommittedDocument {
+            generation = documentGeneration
             onNavigationFailedTask?.cancel()
             onNavigationFailedTask = nil
         } else {
-            cancelNavigationWork()
+            generation = invalidateNavigationWork()
         }
-        let generation = documentGeneration
+        guard documentGeneration == generation else { return }
         onNavigationFailedTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -130,11 +194,20 @@ internal final class NavigationTaskManager: Identifiable {
     }
 
     func cancelNavigationWork() {
+        _ = invalidateNavigationWork()
+    }
+
+    private func invalidateNavigationWork() -> UInt64 {
+        let retiredContext = committedCallbackContext
+        committedCallbackContext = nil
         documentGeneration &+= 1
+        let generation = documentGeneration
         urlChangedGeneration &+= 1
         documentPhase = .invalidated
         pendingURLChangedOperation = nil
         cancelOutstandingTasks()
+        retiredContext?.endNavigationActivity()
+        return generation
     }
 
     func startOnURLChanged(task operation: @escaping NavigationOperation) {
