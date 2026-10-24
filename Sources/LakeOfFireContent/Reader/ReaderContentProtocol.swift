@@ -335,6 +335,9 @@ public extension ReaderContentProtocol {
         let configuration = sourceRealm.configuration
         let key = compoundKey
         let contentType = type(of: self)
+        // ObjectKeyIdentifiable preserves the physical row, including frozen
+        // inputs; a same-key replacement can retain every persisted field.
+        let objectID = id
         let creationDate = createdAt
         let contentURL = url
         let admission = RealmBackgroundActor.shared.captureStorageAdmission(for: configuration)
@@ -351,6 +354,7 @@ public extension ReaderContentProtocol {
                 // managed accessor selected before the suspension.
                 guard let content = targetRealm.object(ofType: contentType, forPrimaryKey: key),
                       !content.isInvalidated,
+                      content.id == objectID,
                       content.createdAt == creationDate,
                       content.url == contentURL else { return }
                 block(targetRealm, content)

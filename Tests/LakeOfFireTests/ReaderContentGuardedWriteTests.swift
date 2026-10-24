@@ -326,6 +326,123 @@ final class ReaderContentGuardedWriteTests: XCTestCase {
     }
 
     @MainActor
+    func testQueuedWriteRejectsEqualMetadataPhysicalReplacement() async throws {
+        try await assertQueuedEqualMetadataReplacementIsRejected(frozen: false)
+    }
+
+    @MainActor
+    func testQueuedFrozenWriteRejectsEqualMetadataPhysicalReplacement() async throws {
+        try await assertQueuedEqualMetadataReplacementIsRejected(frozen: true)
+    }
+
+    @MainActor
+    private func assertQueuedEqualMetadataReplacementIsRejected(frozen: Bool) async throws {
+        let (realm, record) = try fixture()
+        let configuration = realm.configuration
+        let key = record.compoundKey
+        let url = record.url
+        let creationDate = record.createdAt
+        let originalID = record.id
+        let source = frozen ? record.freeze() : record
+        XCTAssertEqual(source.id, originalID)
+
+        try await Self.beginFixtureWrite(configuration)
+        let submitted = expectation(description: "original row write queued before equal-metadata replacement")
+        let task = queuedWrite(source, submitted: submitted) { _, content in
+            XCTFail("Equal key, creation date and URL must not authorize a different physical row")
+            content.title = "Stale caller edit"
+            content.refreshChangeMetadata(
+                explicitlyModified: true, at: Self.mutationDate.addingTimeInterval(1)
+            )
+        }
+        track(task, configuration: configuration)
+        await fulfillment(of: [submitted], timeout: 2)
+
+        let replacementState = try await { @RealmBackgroundActor in
+            let target = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            guard target.isInWriteTransaction else { throw FixtureError.missingHeldTransaction }
+            target.delete(try XCTUnwrap(target.object(ofType: HistoryRecord.self, forPrimaryKey: key)))
+            let replacement = HistoryRecord()
+            replacement.compoundKey = key
+            replacement.url = url
+            replacement.createdAt = creationDate
+            replacement.title = "Replacement"
+            replacement.author = "Replacement author"
+            target.add(replacement)
+            XCTAssertNotEqual(replacement.id, originalID)
+            replacement.refreshChangeMetadata(explicitlyModified: true, at: Self.mutationDate)
+            let state = try Self.mutationState(for: replacement, in: target)
+            try target.commitWrite()
+            return state
+        }()
+
+        try await task.value
+        await realm.asyncRefresh()
+        XCTAssertTrue(record.isInvalidated)
+        if frozen {
+            XCTAssertFalse(source.isInvalidated, "The frozen original remains readable after retirement")
+            XCTAssertEqual(source.id, originalID)
+            XCTAssertEqual(source.title, "Original")
+        }
+        let replacement = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+        XCTAssertNotEqual(replacement.id, originalID)
+        XCTAssertEqual(replacement.createdAt, creationDate)
+        XCTAssertEqual(replacement.url, url)
+        XCTAssertEqual(try Self.mutationState(for: replacement, in: realm), replacementState)
+        XCTAssertEqual(realm.objects(HistoryRecord.self).count, 1)
+        XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 1)
+    }
+
+    @MainActor
+    func testQueuedOriginalRowUsesFreshMetadataAndMayChangeItsURL() async throws {
+        let (realm, record) = try fixture()
+        let configuration = realm.configuration
+        let key = record.compoundKey
+        let originalID = record.id
+        let changedURL = record.url.appendingPathComponent("accepted-edit")
+        let finalDate = Self.mutationDate.addingTimeInterval(1)
+
+        try await Self.beginFixtureWrite(configuration)
+        let submitted = expectation(description: "original row write queued before metadata refresh")
+        let task = queuedWrite(record, submitted: submitted) { target, content in
+            XCTAssertTrue(target.isInWriteTransaction)
+            XCTAssertEqual(content.id, originalID)
+            XCTAssertEqual(content.title, "Current title")
+            XCTAssertEqual(content.author, "Current author")
+            content.url = changedURL
+            content.title = "Accepted edit"
+            content.refreshChangeMetadata(explicitlyModified: true, at: finalDate)
+        }
+        track(task, configuration: configuration)
+        await fulfillment(of: [submitted], timeout: 2)
+
+        let refreshedState = try await { @RealmBackgroundActor in
+            let target = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            guard target.isInWriteTransaction else { throw FixtureError.missingHeldTransaction }
+            let current = try XCTUnwrap(target.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+            XCTAssertEqual(current.id, originalID)
+            current.title = "Current title"
+            current.author = "Current author"
+            current.refreshChangeMetadata(explicitlyModified: true, at: Self.mutationDate)
+            let state = try Self.mutationState(for: current, in: target)
+            try target.commitWrite()
+            return state
+        }()
+
+        try await task.value
+        XCTAssertFalse(record.isInvalidated)
+        XCTAssertEqual(record.id, originalID)
+        XCTAssertEqual(record.compoundKey, key)
+        XCTAssertEqual(record.url, changedURL)
+        XCTAssertEqual(record.title, "Accepted edit")
+        XCTAssertEqual(record.author, "Current author")
+        let settled = try Self.mutationState(for: record, in: realm)
+        XCTAssertNotEqual(settled.generation, refreshedState.generation)
+        XCTAssertEqual(settled.changedAt, finalDate)
+        XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 1)
+    }
+
+    @MainActor
     func testQueuedWriteDoesNotFollowARetargetedURL() async throws {
         let (realm, record) = try fixture()
         let configuration = realm.configuration
