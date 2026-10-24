@@ -49,6 +49,19 @@ final class ReadabilityImagesUserScriptTests: XCTestCase {
         assertUnrelatedStyles(styles)
     }
 
+    func test_verticalImageWrapperWithText_preservesParagraphFlow() async throws {
+        let styles = try await runLoad(after: """
+            document.getElementById('wrapper').prepend('Caption text ');
+            document.body.dataset.mnbWritingDirection = 'vertical';
+            window.manabiUpdateReadabilityImageMargins();
+            """)
+        XCTAssertEqual(styles["verticalWrapper"], "false")
+        XCTAssertEqual(styles["borderRadius"], "6px")
+        XCTAssertEqual(styles["width"], "")
+        XCTAssertEqual(styles["maxWidth"], "")
+        assertUnrelatedStyles(styles)
+    }
+
     func test_lateLoadAfterContentResize_usesCurrentContentWidth() async throws {
         let styles = try await runLoad(after: "window.fixtureContentWidth = 400;")
         XCTAssertFalse(try XCTUnwrap(styles["width"]).isEmpty)

@@ -316,3 +316,34 @@ test('unrelated inserted text and controls do not request an image refresh', asy
     await f.settleMutations()
     assert.equal(f.timers.size, 0)
 })
+
+test('vertical presentation preserves a paragraph containing image-adjacent text', t => {
+    const f = fixture(t, { vertical: true, content: '<p id="wrapper">Caption text <img id="image"></p>' })
+    const wrapper = f.document.getElementById('wrapper')
+    assert.equal(wrapper.classList.contains('mnb-vertical-inline-image-wrapper'), false)
+    assert.equal(wrapper.textContent, 'Caption text ')
+    assert.equal(f.document.getElementById('image').style.borderRadius, '6px')
+})
+
+test('vertical presentation preserves text nested inside an image link', t => {
+    const f = fixture(t, { vertical: true, content: '<div id="wrapper"><a href="/photo">Open photograph <img id="image"></a></div>' })
+    assert.equal(f.document.getElementById('wrapper').classList.contains('mnb-vertical-inline-image-wrapper'), false)
+})
+
+test('whitespace, comments, and image alt text retain image-only flow', t => {
+    const f = fixture(t, { vertical: true, content: '<p id="wrapper"> \n<!-- photograph --> <a> \t<img id="image" alt="A photo description"> </a>\n</p>' })
+    assert.equal(f.document.getElementById('wrapper').classList.contains('mnb-vertical-inline-image-wrapper'), true)
+    assert.equal(f.document.getElementById('image').alt, 'A photo description')
+})
+
+test('the next image refresh retires image-only flow after text is inserted', t => {
+    const f = fixture(t, { vertical: true })
+    const wrapper = f.document.getElementById('wrapper')
+    assert.equal(wrapper.classList.contains('mnb-vertical-inline-image-wrapper'), true)
+    wrapper.prepend('Caption ')
+    f.window.manabiUpdateReadabilityImageMargins()
+    assert.equal(wrapper.classList.contains('mnb-vertical-inline-image-wrapper'), false)
+    wrapper.firstChild.remove()
+    f.window.manabiUpdateReadabilityImageMargins()
+    assert.equal(wrapper.classList.contains('mnb-vertical-inline-image-wrapper'), true)
+})

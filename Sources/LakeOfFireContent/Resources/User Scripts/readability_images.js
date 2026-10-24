@@ -101,6 +101,9 @@
         if (wrapper.children.length !== 1) {
             return null;
         }
+        if (wrapper.textContent.trim()) {
+            return null
+        }
         if (wrapper.firstElementChild === chainNode) {
             return wrapper;
         }
