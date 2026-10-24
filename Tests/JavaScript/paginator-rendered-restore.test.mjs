@@ -60,9 +60,10 @@ const { Paginator } = await import('../../Sources/LakeOfFireReader/Resources/fol
 // Full production rendering/navigation code executes with deterministic DOM
 // geometry and browser host doubles. This suite does not verify CSS layout or
 // WKWebView behavior. Supply JSDOM_MODULE when jsdom is installed externally.
-const fixture = (sectionCount = 2) => {
+const fixture = (sectionCount = 2, beforeOpen = () => {}) => {
     const renderer = new Paginator()
     document.body.append(renderer)
+    beforeOpen(renderer)
     renderer.open({ dir: 'ltr', sections: Array.from({ length: sectionCount }, (_, index) => ({
         id: `section-${index}`, load: async () => `fixture:${index}`, unload() {},
     })) }, false)
@@ -259,6 +260,111 @@ test('actual paginator queued replacement grants only the final accepted command
         cleanup(renderer)
         await Promise.allSettled([first, replaced, current].filter(Boolean).map(operation => bounded(operation)))
     }
+})
+
+// DOM dispatch discards an async event listener's returned promise. Capture the
+// installed production callback so rejection assertions can await it without
+// making the expected load failure an unhandled test-runner error.
+const wheelFixture = sectionCount => {
+    let onWheel
+    const renderer = fixture(sectionCount, renderer => {
+        const addEventListener = renderer.addEventListener.bind(renderer)
+        renderer.addEventListener = (name, callback, options) => {
+            if (name === 'wheel') onWheel = callback
+            return addEventListener(name, callback, options)
+        }
+    })
+    delete renderer.addEventListener
+    assert.equal(typeof onWheel, 'function')
+    return {
+        renderer,
+        wheel: deltaX => onWheel(new window.WheelEvent('wheel', { deltaX, deltaY: 0, cancelable: true })),
+    }
+}
+
+for (const direction of ['forward', 'backward']) {
+    test(`installed wheel callback permits ${direction} retry after a rejected chapter load`, async () => {
+        const { renderer, wheel } = wheelFixture(2)
+        const gate = deferred(), entered = deferred()
+        const failure = new Error(`controlled ${direction} source failure`)
+        const starts = [], accepted = []
+        const targetIndex = direction === 'forward' ? 1 : 0
+        const initialIndex = 1 - targetIndex
+        const delta = direction === 'forward' ? -20 : 20
+        let recovered = false, firstOutcome
+        renderer.sections[targetIndex].load = async () => {
+            if (!recovered) {
+                entered.resolve()
+                await gate.promise
+                throw failure
+            }
+            return `fixture:${targetIndex}`
+        }
+        renderer.addEventListener('foregroundPageTurnActivity', event => starts.push(event.detail))
+        renderer.addEventListener('foregroundNavigationAccepted', event => accepted.push(event.detail))
+        try {
+            await bounded(renderer.goTo({ index: initialIndex, anchor: direction === 'forward' ? 1 : 0 }))
+            firstOutcome = wheel(delta).then(value => ({ value }), error => ({ error }))
+            await bounded(entered.promise)
+            // A pending load retains its cooldown even after a reset-sized event.
+            await wheel(0)
+            await wheel(delta)
+            assert.equal(starts.length, 1)
+            assert.equal(accepted.length, 0)
+
+            gate.resolve()
+            assert.equal((await bounded(firstOutcome)).error, failure, 'The original rejection must remain observable')
+            assert.equal(accepted.length, 0, 'A failed turn grants no navigation receipt')
+            recovered = true
+            await wheel(0)
+            await wheel(delta)
+            assert.equal(starts.length, 1, 'Failure cleanup must preserve the post-settlement cooldown')
+            await new Promise(resolve => setTimeout(resolve, 120))
+            await wheel(delta)
+            assert.equal(starts.length, 1, 'Cooldown expiry alone must not bypass the reset threshold')
+            await wheel(0)
+            await bounded(wheel(delta))
+
+            assert.equal(starts.length, 2, 'A fresh gesture must reach the recovered source')
+            assert.equal(accepted.length, 1)
+            assert.equal(accepted[0].activity, starts[1].activity)
+            assert.equal(accepted[0].receipt.moved, true)
+            assert.equal(renderer.isNavigationReceiptCurrent(accepted[0].receipt), true)
+            assert.equal(renderer.getContents()[0].index, targetIndex)
+        } finally {
+            gate.resolve()
+            cleanup(renderer)
+            if (firstOutcome) await bounded(firstOutcome)
+        }
+    })
+}
+
+test('installed wheel callback preserves successful boundary cooldown and reset behavior', async () => {
+    const { renderer, wheel } = wheelFixture(1)
+    const starts = [], accepted = []
+    renderer.addEventListener('foregroundPageTurnActivity', event => starts.push(event.detail))
+    renderer.addEventListener('foregroundNavigationAccepted', event => accepted.push(event.detail))
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await bounded(wheel(20))
+        assert.equal(starts.length, 1)
+        assert.equal(accepted.length, 1)
+        assert.equal(accepted[0].receipt.moved, false, 'A completed start-boundary turn remains an accepted no-op')
+        await wheel(0)
+        await wheel(-20)
+        assert.equal(starts.length, 1)
+        await new Promise(resolve => setTimeout(resolve, 120))
+        await wheel(-20)
+        assert.equal(starts.length, 1)
+        await wheel(0)
+        await bounded(wheel(-20))
+        assert.equal(starts.length, 2)
+        assert.equal(accepted.length, 2)
+        assert.equal(accepted[1].activity, starts[1].activity)
+        assert.equal(accepted[1].receipt.moved, true)
+        assert.equal(renderer.isNavigationReceiptCurrent(accepted[1].receipt), true)
+        assert.equal((await renderer.pageMetrics()).page, 2)
+    } finally { cleanup(renderer) }
 })
 
 test.after(() => dom.window.close())
