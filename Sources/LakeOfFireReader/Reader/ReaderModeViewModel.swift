@@ -1266,55 +1266,22 @@ private func propagateReaderModeDefaults(
     primaryKey: String,
     readabilityHTML: String,
     fallbackTitle: String?,
-    derivedTitle: String? = nil
+    derivedTitle: String? = nil,
+    permitsCommit: @escaping @Sendable () -> Bool
 ) async {
-    if url.isSnippetURL {
-        return
-    }
+    guard !url.isSnippetURL, permitsCommit(), !Task.isCancelled else { return }
     let storageReadabilityHTML = stripRuntimeReadabilityAssets(from: readabilityHTML)
     let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(storageReadabilityHTML) ?? fallbackTitle
     do {
-        try await propagateReaderModeDefaultsOnBackgroundActor(
+        try await ReaderContentLoader.propagateReaderModeDefaults(
             for: url,
-            primaryKey: primaryKey,
+            excludingPrimaryKey: primaryKey,
             readabilityHTML: storageReadabilityHTML,
-            resolvedTitle: resolvedTitle
+            resolvedTitle: resolvedTitle,
+            permitsCommit: permitsCommit
         )
     } catch {
-    }
-}
-
-@RealmBackgroundActor
-private func propagateReaderModeDefaultsOnBackgroundActor(
-    for url: URL,
-    primaryKey: String,
-    readabilityHTML: String,
-    resolvedTitle: String?
-) async throws {
-    let relatedRecords = try await ReaderContentLoader.loadAll(url: url)
-
-    let writableRecords = relatedRecords.filter { $0.compoundKey != primaryKey && $0.realm != nil }
-    guard !writableRecords.isEmpty else {
-        return
-    }
-
-    for record in writableRecords {
-        guard let realm = record.realm else { continue }
-        try await realm.asyncWritePreservingOwnership {
-            record.isReaderModeByDefault = true
-            record.isReaderModeAvailable = false
-            if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
-                if !url.isReaderFileURL && (record.content?.isEmpty ?? true) {
-                    record.html = readabilityHTML
-                }
-                if let resolvedTitle,
-                   record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    record.title = resolvedTitle
-                }
-                record.rssContainsFullContent = true
-            }
-            record.refreshChangeMetadata(explicitlyModified: true)
-        }
+        // Propagation is optional; never let its failure publish a retired render.
     }
 }
 
@@ -2962,6 +2929,9 @@ public class ReaderModeViewModel: ObservableObject {
         }
         if needsAsyncWrite {
             try await content.asyncWrite { _, content in
+                // Realm can begin this transaction after the page was replaced.
+                // The captured lifetime is safe to query off the main actor.
+                guard selectionIsCurrent() else { return }
                 content.isReaderModeByDefault = true
                 content.isReaderModeAvailable = false
                 content.isReaderModeOfferHidden = false
@@ -3087,7 +3057,8 @@ public class ReaderModeViewModel: ObservableObject {
                 primaryKey: primaryRecordCompoundKey,
                 readabilityHTML: readabilityContent,
                 fallbackTitle: titleForDisplay,
-                derivedTitle: derivedTitle
+                derivedTitle: derivedTitle,
+                permitsCommit: selectionIsCurrent
             )
             guard await ownsContent() else {
                 return
