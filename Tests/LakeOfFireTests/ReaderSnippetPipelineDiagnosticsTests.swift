@@ -120,7 +120,7 @@ final class ReaderSnippetPipelineDiagnosticsTests: XCTestCase {
         ))
     }
 
-    func testCopiedJapaneseSnippetRunsNativeProcessingDespiteCanonicalReadabilityMarkup() throws {
+    func testCopiedJapaneseSnippetRequiresProcessingDespiteCanonicalReadabilityMarkup() throws {
         let text = "学校で日本語を勉強します。"
         let url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "copied-japanese"))
         // Copying from Reader strips generated ruby before the pasteboard
