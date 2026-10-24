@@ -169,16 +169,22 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
 
     @MainActor
     open func delete() async throws {
+        guard !isInvalidated else { return }
         let url = url
         guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
         try await { @RealmBackgroundActor in
             guard let content = try await contentRef.resolveOnBackgroundActor() else { return }
-            //            await content.realm?.asyncRefresh()
-            try await content.realm?.asyncWrite {
-                //            for videoStatus in realm.objects(VideoS)
-                content.isDeleted = true
-                content.refreshChangeMetadata(explicitlyModified: true)
+            guard let realm = content.realm else { return }
+            let canCleanUp = try await realm.asyncWritePreservingOwnership {
+                guard !content.isInvalidated else { return false }
+                if !content.isDeleted {
+                    content.isDeleted = true
+                    content.refreshChangeMetadata(explicitlyModified: true)
+                }
+                return true
             }
+            guard canCleanUp else { return }
+            // A previous tombstone may still need to retry failed cleanup.
             try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(contentURL: url)
         }()
     }
@@ -341,3 +347,4 @@ public extension Bookmark {
         }
     }
 }
+
