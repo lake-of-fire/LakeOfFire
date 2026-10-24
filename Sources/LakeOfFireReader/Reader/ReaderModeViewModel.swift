@@ -1176,7 +1176,7 @@ private func locallyRetrievableReaderHTML(
 
 private func propagateReaderModeDefaults(
     for url: URL,
-    primaryKey: String,
+    context: ReaderContentLoader.ReaderModePropagationContext,
     readabilityHTML: String,
     fallbackTitle: String?,
     derivedTitle: String? = nil
@@ -1196,11 +1196,17 @@ private func propagateReaderModeDefaults(
     let storageReadabilityHTML = stripRuntimeReadabilityAssets(from: readabilityHTML)
     let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(storageReadabilityHTML) ?? fallbackTitle
     do {
-        try await propagateReaderModeDefaultsOnBackgroundActor(
+        let writesStartedAt = Date()
+        let updatedCount = try await ReaderContentLoader.propagateReaderModeDefaults(
             for: url,
-            primaryKey: primaryKey,
+            context: context,
             readabilityHTML: storageReadabilityHTML,
             resolvedTitle: resolvedTitle
+        )
+        debugPrint(
+            "# READERLOAD stage=readerMode.propagateDefaults.writes",
+            "updatedCount=\(updatedCount)",
+            "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(writesStartedAt)))s"
         )
     } catch {
         debugPrint(
@@ -1212,60 +1218,6 @@ private func propagateReaderModeDefaults(
     debugPrint(
         "# READERLOAD stage=readerMode.propagateDefaults.complete",
         "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(startedAt)))s"
-    )
-}
-
-@RealmBackgroundActor
-private func propagateReaderModeDefaultsOnBackgroundActor(
-    for url: URL,
-    primaryKey: String,
-    readabilityHTML: String,
-    resolvedTitle: String?
-) async throws {
-    let loadAllStartedAt = Date()
-    let relatedRecords = try await ReaderContentLoader.loadAll(url: url)
-    debugPrint(
-        "# READERLOAD stage=readerMode.propagateDefaults.loadAll",
-        "count=\(relatedRecords.count)",
-        "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(loadAllStartedAt)))s"
-    )
-
-    let writableRecords = relatedRecords.filter { $0.compoundKey != primaryKey && $0.realm != nil }
-    guard !writableRecords.isEmpty else {
-        debugPrint(
-            "# READERLOAD stage=readerMode.propagateDefaults.writes",
-            "updatedCount=0",
-            "elapsed=0.000s",
-            "reason=noSecondaryRecords"
-        )
-        return
-    }
-
-    var updatedCount = 0
-    let writesStartedAt = Date()
-    for record in writableRecords {
-        guard let realm = record.realm else { continue }
-        try await realm.asyncWrite {
-            record.isReaderModeByDefault = true
-            record.isReaderModeAvailable = false
-            if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
-                if !url.isReaderFileURL && (record.content?.isEmpty ?? true) {
-                    record.html = readabilityHTML
-                }
-                if let resolvedTitle,
-                   record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    record.title = resolvedTitle
-                }
-                record.rssContainsFullContent = true
-            }
-            record.refreshChangeMetadata(explicitlyModified: true)
-        }
-        updatedCount += 1
-    }
-    debugPrint(
-        "# READERLOAD stage=readerMode.propagateDefaults.writes",
-        "updatedCount=\(updatedCount)",
-        "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(writesStartedAt)))s"
     )
 }
 
@@ -3231,6 +3183,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             return
         }
         let url = content.url
+        let propagationContext = ReaderContentLoader.ReaderModePropagationContext(primaryContent: content)
         let renderBaseURL: URL
         if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" || url.isSnippetURL {
             renderBaseURL = url
@@ -3328,7 +3281,6 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         let snippetNeedsClipboardIndicator = content.needsClipboardIndicator
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
         let tracksReadingProgress = content.tracksReadingProgress
-        let primaryRecordCompoundKey = await MainActor.run { content.compoundKey }
         let defaultFontSize = defaultFontSize
         let frameIsMainFrame = frameInfo?.isMainFrame ?? true
 
@@ -3398,7 +3350,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             )
             await propagateReaderModeDefaults(
                 for: url,
-                primaryKey: primaryRecordCompoundKey,
+                context: propagationContext,
                 readabilityHTML: readabilityContent,
                 fallbackTitle: titleForDisplay,
                 derivedTitle: derivedTitle
