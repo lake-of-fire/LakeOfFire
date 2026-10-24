@@ -1315,3 +1315,98 @@ for (const source of [null, '']) {
         }
     })
 }
+
+
+test('review: source assignment failure cleans staged frames and leaves the displayed document', async () => {
+    const { layout, initialContents } = await displayedFixture('review-src-assignment', { paired: true })
+    const createElement = document.createElement
+    let destinationIframes = 0
+    document.createElement = tagName => {
+        const element = createElement(tagName)
+        if (tagName === 'iframe' && ++destinationIframes === 2) {
+            Object.defineProperty(element, 'src', {
+                set() { throw new Error('source assignment failed') },
+            })
+        }
+        return element
+    }
+    const navigation = trackNavigation(layout.goTo({ index: 2 }))
+    try {
+        await assert.rejects(navigation.promise, /source assignment failed/)
+        assert.equal(layout.index, 0)
+        assert.deepEqual(layout.getContents(), initialContents)
+        assert.deepEqual(layout.events, [])
+        assert.deepEqual(
+            layout.shadowRootForTesting.children,
+            initialContents.map(content => content.element),
+        )
+        for (const frame of pendingIframes.splice(0)) {
+            frame.finishLoading(fixedLayoutDocument('late after assignment failure'))
+        }
+        assert.deepEqual(layout.events, [])
+        assert.deepEqual(layout.getContents(), initialContents)
+    } finally {
+        document.createElement = createElement
+        await finishFixture(layout, navigation)
+    }
+})
+
+test('review: rejected section acquisition preserves a paired spread before any frame exists', async () => {
+    const { layout, initialContents } = await displayedFixture('review-source-failure', { paired: true })
+    let releaseSibling
+    const siblingSource = new Promise(resolve => { releaseSibling = resolve })
+    layout.book.sections[2].load = async () => { throw new Error('section acquisition failed') }
+    layout.book.sections[3].load = () => siblingSource
+    const navigation = trackNavigation(layout.goTo({ index: 2 }))
+    try {
+        await assert.rejects(navigation.promise, /section acquisition failed/)
+        assert.deepEqual(layout.getContents(), initialContents)
+        assert.equal(layout.index, 0)
+        assert.deepEqual(layout.events, [])
+        assert.equal(layout.shadowRootForTesting.children.length, 2)
+        releaseSibling('late-sibling-source.xhtml')
+        await nextTurn()
+        assert.equal(pendingIframes.some(frame => frame.source === 'late-sibling-source.xhtml'), false)
+        assert.deepEqual(layout.getContents(), initialContents)
+    } finally {
+        releaseSibling('late-sibling-source.xhtml')
+        await finishFixture(layout, navigation)
+    }
+})
+
+test('review: retry owns both frames while an older failed acquisition still has a pending sibling', async () => {
+    const { layout, sources, initialContents } = await displayedFixture('review-source-retry', { paired: true })
+    let releaseOldSibling
+    const oldSibling = new Promise(resolve => { releaseOldSibling = resolve })
+    let leftCalls = 0
+    let rightCalls = 0
+    layout.book.sections[2].load = async () => {
+        if (++leftCalls === 1) throw new Error('first acquisition failed')
+        return sources[2]
+    }
+    layout.book.sections[3].load = () => ++rightCalls === 1 ? oldSibling : Promise.resolve(sources[3])
+    const failed = trackNavigation(layout.goTo({ index: 2 }))
+    let retry
+    try {
+        await assert.rejects(failed.promise, /first acquisition failed/)
+        retry = trackNavigation(layout.goTo({ index: 2 }))
+        const left = await nextPendingIframe(sources[2])
+        const right = await nextPendingIframe(sources[3])
+        releaseOldSibling('obsolete-acquisition.xhtml')
+        await nextTurn()
+        assert.deepEqual(layout.getContents(), initialContents)
+        assert.equal(pendingIframes.some(frame => frame.source === 'obsolete-acquisition.xhtml'), false)
+        left.finishLoading(fixedLayoutDocument('retry left'))
+        right.finishLoading(fixedLayoutDocument('retry right'))
+        await retry.promise
+        assert.equal(layout.index, 2)
+        assert.deepEqual(layout.getContents().map(content => content.iframe), [left, right])
+        assert.deepEqual(layout.events.map(event => [event.type, event.detail.index]), [
+            ['load', 2], ['load', 3], ['relocate', 2],
+        ])
+        assert.equal(layout.shadowRootForTesting.children.length, 2)
+    } finally {
+        releaseOldSibling('obsolete-acquisition.xhtml')
+        await finishFixture(layout, failed, retry)
+    }
+})
