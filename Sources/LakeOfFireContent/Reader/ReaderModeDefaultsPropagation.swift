@@ -5,20 +5,52 @@ import RealmSwift
 import RealmSwiftGaps
 
 public extension ReaderContentLoader {
-    /// Capture on the primary content's owner before suspending. This freezes
-    /// discovery stores and provider registrations, not the reader selection.
+    /// Capture on the primary content's owner before suspending. The caller
+    /// captures its selection fence before resolving or preparing that content.
+    /// Legacy propagation callers may omit the fence; Reader-mode rendering
+    /// supplies the originating ReaderContent selection's withdraw-only permit.
     struct ReaderModePropagationContext: @unchecked Sendable {
         fileprivate let primaryReference: ContentReference?
         fileprivate let historyStore: ReaderModePropagationStore
         fileprivate let feedStore: ReaderModePropagationStore
         fileprivate let providers: [ReaderContentAdditionalProvider]
+        fileprivate let permitsCommit: @Sendable () -> Bool
 
-        public init(primaryContent: any ReaderContentProtocol) {
+        public init(
+            primaryContent: any ReaderContentProtocol,
+            permitsCommit: @escaping @Sendable () -> Bool = { true }
+        ) {
             primaryReference = ContentReference(content: primaryContent)
             historyStore = ReaderModePropagationStore(configuration: ReaderContentLoader.historyRealmConfiguration)
             feedStore = ReaderModePropagationStore(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
             providers = ReaderContentLoader.additionalContentProviders
+            self.permitsCommit = permitsCommit
         }
+
+        fileprivate func validateOrigin() throws {
+            try Task.checkCancellation()
+            guard permitsCommit() else { throw CancellationError() }
+            try primaryReference?.validateStorage()
+        }
+    }
+
+    /// Persists only the captured primary representation. Unmanaged content has
+    /// no durable target. This does not use the generic content writer or TSR
+    /// transfer; the existing captured identity is resolved at owned admission.
+    @RealmBackgroundActor
+    @discardableResult
+    static func persistPrimaryReaderModeDefaults(
+        context: ReaderModePropagationContext,
+        readabilityHTML: String?,
+        resolvedTitle: String?
+    ) async throws -> Bool {
+        try context.validateOrigin()
+        guard let reference = context.primaryReference else { return false }
+        return try await updateReaderModeDefaults(
+            reference: reference, context: context, for: reference.contentURL,
+            readabilityHTML: readabilityHTML, resolvedTitle: resolvedTitle,
+            isPrimary: true
+        )
     }
 
     /// Updates related stored representations without excluding another class
@@ -33,44 +65,17 @@ public extension ReaderContentLoader {
         readabilityHTML: String,
         resolvedTitle: String?
     ) async throws -> Int {
-        try Task.checkCancellation()
+        try context.validateOrigin()
         guard !url.isSnippetURL else { return 0 }
-        try context.primaryReference?.validateStorage()
         let references = try await readerModePropagationReferences(for: url, context: context)
         var updatedCount = 0
 
         for reference in references {
-            try Task.checkCancellation()
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                for: reference.realmConfiguration,
-                storageAdmission: reference.storageAdmission
+            let didChange = try await updateReaderModeDefaults(
+                reference: reference, context: context, for: url,
+                readabilityHTML: readabilityHTML, resolvedTitle: resolvedTitle,
+                isPrimary: false
             )
-            let didChange = try await realm.asyncWritePreservingOwnership {
-                try Task.checkCancellation()
-                try context.primaryReference?.validateStorage()
-                try reference.validateStorage()
-                guard let record = reference.resolveForMutation(in: realm), !record.isDeleted,
-                      context.primaryReference?.matchesStoredIdentity(of: record) != true else {
-                    return false
-                }
-                // Admission can wait behind another authoritative edit. Sample
-                // time here, then share it between this record and its Feed.
-                let timestamp = Date()
-                let changes = applyReaderModeDefaults(
-                    to: record, for: url,
-                    readabilityHTML: readabilityHTML, resolvedTitle: resolvedTitle,
-                    at: timestamp
-                )
-                if changes.recordChanged {
-                    record.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
-                }
-                // Metadata hooks can change storage or cancel the operation.
-                // Revalidate after both owners' callouts before committing.
-                try Task.checkCancellation()
-                try context.primaryReference?.validateStorage()
-                try reference.validateStorage()
-                return changes.recordChanged || changes.ownerChanged
-            }
             if didChange { updatedCount += 1 }
         }
         return updatedCount
@@ -105,6 +110,49 @@ fileprivate struct ReaderModePropagationStore: @unchecked Sendable {
 
 private extension ReaderContentLoader {
     @RealmBackgroundActor
+    static func updateReaderModeDefaults(
+        reference: ContentReference,
+        context: ReaderModePropagationContext,
+        for url: URL,
+        readabilityHTML: String?,
+        resolvedTitle: String?,
+        isPrimary: Bool
+    ) async throws -> Bool {
+        try context.validateOrigin()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: reference.realmConfiguration,
+            storageAdmission: reference.storageAdmission
+        )
+        return try await realm.asyncWritePreservingOwnership {
+            try context.validateOrigin()
+            try reference.validateStorage()
+            guard let record = reference.resolveForMutation(in: realm), !record.isDeleted,
+                  isPrimary || context.primaryReference?.matchesStoredIdentity(of: record) != true else {
+                return false
+            }
+            // Admission can wait behind another authoritative edit. Sample
+            // time here, then share it between this record and its Feed.
+            let timestamp = Date()
+            let changes = applyReaderModeDefaults(
+                to: record, for: url,
+                readabilityHTML: readabilityHTML, resolvedTitle: resolvedTitle,
+                isPrimary: isPrimary, at: timestamp
+            )
+            if changes.recordChanged {
+                record.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+            }
+            // Metadata hooks can withdraw the selection, replace storage or
+            // change the row. Reject those effects inside our owned transaction.
+            try context.validateOrigin()
+            try reference.validateStorage()
+            guard reference.matchesStoredIdentity(of: record), !record.isDeleted else {
+                throw CancellationError()
+            }
+            return changes.recordChanged || changes.ownerChanged
+        }
+    }
+
+    @RealmBackgroundActor
     static func readerModePropagationReferences(
         for url: URL,
         context: ReaderModePropagationContext
@@ -112,8 +160,9 @@ private extension ReaderContentLoader {
         // Authoritative propagation must not consume the URL-only completed
         // loadAll cache or a task that captured another account's configuration.
         let historyRealm = try await context.historyStore.open()
+        try context.validateOrigin()
         let feedRealm = try await context.feedStore.open()
-        try Task.checkCancellation()
+        try context.validateOrigin()
         try context.historyStore.validate()
         try context.feedStore.validate()
 
@@ -121,9 +170,9 @@ private extension ReaderContentLoader {
             for: url, context: context, historyRealm: historyRealm, feedRealm: feedRealm
         )
         for provider in context.providers {
-            try Task.checkCancellation()
+            try context.validateOrigin()
             let providerReferences = try await provider.load(url)
-            try Task.checkCancellation()
+            try context.validateOrigin()
             // Preserve the producer's original store and incarnation. Resolving
             // and recapturing here could silently adopt a same-key successor.
             references.append(contentsOf: providerReferences)
@@ -180,8 +229,9 @@ private extension ReaderContentLoader {
     static func applyReaderModeDefaults(
         to record: any ReaderContentProtocol,
         for url: URL,
-        readabilityHTML: String,
+        readabilityHTML: String?,
         resolvedTitle: String?,
+        isPrimary: Bool,
         at timestamp: Date
     ) -> (recordChanged: Bool, ownerChanged: Bool) {
         var changed = false
@@ -196,14 +246,19 @@ private extension ReaderContentLoader {
             record.isReaderModeAvailable = false
             changed = changed || !record.isReaderModeAvailable
         }
+        if isPrimary, record.isReaderModeOfferHidden {
+            record.isReaderModeOfferHidden = false
+            changed = changed || !record.isReaderModeOfferHidden
+        }
         if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
-            if !url.isReaderFileURL, record.content?.isEmpty ?? true,
+            if let readabilityHTML, !url.isReaderFileURL, record.content?.isEmpty ?? true,
                record.html != readabilityHTML {
                 record.html = readabilityHTML
                 changed = true
             }
-            if let resolvedTitle,
-               record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            let titleIsEmpty = isPrimary ? record.title.isEmpty
+                : record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if let resolvedTitle, titleIsEmpty,
                record.title != resolvedTitle {
                 record.title = resolvedTitle
                 changed = true
