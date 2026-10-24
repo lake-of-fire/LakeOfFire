@@ -555,6 +555,155 @@ final class ReaderModeDefaultsPropagationTests: XCTestCase {
     }
 
     @RealmBackgroundActor
+    func testQueuedPropagationDoesNotBackdateAnInterveningRecordEdit() async throws {
+        let configuration = makeConfiguration()
+        let restore = install(configuration)
+        defer { restore() }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        let url = URL(string: "https://example.com/queued-reader-timestamp/\(UUID().uuidString)")!
+        let primary = configured(HistoryRecord(), url: url, title: "Primary")
+        let related = configured(Bookmark(), url: url)
+        try await seed([primary, related], in: realm)
+        let primarySeeded = try journalState(for: primary, in: realm)
+        let gate = ReaderModePropagationProviderGate()
+        ReaderContentLoader.additionalContentProviders = [.init(id: "queued-record-timestamp") { _ in
+            await gate.pause()
+            return []
+        }]
+        let context = ReaderContentLoader.ReaderModePropagationContext(primaryContent: primary)
+        let submitted = expectation(description: "propagation queued behind the authoritative writer")
+        submitted.assertForOverFulfill = false
+        let capturedHTML = html
+        let propagation = Task { @RealmBackgroundActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+                try await ReaderContentLoader.propagateReaderModeDefaults(
+                    for: url, context: context, readabilityHTML: capturedHTML, resolvedTitle: "Reader title"
+                )
+            }
+        }
+        guard await awaitProvider(gate, task: propagation) else { return }
+        try realm.beginWrite()
+        defer { if realm.isInWriteTransaction { realm.cancelWrite() } }
+        await gate.release()
+        await fulfillment(of: [submitted], timeout: 2)
+        guard realm.isInWriteTransaction else {
+            XCTFail("Propagation must await its own transaction instead of entering this writer's transaction")
+            return
+        }
+
+        // The actual SDK submission has happened. This edit is later than any
+        // timestamp sampled before write admission; no sleep drives ordering.
+        let interveningTime = Date()
+        related.author = "Intervening author"
+        related.refreshChangeMetadata(explicitlyModified: true, at: interveningTime)
+        let intervening = try journalState(for: related, in: realm)
+        try realm.commitWrite()
+
+        let changedCount = try await propagation.value
+        let settled = try journalState(for: related, in: realm)
+        XCTAssertEqual(changedCount, 1)
+        XCTAssertEqual(related.author, "Intervening author")
+        XCTAssertEqual(related.html, html)
+        XCTAssertEqual(related.title, "Reader title")
+        XCTAssertNotEqual(settled.generation, intervening.generation)
+        XCTAssertGreaterThanOrEqual(settled.changedAt, intervening.changedAt)
+        XCTAssertGreaterThanOrEqual(settled.modifiedAt, intervening.modifiedAt)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(settled.explicitlyModifiedAt), interveningTime)
+        XCTAssertEqual(try journalState(for: primary, in: realm), primarySeeded)
+
+        let repeated = try await ReaderContentLoader.propagateReaderModeDefaults(
+            for: url, context: context, readabilityHTML: html, resolvedTitle: "Reader title"
+        )
+        XCTAssertEqual(repeated, 0)
+        XCTAssertEqual(try journalState(for: related, in: realm), settled)
+    }
+
+    @RealmBackgroundActor
+    func testQueuedPropagationDatesFeedAndEntryAtTheirSharedAdmission() async throws {
+        let configuration = makeConfiguration()
+        let restore = install(configuration)
+        defer { restore() }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        let url = URL(string: "https://example.com/queued-feed-timestamp/\(UUID().uuidString)")!
+        let primary = configured(HistoryRecord(), url: url, title: "Primary")
+        let feed = Feed()
+        feed.rssUrl = url.appendingPathExtension("rss")
+        feed.isReaderModeByDefault = false
+        let entry = FeedEntry()
+        entry.feedID = feed.id
+        entry.url = url
+        entry.updateCompoundKey()
+        try await realm.asyncWritePreservingOwnership {
+            realm.add(primary)
+            primary.refreshChangeMetadata(explicitlyModified: true)
+            realm.add(feed)
+            feed.refreshChangeMetadata(explicitlyModified: true)
+            realm.add(entry)
+            entry.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let primarySeeded = try journalState(for: primary, in: realm)
+        let gate = ReaderModePropagationProviderGate()
+        ReaderContentLoader.additionalContentProviders = [.init(id: "queued-feed-timestamp") { _ in
+            await gate.pause()
+            return []
+        }]
+        let context = ReaderContentLoader.ReaderModePropagationContext(primaryContent: primary)
+        let submitted = expectation(description: "propagation submitted a ticket before the intervening owner edits")
+        submitted.assertForOverFulfill = false
+        let capturedHTML = html
+        let propagation = Task { @RealmBackgroundActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+                try await ReaderContentLoader.propagateReaderModeDefaults(
+                    for: url, context: context, readabilityHTML: capturedHTML, resolvedTitle: "Reader title"
+                )
+            }
+        }
+        guard await awaitProvider(gate, task: propagation) else { return }
+        try realm.beginWrite()
+        defer { if realm.isInWriteTransaction { realm.cancelWrite() } }
+        await gate.release()
+        await fulfillment(of: [submitted], timeout: 2)
+        guard realm.isInWriteTransaction else {
+            XCTFail("Propagation must not mutate another owner's open transaction")
+            return
+        }
+        let interveningTime = Date()
+        feed.title = "Intervening feed title"
+        entry.author = "Intervening entry author"
+        feed.refreshChangeMetadata(explicitlyModified: true, at: interveningTime)
+        entry.refreshChangeMetadata(explicitlyModified: true, at: interveningTime)
+        let interveningFeed = try journalState(for: feed, in: realm)
+        let interveningEntry = try journalState(for: entry, in: realm)
+        try realm.commitWrite()
+
+        let changedCount = try await propagation.value
+        let settledFeed = try journalState(for: feed, in: realm)
+        let settledEntry = try journalState(for: entry, in: realm)
+        XCTAssertEqual(changedCount, 1)
+        XCTAssertEqual(feed.title, "Intervening feed title")
+        XCTAssertEqual(entry.author, "Intervening entry author")
+        XCTAssertFalse(feed.isReaderModeByDefault)
+        XCTAssertTrue(feed.rssContainsFullContent)
+        XCTAssertEqual(entry.html, html)
+        XCTAssertEqual(entry.title, "Reader title")
+        XCTAssertNotEqual(settledFeed.generation, interveningFeed.generation)
+        XCTAssertNotEqual(settledEntry.generation, interveningEntry.generation)
+        XCTAssertGreaterThanOrEqual(settledFeed.changedAt, interveningTime)
+        XCTAssertGreaterThanOrEqual(settledEntry.changedAt, interveningTime)
+        XCTAssertEqual(settledFeed.changedAt, settledEntry.changedAt)
+        XCTAssertEqual(settledFeed.modifiedAt, settledEntry.modifiedAt)
+        XCTAssertEqual(settledFeed.explicitlyModifiedAt, settledEntry.explicitlyModifiedAt)
+        XCTAssertEqual(try journalState(for: primary, in: realm), primarySeeded)
+
+        let repeated = try await ReaderContentLoader.propagateReaderModeDefaults(
+            for: url, context: context, readabilityHTML: html, resolvedTitle: "Reader title"
+        )
+        XCTAssertEqual(repeated, 0)
+        XCTAssertEqual(try journalState(for: feed, in: realm), settledFeed)
+        XCTAssertEqual(try journalState(for: entry, in: realm), settledEntry)
+    }
+
+    @RealmBackgroundActor
     func testFeedPropagationJournalsOnlyChangedOwnersAndPreservesPreferences() async throws {
         // Adapt the real owner-journal regressions from LakeOfFire #262.
         for defaultMode in [false, true] {
