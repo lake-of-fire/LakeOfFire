@@ -877,7 +877,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             } else if category != nil, !(opmlEntry.attributes?.contains(where: { $0.name == "isUserScriptList" }) ?? false) {
                 if let uuid, let existingDirectory = realm.object(ofType: FeedDirectory.self, forPrimaryKey: uuid) {
                     directory = existingDirectory
-                    if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, directory: existingDirectory, categoryID: categoryID, parentDirectoryID: directoryID, ordinal: ordinal) {
+                    if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, directory: existingDirectory, categoryID: categoryID, parentDirectoryID: directoryID, ordinal: ordinal, downloadURL: downloadURL) {
                         try Self.applyAttributes(
                             opml: opml,
                             opmlEntry: opmlEntry,
@@ -1175,7 +1175,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         }
     }
 
-    static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, directory: FeedDirectory, categoryID: UUID?, parentDirectoryID: UUID?, ordinal: Int? = nil) -> Bool {
+    static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, directory: FeedDirectory, categoryID: UUID?, parentDirectoryID: UUID?, ordinal: Int? = nil, downloadURL: URL? = nil) -> Bool {
         if opmlEntry.attributeUUIDValue("uuid") != directory.id {
             return true
         }
@@ -1198,6 +1198,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         }
         let newOpmlOwnerName = opml.ownerName ?? directory.opmlOwnerName
         if directory.opmlOwnerName != newOpmlOwnerName {
+            return true
+        }
+        if directory.opmlURL != downloadURL {
             return true
         }
         let newIconURL = opmlEntry.attributeStringValue("iconUrl").flatMap(URL.init(string:))
