@@ -128,17 +128,42 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     @RealmBackgroundActor
     private var objectNotificationToken: NotificationToken?
+
+    private nonisolated let realmConfiguration: Realm.Configuration
+    private nonisolated let realmStorageAdmission: RealmStorageAdmission
+    private var duplicateRequestID: UUID?
     
     var exportableOPML: OPML {
         return exportedOPML ?? OPML(entries: [])
     }
 
     public override init() {
+        let realmConfiguration = LibraryDataManager.realmConfiguration
+        self.realmConfiguration = realmConfiguration
+        realmStorageAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
         super.init()
-        
+        observeRealm()
+    }
+
+    init(observesRealm: Bool) {
+        let realmConfiguration = LibraryDataManager.realmConfiguration
+        self.realmConfiguration = realmConfiguration
+        realmStorageAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
+        super.init()
+        if observesRealm {
+            observeRealm()
+        }
+    }
+
+    private func observeRealm() {
+        let realmConfiguration = self.realmConfiguration
+        let realmStorageAdmission = self.realmStorageAdmission
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: realmConfiguration,
+                storageAdmission: realmStorageAdmission
+            )
 
             let exportableTypes: [ObjectBase.Type] = [FeedCategory.self, Feed.self, LibraryConfiguration.self]
             for objectType in exportableTypes {
@@ -187,10 +212,12 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                             guard let self else { return }
                             let currentConfigurationID = self.libraryConfiguration?.id
                             let newLibraryConfigurationID = try await { @RealmBackgroundActor in
-                                try await LibraryConfiguration.getConsolidatedOrCreate().id
+                                try await LibraryConfiguration.getConsolidatedOrCreate(
+                                    realmConfiguration: realmConfiguration
+                                ).id
                             }()
                             if newLibraryConfigurationID != currentConfigurationID {
-                                let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                                let realm = try await Realm.open(configuration: realmConfiguration)
                                 guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: newLibraryConfigurationID) else { return }
                                 if self.isLibraryPresented {
                                     self.objectWillChange.send()
@@ -305,18 +332,51 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     }
     
     @RealmBackgroundActor
-    func duplicate(feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws {
-        do {
-            guard let newFeedID = try await LibraryDataManager.shared.duplicateFeed(feed, inCategory: category, overwriteExisting: true) else { return }
-            Task { @MainActor in
-                let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
-                guard let category = realm.resolve(category),
-                      let newFeed = realm.object(ofType: Feed.self, forPrimaryKey: newFeedID)
-                else { return }
-                navigationPath.removeLast(navigationPath.count)
-                navigationPath.append(category)
-                selectedFeed = newFeed
-            }
-        } catch { }
+    func duplicate(
+        feed: ThreadSafeReference<Feed>,
+        inCategory category: ThreadSafeReference<FeedCategory>,
+        overwriteExisting: Bool,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
+        beforePublication: (@MainActor @Sendable () async throws -> Void)? = nil
+    ) async throws {
+        try Task.checkCancellation()
+        let requestID = try await { @MainActor in
+            try Task.checkCancellation()
+            let requestID = UUID()
+            duplicateRequestID = requestID
+            return requestID
+        }()
+        guard let result = try await LibraryDataManager.shared.duplicateFeedWithIdentity(
+            feed,
+            inCategory: category,
+            overwriteExisting: overwriteExisting,
+            realmConfiguration: realmConfiguration,
+            storageAdmission: realmStorageAdmission,
+            beforeWrite: beforeWrite
+        ) else { return }
+        try await { @MainActor in
+            try await beforePublication?()
+            guard !Task.isCancelled,
+                  duplicateRequestID == requestID,
+                  realmStorageAdmission.matchesCurrentStorageIdentity({
+                      RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+                  }) else { return }
+            let realm = try await Realm.open(configuration: realmConfiguration)
+            await realm.asyncRefresh()
+            guard !Task.isCancelled,
+                  duplicateRequestID == requestID,
+                  realmStorageAdmission.matchesCurrentStorageIdentity({
+                      RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+                  }),
+                  let newFeed = realm.object(ofType: Feed.self, forPrimaryKey: result.feedID),
+                  newFeed.createdAt == result.feedCreatedAt, !newFeed.isDeleted,
+                  newFeed.categoryID == result.categoryID,
+                  let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: result.categoryID),
+                  category.createdAt == result.categoryCreatedAt,
+                  !category.isDeleted, category.isUserEditable else { return }
+            navigationPath.removeLast(navigationPath.count)
+            navigationPath.append(category)
+            selectedFeed = newFeed
+        }()
     }
 }
