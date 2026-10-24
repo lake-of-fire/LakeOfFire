@@ -1319,84 +1319,73 @@ This snippet loads when the pasteboard is empty in a debug build.
         _ appendedHTML: String,
         to content: any ReaderContentProtocol
     ) async throws -> (any ReaderContentProtocol)? {
-        guard content.url.isSnippetURL else {
-            return nil
-        }
+        guard let target = captureSnippetAppendTarget(for: content) else { return nil }
+        let result = try await appendSnippetHTML(appendedHTML, to: target, permitsCommit: { true })
+        return result.content
+    }
 
-        let normalizedAppendedHTML = normalizeSnippetSourceHTML(appendedHTML)
-        let contentURL = content.url
+    static func normalizedSnippetAppendHTML(_ html: String, contentURL: URL) -> String {
+        let normalizedHTML = normalizeSnippetSourceHTML(html)
         logSnippetEvent(
             "appendSnippetHTML.begin",
             "contentURL=\(contentURL.absoluteString)",
-            "incomingBytes=\(normalizedAppendedHTML.utf8.count)"
+            "incomingBytes=\(normalizedHTML.utf8.count)"
         )
+        return normalizedHTML
+    }
 
-        try await { @RealmBackgroundActor in
-            try await updateContent(url: contentURL) { object in
-                let currentHTML = object.html
-                guard let mergedHTML = try? appendSnippetHTML(
-                    normalizedAppendedHTML,
-                    toExistingHTML: currentHTML
-                ) else {
-                    return false
-                }
+    /// Shared field mutator used by the captured writer on its owning actor.
+    /// Transaction admission and authoritative metadata belong to that writer.
+    static func applySnippetAppend(
+        _ normalizedAppendedHTML: String,
+        to object: any ReaderContentProtocol
+    ) -> Bool {
+        let currentHTML = object.html
+        guard let mergedHTML = try? appendSnippetHTML(
+            normalizedAppendedHTML,
+            toExistingHTML: currentHTML
+        ) else { return false }
 
-                let normalizedCurrentHTML = snippetHTML(fromHTML: currentHTML ?? "<html><body></body></html>")
-                let normalizedMergedHTML = snippetHTML(fromHTML: mergedHTML)
-                let resolvedTitleUpdate = resolvedSnippetTitleAfterHTMLUpdate(
-                    currentTitle: object.title,
-                    currentHTML: currentHTML,
-                    updatedHTML: mergedHTML,
-                    currentIsTitlePrefixOfContent: object.isTitlePrefixOfContent
-                )
-                var objectDidChange = false
+        let normalizedCurrentHTML = snippetHTML(fromHTML: currentHTML ?? "<html><body></body></html>")
+        let normalizedMergedHTML = snippetHTML(fromHTML: mergedHTML)
+        let resolvedTitleUpdate = resolvedSnippetTitleAfterHTMLUpdate(
+            currentTitle: object.title,
+            currentHTML: currentHTML,
+            updatedHTML: mergedHTML,
+            currentIsTitlePrefixOfContent: object.isTitlePrefixOfContent
+        )
+        var objectDidChange = false
 
-                if normalizedCurrentHTML != normalizedMergedHTML {
-                    object.html = mergedHTML
-                    objectDidChange = true
-                }
-                if object.title != resolvedTitleUpdate.title {
-                    object.title = resolvedTitleUpdate.title
-                    objectDidChange = true
-                }
-                if object.isTitlePrefixOfContent != resolvedTitleUpdate.isTitlePrefixOfContent {
-                    object.isTitlePrefixOfContent = resolvedTitleUpdate.isTitlePrefixOfContent
-                    objectDidChange = true
-                }
-                if object.rssContainsFullContent == false {
-                    object.rssContainsFullContent = true
-                    objectDidChange = true
-                }
-                if object.isReaderModeByDefault == false {
-                    object.isReaderModeByDefault = true
-                    objectDidChange = true
-                }
-
-                logSnippetEvent(
-                    "appendSnippetHTML.merge",
-                    "contentURL=\(contentURL.absoluteString)",
-                    "currentBytes=\((currentHTML ?? "").utf8.count)",
-                    "mergedBytes=\(mergedHTML.utf8.count)",
-                    "didChange=\(objectDidChange)",
-                    "title=\(object.title.truncate(80))"
-                )
-
-                return objectDidChange
-            }
-        }()
+        if normalizedCurrentHTML != normalizedMergedHTML {
+            object.html = mergedHTML
+            objectDidChange = true
+        }
+        if object.title != resolvedTitleUpdate.title {
+            object.title = resolvedTitleUpdate.title
+            objectDidChange = true
+        }
+        if object.isTitlePrefixOfContent != resolvedTitleUpdate.isTitlePrefixOfContent {
+            object.isTitlePrefixOfContent = resolvedTitleUpdate.isTitlePrefixOfContent
+            objectDidChange = true
+        }
+        if object.rssContainsFullContent == false {
+            object.rssContainsFullContent = true
+            objectDidChange = true
+        }
+        if object.isReaderModeByDefault == false {
+            object.isReaderModeByDefault = true
+            objectDidChange = true
+        }
 
         logSnippetEvent(
-            "appendSnippetHTML.reload",
-            "contentURL=\(contentURL.absoluteString)",
-            "persist=false",
-            "countsAsHistoryVisit=false"
+            "appendSnippetHTML.merge",
+            "contentURL=\(object.url.absoluteString)",
+            "currentBytes=\((currentHTML ?? "").utf8.count)",
+            "mergedBytes=\(mergedHTML.utf8.count)",
+            "didChange=\(objectDidChange)",
+            "title=\(object.title.truncate(80))"
         )
-        return try await load(
-            url: contentURL,
-            persist: false,
-            countsAsHistoryVisit: false,
-            source: "ReaderContentLoader.appendSnippetHTML.reload"
-        )
+        return objectDidChange
     }
 
     @MainActor
