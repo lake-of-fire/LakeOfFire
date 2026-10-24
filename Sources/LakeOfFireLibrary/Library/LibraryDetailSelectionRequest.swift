@@ -6,6 +6,7 @@ import Foundation
 struct LibraryDetailSelectionRequest: Equatable, Sendable {
     enum Target: Equatable, Sendable {
         case none
+        case libraryRoot
         case feed(id: UUID, createdAt: Date, categoryID: UUID, categoryCreatedAt: Date)
         case script(id: UUID, createdAt: Date)
         case navigation
@@ -16,7 +17,7 @@ struct LibraryDetailSelectionRequest: Equatable, Sendable {
 
     var contentRoute: ContentPaneRoute? {
         switch target {
-        case .none, .navigation:
+        case .none, .libraryRoot, .navigation:
             return nil
         case .feed(_, _, let categoryID, _):
             return .contentCategory(categoryID)

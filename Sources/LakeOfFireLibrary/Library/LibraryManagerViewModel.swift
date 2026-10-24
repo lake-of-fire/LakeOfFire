@@ -151,7 +151,20 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             }
         }
     }
-    @Published private(set) var detailSelectionRequest = LibraryDetailSelectionRequest(target: .none)
+    @Published private(set) var detailSelectionRequest = LibraryDetailSelectionRequest(target: .none) {
+        willSet {
+            // This derived publisher can also be observed synchronously. Only
+            // a newer request supersedes it; pending commands retain their
+            // separate admission and are checked by their presentation caller.
+            detailSelectionPublication.begin(newValue, commandID: nil)
+        }
+        didSet {
+            if case .restore(let latest) = detailSelectionPublication.finish(previous: oldValue, commandID: nil),
+               let latest {
+                restoreDetailSelectionRequest(latest)
+            }
+        }
+    }
     
     private var exportOPMLTask: Task<Void, Never>?
     private var exportOPMLGeneration = 0
@@ -204,6 +217,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     private var feedCommandSelection: (commandID: UUID, request: LibraryDetailSelectionRequest)?
     private var feedSelectionPublication = SelectionPublication<Feed>()
     private var scriptSelectionPublication = SelectionPublication<UserScript>()
+    private var detailSelectionPublication = SelectionPublication<LibraryDetailSelectionRequest>()
 
     // A direct self-assignment inside didSet bypasses its property observers.
     // Use the ordinary setter for rejection cleanup, and to consume a marked
@@ -215,6 +229,10 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
 
     private func restoreScriptSelection(_ value: UserScript?) {
         selectedScript = value
+    }
+
+    private func restoreDetailSelectionRequest(_ request: LibraryDetailSelectionRequest) {
+        detailSelectionRequest = request
     }
 
     /// @Published sends before assigning its backing value. An observer can
@@ -277,6 +295,78 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     var exportableOPML: OPML {
         return exportedOPML ?? OPML(entries: [])
+    }
+
+    lazy var webFeedButtonLibraryState = WebFeedButtonLibraryState(
+        realmConfiguration: realmConfiguration,
+        storageAdmission: realmStorageAdmission
+    )
+
+    /// Managing categories is a new menu intent, including when an Add has
+    /// committed but is still awaiting presentation. Clear the actual typed
+    /// selection while retaining any successor admitted by a synchronous send.
+    @discardableResult
+    func manageLibraryCategories() -> Bool {
+        guard !Task.isCancelled else { return false }
+        let commandID = UUID()
+        feedCommandRequestID = commandID
+        defer {
+            if feedCommandRequestID == commandID { feedCommandRequestID = nil }
+        }
+        let request = LibraryDetailSelectionRequest(target: .libraryRoot)
+        detailSelectionRequest = request
+        guard !Task.isCancelled, feedCommandRequestID == commandID,
+              detailSelectionRequest == request else { return false }
+        selectedFeed = nil
+        guard !Task.isCancelled, feedCommandRequestID == commandID,
+              detailSelectionRequest == request else { return false }
+        selectedScript = nil
+        guard !Task.isCancelled, feedCommandRequestID == commandID,
+              detailSelectionRequest == request,
+              selectedFeed == nil, selectedScript == nil else { return false }
+        isLibraryPresented = true
+        return true
+    }
+
+    /// Edit uses the same explicit publication receipt as feed commands. A
+    /// refresh or publisher callback can select a successor before presentation.
+    @discardableResult
+    func selectExistingWebFeed(
+        resolving resolve: @MainActor () -> Feed?,
+        didPublish: @MainActor () -> Void
+    ) -> Bool {
+        guard !Task.isCancelled else { return false }
+        let previousCommand = feedCommandRequestID
+        let previousRequest = detailSelectionRequest
+        guard let feed = resolve(), !Task.isCancelled,
+              feedCommandRequestID == previousCommand,
+              detailSelectionRequest == previousRequest,
+              let expected = captureDetailSelection(feed: feed) else { return false }
+        let requestID = UUID()
+        feedCommandRequestID = requestID
+        defer {
+            if feedCommandRequestID == requestID { feedCommandRequestID = nil }
+        }
+        feedSelectionPublication.publishNextAssignment(for: requestID)
+        selectedFeed = feed
+        guard let publication = feedCommandSelection,
+              publication.commandID == requestID,
+              publication.request.target == expected.target,
+              feedCommandRequestID == nil,
+              detailSelectionRequest == publication.request,
+              selectedFeed(for: publication.request) != nil,
+              feedCommandRequestID == nil,
+              detailSelectionRequest == publication.request,
+              let currentFeed = resolve(),
+              let current = captureDetailSelection(feed: currentFeed),
+              current.target == expected.target, !Task.isCancelled,
+              feedCommandRequestID == nil,
+              detailSelectionRequest == publication.request,
+              realmStorageAdmission.matchesCurrentStorageIdentity({
+                  RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+              }) else { return false }
+        didPublish()
+        return true
     }
 
     public override init() {
@@ -376,7 +466,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             selectedFeed = nil
         case .script:
             selectedScript = nil
-        case .navigation:
+        case .navigation, .libraryRoot:
             detailSelectionRequest = .init(target: .none)
         case .none:
             break
@@ -448,6 +538,20 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                detailSelectionRequest == cleared {
                 detailPath.wrappedValue = NavigationPath()
             }
+        case .libraryRoot:
+            // Categories management explicitly leaves the previous content
+            // route. Ordinary .none requests still preserve sidebar selection.
+            let commandID = feedCommandRequestID
+            selectedFeed = nil
+            guard detailSelectionRequest == request,
+                  feedCommandRequestID == commandID else { return }
+            selectedScript = nil
+            guard detailSelectionRequest == request,
+                  feedCommandRequestID == commandID else { return }
+            contentRoute.wrappedValue = nil
+            guard detailSelectionRequest == request,
+                  feedCommandRequestID == commandID else { return }
+            detailPath.wrappedValue = NavigationPath()
         case .navigation:
             break // The host already installed this user-selected path.
         }
