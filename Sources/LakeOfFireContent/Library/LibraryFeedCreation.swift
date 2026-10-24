@@ -19,6 +19,13 @@ public struct LibraryFeedCreationResult: Equatable, Sendable {
     }
 }
 
+/// A rendered destination is an identity, not an optional lookup result. A
+/// retired explicit category must never become a request for a new category.
+public enum LibraryFeedCreationDestination: Equatable, Sendable {
+    case category(id: UUID, createdAt: Date)
+    case newUserCategory
+}
+
 public extension LibraryDataManager {
     @RealmBackgroundActor
     func createEmptyFeedWithIdentity(
@@ -35,14 +42,53 @@ public extension LibraryDataManager {
             for: realmConfiguration,
             storageAdmission: storageAdmission
         )
-        let categoryID: UUID
-        let categoryCreatedAt: Date
+        let destination: LibraryFeedCreationDestination
         do {
             guard let category = realm.resolve(categoryReference),
                   !category.isDeleted, category.isUserEditable,
                   expectedCategoryCreatedAt.map({ $0 == category.createdAt }) ?? true else { return nil }
-            categoryID = category.id
-            categoryCreatedAt = category.createdAt
+            destination = .category(id: category.id, createdAt: category.createdAt)
+        }
+
+        return try await createFeedWithIdentity(
+            destination: destination,
+            realmConfiguration: realmConfiguration,
+            storageAdmission: storageAdmission,
+            beforeWrite: beforeWrite
+        )
+    }
+
+    /// Initializes the complete feed inside its birth transaction. New user
+    /// categories, their membership and their first feed are committed together.
+    @RealmBackgroundActor
+    func createFeedWithIdentity(
+        destination: LibraryFeedCreationDestination,
+        rssURL: URL? = nil,
+        title: String? = nil,
+        realmConfiguration: Realm.Configuration,
+        storageAdmission: RealmStorageAdmission? = nil,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil
+    ) async throws -> LibraryFeedCreationResult? {
+        try Task.checkCancellation()
+        let storageAdmission = storageAdmission
+            ?? RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: realmConfiguration,
+            storageAdmission: storageAdmission
+        )
+        let libraryIdentity: (id: UUID, createdAt: Date)?
+        switch destination {
+        case .category(let id, let createdAt):
+            guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: id),
+                  category.createdAt == createdAt,
+                  !category.isDeleted, category.isUserEditable else { return nil }
+            libraryIdentity = nil
+        case .newUserCategory:
+            let library = try await LibraryConfiguration.getConsolidatedOrCreate(
+                realmConfiguration: realmConfiguration,
+                storageAdmission: storageAdmission
+            )
+            libraryIdentity = (library.id, library.createdAt)
         }
 
         try await beforeWrite?()
@@ -54,14 +100,37 @@ public extension LibraryDataManager {
             }) else {
                 throw RealmBackgroundActorError.realmFileChangedDuringOpen
             }
-            guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
-                  category.createdAt == categoryCreatedAt,
-                  !category.isDeleted, category.isUserEditable else { return nil }
+            let category: FeedCategory
+            let changedLibrary: LibraryConfiguration?
+            switch destination {
+            case .category(let id, let createdAt):
+                guard let liveCategory = realm.object(ofType: FeedCategory.self, forPrimaryKey: id),
+                      liveCategory.createdAt == createdAt,
+                      !liveCategory.isDeleted, liveCategory.isUserEditable else { return nil }
+                category = liveCategory
+                changedLibrary = nil
+            case .newUserCategory:
+                guard let libraryIdentity,
+                      let library = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryIdentity.id),
+                      library.createdAt == libraryIdentity.createdAt, !library.isDeleted else { return nil }
+                category = FeedCategory()
+                category.title = "My Library"
+                realm.add(category)
+                library.categoryIDs.append(category.id)
+                changedLibrary = library
+            }
             let feed = Feed()
-            feed.categoryID = categoryID
+            feed.categoryID = category.id
             feed.meaningfulContentMinLength = 0
+            if let rssURL { feed.rssUrl = rssURL }
+            if let title { feed.title = title }
             realm.add(feed)
-            feed.refreshChangeMetadata(explicitlyModified: true)
+            let timestamp = Date()
+            if let changedLibrary {
+                category.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                changedLibrary.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+            }
+            feed.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
             return LibraryFeedCreationResult(feed: feed, category: category)
         }
     }
