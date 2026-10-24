@@ -111,7 +111,7 @@ private struct ContentRouteSwitcher: View {
                     .navigationTitle("User Scripts")
             case .contentCategory(let categoryID):
                 if let libraryConfiguration = viewModel.libraryConfiguration,
-                   let category = Array(libraryConfiguration.getCategories() ?? []).first(where: { $0.id == categoryID }) {
+                   let category = LibraryCategoryRouteResolver.category(id: categoryID, in: libraryConfiguration) {
                     LibraryCategoryView(
                         category: category,
                         libraryConfiguration: libraryConfiguration,
