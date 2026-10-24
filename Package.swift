@@ -291,6 +291,7 @@ let package = Package(
                 "LakeOfFireContent",
                 "LakeOfFireContentUI",
                 "LakeOfFireCore",
+                "LakeOfFireLibrary",
                 "LakeOfFireReader",
                 "LakeOfFireWeb",
                 .product(name: "SwiftReadability", package: "swift-readability"),
