@@ -1650,4 +1650,57 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         XCTAssertNil(related.html)
         XCTAssertEqual(try XCTUnwrap(pendingMutation(for: related, in: realm)).generation, seeded)
     }
+
+    @MainActor
+    func testPrivateReaderLoadingRoutesCannotCreateHistoryOrLeakLoaderURLs() async throws {
+        let configuration = makeConfiguration()
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeed
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        addTeardownBlock {
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+
+        for value in [
+            "INTERNAL://LOCAL/load/unknown",
+            "internal://local/load/reader-extra?reader-url=https%3A%2F%2Fexample.org",
+            "internal://other/load/reader?reader-url=https%3A%2F%2Fexample.org",
+            "internal://local/load",
+        ] {
+            let url = try XCTUnwrap(URL(string: value))
+            let direct = try await ReaderContentLoader.load(
+                url: url, persist: true, countsAsHistoryVisit: true
+            )
+            XCTAssertNil(direct, value)
+            let recovered = try await ReaderContentLoader.getContent(
+                forURL: url, countsAsHistoryVisit: true
+            )
+            XCTAssertNil(recovered, value)
+        }
+        await realm.asyncRefresh()
+        XCTAssertTrue(realm.objects(HistoryRecord.self).isEmpty)
+
+        let source = try XCTUnwrap(URL(string: "https://example.org/valid-article"))
+        let wrapped = try XCTUnwrap(URL(string:
+            "internal://LOCAL/load/reader?reader-url=https%3A%2F%2Fexample.org%2Fvalid-article"))
+        let loaded = try await ReaderContentLoader.getContent(
+            forURL: wrapped, countsAsHistoryVisit: true
+        )
+        XCTAssertEqual(loaded?.url, source)
+        await realm.asyncRefresh()
+        let histories = realm.objects(HistoryRecord.self)
+        XCTAssertEqual(histories.count, 1)
+        XCTAssertEqual(histories.first?.url, source)
+    }
 }

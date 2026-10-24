@@ -375,7 +375,7 @@ public struct ReaderContentLoader {
         storage: DiscoveryStorage
     ) async throws -> ReaderContentLoader.ContentReference? {
         try Task.checkCancellation()
-        guard !(url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/")) else {
+        guard !url.isInternalReaderLoadingURL else {
             return nil
         }
         guard url.absoluteString != "about:blank" else {
@@ -618,7 +618,7 @@ public struct ReaderContentLoader {
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
             
-            if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
+            if url.isInternalReaderLoadingURL {
                 // Don't persist about:load
                 // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
                 return nil
@@ -1876,7 +1876,7 @@ public extension ReaderContentLoader {
 
         case let .url(url, fromClipboard):
             guard url.absoluteString != "about:blank",
-                  !(url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/")) else {
+                  !url.isInternalReaderLoadingURL else {
                 return nil
             }
             let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: storage.bookmarks)

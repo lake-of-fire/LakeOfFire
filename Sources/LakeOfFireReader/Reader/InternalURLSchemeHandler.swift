@@ -42,8 +42,11 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
             urlSchemeTask.didFinish()
             return
         }
-        if url.path.hasPrefix("/load/reader"),
-           !url.isReaderURLLoaderURL || url.readerContentURL == nil {
+        // Only known document bootstraps may return an empty HTML shell.
+        // Unknown internal paths must not look like successful navigations.
+        let isValidReaderDocument = url.isSnippetURL
+            || (url.isReaderURLLoaderURL && url.readerContentURL != nil)
+        guard isValidReaderDocument else {
             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.notFound)
             return
         }
