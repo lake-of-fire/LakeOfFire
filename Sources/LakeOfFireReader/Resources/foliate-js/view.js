@@ -68,7 +68,7 @@ export class View extends HTMLElement {
         this.history.addEventListener('popstate', ({ detail }) => {
             // EventTarget does not consume rejected promises. History traversal
             // shares command ownership but must not append another history entry.
-            void this.#navigate(detail.state, { recordHistory: false }).catch(error => {
+            void this.#navigate(detail.state, { recordHistory: false, userInitiated: true }).catch(error => {
                 console.error(error)
             })
         })
@@ -127,8 +127,28 @@ export class View extends HTMLElement {
         this.#rendererBindings.listen(renderer, 'relocate', e => {
             if (isCurrent() && this.renderer === renderer) this.#onRelocate(e.detail)
         })
-        this.#rendererBindings.listen(renderer, 'foregroundPageTurnActivity', () => {
-            if (isCurrent() && this.renderer === renderer) this.#navigationGeneration += 1
+        let foregroundNavigation = null
+        this.#rendererBindings.listen(renderer, 'foregroundPageTurnActivity', event => {
+            if (!isCurrent() || this.renderer !== renderer) return
+            const navigationGeneration = ++this.#navigationGeneration
+            if (event.detail?.activity == null || typeof event.detail.activity !== 'object') {
+                foregroundNavigation = null
+                return
+            }
+            const manual = this.#beginManualNavigation(event.detail.activity)
+            event.detail.isCurrent = manual.isCurrent
+            foregroundNavigation = { manual, navigationGeneration }
+        })
+        this.#rendererBindings.listen(renderer, 'foregroundNavigationAccepted', event => {
+            const navigation = foregroundNavigation
+            const rendererReceipt = event.detail?.receipt
+            const ownsNavigation = () => isCurrent() && this.renderer === renderer
+                && navigation?.manual.activity != null && navigation.manual.activity === event.detail?.activity
+                && this.#navigationGeneration === navigation.navigationGeneration
+                && renderer.isNavigationReceiptCurrent?.(rendererReceipt) === true
+            if (!ownsNavigation() || !navigation.manual.isCurrent()) return
+            const receipt = this.#makeNavigationReceipt({ index: rendererReceipt.index }, ownsNavigation)
+            this.#emit('manualNavigationAccepted', { activity: navigation.manual.activity, receipt })
         })
         if (!this.#isCacheWarmer) {
             this.#rendererBindings.listen(this.renderer, 'create-overlayer', e =>
@@ -257,9 +277,11 @@ export class View extends HTMLElement {
                             : null)
                         .catch(e => console.error(e))
                 } else {
+                    const manualNavigation = this.#beginManualNavigation()
                     Promise.resolve(this.#emit('link', { a, href }, true))
                         .then(async x => this.#isCurrentDocument(doc, bindings, book) && x
-                            ? await this.goTo(href)
+                            && manualNavigation.isCurrent()
+                            ? await this.goTo(href, { manualNavigation })
                             : null)
                         .catch(e => console.error(e))
                 }
@@ -383,7 +405,10 @@ export class View extends HTMLElement {
         }
     }
     async #navigate(target, { select = false, recordHistory = true,
-        requiresNavigationReceipt = false, requiresPositionReceipt = false, localPage } = {}) {
+        requiresNavigationReceipt = false, requiresPositionReceipt = false, userInitiated = false,
+        manualNavigation = null, localPage } = {}) {
+        const manual = manualNavigation ?? (userInitiated ? this.#beginManualNavigation() : null)
+        if (manual && !manual.isCurrent()) return null
         const navigationGeneration = ++this.#navigationGeneration
         const renderer = this.renderer
         const book = this.book
@@ -393,18 +418,21 @@ export class View extends HTMLElement {
             || !Number.isInteger(localPage) || localPage < 0)) return null
         if (requiresPositionReceipt && (target?.fraction !== 0
             || renderer.localName !== 'foliate-paginator' || renderer.scrolled)) return null
-        const isCurrent = () => this.renderer === renderer && this.book === book
+        const isCommandCurrent = () => this.renderer === renderer && this.book === book
             && this.#openGeneration === openGeneration
             && this.#navigationGeneration === navigationGeneration
+        const isCurrent = () => isCommandCurrent() && (!manual || manual.isCurrent())
         const resolved = this.resolveNavigation(target)
         // A renderer may silently ignore an invalid section. Never publish that
         // as successful navigation or an acknowledged saved-position restore.
         if (!resolved || !Number.isInteger(resolved.index)
             || resolved.index < 0 || resolved.index >= book.sections.length) return null
         const rendererTarget = localPage == null ? resolved : { ...resolved, localPage }
+        const requiresRendererReceipt = (requiresNavigationReceipt || manual != null)
+            && typeof renderer.isNavigationReceiptCurrent === 'function'
         const result = await runCurrentRendererOperation({
             operation: () => renderer.goTo(select ? { ...rendererTarget, select: true } : rendererTarget,
-                { requiresPositionReceipt }),
+                { requiresPositionReceipt, requiresNavigationReceipt: requiresRendererReceipt }),
             isCurrent,
         })
         if (result.ignored || result.value === null || result.value === false
@@ -412,19 +440,22 @@ export class View extends HTMLElement {
         // Successful renderers can return void. Only their explicit rejection
         // values, or loss of ownership, mean that this command was not applied.
         if (requiresPositionReceipt && !renderer.isPositionReceiptCurrent?.(result.value)) return null
+        if (requiresRendererReceipt && !renderer.isNavigationReceiptCurrent(result.value)) return null
         if (recordHistory) this.history.pushState(target)
         if (!isCurrent()) return null
-        if (!requiresNavigationReceipt && !requiresPositionReceipt) return resolved
+        if (!requiresNavigationReceipt && !requiresPositionReceipt && !manual) return resolved
         if (requiresPositionReceipt && !renderer.isPositionReceiptCurrent(result.value)) return null
-        // Each accepted command gets a fresh receipt, even when a resolver reuses
-        // its target object. Later commands must never re-key an older receipt.
-        const receipt = Object.freeze(requiresPositionReceipt
-            ? { index: result.value.index, anchor: result.value.anchor } : { ...resolved })
-        this.#navigationReceipts.set(receipt, { isCurrent })
+        const ownsNavigation = () => isCommandCurrent()
+            && (!requiresRendererReceipt || renderer.isNavigationReceiptCurrent(result.value))
+        if (!ownsNavigation()) return null
+        const receipt = this.#makeNavigationReceipt(requiresPositionReceipt
+            ? { index: result.value.index, anchor: result.value.anchor } : resolved, ownsNavigation)
         if (requiresPositionReceipt) {
-            this.#positionReceipts.set(receipt, { renderer, rendererReceipt: result.value, isCurrent })
+            this.#positionReceipts.set(receipt, { renderer, rendererReceipt: result.value, isCurrent: ownsNavigation })
         }
-        return receipt
+        if (manual) this.#emit('manualNavigationAccepted', { activity: manual.activity, receipt })
+        if (!ownsNavigation()) return null
+        return requiresNavigationReceipt || requiresPositionReceipt ? receipt : resolved
     }
     async goTo(target, options) {
         try {
@@ -439,6 +470,17 @@ export class View extends HTMLElement {
         if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) return null
         // Use the same renderer/load/command fence as CFI and href navigation.
         return this.goTo({ fraction }, options)
+    }
+    #beginManualNavigation(activity = Object.freeze({})) {
+        const detail = { activity, isCurrent: () => true }
+        this.#emit('manualNavigationStarted', detail)
+        return Object.freeze({ activity, isCurrent: detail.isCurrent })
+    }
+    #makeNavigationReceipt(target, isCurrent) {
+        // A resolver may reuse its target object; never re-key an old receipt.
+        const receipt = Object.freeze({ ...target })
+        this.#navigationReceipts.set(receipt, { isCurrent })
+        return receipt
     }
     isNavigationReceiptCurrent(receipt) {
         return this.#navigationReceipts.get(receipt)?.isCurrent() === true
@@ -550,19 +592,46 @@ export class View extends HTMLElement {
             return null
         }
     }
-    async prev(distance) {
-        this.#navigationGeneration += 1
-        await this.renderer?.prev(distance)
+    async #navigateRenderer(method, args, { requiresNavigationReceipt = false } = {}) {
+        const navigationGeneration = ++this.#navigationGeneration
+        const renderer = this.renderer
+        const book = this.book
+        const openGeneration = this.#openGeneration
+        if (!requiresNavigationReceipt) {
+            await renderer?.[method](...args)
+            return
+        }
+        if (!renderer || !book || typeof renderer[method] !== 'function') return null
+        const isCurrent = () => this.renderer === renderer && this.book === book
+            && this.#openGeneration === openGeneration
+            && this.#navigationGeneration === navigationGeneration
+        const requiresRendererReceipt = typeof renderer.isNavigationReceiptCurrent === 'function'
+        const result = await runCurrentRendererOperation({ isCurrent,
+            operation: () => renderer[method](...args, { requiresNavigationReceipt: requiresRendererReceipt }) })
+        if (result.ignored || result.value === null || result.value === false
+            || result.value?.ignored === true || result.value?.superseded === true) return null
+        const ownsNavigation = () => isCurrent()
+            && (!requiresRendererReceipt || renderer.isNavigationReceiptCurrent(result.value))
+        if (!ownsNavigation()) return null
+        return this.#makeNavigationReceipt({ index: result.value?.index }, ownsNavigation)
     }
-    async next(distance) {
-        this.#navigationGeneration += 1
-        await this.renderer?.next(distance)
+    async prev(distance, options) {
+        return this.#navigateRenderer('prev', [distance], options)
     }
-    async goLeft() {
-        return this.book.dir === 'rtl' ? await this.next() : await this.prev()
+    async next(distance, options) {
+        return this.#navigateRenderer('next', [distance], options)
     }
-    async goRight() {
-        return this.book.dir === 'rtl' ? await this.prev() : await this.next()
+    async prevSection(options) {
+        return this.#navigateRenderer('prevSection', [], options)
+    }
+    async nextSection(options) {
+        return this.#navigateRenderer('nextSection', [], options)
+    }
+    async goLeft(options) {
+        return this.book.dir === 'rtl' ? await this.next(undefined, options) : await this.prev(undefined, options)
+    }
+    async goRight(options) {
+        return this.book.dir === 'rtl' ? await this.prev(undefined, options) : await this.next(undefined, options)
     }
     async * #searchSection(matcher, query, index, renderer, book, openGeneration) {
         const doc = await book.sections[index].createDocument()

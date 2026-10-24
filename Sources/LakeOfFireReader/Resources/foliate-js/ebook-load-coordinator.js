@@ -49,6 +49,28 @@ export const createNavigationIntentRunner = (host = globalThis) => {
     }
 }
 
+// Only explicit Reader commands use this boundary. Generic input events and
+// an unaccepted/rejected renderer command cannot enable reading persistence.
+export const createManualNavigationRunner = ({ host = globalThis, runWithNavigationIntent, captureOwner, onAccepted }) =>
+    async (intent, operation, { reader, view } = {}) => {
+        const renderer = view?.renderer
+        const isCurrent = () => reader && host.reader === reader && reader.isClosed !== true
+            && reader.view === view && view?.renderer === renderer
+        if (!renderer || !isCurrent()) return null
+        const admission = captureOwner({ reader, view })
+        if (!admission?.isCurrent()) return null
+        const perform = async () => {
+            if (!isCurrent() || !admission.isCurrent()) return null
+            const receipt = await operation(view, { requiresNavigationReceipt: true })
+            if (!isCurrent() || !admission.isCurrent() || !view.isNavigationReceiptCurrent?.(receipt)) return null
+            onAccepted({ reader, view, receipt, admission })
+            return isCurrent() && view.isNavigationReceiptCurrent(receipt) ? receipt : null
+        }
+        // Relative/chapter controls previously had no intent wrapper. Preserve
+        // that policy, including the Paginator's duplicate-turn suppression.
+        return intent == null ? perform() : runWithNavigationIntent(intent, perform)
+    }
+
 const sameRestore = (left, right) => left === right || (left != null && right != null
     && left.requestID === right.requestID && left.cfi === right.cfi
     && left.fractionalCompletion === right.fractionalCompletion
@@ -76,6 +98,7 @@ export const createEbookLoadHandlers = ({
     let loadInvocation = 0
     let currentRestore = null
     const completionLeases = new WeakMap()
+    const manualAdmissions = new WeakMap()
     const ownsLoad = load => currentLoad === load
         && host.manabiLoadEBookToken === load.token
     const liveLoad = load => ownsLoad(load) && !load.retired
@@ -176,6 +199,84 @@ export const createEbookLoadHandlers = ({
             && reader.isClosed !== true && reader.view === view && view.renderer === renderer
         currentRestore = restore
         return restore
+    }
+
+    const captureManualNavigation = ({ reader, view }) => {
+        const load = currentLoad
+        const restore = currentRestore
+        const renderer = view?.renderer
+        const book = view?.book
+        const isCurrent = () => load && load === currentLoad && liveLoad(load)
+            && load.reader === reader && restore && restore === currentRestore
+            && restore.reader === reader && reader.view === view
+            && view?.renderer === renderer && view?.book === book
+        if (!renderer || !isCurrent()) return null
+        const admission = Object.freeze({ isCurrent })
+        manualAdmissions.set(admission, { load, restore, reader, view })
+        return admission
+    }
+    const acceptManualNavigation = ({ reader, view, receipt, admission }) => {
+        const captured = admission && manualAdmissions.get(admission)
+        if (!captured || captured.reader !== reader || captured.view !== view
+            || !admission.isCurrent() || !view.isNavigationReceiptCurrent?.(receipt)) return false
+        manualAdmissions.delete(admission)
+        const { load, restore: previous } = captured
+        const needsCompletion = reader.hasLoadedLastPosition !== true
+            || host.__manabiRestoreInProgress === true || !load.terminalPublished
+        // After terminal publication ordinary navigation already has the normal
+        // Reader persistence policy. No repeated initial-completion effects.
+        if (previous.manual && !needsCompletion) return true
+
+        // Retire the saved continuation's cleanup authority before enabling the
+        // accepted user position. Its late catch/finally cannot close this gate.
+        const manual = beginRestore()
+        manual.manual = true
+        load.restore = manual
+        const ownsReader = manual.isCurrent
+        manual.isCurrent = () => ownsReader() && view.isNavigationReceiptCurrent(receipt)
+        const check = () => { assertCurrent(load); assertCurrent(manual) }
+        const effect = operation => { check(); const result = operation(); check(); return result }
+        try {
+            check()
+            if (!needsCompletion) return true
+            host.__manabiRestoreInProgress = true
+            effect(() => reader.completeLastPositionLoad())
+            effect(() => reader.refreshNativeLookupHitTargets?.('manual-navigation-ready'))
+            effect(() => markReaderRenderReady('manual-navigation-ready'))
+            effect(() => scheduleDeferredCacheWarmerOpen('manual-navigation-ready', 2200))
+            if (!load.terminalPublished) {
+                // Settle the original native request without crediting its saved
+                // locator. The accepted manual command owns JS readiness only.
+                const result = makeInitialRestoreTerminalResult({ request: load.request, snapshot: null,
+                    error: new Error('Saved restore was superseded by manual navigation'),
+                    loadRequestID: load.loadRequestID })
+                const probe = effect(() => reader.collectLayoutGapProbe?.('ebookViewerLoaded', {
+                    bookDir: reader.bookDir || null, isRTL: !!reader.isRTL,
+                }) ?? null)
+                effect(() => {
+                    load.terminalPublished = true
+                    host.manabiInitialRestoreResult = result
+                    host.webkit.messageHandlers.ebookViewerLoaded.postMessage({ probe, initialRestoreResult: result })
+                })
+            }
+            effect(() => {
+                host.manabiLoadEBookReady = true
+                host.manabiLoadEBookLastState = 'reader-open-manual-navigation'
+                host.__manabiRestoreInProgress = false
+                host.__manabiSuppressNextRestoreRelocateSave = false
+                host.__manabiRequireUserInputBeforePositionSave = false
+            })
+            effect(() => finishForeground(load))
+            return true
+        } catch (error) {
+            if (manual.ownsFlags()) {
+                reader.hasLoadedLastPosition = false
+                host.manabiLoadEBookReady = false
+                clearRestoreFlags()
+            }
+            if (error instanceof EbookLoadSupersededError) return false
+            throw error
+        }
     }
 
     const performRestore = async (restore, { cfi = '', fractionalCompletion = null } = {}, deferCompletionRelease = false) => {
@@ -425,6 +526,22 @@ export const createEbookLoadHandlers = ({
             host.manabiLoadEBookLastState = 'reader-open-dispatch'
             await waitFor(load, () => reader.open(source))
             if (!reader.view?.renderer) throw new Error('reader-open-missing-renderer')
+            const view = reader.view
+            const foregroundAdmissions = new WeakMap()
+            view.addEventListener?.('manualNavigationStarted', event => {
+                const activity = event.detail?.activity
+                if (!activity || typeof activity !== 'object') return
+                const admission = captureManualNavigation({ reader, view })
+                if (!admission) return
+                foregroundAdmissions.set(activity, admission)
+                event.detail.isCurrent = admission.isCurrent
+            }, { signal: load.controller.signal })
+            view.addEventListener?.('manualNavigationAccepted', event => {
+                const activity = event.detail?.activity
+                const admission = activity && foregroundAdmissions.get(activity)
+                if (activity) foregroundAdmissions.delete(activity)
+                acceptManualNavigation({ reader, view, receipt: event.detail?.receipt, admission })
+            }, { signal: load.controller.signal })
             host.manabiPendingInitialRestoreRequest = null
             const restore = beginRestore()
             load.restore = restore
@@ -454,6 +571,7 @@ export const createEbookLoadHandlers = ({
                 const succeeded = result.navigationOk && result.terminalState !== 'failed'
                 host.manabiLoadEBookReady = succeeded
                 host.manabiLoadEBookLastState = succeeded ? 'reader-open-resolved' : 'reader-restore-failed'
+                load.terminalPublished = true
                 host.webkit.messageHandlers.ebookViewerLoaded.postMessage({ probe, initialRestoreResult: result })
                 lease?.check()
                 if (!succeeded) finishForeground(load)
@@ -535,7 +653,7 @@ export const createEbookLoadHandlers = ({
             oldWarmer?.destroy?.()
         }
         if (invocation !== loadInvocation) return host.manabiLoadEBookPromise
-        const load = { url: requestedURL, layoutMode, request, loadRequestID, retired: false,
+        const load = { url: requestedURL, layoutMode, request, loadRequestID, retired: false, terminalPublished: false,
             token: (host.manabiLoadEBookToken ?? 0) + 1, controller: new AbortController() }
         currentLoad = load
         load.isCurrent = () => liveLoad(load)
@@ -595,5 +713,5 @@ export const createEbookLoadHandlers = ({
             throw error
         }
     }
-    return { loadEBook, loadLastPosition }
+    return { loadEBook, loadLastPosition, captureManualNavigation, acceptManualNavigation }
 }

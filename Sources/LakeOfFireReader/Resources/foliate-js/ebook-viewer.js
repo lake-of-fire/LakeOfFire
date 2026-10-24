@@ -18,7 +18,7 @@ import {
 } from './ebook-render-readiness.js'
 import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
 import { applyEbookViewerWritingDirection } from './ebook-viewer-writing-direction.js'
-import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
+import { ebookProgressFractionForRelocate, ebookRelocatePersistenceDecision, captureEbookRelocatePublication } from './ebook-reading-progress.js'
 import { ebookProcessTextResponseIsAuthoritative } from './ebook-process-text-response.js'
 import { createNativeMarkReadRequestCoordinator } from './native-mark-read-request.js'
 import {
@@ -38,7 +38,7 @@ import {
     restoreLocatorKind as classifyRestoreLocator,
     shouldSkipScheduledReaderFractionGoTo,
 } from './ebook-restore-coordination.js'
-import { createEbookLoadHandlers, createNavigationIntentRunner } from './ebook-load-coordinator.js'
+import { createEbookLoadHandlers, createNavigationIntentRunner, createManualNavigationRunner } from './ebook-load-coordinator.js'
 import { CacheWarmerOpenIntent } from './cache-warmer-open-intent.js'
 import { CacheWarmerPrecedingSections } from './cache-warmer-preceding-sections.js'
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
@@ -953,6 +953,12 @@ const getActiveReaderDocument = () => {
 };
 
 const runWithNavigationIntent = createNavigationIntentRunner(globalThis);
+const runManualNavigation = createManualNavigationRunner({
+    host: globalThis,
+    runWithNavigationIntent,
+    captureOwner: navigation => ebookLoadHandlers.captureManualNavigation(navigation),
+    onAccepted: navigation => ebookLoadHandlers.acceptManualNavigation(navigation),
+});
 
 const shouldSkipScheduledReaderFractionGoToForRestoreSettling = (fraction) => {
     const restoreSettlingMs = typeof bookRestoreSettlingMs === 'function'
@@ -4188,6 +4194,7 @@ class Reader {
         }
     }
     async _goToDescriptor(descriptor) {
+        const view = this.view;
         if (!descriptor || !this.view) return;
         if (
             typeof descriptor.sectionIndex === 'number'
@@ -4201,52 +4208,56 @@ class Reader {
                 Math.min(descriptor.rendererTotal - 1, Math.round(descriptor.localSectionIndex))
             );
             const fractionInSection = clampedLocalSectionIndex / (descriptor.rendererTotal - 1);
-            await runWithNavigationIntent({
+            await this.#runManualNavigation({
                 source: 'goToDescriptor',
-                target: 'renderer.goTo',
+                target: 'view.goTo',
                 sectionIndex: descriptor.sectionIndex,
                 localSectionIndex: descriptor.localSectionIndex,
                 rendererTotal: descriptor.rendererTotal,
                 fractionInSection,
                 pageItemKey: descriptor.pageItemKey ?? null,
-            }, () => this.view.renderer.goTo({
-                index: Math.max(0, Math.round(descriptor.sectionIndex)),
-                localPage: clampedLocalSectionIndex,
-            })).catch((error) => console.error(error));
+            }, (view, options) => view.goTo(Math.max(0, Math.round(descriptor.sectionIndex)), {
+                ...options, localPage: clampedLocalSectionIndex, recordHistory: false,
+            }), view).catch((error) => console.error(error));
             return;
         }
         if (typeof descriptor.cfi === 'string' && descriptor.cfi) {
-            await runWithNavigationIntent({
+            await this.#runManualNavigation({
                 source: 'goToDescriptor',
                 target: 'view.goTo',
                 cfiLength: descriptor.cfi.length,
                 pageItemKey: descriptor.pageItemKey ?? null,
-            }, () => this.view.goTo(descriptor.cfi)).catch((error) => console.error(error));
+            }, (view, options) => view.goTo(descriptor.cfi, options), view).catch((error) => console.error(error));
             return;
         }
         if (typeof descriptor.fraction === 'number' && Number.isFinite(descriptor.fraction)) {
-            await runWithNavigationIntent({
+            await this.#runManualNavigation({
                 source: 'goToDescriptor',
                 target: 'view.goToFraction',
                 fraction: descriptor.fraction,
                 pageItemKey: descriptor.pageItemKey ?? null,
-            }, () => this.view.goToFraction(descriptor.fraction));
+            }, (view, options) => view.goToFraction(descriptor.fraction, options), view);
         }
     }
+    #runManualNavigation(intent, operation, view) {
+        return runManualNavigation(intent, operation, { reader: this, view });
+    }
     async goToHref(href, source = 'unknown') {
+        const view = this.view;
         if (!this.view || typeof href !== 'string' || !href) {
             return false;
         }
         this.navHUD?.requestExplicitRelocateHistoryMutation?.('goToHref');
-        await runWithNavigationIntent({
+        await this.#runManualNavigation({
             source: 'goToHref',
             target: 'view.goTo',
             href,
             requestSource: source,
-        }, () => this.view.goTo(href));
+        }, (view, options) => view.goTo(href, options), view);
         return true;
     }
     async goToPercent(percent, source = 'unknown') {
+        const view = this.view;
         if (!this.view) {
             return false;
         }
@@ -4257,16 +4268,17 @@ class Reader {
             return false;
         }
         const fraction = clampedPercent / 100;
-        await runWithNavigationIntent({
+        await this.#runManualNavigation({
             source: 'goToPercent',
             target: 'view.goToFraction',
             percent: clampedPercent,
             fraction,
             requestSource: source,
-        }, () => this.view.goToFraction(fraction));
+        }, (view, options) => view.goToFraction(fraction, options), view);
         return true;
     }
     async goToLocationNumber(locationNumber, source = 'unknown') {
+        const view = this.view;
         if (!this.view) {
             return false;
         }
@@ -4286,14 +4298,14 @@ class Reader {
         const fraction = maxLocationNumber > 1
             ? (clampedLocationNumber - 1) / (maxLocationNumber - 1)
             : 0;
-        await runWithNavigationIntent({
+        await this.#runManualNavigation({
             source: 'goToLocationNumber',
             target: 'view.goToFraction',
             locationNumber: clampedLocationNumber,
             locationTotal: maxLocationNumber,
             fraction,
             requestSource: source,
-        }, () => this.view.goToFraction(fraction));
+        }, (view, options) => view.goToFraction(fraction, options), view);
         return true;
     }
     async goToPageNumber(pageNumber, source = 'unknown') {
@@ -4457,6 +4469,7 @@ class Reader {
                 .catch((error) => console.error(error));
         }, 120);
         this.scheduleGoToFraction = debounce((fraction) => {
+            const view = this.view;
             const clampedFraction = Math.max(0, Math.min(1, Number(fraction)));
             if (shouldSkipScheduledReaderFractionGoToForRestoreSettling(clampedFraction)) {
                 return false;
@@ -4501,11 +4514,11 @@ class Reader {
             if (roundedCurrentPercent != null && roundedTargetPercent != null && roundedCurrentPercent === roundedTargetPercent) {
                 return;
             }
-            runWithNavigationIntent({
+            this.#runManualNavigation({
                 source: 'live-schedule',
                 target: 'view.goToFraction',
                 fraction: clampedFraction,
-            }, () => this.view.goToFraction(clampedFraction))
+            }, (view, options) => view.goToFraction(clampedFraction, options), view)
                 .then(() => {
                 })
                 .catch((error) => {
@@ -6152,6 +6165,7 @@ class Reader {
         );
         // Side-nav scroll handlers
         const runSideButtonPageTurn = async (side, method, button, eventType) => {
+            const view = this.view;
             if (button?.disabled || isCompactNavigationSheetSidePaginationDisabled()) {
                 return;
             }
@@ -6159,9 +6173,11 @@ class Reader {
                 this.#clearVisiblePageReadChrome('page-turn-start');
                 this.#applyPageTurnNavigationVisibility(method, 'page-turn.side-button');
                 if (method === 'goLeft') {
-                    await this.view.goLeft();
+                    await this.#runManualNavigation(null,
+                        (view, options) => view.goLeft(options), view);
                 } else {
-                    await this.view.goRight();
+                    await this.#runManualNavigation(null,
+                        (view, options) => view.goRight(options), view);
                 }
             } catch (error) {
                 throw error;
@@ -6618,11 +6634,12 @@ class Reader {
                     if (!toc || this.#tocView || !isCurrent()) return
                     const tocView = createTOCView(toc, async (href) => {
                         if (!isCurrent()) return
-                        await runWithNavigationIntent({
+                        const view = this.view
+                        await this.#runManualNavigation({
                             source: 'toc',
                             target: 'view.goTo',
                             href,
-                        }, () => this.view.goTo(href)).catch(e => console.error(e))
+                        }, (view, options) => view.goTo(href, options), view).catch(e => console.error(e))
                         if (isCurrent()) this.closeSideBar()
                     })
                     if (!isCurrent()) return
@@ -6797,29 +6814,34 @@ class Reader {
     }
     async #handleKeydown(event) {
         const k = event.key;
-        const renderer = this.view?.renderer;
+        const view = this.view;
+        const renderer = view?.renderer;
         if (!renderer) return;
         const isRTL = this.isRTL;
+        const ownsView = () => !this.#closed && globalThis.reader === this
+            && this.view === view && view.renderer === renderer;
 
         if (k === 'ArrowLeft' || k === 'h') {
-            if (isRTL && await renderer.atEnd()) {
-                this.buttons.next.click();
-            } else if (!isRTL && await renderer.atStart()) {
-                this.buttons.prev.click();
+            const atBoundary = isRTL ? await renderer.atEnd() : await renderer.atStart();
+            if (!ownsView()) return;
+            if (atBoundary) {
+                (isRTL ? this.buttons.next : this.buttons.prev).click();
             } else {
                 this.#clearVisiblePageReadChrome('page-turn-start');
                 this.#applyPageTurnNavigationVisibility('goLeft', 'page-turn.keydown');
-                await this.view.goLeft();
+                await this.#runManualNavigation(null,
+                    (view, options) => view.goLeft(options), view);
             }
         } else if (k === 'ArrowRight' || k === 'l') {
-            if (isRTL && await renderer.atStart()) {
-                this.buttons.prev.click();
-            } else if (!isRTL && await renderer.atEnd()) {
-                this.buttons.next.click();
+            const atBoundary = isRTL ? await renderer.atStart() : await renderer.atEnd();
+            if (!ownsView()) return;
+            if (atBoundary) {
+                (isRTL ? this.buttons.prev : this.buttons.next).click();
             } else {
                 this.#clearVisiblePageReadChrome('page-turn-start');
                 this.#applyPageTurnNavigationVisibility('goRight', 'page-turn.keydown');
-                await this.view.goRight();
+                await this.#runManualNavigation(null,
+                    (view, options) => view.goRight(options), view);
             }
         }
     }
@@ -7186,8 +7208,9 @@ class Reader {
         };
     }
     async #turnLookupNavigationPage(direction) {
-        const renderer = this.view?.renderer;
-        if (!renderer || !this.view) {
+        const view = this.view;
+        const renderer = view?.renderer;
+        if (!renderer || !view) {
             return {
                 moved: false,
                 failureReason: 'missingRenderer',
@@ -7196,35 +7219,44 @@ class Reader {
         const normalizedDirection = direction === 'previous' ? 'previous' : 'next';
         const atStart = await renderer.atStart?.();
         const atEnd = await renderer.atEnd?.();
+        if (this.#closed || globalThis.reader !== this || this.view !== view || view.renderer !== renderer) {
+            return { moved: false, failureReason: 'staleReader' };
+        }
         if (normalizedDirection === 'next') {
             if (atEnd === true) {
                 this.#clearVisiblePageReadChrome('lookup-navigation-page-turn-start');
                 this.#applyLogicalPageTurnNavigationVisibility('forward', 'lookup-navigation.next-section');
-                await renderer.nextSection?.();
+                await this.#runManualNavigation(null,
+                    (view, options) => view.nextSection(options), view);
                 return { moved: true, mode: 'nextSection' };
             }
             this.#clearVisiblePageReadChrome('lookup-navigation-page-turn-start');
             this.#applyLogicalPageTurnNavigationVisibility('forward', 'lookup-navigation.page');
             if (this.isRTL) {
-                await this.view.goLeft();
+                await this.#runManualNavigation(null,
+                    (view, options) => view.goLeft(options), view);
                 return { moved: true, mode: 'goLeft' };
             }
-            await this.view.goRight();
+            await this.#runManualNavigation(null,
+                (view, options) => view.goRight(options), view);
             return { moved: true, mode: 'goRight' };
         }
         if (atStart === true) {
             this.#clearVisiblePageReadChrome('lookup-navigation-page-turn-start');
             this.#applyLogicalPageTurnNavigationVisibility('backward', 'lookup-navigation.previous-section');
-            await renderer.prevSection?.();
+            await this.#runManualNavigation(null,
+                (view, options) => view.prevSection(options), view);
             return { moved: true, mode: 'prevSection' };
         }
         this.#clearVisiblePageReadChrome('lookup-navigation-page-turn-start');
         this.#applyLogicalPageTurnNavigationVisibility('backward', 'lookup-navigation.page');
         if (this.isRTL) {
-            await this.view.goRight();
+            await this.#runManualNavigation(null,
+                (view, options) => view.goRight(options), view);
             return { moved: true, mode: 'goRight' };
         }
-        await this.view.goLeft();
+        await this.#runManualNavigation(null,
+            (view, options) => view.goLeft(options), view);
         return { moved: true, mode: 'goLeft' };
     }
     async performLookupNavigationPageTurn(request = {}) {
@@ -7779,20 +7811,30 @@ class Reader {
         currentPageNumber,
         totalPages,
         sectionIndex,
+        publication,
     }) => {
+        const mayPersist = () => ebookRelocatePersistenceDecision({
+            hasLoadedLastPosition: this.hasLoadedLastPosition,
+            restoreInProgress: globalThis.__manabiRestoreInProgress,
+            suppressNextRestoreRelocateSave: globalThis.__manabiSuppressNextRestoreRelocateSave,
+            requireUserInputBeforePositionSave: globalThis.__manabiRequireUserInputBeforePositionSave,
+            reason,
+        }).shouldPersist;
+        if (!publication?.isCurrent() || !mayPersist()) return;
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
-        const content = getPrimaryRendererContent(this.view?.renderer);
+        const content = getPrimaryRendererContent(publication.renderer);
         const doc = content?.doc || content?.document || null;
         const visibleRange = isDocumentLike(doc) ? this.#visibleRangeForDocument(doc) : null;
         const visibleSegmentsResult = isDocumentLike(doc)
             ? this.#visiblePageSegmentResult(doc, visibleRange, 'reading-progress')
             : null;
         const visibleJapaneseTextState = getVisibleJapaneseTextStateForRenderer(
-            this.view?.renderer,
+            publication.renderer,
             visibleRange,
             visibleSegmentsResult
         );
-        window.webkit.messageHandlers.updateReadingProgress.postMessage({
+        if (!mayPersist()) return;
+        publication.publishIfCurrent(() => window.webkit.messageHandlers.updateReadingProgress.postMessage({
             fractionalCompletion: fraction,
             cfi: cfi,
             reason: reason,
@@ -7803,12 +7845,16 @@ class Reader {
             hasVisibleJapaneseText: visibleJapaneseTextState.hasVisibleJapaneseText,
             visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
             observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
-        })
+        }))
     }, 400)
 
     async #onRelocate({
         detail
     }) {
+        const publication = captureEbookRelocatePublication({
+            reader: this, view: this.view, detail,
+            getCurrentReader: () => globalThis.reader,
+        });
         const {
             fraction,
             location,
@@ -7944,24 +7990,16 @@ class Reader {
         };
         // (removed: setting tocView currentHref here)
 
-        if (this.hasLoadedLastPosition && !globalThis.__manabiRestoreInProgress) {
-            if (didMarkCFIUnstable) {
-            }
-            const normalizedRelocateReason = typeof reason === 'string' ? reason.trim().toLowerCase() : '';
-            const shouldSuppressRestoreSettleSave =
-                globalThis.__manabiSuppressNextRestoreRelocateSave === true
-                && normalizedRelocateReason === 'page';
-            if (shouldSuppressRestoreSettleSave) {
-                globalThis.__manabiSuppressNextRestoreRelocateSave = false;
-            }
-            const requiresUserInputBeforePositionSave =
-                globalThis.__manabiRequireUserInputBeforePositionSave === true;
-            const shouldPersistRelocatePosition =
-                normalizedRelocateReason !== 'anchor'
-                && !shouldSuppressRestoreSettleSave
-                && !requiresUserInputBeforePositionSave;
-            if (!shouldPersistRelocatePosition) {
-            } else {
+        if (publication?.isCurrent()) {
+            const persistence = ebookRelocatePersistenceDecision({
+                hasLoadedLastPosition: this.hasLoadedLastPosition,
+                restoreInProgress: globalThis.__manabiRestoreInProgress,
+                suppressNextRestoreRelocateSave: globalThis.__manabiSuppressNextRestoreRelocateSave,
+                requireUserInputBeforePositionSave: globalThis.__manabiRequireUserInputBeforePositionSave,
+                reason,
+            });
+            if (persistence.clearSuppression) globalThis.__manabiSuppressNextRestoreRelocateSave = false;
+            if (persistence.shouldPersist) {
                 this.#postUpdateReadingProgressMessage({
                     fraction: progressFraction,
                     cfi: persistedLocator,
@@ -7971,7 +8009,8 @@ class Reader {
                         : null,
                     totalPages: typeof rendererTotal === 'number' ? rendererTotal : null,
                     sectionIndex,
-                })
+                    publication,
+                });
             }
         }
 
@@ -8000,7 +8039,8 @@ class Reader {
         if (this.#closed) return
         const btn = e.currentTarget;
         const type = btn.dataset.buttonType;
-        const renderer = this.view?.renderer;
+        const view = this.view;
+        const renderer = view?.renderer;
         if (!renderer) return;
         markRestorePositionSaveUserInput(`nav-button.${type ?? 'unknown'}`);
         finishOwnedElementOperation(btn);
@@ -8069,13 +8109,15 @@ class Reader {
                 // TODO: Clean up, the scroll cases here won't be reached because of above...
             case 'prev':
                 // Go to previous section, then jump to its end
-                await renderer.prevSection().then(() => {
+                await this.#runManualNavigation(null,
+                    (view, options) => view.prevSection(options), view).then(() => {
                     // TODO: Add this here...
                     //this.view.fraction = 1;
                 });
                 break;
             case 'next':
-                await renderer.nextSection();
+                await this.#runManualNavigation(null,
+                    (view, options) => view.nextSection(options), view);
                 break;
             default:
                 break;
@@ -8686,9 +8728,10 @@ window.manabiBeginReaderProgressScrub = () => {
 
 window.manabiEndReaderProgressScrub = async (fraction, cancel = false) => {
     markRestorePositionSaveUserInput(cancel ? 'bridge.endReaderProgressScrub.cancel' : 'bridge.endReaderProgressScrub.commit');
-    const navHUD = globalThis.reader?.navHUD;
-    const view = globalThis.reader?.view;
-    globalThis.reader?.scheduleGoToFraction?.cancel?.();
+    const reader = globalThis.reader;
+    const navHUD = reader?.navHUD;
+    const view = reader?.view;
+    reader?.scheduleGoToFraction?.cancel?.();
     const numericFraction = Number(fraction);
     const clampedFraction = Number.isFinite(numericFraction)
         ? Math.max(0, Math.min(1, numericFraction))
@@ -8705,11 +8748,11 @@ window.manabiEndReaderProgressScrub = async (fraction, cancel = false) => {
     if (!cancel && Number.isFinite(clampedFraction) && view) {
         try {
             navHUD?.requestExplicitRelocateHistoryMutation?.('scrub-release');
-            await runWithNavigationIntent({
+            await runManualNavigation({
                 source: 'scrub-release',
                 target: 'view.goToFraction',
                 fraction: clampedFraction,
-            }, () => view.goToFraction(clampedFraction));
+            }, (view, options) => view.goToFraction(clampedFraction, options), { reader, view });
             finalizeScrubSession();
         } catch (error) {
             finalizeScrubSession();

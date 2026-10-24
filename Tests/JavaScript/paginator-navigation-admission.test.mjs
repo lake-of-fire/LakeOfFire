@@ -176,3 +176,56 @@ test('wheel foreground callback supersession stops the original page-turn handle
     assert.equal(turns, 0)
     renderer.destroy()
 })
+
+// The existing empty-source host admits real commands without creating an
+// iframe. These cases qualify receipt ownership, not rendered page geometry.
+const receiptFixture = load => {
+    const renderer = new Paginator()
+    renderer.open({ dir: 'ltr', sections: [{ load: load ?? (async () => '') }] }, true)
+    renderer.pageMetrics = async () => ({ pages: 0 })
+    return renderer
+}
+
+test('navigation receipt: actual paginator grants fresh ownership and retains the stronger position proof boundary', async t => {
+    const renderer = receiptFixture()
+    t.after(() => renderer.destroy())
+    const first = await renderer.goTo({ index: 0, anchor: 0.5 }, { requiresNavigationReceipt: true })
+    assert.equal(renderer.isNavigationReceiptCurrent(first), true)
+    assert.equal(renderer.isNavigationReceiptCurrent({ ...first }), false)
+    assert.equal(renderer.capturePositionProof(first), null, 'a command receipt is not first-page geometry evidence')
+    const second = await renderer.goTo({ index: 0, anchor: 0.5 }, { requiresNavigationReceipt: true })
+    assert.notEqual(first, second)
+    assert.equal(renderer.isNavigationReceiptCurrent(first), false)
+    assert.equal(renderer.isNavigationReceiptCurrent(second), true)
+    assert.equal(await renderer.goTo({ index: -1 }, { requiresNavigationReceipt: true }), null)
+    assert.equal(renderer.isNavigationReceiptCurrent(second), false, 'rejected newer commands do not revive prior ownership')
+})
+
+test('navigation receipt: late target resolution cannot capture an accepted successor command', async t => {
+    const renderer = receiptFixture(), target = deferred()
+    t.after(() => renderer.destroy())
+    const pending = renderer.goTo(target.promise, { requiresNavigationReceipt: true })
+    const successor = await renderer.goTo({ index: 0, anchor: 0.75 }, { requiresNavigationReceipt: true })
+    target.resolve({ index: 0, anchor: 0.25 })
+    assert.equal(await pending, null)
+    assert.equal(renderer.isNavigationReceiptCurrent(successor), true)
+})
+
+test('navigation receipt: section failure grants no receipt, retry succeeds, and destroy revokes it', async () => {
+    const failure = new Error('expected source failure')
+    let attempts = 0
+    const renderer = receiptFixture(async () => {
+        if (++attempts === 1) throw failure
+        return ''
+    })
+    try {
+        await assert.rejects(renderer.goTo({ index: 0, anchor: 0.5 }, { requiresNavigationReceipt: true }),
+            error => error === failure)
+        assert.equal(renderer.isNavigationReceiptCurrent(null), false)
+        const retried = await renderer.goTo({ index: 0, anchor: 0.5 }, { requiresNavigationReceipt: true })
+        assert.equal(attempts, 2)
+        assert.equal(renderer.isNavigationReceiptCurrent(retried), true)
+        renderer.destroy()
+        assert.equal(renderer.isNavigationReceiptCurrent(retried), false)
+    } finally { renderer.destroy() }
+})
