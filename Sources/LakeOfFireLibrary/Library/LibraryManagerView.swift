@@ -117,6 +117,7 @@ private struct ContentRouteSwitcher: View {
                         libraryConfiguration: libraryConfiguration,
                         selectedFeed: $viewModel.selectedFeed
                     )
+                    .id(LibraryCategoryEditorIdentity(category: category, library: libraryConfiguration))
                 } else {
                     LoadingLibraryView()
                 }
