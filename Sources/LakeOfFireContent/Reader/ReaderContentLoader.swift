@@ -522,7 +522,7 @@ public struct ReaderContentLoader {
     ) async throws {
         guard permitsCommit() else { return }
         try Task.checkCancellation()
-        try await updateContent(url: url) { record in
+        try await updateContent(url: url) { record, timestamp in
             guard permitsCommit(), !Task.isCancelled,
                   !(record.compoundKey == primaryKey
                     && record.objectSchema.className == primaryClassName) else {
@@ -532,11 +532,13 @@ public struct ReaderContentLoader {
             var changed = false
             if !record.isReaderModeByDefault {
                 record.isReaderModeByDefault = true
-                changed = true
+                // FeedEntry exposes feed policy through an intentionally inert
+                // setter. An attempted assignment is not a persisted change.
+                changed = record.isReaderModeByDefault
             }
             if record.isReaderModeAvailable {
                 record.isReaderModeAvailable = false
-                changed = true
+                changed = changed || !record.isReaderModeAvailable
             }
             if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
                 if !url.isReaderFileURL,
@@ -551,9 +553,17 @@ public struct ReaderContentLoader {
                     record.title = resolvedTitle
                     changed = true
                 }
-                if !record.rssContainsFullContent {
+                if let entry = record as? FeedEntry {
+                    // This protocol property belongs to the Feed, not its entry.
+                    // Resolve and journal that owner in this same transaction.
+                    if let feed = entry.getFeed(), !feed.isDeleted,
+                       !feed.rssContainsFullContent {
+                        feed.rssContainsFullContent = true
+                        feed.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                    }
+                } else if !record.rssContainsFullContent {
                     record.rssContainsFullContent = true
-                    changed = true
+                    changed = changed || record.rssContainsFullContent
                 }
             }
             // updateContent journals just once, and only for an actual change.
@@ -568,6 +578,21 @@ public struct ReaderContentLoader {
         skipContentFiles: Bool = false,
         skipFeedEntries: Bool = false,
         mutate: (Object & ReaderContentProtocol) -> Bool
+    ) async throws {
+        try await updateContent(
+            url: url,
+            skipContentFiles: skipContentFiles,
+            skipFeedEntries: skipFeedEntries
+        ) { record, _ in mutate(record) }
+    }
+
+    /// Keep related model mutations on the existing writer's batch timestamp.
+    @RealmBackgroundActor
+    private static func updateContent(
+        url: URL,
+        skipContentFiles: Bool = false,
+        skipFeedEntries: Bool = false,
+        mutate: (Object & ReaderContentProtocol, Date) -> Bool
     ) async throws {
         let storage = DiscoveryStorage()
         let references = try await discoverContentReferences(
@@ -588,7 +613,7 @@ public struct ReaderContentLoader {
                 guard let object = realm.object(ofType: reference.contentType,
                     forPrimaryKey: reference.contentKey) as? (Object & ReaderContentProtocol),
                     !object.isDeleted else { return }
-                if mutate(object) {
+                if mutate(object, timestamp) {
                     object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 }
             }
