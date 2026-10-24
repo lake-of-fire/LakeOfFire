@@ -549,6 +549,12 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         sortOrder: ReaderContentSortOrder? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) async throws {
+        // A cancelled caller cannot revoke an admitted load or publish a fast path.
+        try Task.checkCancellation()
+        loadContentsTask?.cancel()
+        let loadID = UUID()
+        currentLoadID = loadID
+        loadContentsTask = nil
         let contentIDs = contents.map(\.compoundKey)
 
         if sortOrder == nil && contentFilter == nil && postSortTransform == nil {
@@ -569,9 +575,6 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         
         let realmConfig = contents.first?.realm?.configuration
         self.realmConfiguration = realmConfig
-        loadContentsTask?.cancel()
-        let loadID = UUID()
-        currentLoadID = loadID
         let task = Task { @ReaderContentListActor in
             var filtered: [C] = []
 
@@ -652,13 +655,13 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             try await { @MainActor [weak self] in
                 try Task.checkCancellation()
                 guard let self = self else { return }
-                guard self.currentLoadID == loadID else { return }
+                guard !Task.isCancelled, self.currentLoadID == loadID else { return }
 
                 let resolvedContents: [C]
                 let resolvedIDs: [String]
                 if let realmConfig {
                     let realm = try await Realm(configuration: realmConfig, actor: MainActor.shared)
-                    guard self.currentLoadID == loadID else { return }
+                    guard !Task.isCancelled, self.currentLoadID == loadID else { return }
                     let resolvedItems = ids.compactMap { id in
                         realm.object(ofType: C.self, forPrimaryKey: id).map { content in
                             (id: id, content: content)
@@ -675,7 +678,12 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         }
         loadContentsTask = task
 
-        try? await task.value
+        try? await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            // Cancel only this caller's producer, never a replacement handle.
+            task.cancel()
+        }
         guard currentLoadID == loadID else { return }
         loadContentsTask = nil
     }
