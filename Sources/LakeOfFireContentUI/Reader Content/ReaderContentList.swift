@@ -83,12 +83,23 @@ public enum ReaderContentListDeleteDialog: @preconcurrency Identifiable {
 }
 
 @MainActor
+struct ReaderContentListDeletePresentation: @preconcurrency Identifiable {
+    let id: UUID
+    let dialog: ReaderContentListDeleteDialog
+    let dismiss: @MainActor @Sendable () -> Void
+    let confirm: (@MainActor @Sendable () -> Task<Void, Never>?)?
+}
+
+@MainActor
 public class ReaderContentListModalsModel: ObservableObject {
     @Published var deleteDialog: ReaderContentListDeleteDialog?
+    private(set) var deleteDialogGeneration = UUID()
+    private var confirmedDeleteGeneration: UUID?
 
     public init() { }
 
     func presentDeleteConfirmation(for items: [any DeletableReaderContent]) {
+        deleteDialogGeneration = UUID()
         guard let first = items.first else {
             deleteDialog = nil
             return
@@ -102,13 +113,110 @@ public class ReaderContentListModalsModel: ObservableObject {
     }
 
     func presentDeleteError(for error: Error) {
+        deleteDialogGeneration = UUID()
         let alert = ReaderFileOperationMessageMapper.deleteAlert(for: error)
             ?? ("Delete Failed", error.localizedDescription)
         deleteDialog = .error(title: alert.title, message: alert.message)
     }
 
-    func clearDeleteDialog() {
+    func clearDeleteDialog(generation: UUID? = nil) {
+        guard generation == nil || generation == deleteDialogGeneration else { return }
+        deleteDialogGeneration = UUID()
         deleteDialog = nil
+    }
+
+    func deleteDialogBinding(
+        isActive: Binding<Bool>
+    ) -> Binding<ReaderContentListDeletePresentation?> {
+        let generation = deleteDialogGeneration
+        return Binding(
+            get: { [weak self] in
+                guard isActive.wrappedValue, let self,
+                      self.deleteDialogGeneration == generation,
+                      let dialog = self.deleteDialog else { return nil }
+                let confirm: (@MainActor @Sendable () -> Task<Void, Never>?)?
+                if case .confirm(let items, _, _, _) = dialog {
+                    confirm = { [weak self] in
+                        guard isActive.wrappedValue else { return nil }
+                        return self?.requestConfirmedDeletion(items, generation: generation)
+                    }
+                } else {
+                    confirm = nil
+                }
+                return ReaderContentListDeletePresentation(
+                    id: generation,
+                    dialog: dialog,
+                    dismiss: { [weak self] in
+                        guard isActive.wrappedValue else { return }
+                        self?.clearDeleteDialog(generation: generation)
+                    },
+                    confirm: confirm
+                )
+            },
+            set: { [weak self] presentation in
+                guard isActive.wrappedValue, let self,
+                      self.deleteDialogGeneration == generation else { return }
+                if let presentation, presentation.id != generation { return }
+                // SwiftUI's automatic dismissal is not an explicit cancellation.
+                // Keep the accepted command's generation so its error can appear.
+                self.deleteDialog = presentation?.dialog
+            }
+        )
+    }
+
+    private func requestConfirmedDeletion(
+        _ items: [any DeletableReaderContent],
+        generation: UUID
+    ) -> Task<Void, Never>? {
+        guard !Task.isCancelled, generation == deleteDialogGeneration,
+              confirmedDeleteGeneration != generation else { return nil }
+        confirmedDeleteGeneration = generation
+        // Admission happens in the button action, before scheduling. A later
+        // dialog can retire presentation authority, not the accepted deletion.
+        return Task { @MainActor in
+            await deleteConfirmedItems(items, generation: generation)
+        }
+    }
+
+    func deleteConfirmedItems(
+        _ items: [any DeletableReaderContent],
+        generation: UUID? = nil
+    ) async {
+        await performDeleteAction(generation: generation ?? deleteDialogGeneration, clearOnSuccess: true) {
+            try await preflightDeleteBatch(items)
+            for item in items {
+                try await item.delete()
+            }
+        }
+    }
+
+    @discardableResult
+    func requestDeleteOperation(
+        _ operation: @escaping @MainActor () async throws -> Void
+    ) -> Task<Void, Never>? {
+        guard !Task.isCancelled else { return nil }
+        let generation = UUID()
+        deleteDialogGeneration = generation
+        return Task { @MainActor in
+            await performDeleteAction(generation: generation, clearOnSuccess: false, operation: operation)
+        }
+    }
+
+    private func performDeleteAction(
+        generation: UUID,
+        clearOnSuccess: Bool,
+        operation: @MainActor () async throws -> Void
+    ) async {
+        do {
+            try await operation()
+            if clearOnSuccess, generation == deleteDialogGeneration {
+                clearDeleteDialog(generation: generation)
+            }
+        } catch {
+            if generation == deleteDialogGeneration {
+                presentDeleteError(for: error)
+            }
+        }
     }
 }
 
@@ -120,37 +228,17 @@ struct ReaderContentListSheetsModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .alert(item: Binding<ReaderContentListDeleteDialog?>(
-                get: {
-                    guard isActive else { return nil }
-                    return readerContentListModalsModel.deleteDialog
-                },
-                set: { newValue in
-                    if isActive {
-                        readerContentListModalsModel.deleteDialog = newValue
-                    }
-                }
-            )) { dialog in
-                switch dialog {
-                case .confirm(let items, let title, let message, let actionTitle):
+            .alert(item: readerContentListModalsModel.deleteDialogBinding(isActive: $isActive)) { presentation in
+                switch presentation.dialog {
+                case .confirm(_, let title, let message, let actionTitle):
                     return Alert(
                         title: Text(title),
                         message: Text(message),
                         primaryButton: .destructive(Text(actionTitle)) {
-                            Task { @MainActor in
-                                do {
-                                    try await preflightDeleteBatch(items)
-                                    for item in items {
-                                        try await item.delete()
-                                    }
-                                    readerContentListModalsModel.clearDeleteDialog()
-                                } catch {
-                                    readerContentListModalsModel.presentDeleteError(for: error)
-                                }
-                            }
+                            _ = presentation.confirm?()
                         },
                         secondaryButton: .cancel {
-                            readerContentListModalsModel.clearDeleteDialog()
+                            presentation.dismiss()
                         }
                     )
                 case .error(let title, let message):
@@ -158,7 +246,7 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                         title: Text(title),
                         message: Text(message),
                         dismissButton: .default(Text("OK")) {
-                            readerContentListModalsModel.clearDeleteDialog()
+                            presentation.dismiss()
                         }
                     )
                 }
@@ -1308,12 +1396,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             Button(role: .destructive) {
                 let selected = viewModel.filteredContents.filter { multiSelection.contains($0.compoundKey) }
                 if let onDelete {
-                    Task { @MainActor in
-                        do {
-                            try await onDelete(selected)
-                        } catch {
-                            readerContentListModalsModel.presentDeleteError(for: error)
-                        }
+                    readerContentListModalsModel.requestDeleteOperation {
+                        try await onDelete(selected)
                     }
                 } else if let selected = selected as? [any DeletableReaderContent] {
                     readerContentListModalsModel.presentDeleteConfirmation(for: selected)
