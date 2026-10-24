@@ -57,6 +57,7 @@ export class View extends HTMLElement {
     #documentBindings = new Map()
     #openGeneration = 0
     #navigationGeneration = 0
+    #navigationReceipts = new WeakMap()
     #positionReceipts = new WeakMap()
     #positionProofs = new WeakMap()
     isFixedLayout = false
@@ -381,12 +382,15 @@ export class View extends HTMLElement {
             console.error(`Could not resolve target ${target}`)
         }
     }
-    async #navigate(target, { select = false, recordHistory = true, requiresPositionReceipt = false } = {}) {
+    async #navigate(target, { select = false, recordHistory = true,
+        requiresNavigationReceipt = false, requiresPositionReceipt = false, localPage } = {}) {
         const navigationGeneration = ++this.#navigationGeneration
         const renderer = this.renderer
         const book = this.book
         const openGeneration = this.#openGeneration
         if (!renderer || !book) return null
+        if (localPage != null && (typeof target !== 'number'
+            || !Number.isInteger(localPage) || localPage < 0)) return null
         if (requiresPositionReceipt && (target?.fraction !== 0
             || renderer.localName !== 'foliate-paginator' || renderer.scrolled)) return null
         const isCurrent = () => this.renderer === renderer && this.book === book
@@ -397,8 +401,9 @@ export class View extends HTMLElement {
         // as successful navigation or an acknowledged saved-position restore.
         if (!resolved || !Number.isInteger(resolved.index)
             || resolved.index < 0 || resolved.index >= book.sections.length) return null
+        const rendererTarget = localPage == null ? resolved : { ...resolved, localPage }
         const result = await runCurrentRendererOperation({
-            operation: () => renderer.goTo(select ? { ...resolved, select: true } : resolved,
+            operation: () => renderer.goTo(select ? { ...rendererTarget, select: true } : rendererTarget,
                 { requiresPositionReceipt }),
             isCurrent,
         })
@@ -409,10 +414,16 @@ export class View extends HTMLElement {
         if (requiresPositionReceipt && !renderer.isPositionReceiptCurrent?.(result.value)) return null
         if (recordHistory) this.history.pushState(target)
         if (!isCurrent()) return null
-        if (!requiresPositionReceipt) return resolved
-        if (!renderer.isPositionReceiptCurrent(result.value)) return null
-        const receipt = Object.freeze({ index: result.value.index, anchor: result.value.anchor })
-        this.#positionReceipts.set(receipt, { renderer, rendererReceipt: result.value, isCurrent })
+        if (!requiresNavigationReceipt && !requiresPositionReceipt) return resolved
+        if (requiresPositionReceipt && !renderer.isPositionReceiptCurrent(result.value)) return null
+        // Each accepted command gets a fresh receipt, even when a resolver reuses
+        // its target object. Later commands must never re-key an older receipt.
+        const receipt = Object.freeze(requiresPositionReceipt
+            ? { index: result.value.index, anchor: result.value.anchor } : { ...resolved })
+        this.#navigationReceipts.set(receipt, { isCurrent })
+        if (requiresPositionReceipt) {
+            this.#positionReceipts.set(receipt, { renderer, rendererReceipt: result.value, isCurrent })
+        }
         return receipt
     }
     async goTo(target, options) {
@@ -428,6 +439,9 @@ export class View extends HTMLElement {
         if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) return null
         // Use the same renderer/load/command fence as CFI and href navigation.
         return this.goTo({ fraction }, options)
+    }
+    isNavigationReceiptCurrent(receipt) {
+        return this.#navigationReceipts.get(receipt)?.isCurrent() === true
     }
     capturePositionProof(receipt) {
         const navigation = receipt && this.#positionReceipts.get(receipt)

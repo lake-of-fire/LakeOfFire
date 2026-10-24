@@ -1,7 +1,6 @@
 import { EbookLoadResources } from './ebook-load-resources.js'
 import {
     makeInitialRestoreTerminalResult,
-    isPureZeroRestore,
     normalizeInitialRestoreRequest,
     parseSyntheticRestoreLocator,
     runRequiredRestoreNavigation,
@@ -187,9 +186,13 @@ export const createEbookLoadHandlers = ({
         const initialPositionMode = pureZero ? positionMode() : null
         let settledLocation = null
         let positionProof = null
+        let navigationReceipt = null
         let retainedCompletion = false
         const check = () => {
             assertCurrent(restore)
+            if (navigationReceipt && !view.isNavigationReceiptCurrent?.(navigationReceipt)) {
+                throw new EbookLoadSupersededError()
+            }
             if (pureZero && (positionMode() !== initialPositionMode
                 || (settledLocation && (view.lastLocation !== settledLocation.detail
                     || view.lastLocation?.fraction !== settledLocation.currentFraction)))) {
@@ -202,9 +205,16 @@ export const createEbookLoadHandlers = ({
         const releaseCompletion = () => {
             if (restore.ownsFlags()) clearRestoreFlags()
         }
+        const retainCompletion = snapshot => {
+            if (deferCompletionRelease) {
+                retainedCompletion = true
+                completionLeases.set(snapshot, { check, release: releaseCompletion, restore })
+            }
+        }
         const effect = operation => { check(); const result = operation(); check(); return result }
         const waitForFrames = async (count = 2) => {
             for (let index = 0; index < count; index += 1) {
+                check()
                 let scheduled
                 try {
                     await waitFor(restore, () => new Promise(resolve => {
@@ -214,6 +224,7 @@ export const createEbookLoadHandlers = ({
                             setTimer: host.setTimeout.bind(host), clearTimer: host.clearTimeout.bind(host) })
                     }))
                 } finally { scheduled?.cancel() }
+                check()
             }
         }
         const captureState = () => {
@@ -227,10 +238,21 @@ export const createEbookLoadHandlers = ({
                 sectionIndex: detail?.section?.current ?? detail?.sectionIndex ?? null,
             }
         }
-        const navigate = async (intent, action) => {
+        const navigate = async (intent, action, requiresNavigationReceipt = true) => {
             const result = await waitFor(restore, () => runRequiredRestoreNavigation(
-                () => runWithNavigationIntent(intent, () => effect(action))))
+                () => runWithNavigationIntent(intent, () => {
+                    // Check the previous command at the actual dispatch boundary:
+                    // intent publication can itself admit a newer navigation.
+                    check()
+                    navigationReceipt = null
+                    return effect(action)
+                })))
             if (!result.ok) throw result.error
+            if (requiresNavigationReceipt) {
+                if (!view.isNavigationReceiptCurrent?.(result.value)) throw new EbookLoadSupersededError()
+                navigationReceipt = result.value
+            }
+            check()
             return result.value
         }
         const validFraction = Number.isFinite(fractionalCompletion)
@@ -255,9 +277,10 @@ export const createEbookLoadHandlers = ({
                 const supportsLocalPage = renderer.localName === 'foliate-paginator'
                     && !renderer.scrolled && typeof renderer.goTo === 'function'
                 if (supportsLocalPage) {
-                    await navigate({ source: 'restore.synthetic', target: 'renderer.goTo',
+                    await navigate({ source: 'restore.synthetic', target: 'view.goTo',
                         sectionIndex: synthetic.sectionIndex, localPage: synthetic.localSectionIndex },
-                        () => renderer.goTo({ index: synthetic.sectionIndex, localPage: synthetic.localSectionIndex }))
+                        () => view.goTo(synthetic.sectionIndex, { localPage: synthetic.localSectionIndex,
+                            recordHistory: false, requiresNavigationReceipt: true }))
                     handledCFI = cfi
                 } else {
                     // Preserve the selected CFI-plus-zero rule: only a positive
@@ -267,12 +290,14 @@ export const createEbookLoadHandlers = ({
                     // authorize another navigation in that case.
                     if (!hasFraction) throw new Error('Synthetic restore requires paginated navigation')
                     await navigate({ source: 'restore.synthetic-fallback', target: 'view.goToFraction',
-                        fraction: fractionalCompletion }, () => view.goToFraction(fractionalCompletion))
+                        fraction: fractionalCompletion }, () => view.goToFraction(fractionalCompletion,
+                            { requiresNavigationReceipt: true }))
                 }
                 await waitForFrames()
             } else if (cfi.length > 0) {
                 await navigate({ source: 'restore.cfi', target: 'view.goTo', cfiLength: cfi.length,
-                    fraction: hasFraction ? fractionalCompletion : null }, () => view.goTo(cfi))
+                    fraction: hasFraction ? fractionalCompletion : null }, () => view.goTo(cfi,
+                        { requiresNavigationReceipt: true }))
                 handledCFI = cfi
                 await waitForFrames()
                 const state = captureState()
@@ -285,14 +310,15 @@ export const createEbookLoadHandlers = ({
                     if ((delta > 0.003 || percentChanged) && !(targetPage != null && pages?.current === targetPage)) {
                         await navigate({ source: 'restore.reconcile', reason: 'cfi-fraction-drift',
                             target: 'view.goToFraction', fraction: fractionalCompletion,
-                            stageOnReconcile: 'after-cfi-fraction-reconcile' }, () => view.goToFraction(fractionalCompletion))
+                            stageOnReconcile: 'after-cfi-fraction-reconcile' }, () => view.goToFraction(fractionalCompletion,
+                                { requiresNavigationReceipt: true }))
                         await waitForFrames()
                     }
                 }
             } else if (hasFraction) {
                 acceptedPosition = await navigate({ source: 'restore.fraction', target: 'view.goToFraction', fraction: fractionalCompletion },
-                    () => view.goToFraction(fractionalCompletion,
-                        pureZero && initialPositionMode === 'paginated' ? { requiresPositionReceipt: true } : undefined))
+                    () => view.goToFraction(fractionalCompletion, { requiresNavigationReceipt: true,
+                        requiresPositionReceipt: pureZero && initialPositionMode === 'paginated' }))
                 await waitForFrames()
             } else {
                 try {
@@ -302,7 +328,7 @@ export const createEbookLoadHandlers = ({
                 } catch (error) {
                     check() // Cancellation/replacement is never fallback authority.
                     await navigate({ source: 'restore.default', target: 'renderer.nextSection' },
-                        () => renderer.nextSection())
+                        () => renderer.nextSection(), false)
                 }
                 await waitForFrames()
             }
@@ -342,16 +368,16 @@ export const createEbookLoadHandlers = ({
                 requestedFraction: validFraction ? Number(fractionalCompletion.toFixed(6)) : null,
             }))
             effect(() => scheduleDeferredCacheWarmerOpen('load-last-position-done', 2200))
-            if (pureZero && deferCompletionRelease) {
-                retainedCompletion = true
-                completionLeases.set(snapshot, { check, release: releaseCompletion, restore })
-            }
+            retainCompletion(snapshot)
             return snapshot
         } catch (error) {
             if (restore.isCurrent()) {
                 reader.hasLoadedLastPosition = false
                 reader.completeLastPositionLoadAttempt()
             }
+            // A measured failure still belongs to the accepted command. Do not
+            // publish its terminal receipt after a newer navigation takes over.
+            if (error instanceof EbookRestoreValidationError) retainCompletion(error.snapshot)
             throw error
         } finally {
             // Renderer replacement revokes navigation, not this attempt's
@@ -404,7 +430,7 @@ export const createEbookLoadHandlers = ({
             load.restore = restore
             let snapshot = null
             let error = null
-            try { snapshot = await performRestore(restore, load.request ?? {}, isPureZeroRestore(load.request)) }
+            try { snapshot = await performRestore(restore, load.request ?? {}, load.request != null) }
             catch (failure) {
                 if (failure instanceof EbookLoadSupersededError) throw failure
                 if (failure instanceof EbookRestoreValidationError) snapshot = failure.snapshot

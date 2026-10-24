@@ -53,6 +53,16 @@ const fixture = (specs = [], hooks = {}) => {
             this.events.push(['open', source])
             await this.spec.open?.(this, source)
             if (this.isClosed || this.spec.missingRenderer) return
+            // These endpoint doubles acknowledge accepted commands only. The
+            // real View tests below exercise command retirement and identity.
+            const receipts = new WeakSet()
+            const acknowledge = async operation => {
+                const value = await operation()
+                if (value === null || value === false || value?.ignored === true) return value
+                const receipt = value && typeof value === 'object' ? value : Object.freeze({})
+                receipts.add(receipt)
+                return receipt
+            }
             this.view = {
                 lastLocation: { fraction: this.spec.landing ?? 0.25 },
                 renderer: {
@@ -60,8 +70,18 @@ const fixture = (specs = [], hooks = {}) => {
                     next: () => { this.events.push(['next']); return this.spec.next?.(this) },
                     nextSection: () => { this.events.push(['nextSection']); return this.spec.nextSection?.(this) },
                 },
-                goTo: cfi => { this.events.push(['goTo', cfi]); return this.spec.goTo?.(this, cfi) },
-                goToFraction: fraction => { this.events.push(['goToFraction', fraction]); return this.spec.fraction?.(this, fraction) },
+                goTo: (target, options) => acknowledge(() => {
+                    if (typeof target === 'number') {
+                        return this.view.renderer.goTo({ index: target, localPage: options?.localPage })
+                    }
+                    this.events.push(['goTo', target])
+                    return this.spec.goTo?.(this, target)
+                }),
+                goToFraction: fraction => acknowledge(() => {
+                    this.events.push(['goToFraction', fraction])
+                    return this.spec.fraction?.(this, fraction)
+                }),
+                isNavigationReceiptCurrent: receipt => receipts.has(receipt),
             }
             this.spec.configureView?.(this.view, this)
         }
@@ -911,4 +931,286 @@ test('zero scrolled completion cannot publish after a callback changes actual mo
         assert.equal(f.readers[0].hasLoadedLastPosition, false)
         assert.equal(f.host.__manabiRestoreInProgress, false)
     }
+})
+
+// The production load coordinator and View run together. The first three
+// regressions preserve the independent finding's original failing probes.
+// Only the browser host and renderer are controlled; SectionProgress supplies
+// actual fraction mapping. No iframe, CSS layout or native execution is claimed.
+globalThis.HTMLElement = class extends EventTarget {
+    attachShadow() { return { append() {} } }
+}
+globalThis.customElements = { define() {} }
+globalThis.document = { createElement() { throw new Error('Unexpected browser rendering') } }
+const { View: ReviewView } = await import('../../Sources/LakeOfFireReader/Resources/foliate-js/view.js')
+
+const reviewNavigationFixture = ({ cfiAnchor = 0.5, specs = [{}], rendererGoTo } = {}) => {
+    const rendererCalls = []
+    const f = fixture(specs.map(spec => ({
+        ...spec,
+        configureView(_unused, reader) {
+            const view = new ReviewView()
+            const sections = [{ id: 'one', size: 100 }, { id: 'two', size: 100 }]
+            const progress = new SectionProgress(sections, 10, 10)
+            view.book = {
+                sections,
+                resolveCFI: () => ({ index: 0, anchor: cfiAnchor }),
+            }
+            const resolve = view.resolveNavigation.bind(view)
+            view.resolveNavigation = target => {
+                if (typeof target?.fraction !== 'number') return resolve(target)
+                const [index, anchor] = progress.getSection(target.fraction)
+                return { index, anchor }
+            }
+            view.renderer = {
+                localName: 'foliate-paginator', scrolled: false,
+                goTo(target, options) {
+                    rendererCalls.push(target)
+                    const publish = () => { view.lastLocation = buildRelocateLocation({
+                        index: target.index, fraction: target.anchor ?? 0, size: 0,
+                    }, { sectionCount: sections.length, sectionProgress: progress }) }
+                    const operation = spec.rendererGoTo ?? rendererGoTo
+                    return operation ? operation({ target, options, view, reader, publish }) : publish()
+                },
+                destroy() {}, remove() {},
+            }
+            reader.view = view
+            spec.configureView?.(view, reader)
+        },
+    })))
+    return { ...f, rendererCalls }
+}
+
+test('review: CFI reconciliation cannot navigate over a newer completed manual command', async () => {
+    const f = reviewNavigationFixture()
+    f.host.pauseFrames = true
+    const load = f.loadEBook(request('restore', 'epubcfi(/6/2)', 0.25))
+    await until(() => f.frames.size === 1)
+    const view = f.readers[0].view
+    await view.goToFraction(0.8)
+    assert.equal(view.lastLocation.fraction, 0.8)
+    f.host.pauseFrames = false
+    for (const [id, callback] of f.frames) { f.frames.delete(id); callback() }
+    await load
+    assert.equal(view.lastLocation.fraction, 0.8, 'the newer manual navigation owns the current page')
+    assert.equal(f.rendererCalls.length, 2, 'an obsolete restore cannot dispatch drift reconciliation')
+    assert.equal(f.messages.some(message => message.initialRestoreResult.restoreSatisfied), false)
+})
+
+test('review: CFI-only completion cannot credit a position replaced before frame settlement', async () => {
+    const f = reviewNavigationFixture()
+    f.host.pauseFrames = true
+    const load = f.loadEBook(request('restore', 'epubcfi(/6/2)', null))
+    await until(() => f.frames.size === 1)
+    const view = f.readers[0].view
+    await view.goToFraction(0.8)
+    f.host.pauseFrames = false
+    for (const [id, callback] of f.frames) { f.frames.delete(id); callback() }
+    await load
+    assert.equal(view.lastLocation.fraction, 0.8)
+    assert.equal(f.messages.some(message => message.initialRestoreResult.restoreSatisfied), false,
+        'the original CFI cannot be reported satisfied after newer navigation took ownership')
+    assert.equal(f.readers[0].hasLoadedLastPosition, false)
+})
+
+test('review: current CFI drift still reconciles without a newer navigation command', async () => {
+    const f = reviewNavigationFixture({ cfiAnchor: 0.2 })
+    await f.loadEBook(request('restore', 'epubcfi(/6/2)', 0.25))
+    assert.equal(f.readers[0].view.lastLocation.fraction, 0.25)
+    assert.equal(f.rendererCalls.length, 2)
+    assert.equal(f.messages[0].initialRestoreResult.restoreSatisfied, true)
+    assert.equal(f.readers[0].hasLoadedLastPosition, true)
+})
+
+const settleReviewFrames = f => {
+    f.host.pauseFrames = false
+    for (const [id, callback] of f.frames) { f.frames.delete(id); callback() }
+}
+
+for (const { label, cfi, fraction, target } of [
+    { label: 'fraction', cfi: '', fraction: 0.25, target: { index: 0, anchor: 0.5 } },
+    { label: 'synthetic', cfi: 'mnb-loc-v1:0:1:3', fraction: null, target: { index: 0, localPage: 1 } },
+]) {
+    test(`actual View: a newer command retires ${label} restore frame settlement`, async () => {
+        const f = reviewNavigationFixture()
+        f.host.pauseFrames = true
+        const load = f.loadEBook(request('restore', cfi, fraction))
+        await until(() => f.frames.size === 1)
+        const view = f.readers[0].view
+        assert.deepEqual(f.rendererCalls[0], target)
+        await view.goToFraction(0.8)
+        settleReviewFrames(f)
+        await load
+        assert.equal(view.lastLocation.fraction, 0.8)
+        assert.equal(f.rendererCalls.length, 2)
+        assert.equal(f.messages.length, 0)
+        assert.equal(f.readers[0].hasLoadedLastPosition, false)
+        assert.equal(f.host.__manabiRestoreInProgress, false)
+        if (label === 'synthetic') {
+            assert.equal(view.history.canGoBack, false, 'synthetic local-page restore does not add a history entry')
+        }
+    })
+}
+
+for (const newerCommand of ['invalid section', 'renderer rejection']) {
+    test(`actual View: ${newerCommand} retires the old receipt and permits an explicit same-View retry`, async () => {
+        const f = reviewNavigationFixture({ rendererGoTo: ({ target, publish }) =>
+            target.index === 1 ? false : publish() })
+        f.host.pauseFrames = true
+        const load = f.loadEBook(request('restore', 'epubcfi(/6/2)', null))
+        await until(() => f.frames.size === 1)
+        const view = f.readers[0].view
+        const result = newerCommand === 'invalid section'
+            ? await view.goTo(-1) : await view.goToFraction(0.8)
+        assert.equal(result, null)
+        settleReviewFrames(f)
+        await load
+        assert.equal(view.lastLocation.fraction, 0.25, 'rejected newer commands need not move to retire the prior command')
+        assert.equal(f.messages.length, 0)
+        assert.equal(count(f.readers[0], 'complete'), 0)
+        const retried = await f.loadLastPosition({ cfi: 'epubcfi(/6/2)' })
+        assert.equal(retried.handledCFI, 'epubcfi(/6/2)')
+        assert.equal(f.readers[0].view, view)
+        assert.equal(f.readers[0].hasLoadedLastPosition, true)
+        assert.equal(count(f.readers[0], 'complete'), 1)
+        assert.equal(f.host.__manabiRestoreInProgress, false)
+    })
+}
+
+test('actual View: malformed fraction input preserves the current accepted command', async () => {
+    const f = reviewNavigationFixture()
+    f.host.pauseFrames = true
+    const load = f.loadEBook(request('restore', 'epubcfi(/6/2)', null))
+    await until(() => f.frames.size === 1)
+    assert.equal(await f.readers[0].view.goToFraction(NaN), null)
+    settleReviewFrames(f)
+    await load
+    assert.equal(f.rendererCalls.length, 1)
+    assert.equal(f.messages[0].initialRestoreResult.restoreSatisfied, true)
+})
+
+test('actual View: replacing the book on the same renderer retires the restore receipt', async () => {
+    const f = reviewNavigationFixture()
+    f.host.pauseFrames = true
+    const load = f.loadEBook(request('restore', 'epubcfi(/6/2)', null))
+    await until(() => f.frames.size === 1)
+    const view = f.readers[0].view
+    view.book = { ...view.book }
+    settleReviewFrames(f)
+    await load
+    assert.equal(f.messages.length, 0)
+    assert.equal(count(f.readers[0], 'complete'), 0)
+    assert.equal(f.host.__manabiRestoreInProgress, false)
+})
+
+for (const stage of ['complete', 'probe']) {
+    test(`actual View: ${stage} callback navigation revokes completion and terminal publication`, async () => {
+        let f, manual
+        let saves = 0
+        const navigate = () => {
+            const reader = f.readers[0]
+            if (reader.hasLoadedLastPosition && !f.host.__manabiRestoreInProgress) saves++
+            manual = reader.view.goToFraction(0.8)
+        }
+        f = reviewNavigationFixture({ specs: [stage === 'complete'
+            ? { complete: navigate } : { probe: navigate }] })
+        await f.loadEBook(request('restore', 'epubcfi(/6/2)', null))
+        await manual
+        assert.equal(f.readers[0].view.lastLocation.fraction, 0.8)
+        assert.equal(saves, 0, 'position saving remains suppressed until terminal publication is admitted')
+        assert.equal(f.messages.length, 0)
+        assert.equal(f.readers[0].hasLoadedLastPosition, false)
+        assert.equal(f.host.manabiLoadEBookReady, false)
+        assert.equal(f.host.__manabiRestoreInProgress, false)
+        if (stage === 'complete') assert.equal(count(f.readers[0], 'lookup'), 0)
+    })
+}
+
+test('actual View: navigation during reconciliation intent publication wins before old dispatch', async () => {
+    const f = reviewNavigationFixture({ cfiAnchor: 0.2 })
+    let intent = null, manual
+    Object.defineProperty(f.host, '__manabiNavigationIntent', {
+        get: () => intent,
+        set(value) {
+            intent = value
+            if (value?.source === 'restore.reconcile') manual = f.readers[0].view.goToFraction(0.8)
+        },
+    })
+    await f.loadEBook(request('restore', 'epubcfi(/6/2)', 0.25))
+    await manual
+    assert.equal(f.readers[0].view.lastLocation.fraction, 0.8)
+    assert.equal(f.rendererCalls.length, 2, 'the retired reconciliation never reaches the renderer')
+    assert.equal(f.messages.length, 0)
+    assert.equal(count(f.readers[0], 'complete'), 0)
+})
+
+test('actual View: a newer probe command suppresses a measured-failure terminal too', async () => {
+    let f, manual
+    let rejectLanding = true
+    f = reviewNavigationFixture({
+        rendererGoTo: ({ target, publish }) => {
+            if (target.index === 1 && rejectLanding) { rejectLanding = false; return }
+            return publish()
+        },
+        specs: [{ probe: () => { manual = f.readers[0].view.goToFraction(0.8) } }],
+    })
+    await f.loadEBook(request('restore', 'epubcfi(/6/2)', 0.75))
+    await manual
+    assert.equal(f.readers[0].view.lastLocation.fraction, 0.8)
+    assert.equal(count(f.readers[0], 'attempt'), 1)
+    assert.equal(count(f.readers[0], 'complete'), 0)
+    assert.equal(f.messages.length, 0)
+    assert.equal(f.host.manabiLoadEBookReady, false)
+    assert.equal(f.host.__manabiRestoreInProgress, false)
+})
+
+test('actual View: renderer rejection keeps failure reporting and a fresh load can retry', async () => {
+    const f = reviewNavigationFixture({ specs: [{ rendererGoTo: () => false }, {}] })
+    const args = request('restore', 'epubcfi(/6/2)', null)
+    await f.loadEBook(args)
+    assert.equal(f.messages[0].initialRestoreResult.navigationOk, false)
+    assert.equal(f.messages[0].initialRestoreResult.restoreSatisfied, false)
+    assert.equal(count(f.readers[0], 'complete'), 0)
+    await f.loadEBook(args)
+    assert.equal(f.readers.length, 2)
+    assert.equal(f.readers[0].isClosed, true)
+    assert.equal(f.messages[1].initialRestoreResult.restoreSatisfied, true)
+    assert.equal(f.readers[1].hasLoadedLastPosition, true)
+})
+
+test('actual View: closing a pending command rejects its late completion authority', async () => {
+    const gate = deferred()
+    let rendererResult
+    const f = reviewNavigationFixture({ rendererGoTo: ({ publish }) => {
+        rendererResult = gate.promise.then(publish)
+        return rendererResult
+    } })
+    const load = f.loadEBook(request('restore', 'epubcfi(/6/2)', null))
+    await until(() => f.rendererCalls.length === 1)
+    f.readers[0].close('cancelled during renderer navigation')
+    await load
+    gate.resolve()
+    await rendererResult
+    assert.equal(f.messages.length, 0)
+    assert.equal(count(f.readers[0], 'complete'), 0)
+    assert.equal(f.timers.size, 0)
+    assert.equal(f.frames.size, 0)
+    assert.equal(f.host.__manabiRestoreInProgress, false)
+})
+
+test('actual View: fresh command receipts cannot re-authorize a reused resolver object', async () => {
+    const f = reviewNavigationFixture()
+    await f.loadEBook(request('restore', 'epubcfi(/6/2)', null))
+    const view = f.readers[0].view
+    const sharedTarget = { index: 0, anchor: 0.5 }
+    view.book.resolveCFI = () => sharedTarget
+    const first = await view.goTo('epubcfi(/6/2)', { requiresNavigationReceipt: true })
+    const second = await view.goTo('epubcfi(/6/2)', { requiresNavigationReceipt: true })
+    assert.notEqual(first, second)
+    assert.equal(view.isNavigationReceiptCurrent(first), false)
+    assert.equal(view.isNavigationReceiptCurrent(second), true)
+    assert.equal(view.isNavigationReceiptCurrent({ ...second }), false)
+    assert.equal(await view.goTo('epubcfi(/6/2)'), sharedTarget,
+        'ordinary goTo preserves its selected resolved-target return contract')
+    assert.equal(view.isNavigationReceiptCurrent(second), false)
 })
