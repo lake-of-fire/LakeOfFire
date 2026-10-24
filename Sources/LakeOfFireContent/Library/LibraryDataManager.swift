@@ -356,18 +356,14 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     }
     
     @RealmBackgroundActor
-    public func createEmptyFeed(inCategory category: ThreadSafeReference<FeedCategory>) async throws -> UUID? {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration)
-        guard let category = realm.resolve(category) else { return nil }
-        let feed = Feed()
-        feed.categoryID = category.id
-        feed.meaningfulContentMinLength = 0
-//        await realm.asyncRefresh()
-        try await realm.asyncWrite {
-            realm.add(feed, update: .modified)
-            feed.refreshChangeMetadata(explicitlyModified: true)
-        }
-        return feed.id
+    public func createEmptyFeed(
+        inCategory category: ThreadSafeReference<FeedCategory>,
+        realmConfiguration: Realm.Configuration = ReaderContentLoader.feedEntryRealmConfiguration
+    ) async throws -> UUID? {
+        try await createEmptyFeedWithIdentity(
+            inCategory: category,
+            realmConfiguration: realmConfiguration
+        )?.feedID
     }
     
     @RealmBackgroundActor

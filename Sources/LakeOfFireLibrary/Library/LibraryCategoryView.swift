@@ -41,6 +41,8 @@ class LibraryCategoryViewModel: ObservableObject {
     private var isRefreshing = false
     private var pendingFieldCommands: [LibraryCategoryField: LibraryCategoryFieldCommand] = [:]
     private var activeWrites: [UUID: Task<Void, Error>] = [:]
+    private var feedCreationRequestID: UUID?
+    private var feedCreationTask: Task<UUID?, Error>?
     private let owner: LibraryCategoryFieldOwner?
     private let ordering: LibraryCategoryFieldWriteOrdering?
     private let beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)?
@@ -303,6 +305,80 @@ class LibraryCategoryViewModel: ObservableObject {
             categoryBackgroundImageURL = category.backgroundImageUrl.absoluteString == "about:blank"
                 ? "" : category.backgroundImageUrl.absoluteString
         }
+    }
+
+    /// Admit the rendered category before scheduling, and publish only the
+    /// committed incarnation while this presentation still owns the request.
+    @discardableResult
+    func createFeed(
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
+        beforePublication: (@MainActor @Sendable () async throws -> Void)? = nil,
+        didPublish: @escaping @MainActor (UUID) -> Void = { _ in }
+    ) -> Task<UUID?, Error>? {
+        guard !Task.isCancelled, let owner, owner.isCurrentStorage, isUserEditable,
+              category.id == owner.categoryID, category.createdAt == owner.createdAt else { return nil }
+        let previousSelection: LibraryCategoryFeedSelection?
+        if let feed = selectedFeed {
+            guard let selection = LibraryCategoryFeedSelection(feed: feed) else { return nil }
+            previousSelection = selection
+        } else {
+            previousSelection = nil
+        }
+        let reference = ThreadSafeReference(to: category)
+        let requestID = UUID()
+        feedCreationTask?.cancel()
+        feedCreationRequestID = requestID
+        let task = Task<UUID?, Error> { @MainActor in
+            defer {
+                if self.feedCreationRequestID == requestID {
+                    self.feedCreationRequestID = nil
+                    self.feedCreationTask = nil
+                }
+            }
+            guard let result = try await LibraryDataManager.shared.createEmptyFeedWithIdentity(
+                inCategory: reference,
+                realmConfiguration: owner.realmConfiguration,
+                storageAdmission: owner.storageAdmission,
+                expectedCategoryCreatedAt: owner.createdAt,
+                beforeWrite: beforeWrite
+            ) else { return nil }
+            try await beforePublication?()
+            guard !Task.isCancelled, self.feedCreationRequestID == requestID,
+                  owner.isCurrentStorage, self.selectionMatches(previousSelection),
+                  result.categoryID == owner.categoryID,
+                  result.categoryCreatedAt == owner.createdAt else { return nil }
+            let realm = try await Realm.open(configuration: owner.realmConfiguration)
+            await realm.asyncRefresh()
+            guard !Task.isCancelled, self.feedCreationRequestID == requestID,
+                  owner.isCurrentStorage, self.selectionMatches(previousSelection),
+                  let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: result.categoryID),
+                  category.createdAt == result.categoryCreatedAt,
+                  !category.isDeleted, category.isUserEditable,
+                  let feed = realm.object(ofType: Feed.self, forPrimaryKey: result.feedID),
+                  feed.createdAt == result.feedCreatedAt, !feed.isDeleted,
+                  feed.categoryID == result.categoryID else { return nil }
+            self.selectedFeed = feed
+            // A binding may synchronously select another row or retire the view.
+            guard !Task.isCancelled, self.feedCreationRequestID == requestID,
+                  owner.isCurrentStorage,
+                  self.selectionMatches(.init(id: result.feedID, createdAt: result.feedCreatedAt)) else { return nil }
+            didPublish(result.feedID)
+            return result.feedID
+        }
+        feedCreationTask = task
+        return task
+    }
+
+    private func selectionMatches(_ expected: LibraryCategoryFeedSelection?) -> Bool {
+        guard let feed = selectedFeed else { return expected == nil }
+        guard let selection = LibraryCategoryFeedSelection(feed: feed) else { return false }
+        return selection == expected
+    }
+
+    func retireFeedCreation() {
+        feedCreationRequestID = nil
+        feedCreationTask?.cancel()
+        feedCreationTask = nil
     }
 
     @MainActor
@@ -584,24 +660,17 @@ struct LibraryCategoryView: View {
                 libraryCategoryViewModel.isEditing = true
             }
         }
-        .onDisappear { libraryCategoryViewModel.finishEditing() }
+        .onDisappear {
+            libraryCategoryViewModel.retireFeedCreation()
+            libraryCategoryViewModel.finishEditing()
+        }
     }
     
     @ViewBuilder private func addFeedButton(scrollProxy: ScrollViewProxy) -> some View {
         let button = Button {
-            Task { @MainActor in
-                guard libraryCategoryViewModel.isUserEditable else { return }
-                let ref = ThreadSafeReference(to: libraryCategoryViewModel.category)
-                let createdFeedID: UUID? = try await { @RealmBackgroundActor in
-                    try await LibraryDataManager.shared.createEmptyFeed(inCategory: ref)
-                }()
-                guard let feedID = createdFeedID else { return }
+            libraryCategoryViewModel.createFeed(didPublish: { feedID in
                 scrollProxy.scrollTo("library-sidebar-\(feedID.uuidString)")
-                let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                if let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) {
-                    libraryCategoryViewModel.selectedFeed = feed
-                }
-            }
+            })
         } label: {
             Label("Add Feed", systemImage: "plus.circle")
                 .bold()
