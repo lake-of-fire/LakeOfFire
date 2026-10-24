@@ -456,38 +456,11 @@ public class ReaderContent: ObservableObject {
 
     @MainActor
     public func updateContentTitle(_ newTitle: String) async {
-        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        guard let content else { return }
-        guard trimmed != content.title else { return }
-        logTitleTrace(
-            "stage=readerContent.updateContentTitle begin pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) oldTitle=\(content.title.debugTitleFragment) requestedTitle=\(newTitle.debugTitleFragment) trimmedTitle=\(trimmed.debugTitleFragment)"
-        )
-        let isTitlePrefixOfContent =
-            content.url.isSnippetURL &&
-            ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
-                trimmed,
-                sourceHTML: content.html
-            )
-
-        content.title = trimmed
-        content.isTitlePrefixOfContent = isTitlePrefixOfContent
-        syncLocationBarTitle()
-        syncContentTitle()
-
+        guard let target = captureTitleEditTarget() else { return }
         do {
-            let contentURL = content.url
-            try await ReaderContentLoader.updateContent(url: contentURL) { object in
-                guard object.title != trimmed || object.isTitlePrefixOfContent != isTitlePrefixOfContent else {
-                    return false
-                }
-                object.title = trimmed
-                object.isTitlePrefixOfContent = isTitlePrefixOfContent
-                return true
-            }
-            logTitleTrace(
-                "stage=readerContent.updateContentTitle persisted contentURL=\(contentURL.absoluteString) finalTitle=\(trimmed.debugTitleFragment) isTitlePrefixOfContent=\(isTitlePrefixOfContent)"
-            )
+            _ = try await updateContentTitle(newTitle, target: target, permitsCommit: { true })
+        } catch is CancellationError {
+            // Cancellation before owned admission is an obsolete edit.
         } catch {
             debugPrint("# EPUB  contentTitle.update.failed", error.localizedDescription)
         }
