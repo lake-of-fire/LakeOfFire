@@ -1,8 +1,40 @@
 import Foundation
 import RealmSwift
+import SwiftUIWebView
 import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
+
+@MainActor
+private final class HTMLNavigationModeProbe: ReaderModeViewModel, @unchecked Sendable {
+    var beforeFontReturns: (@MainActor () async -> Void)?
+    private(set) var readerPresentationRequests = 0
+
+    override func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
+        await beforeFontReturns?()
+    }
+
+    override func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
+        readerPresentationRequests += 1
+    }
+}
+
+@MainActor
+private final class HTMLNavigationReadGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isReleased = false
+
+    func wait() async {
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
 
 @MainActor
 final class ReaderContentHTMLLifetimeTests: XCTestCase {
@@ -25,6 +57,34 @@ final class ReaderContentHTMLLifetimeTests: XCTestCase {
         record.updateCompoundKey()
         try realm.write { realm.add(record) }
         return (realm, record)
+    }
+
+    private func navigationFixture(
+        for record: HistoryRecord,
+        hasFileManager: Bool = true
+    ) throws -> (content: ReaderContent, mode: HTMLNavigationModeProbe, navigator: WebViewNavigator, state: WebViewState) {
+        let content = ReaderContent()
+        content.content = record
+        content.pageURL = record.url
+        let mode = HTMLNavigationModeProbe()
+        mode.readerFileManager = hasFileManager ? ReaderFileManager() : nil
+        let navigator = WebViewNavigator()
+        mode.navigator = navigator
+        var state = WebViewState.empty
+        state.pageURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: record.url))
+        return (content, mode, navigator, state)
+    }
+
+    private func assertCancelled(
+        _ operation: @MainActor () async throws -> Void,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        do {
+            try await operation()
+            XCTFail("Retired navigation must throw CancellationError", file: file, line: line)
+        } catch is CancellationError {
+        }
     }
 
     func testAlreadyDeletedRowDoesNotReadPersistedFieldsOrStartIO() async throws {
@@ -265,6 +325,219 @@ final class ReaderContentHTMLLifetimeTests: XCTestCase {
             XCTFail("Cancelled loading must not become a successful presentation result")
         } catch is CancellationError {
             // The consumer rechecks cancellation even when best-effort I/O returns nil.
+        }
+    }
+
+    func testCancelledCommitCannotReplaceSuccessorRequestAfterNilOrFailedRead() async throws {
+        for throwsReadError in [false, true] {
+            let (_, record) = try fixture()
+            let navigation = try navigationFixture(for: record)
+            let manager = NavigationTaskManager()
+            let gate = HTMLNavigationReadGate()
+            let readStarted = expectation(description: "file read suspended: \(throwsReadError)")
+            manager.startOnNavigationCommitted {
+                try await navigation.mode.onNavigationCommitted(
+                    readerContent: navigation.content,
+                    newState: navigation.state,
+                    scriptCaller: WebViewScriptCaller(),
+                    loadHTML: { content, _ in
+                        try await content.htmlToDisplay(
+                            readFile: { _ in
+                                readStarted.fulfill()
+                                await gate.wait()
+                                if throwsReadError { throw FixtureError.unavailable }
+                                return nil
+                            },
+                            resolveMIMEType: { _ in XCTFail("An absent read needs no metadata"); return nil }
+                        )
+                    }
+                )
+            }
+            let retiredTask = try XCTUnwrap(manager.onNavigationCommittedTask)
+            await fulfillment(of: [readStarted], timeout: 1)
+            let successorURL = try XCTUnwrap(URL(string: "https://example.com/successor"))
+            manager.startOnNavigationCommitted {
+                navigation.navigator.load(URLRequest(url: successorURL))
+            }
+            try await manager.onNavigationCommittedTask?.value
+            gate.release()
+            try await assertCancelled { try await retiredTask.value }
+            XCTAssertEqual(navigation.navigator.debugLoadSnapshot.lastRequestURL, successorURL.absoluteString)
+            XCTAssertEqual(navigation.mode.readerPresentationRequests, 0)
+        }
+    }
+
+    func testCommitRejectsDeletedSourceBeforeMissingHTMLFallback() async throws {
+        let (realm, record) = try fixture()
+        let navigation = try navigationFixture(for: record)
+        try await assertCancelled {
+            try await navigation.mode.onNavigationCommitted(
+                readerContent: navigation.content,
+                newState: navigation.state,
+                scriptCaller: WebViewScriptCaller(),
+                loadHTML: { content, _ in
+                    try await content.htmlToDisplay(
+                        readFile: { _ in
+                            try realm.write { realm.delete(record) }
+                            return Data("Retired file text".utf8)
+                        },
+                        resolveMIMEType: { _ in XCTFail("Retired read must stop"); return nil }
+                    )
+                }
+            )
+        }
+        XCTAssertTrue(record.isInvalidated)
+        XCTAssertEqual(navigation.navigator.debugLoadSnapshot.lastRequestURL, "nil")
+        XCTAssertEqual(navigation.mode.readerPresentationRequests, 0)
+    }
+
+    func testCommitRejectsReplacedSourceURLBeforeMissingHTMLFallback() async throws {
+        let (realm, record) = try fixture()
+        let navigation = try navigationFixture(for: record)
+        try await assertCancelled {
+            try await navigation.mode.onNavigationCommitted(
+                readerContent: navigation.content,
+                newState: navigation.state,
+                scriptCaller: WebViewScriptCaller(),
+                loadHTML: { content, _ in
+                    try await content.htmlToDisplay(
+                        readFile: { _ in
+                            try realm.write {
+                                record.url = URL(string: "reader-file://file/load/local/replacement.txt")!
+                            }
+                            return Data("Original file text".utf8)
+                        },
+                        resolveMIMEType: { _ in XCTFail("Replaced read must stop"); return nil }
+                    )
+                }
+            )
+        }
+        XCTAssertEqual(navigation.navigator.debugLoadSnapshot.lastRequestURL, "nil")
+        XCTAssertEqual(navigation.mode.readerPresentationRequests, 0)
+    }
+
+    func testChangedPageRejectsBothMissingAndPresentFileHTML() async throws {
+        for returnsHTML in [false, true] {
+            let (_, record) = try fixture()
+            let navigation = try navigationFixture(for: record)
+            let successorURL = try XCTUnwrap(URL(string: "https://example.com/successor"))
+            try await assertCancelled {
+                try await navigation.mode.onNavigationCommitted(
+                    readerContent: navigation.content,
+                    newState: navigation.state,
+                    scriptCaller: WebViewScriptCaller(),
+                    loadHTML: { content, _ in
+                        try await content.htmlToDisplay(
+                            readFile: { _ in
+                                navigation.content.pageURL = successorURL
+                                return returnsHTML ? Data("Original file text".utf8) : nil
+                            },
+                            resolveMIMEType: { _ in "text/plain" }
+                        )
+                    }
+                )
+            }
+            XCTAssertEqual(navigation.content.pageURL, successorURL)
+            XCTAssertFalse(navigation.content.isRenderingReaderHTML)
+            XCTAssertEqual(navigation.navigator.debugLoadSnapshot.lastRequestURL, "nil")
+            XCTAssertEqual(navigation.mode.readerPresentationRequests, 0)
+        }
+    }
+
+    func testCurrentMissingOrFailedFileReadPreservesFallbackNavigation() async throws {
+        for throwsReadError in [false, true] {
+            let (_, record) = try fixture()
+            let navigation = try navigationFixture(for: record)
+            try await navigation.mode.onNavigationCommitted(
+                readerContent: navigation.content,
+                newState: navigation.state,
+                scriptCaller: WebViewScriptCaller(),
+                loadHTML: { content, _ in
+                    try await content.htmlToDisplay(
+                        readFile: { _ in
+                            if throwsReadError { throw FixtureError.unavailable }
+                            return nil
+                        },
+                        resolveMIMEType: { _ in XCTFail("An absent read needs no metadata"); return nil }
+                    )
+                }
+            )
+            XCTAssertEqual(navigation.navigator.debugLoadSnapshot.lastRequestURL, fileURL.absoluteString)
+            XCTAssertEqual(navigation.mode.readerPresentationRequests, 0)
+        }
+    }
+
+    func testCurrentInlineHTMLUsesPublicCommitPresentationPath() async throws {
+        let (realm, record) = try fixture()
+        try realm.write {
+            record.rssContainsFullContent = true
+            record.html = "<p>Current inline content</p>"
+        }
+        let navigation = try navigationFixture(for: record)
+        try await navigation.mode.onNavigationCommitted(
+            readerContent: navigation.content,
+            newState: navigation.state,
+            scriptCaller: WebViewScriptCaller()
+        )
+        XCTAssertTrue(navigation.content.isRenderingReaderHTML)
+        XCTAssertEqual(navigation.mode.readerPresentationRequests, 1)
+        XCTAssertEqual(navigation.navigator.debugLoadSnapshot.lastRequestURL, "nil")
+    }
+
+    func testNoFileManagerFallbackRejectsPageChangedDuringPreparation() async throws {
+        let (_, record) = try fixture()
+        let navigation = try navigationFixture(for: record, hasFileManager: false)
+        let successorURL = try XCTUnwrap(URL(string: "https://example.com/successor"))
+        navigation.mode.beforeFontReturns = { [content = navigation.content] in
+            content.pageURL = successorURL
+        }
+        try await assertCancelled {
+            try await navigation.mode.onNavigationCommitted(
+                readerContent: navigation.content,
+                newState: navigation.state,
+                scriptCaller: WebViewScriptCaller()
+            )
+        }
+        XCTAssertEqual(navigation.navigator.debugLoadSnapshot.lastRequestURL, "nil")
+        XCTAssertEqual(navigation.mode.readerPresentationRequests, 0)
+    }
+
+    func testCurrentNoFileManagerUsesPublicFallbackPath() async throws {
+        let (_, record) = try fixture()
+        let navigation = try navigationFixture(for: record, hasFileManager: false)
+        try await navigation.mode.onNavigationCommitted(
+            readerContent: navigation.content,
+            newState: navigation.state,
+            scriptCaller: WebViewScriptCaller()
+        )
+        XCTAssertEqual(navigation.navigator.debugLoadSnapshot.lastRequestURL, fileURL.absoluteString)
+        XCTAssertEqual(navigation.mode.readerPresentationRequests, 0)
+    }
+
+    func testGetterErrorPreservesCurrentFailureAndWithdrawsRetiredFailure() async throws {
+        for changesPage in [false, true] {
+            let (_, record) = try fixture()
+            let navigation = try navigationFixture(for: record)
+            do {
+                try await navigation.mode.onNavigationCommitted(
+                    readerContent: navigation.content,
+                    newState: navigation.state,
+                    scriptCaller: WebViewScriptCaller(),
+                    loadHTML: { _, _ in
+                        if changesPage {
+                            navigation.content.pageURL = URL(string: "https://example.com/successor")!
+                        }
+                        throw FixtureError.unavailable
+                    }
+                )
+                XCTFail("A failed getter must not complete navigation")
+            } catch is CancellationError {
+                XCTAssertTrue(changesPage)
+            } catch FixtureError.unavailable {
+                XCTAssertFalse(changesPage)
+            }
+            XCTAssertEqual(navigation.navigator.debugLoadSnapshot.lastRequestURL, "nil")
+            XCTAssertEqual(navigation.mode.readerPresentationRequests, 0)
         }
     }
 }
