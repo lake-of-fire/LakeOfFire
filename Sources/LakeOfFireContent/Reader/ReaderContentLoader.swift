@@ -83,6 +83,7 @@ public struct ReaderContentLoader {
     public struct ContentReference: @unchecked Sendable {
         public let contentType: RealmSwift.Object.Type
         public let contentKey: String
+        let contentObjectID: UInt64
         public let contentCreatedAt: Date
         public let contentURL: URL
         public let realmConfiguration: Realm.Configuration
@@ -110,6 +111,7 @@ public struct ReaderContentLoader {
                   content.realm != nil else { return nil }
             self.contentType = contentType
             contentKey = content.compoundKey
+            contentObjectID = content.id
             contentCreatedAt = content.createdAt
             contentURL = content.url
             realmConfiguration = configuration
@@ -127,6 +129,7 @@ public struct ReaderContentLoader {
             guard !content.isInvalidated,
                   content.objectSchema.objectClass == contentType,
                   content.compoundKey == contentKey,
+                  content.id == contentObjectID,
                   content.createdAt == contentCreatedAt,
                   content.url == contentURL,
                   let realm = content.realm else { return false }

@@ -56,6 +56,7 @@ private final class TitleEditAdmission: @unchecked Sendable {
 
 private enum TitleEditFixtureError: Error {
     case providerFailed
+    case missingHeldWrite
 }
 
 private actor TitleEditRetryingProvider {
@@ -492,6 +493,123 @@ final class ReaderContentTitleEditingTests: XCTestCase {
         }
     }
 
+    func testQueuedTitleRejectsEqualFieldsPhysicalPrimaryReplacement() async throws {
+        try await assertQueuedEqualFieldsReplacement(frozen: false, replacesPrimary: true)
+    }
+
+    func testQueuedFrozenTitleRejectsEqualFieldsPhysicalPrimaryReplacement() async throws {
+        try await assertQueuedEqualFieldsReplacement(frozen: true, replacesPrimary: true)
+    }
+
+    func testQueuedTitleSkipsEqualFieldsPhysicalRelatedReplacement() async throws {
+        try await assertQueuedEqualFieldsReplacement(frozen: false, replacesPrimary: false)
+    }
+
+    private func assertQueuedEqualFieldsReplacement(frozen: Bool, replacesPrimary: Bool) async throws {
+        let configuration = configuration()
+        let restore = install(configuration)
+        defer { restore() }
+        let realm = try await Realm(configuration: configuration)
+        let primary = record(HistoryRecord())
+        let related = record(Bookmark(), url: primary.url, title: "Related original", html: "<p>Related body</p>")
+        try seed([primary, related], in: realm)
+        let primaryBefore = try journal(primary, in: realm)
+        let relatedBefore = try journal(related, in: realm)
+        let replaced: Bookmark = replacesPrimary ? primary : related
+        let originalID = replaced.id
+        let primaryID = primary.id
+        let key = replaced.compoundKey
+        let url = replaced.url
+        let creationDate = replaced.createdAt
+        let replacementDate = Self.seedDate.addingTimeInterval(2)
+        let source = frozen ? primary.freeze() : primary
+        XCTAssertEqual(source.id, primaryID)
+        let gate = pauseDiscovery()
+        let reader = ReaderContent()
+        let target = try select(source, in: reader)
+        let fixture = await TitleEditFixtureWrite()
+        let submitted = expectation(description: "captured title queued before equal-fields physical replacement")
+        let write = queued(reader: reader, target: target, title: "Alpha", submitted: submitted)
+        guard await awaitProvider(gate, task: write, fixture: fixture) else { return }
+        try await fixture.begin(configuration)
+        await gate.release()
+        await fulfillment(of: [submitted], timeout: 2)
+        if frozen {
+            // The explicit target survives navigation. Keep this fixture about
+            // durable admission, without trying to refresh a frozen presentation.
+            reader.replaceSelection(with: nil)
+        }
+
+        let replacementState = try await { @RealmBackgroundActor in
+            let owner = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            guard owner.isInWriteTransaction else { throw TitleEditFixtureError.missingHeldWrite }
+            let old: Bookmark
+            if replacesPrimary {
+                old = try XCTUnwrap(owner.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+            } else {
+                old = try XCTUnwrap(owner.object(ofType: Bookmark.self, forPrimaryKey: key))
+            }
+            XCTAssertEqual(old.id, originalID)
+            owner.delete(old) // Fixture-only physical recreation; production keeps deletion tombstones.
+            let replacement: Bookmark = replacesPrimary ? HistoryRecord() : Bookmark()
+            replacement.compoundKey = key
+            replacement.url = url
+            replacement.createdAt = creationDate
+            replacement.title = "Replacement"
+            replacement.author = "Replacement author"
+            replacement.html = "<p>Replacement body</p>"
+            replacement.isTitlePrefixOfContent = true
+            owner.add(replacement)
+            XCTAssertNotEqual(replacement.id, originalID)
+            replacement.refreshChangeMetadata(explicitlyModified: true, at: replacementDate)
+            let pending = try XCTUnwrap(owner.object(ofType: BigSyncPendingMutation.self,
+                forPrimaryKey: replacement.objectSchema.className + "." + key))
+            let state = (id: replacement.id, title: replacement.title, author: replacement.author,
+                         html: replacement.html, prefix: replacement.isTitlePrefixOfContent,
+                         generation: pending.generation, modifiedAt: replacement.modifiedAt,
+                         explicitlyModifiedAt: replacement.explicitlyModifiedAt, changedAt: pending.changedAt)
+            try fixture.commit()
+            return state
+        }()
+
+        let changed = try await write.value
+        XCTAssertEqual(changed, !replacesPrimary)
+        await realm.asyncRefresh()
+        let replacement: Bookmark
+        if replacesPrimary {
+            replacement = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+        } else {
+            replacement = try XCTUnwrap(realm.object(ofType: Bookmark.self, forPrimaryKey: key))
+        }
+        XCTAssertEqual(replacement.id, replacementState.id)
+        XCTAssertNotEqual(replacement.id, originalID)
+        XCTAssertEqual(replacement.compoundKey, key)
+        XCTAssertEqual(replacement.createdAt, creationDate)
+        XCTAssertEqual(replacement.url, url)
+        XCTAssertEqual(replacement.title, replacementState.title)
+        XCTAssertEqual(replacement.author, replacementState.author)
+        XCTAssertEqual(replacement.html, replacementState.html)
+        XCTAssertEqual(replacement.isTitlePrefixOfContent, replacementState.prefix)
+        XCTAssertEqual(try journal(replacement, in: realm), JournalState(
+            generation: replacementState.generation, modifiedAt: replacementState.modifiedAt,
+            explicitlyModifiedAt: replacementState.explicitlyModifiedAt, changedAt: replacementState.changedAt))
+        if replacesPrimary {
+            XCTAssertEqual(related.title, "Related original")
+            XCTAssertFalse(related.isTitlePrefixOfContent)
+            XCTAssertEqual(try journal(related, in: realm), relatedBefore)
+        } else {
+            XCTAssertEqual(primary.id, primaryID)
+            XCTAssertEqual(primary.title, "Alpha")
+            XCTAssertTrue(primary.isTitlePrefixOfContent)
+            XCTAssertNotEqual(try journal(primary, in: realm).generation, primaryBefore.generation)
+        }
+        if frozen {
+            XCTAssertFalse(source.isInvalidated)
+            XCTAssertEqual(source.id, primaryID)
+            XCTAssertEqual(source.title, "Original")
+        }
+    }
+
     func testQueuedCancellationLeavesTheOtherOwnersPendingWriteIntact() async throws {
         let configuration = configuration()
         let restore = install(configuration)
@@ -701,6 +819,44 @@ final class ReaderContentTitleEditingTests: XCTestCase {
 
         XCTAssertEqual(first.identity, afterTitleChange.identity)
         XCTAssertNotEqual(first.initialTitle, afterTitleChange.initialTitle)
+    }
+
+    func testManagedTargetIdentitySeparatesEqualFieldsPhysicalReplacement() async throws {
+        let configuration = configuration()
+        let restore = install(configuration)
+        defer { restore() }
+        let realm = try await Realm(configuration: configuration)
+        let primary = record(HistoryRecord())
+        try seed([primary], in: realm)
+        let originalID = primary.id
+        let key = primary.compoundKey
+        let url = primary.url
+        let creationDate = primary.createdAt
+        let reader = ReaderContent()
+        let original = try select(primary, in: reader)
+        let otherReader = ReaderContent()
+        let sameRow = try select(try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: key)),
+                                 in: otherReader)
+        let frozenReader = ReaderContent()
+        let frozen = try select(primary.freeze(), in: frozenReader)
+        XCTAssertEqual(original.identity, sameRow.identity)
+        XCTAssertEqual(original.identity, frozen.identity)
+
+        let replacement = record(HistoryRecord(), url: url, title: "Replacement")
+        replacement.createdAt = creationDate
+        XCTAssertEqual(replacement.compoundKey, key)
+        try realm.write {
+            realm.delete(primary) // Fixture-only same-fields physical recreation.
+            realm.add(replacement)
+            replacement.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let recreated = try select(replacement, in: reader)
+
+        XCTAssertNotEqual(replacement.id, originalID)
+        XCTAssertEqual(replacement.createdAt, creationDate)
+        XCTAssertEqual(replacement.url, url)
+        XCTAssertNotEqual(original.identity, recreated.identity)
+        XCTAssertEqual(Set([original.identity, sameRow.identity, frozen.identity, recreated.identity]).count, 2)
     }
 
     func testManagedTargetIdentitySeparatesStoresAndRecreatedIncarnations() async throws {
