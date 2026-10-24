@@ -926,8 +926,11 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         }
     }
 
+    // Keep menu entries in ViewBuilder's deployment-compatible representation.
+    // The SDK Menu builder receives one expression instead of exposing newer
+    // ContentBuilder tuple metadata from this generic cell to older runtimes.
     @ViewBuilder
-    private var trailingMenuButton: some View {
+    private var cellMenuItems: some View {
         let deletable = (self.item as? (any DeletableReaderContent))
         let menuSyncStatusPresentation = ReaderContentSyncStatusPresentationBuilder.menuPresentation(
             for: item.url,
@@ -939,34 +942,39 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             imageIsSystemSymbol: menuSyncStatusPresentation.imageIsSystemSymbol
         )
 
-        Menu {
-            ReaderContentSyncStatusLabel(presentation: menuSyncStatusLabelPresentation, iconOnly: false)
+        ReaderContentSyncStatusLabel(presentation: menuSyncStatusLabelPresentation, iconOnly: false)
+        Divider()
+
+        AnyView(self.item.bookmarkButtonView())
+
+        if let customMenuOptions {
+            customMenuOptions(self.item)
+        }
+
+        if let deletable {
             Divider()
-
-            AnyView(self.item.bookmarkButtonView())
-
-            if let customMenuOptions {
-                customMenuOptions(self.item)
+            Button(role: .destructive) {
+                readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
+                debugPrint("# DELETEMODAL cell tapped ellipsis delete confirmDelete=true host=\(ObjectIdentifier(readerContentListModalsModel))")
+            } label: {
+                Label(deletable.deleteActionTitle, systemImage: "trash")
             }
+            .task { kickOffContentFileLookupIfNeeded() }
+        }
 
-            if let deletable {
-                Divider()
-                Button(role: .destructive) {
-                    readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
-                    debugPrint("# DELETEMODAL cell tapped ellipsis delete confirmDelete=true host=\(ObjectIdentifier(readerContentListModalsModel))")
-                } label: {
-                    Label(deletable.deleteActionTitle, systemImage: "trash")
-                }
-                .task { kickOffContentFileLookupIfNeeded() }
+        if let contentFile = resolvedContentFile {
+            Button(role: .destructive) {
+                readerContentListModalsModel.presentDeleteConfirmation(for: [contentFile])
+            } label: {
+                Label(contentFile.deleteActionTitle, systemImage: "trash")
             }
+        }
+    }
 
-            if let contentFile = resolvedContentFile {
-                Button(role: .destructive) {
-                    readerContentListModalsModel.presentDeleteConfirmation(for: [contentFile])
-                } label: {
-                    Label(contentFile.deleteActionTitle, systemImage: "trash")
-                }
-            }
+    @ViewBuilder
+    private var trailingMenuButton: some View {
+        Menu {
+            cellMenuItems
         } label: {
             Label("More Options", systemImage: "ellipsis")
                 .labelStyle(.iconOnly)
@@ -1271,6 +1279,19 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
     }
 }
 
+/// SwiftUI owns cancellation through .task(id:). A detached metadata read may
+/// finish afterward, so the result must still belong to the uncancelled caller.
+@MainActor
+func refreshReaderBookCoverWidth(
+    resolve: @MainActor () async -> CGFloat,
+    publish: @MainActor (CGFloat) -> Void
+) async {
+    guard !Task.isCancelled else { return }
+    let width = await resolve()
+    guard !Task.isCancelled else { return }
+    publish(width)
+}
+
 public struct BookCoverImageView: View {
     public let imageURL: URL
     public let dimension: CGFloat
@@ -1298,15 +1319,19 @@ public struct BookCoverImageView: View {
                 value: renderedCoverWidth
             )
             .task(id: "\(imageURL.absoluteString)|\(dimension)") {
-                let resolvedWidth = await resolveRenderedCoverWidth(imageURL: imageURL, dimension: dimension)
-                guard abs(renderedCoverWidth - resolvedWidth) >= 0.5 else { return }
-                renderedCoverWidth = resolvedWidth
-                debugPrint(
-                    "# BOOKHORIZ",
-                    "event=coverPreferenceEmitResolved",
-                    "url=\(imageURL.absoluteString)",
-                    "dimension=\(dimension)",
-                    "renderedWidth=\(resolvedWidth)"
+                await refreshReaderBookCoverWidth(
+                    resolve: { await resolveRenderedCoverWidth(imageURL: imageURL, dimension: dimension) },
+                    publish: { resolvedWidth in
+                        guard abs(renderedCoverWidth - resolvedWidth) >= 0.5 else { return }
+                        renderedCoverWidth = resolvedWidth
+                        debugPrint(
+                            "# BOOKHORIZ",
+                            "event=coverPreferenceEmitResolved",
+                            "url=\(imageURL.absoluteString)",
+                            "dimension=\(dimension)",
+                            "renderedWidth=\(resolvedWidth)"
+                        )
+                    }
                 )
             }
     }
@@ -1317,7 +1342,7 @@ public struct BookCoverImageView: View {
     }
 
     private func resolveRenderedCoverWidth(imageURL: URL, dimension: CGFloat) async -> CGFloat {
-        guard dimension > 0 else { return 0 }
+        guard dimension.isFinite, dimension > 0 else { return 0 }
         guard let pixelSize = await imagePixelSize(for: imageURL) else { return 0 }
         guard pixelSize.height > 0 else { return 0 }
 
