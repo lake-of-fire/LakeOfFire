@@ -245,13 +245,14 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         }
         .onReceive(NotificationCenter.default.publisher(for: ReaderFileManager.readerBackingStatusRefreshRequestedNotification)) { notification in
             guard let contentFile = content as? ContentFile,
-                  let requestedURLString = notification.object as? String,
-                  let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url),
-                  readerBackingURL.absoluteString == requestedURLString else {
+                  let requestedURLString = notification.object as? String else {
                 return
             }
             Task { @MainActor in
-                await cloudDriveSyncStatusModel.refreshAsync(item: contentFile)
+                cloudDriveSyncStatusModel.requestRefresh(
+                    item: contentFile,
+                    matchingBackingURLString: requestedURLString
+                )
             }
         }
         .onAppear {
