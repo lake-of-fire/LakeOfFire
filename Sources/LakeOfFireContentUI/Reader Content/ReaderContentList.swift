@@ -968,8 +968,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
     @State private var groupedSections: [ReaderContentGroupingSection<C>] = []
     @State private var sectionExpanded: [String: Bool] = [:]
-    @State private var deleteEligibilityByContentKey: [String: ReaderFileDeleteEligibility] = [:]
-    @State private var deleteEligibilityRefreshTask: Task<Void, Never>?
+    @StateObject private var deleteEligibilityModel = ReaderContentDeleteEligibilityModel()
 
     // Navigation/env for selection syncing when using custom grouping
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
@@ -999,22 +998,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
     
     private var isDeletionToolbarButtonDisabled: Bool {
-        guard !multiSelection.isEmpty else {
-            return true
-        }
-        let selectedContentFiles = viewModel.filteredContents.compactMap { content -> ContentFile? in
-            guard multiSelection.contains(content.compoundKey) else { return nil }
-            return content as? ContentFile
-        }
-        guard !selectedContentFiles.isEmpty else {
-            return false
-        }
-        guard selectedContentFiles.allSatisfy({ deleteEligibilityByContentKey[$0.compoundKey] != nil }) else {
-            return true
-        }
-        return selectedContentFiles.contains {
-            deleteEligibilityByContentKey[$0.compoundKey] != .allowed
-        }
+        deleteEligibilityModel.isDeletionDisabled(
+            contents: viewModel.filteredContents,
+            selectedKeys: multiSelection
+        )
     }
 
     private var showsHeaderSection: Bool {
@@ -1122,29 +1109,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
 
     private func refreshDeleteEligibilityCache() {
-        deleteEligibilityRefreshTask?.cancel()
-        let selectedContentFiles = viewModel.filteredContents.compactMap { content -> ContentFile? in
-            guard multiSelection.contains(content.compoundKey) else { return nil }
-            return content as? ContentFile
-        }
-        guard !selectedContentFiles.isEmpty else {
-            deleteEligibilityByContentKey = [:]
-            return
-        }
-        deleteEligibilityRefreshTask = Task { @MainActor in
-            var nextEligibility = [String: ReaderFileDeleteEligibility]()
-            for contentFile in selectedContentFiles {
-                guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url) else {
-                    continue
-                }
-                let eligibility = await ReaderFileManager.shared.deleteEligibility(forReaderBackingURL: readerBackingURL)
-                if Task.isCancelled {
-                    return
-                }
-                nextEligibility[contentFile.compoundKey] = eligibility
-            }
-            deleteEligibilityByContentKey = nextEligibility
-        }
+        deleteEligibilityModel.refresh(
+            contents: viewModel.filteredContents,
+            selectedKeys: multiSelection
+        )
     }
     
     private var listContainer: some View {
@@ -1300,13 +1268,20 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             enabled: true,
             onSelection: onContentSelected
         )
+        .onDisappear {
+            deleteEligibilityModel.cancelRefresh()
+        }
     }
     
     @ViewBuilder
     private var deletionToolbarButtonView: some View {
         if showDeletionToolbarButton {
             Button(role: .destructive) {
-                let selected = viewModel.filteredContents.filter { multiSelection.contains($0.compoundKey) }
+                guard !isDeletionToolbarButtonDisabled else { return }
+                let selected = readerContentSelectedForDeletion(
+                    contents: viewModel.filteredContents,
+                    selectedKeys: multiSelection
+                )
                 if let onDelete {
                     Task { @MainActor in
                         do {
