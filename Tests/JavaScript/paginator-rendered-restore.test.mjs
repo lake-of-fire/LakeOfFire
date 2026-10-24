@@ -7,6 +7,7 @@ const html = '<!doctype html><html><body data-mnb-writing-direction="horizontal"
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true, url: 'https://reader.invalid/' })
 const frames = []
 let nextSidecars = []
+let fixtureTextWidth = 1200
 const rect = (width = 600, height = 800) => ({ x: 0, y: 0, top: 0, left: 0, right: width, bottom: height, width, height, toJSON() { return this } })
 const installGeometry = window => {
     Object.defineProperties(window.HTMLElement.prototype, {
@@ -14,8 +15,8 @@ const installGeometry = window => {
         clientHeight: { get() { return this.style.height?.endsWith('px') ? parseFloat(this.style.height) : 800 } },
     })
     window.HTMLElement.prototype.getBoundingClientRect = function () { return rect(this.clientWidth, this.clientHeight) }
-    window.Range.prototype.getBoundingClientRect = () => rect(1200, 400)
-    window.Range.prototype.getClientRects = () => [rect(1200, 400)]
+    window.Range.prototype.getBoundingClientRect = () => rect(fixtureTextWidth, 400)
+    window.Range.prototype.getClientRects = () => [rect(fixtureTextWidth, 400)]
     window.HTMLElement.prototype.scrollTo = function ({ left = this.scrollLeft, top = this.scrollTop }) { this.scrollLeft = left; this.scrollTop = top }
     window.HTMLElement.prototype.scrollBy = function ({ left = 0, top = 0 }) { this.scrollLeft += left; this.scrollTop += top }
 }
@@ -207,5 +208,57 @@ for (const suspension of ['frame', 'scroll-property']) {
         }
     })
 }
+
+test('actual paginator navigation receipts distinguish completed movement and proven boundary no-ops', async () => {
+    const renderer = fixture(1)
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        const firstPage = await renderer.pageMetrics()
+        const startBoundary = await bounded(renderer.prev(1, { requiresNavigationReceipt: true }))
+        assert.equal(renderer.isNavigationReceiptCurrent(startBoundary), true)
+        assert.equal(startBoundary.moved, false)
+        assert.equal((await renderer.pageMetrics()).start, firstPage.start)
+        const moved = await bounded(renderer.next(1, { requiresNavigationReceipt: true }))
+        assert.equal(renderer.isNavigationReceiptCurrent(moved), true)
+        assert.equal(moved.moved, true)
+        assert.equal(renderer.isNavigationReceiptCurrent(startBoundary), false)
+        const lastPage = await renderer.pageMetrics()
+        assert.equal(lastPage.page, lastPage.pages - 2)
+        const endBoundary = await bounded(renderer.next(1, { requiresNavigationReceipt: true }))
+        assert.equal(renderer.isNavigationReceiptCurrent(endBoundary), true)
+        assert.equal(endBoundary.moved, false)
+        assert.equal((await renderer.pageMetrics()).start, lastPage.start)
+        assert.equal(renderer.isNavigationReceiptCurrent(moved), false)
+    } finally { cleanup(renderer) }
+})
+
+test('actual paginator queued replacement grants only the final accepted command a receipt', async () => {
+    fixtureTextWidth = 2400
+    const renderer = fixture(1), queued = deferred()
+    let first, replaced, current
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        assert.ok((await renderer.pageMetrics()).pages >= 5, 'controlled DOM geometry leaves room for a queued turn')
+        renderer.addEventListener('relocate', () => {
+            replaced = renderer.next(1, { requiresNavigationReceipt: true })
+            current = renderer.next(1, { requiresNavigationReceipt: true })
+            queued.resolve()
+        }, { once: true })
+        first = renderer.next(1, { requiresNavigationReceipt: true })
+        await bounded(queued.promise)
+        const [firstResult, replacedResult, currentReceipt] = await bounded(Promise.all([first, replaced, current]))
+        assert.equal(firstResult, null)
+        assert.equal(replacedResult.superseded, true)
+        assert.equal(renderer.isNavigationReceiptCurrent(replacedResult), false)
+        assert.equal(renderer.isNavigationReceiptCurrent(currentReceipt), true)
+        assert.equal(currentReceipt.moved, true)
+        assert.equal(renderer.getContents()[0].index, 0)
+        assert.equal((await renderer.pageMetrics()).page, 3)
+    } finally {
+        fixtureTextWidth = 1200
+        cleanup(renderer)
+        await Promise.allSettled([first, replaced, current].filter(Boolean).map(operation => bounded(operation)))
+    }
+})
 
 test.after(() => dom.window.close())

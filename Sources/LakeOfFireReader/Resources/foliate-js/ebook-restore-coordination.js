@@ -206,7 +206,8 @@ export const installVisibleRendererGoToGuard = ({ renderer, getCurrentIndex, get
             currentPage: snapshot?.current ?? null,
             totalPages: snapshot?.total ?? null,
         })
-        if (sameVisiblePage && args[0]?.requiresPositionReceipt !== true) {
+        if (sameVisiblePage && args[0]?.requiresPositionReceipt !== true
+            && args[0]?.requiresNavigationReceipt !== true) {
             return Promise.resolve()
         }
         return originalGoTo.call(this, target, ...args)

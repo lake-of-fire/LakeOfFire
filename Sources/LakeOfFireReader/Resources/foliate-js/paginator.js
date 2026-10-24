@@ -796,6 +796,7 @@ export class Paginator extends HTMLElement {
     #positionRevision = null
     #positionActivities = new Set()
     #positionReceipts = new WeakMap()
+    #navigationReceipts = new WeakMap()
     #positionProofs = new WeakMap()
     #positionDestroyed = false
     #displayOwner = null
@@ -817,6 +818,10 @@ export class Paginator extends HTMLElement {
     }
     attributeChangedCallback(_name, oldValue, newValue) {
         if (oldValue !== newValue) this.#positionRevision = {}
+    }
+    isNavigationReceiptCurrent(receipt) {
+        const command = receipt && this.#navigationReceipts.get(receipt)
+        return !!command && this.#isPositionCommandCurrent(command)
     }
     isPositionReceiptCurrent(receipt) {
         const command = receipt && this.#positionReceipts.get(receipt)
@@ -2323,16 +2328,16 @@ export class Paginator extends HTMLElement {
 
         if (!state.triggered && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > minSwipe) {
             state.triggered = true;
-            const stillCurrent = this.#dispatchForegroundPageTurnActivity(this.#logicalDirectionForSwipeDelta(dx, 'touch'), {
+            const foregroundActivity = this.#dispatchForegroundPageTurnActivity(this.#logicalDirectionForSwipeDelta(dx, 'touch'), {
                 input: 'touch',
                 source: 'paginator.touchmove',
             });
-            if (!stillCurrent) return;
+            if (!foregroundActivity) return;
 
             if (dx < 0) {
-                (this.bookDir === 'rtl') ? await this.prev() : await this.next();
+                (this.bookDir === 'rtl') ? await this.prev(undefined, { foregroundActivity }) : await this.next(undefined, { foregroundActivity });
             } else {
-                (this.bookDir === 'rtl') ? await this.next() : await this.prev();
+                (this.bookDir === 'rtl') ? await this.next(undefined, { foregroundActivity }) : await this.prev(undefined, { foregroundActivity });
             }
         }
     }
@@ -2443,15 +2448,15 @@ export class Paginator extends HTMLElement {
         if (this.#wheelArmed && Math.abs(e.deltaX) > TRIGGER_THRESHOLD) {
             this.#wheelArmed = false;
             this.#wheelCooldown = true;
-            const stillCurrent = this.#dispatchForegroundPageTurnActivity(this.#logicalDirectionForSwipeDelta(e.deltaX, 'wheel'), {
+            const foregroundActivity = this.#dispatchForegroundPageTurnActivity(this.#logicalDirectionForSwipeDelta(e.deltaX, 'wheel'), {
                 input: 'wheel',
                 source: 'paginator.wheel',
             });
-            if (!stillCurrent) { this.#wheelCooldown = false; return; }
+            if (!foregroundActivity) { this.#wheelCooldown = false; return; }
             if (e.deltaX > 0) {
-                await this.prev();
+                await this.prev(undefined, { foregroundActivity });
             } else {
-                await this.next();
+                await this.next(undefined, { foregroundActivity });
             }
             this.#updateSwipeChevron(e.deltaX, TRIGGER_THRESHOLD, { input: 'wheel' })
             setTimeout(() => {
@@ -2886,22 +2891,20 @@ export class Paginator extends HTMLElement {
         return null;
     }
     #dispatchForegroundPageTurnActivity(logicalDirection, { input = 'touch', source = 'paginator' } = {}) {
-        if (logicalDirection !== 'forward' && logicalDirection !== 'backward') return false;
+        if (logicalDirection !== 'forward' && logicalDirection !== 'backward') return null;
         const marker = {}
         this.#positionCommand = marker
         this.#positionRevision = {}
+        const detail = {
+            activity: marker, input, source, logicalDirection,
+            chevronSide: this.#chevronSideForLogicalDirection(logicalDirection),
+            isRTL: this.bookDir === 'rtl',
+        }
         this.dispatchEvent(new CustomEvent('foregroundPageTurnActivity', {
-            bubbles: true,
-            composed: true,
-            detail: {
-                input,
-                source,
-                logicalDirection,
-                chevronSide: this.#chevronSideForLogicalDirection(logicalDirection),
-                isRTL: this.bookDir === 'rtl',
-            },
+            bubbles: true, composed: true, detail,
         }));
         return !this.#positionDestroyed && this.#positionCommand === marker
+            && detail.isCurrent?.() !== false ? marker : null
     }
     #updateSwipeChevron(dx, minSwipe, { input = 'touch' } = {}) {
         const progress = Math.min(1, Math.abs(dx) / minSwipe);
@@ -3249,7 +3252,7 @@ export class Paginator extends HTMLElement {
             if (isCurrent()) this.#scheduleNeighborPrefetch('section-display')
         }
     }
-    async goTo(target, { requiresPositionReceipt = false } = {}) {
+    async goTo(target, { requiresPositionReceipt = false, requiresNavigationReceipt = false } = {}) {
         if (this.#locked || this.#positionDestroyed) return null
         const command = this.#beginPositionCommand()
         try {
@@ -3258,11 +3261,13 @@ export class Paginator extends HTMLElement {
                 || !this.#canGoToIndex(resolved?.index)) return null
             const acceptedTarget = { index: resolved.index, anchor: resolved.anchor }
             const result = await this.#goTo(resolved)
-            if (!requiresPositionReceipt) return result
-            if (result === null || !this.#isPositionCommandCurrent(command)
-                || acceptedTarget.anchor !== 0) return null
+            if (!requiresPositionReceipt && !requiresNavigationReceipt) return result
+            if (result === null || result === false || result?.ignored === true
+                || !this.#isPositionCommandCurrent(command)
+                || (requiresPositionReceipt && acceptedTarget.anchor !== 0)) return null
             const receipt = Object.freeze(acceptedTarget)
-            this.#positionReceipts.set(receipt, command)
+            this.#navigationReceipts.set(receipt, command)
+            if (requiresPositionReceipt) this.#positionReceipts.set(receipt, command)
             return receipt
         } finally { command.finish() }
     }
@@ -3374,7 +3379,9 @@ export class Paginator extends HTMLElement {
             previousQueuedPageTurn?.command?.finish()
             previousQueuedPageTurn?.resolve?.({ superseded: true })
             return await new Promise((resolve, reject) => {
-                this.#queuedPageTurn = { dir, distance, resolve, reject, command }
+                this.#queuedPageTurn = { dir, distance, resolve, reject, command,
+                    requiresNavigationReceipt: options.requiresNavigationReceipt,
+                    foregroundActivity: options.foregroundActivity }
             })
         }
 
@@ -3383,6 +3390,7 @@ export class Paginator extends HTMLElement {
             command.finish()
             return { superseded: true }
         }
+        let acceptedReceipt = null
         try {
             this.#locked = true
             this.#lockedAt = manabiPerfNow()
@@ -3430,6 +3438,31 @@ export class Paginator extends HTMLElement {
                 }
                 if (shouldGo || !this.hasAttribute('animated')) await wait(100)
                 if (!shouldGo) this.#scheduleNeighborPrefetch('page-turn.within-section')
+                if ((options.requiresNavigationReceipt || options.foregroundActivity)
+                    && this.#isPositionCommandCurrent(command) && this.#view?.document
+                    && this.#canGoToIndex(this.#index)
+                    && Number.isFinite(finalMetrics?.size) && finalMetrics.size > 0
+                    && Number.isFinite(finalMetrics?.start)) {
+                    const moved = this.#index !== beforeIndex
+                        || (Number.isFinite(beforeMetrics?.page) && Number.isFinite(finalMetrics.page)
+                            && finalMetrics.page !== beforeMetrics.page)
+                        || (Number.isFinite(beforeMetrics?.start)
+                            && Math.abs(finalMetrics.start - beforeMetrics.start) >= 1)
+                    // At a proven book boundary a completed turn is a valid
+                    // no-op. Ignored/queued-rejected commands never reach here.
+                    const atBoundary = beforeAdjacentIndex == null && (this.scrolled
+                        ? (dir < 0 ? beforeMetrics?.start <= 0
+                            : beforeMetrics?.viewSize - beforeMetrics?.end <= 2)
+                        : (dir < 0 ? beforeMetrics?.page <= 1
+                            : beforeMetrics?.page >= beforeMetrics?.pages - 2))
+                    const boundaryNoOp = atBoundary && this.#index === beforeIndex
+                        && Number.isFinite(beforeMetrics?.start)
+                        && Math.abs(finalMetrics.start - beforeMetrics.start) < 1
+                    if (moved || boundaryNoOp) {
+                        acceptedReceipt = Object.freeze({ index: this.#index, moved })
+                        this.#navigationReceipts.set(acceptedReceipt, command)
+                    }
+                }
             } finally {
                 this.#pendingPageTurnDirection = null
                 this.#pendingPageTurnQueueAllowed = false
@@ -3444,7 +3477,9 @@ export class Paginator extends HTMLElement {
                         this.#turnPage(
                             queuedPageTurn.dir,
                             queuedPageTurn.distance,
-                            { bypassPostTurnDuplicateSuppression: true, positionCommand: queuedPageTurn.command }
+                            { bypassPostTurnDuplicateSuppression: true, positionCommand: queuedPageTurn.command,
+                                requiresNavigationReceipt: queuedPageTurn.requiresNavigationReceipt,
+                                foregroundActivity: queuedPageTurn.foregroundActivity }
                         )
                             .then(value => queuedPageTurn.resolve?.(value))
                             .catch(error => queuedPageTurn.reject?.(error))
@@ -3452,22 +3487,31 @@ export class Paginator extends HTMLElement {
                 }
             }
         } finally { command.finish() }
+        if (acceptedReceipt && this.isNavigationReceiptCurrent(acceptedReceipt)
+            && options.foregroundActivity) {
+            this.dispatchEvent(new CustomEvent('foregroundNavigationAccepted', {
+                detail: { activity: options.foregroundActivity, receipt: acceptedReceipt },
+            }))
+        }
+        if (options.requiresNavigationReceipt) {
+            return this.isNavigationReceiptCurrent(acceptedReceipt) ? acceptedReceipt : null
+        }
     }
-    async prev(distance) {
-        return await this.#turnPage(-1, distance)
+    async prev(distance, options) {
+        return await this.#turnPage(-1, distance, options)
     }
-    async next(distance) {
-        return await this.#turnPage(1, distance)
+    async next(distance, options) {
+        return await this.#turnPage(1, distance, options)
     }
-    async prevSection() {
+    async prevSection(options) {
         return await this.goTo({
             index: this.#adjacentIndex(-1)
-        })
+        }, options)
     }
-    async nextSection() {
+    async nextSection(options) {
         return await this.goTo({
             index: this.#adjacentIndex(1)
-        })
+        }, options)
     }
     async firstSection() {
         const index = this.sections.findIndex(section => section.linear !== 'no')
