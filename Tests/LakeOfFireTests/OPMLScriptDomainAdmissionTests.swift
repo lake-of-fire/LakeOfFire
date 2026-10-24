@@ -104,9 +104,9 @@ final class OPMLScriptDomainAdmissionTests: XCTestCase {
         let previous = LibraryDataManager.observesDownloadController
         LibraryDataManager.observesDownloadController = false
         defer { LibraryDataManager.observesDownloadController = previous }
-        // This synchronous initializer guard suppresses both download and Realm
-        // observers. Each import below explicitly supplies its fixture store.
-        return LibraryDataManager()
+        // Realm observation is independently disabled: no observer may attach
+        // to the process-global store. Imports pass their private fixture store.
+        return LibraryDataManager(observesRealm: false)
     }
 
     @RealmBackgroundActor
