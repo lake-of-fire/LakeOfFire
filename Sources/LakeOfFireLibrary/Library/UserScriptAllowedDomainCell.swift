@@ -1,48 +1,55 @@
 import SwiftUI
-import RealmSwift
-import LakeKit
 import RealmSwiftGaps
-import SwiftUtilities
-import LakeOfFireCore
-import LakeOfFireAdblock
-import LakeOfFireContent
 
 struct UserScriptAllowedDomainCell: View {
-    let domainID: UUID
-    
-    init(domainID: UUID) {
-        self.domainID = domainID
+    let editor: UserScriptAllowedDomainEditor
+
+    init(editor: UserScriptAllowedDomainEditor) {
+        self.editor = editor
+        _domainText = State(initialValue: editor.initialText)
     }
-    
-    @State private var domainText: String = ""
-    
+
+    @State private var domainText: String
+    @State private var pendingEdit: UserScriptAllowedDomainEdit?
+    @State private var writeTask: Task<Void, Never>?
+
     var body: some View {
-        TextField("Domain", text: $domainText, prompt: Text("example.com"))
+        TextField("Domain", text: Binding(get: { domainText }, set: edit), prompt: Text("example.com"))
 #if os(iOS)
             .textInputAutocapitalization(.never)
 #endif
-            .onChange(of: domainText, debounceTime: 0.3) { domainText in
-                let domainID = domainID
-                Task { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                    guard let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID) else { return }
-                    try await realm.asyncWrite {
-                        guard domain.domain != domainText else { return }
-                        domain.domain = domainText
-                        domain.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
+            .onDisappear(perform: finishEditing)
+    }
+
+    @MainActor
+    private func edit(_ text: String) {
+        domainText = text
+        // Reserve input ownership before debounce or an actor hop, including no-op input.
+        let command = editor.makeEdit(text)
+        pendingEdit = command
+        writeTask?.cancel()
+        writeTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 300_000_000)
+                try await command.write()
+                if pendingEdit?.intent == command.intent { pendingEdit = nil }
+            } catch is CancellationError {
+                // Replacement/disappearance retains the latest command for its owned flush.
+            } catch {
+                print("# LIBRARYSCRIPTDOMAIN edit failed: \(error)")
             }
-            .task(id: domainID) {
-                let domainID = domainID
-                try? await { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                    guard let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID) else { return }
-                    let domainText = domain.domain
-                    await { @MainActor in
-                        self.domainText = domainText
-                    }()
-                }()
-            }
+        }
+    }
+
+    @MainActor
+    private func finishEditing() {
+        writeTask?.cancel()
+        writeTask = nil
+        guard let command = pendingEdit else { return }
+        pendingEdit = nil
+        Task { @RealmBackgroundActor in
+            do { try await command.write() }
+            catch { print("# LIBRARYSCRIPTDOMAIN retirement write failed: \(error)") }
+        }
     }
 }
