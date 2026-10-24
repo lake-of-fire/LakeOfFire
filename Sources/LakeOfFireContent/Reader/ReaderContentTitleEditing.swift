@@ -7,7 +7,7 @@ import RealmSwiftGaps
 /// Opaque equality for one captured title-edit record, without live Realm access.
 public struct ReaderContentTitleEditIdentity: Hashable, Sendable {
     fileprivate enum Storage: Hashable, Sendable {
-        case managed(String)
+        case managed(scope: String, objectID: UInt64)
         case unmanaged(ObjectIdentifier)
     }
 
@@ -23,7 +23,7 @@ public struct ReaderContentTitleEditIdentity: Hashable, Sendable {
         reference: ReaderContentLoader.ContentReference?
     ) {
         if let reference {
-            storage = .managed(reference.storageAdmission.scopeIdentity)
+            storage = .managed(scope: reference.storageAdmission.scopeIdentity, objectID: reference.contentObjectID)
             contentType = ObjectIdentifier(reference.contentType)
             contentKey = reference.contentKey
             contentURL = reference.contentURL
