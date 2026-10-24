@@ -6,6 +6,40 @@ import SwiftUIWebView
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
+private actor DownloadedBookOpenImportGate {
+    private var entered = false
+    private var finished = false
+    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func suspendIgnoringCancellation() async {
+        entered = true
+        let waiters = entryWaiters
+        entryWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+
+    func waitUntilSuspendedOrFinished() async -> Bool {
+        if !entered && !finished {
+            await withCheckedContinuation { entryWaiters.append($0) }
+        }
+        return entered
+    }
+
+    func finish() {
+        finished = true
+        let waiters = entryWaiters
+        entryWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func release() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+
 final class DownloadableBookLibraryImportTests: XCTestCase {
     private struct Fixture {
         let manager: ReaderFileManager
@@ -230,6 +264,204 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 throw error
             }
             await ReaderContentLoader.resetTransientCachesForTesting()
+        }
+    }
+
+    @MainActor
+    func testOpenDownloadedRetiredEntrantDoesNotImport() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            let navigator = WebViewNavigator()
+            var imports = 0
+            var callbacks = 0
+            try await BookLibraryViewModel.openDownloaded(
+                publication: Publication(title: fixture.downloadable.name, downloadURL: fixture.downloadable.url),
+                readerFileManager: fixture.manager,
+                readerContent: ReaderContent(),
+                navigator: navigator,
+                readerModeViewModel: ReaderModeViewModel(),
+                shouldOpen: { false },
+                onNavigateToReader: { callbacks += 1 },
+                importDownloaded: { _ in
+                    imports += 1
+                    return fixture.expectedReaderURL
+                }
+            )
+
+            XCTAssertEqual(imports, 0)
+            XCTAssertEqual(callbacks, 0)
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, "nil")
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+        }
+    }
+
+    @MainActor
+    func testOpenDownloadedCancellationPreservesCommittedImportWithoutOpening() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            try await withIsolatedContentLoading {
+                let gate = DownloadedBookOpenImportGate()
+                let navigator = WebViewNavigator()
+                let readerContent = ReaderContent()
+                var importedURL: URL?
+                var callbacks = 0
+                let task = Task { @MainActor in
+                    do {
+                        try await BookLibraryViewModel.openDownloaded(
+                            publication: Publication(title: fixture.downloadable.name, downloadURL: fixture.downloadable.url),
+                            readerFileManager: fixture.manager,
+                            readerContent: readerContent,
+                            navigator: navigator,
+                            readerModeViewModel: ReaderModeViewModel(),
+                            onNavigateToReader: { callbacks += 1 },
+                            importDownloaded: { downloadable in
+                                importedURL = try await fixture.manager.ensureImported(downloadable: downloadable)
+                                await gate.suspendIgnoringCancellation()
+                                return importedURL
+                            }
+                        )
+                        await gate.finish()
+                    } catch {
+                        await gate.finish()
+                        throw error
+                    }
+                }
+                guard await gate.waitUntilSuspendedOrFinished() else {
+                    try await task.value
+                    XCTFail("The current command must reach its importer")
+                    return
+                }
+                XCTAssertEqual(importedURL, fixture.expectedReaderURL)
+
+                task.cancel()
+                await gate.release()
+                try await task.value
+
+                let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+                XCTAssertEqual(realm.objects(ContentFile.self).count, 1)
+                XCTAssertEqual(realm.objects(HistoryRecord.self).count, 0)
+                XCTAssertEqual(fixture.manager.files(ofTypes: [.epub, .epubZip])?.map(\.url), [fixture.expectedReaderURL])
+                XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.downloadable.localDestination.path))
+                XCTAssertEqual(callbacks, 0)
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, "nil")
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+                XCTAssertNil(readerContent.content)
+            }
+        }
+    }
+
+    @MainActor
+    func testOpenDownloadedReplacedSelectionRejectsUncancelledLateImport() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            try await withIsolatedContentLoading {
+                let viewModel = BookLibraryViewModel()
+                var original: BookLibraryViewModel.OpenSelection?
+                let reservation = try XCTUnwrap(viewModel.startOpenSelection(
+                    onStart: { original = $0 }
+                ) { _ in })
+                await reservation.value
+                let selection = try XCTUnwrap(original)
+                let gate = DownloadedBookOpenImportGate()
+                let navigator = WebViewNavigator()
+                var importedURL: URL?
+                var callbacks = 0
+                let task = Task { @MainActor in
+                    do {
+                        try await BookLibraryViewModel.openDownloaded(
+                            publication: Publication(title: fixture.downloadable.name, downloadURL: fixture.downloadable.url),
+                            readerFileManager: fixture.manager,
+                            readerContent: ReaderContent(),
+                            navigator: navigator,
+                            readerModeViewModel: ReaderModeViewModel(),
+                            shouldOpen: { viewModel.isCurrentOpenSelection(selection) },
+                            onNavigateToReader: { callbacks += 1 },
+                            importDownloaded: { downloadable in
+                                importedURL = try await fixture.manager.ensureImported(downloadable: downloadable)
+                                await gate.suspendIgnoringCancellation()
+                                return importedURL
+                            }
+                        )
+                        await gate.finish()
+                    } catch {
+                        await gate.finish()
+                        throw error
+                    }
+                }
+                guard await gate.waitUntilSuspendedOrFinished() else {
+                    try await task.value
+                    XCTFail("The current command must reach its importer")
+                    return
+                }
+                XCTAssertEqual(importedURL, fixture.expectedReaderURL)
+
+                let replacement = try XCTUnwrap(viewModel.startOpenSelection { newer in
+                    XCTAssertTrue(viewModel.isCurrentOpenSelection(newer))
+                })
+                await replacement.value
+                XCTAssertFalse(viewModel.isCurrentOpenSelection(selection))
+                XCTAssertFalse(task.isCancelled, "The public command must also honor its explicit selection admission")
+                await gate.release()
+                try await task.value
+
+                let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+                XCTAssertEqual(realm.objects(ContentFile.self).count, 1)
+                XCTAssertEqual(realm.objects(HistoryRecord.self).count, 0)
+                XCTAssertEqual(fixture.manager.files(ofTypes: [.epub, .epubZip])?.map(\.url), [fixture.expectedReaderURL])
+                XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.downloadable.localDestination.path))
+                XCTAssertEqual(callbacks, 0)
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, "nil")
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+            }
+        }
+    }
+
+    @MainActor
+    func testOpenDownloadedPublicPathNavigatesCurrentImport() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            try await withIsolatedContentLoading {
+                let navigator = WebViewNavigator()
+                var callbacks = 0
+                try await BookLibraryViewModel.openDownloaded(
+                    publication: Publication(title: fixture.downloadable.name, downloadURL: fixture.downloadable.url),
+                    readerFileManager: fixture.manager,
+                    readerContent: ReaderContent(),
+                    navigator: navigator,
+                    readerModeViewModel: ReaderModeViewModel(),
+                    onNavigateToReader: { callbacks += 1 }
+                )
+
+                let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+                XCTAssertEqual(realm.objects(ContentFile.self).count, 1)
+                XCTAssertEqual(realm.objects(HistoryRecord.self).count, 1)
+                XCTAssertEqual(callbacks, 1)
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, fixture.expectedReaderURL.absoluteString)
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+            }
+        }
+    }
+
+    @MainActor
+    private func withIsolatedContentLoading<T>(
+        _ operation: @MainActor () async throws -> T
+    ) async throws -> T {
+        let previousFeedConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let previousProviders = ReaderContentLoader.additionalContentProviders
+        defer {
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeedConfiguration
+            ReaderContentLoader.additionalContentProviders = previousProviders
+        }
+        ReaderContentLoader.feedEntryRealmConfiguration = ReaderContentLoader.historyRealmConfiguration
+        ReaderContentLoader.additionalContentProviders = []
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        do {
+            let result = try await operation()
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            return result
+        } catch {
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            throw error
         }
     }
 
