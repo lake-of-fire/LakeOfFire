@@ -544,6 +544,7 @@ final class LibraryCategoryEditorPresentationTests: XCTestCase, @unchecked Senda
         ))
         var replacementConfiguration = configuration
         replacementConfiguration.fileURL = directory.appendingPathComponent("replacement.realm")
+        configureLakeOfFireMutationTrackingForTesting(&replacementConfiguration)
         var retiredConfiguration = configuration
         retiredConfiguration.fileURL = directory.appendingPathComponent("retired.realm")
         let captured = configuration
@@ -585,6 +586,13 @@ final class LibraryCategoryEditorPresentationTests: XCTestCase, @unchecked Senda
         }
         let original = try diskSnapshot(configuration)
         let replacement = try diskSnapshot(replacementConfiguration)
+        let expectedJournalRecords: Set<String> = [
+            "\(FeedCategory.className()).\(categoryID)",
+            "\(LibraryConfiguration.className()).\(libraryID)",
+            "\(Feed.className()).\(feedID)",
+        ]
+        XCTAssertEqual(Set(original.generations.keys), expectedJournalRecords)
+        XCTAssertEqual(Set(replacement.generations.keys), expectedJournalRecords)
         XCTAssertEqual(original.feeds.map(\.id), replacement.feeds.map(\.id))
         XCTAssertEqual(original.feeds.map(\.createdAt), replacement.feeds.map(\.createdAt))
         XCTAssertEqual(original.categories.map(\.id), replacement.categories.map(\.id))
