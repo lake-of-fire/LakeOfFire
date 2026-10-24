@@ -32,12 +32,13 @@ public func transformContentSpecificToFeed(doc: Document, url: URL) {
 
 private func matchaTravel(doc: Document) throws {
     // Collapse spaces.
-    guard let articleTitle = try doc.getElementById("reader-title") else { return }
-    try articleTitle.text(articleTitle.text().replace(regex: emptySpaceRegex, template: ""))
+    guard let articleTitle = try readerDocumentElementWithID("reader-title", in: doc) else { return }
+    try replaceReaderDocumentText(ReaderDocumentTree.text(in: articleTitle).replace(regex: emptySpaceRegex, template: ""), in: articleTitle)
 
     // Collapse spaces. /*Remove (※) which reference Matcha vocab definitions that we remove.*/
-    guard let articleDiv = try doc.getElementById("reader-content")?.getElementsByClass("page").first() else { return }
-    guard let elements = try? articleDiv.getAllElements() else { return }
+    guard let readerContent = try readerDocumentElementWithID("reader-content", in: doc),
+          let articleDiv = try readerDocumentElements(in: readerContent, matching: ".page").first else { return }
+    guard let elements = try? readerDocumentElements(in: articleDiv, matching: "*") else { return }
     for element in elements {
         for textNode in element.textNodes() {
             var text = textNode.getWholeText()
@@ -60,56 +61,61 @@ private func matchaTravel(doc: Document) throws {
 }
 
 private func wataNoC(doc: Document) throws {
-    guard let readerContentElement = try doc.getElementById("reader-content"), let articleDiv = try readerContentElement.getElementsByTag("article").first() else { return }
+    guard let readerContentElement = try readerDocumentElementWithID("reader-content", in: doc),
+          let articleDiv = try readerDocumentElements(in: readerContentElement, matching: "article").first else { return }
 
     // Remove the " –freeweb manage ..." title suffix.
-    guard let titleElement = try doc.getElementById("reader-title") else { return }
-    var title = try titleElement.text()
+    guard let titleElement = try readerDocumentElementWithID("reader-title", in: doc) else { return }
+    var title = try ReaderDocumentTree.text(in: titleElement)
     if let range = title.range(of: " – free web magazine", options: .backwards) {
         title = title[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
-        try titleElement.text(title)
+        try replaceReaderDocumentText(title, in: titleElement)
     }
     if let range = title.range(of: ")") {
         title.insert(" ", at: range.upperBound)
-        try titleElement.text(title)
+        try replaceReaderDocumentText(title, in: titleElement)
     }
 
     // Remove the author header which can remain in the article body, duplicated.
-    try readerContentElement.getElementsByTag("header").first()?.remove()
+    try removeReaderDocumentElement(readerDocumentElements(in: readerContentElement, matching: "header").first)
 
     // Remove comments and rest of footer.
-    try readerContentElement.getElementById("reply-title")?.parent()?.remove()
-    try readerContentElement.getElementById("content-bottom-widget")?.remove()
-    try readerContentElement.select("ul > li > p > a").first()?.parent()?.parent()?.parent()?.parent()?.remove()
+    try removeReaderDocumentElement(readerDocumentElementWithID("reply-title", in: readerContentElement)?.parent())
+    try removeReaderDocumentElement(readerDocumentElementWithID("content-bottom-widget", in: readerContentElement))
+    try removeReaderDocumentElement(readerDocumentElements(in: readerContentElement, matching: "ul > li > p > a").first?.parent()?.parent()?.parent()?.parent())
 
     // Remove "english" (or other language) translation buttons.
-    for translationImg in try readerContentElement.select("div span:first-of-type img") {
+    for translationImg in try readerDocumentElements(in: readerContentElement, matching: "div span:first-of-type img") {
         // The translation image URLs look like kigoo-en.jpg
         if try !translationImg.attr("src").contains("kigoo-") {
             continue
         }
 
-        try translationImg.parent()?.parent()?.remove()
+        try removeReaderDocumentElement(translationImg.parent()?.parent())
     }
 
     // Un-bold words that had grammar explanations.
-    for strong in try readerContentElement.select("span[title] strong") {
-        let surface = try strong.text()
+    for strong in try readerDocumentElements(in: readerContentElement, matching: "span[title] strong") {
+        guard !ReaderDocumentTree.containsInertHTMLTemplate(in: strong) else { continue }
+        let surface = try ReaderDocumentTree.text(in: strong)
         try strong.before(surface)
         try strong.remove()
     }
 
     // Remove broken paragraphs that display code.
-    for p in try readerContentElement.getElementsByTag("p") {
+    for p in try readerDocumentElements(in: readerContentElement, matching: "p") {
         if p.ownText().contains("[label ") {
-            try p.remove()
+            try removeReaderDocumentElement(p)
         }
     }
 
     // Make images block level
-    if let childDivs = try articleDiv.getElementsByTag("div").first()?.children() {
+    if let childDivs = try readerDocumentElements(in: articleDiv, matching: "div").first?.children() {
         for div in childDivs {
-            if let firstChild = div.children().first(), firstChild.tagNameNormalUTF8() == UTF8Arrays.img {
+            guard !ReaderDocumentTree.isInertHTMLTemplate(div),
+                  !ReaderDocumentTree.isInTemplateContents(div) else { continue }
+            if let firstChild = div.children().first(), firstChild.tagNameNormalUTF8() == UTF8Arrays.img,
+               !ReaderDocumentTree.containsInertHTMLTemplate(in: firstChild) {
                 let imgHtml = try firstChild.outerHtml()
                 try firstChild.remove()
                 try div.before(imgHtml)
@@ -118,16 +124,19 @@ private func wataNoC(doc: Document) throws {
     }
 
     // Collapse spaces and learning markup in the text.
-    try articleDiv.getElementsByTag("br").remove()
-    for wordWithTipElement in try articleDiv.getElementsByAttribute("data-tipso") {
+    for br in try readerDocumentElements(in: articleDiv, matching: "br") {
+        try removeReaderDocumentElement(br)
+    }
+    for wordWithTipElement in try readerDocumentElements(in: articleDiv, matching: "[data-tipso]") {
+        guard !ReaderDocumentTree.containsInertHTMLTemplate(in: wordWithTipElement) else { continue }
         try wordWithTipElement.before(wordWithTipElement.ownText())
         try wordWithTipElement.remove()
     }
 
     // Remove bottom bar with audio player
-    try articleDiv.getElementById("bottom-bar")?.remove()
+    try removeReaderDocumentElement(readerDocumentElementWithID("bottom-bar", in: articleDiv))
 
-    for element in try articleDiv.getAllElements() {
+    for element in try readerDocumentElements(in: articleDiv, matching: "*") {
         guard containsCJKCharacters(text: element.ownText()) else { continue }
 
         for textNode in element.textNodes() {
@@ -141,10 +150,10 @@ private func wataNoC(doc: Document) throws {
     }
 
     // Remove nonfunctional "next" links and other garbage.
-    for p in try doc.getElementsByTag("p") {
+    for p in try readerDocumentElements(in: doc, matching: "p") {
         for garbageText in ["次(next)⇒", "つぎ(next)"] {
-            if try p.text().contains(garbageText) {
-                try p.remove()
+            if try ReaderDocumentTree.text(in: p).contains(garbageText) {
+                try removeReaderDocumentElement(p)
                 break
             }
         }
@@ -153,58 +162,63 @@ private func wataNoC(doc: Document) throws {
 }
 
 private func hukumusume(doc: Document) throws {
-    try doc.getElementsByTag("table").remove()
+    for table in try readerDocumentElements(in: doc, matching: "table") {
+        try removeReaderDocumentElement(table)
+    }
 
     func removeTranslationOptions(_ tag: Element) throws {
-        if try tag.getElementsMatchingText("←").first() != nil && tag.getElementsMatchingText("→").first() != nil {
+        let visibleText = try ReaderDocumentTree.text(in: tag)
+        if visibleText.contains("←") && visibleText.contains("→") {
+            guard !ReaderDocumentTree.containsInertHTMLTemplate(in: tag) else { return }
             // Remove line-breaks preceding the translation options paragraph.
             while true {
                 let sibling = try tag.previousElementSibling()
                 if (sibling?.tagNameNormal() ?? "") != "br" {
                     break
                 }
-                try sibling?.remove()
+                if let sibling, ReaderDocumentTree.containsInertHTMLTemplate(in: sibling) { break }
+                try removeReaderDocumentElement(sibling)
             }
-            try tag.remove()
+            try removeReaderDocumentElement(tag)
         }
     }
 
-    for tag in try doc.getElementsByTag("p") {
+    for tag in try readerDocumentElements(in: doc, matching: "p") {
         try removeTranslationOptions(tag)
     }
-    for tag in try doc.getElementsByTag("font") {
+    for tag in try readerDocumentElements(in: doc, matching: "font") {
         try removeTranslationOptions(tag)
     }
-    for tag in try doc.getElementsByAttributeValue("href", "javascript:history.back();") {
-        try tag.remove()
+    for tag in try readerDocumentElements(in: doc, matching: "[href='javascript:history.back();']") {
+        try removeReaderDocumentElement(tag)
     }
 
     // Remove useless spacer.gif
-    for img in try doc.getElementsByTag("img") {
+    for img in try readerDocumentElements(in: doc, matching: "img") {
         if let src = try? img.attr("src"), src.hasSuffix("/spacer.gif") {
-            try img.remove()
+            try removeReaderDocumentElement(img)
         }
     }
 
     // Remove empty paragraphs.
-    for p in try doc.getElementsByTag("p") {
+    for p in try readerDocumentElements(in: doc, matching: "p") {
         if !p.hasText() && !p.hasChildNodes() {
-            try p.remove()
+            try removeReaderDocumentElement(p)
         }
     }
 
     // Remove <br> at start or end of paragraph nodes.
-    for br in try doc.getElementsByTag("br") {
+    for br in try readerDocumentElements(in: doc, matching: "br") {
         if let parent = br.parent(), parent.tagNameNormalUTF8() == UTF8Arrays.p && (br.previousSibling() == nil || !br.hasNextSibling()) {
-            try br.remove()
+            try removeReaderDocumentElement(br)
         }
     }
 
     // Remove breadcrumb nav at top.
-    for p in try doc.getElementsByTag("p") {
-        if try p.text().contains(" > ") {
-            let anchors = try p.getElementsByTag("a")
-            if anchors.first() == nil {
+    for p in try readerDocumentElements(in: doc, matching: "p") {
+        if try ReaderDocumentTree.text(in: p).contains(" > ") {
+            let anchors = try readerDocumentElements(in: p, matching: "a")
+            if anchors.first == nil {
                 continue
             }
             var match = true
@@ -215,7 +229,7 @@ private func hukumusume(doc: Document) throws {
                 }
             }
             if match {
-                try p.remove()
+                try removeReaderDocumentElement(p)
                 break
             }
         }
@@ -223,49 +237,55 @@ private func hukumusume(doc: Document) throws {
 }
 
 private func hiraganaTimes(doc: Document) throws {
-    try doc.getElementById("reader-content")?.getElementsByTag("p").first()?.remove()
+    if let content = try readerDocumentElementWithID("reader-content", in: doc) {
+        try removeReaderDocumentElement(readerDocumentElements(in: content, matching: "p").first)
+    }
 }
 
 private func cnn(doc: Document) throws {
-    guard let titleElement = try doc.getElementById("reader-title") else { return }
-    let title = try titleElement.text()
+    guard let titleElement = try readerDocumentElementWithID("reader-title", in: doc) else { return }
+    let title = try ReaderDocumentTree.text(in: titleElement)
     if let range = title.range(of: "CNN.co.jp : ") {
-        try titleElement.text(title[range.upperBound...].trimmingCharacters(in: .whitespaces))
+        try replaceReaderDocumentText(title[range.upperBound...].trimmingCharacters(in: .whitespaces), in: titleElement)
     }
 }
 
 private func slowCommunication(doc: Document) throws {
-    guard let pageElement = try doc.getElementById("reader-content")?.getElementsByClass("page").first() else { return }
+    guard let content = try readerDocumentElementWithID("reader-content", in: doc),
+          let pageElement = try readerDocumentElements(in: content, matching: ".page").first else { return }
 
     // Remove date and tag which get interpreted as an article paragraph.
 //    guard let dateAndTagElement = try pageElement.getElementsByTag("p").first() else { return }
 //    try dateAndTagElement.remove()
 
     // Remove the inline audio.
-    if let inlineAudioElement = try pageElement.getElementsByTag("article").first()?.getElementsByTag("audio").first() {
-        try inlineAudioElement.remove()
+    if let article = try readerDocumentElements(in: pageElement, matching: "article").first,
+       let inlineAudioElement = try readerDocumentElements(in: article, matching: "audio").first {
+        try removeReaderDocumentElement(inlineAudioElement)
     }
 
     // Remove the audio credit, which is confusing in our UI.
-    for p in try doc.getElementsByTag("p") {
-        if try p.text().hasPrefix("(音声") {
-            try p.remove()
+    for p in try readerDocumentElements(in: doc, matching: "p") {
+        if try ReaderDocumentTree.text(in: p).hasPrefix("(音声") {
+            try removeReaderDocumentElement(p)
             break
         }
     }
 
     // Remove the line-breaks within the article that they add for readability but which screw with our sentence detection.
-    for br in try doc.getElementsByTag("br") {
-        try br.remove()
+    for br in try readerDocumentElements(in: doc, matching: "br") {
+        try removeReaderDocumentElement(br)
     }
 }
 
 private func nhk(doc: Document) throws {
-    guard let pageElement = try doc.getElementById("reader-content")?.getElementsByClass("page").first() else { return }
+    guard let content = try readerDocumentElementWithID("reader-content", in: doc),
+          let pageElement = try readerDocumentElements(in: content, matching: ".page").first else { return }
 
     // Un-link words that have NHK popup dictionaries.
-    for wordLink in try pageElement.select("a.dicWin") {
-        if let word = try wordLink.select("span.under").first()?.ownText() {
+    for wordLink in try readerDocumentElements(in: pageElement, matching: "a.dicWin") {
+        guard !ReaderDocumentTree.containsInertHTMLTemplate(in: wordLink) else { continue }
+        if let word = try readerDocumentElements(in: wordLink, matching: "span.under").first?.ownText() {
             try wordLink.before(word)
             try wordLink.remove()
         }
@@ -273,22 +293,23 @@ private func nhk(doc: Document) throws {
 }
 
 private func hypebeast(doc: Document) throws {
-    guard let pageElement = try doc.getElementById("reader-content")?.getElementsByClass("page").first() else { return }
+    guard let content = try readerDocumentElementWithID("reader-content", in: doc),
+          let pageElement = try readerDocumentElements(in: content, matching: ".page").first else { return }
 
     // Remove the "『HYPEBEAST』がお届けするその他最新のファッション情報もお見逃しなく。" footer from articles.
-    for p in try pageElement.getElementsByTag("p") {
+    for p in try readerDocumentElements(in: pageElement, matching: "p") {
         if p.ownText() == "『HYPEBEAST』がお届けするもお見逃しなく。" {
-            try p.remove()
+            try removeReaderDocumentElement(p)
         }
     }
 
     // Remove "What To Read Next" footer
-    try doc.getElementById("post-feed")?.remove()
+    try removeReaderDocumentElement(readerDocumentElementWithID("post-feed", in: doc))
 }
 
 public func fixAnnoyingTitlesWithPipes(doc: Document, url: URL) throws {
     guard shouldPreferPipePrefixTitle(url: url) else { return }
-    guard let titleElement = try doc.getElementById("reader-title") else { return }
+    guard let titleElement = try readerDocumentElementWithID("reader-title", in: doc) else { return }
     let textNodes = try titleElement.textNodes()
     for node in textNodes {
         let original = node.getWholeText()
@@ -319,14 +340,15 @@ private func shouldPreferPipePrefixTitle(url: URL) -> Bool {
 }
 
 public func wireViewOriginalLinks(doc: Document, url: URL) throws {
-    let originalLinks = try doc.getElementsByClass("reader-view-original")
+    let originalLinks = try readerDocumentElements(in: doc, matching: ".reader-view-original")
     for originalLink in originalLinks {
         if originalLink.tagName().lowercased() == "button" {
+            guard !ReaderDocumentTree.containsInertHTMLTemplate(in: originalLink) else { continue }
             let baseURI = originalLink.ownerDocument()?.getBaseUri() ?? ""
             let anchor = try Element(Tag.valueOf("a"), baseURI)
             try anchor.attr("class", "reader-view-original")
             try anchor.attr("href", url.absoluteString)
-            try anchor.text(originalLink.text(trimAndNormaliseWhitespace: false))
+            try anchor.text(ReaderDocumentTree.text(in: originalLink, trimAndNormaliseWhitespace: false))
             try originalLink.replaceWith(anchor)
         } else {
             try originalLink.attr("href", url.absoluteString)
