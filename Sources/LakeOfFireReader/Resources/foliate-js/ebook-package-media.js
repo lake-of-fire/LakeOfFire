@@ -1,10 +1,45 @@
 const packageEntryPathPrefix = '/entry-source/';
 const mediaSourceSelector = 'audio[src], video[src], audio source[src], video source[src]';
 
+const mediaOwnerFor = element => element.matches?.('audio, video')
+    ? element
+    : element.closest?.('audio, video')
+
+const captureMediaSourceSelection = element => {
+    const document = element.ownerDocument
+    let expectedSource = element.src
+    let changed = false
+    const Observer = document?.defaultView?.MutationObserver
+    const observer = Observer ? new Observer(() => { changed = true }) : null
+    const observe = () => observer?.observe(element, { attributes: true, attributeFilter: ['src'] })
+    observe()
+
+    return {
+        isCurrent() {
+            // Include queued mutations even if the observer has not run yet.
+            // String equality alone would admit a source changed A -> B -> A.
+            if (observer?.takeRecords().length) changed = true
+            return !changed && element.isConnected !== false
+                && element.ownerDocument === document
+                && element.src === expectedSource
+        },
+        publish(objectURL) {
+            // This operation's own src write is the only permitted mutation.
+            observer?.disconnect()
+            expectedSource = objectURL
+            element.src = objectURL
+            observe()
+        },
+        dispose() { observer?.disconnect() },
+    }
+}
+
 export const isPackageMediaURL = value => {
     try {
         const url = new URL(value);
-        return url.protocol === 'ebook:' && url.pathname.startsWith(packageEntryPathPrefix);
+        return url.protocol === 'ebook:' && url.hostname === 'ebook'
+            && url.username === '' && url.password === '' && url.port === ''
+            && url.pathname.startsWith(packageEntryPathPrefix)
     } catch {
         return false;
     }
@@ -22,7 +57,19 @@ export const hydratePackageMedia = async ({
 
     const objectURLPromises = new Map();
     const ownedObjectURLs = new Set();
+    const sourceSelections = new Map()
+    const selectionFor = element => {
+        let selection = sourceSelections.get(element)
+        if (!selection) {
+            selection = captureMediaSourceSelection(element)
+            sourceSelections.set(element, selection)
+        }
+        return selection
+    }
+    let closed = false
     addPageHideListener?.(() => {
+        closed = true
+        for (const selection of sourceSelections.values()) selection.dispose()
         for (const objectURL of ownedObjectURLs) revokeObjectURL(objectURL);
         ownedObjectURLs.clear();
     });
@@ -41,29 +88,66 @@ export const hydratePackageMedia = async ({
                     return response.blob();
                 })
                 .then(blob => {
+                    if (closed) return null
                     const objectURL = createObjectURL(blob);
                     ownedObjectURLs.add(objectURL);
+                    if (closed) {
+                        ownedObjectURLs.delete(objectURL)
+                        revokeObjectURL(objectURL)
+                        return null
+                    }
                     return objectURL;
                 });
             objectURLPromises.set(resourceURL, promise);
         }
-        return promise.then(objectURL => `${objectURL}${fragment}`);
+        return promise.then(objectURL => objectURL === null ? null : `${objectURL}${fragment}`)
     };
 
-    const mediaElements = new Set();
-    const results = await Promise.all(Array.from(doc.querySelectorAll(mediaSourceSelector), async element => {
+    const mediaSettlements = new Map()
+    const pending = Array.from(doc.querySelectorAll(mediaSourceSelector), async element => {
         const sourceURL = element.src;
         if (!isPackageMediaURL(sourceURL)) return false;
-        const owningMedia = element.matches?.('audio, video')
-            ? element
-            : element.closest?.('audio, video');
-        if (owningMedia) mediaElements.add(owningMedia);
-        element.src = await objectURLFor(sourceURL);
-        return true;
-    }));
+        const selection = selectionFor(element)
+        const media = mediaOwnerFor(element)
+        const mediaSelection = media ? selectionFor(media) : null
+        const owner = {
+            isCurrent: () => selection.isCurrent() && (!mediaSelection || mediaSelection.isCurrent())
+                && mediaOwnerFor(element) === media,
+        }
+        const mediaSettlement = media
+            ? mediaSettlements.get(media) || { pendingSourceCount: 0, owners: [] }
+            : null
+        if (mediaSettlement) {
+            mediaSettlement.pendingSourceCount += 1
+            mediaSettlements.set(media, mediaSettlement)
+        }
+        try {
+            const objectURL = await objectURLFor(sourceURL)
+            if (closed || objectURL === null || !owner.isCurrent()) return false
+            selection.publish(objectURL)
+            if (mediaSettlement) mediaSettlement.owners.push(owner)
+            return true
+        } finally {
+            // Settle each media independently so an unrelated resource failure
+            // cannot bypass a successfully published owner's reload.
+            if (mediaSettlement) {
+                mediaSettlement.pendingSourceCount -= 1
+                if (mediaSettlement.pendingSourceCount === 0 && !closed
+                    && mediaSettlement.owners.some(owner => owner.isCurrent())) media.load?.()
+            }
+        }
+    })
 
-    for (const media of mediaElements) media.load?.();
-    return results;
+    try {
+        return await Promise.all(pending)
+    } finally {
+        // Promise.all can reject while peer fetches still own pending sources.
+        // Keep their observations until they settle (or pagehide retires them).
+        void Promise.allSettled(pending).then(() => {
+            for (const selection of sourceSelections.values()) selection.dispose()
+            sourceSelections.clear()
+        })
+    }
 };
 
 export const installPackageMediaHydration = ({

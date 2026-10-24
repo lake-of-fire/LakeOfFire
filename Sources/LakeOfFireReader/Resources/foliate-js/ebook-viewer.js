@@ -3192,11 +3192,12 @@ const fetchNativeEntries = async (sourceURL) => {
     return response.json()
 }
 
-const fetchNativeEntryResponse = async (sourceURL, subpath) => {
+const fetchNativeEntryResponse = async (sourceURL, subpath, { signal } = {}) => {
     const response = await fetch(`ebook://ebook/entry?subpath=${encodeURIComponent(subpath)}&${makeNativeSourceURLQuery(sourceURL)}`, {
         headers: {
             'X-Ebook-Source-URL': sourceURL,
         },
+        signal,
     })
     if (!response.ok) {
         return null
@@ -3246,11 +3247,11 @@ const makeNativeEpubLoader = async (url, isCacheWarmer, { isCurrent = () => true
     let destroyed = false
     const isActive = () => !destroyed && isCurrent()
     const replaceText = makeReplaceText(isCacheWarmer)
-    const loadText = async (name) => {
+    const loadText = async (name, options) => {
         if (!isActive() || !entryNames.has(name)) {
             return null
         }
-        const response = await fetchNativeEntryResponse(url, name)
+        const response = await fetchNativeEntryResponse(url, name, options)
         if (!isActive()) return null
         const text = await readNativeEntryText(response)
         return isActive() ? text : null
