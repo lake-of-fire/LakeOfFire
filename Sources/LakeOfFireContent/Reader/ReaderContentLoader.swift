@@ -595,13 +595,28 @@ public struct ReaderContentLoader {
         skipFeedEntries: Bool = false,
         mutate: @RealmBackgroundActor (Object & ReaderContentProtocol) -> Bool
     ) async throws {
-        let objects = try await loadAll(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
-        for case let object as (Object & ReaderContentProtocol) in objects {
-            guard let realm = object.realm else { continue }
-            try await realm.asyncWrite {
+        try Task.checkCancellation()
+        let context = ReaderModePropagationContext()
+        let references = try await contentMutationReferences(
+            for: url, context: context,
+            skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries
+        )
+        for reference in references {
+            try Task.checkCancellation()
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: reference.realmConfiguration, storageAdmission: reference.storageAdmission
+            )
+            try await realm.asyncWritePreservingOwnership {
+                try Task.checkCancellation()
+                try reference.validateStorage()
+                guard let object = reference.resolveForMutation(in: realm), !object.isDeleted else { return }
                 if mutate(object) {
-                    object.refreshChangeMetadata(explicitlyModified: true)
+                    // A queued writer must not predate intervening committed edits.
+                    object.refreshChangeMetadata(explicitlyModified: true, at: Date())
                 }
+                // Mutators and metadata hooks can cancel or replace storage.
+                try Task.checkCancellation()
+                try reference.validateStorage()
             }
         }
     }
