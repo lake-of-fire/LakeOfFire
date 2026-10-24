@@ -101,12 +101,9 @@ final class OPMLScriptDomainAdmissionTests: XCTestCase {
 
     @MainActor
     private static func makeManager() -> LibraryDataManager {
-        let previous = LibraryDataManager.observesDownloadController
-        LibraryDataManager.observesDownloadController = false
-        defer { LibraryDataManager.observesDownloadController = previous }
-        // Realm observation is independently disabled: no observer may attach
-        // to the process-global store. Imports pass their private fixture store.
-        return LibraryDataManager(observesRealm: false)
+        // Imports pass their private fixture store; neither observer may attach
+        // to process-global configuration during fixture construction.
+        return LibraryDataManager(observesChanges: false)
     }
 
     @RealmBackgroundActor

@@ -217,12 +217,12 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     }
     
     public override convenience init() {
-        self.init(observesRealm: true)
+        self.init(observesChanges: true)
     }
 
-    // Isolated import fixtures can disable Realm subscriptions independently.
-    init(observesRealm: Bool) {
+    public init(observesChanges: Bool) {
         super.init()
+        guard observesChanges else { return }
 
         guard Self.observesDownloadController else { return }
         
@@ -285,7 +285,6 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         //            })
         //            .store(in: &cancellables)
         
-        guard observesRealm else { return }
         let realmConfiguration = Self.realmConfiguration
         Task { @RealmBackgroundActor in
             guard realmConfiguration.fileURL != nil || realmConfiguration.inMemoryIdentifier != nil else { return }
