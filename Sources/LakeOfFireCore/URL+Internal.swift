@@ -108,7 +108,13 @@ private extension URL {
         switch scheme {
         case "http", "https":
             return host?.isEmpty == false
-        case "reader-file", "ebook", "ebook-url", "epub", "pdf", "pdf-url":
+        case "reader-file":
+            guard let parts = URLComponents(url: self, resolvingAgainstBaseURL: false) else { return false }
+            return parts.host?.lowercased() == "file"
+                && parts.user == nil && parts.password == nil && parts.port == nil
+                && (parts.percentEncodedPath.hasPrefix("/load/local/")
+                    || parts.percentEncodedPath.hasPrefix("/load/icloud/"))
+        case "ebook", "ebook-url", "epub", "pdf", "pdf-url":
             // Older local-content transports include ebook chapters. Keep
             // their original source identity while excluding script, data and
             // file URLs from the privileged internal reader wrapper.
