@@ -113,6 +113,33 @@ final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
         XCTAssertEqual(task.responses.first?.mimeType, "text/html")
     }
 
+    @MainActor
+    func testInternalDocumentHandlerOnlyServesKnownBootstrapRoutes() throws {
+        let handler = InternalURLSchemeHandler()
+        let webView = WKWebView()
+        let snippet = TestURLSchemeTask(request: URLRequest(url: try XCTUnwrap(
+            URL(string: "internal://local/snippet?key=valid-key")
+        )))
+        handler.webView(webView, start: snippet)
+        XCTAssertEqual(snippet.finishCount, 1)
+        XCTAssertTrue(snippet.failures.isEmpty)
+        XCTAssertEqual(snippet.responses.first?.mimeType, "text/html")
+
+        for value in [
+            "internal://LOCAL/load/other",
+            "internal://local/load/reader-other?reader-url=https%3A%2F%2Fexample.org",
+            "internal://local/snippet-other?key=valid-key",
+            "internal://local/snippet?key=valid-key&other=1",
+            "internal://local/unknown",
+        ] {
+            let task = TestURLSchemeTask(request: URLRequest(url: try XCTUnwrap(URL(string: value))))
+            handler.webView(webView, start: task)
+            XCTAssertEqual(task.failures.count, 1, value)
+            XCTAssertEqual(task.finishCount, 0, value)
+            XCTAssertTrue(task.responses.isEmpty, value)
+        }
+    }
+
     func testCancellationRejectsLaterCompletion() {
         let ownership = URLSchemeTaskCompletionOwnership()
         let task = NSObject()
