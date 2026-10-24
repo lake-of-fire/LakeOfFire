@@ -4,6 +4,10 @@ import {
 createTOCView
 } from './ui/tree.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
+import {
+    captureEbookHistoryActionContext,
+    ebookHistoryActionContextIsCurrent,
+} from './ebook-native-history-action.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { applyLayoutSettingsToEbookDocument } from './ebook-layout-settings.js'
 import {
@@ -4447,6 +4451,7 @@ class Reader {
         this.navHUD = new NavigationHUD({
             formatPercent: value => percentFormat.format(value),
             getRenderer: () => this.view?.renderer,
+            getHistoryActionContext: navHUD => captureEbookHistoryActionContext(globalThis, this, navHUD),
             onJumpRequest: descriptor => this._goToDescriptor(descriptor),
             isJumpRequestCurrent: receipt => globalThis.reader === this && !this.isClosed
                 && this.view?.isNavigationReceiptCurrent?.(receipt) === true,
@@ -8765,9 +8770,16 @@ window.manabiEndReaderProgressScrub = async (fraction, cancel = false) => {
     return true;
 }
 
-window.manabiTriggerReaderRelocateJump = async (direction) => {
-    const navHUD = globalThis.reader?.navHUD;
+window.manabiTriggerReaderRelocateJump = async function(direction, expectedContext) {
+    const reader = globalThis.reader;
+    const navHUD = reader?.navHUD;
     if (direction !== 'back' && direction !== 'forward') {
+        return false;
+    }
+    // Native taps always carry the context from their original HUD message.
+    // Keep the existing one-argument entry point for trusted in-page callers.
+    if (arguments.length > 1
+        && !ebookHistoryActionContextIsCurrent(expectedContext, globalThis, reader, navHUD)) {
         return false;
     }
     await navHUD?._handleRelocateJump?.(direction);

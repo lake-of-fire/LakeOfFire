@@ -93,6 +93,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published public private(set) var ebookNativeOverlayRelocateForwardEnabled: Bool = false
     @Published public private(set) var ebookNativeOverlayCurrentPageNumber: Int?
     @Published public private(set) var ebookNativeOverlayTotalPages: Int?
+    public private(set) var ebookNativeHistoryAction: ReaderEBookHistoryAction?
+    private let ebookNativeHistoryState = ReaderEBookNativeHistoryState()
     @Published public private(set) var ebookNativeMarkReadAvailable: Bool = false
     @Published public private(set) var ebookNativeMarkReadIsRead: Bool = false
     @Published public private(set) var ebookNativeMarkReadIsBusy: Bool = false
@@ -155,53 +157,110 @@ public class ReaderViewModel: NSObject, ObservableObject {
         currentPageNumber: Int? = nil,
         totalPages: Int? = nil
     ) {
+        publishEbookNativeOverlayState(
+            percentLabel: percentLabel, navigationHidden: navigationHidden,
+            titleLocationLabel: titleLocationLabel, titleLocationVisible: titleLocationVisible,
+            bookTitleLabel: bookTitleLabel, pagesLeftLabel: pagesLeftLabel, source: source,
+            relocateBackEnabled: relocateBackEnabled, relocateForwardEnabled: relocateForwardEnabled,
+            currentPageNumber: currentPageNumber, totalPages: totalPages,
+            isCurrentPublication: { true }
+        )
+    }
+
+    private func publishEbookNativeOverlayState(
+        percentLabel: String, navigationHidden: Bool,
+        titleLocationLabel: String, titleLocationVisible: Bool,
+        bookTitleLabel: String, pagesLeftLabel: String, source: String,
+        relocateBackEnabled: Bool, relocateForwardEnabled: Bool,
+        currentPageNumber: Int?, totalPages: Int?,
+        isCurrentPublication: @MainActor () -> Bool
+    ) {
+        guard isCurrentPublication() else { return }
         if ebookNativeOverlayPercentLabel != percentLabel {
             ebookNativeOverlayPercentLabel = percentLabel
         }
+        guard isCurrentPublication() else { return }
         if ebookNativeOverlayNavigationHidden != navigationHidden {
             ebookNativeOverlayNavigationHidden = navigationHidden
         }
+        guard isCurrentPublication() else { return }
         if ebookNativeOverlayTitleLocationLabel != titleLocationLabel {
             ebookNativeOverlayTitleLocationLabel = titleLocationLabel
         }
+        guard isCurrentPublication() else { return }
         if ebookNativeOverlayTitleLocationVisible != titleLocationVisible {
             ebookNativeOverlayTitleLocationVisible = titleLocationVisible
         }
+        guard isCurrentPublication() else { return }
         if ebookNativeOverlayBookTitleLabel != bookTitleLabel {
             ebookNativeOverlayBookTitleLabel = bookTitleLabel
         }
+        guard isCurrentPublication() else { return }
         if ebookNativeOverlayPagesLeftLabel != pagesLeftLabel {
             ebookNativeOverlayPagesLeftLabel = pagesLeftLabel
         }
+        guard isCurrentPublication() else { return }
         if ebookNativeOverlaySource != source {
             ebookNativeOverlaySource = source
         }
+        guard isCurrentPublication() else { return }
         if ebookNativeOverlayRelocateBackEnabled != relocateBackEnabled {
             ebookNativeOverlayRelocateBackEnabled = relocateBackEnabled
         }
+        guard isCurrentPublication() else { return }
         if ebookNativeOverlayRelocateForwardEnabled != relocateForwardEnabled {
             ebookNativeOverlayRelocateForwardEnabled = relocateForwardEnabled
         }
+        guard isCurrentPublication() else { return }
         if ebookNativeOverlayCurrentPageNumber != currentPageNumber {
             ebookNativeOverlayCurrentPageNumber = currentPageNumber
         }
+        guard isCurrentPublication() else { return }
         if ebookNativeOverlayTotalPages != totalPages {
             ebookNativeOverlayTotalPages = totalPages
         }
     }
 
+    public func receiveEbookNativeOverlayState(
+        message: WebViewMessage, caller: WebViewScriptCaller, loaderURL: URL
+    ) {
+        ebookNativeHistoryState.receive(
+            message: message, caller: caller, loaderURL: loaderURL,
+            callerIsCurrent: { [weak self, weak caller] in
+                guard let self, let caller else { return false }
+                return self.scriptCaller === caller
+            },
+            publish: { [weak self] action, overlay, isCurrent in
+                self?.publishEbookNativeHistory(action: action, overlay: overlay, isCurrent: isCurrent)
+            }
+        )
+    }
+
     @MainActor
     public func clearEbookNativeOverlayState(source: String) {
-        setEbookNativeOverlayState(
-            percentLabel: "",
-            navigationHidden: false,
-            titleLocationLabel: "",
-            titleLocationVisible: false,
-            bookTitleLabel: "",
-            pagesLeftLabel: "",
-            source: source,
-            relocateBackEnabled: false,
-            relocateForwardEnabled: false
+        ebookNativeHistoryState.clear(source: source) { [weak self] action, overlay, isCurrent in
+            self?.publishEbookNativeHistory(action: action, overlay: overlay, isCurrent: isCurrent)
+        }
+    }
+
+    private func publishEbookNativeHistory(
+        action: ReaderEBookHistoryAction?, overlay: ReaderEBookNativeOverlayState?,
+        isCurrent: @MainActor () -> Bool
+    ) {
+        guard isCurrent() else { return }
+        let actionChanged = ebookNativeHistoryAction !== action
+        // Store first: a synchronous observer can install a successor. A
+        // Published willSet would overwrite that successor on return.
+        ebookNativeHistoryAction = action
+        if actionChanged { objectWillChange.send() }
+        guard isCurrent(), let overlay else { return }
+        publishEbookNativeOverlayState(
+            percentLabel: overlay.percentLabel, navigationHidden: overlay.navigationHidden,
+            titleLocationLabel: overlay.titleLocationLabel, titleLocationVisible: overlay.titleLocationVisible,
+            bookTitleLabel: overlay.bookTitleLabel, pagesLeftLabel: overlay.pagesLeftLabel, source: overlay.source,
+            relocateBackEnabled: overlay.relocateBackEnabled, relocateForwardEnabled: overlay.relocateForwardEnabled,
+            currentPageNumber: overlay.currentPageNumber, totalPages: overlay.totalPages,
+            isCurrentPublication: isCurrent
         )
     }
 
