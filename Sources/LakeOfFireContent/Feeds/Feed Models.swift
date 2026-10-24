@@ -1492,8 +1492,11 @@ public extension Feed {
         var incomingIDs = [String]()
         var skippedItems = 0
         let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
-            guard let link = item.link?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed),
+            // Existing escapes and fragment delimiters belong to the URL;
+            // apply the legacy escaping fallback only when parsing fails.
+            guard let link = item.link,
                   let url = URL(string: link)
+                    ?? link.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
             else {
                 skippedItems += 1
                 return nil
@@ -1633,13 +1636,15 @@ public extension Feed {
             var url: URL?
             var imageUrl: URL?
             item.links?.forEach { (link: AtomFeedEntryLink) in
-                guard let linkHref = link.attributes?.href?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
+                guard let linkHref = link.attributes?.href,
+                      let linkURL = URL(string: linkHref)
+                        ?? linkHref.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
                 else { return }
 
                 if (link.attributes?.rel ?? "alternate") == "alternate" {
-                    url = URL(string: linkHref)
+                    url = linkURL
                 } else if let rel = link.attributes?.rel, let type = link.attributes?.type, rel == "enclosure" && type.hasPrefix("image/") {
-                    imageUrl = URL(string: linkHref)
+                    imageUrl = linkURL
                 }
             }
             guard let url = url else {
@@ -1679,10 +1684,10 @@ public extension Feed {
                     return (link.attributes?.rel ?? "") == "reddit-translations"
                 })
                     .first?.attributes,
-               let rawRedditTranslationsUrl = redditTranslationsAttrs.href?
-                .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+               let rawRedditTranslationsUrl = redditTranslationsAttrs.href
             {
                 redditTranslationsUrl = URL(string: rawRedditTranslationsUrl)
+                    ?? rawRedditTranslationsUrl.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed).flatMap(URL.init(string:))
                 redditTranslationsTitle = redditTranslationsAttrs.title
             }
 
