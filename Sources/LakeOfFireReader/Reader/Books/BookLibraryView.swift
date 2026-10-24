@@ -77,38 +77,46 @@ fileprivate struct EditorsPicksView: View {
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
 
     var body: some View {
-        if let errorMessage = viewModel.errorMessage {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(errorMessage)
-                    .foregroundColor(.red)
-                Button("Retry") {
-                    viewModel.fetchEditorsPicks()
+        Group {
+            if let errorMessage = viewModel.errorMessage {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(errorMessage)
+                        .foregroundColor(.red)
+                    Button("Retry") {
+                        viewModel.fetchEditorsPicks()
+                    }
                 }
-            }
-        } else if !viewModel.editorsPicks.isEmpty {
-            ForEach(viewModel.editorsPicks) { publication in
-                BookListRow(
-                    publication: publication,
-                    onSelected: { wasAlreadyDownloaded in
-                        guard wasAlreadyDownloaded else { return }
-                        Task { @MainActor in
+            } else if !viewModel.editorsPicks.isEmpty {
+                ForEach(viewModel.editorsPicks) { publication in
+                    BookListRow(
+                        publication: publication,
+                        selectionOwner: viewModel,
+                        onSelected: { wasAlreadyDownloaded, selection in
+                            guard wasAlreadyDownloaded,
+                                  viewModel.isCurrentOpenSelection(selection) else { return }
                             do {
                                 try await viewModel.open(
                                     publication: publication,
+                                    selection: selection,
                                     readerFileManager: ReaderFileManager.shared,
                                     readerPageURL: readerContent.pageURL,
                                     navigator: navigator,
                                     readerModeViewModel: readerModeViewModel
                                 )
                             } catch {
-                                viewModel.errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
+                                if viewModel.isCurrentOpenSelection(selection) {
+                                    viewModel.errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
+                                }
                             }
-                        }
-                    },
-                    onNavigateToReader: viewModel.onNavigateToReader
-                )
-                .accessibilityIdentifier("BookLibrary.EditorsPick.Row.\(publication.title)")
+                        },
+                        onNavigateToReader: viewModel.onNavigateToReader
+                    )
+                    .accessibilityIdentifier("BookLibrary.EditorsPick.Row.\(publication.title)")
+                }
             }
+        }
+        .onDisappear {
+            viewModel.cancelOpenSelection()
         }
     }
 }
@@ -304,6 +312,12 @@ public struct BookLibraryView: View {
 
 @MainActor
 public class BookLibraryViewModel: ObservableObject {
+    typealias OpenSelection = BookOpenSelectionCoordinator.Selection
+    typealias OpenNavigationClaim = BookOpenSelectionCoordinator.NavigationClaim
+    typealias OpenStageOperations = BookOpenSelectionCoordinator.StageOperations
+
+    private let openSelectionCoordinator = BookOpenSelectionCoordinator()
+
     nonisolated public static let defaultOPDSURL = URL(string: "https://reader.manabi.io/static/reader/books/opds/index.xml")!
 
     public let mediaTypeTitle: String
@@ -429,41 +443,120 @@ public class BookLibraryViewModel: ObservableObject {
         }
     }
 
+    @discardableResult
+    func startOpenSelection(
+        cancellingPassiveOperation passiveOperation: BookDownloadOperation? = nil,
+        onStart: (@MainActor (OpenSelection) -> Void)? = nil,
+        _ operation: @escaping @MainActor (OpenSelection) async -> Void
+    ) -> Task<Void, Never>? {
+        openSelectionCoordinator.start(onStart: { selection in
+            passiveOperation?.cancel()
+            onStart?(selection)
+        }, operation)
+    }
+
+    func isCurrentOpenSelection(_ selection: OpenSelection) -> Bool {
+        openSelectionCoordinator.isCurrent(selection)
+    }
+
+    @discardableResult
+    func cancelOpenSelection(ifCurrent selection: OpenSelection) -> Bool {
+        openSelectionCoordinator.cancel(ifCurrent: selection)
+    }
+
+    func cancelOpenSelection() {
+        openSelectionCoordinator.cancel()
+    }
+
     @MainActor
     func open(
         publication: Publication,
+        selection: OpenSelection,
         readerFileManager: ReaderFileManager = .shared,
         readerPageURL: URL,
         navigator: WebViewNavigator,
         readerModeViewModel: ReaderModeViewModel
     ) async throws {
-        guard let downloadURL = publication.downloadURL else { return }
-        guard let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title) else { return }
-
-        let importedURL: URL?
-        if await downloadable.existsLocally() {
-            importedURL = try await readerFileManager.ensureImported(downloadable: downloadable)
-        } else {
-            guard let importedFileURL = try await readerFileManager.importFile(fileURL: downloadable.localDestination, fromDownloadURL: downloadable.url) else {
-                print("Couldn't import \(publication.title) file URL")
-                return
+        var downloadable: Downloadable?
+        var importedURL: URL?
+        var content: (any ReaderContentProtocol)?
+        let stages = OpenStageOperations(
+            resolveDownloadable: {
+                guard let downloadURL = publication.downloadURL else { return false }
+                downloadable = try? await readerFileManager.downloadable(
+                    url: downloadURL,
+                    name: publication.title
+                )
+                return downloadable != nil
+            },
+            existsLocally: {
+                await downloadable?.existsLocally() == true
+            },
+            importContent: { existsLocally in
+                guard let downloadable else { return false }
+                if existsLocally {
+                    importedURL = try await readerFileManager.ensureImported(downloadable: downloadable)
+                } else {
+                    importedURL = try await readerFileManager.importFile(
+                        fileURL: downloadable.localDestination,
+                        fromDownloadURL: downloadable.url
+                    )
+                    if importedURL == nil {
+                        print("Couldn't import \(publication.title) file URL")
+                    }
+                }
+                return importedURL != nil
+            },
+            loadContent: {
+                guard let importedURL else { return false }
+                content = try await ReaderContentLoader.load(
+                    url: importedURL,
+                    persist: true,
+                    countsAsHistoryVisit: true,
+                    source: "BookLibraryView.openOrDownloadPublication"
+                )
+                return content?.url.matchesReaderURL(readerPageURL) == false
+            },
+            navigate: { claim in
+                guard let content else { return }
+                try await navigator.load(
+                    content: content,
+                    readerFileManager: readerFileManager,
+                    readerModeViewModel: readerModeViewModel,
+                    shouldLoad: claim.isCurrent
+                )
+            },
+            publishNavigation: { [weak self] in
+                self?.onNavigateToReader?()
             }
-            importedURL = importedFileURL
-        }
-
-        guard let toLoad = importedURL else { return }
-        guard let content = try await ReaderContentLoader.load(
-            url: toLoad,
-            persist: true,
-            countsAsHistoryVisit: true,
-            source: "BookLibraryView.openOrDownloadPublication"
-        ), !content.url.matchesReaderURL(readerPageURL) else { return }
-        try await navigator.load(
-            content: content,
-            readerFileManager: readerFileManager,
-            readerModeViewModel: readerModeViewModel
         )
-        onNavigateToReader?()
+        try await open(selection: selection, stages: stages)
+    }
+
+    @MainActor
+    func open(
+        selection: OpenSelection,
+        stages: OpenStageOperations
+    ) async throws {
+        try await BookOpenSelectionCoordinator.run(
+            stages: stages,
+            shouldContinue: { [weak self] in
+                self?.isCurrentOpenSelection(selection) == true
+            }
+        )
+    }
+
+    @MainActor
+    static func openDownloaded(
+        stages: OpenStageOperations,
+        shouldOpen: @escaping @MainActor () -> Bool = { true }
+    ) async throws {
+        try await BookOpenSelectionCoordinator.run(
+            stages: stages,
+            shouldContinue: {
+                !Task.isCancelled && shouldOpen()
+            }
+        )
     }
 
     @MainActor
@@ -473,6 +566,7 @@ public class BookLibraryViewModel: ObservableObject {
         readerContent: ReaderContent,
         navigator: WebViewNavigator,
         readerModeViewModel: ReaderModeViewModel,
+        shouldOpen: @escaping @MainActor () -> Bool = { true },
         onNavigateToReader: (() -> Void)? = nil
     ) async throws {
         try await openDownloaded(
@@ -481,6 +575,7 @@ public class BookLibraryViewModel: ObservableObject {
             readerContent: readerContent,
             navigator: navigator,
             readerModeViewModel: readerModeViewModel,
+            shouldOpen: shouldOpen,
             onNavigateToReader: onNavigateToReader,
             importDownloaded: { downloadable in
                 try await readerFileManager.ensureImported(downloadable: downloadable)
@@ -495,32 +590,55 @@ public class BookLibraryViewModel: ObservableObject {
         readerContent: ReaderContent,
         navigator: WebViewNavigator,
         readerModeViewModel: ReaderModeViewModel,
+        shouldOpen: @escaping @MainActor () -> Bool = { true },
         onNavigateToReader: (() -> Void)? = nil,
-        importDownloaded: @MainActor (Downloadable) async throws -> URL?
+        importDownloaded: @escaping @MainActor (Downloadable) async throws -> URL?
     ) async throws {
-        guard
-            let downloadURL = publication.downloadURL,
-            let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title),
-            await downloadable.existsLocally()
-        else { return }
-
-        guard let importedURL = try await importDownloaded(downloadable) else {
-            throw ReaderFileImportError.missingResult(downloadable.localDestination)
-        }
-
-        guard let content = try await ReaderContentLoader.load(
-            url: importedURL,
-            persist: true,
-            countsAsHistoryVisit: true,
-            source: "BookLibraryView.openDownloaded"
-        ) else { return }
-        if content.url.matchesReaderURL(readerContent.pageURL) { return }
-        try await navigator.load(
-            content: content,
-            readerFileManager: readerFileManager,
-            readerModeViewModel: readerModeViewModel
+        var downloadable: Downloadable?
+        var importedURL: URL?
+        var content: (any ReaderContentProtocol)?
+        let stages = OpenStageOperations(
+            resolveDownloadable: {
+                guard let downloadURL = publication.downloadURL else { return false }
+                downloadable = try? await readerFileManager.downloadable(
+                    url: downloadURL,
+                    name: publication.title
+                )
+                return downloadable != nil
+            },
+            existsLocally: {
+                await downloadable?.existsLocally() == true
+            },
+            importContent: { existsLocally in
+                guard existsLocally, let downloadable else { return false }
+                guard let result = try await importDownloaded(downloadable) else {
+                    throw ReaderFileImportError.missingResult(downloadable.localDestination)
+                }
+                importedURL = result
+                return true
+            },
+            loadContent: {
+                guard let importedURL else { return false }
+                content = try await ReaderContentLoader.load(
+                    url: importedURL,
+                    persist: true,
+                    countsAsHistoryVisit: true,
+                    source: "BookLibraryView.openDownloaded"
+                )
+                return content?.url.matchesReaderURL(readerContent.pageURL) == false
+            },
+            navigate: { claim in
+                guard let content else { return }
+                try await navigator.load(
+                    content: content,
+                    readerFileManager: readerFileManager,
+                    readerModeViewModel: readerModeViewModel,
+                    shouldLoad: claim.isCurrent
+                )
+            },
+            publishNavigation: { onNavigateToReader?() }
         )
-        onNavigateToReader?()
+        try await openDownloaded(stages: stages, shouldOpen: shouldOpen)
     }
 }
 
