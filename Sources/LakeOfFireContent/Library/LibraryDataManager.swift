@@ -97,10 +97,12 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                 return downloadable
             } else {
                 return Downloadable(
+                    url: url,
                     name: "App Data (\(url.lastPathComponent))",
-                    groupIdentifier: Self.securityApplicationGroupIdentifier,
-                    parentDirectoryName: Self.downloadstDirectoryName,
-                    downloadMirrors: [url])
+                    localDestination: DownloadDirectory.documents(
+                        parentDirectoryName: Self.downloadstDirectoryName,
+                        groupIdentifier: Self.securityApplicationGroupIdentifier
+                    ).directoryURL.appendingPathComponent(url.lastPathComponent))
             }
         })
     }
