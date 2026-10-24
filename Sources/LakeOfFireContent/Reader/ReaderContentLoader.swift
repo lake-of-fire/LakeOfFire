@@ -21,12 +21,6 @@ fileprivate extension URL {
     }
 }
 
-public extension URL {
-    var isReaderURLLoaderURL: Bool {
-        return scheme == "internal" && host == "local" && path == "/load/reader"
-    }
-}
-
 /// Loads from any source by URL.
 public struct ReaderContentLoader {
     // Task-scoped input lets behavior tests exercise the public pasteboard route.
@@ -240,7 +234,7 @@ public struct ReaderContentLoader {
     }
     
     public static func getContentURL(fromLoaderURL pageURL: URL) -> URL? {
-        pageURL.readerLoaderContentURL
+        pageURL.isReaderURLLoaderURL ? pageURL.readerContentURL : nil
     }
 
     @RealmBackgroundActor
@@ -849,19 +843,29 @@ public struct ReaderContentLoader {
         content: any ReaderContentProtocol,
         readerFileManager: ReaderFileManager
     ) async throws -> URL? {
-        let storage = DiscoveryStorage()
+        try Task.checkCancellation()
+        guard !content.isInvalidated else { throw CancellationError() }
         let contentURL = content.url
+        func validateContent() throws {
+            try Task.checkCancellation()
+            guard !content.isInvalidated, content.url == contentURL else {
+                throw CancellationError()
+            }
+        }
+
+        let storage = DiscoveryStorage()
         let canonicalReaderBackingURL = readerFileManager.canonicalReaderBackingURL(for: contentURL)
         let contentHasLocallyRetrievableHTML = try await hasLocallyRetrievableHTML(
             for: content,
             readerFileManager: readerFileManager
         )
+        try validateContent()
 
         if contentURL.isSnippetURL {
             if contentHasLocallyRetrievableHTML, let loaderURL = readerLoaderURL(for: contentURL) {
                 return loaderURL
             }
-            return content.url
+            return contentURL
         }
 
         if ["http", "https"].contains(contentURL.scheme?.lowercased()) {
@@ -871,16 +875,24 @@ public struct ReaderContentLoader {
                 return loaderURL
             }
 
-            if let matchingContent = try await lookupStoredContent(url: contentURL, storage: storage),
-               matchingContent.isReaderModeByDefault,
-               (try? await hasLocallyRetrievableHTML(
+            let matchingContent = try await lookupStoredContent(url: contentURL, storage: storage)
+            try validateContent()
+            if let matchingContent, !matchingContent.isInvalidated,
+               matchingContent.isReaderModeByDefault {
+                let matchingContentURL = matchingContent.url
+                let matchingContentHasHTML = (try? await hasLocallyRetrievableHTML(
                     for: matchingContent,
                     readerFileManager: readerFileManager
-               )) == true,
-               let matchingURL = readerLoaderURL(for: matchingContent.url) {
-                return matchingURL
+                )) == true
+                try validateContent()
+                if matchingContentHasHTML,
+                   !matchingContent.isInvalidated,
+                   matchingContent.url == matchingContentURL,
+                   let matchingURL = readerLoaderURL(for: matchingContentURL) {
+                    return matchingURL
+                }
             }
-            return content.url
+            return contentURL
         }
 
         if let canonicalReaderBackingURL,
@@ -888,6 +900,7 @@ public struct ReaderContentLoader {
             _ = try await readerFileManager.resolveReadableLocalURL(
                 forReaderBackingURL: canonicalReaderBackingURL
             )
+            try validateContent()
         }
 
         if contentURL.isReaderFileURL,
@@ -895,8 +908,8 @@ public struct ReaderContentLoader {
            let loaderURL = readerLoaderURL(for: contentURL) {
             return loaderURL
         }
-        
-        return content.url
+
+        return contentURL
     }
 
     static func docIsPlainText(doc: SwiftSoup.Document) -> Bool {
@@ -952,7 +965,8 @@ public struct ReaderContentLoader {
     }
 
     public static func readerLoaderURL(for contentURL: URL) -> URL? {
-        guard let encodedURL = contentURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
+        guard let contentURL = contentURL.readerContentURL,
+              let encodedURL = contentURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
             return nil
         }
         return URL(string: "internal://local/load/reader?reader-url=\(encodedURL)")
