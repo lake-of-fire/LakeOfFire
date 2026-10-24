@@ -1,5 +1,6 @@
 import XCTest
 @testable import LakeOfFireContent
+@testable import LakeOfFireCore
 
 @MainActor
 final class ReaderContentLoadCoordinationTests: XCTestCase {
@@ -165,7 +166,12 @@ final class ReaderContentLoadCoordinationTests: XCTestCase {
             "about:snippet#key=stored-snippet",
         ] {
             let malformedURL = try XCTUnwrap(URL(string: value))
-            let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: malformedURL))
+            XCTAssertNil(ReaderContentLoader.readerLoaderURL(for: malformedURL), value)
+            // The production builder rejects these inputs; model an incoming
+            // malformed transport without weakening its admission policy.
+            var loader = try XCTUnwrap(URLComponents(string: "internal://local/load/reader"))
+            loader.queryItems = [URLQueryItem(name: "reader-url", value: malformedURL.absoluteString)]
+            let loaderURL = try XCTUnwrap(loader.url)
             XCTAssertFalse(snippetURL.matchesReaderURL(malformedURL), value)
             XCTAssertFalse(snippetURL.matchesReaderURL(loaderURL), value)
 
@@ -178,17 +184,47 @@ final class ReaderContentLoadCoordinationTests: XCTestCase {
                 try await readerContent.load(url: requestedURL)
 
                 XCTAssertEqual(requestedURLs, [snippetURL, requestedURL], requestedURL.absoluteString)
-                XCTAssertEqual(readerContent.pageURL, malformedURL, requestedURL.absoluteString)
+                XCTAssertEqual(readerContent.pageURL, requestedURL, requestedURL.absoluteString)
                 XCTAssertNil(readerContent.content, requestedURL.absoluteString)
             }
         }
+    }
+
+    func testNestedArticleLoaderPublishesSourceIdentityAndPreservesResolverInput() async throws {
+        let source = try XCTUnwrap(URL(string: "https://example.com/article?value=a%26b#source"))
+        let article = HistoryRecord()
+        article.url = source
+        article.title = "Stored article"
+        article.updateCompoundKey()
+        let inner = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: source))
+        var outer = try XCTUnwrap(URLComponents(string: "internal://local/load/reader"))
+        outer.queryItems = [URLQueryItem(name: "reader-url", value: inner.absoluteString)]
+        outer.fragment = "position"
+        let transport = try XCTUnwrap(outer.url)
+
+        let originalResolver = ReaderContent.contentResolver
+        var requestedURLs = [URL]()
+        ReaderContent.contentResolver = { requestedURL, _, _ in
+            requestedURLs.append(requestedURL)
+            return article
+        }
+        defer { ReaderContent.contentResolver = originalResolver }
+
+        let reader = ReaderContent()
+        try await reader.load(url: transport)
+        XCTAssertEqual(requestedURLs, [transport])
+        XCTAssertEqual(reader.pageURL, source)
+        XCTAssertTrue(reader.content === article)
+        XCTAssertEqual(transport.readerContentURL, URL(string: "https://example.com/article?value=a%26b#position"))
     }
 
     func testValidSnippetAndLegacyLoaderWrappersKeepCurrentSelection() async throws {
         let snippetURL = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "stored-snippet"))
         let legacyURL = try XCTUnwrap(URL(string: "about:snippet?key=stored-snippet"))
         let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: snippetURL))
-        let nestedLoaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: loaderURL))
+        var nestedLoader = try XCTUnwrap(URLComponents(string: "internal://local/load/reader"))
+        nestedLoader.queryItems = [URLQueryItem(name: "reader-url", value: loaderURL.absoluteString)]
+        let nestedLoaderURL = try XCTUnwrap(nestedLoader.url)
         let legacyLoaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: legacyURL))
         let snippet = HistoryRecord()
         snippet.url = snippetURL

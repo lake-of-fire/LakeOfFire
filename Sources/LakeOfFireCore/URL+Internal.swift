@@ -8,46 +8,83 @@ public extension URL {
             && snippetKey != nil
     }
 
+    /// Private loader paths must never be persisted as history, even when the
+    /// route or authority is malformed and WebKit cannot navigate to them.
+    var isInternalReaderLoadingURL: Bool {
+        let loadingPath = path.lowercased()
+        return scheme?.lowercased() == "internal"
+            && (loadingPath == "/load" || loadingPath.hasPrefix("/load/"))
+    }
+
+    /// Identifies the transport route even when its content query is malformed.
+    /// Do not use this URL as a user-facing address or a stored content identity.
+    var isReaderURLLoaderURL: Bool {
+        scheme?.lowercased() == "internal"
+            && host?.lowercased() == "local"
+            && path == "/load/reader"
+    }
+
+    /// The endpoint and authority required for a valid loader transport.
+    var isReaderLoaderTransportURL: Bool {
+        isReaderURLLoaderURL && user == nil && password == nil && port == nil
+    }
+
+    /// The content identity carried by one reader-loader transport URL.
+    /// URLComponents has already decoded the query value once; only legacy
+    /// double-encoded values without an absolute URL need another decoding pass.
     var readerLoaderContentURL: URL? {
-        guard scheme?.lowercased() == "internal",
-              host?.lowercased() == "local",
-              path == "/load/reader" else {
+        guard isReaderLoaderTransportURL,
+              let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
+              let items = components.queryItems, items.count == 1 else {
+            return nil
+        }
+
+        let contentItems = items.filter { $0.name == "reader-url" }
+        guard contentItems.count == 1,
+              let value = contentItems.first?.value,
+              !value.isEmpty else {
             return nil
         }
 
         func absoluteURL(from value: String) -> URL? {
-            URL(string: value).flatMap { $0.scheme == nil ? nil : $0 }
+            URL(string: value).flatMap { $0.isSupportedReaderLoaderTarget ? $0 : nil }
         }
 
-        if let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
-           let readerURLString = components.queryItems?.first(where: { $0.name == "reader-url" })?.value {
-            if let readerURL = absoluteURL(from: readerURLString) {
-                return readerURL
-            }
-            if let decodedReaderURL = readerURLString.removingPercentEncoding,
-               let readerURL = absoluteURL(from: decodedReaderURL) {
-                return readerURL
-            }
+        let contentURL: URL?
+        if let parsed = URL(string: value), parsed.scheme != nil {
+            contentURL = parsed.isSupportedReaderLoaderTarget ? parsed : nil
+        } else {
+            contentURL = value.removingPercentEncoding.flatMap(absoluteURL(from:))
         }
-
-        guard let range = absoluteString.range(of: "reader-url=") else {
-            return nil
-        }
-        let rawReaderURL = String(absoluteString[range.upperBound...])
-        if let decodedReaderURL = rawReaderURL.removingPercentEncoding,
-           let readerURL = absoluteURL(from: decodedReaderURL) {
-            return readerURL
-        }
-        return absoluteURL(from: rawReaderURL)
+        guard let contentURL else { return nil }
+        guard let fragment = components.percentEncodedFragment else { return contentURL }
+        var source = URLComponents(url: contentURL, resolvingAgainstBaseURL: false)
+        source?.percentEncodedFragment = fragment
+        return source?.url
     }
 
-    /// Extracts the snippet key embedded in either a snippet URL or a snippet loader URL.
-    var snippetKey: String? {
-        let absolute = absoluteString
-        if absolute.hasPrefix("internal://local/load/reader") {
-            return readerLoaderContentURL?.snippetKey
+    /// Resolves transport wrappers at content and presentation boundaries.
+    /// Physical WebKit document/frame identity must continue to use the original
+    /// URL. Invalid wrappers have no content URL and must not escape as addresses.
+    var readerContentURL: URL? {
+        var contentURL = self
+        var visited = Set<URL>()
+        while contentURL.isReaderURLLoaderURL {
+            guard visited.insert(contentURL).inserted,
+                  let nextURL = contentURL.readerLoaderContentURL else {
+                return nil
+            }
+            contentURL = nextURL
         }
+        guard !contentURL.isInternalReaderLoadingURL else { return nil }
+        return contentURL.isAbsoluteReaderContentURL ? contentURL : nil
+    }
 
+    /// Extracts a snippet key only from an exact route or a valid loader chain.
+    var snippetKey: String? {
+        if isReaderURLLoaderURL {
+            return readerContentURL?.snippetKey
+        }
         guard let scheme = scheme?.lowercased(),
               let parts = URLComponents(url: self, resolvingAgainstBaseURL: false),
               parts.user == nil, parts.password == nil, parts.port == nil,
@@ -64,5 +101,47 @@ public extension URL {
             return nil
         }
         return key
+    }
+}
+
+private extension URL {
+    var isSupportedReaderLoaderTarget: Bool {
+        guard let scheme = scheme?.lowercased() else { return false }
+        switch scheme {
+        case "http", "https":
+            return host?.isEmpty == false
+        case "reader-file":
+            guard let parts = URLComponents(url: self, resolvingAgainstBaseURL: false) else { return false }
+            return parts.host?.lowercased() == "file"
+                && parts.user == nil && parts.password == nil && parts.port == nil
+                && (parts.percentEncodedPath.hasPrefix("/load/local/")
+                    || parts.percentEncodedPath.hasPrefix("/load/icloud/"))
+        case "ttsu":
+            // Selected reader books use this source identity and are wrapped by
+            // ReaderContentLoader before the provider supplies their HTML.
+            return true
+        case "transcript":
+            // Preserve the selected transcript page factory's transport
+            // capability without admitting its VTT resource route.
+            return isTranscriptPageURL && user == nil && password == nil && port == nil
+        case "ebook", "ebook-url", "epub", "pdf", "pdf-url":
+            // Older local-content transports include ebook chapters. Keep
+            // their original source identity while excluding script, data and
+            // file URLs from the privileged internal reader wrapper.
+            return true
+        case "internal", "about":
+            if isReaderURLLoaderURL { return true } // Resolve legacy nested wrappers below.
+            return snippetKey != nil
+        default:
+            return false
+        }
+    }
+
+    var isAbsoluteReaderContentURL: Bool {
+        guard let scheme = scheme?.lowercased() else { return false }
+        if scheme == "http" || scheme == "https" {
+            return host?.isEmpty == false
+        }
+        return true
     }
 }

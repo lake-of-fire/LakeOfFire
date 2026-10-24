@@ -1,4 +1,5 @@
 import SwiftUI
+import LakeOfFireCore
 import RealmSwift
 import MarkdownKit
 import SwiftSoup
@@ -42,12 +43,6 @@ fileprivate extension URL {
         let components = NSURLComponents.init(url: self, resolvingAgainstBaseURL: true)
         components?.scheme = value
         return (components?.url!)!
-    }
-}
-
-public extension URL {
-    var isReaderURLLoaderURL: Bool {
-        return scheme == "internal" && host == "local" && path == "/load/reader"
     }
 }
 
@@ -174,7 +169,10 @@ public struct ReaderContentLoader {
            let canonicalSnippetURL = snippetURL(key: snippetKey) {
             return canonicalSnippetURL
         }
-        return pageURL.readerLoaderContentURL
+        guard pageURL.isReaderURLLoaderURL else { return nil }
+        // Stored content keeps the source fragment. The outer loader fragment
+        // is a presentation position, resolved separately by readerContentURL.
+        return pageURL.removingFragmentIfNeeded().readerContentURL
     }
 
     private static func loadAllTaskKey(
@@ -418,7 +416,7 @@ public struct ReaderContentLoader {
     @RealmBackgroundActor
     private static func storedContentReference(for url: URL) async throws -> ReaderContentLoader.ContentReference? {
         try Task.checkCancellation()
-        guard !(url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/")) else {
+        guard !url.isInternalReaderLoadingURL else {
             return nil
         }
         guard url.absoluteString != "about:blank" else {
@@ -569,7 +567,7 @@ public struct ReaderContentLoader {
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
 
-            if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
+            if url.isInternalReaderLoadingURL {
                 // Don't persist about:load
                 // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
                 logReaderLoad("stage=contentLoader.load.skip reason=internalLoader url=\(url.absoluteString)")
@@ -934,11 +932,14 @@ public struct ReaderContentLoader {
     }
 
     public static func readerLoaderURL(for contentURL: URL) -> URL? {
-        guard let encodedURL = contentURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
+        guard let sourceURL = contentURL.readerContentURL,
+              let encodedURL = sourceURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+              let loaderURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)"),
+              loaderURL.readerLoaderContentURL?.absoluteString == sourceURL.absoluteString else {
             logReaderLoad("stage=contentLoader.readerLoaderURL.failed contentURL=\(contentURL.absoluteString)")
             return nil
         }
-        return URL(string: "internal://local/load/reader?reader-url=\(encodedURL)")
+        return loaderURL
     }
 
     @MainActor
