@@ -294,6 +294,7 @@ let package = Package(
                 "LakeOfFireLibrary",
                 "LakeOfFireReader",
                 "LakeOfFireWeb",
+                .product(name: "SwiftUIWebView", package: "swiftui-webview"),
                 .product(name: "SwiftReadability", package: "swift-readability"),
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
                 .product(name: "SwiftUIDownloads", package: "SwiftUIDownloads"),

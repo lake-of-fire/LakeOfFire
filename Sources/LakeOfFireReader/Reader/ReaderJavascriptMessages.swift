@@ -218,17 +218,27 @@ public struct VideoStatusMessage {
 
 public struct PageMetadataUpdatedMessage {
     public let title: String
-    public let author: String
+    /// Missing means preserve the current author; an explicit empty string clears it.
+    public let author: String?
     public let url: URL?
 
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any],
+        self.init(body: message.body)
+    }
+
+    public init?(body rawBody: Any?) {
+        guard let body = rawBody as? [String: Any],
               let title = body["title"] as? String,
-              let author = body["author"] as? String
-        else { return nil }
+              let urlString = body["url"] as? String,
+              let url = URL(string: urlString) else { return nil }
+        if let rawAuthor = body["author"] {
+            guard let author = rawAuthor as? String else { return nil }
+            self.author = author
+        } else {
+            self.author = nil
+        }
         self.title = title
-        self.author = author
-        url = URL(string: body["url"] as! String)
+        self.url = url
     }
 }
 

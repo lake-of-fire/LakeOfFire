@@ -228,7 +228,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
         readingProgressState = state
     }
 
-    public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
+    public init(
+        realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration,
+        systemScripts: [WebViewUserScript],
+        observeLibraryChanges: Bool = true
+    ) {
         self.baseSystemScripts = systemScripts
         super.init()
         ReaderContent.contentResolver = { pageURL, countsAsHistoryVisit, source in
@@ -238,6 +242,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 source: source
             )
         }
+
+        guard observeLibraryChanges else { return }
 
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
@@ -329,15 +335,31 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
-    private func refreshTitleInWebView(content: (any ReaderContentProtocol), newState: WebViewState? = nil) async throws {
-        let state = newState ?? self.state
-        logTitleTrace(
-            "stage=readerViewModel.refreshTitleInWebView pageURL=\(state.pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) contentTitle=\(content.title.debugTitleFragment) rssContainsFullContent=\(content.rssContainsFullContent) isLoading=\(state.isLoading) isProvisionallyNavigating=\(state.isProvisionallyNavigating)"
+    private func refreshTitleInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil) async throws {
+        guard !content.isInvalidated, !content.isDeleted else { return }
+        try await refreshTitleInWebView(
+            title: content.title, contentURL: content.url,
+            isFromClipboard: content.isFromClipboard,
+            rssContainsFullContent: content.rssContainsFullContent,
+            newState: newState
         )
-        if !content.url.isEBookURL && !content.isFromClipboard && content.rssContainsFullContent && !content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
-                try await scriptCaller.evaluateJavaScript(
-                    """
+    }
+
+    @MainActor
+    private func refreshTitleInWebView(
+        title: String,
+        contentURL: URL,
+        isFromClipboard: Bool,
+        rssContainsFullContent: Bool,
+        newState: WebViewState? = nil,
+        requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil
+    ) async throws {
+        let state = newState ?? self.state
+        if !contentURL.isEBookURL && !isFromClipboard && rssContainsFullContent
+            && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if contentURL.absoluteString == state.pageURL.absoluteString,
+               !state.isLoading && !state.isProvisionallyNavigating {
+                let script = """
                     (function() {
                         if (document.body?.classList.contains('readability-mode')) {
                             const title = arguments.title
@@ -346,57 +368,71 @@ public class ReaderViewModel: NSObject, ObservableObject {
                             }
                         }
                     })()
-                    """,
-                    arguments: ["title": content.title]
-                )
+                    """
+                if let bindingToken {
+                    try await scriptCaller.evaluateJavaScript(
+                        script, arguments: ["title": title], requiring: bindingToken
+                    )
+                } else {
+                    try await scriptCaller.evaluateJavaScript(script, arguments: ["title": title])
+                }
             }
         }
     }
 
     @MainActor
     public func pageMetadataUpdated(title: String?, author: String? = nil) async throws {
-        let sanitizedIncomingTitle = title?
-            .replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: "")
-        logTitleTrace(
-            "stage=readerViewModel.pageMetadataUpdated.received pageURL=\(state.pageURL.absoluteString) incomingTitle=\(title.debugTitleFragment) sanitizedTitle=\(sanitizedIncomingTitle.debugTitleFragment) author=\(author.debugTitleFragment) isNativeReaderView=\(state.pageURL.isNativeReaderView)"
-        )
-        guard !state.pageURL.isNativeReaderView, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty else { return }
-        let newTitle: String
-        if state.pageURL.isEBookURL {
-            newTitle = title
+        // Preserve the native page-title callback, including headless callers.
+        // Mounted work retains its original binding through the durable write.
+        let admission: ReaderDocumentMutationAdmission
+        if scriptCaller.canEvaluateJavaScript {
+            guard let captured = ReaderDocumentMutationAdmission.capture(
+                targetURL: state.pageURL,
+                requiring: scriptCaller.currentJavaScriptBindingToken,
+                scriptCaller: scriptCaller
+            ) else { return }
+            admission = captured
         } else {
-            newTitle = fixAnnoyingTitlesWithPipes(title: title, url: state.pageURL)
-        }
-        logTitleTrace(
-            "stage=readerViewModel.pageMetadataUpdated.normalized pageURL=\(state.pageURL.absoluteString) newTitle=\(newTitle.debugTitleFragment)"
-        )
-        let contentRefs = try await { @RealmBackgroundActor in
-            let contents = try await ReaderContentLoader.loadAll(url: state.pageURL)
-            return contents.compactMap { ReaderContentLoader.ContentReference(content: $0) }
-        }()
-        for contentRef in contentRefs {
-            guard let content = try await contentRef.resolveOnMainActor() else { continue }
-            let shouldStripClipboardIndicator = content.isFromClipboard || content.url.isSnippetURL
-            let finalTitle = newTitle.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
-            let existingTitle = content.title
-                .replacingOccurrences(of: String("\u{fffc}"), with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            logTitleTrace(
-                "stage=readerViewModel.pageMetadataUpdated.inspect contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey) existingTitle=\(existingTitle.debugTitleFragment) finalTitle=\(finalTitle.debugTitleFragment) existingAuthor=\(content.author.debugTitleFragment) newAuthor=\((author ?? "").debugTitleFragment)"
+            admission = ReaderDocumentMutationAdmission(
+                targetURL: state.pageURL, bindingToken: nil, bindingIsCurrent: { true }
             )
-            if !finalTitle.isEmpty, existingTitle != finalTitle || content.author != author ?? "" {
-                try await content.asyncWrite { _, content in
-                    content.title = finalTitle
-                    content.author = author ?? ""
-                    content.refreshChangeMetadata(explicitlyModified: true)
-                }
-                logTitleTrace(
-                    "stage=readerViewModel.pageMetadataUpdated.persisted contentURL=\(content.url.absoluteString) key=\(content.compoundKey) persistedTitle=\(finalTitle.debugTitleFragment) persistedAuthor=\((author ?? "").debugTitleFragment)"
-                )
-                try await refreshTitleInWebView(content: content)
-            } else if state.pageURL.isEBookURL {
-                try await refreshTitleInWebView(content: content)
-            }
+        }
+        try await pageMetadataUpdated(title: title, author: author, admission: admission)
+    }
+
+    @MainActor
+    func pageMetadataUpdated(
+        title: String?,
+        author: String? = nil,
+        admission: ReaderDocumentMutationAdmission
+    ) async throws {
+        let targetURL = admission.targetURL
+        guard admission.permitsMutation, urlsMatchWithoutHash(targetURL, state.pageURL),
+              !targetURL.isNativeReaderView,
+              let title = title?.replacingOccurrences(of: String("\u{fffc}"), with: ""),
+              !title.isEmpty else { return }
+        let newTitle = targetURL.isEBookURL
+            ? title : fixAnnoyingTitlesWithPipes(title: title, url: targetURL)
+        // Keep the same selected history/feed/provider discovery policy, with
+        // original configurations/physical admissions captured before any await.
+        let context = ReaderContentLoader.ReaderModePropagationContext()
+        let references = try await ReaderContentLoader.pageMetadataReferences(for: targetURL, context: context)
+        for reference in references {
+            guard admission.permitsMutation, urlsMatchWithoutHash(targetURL, state.pageURL) else { return }
+            let result = try await reference.writePageMetadata(
+                title: newTitle, author: author, isAdmitted: { admission.permitsMutation }
+            )
+            guard admission.permitsMutation, urlsMatchWithoutHash(targetURL, state.pageURL) else { return }
+            guard let result, result.changed || targetURL.isEBookURL,
+                  let bindingToken = admission.bindingToken else { continue }
+            // Presentation uses values from the committed row, never a same-key
+            // successor reopened after the transaction.
+            try await refreshTitleInWebView(
+                title: result.title, contentURL: result.url,
+                isFromClipboard: result.isFromClipboard,
+                rssContainsFullContent: result.rssContainsFullContent,
+                requiring: bindingToken
+            )
         }
     }
 
