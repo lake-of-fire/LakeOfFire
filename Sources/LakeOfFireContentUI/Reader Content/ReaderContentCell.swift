@@ -63,6 +63,24 @@ fileprivate actor ReaderContentCellActor {
     static let shared = ReaderContentCellActor()
 }
 
+/// Same-row metadata edits must restart the one generation-fenced loader.
+/// Progress stored in other models needs a separate upstream invalidation signal.
+struct ReaderContentCellLoadIdentity: Hashable {
+    let compoundKey: String
+    let includesSource: Bool
+    let url: URL
+    let modifiedAt: Date
+    let imageURL: URL?
+
+    init(item: any ReaderContentProtocol, includesSource: Bool) {
+        compoundKey = item.compoundKey
+        self.includesSource = includesSource
+        url = item.url
+        modifiedAt = item.modifiedAt
+        imageURL = item.imageUrl
+    }
+}
+
 private func usableReaderContentSourceIconURL(_ url: URL?) -> URL? {
     guard let url, !url.isNativeReaderView else { return nil }
     return url
@@ -86,19 +104,41 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     @Published var hasLoadedDisplayState = false
     // Continue Reading menu is driven by an injected provider in the environment.
 
-    init() { }
+    private var loadGeneration: UInt64 = 0
+    private let imageURLLoader: @MainActor (C) async throws -> URL?
+    private let historyRealmConfiguration: Realm.Configuration?
+    private let syncStatusLoader: @Sendable (URL) async throws -> ReaderContentSyncStatusPresentation?
+
+    init(
+        imageURLLoader: @escaping @MainActor (C) async throws -> URL? = { try await $0.imageURLToDisplay() },
+        historyRealmConfiguration: Realm.Configuration? = nil,
+        syncStatusLoader: @escaping @Sendable (URL) async throws -> ReaderContentSyncStatusPresentation? = {
+            try await ReaderContentSyncStatusLoader.syncStatusLoader?($0)
+        }
+    ) {
+        self.imageURLLoader = imageURLLoader
+        self.historyRealmConfiguration = historyRealmConfiguration
+        self.syncStatusLoader = syncStatusLoader
+    }
 
     @MainActor
     func load(
         item: C,
         includeSource: Bool
     ) async throws {
+        try Task.checkCancellation()
+        loadGeneration &+= 1
+        let generation = loadGeneration
         hasLoadedDisplayState = false
         debugPrint("# loading", item.url.lastPathComponent)
 
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
-        let imageURL = try await item.imageURLToDisplay()
+        let historyRealmConfiguration = historyRealmConfiguration ?? ReaderContentLoader.historyRealmConfiguration
+        let syncStatusLoader = syncStatusLoader
+        let imageURL = try await imageURLLoader(item)
+        try Task.checkCancellation()
+        guard generation == loadGeneration else { throw CancellationError() }
         try await { @ReaderContentCellActor [weak self] in
             guard let self else { return }
             let realm = try await Realm(configuration: config, actor: ReaderContentCellActor.shared)
@@ -121,9 +161,9 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let tracksReadingProgress = item.tracksReadingProgress
                 let progressResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL) : nil
                 let metadataResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL) : nil
-                let syncStatusPresentation = try await ReaderContentSyncStatusLoader.syncStatusLoader?(itemURL)
+                let syncStatusPresentation = try await syncStatusLoader(itemURL)
                 let historyRealm = try await Realm(
-                    configuration: ReaderContentLoader.historyRealmConfiguration,
+                    configuration: historyRealmConfiguration,
                     actor: ReaderContentCellActor.shared
                 )
                 let latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: itemURL, in: historyRealm)
@@ -167,6 +207,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 try await { @MainActor [weak self] in
                     guard let self else { return }
                     try Task.checkCancellation()
+                    guard generation == self.loadGeneration else { throw CancellationError() }
                     self.title = title
                     self.imageURL = imageURL
                     self.humanReadablePublicationDate = humanReadablePublicationDate
@@ -1216,13 +1257,11 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered
         }
-        .onAppear {
-            Task { @MainActor in
-                try? await viewModel.load(
-                    item: item,
-                    includeSource: appearance.includeSource
-                )
-            }
+        .task(id: ReaderContentCellLoadIdentity(item: item, includesSource: appearance.includeSource)) {
+            try? await viewModel.load(
+                item: item,
+                includeSource: appearance.includeSource
+            )
         }
         .task(id: "\(item.compoundKey)|\(item.url.absoluteString)") {
             let url = item.url
@@ -1236,12 +1275,6 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         .onChange(of: item.compoundKey) { _ in
             resolvedContentFile = nil
             contentFileLookupStarted = false
-        }
-        .onChange(of: item.imageUrl) { newImageURL in
-            guard newImageURL != viewModel.imageURL else { return }
-            Task { @MainActor in
-                viewModel.imageURL = try await item.imageURLToDisplay()
-            }
         }
         // No provider-based onReceive; lists refresh via Realm publishers.
     }
