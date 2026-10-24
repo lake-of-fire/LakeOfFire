@@ -104,9 +104,7 @@ fileprivate struct EditorsPicksView: View {
                                     readerModeViewModel: readerModeViewModel
                                 )
                             } catch {
-                                if viewModel.isCurrentOpenSelection(selection) {
-                                    viewModel.errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
-                                }
+                                viewModel.publishOpenError(error, selection: selection)
                             }
                         },
                         onNavigateToReader: viewModel.onNavigateToReader
@@ -142,6 +140,10 @@ public struct BookLibraryView: View {
 
     private var isMyBooksEmpty: Bool {
         readerContentListViewModel.hasLoadedBefore && readerContentListViewModel.filteredContents.isEmpty
+    }
+
+    private var localContentSelection: Binding<String?> {
+        viewModel.localContentSelectionBinding(contentSelection)
     }
 
     private var mediaTypeTitleLowercased: String {
@@ -209,7 +211,7 @@ public struct BookLibraryView: View {
         } else {
             ReaderContentListItems(
                 viewModel: readerContentListViewModel,
-                entrySelection: contentSelection,
+                entrySelection: localContentSelection,
                 includeSource: false,
                 alwaysShowThumbnails: true,
                 showSeparators: false,
@@ -232,7 +234,7 @@ public struct BookLibraryView: View {
 
     @ViewBuilder
     var list: some View {
-        List(selection: contentSelection) {
+        List(selection: localContentSelection) {
             if #available(iOS 17, macOS 14.0, *) {
                 Section(isExpanded: $isMyBooksExpanded) {
                     myBooksSection
@@ -466,6 +468,26 @@ public class BookLibraryViewModel: ObservableObject {
 
     func cancelOpenSelection() {
         openSelectionCoordinator.cancel()
+    }
+
+    func localContentSelectionBinding(_ selection: Binding<String?>) -> Binding<String?> {
+        Binding(
+            get: { selection.wrappedValue },
+            set: { [weak self] value in
+                // A local row can open in the reader while this library remains
+                // visible. Re-selection also retires older Editor's Pick work;
+                // nil is cleanup from the existing selection synchronization.
+                if value != nil {
+                    self?.cancelOpenSelection()
+                }
+                selection.wrappedValue = value
+            }
+        )
+    }
+
+    func publishOpenError(_ error: Error, selection: OpenSelection) {
+        guard isCurrentOpenSelection(selection) else { return }
+        errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
     }
 
     @MainActor

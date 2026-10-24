@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 import RealmSwift
 import SwiftCloudDrive
 import SwiftUIDownloads
@@ -438,6 +439,72 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
                 XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, fixture.expectedReaderURL.absoluteString)
                 XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
                 XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+            }
+        }
+    }
+
+    @MainActor
+    func testLocalBookSelectionPreservesCommittedEditorImportWithoutOpeningIt() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            try await withIsolatedContentLoading {
+                let viewModel = BookLibraryViewModel()
+                let gate = DownloadedBookOpenImportGate()
+                let navigator = WebViewNavigator()
+                let readerContent = ReaderContent()
+                var importedURL: URL?
+                var operationError: Error?
+                var callbacks = 0
+                let task = try XCTUnwrap(viewModel.startOpenSelection { selection in
+                    do {
+                        try await BookLibraryViewModel.openDownloaded(
+                            publication: Publication(title: fixture.downloadable.name, downloadURL: fixture.downloadable.url),
+                            readerFileManager: fixture.manager,
+                            readerContent: readerContent,
+                            navigator: navigator,
+                            readerModeViewModel: ReaderModeViewModel(),
+                            shouldOpen: { viewModel.isCurrentOpenSelection(selection) },
+                            onNavigateToReader: { callbacks += 1 },
+                            importDownloaded: { downloadable in
+                                importedURL = try await fixture.manager.ensureImported(downloadable: downloadable)
+                                await gate.suspendIgnoringCancellation()
+                                return importedURL
+                            }
+                        )
+                    } catch {
+                        operationError = error
+                        viewModel.publishOpenError(error, selection: selection)
+                    }
+                    await gate.finish()
+                })
+                guard await gate.waitUntilSuspendedOrFinished() else {
+                    await task.value
+                    XCTFail("The Editor's Pick must reach its importer: \(String(describing: operationError))")
+                    return
+                }
+                XCTAssertEqual(importedURL, fixture.expectedReaderURL)
+                var selectedKey: String?
+                let binding = viewModel.localContentSelectionBinding(Binding(
+                    get: { selectedKey }, set: { selectedKey = $0 }
+                ))
+
+                binding.wrappedValue = "ContentFile:local-B"
+                XCTAssertTrue(task.isCancelled)
+                await gate.release()
+                await task.value
+
+                let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+                XCTAssertNil(operationError)
+                XCTAssertNil(viewModel.errorMessage)
+                XCTAssertEqual(selectedKey, "ContentFile:local-B")
+                XCTAssertEqual(realm.objects(ContentFile.self).count, 1)
+                XCTAssertEqual(realm.objects(HistoryRecord.self).count, 0)
+                XCTAssertEqual(fixture.manager.files(ofTypes: [.epub, .epubZip])?.map(\.url), [fixture.expectedReaderURL])
+                XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.downloadable.localDestination.path))
+                XCTAssertEqual(callbacks, 0)
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, "nil")
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+                XCTAssertNil(readerContent.content)
             }
         }
     }
