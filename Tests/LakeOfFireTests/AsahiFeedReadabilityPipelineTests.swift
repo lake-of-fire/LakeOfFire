@@ -167,6 +167,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
         let feed = Feed()
         feed.rssUrl = rssURL
+        feed.lastFetchedRSSURL = rssURL
         feed.lastFetchedETag = "\"stale-validator\""
         try await realm.asyncWrite {
             realm.add(feed)
@@ -210,6 +211,8 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         )
         XCTAssertEqual(requests.map(\.method), ["HEAD", "HEAD", "GET"])
         XCTAssertEqual(requests.map(\.validator), ["\"stale-validator\"", nil, nil])
+        XCTAssertEqual(feed.lastFetchedRSSURL, rssURL)
+        XCTAssertNotNil(feed.lastRefreshedEntriesAt)
     }
 
     @MainActor
@@ -287,6 +290,153 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
     }
 
     @MainActor
+    func testLegacyRefreshMetadataRequiresAnUnconditionalBody() async throws {
+        try await assertHTTPRefresh(
+            headStatus: 200, headHeaders: ["ETag": "\"stored-version\""],
+            getHeaders: ["ETag": "\"new-version\""],
+            expectedETag: "\"new-version\"", expectedModifiedAt: nil,
+            storedFetchProvenance: .legacy,
+            storedRefreshedAt: Date().addingTimeInterval(-60)
+        )
+    }
+
+    @MainActor
+    func testURLOnlyReplacementIgnoresPreviousURLValidatorsAndRefreshDate() async throws {
+        try await assertHTTPRefresh(
+            headStatus: 200, headHeaders: ["ETag": "\"stored-version\""],
+            getHeaders: ["ETag": "\"new-version\""],
+            expectedETag: "\"new-version\"", expectedModifiedAt: nil,
+            storedFetchProvenance: .previousURL,
+            storedRefreshedAt: Date().addingTimeInterval(-60)
+        )
+    }
+
+    @MainActor
+    func testUnprovenHEAD304StillRequiresAnUnconditionalBody() async throws {
+        for provenance in [StoredFetchProvenance.legacy, .previousURL] {
+            try await assertHTTPRefresh(
+                headStatus: 304, headHeaders: [:],
+                getHeaders: ["ETag": "\"new-version\""],
+                expectedETag: "\"new-version\"", expectedModifiedAt: nil,
+                storedFetchProvenance: provenance,
+                storedRefreshedAt: Date().addingTimeInterval(-60)
+            )
+        }
+    }
+
+    @MainActor
+    func testUnprovenGET304CannotPublishRefreshMetadataForCurrentURL() async throws {
+        for provenance in [StoredFetchProvenance.legacy, .previousURL] {
+            try await assertHTTPRefresh(
+                headStatus: 405, getStatus: 304,
+                expectedETag: "\"stored-version\"",
+                expectedModifiedAt: Date(timeIntervalSince1970: 1577836800),
+                expectsFailure: true, storedFetchProvenance: provenance,
+                storedRefreshedAt: Date().addingTimeInterval(-60)
+            )
+        }
+    }
+
+    @MainActor
+    func testFetchedURLProvenanceIsLocalOnlyAndStartsUnknown() {
+        let feed = Feed()
+        XCTAssertNil(feed.lastFetchedRSSURL)
+        XCTAssertTrue(feed.skipSyncingProperties()?.contains("lastFetchedRSSURL") == true)
+    }
+
+    @MainActor
+    func testFrozenCallerCannotRevalidateSameValidatorsFetchedFromAnotherURL() async throws {
+        let originalURL = URL(string: "https://example.com/\(UUID().uuidString)/original.xml")!
+        let replacementURL = originalURL.deletingLastPathComponent().appendingPathComponent("replacement.xml")
+        let entryURL = originalURL.deletingLastPathComponent().appendingPathComponent("entry")
+        let configuration = makeRealmConfiguration()
+        let previousLibrary = LibraryDataManager.realmConfiguration
+        let previousBookmarks = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousEntries = ReaderContentLoader.feedEntryRealmConfiguration
+        let previousProviders = ReaderContentLoader.additionalContentProviders
+        let previousSession = makeFeedSessionOverrideForTesting
+        let previousHandler = FeedURLProtocol.requestHandler
+        defer {
+            LibraryDataManager.realmConfiguration = previousLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmarks
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousEntries
+            ReaderContentLoader.additionalContentProviders = previousProviders
+            makeFeedSessionOverrideForTesting = previousSession
+            FeedURLProtocol.requestHandler = previousHandler
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.additionalContentProviders = []
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = originalURL
+        feed.lastFetchedRSSURL = originalURL
+        feed.lastFetchedETag = "\"shared-validator\""
+        feed.lastFetchedModifiedAt = Date(timeIntervalSince1970: 1577836800)
+        feed.lastRefreshedEntriesAt = Date()
+        let cached = FeedEntry()
+        cached.feedID = feed.id
+        cached.url = entryURL
+        cached.title = "Original"
+        cached.html = "Original body"
+        cached.updateCompoundKey()
+        try await realm.asyncWrite { realm.add(feed); realm.add(cached) }
+        let staleFeed = feed.freeze()
+        var requests = [URLRequest]()
+        FeedURLProtocol.requestHandler = { request in
+            requests.append(request)
+            let headers = [
+                "ETag": "\"shared-validator\"",
+                "Last-Modified": "Wed, 01 Jan 2020 00:00:00 GMT",
+                "Content-Type": "application/xml",
+            ]
+            if request.value(forHTTPHeaderField: "If-None-Match") == "\"shared-validator\"" {
+                return (304, headers, Data())
+            }
+            let title = request.url == originalURL ? "Original" : "Replacement"
+            return (200, headers, RefreshFixtureFormat.rss.data(entryURL: entryURL, title: title))
+        }
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+
+        // URL-only sync edits can surround a successful fetch of another resource with equal validators.
+        try await realm.asyncWrite { feed.rssUrl = replacementURL }
+        try await feed.fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(cached.title, "Replacement")
+        XCTAssertEqual(feed.lastFetchedRSSURL, replacementURL)
+        try await realm.asyncWrite { feed.rssUrl = originalURL }
+        XCTAssertTrue(feed.shouldRefreshAutomaticallyOnFeedAppear)
+
+        try await staleFeed.fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(requests.map(\.url), [replacementURL, replacementURL, originalURL, originalURL, originalURL])
+        XCTAssertEqual(requests.map(\.httpMethod), ["HEAD", "GET", "HEAD", "HEAD", "GET"])
+        XCTAssertEqual(
+            requests.map { $0.value(forHTTPHeaderField: "If-None-Match") },
+            [nil, nil, "\"shared-validator\"", nil, nil]
+        )
+        XCTAssertEqual(cached.title, "Original")
+        XCTAssertEqual(cached.html, "Original body")
+        XCTAssertEqual(feed.lastFetchedRSSURL, originalURL)
+        XCTAssertNotNil(feed.lastRefreshedEntriesAt)
+        XCTAssertFalse(feed.shouldRefreshAutomaticallyOnFeedAppear)
+    }
+
+    private enum StoredFetchProvenance: Equatable {
+        case matching, legacy, previousURL
+    }
+
+    @MainActor
     private func assertHTTPRefresh(
         headStatus: Int,
         headHeaders: [String: String] = [
@@ -296,7 +446,9 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         getHeaders: [String: String] = [:],
         expectedETag: String?, expectedModifiedAt: Date?,
         expectsGET: Bool = true, expectsFailure: Bool = false,
-        storedETag: String? = "\"stored-version\""
+        storedETag: String? = "\"stored-version\"",
+        storedFetchProvenance: StoredFetchProvenance = .matching,
+        storedRefreshedAt: Date? = nil
     ) async throws {
         let rssURL = URL(string: "https://example.com/\(UUID().uuidString)/feed.xml")!
         let entryURL = rssURL.deletingLastPathComponent().appendingPathComponent("new-entry")
@@ -328,14 +480,32 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         await ReaderContentLoader.resetTransientCachesForTesting()
         let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
         let feed = Feed()
-        feed.rssUrl = rssURL
+        let storedRSSURL: URL?
+        switch storedFetchProvenance {
+        case .matching: storedRSSURL = rssURL
+        case .legacy: storedRSSURL = nil
+        case .previousURL:
+            storedRSSURL = rssURL.deletingLastPathComponent().appendingPathComponent("previous.xml")
+        }
+        feed.rssUrl = storedRSSURL ?? rssURL
+        feed.lastFetchedRSSURL = storedRSSURL
         feed.lastFetchedETag = storedETag
         feed.lastFetchedModifiedAt = Date(timeIntervalSince1970: 1577836800)
+        feed.lastRefreshedEntriesAt = storedRefreshedAt
         let cached = FeedEntry()
         cached.feedID = feed.id
         cached.url = rssURL.appendingPathComponent("cached-entry")
         cached.compoundKey = feed.id.uuidString + "-cached-entry"
         try await realm.asyncWrite { realm.add(feed); realm.add(cached) }
+        if feed.rssUrl != rssURL {
+            // Inbound sync changes the synchronized URL while retaining this device's local fields.
+            try await realm.asyncWrite { feed.rssUrl = rssURL }
+        }
+        let hasMatchingFetchURL = storedFetchProvenance == .matching
+        if !hasMatchingFetchURL {
+            XCTAssertFalse(feed.hasRecentlyRefreshedEntries)
+            XCTAssertTrue(feed.shouldRefreshAutomaticallyOnFeedAppear)
+        }
         var requests = [URLRequest]()
         FeedURLProtocol.requestHandler = { request in
             requests.append(request)
@@ -357,15 +527,26 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         await realm.asyncRefresh()
         XCTAssertEqual(requests.map(\.httpMethod), expectsGET ? ["HEAD", "GET"] : ["HEAD"])
         for request in requests {
-            XCTAssertEqual(request.value(forHTTPHeaderField: "If-None-Match"), storedETag)
-            XCTAssertEqual(request.value(forHTTPHeaderField: "If-Modified-Since"), "Wed, 01 Jan 2020 00:00:00 GMT")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "If-None-Match"), hasMatchingFetchURL ? storedETag : nil)
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "If-Modified-Since"),
+                hasMatchingFetchURL ? "Wed, 01 Jan 2020 00:00:00 GMT" : nil
+            )
         }
         XCTAssertEqual(feed.lastFetchedETag, expectedETag)
         XCTAssertEqual(feed.lastFetchedModifiedAt, expectedModifiedAt)
         if !expectsFailure, expectsGET, getStatus == 200 {
             XCTAssertEqual(realm.objects(FeedEntry.self).where { $0.url == entryURL && !$0.isDeleted }.count, 1)
         }
-        if expectsFailure { XCTAssertNil(feed.lastRefreshedEntriesAt) }
+        if expectsFailure {
+            XCTAssertEqual(feed.lastFetchedRSSURL, storedRSSURL)
+            XCTAssertEqual(feed.lastRefreshedEntriesAt, storedRefreshedAt)
+            if !hasMatchingFetchURL { XCTAssertTrue(feed.shouldRefreshAutomaticallyOnFeedAppear) }
+        } else {
+            XCTAssertEqual(feed.lastFetchedRSSURL, rssURL)
+            XCTAssertNotNil(feed.lastRefreshedEntriesAt)
+            XCTAssertFalse(feed.shouldRefreshAutomaticallyOnFeedAppear)
+        }
     }
 
 
@@ -540,6 +721,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
         let feed = Feed()
         feed.rssUrl = rssURL
+        feed.lastFetchedRSSURL = rssURL
         feed.lastFetchedETag = "\"A\""
         feed.lastFetchedModifiedAt = Date(timeIntervalSince1970: 1577836800)
         feed.lastRefreshedEntriesAt = Date()
@@ -581,6 +763,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             XCTAssertNil(feed.lastFetchedETag)
             XCTAssertNil(feed.lastFetchedModifiedAt)
             XCTAssertNil(feed.lastRefreshedEntriesAt)
+            XCTAssertNil(feed.lastFetchedRSSURL)
             if case .atom = format {
                 XCTAssertEqual(realm.objects(FeedEntryCollection.self).first?.title, "Collection B")
             }
@@ -613,6 +796,9 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             if let replacement {
                 try await replacement.value
             } else {
+                await realm.asyncRefresh()
+                XCTAssertNil(feed.lastFetchedRSSURL)
+                XCTAssertNil(feed.lastRefreshedEntriesAt)
                 ReaderContentLoader.additionalContentProviders = []
                 try await feed.fetch(realmConfiguration: configuration)
             }
@@ -622,6 +808,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             XCTAssertEqual(feed.lastFetchedETag, "\"A\"")
             XCTAssertEqual(feed.lastFetchedModifiedAt, Date(timeIntervalSince1970: 1577836800))
             XCTAssertNotNil(feed.lastRefreshedEntriesAt)
+            XCTAssertEqual(feed.lastFetchedRSSURL, rssURL)
             if case .atom = format {
                 XCTAssertEqual(realm.objects(FeedEntryCollection.self).first?.title, "Collection A")
             }

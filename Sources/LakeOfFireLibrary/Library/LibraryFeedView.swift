@@ -358,6 +358,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     feed.lastFetchedETag = nil
                     feed.lastFetchedModifiedAt = nil
                     feed.lastRefreshedEntriesAt = nil
+                    feed.lastFetchedRSSURL = nil
                 }
                 feed.refreshChangeMetadata(explicitlyModified: true)
             }

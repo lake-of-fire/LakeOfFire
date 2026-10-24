@@ -273,6 +273,8 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var lastViewedAt: Date?
     @Persisted public var lastSeenFeedEntriesAt: Date?
     @Persisted public var lastRefreshedEntriesAt: Date?
+    /// Requested URL of this device's settled refresh; legacy or retired metadata has no provenance.
+    @Persisted public var lastFetchedRSSURL: URL?
     @Persisted public var lastFetchedETag: String?
     @Persisted public var lastFetchedModifiedAt: Date?
     @Persisted public var showsUnseenBadge = true
@@ -408,6 +410,7 @@ extension Feed: SyncSkippablePropertiesModel {
             "lastViewedAt",
             "lastSeenFeedEntriesAt",
             "lastRefreshedEntriesAt",
+            "lastFetchedRSSURL",
             "lastFetchedETag",
             "lastFetchedModifiedAt",
         ]
@@ -1473,7 +1476,8 @@ public extension Feed {
                 }
                 if let expectedValidators {
                     // A 304 validates the request's stored representation, not any newer partial write.
-                    guard expectedValidators.etag?.isEmpty == false || expectedValidators.lastModifiedAt != nil,
+                    guard feed.lastFetchedRSSURL == expectedRSSURL,
+                          expectedValidators.etag?.isEmpty == false || expectedValidators.lastModifiedAt != nil,
                           feed.lastFetchedETag == expectedValidators.etag,
                           feed.lastFetchedModifiedAt == expectedValidators.lastModifiedAt,
                           !realm.objects(FeedEntry.self)
@@ -1482,6 +1486,7 @@ public extension Feed {
                     }
                 }
                 feed.lastRefreshedEntriesAt = Date()
+                feed.lastFetchedRSSURL = expectedRSSURL
                 feed.lastFetchedETag = replacesValidators ? metadata.etag : metadata.etag ?? feed.lastFetchedETag
                 feed.lastFetchedModifiedAt = replacesValidators ? metadata.lastModifiedAt : metadata.lastModifiedAt ?? feed.lastFetchedModifiedAt
                 return true
@@ -1814,9 +1819,11 @@ public extension Feed {
         let feedID = id
         let feedTitle = title
         let rssUrl = rssUrl
-        let lastFetchedETag = lastFetchedETag
-        let lastFetchedModifiedAt = lastFetchedModifiedAt
-        let lastRefreshedEntriesAt = lastRefreshedEntriesAt
+        // RSS URLs can change through sync without changing this device's local cache metadata.
+        let hasMatchingFetchURL = lastFetchedRSSURL == rssUrl
+        let lastFetchedETag = hasMatchingFetchURL ? lastFetchedETag : nil
+        let lastFetchedModifiedAt = hasMatchingFetchURL ? lastFetchedModifiedAt : nil
+        let lastRefreshedEntriesAt = hasMatchingFetchURL ? lastRefreshedEntriesAt : nil
         let refreshLease = FeedRefreshRegistry.shared.begin(feedID: feedID)
         defer { FeedRefreshRegistry.shared.end(refreshLease) }
         func checkRequestIsCurrent() throws {
@@ -1834,7 +1841,8 @@ public extension Feed {
             fetchResult = try await getRssData(
                 rssUrl: rssUrl,
                 lastFetchedETag: lastFetchedETag,
-                lastFetchedModifiedAt: lastFetchedModifiedAt
+                lastFetchedModifiedAt: lastFetchedModifiedAt,
+                allowNotModified: hasMatchingFetchURL
             )
         } catch {
             logRSS("stage=fetch.download.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) error=\(error)")
@@ -2000,6 +2008,7 @@ fileprivate func retireFeedFetchValidators(in realm: Realm, feedID: UUID) throws
     if feed.lastFetchedETag != nil { feed.lastFetchedETag = nil }
     if feed.lastFetchedModifiedAt != nil { feed.lastFetchedModifiedAt = nil }
     if feed.lastRefreshedEntriesAt != nil { feed.lastRefreshedEntriesAt = nil }
+    if feed.lastFetchedRSSURL != nil { feed.lastFetchedRSSURL = nil }
 }
 
 @RealmBackgroundActor

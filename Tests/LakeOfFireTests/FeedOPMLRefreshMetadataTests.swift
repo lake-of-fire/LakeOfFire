@@ -46,6 +46,7 @@ final class FeedOPMLRefreshMetadataTests: XCTestCase {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
             let feed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: feedID))
             try await realm.asyncWritePreservingOwnership {
+                feed.lastFetchedRSSURL = feed.rssUrl
                 feed.lastFetchedETag = "\"old-resource\""
                 feed.lastFetchedModifiedAt = Date(timeIntervalSince1970: 100)
                 feed.lastRefreshedEntriesAt = Date(timeIntervalSince1970: 200)
@@ -57,10 +58,12 @@ final class FeedOPMLRefreshMetadataTests: XCTestCase {
             XCTAssertEqual(feed.title, "Updated title")
             XCTAssertEqual(realm.objects(Feed.self).count, 1)
             if shouldClear {
+                XCTAssertNil(feed.lastFetchedRSSURL)
                 XCTAssertNil(feed.lastFetchedETag)
                 XCTAssertNil(feed.lastFetchedModifiedAt)
                 XCTAssertNil(feed.lastRefreshedEntriesAt)
             } else {
+                XCTAssertEqual(feed.lastFetchedRSSURL?.absoluteString, "https://example.org/original.xml")
                 XCTAssertEqual(feed.lastFetchedETag, "\"old-resource\"")
                 XCTAssertEqual(feed.lastFetchedModifiedAt, Date(timeIntervalSince1970: 100))
                 XCTAssertEqual(feed.lastRefreshedEntriesAt, Date(timeIntervalSince1970: 200))

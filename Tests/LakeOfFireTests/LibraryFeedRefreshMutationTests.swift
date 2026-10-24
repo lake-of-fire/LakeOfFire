@@ -24,6 +24,7 @@ final class LibraryFeedRefreshMutationTests: XCTestCase {
             }
             await realm.asyncRefresh()
             XCTAssertEqual(feed.rssUrl, replacement)
+            XCTAssertNil(feed.lastFetchedRSSURL)
             XCTAssertNil(feed.lastFetchedETag)
             XCTAssertNil(feed.lastFetchedModifiedAt)
             XCTAssertNil(feed.lastRefreshedEntriesAt)
@@ -81,6 +82,7 @@ final class LibraryFeedRefreshMutationTests: XCTestCase {
         await original.asyncRefresh()
         await replacement.asyncRefresh()
         XCTAssertEqual(feed.rssUrl, updatedURL)
+        XCTAssertNil(feed.lastFetchedRSSURL)
         XCTAssertNil(feed.lastFetchedETag)
         XCTAssertEqual(other.rssUrl.absoluteString, "https://example.com/feed.xml")
         assertSeededMetadata(other)
@@ -170,6 +172,7 @@ final class LibraryFeedRefreshMutationTests: XCTestCase {
         feed.categoryID = category.id
         feed.title = "Original"
         feed.rssUrl = URL(string: "https://example.com/feed.xml")!
+        feed.lastFetchedRSSURL = feed.rssUrl
         feed.lastFetchedETag = "\"old-resource\""
         feed.lastFetchedModifiedAt = Date(timeIntervalSince1970: 100)
         feed.lastRefreshedEntriesAt = Date(timeIntervalSince1970: 200)
@@ -180,6 +183,7 @@ final class LibraryFeedRefreshMutationTests: XCTestCase {
     private func assertSeededMetadata(
         _ feed: Feed, file: StaticString = #filePath, line: UInt = #line
     ) {
+        XCTAssertEqual(feed.lastFetchedRSSURL?.absoluteString, "https://example.com/feed.xml", file: file, line: line)
         XCTAssertEqual(feed.lastFetchedETag, "\"old-resource\"", file: file, line: line)
         XCTAssertEqual(feed.lastFetchedModifiedAt, Date(timeIntervalSince1970: 100), file: file, line: line)
         XCTAssertEqual(feed.lastRefreshedEntriesAt, Date(timeIntervalSince1970: 200), file: file, line: line)

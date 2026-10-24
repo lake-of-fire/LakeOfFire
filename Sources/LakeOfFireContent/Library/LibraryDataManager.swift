@@ -1385,6 +1385,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             feed.lastFetchedETag = nil
             feed.lastFetchedModifiedAt = nil
             feed.lastRefreshedEntriesAt = nil
+            feed.lastFetchedRSSURL = nil
             didChange = true
         }
         if let newIconURL = newIconURL, feed.iconUrl != newIconURL {
