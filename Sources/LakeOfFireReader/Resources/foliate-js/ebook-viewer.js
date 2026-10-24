@@ -4195,7 +4195,7 @@ class Reader {
     }
     async _goToDescriptor(descriptor) {
         const view = this.view;
-        if (!descriptor || !this.view) return;
+        if (!descriptor || !view) return null;
         if (
             typeof descriptor.sectionIndex === 'number'
             && typeof descriptor.localSectionIndex === 'number'
@@ -4208,7 +4208,7 @@ class Reader {
                 Math.min(descriptor.rendererTotal - 1, Math.round(descriptor.localSectionIndex))
             );
             const fractionInSection = clampedLocalSectionIndex / (descriptor.rendererTotal - 1);
-            await this.#runManualNavigation({
+            return await this.#runManualNavigation({
                 source: 'goToDescriptor',
                 target: 'view.goTo',
                 sectionIndex: descriptor.sectionIndex,
@@ -4219,25 +4219,24 @@ class Reader {
             }, (view, options) => view.goTo(Math.max(0, Math.round(descriptor.sectionIndex)), {
                 ...options, localPage: clampedLocalSectionIndex, recordHistory: false,
             }), view).catch((error) => console.error(error));
-            return;
         }
         if (typeof descriptor.cfi === 'string' && descriptor.cfi) {
-            await this.#runManualNavigation({
+            return await this.#runManualNavigation({
                 source: 'goToDescriptor',
                 target: 'view.goTo',
                 cfiLength: descriptor.cfi.length,
                 pageItemKey: descriptor.pageItemKey ?? null,
             }, (view, options) => view.goTo(descriptor.cfi, options), view).catch((error) => console.error(error));
-            return;
         }
         if (typeof descriptor.fraction === 'number' && Number.isFinite(descriptor.fraction)) {
-            await this.#runManualNavigation({
+            return await this.#runManualNavigation({
                 source: 'goToDescriptor',
                 target: 'view.goToFraction',
                 fraction: descriptor.fraction,
                 pageItemKey: descriptor.pageItemKey ?? null,
             }, (view, options) => view.goToFraction(descriptor.fraction, options), view);
         }
+        return null;
     }
     #runManualNavigation(intent, operation, view) {
         return runManualNavigation(intent, operation, { reader: this, view });
@@ -4449,6 +4448,8 @@ class Reader {
             formatPercent: value => percentFormat.format(value),
             getRenderer: () => this.view?.renderer,
             onJumpRequest: descriptor => this._goToDescriptor(descriptor),
+            isJumpRequestCurrent: receipt => globalThis.reader === this && !this.isClosed
+                && this.view?.isNavigationReceiptCurrent?.(receipt) === true,
             onHideNavigationDueToScrollChange: (hidden, details = {}) => {
                 this.#applyHideNavigationDueToScrollToBookContent(hidden);
                 if (details?.context?.bridgeSource) {

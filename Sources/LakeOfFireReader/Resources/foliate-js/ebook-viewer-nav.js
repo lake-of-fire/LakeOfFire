@@ -101,8 +101,9 @@ const safeRound = (value, digits = 1) =>
             : null);
 
 export class NavigationHUD {
-    constructor({ onJumpRequest, getRenderer, formatPercent, onHideNavigationDueToScrollChange } = {}) {
+    constructor({ onJumpRequest, isJumpRequestCurrent, getRenderer, formatPercent, onHideNavigationDueToScrollChange } = {}) {
         this.onJumpRequest = onJumpRequest;
+        this.isJumpRequestCurrent = isJumpRequestCurrent;
         this.getRenderer = getRenderer;
         this.formatPercent = formatPercent ?? (value => `${Math.round(value * 100)}%`);
         this.onHideNavigationDueToScrollChange = onHideNavigationDueToScrollChange;
@@ -208,6 +209,7 @@ export class NavigationHUD {
         this.scrubSession = null;
         this.isProcessingRelocateJump = false;
         this.onJumpRequest = null;
+        this.isJumpRequestCurrent = null;
         this.getRenderer = null;
         this.onHideNavigationDueToScrollChange = null;
         return true;
@@ -1409,11 +1411,9 @@ export class NavigationHUD {
         }
         if (this.isProcessingRelocateJump) {
             this.currentLocationDescriptor = descriptor;
-            this._finalizePendingRelocateJump(descriptor);
-            if (this.isProcessingRelocateJump || this.pendingRelocateJump) {
-                return;
-            }
-            // fall through to normal handling to capture subsequent movement if needed
+            // Layout and older relocations can arrive while the requested
+            // chapter loads. Only that command's receipt may consume history.
+            return;
         }
         const isRestoreInProgress = globalThis.__manabiRestoreInProgress === true;
         if (isRestoreInProgress) {
@@ -2021,7 +2021,7 @@ export class NavigationHUD {
     }
 
     _pruneBackStackIfReturnedToOrigin(detail) {
-        if (!detail) return;
+        if (!detail || this.pendingRelocateJump) return;
         const descriptor = this._makeLocationDescriptor(detail);
         if (!descriptor) return;
         const reason = (detail.reason || '').toLowerCase();
@@ -2067,23 +2067,12 @@ export class NavigationHUD {
         return !!result?.entry;
     }
     
-    _finalizePendingRelocateJump(descriptor) {
-        const pending = this.pendingRelocateJump;
-        if (!pending) {
-            this.isProcessingRelocateJump = false;
-            return;
-        }
+    _finalizePendingRelocateJump(pending) {
+        if (this.destroyed || this.pendingRelocateJump !== pending) return;
         const direction = pending.direction;
-        if (!direction) {
-            this.pendingRelocateJump = null;
-            this.isProcessingRelocateJump = false;
-            return;
-        }
-        const targetFraction = typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
         const stack = this.relocateStacks?.[direction];
-        if (stack?.length) {
-            stack.pop();
-        }
+        if (!stack?.length || stack[stack.length - 1] !== pending.historyEntry) return;
+        stack.pop();
         const opposite = direction === 'back' ? 'forward' : 'back';
         if (pending.preJumpDescriptor) {
             const entry = this._cloneDescriptor(pending.preJumpDescriptor);
@@ -2098,13 +2087,10 @@ export class NavigationHUD {
                 }
             }
         }
-        this.pendingRelocateJump = null;
-        this.isProcessingRelocateJump = false;
-        this._updateRelocateButtons();
     }
     
     async _handleRelocateJump(direction) {
-
+        if (this.destroyed) return;
         const stack = this.relocateStacks?.[direction];
         if (!stack?.length) {
             return;
@@ -2115,39 +2101,41 @@ export class NavigationHUD {
         if (this.pendingRelocateJump) {
             return;
         }
-        const descriptor = this._cloneDescriptor(stack[stack.length - 1]);
+        const historyEntry = stack[stack.length - 1];
+        const descriptor = this._cloneDescriptor(historyEntry);
         if (!descriptor) {
             return;
         }
 
-        this.requestExplicitRelocateHistoryMutation?.('relocate-button');
-
         const preJumpDescriptor = this._cloneDescriptor(this.pendingReleasedScrubDescriptor)
             ?? this._cloneDescriptor(this.currentLocationDescriptor)
             ?? (this.lastRelocateDetail ? this._makeLocationDescriptor(this.lastRelocateDetail) : null);
-        const opposite = direction === 'back' ? 'forward' : 'back';
-        const oppositeStack = this.relocateStacks?.[opposite];
-
-        this.pendingRelocateJump = {
+        const pending = {
             direction,
+            historyEntry,
             targetDescriptor: descriptor,
             preJumpDescriptor,
         };
+        this.pendingRelocateJump = pending;
         this.isProcessingRelocateJump = true;
         this._updateRelocateButtons();
 
-        const targetFraction = typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
-
         try {
-
-            await this.onJumpRequest?.(descriptor);
-
+            const receipt = await this.onJumpRequest?.(descriptor);
+            if (!this.destroyed && this.pendingRelocateJump === pending
+                && this.isJumpRequestCurrent?.(receipt) === true) {
+                this._finalizePendingRelocateJump(pending);
+            }
         } catch (error) {
-            console.error('Failed to navigate to saved location', error);
-            this.pendingRelocateJump = null;
-            this.isProcessingRelocateJump = false;
-            this._updateRelocateButtons();
+            if (!this.destroyed && this.pendingRelocateJump === pending) {
+                console.error('Failed to navigate to saved location', error);
+            }
         } finally {
+            if (this.pendingRelocateJump === pending) {
+                this.pendingRelocateJump = null;
+                this.isProcessingRelocateJump = false;
+                this._updateRelocateButtons();
+            }
         }
     }
 }
