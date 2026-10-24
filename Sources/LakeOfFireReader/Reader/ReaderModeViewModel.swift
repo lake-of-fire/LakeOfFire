@@ -1264,6 +1264,7 @@ private func locallyRetrievableReaderHTML(
 private func propagateReaderModeDefaults(
     for url: URL,
     primaryKey: String,
+    primaryClassName: String,
     readabilityHTML: String,
     fallbackTitle: String?,
     derivedTitle: String? = nil,
@@ -1276,6 +1277,7 @@ private func propagateReaderModeDefaults(
         try await ReaderContentLoader.propagateReaderModeDefaults(
             for: url,
             excludingPrimaryKey: primaryKey,
+            primaryClassName: primaryClassName,
             readabilityHTML: storageReadabilityHTML,
             resolvedTitle: resolvedTitle,
             permitsCommit: permitsCommit
@@ -2972,6 +2974,7 @@ public class ReaderModeViewModel: ObservableObject {
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
         let tracksReadingProgress = content.tracksReadingProgress
         let primaryRecordCompoundKey = content.compoundKey
+        let primaryRecordClassName = content.objectSchema.className
         
         try await { @ReaderViewModelActor [weak self] in
             guard let self,
@@ -3055,6 +3058,7 @@ public class ReaderModeViewModel: ObservableObject {
             await propagateReaderModeDefaults(
                 for: url,
                 primaryKey: primaryRecordCompoundKey,
+                primaryClassName: primaryRecordClassName,
                 readabilityHTML: readabilityContent,
                 fallbackTitle: titleForDisplay,
                 derivedTitle: derivedTitle,
