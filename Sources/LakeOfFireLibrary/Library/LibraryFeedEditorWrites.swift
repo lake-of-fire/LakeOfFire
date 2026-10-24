@@ -10,6 +10,8 @@ final class LibraryFeedWriteOrdering: @unchecked Sendable {
         let schemaVersion: UInt64
         let feedID: UUID
         let createdAt: Date
+        let categoryID: UUID?
+        let categoryCreatedAt: Date?
     }
     private final class WeakOrdering {
         weak var value: LibraryFeedWriteOrdering?
@@ -21,14 +23,16 @@ final class LibraryFeedWriteOrdering: @unchecked Sendable {
     private var newest: [LibraryFeedEditorField: UInt64] = [:]
 
     @MainActor
-    static func shared(configuration: Realm.Configuration, feedID: UUID, createdAt: Date) -> LibraryFeedWriteOrdering {
+    static func shared(
+        configuration: Realm.Configuration, storageAdmission: RealmStorageAdmission,
+        feedID: UUID, createdAt: Date, categoryID: UUID?, categoryCreatedAt: Date?
+    ) -> LibraryFeedWriteOrdering {
         orderings = orderings.filter { $0.value.value != nil }
         let scope = Scope(
-            storage: configuration.inMemoryIdentifier.map { "memory:" + $0 }
-                ?? configuration.fileURL.map { "file:" + $0.resolvingSymlinksInPath().standardizedFileURL.path }
-                ?? "default",
+            storage: storageAdmission.scopeIdentity,
             encryptionKey: configuration.encryptionKey, schemaVersion: configuration.schemaVersion,
-            feedID: feedID, createdAt: createdAt
+            feedID: feedID, createdAt: createdAt,
+            categoryID: categoryID, categoryCreatedAt: categoryCreatedAt
         )
         if let existing = orderings[scope]?.value { return existing }
         let ordering = LibraryFeedWriteOrdering()
@@ -139,6 +143,7 @@ struct LibraryFeedFieldCommand: Sendable {
     let categoryID: UUID?
     let categoryCreatedAt: Date?
     let realmConfiguration: Realm.Configuration
+    let storageAdmission: RealmStorageAdmission
     let field: LibraryFeedEditorField
     let sequence: UInt64
     let metadataIntent: [LibraryFeedEditorField: UInt64]?
@@ -148,11 +153,18 @@ struct LibraryFeedFieldCommand: Sendable {
     @RealmBackgroundActor
     func write(beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil) async throws {
         try Task.checkCancellation()
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: realmConfiguration, storageAdmission: storageAdmission
+        )
         try await beforeWrite?()
         try Task.checkCancellation()
         try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
+            guard storageAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+            }) else {
+                throw RealmBackgroundActorError.realmFileChangedDuringOpen
+            }
             guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
                   feed.createdAt == feedCreatedAt, feed.categoryID == categoryID,
                   !feed.isDeleted, let categoryID,
