@@ -37,7 +37,6 @@ public extension ReaderContentLoader {
         guard !url.isSnippetURL else { return 0 }
         try context.primaryReference?.validateStorage()
         let references = try await readerModePropagationReferences(for: url, context: context)
-        let timestamp = Date()
         var updatedCount = 0
 
         for reference in references {
@@ -54,6 +53,9 @@ public extension ReaderContentLoader {
                       context.primaryReference?.matchesStoredIdentity(of: record) != true else {
                     return false
                 }
+                // Admission can wait behind another authoritative edit. Sample
+                // time here, then share it between this record and its Feed.
+                let timestamp = Date()
                 let changes = applyReaderModeDefaults(
                     to: record, for: url,
                     readabilityHTML: readabilityHTML, resolvedTitle: resolvedTitle,
