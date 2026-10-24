@@ -82,9 +82,16 @@ public struct ReaderContentLoader {
         }
 
         func reference(for content: any ReaderContentProtocol) -> ContentReference? {
-            let admission = content.objectSchema.objectClass == Bookmark.self ? bookmarkAdmission
-                : content is FeedEntry ? feedAdmission : historyAdmission
-            return ContentReference(content: content, storageAdmission: admission)
+            if content.objectSchema.objectClass == Bookmark.self {
+                return ContentReference(content: content, configuration: bookmarkConfiguration,
+                                        storageAdmission: bookmarkAdmission)
+            }
+            if content is FeedEntry {
+                return ContentReference(content: content, configuration: feedConfiguration,
+                                        storageAdmission: feedAdmission)
+            }
+            return ContentReference(content: content, configuration: historyConfiguration,
+                                    storageAdmission: historyAdmission)
         }
     }
 
@@ -126,12 +133,23 @@ public struct ReaderContentLoader {
         }
 
         public init?(content: any ReaderContentProtocol, storageAdmission: RealmStorageAdmission?) {
-            guard !content.isInvalidated, let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type, let config = content.realm?.configuration else { return nil }
+            guard !content.isInvalidated, let config = content.realm?.configuration else { return nil }
+            self.init(content: content, configuration: config,
+                      storageAdmission: storageAdmission ?? RealmBackgroundActor.shared.captureStorageAdmission(for: config))
+        }
+
+        /// Preserve the exact configuration paired with a captured admission.
+        /// Realm.configuration materializes automatic schemas after opening.
+        init?(content: any ReaderContentProtocol, configuration: Realm.Configuration,
+              storageAdmission: RealmStorageAdmission) {
+            guard !content.isInvalidated,
+                  let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type,
+                  content.realm != nil else { return nil }
             self.contentType = contentType
             contentKey = content.compoundKey
             contentCreatedAt = content.createdAt
-            realmConfiguration = config
-            self.storageAdmission = storageAdmission ?? RealmBackgroundActor.shared.captureStorageAdmission(for: config)
+            realmConfiguration = configuration
+            self.storageAdmission = storageAdmission
         }
         
         public func validateStorage() throws {
@@ -148,9 +166,19 @@ public struct ReaderContentLoader {
                   content.compoundKey == contentKey,
                   content.createdAt == contentCreatedAt,
                   let candidateRealm = content.realm else { return false }
-            return storageAdmission.matchesCurrentStorageIdentity {
-                RealmBackgroundActor.shared.realmCacheKey(for: candidateRealm.configuration)
+            guard storageAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+            }) else { return false }
+            // A store can be opened through different schema views. Validate
+            // this reference's admission, then compare locators, not cache keys.
+            let candidateConfiguration = candidateRealm.configuration
+            if let identifier = realmConfiguration.inMemoryIdentifier {
+                return candidateConfiguration.inMemoryIdentifier == identifier
             }
+            guard candidateConfiguration.inMemoryIdentifier == nil,
+                  let fileURL = realmConfiguration.fileURL,
+                  let candidateURL = candidateConfiguration.fileURL else { return false }
+            return fileURL.standardizedFileURL == candidateURL.standardizedFileURL
         }
 
         /// Resolve synchronously after the caller's final suspension. Deletion

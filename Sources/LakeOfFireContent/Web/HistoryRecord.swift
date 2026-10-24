@@ -178,7 +178,10 @@ public extension HistoryRecord {
             let committed = realm.freeze()
             let record = getOpenedRecord(forURL: url, in: committed)
                 ?? getOpenedRecord(forURL: url, in: realm)
-            return record.flatMap { ReaderContentLoader.ContentReference(content: $0, storageAdmission: historyAdmission) }
+            return record.flatMap {
+                ReaderContentLoader.ContentReference(content: $0,
+                    configuration: historyRealmConfiguration, storageAdmission: historyAdmission)
+            }
         }()
         guard let reference else { return }
         try await refreshDemotedStatus(for: reference,

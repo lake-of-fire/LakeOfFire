@@ -1829,6 +1829,101 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
     }
 
     @RealmBackgroundActor
+    func testAutomaticSchemaPropagationKeepsTheMaterializedPrimaryViewExcluded() async throws {
+        // Install the fixture-model journal policy before the first open, then
+        // retain automatic schema selection in the actual opening configuration.
+        var configuration = makeConfiguration()
+        configuration.objectTypes = nil
+        let capturedConfiguration = configuration
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeed
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        addTeardownBlock {
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: capturedConfiguration)
+        }
+
+        XCTAssertNil(configuration.objectTypes)
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        let materializedConfiguration = realm.configuration
+        let materializedTypes = try XCTUnwrap(materializedConfiguration.objectTypes)
+        XCTAssertTrue(materializedTypes.contains { $0.className() == BigSyncPendingMutation.className() })
+        XCTAssertTrue(materializedTypes.contains { $0.className() == Bookmark.className() })
+        XCTAssertTrue(materializedTypes.contains { $0.className() == HistoryRecord.className() })
+        XCTAssertEqual(materializedConfiguration.inMemoryIdentifier, configuration.inMemoryIdentifier)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: materializedConfiguration)
+        }
+
+        let url = URL(string: "https://example.com/automatic-reader-schema/\(UUID().uuidString)")!
+        let createdAt = Date(timeIntervalSinceReferenceDate: 90_200)
+        let seededPrimary = HistoryRecord()
+        seededPrimary.url = url
+        seededPrimary.title = "Primary"
+        seededPrimary.createdAt = createdAt
+        seededPrimary.isReaderModeAvailable = true
+        seededPrimary.updateCompoundKey()
+        let related = Bookmark()
+        related.url = url
+        related.title = ""
+        related.createdAt = createdAt
+        related.isReaderModeAvailable = true
+        related.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(seededPrimary)
+            seededPrimary.refreshChangeMetadata(explicitlyModified: true)
+            realm.add(related)
+            related.refreshChangeMetadata(explicitlyModified: true)
+        }
+        XCTAssertEqual(seededPrimary.compoundKey, related.compoundKey)
+        let materializedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: materializedConfiguration)
+        await materializedRealm.asyncRefresh()
+        let primary = try XCTUnwrap(materializedRealm.object(
+            ofType: HistoryRecord.self, forPrimaryKey: seededPrimary.compoundKey
+        ))
+        XCTAssertFalse(primary.isReaderModeByDefault)
+        XCTAssertTrue(primary.isReaderModeAvailable)
+        XCTAssertNil(primary.html)
+        let primaryReference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: primary))
+        let primarySeeded = try journalState(for: primary, in: materializedRealm)
+        let relatedSeeded = try journalState(for: related, in: realm)
+        let html = "<article><p>Content through automatic schema discovery.</p></article>"
+
+        // Exclusion captures the materialized schema view. Discovery must keep
+        // its original nil-schema admission while recognizing this same primary.
+        try await ReaderContentLoader.propagateReaderModeDefaults(
+            for: url,
+            excluding: primaryReference,
+            readabilityHTML: html,
+            resolvedTitle: "Automatic-schema title",
+            permitsCommit: { true }
+        )
+        await realm.asyncRefresh()
+        await materializedRealm.asyncRefresh()
+
+        XCTAssertTrue(related.isReaderModeByDefault)
+        XCTAssertFalse(related.isReaderModeAvailable)
+        XCTAssertEqual(related.html, html)
+        XCTAssertEqual(related.title, "Automatic-schema title")
+        XCTAssertTrue(related.rssContainsFullContent)
+        XCTAssertNotEqual(try journalState(for: related, in: realm).generation, relatedSeeded.generation)
+        XCTAssertFalse(primary.isReaderModeByDefault)
+        XCTAssertTrue(primary.isReaderModeAvailable)
+        XCTAssertNil(primary.html)
+        XCTAssertEqual(primary.title, "Primary")
+        XCTAssertEqual(try journalState(for: primary, in: materializedRealm), primarySeeded)
+    }
+
+    @RealmBackgroundActor
     func testReaderModePropagationDoesNotExcludeSameTypeAndKeyInAnotherStore() async throws {
         let primaryConfiguration = makeConfiguration()
         let relatedConfiguration = makeConfiguration()
