@@ -940,6 +940,7 @@ actor EBookProcessingActor {
         sectionHref: String,
         source: ReaderPackageEntrySource
     ) async throws -> EBookNativeSectionPrewarmResult {
+        try Task.checkCancellation()
         let entryData = try source.readEntry(subpath: sectionHref)
         let entryText = ReaderPackageEntrySource.decodeText(entryData)
         let processedPayload = try await process(
@@ -963,6 +964,7 @@ actor EBookProcessingActor {
         isCacheWarmer: Bool,
         shouldReadProcessedCache: Bool = true
     ) async throws -> EbookProcessedSectionPayload {
+        try Task.checkCancellation()
         let resolvedContentFingerprint = contentFingerprint ?? EBookProcessTextRequestKey(
             contentURL: contentURL,
             location: location,
@@ -970,14 +972,18 @@ actor EBookProcessingActor {
             text: text
         ).textFingerprint
         if !isCacheWarmer, shouldReadProcessedCache, let ebookProcessedTextCacheReader {
-            if let cachedResult = try await ebookProcessedTextCacheReader(
+            let cachedResult = try await ebookProcessedTextCacheReader(
                 contentURL,
                 location,
                 text,
                 resolvedContentFingerprint
-            ), ebookProcessedSectionPayloadHasDurableSegmentIdentities(cachedResult) {
-                if let ebookProcessedPayloadAdmission,
-                   !(await ebookProcessedPayloadAdmission(cachedResult)) {
+            )
+            try Task.checkCancellation()
+            if let cachedResult, ebookProcessedSectionPayloadHasDurableSegmentIdentities(cachedResult) {
+                if let ebookProcessedPayloadAdmission {
+                    let isAdmitted = await ebookProcessedPayloadAdmission(cachedResult)
+                    try Task.checkCancellation()
+                    if isAdmitted { return cachedResult }
                     // Continue to fresh processing under the current runtime.
                 } else {
                     return cachedResult
@@ -1002,25 +1008,33 @@ actor EBookProcessingActor {
             processHTMLBytes,
             processHTML
         )
+        try Task.checkCancellation()
         var result = ebookProcessedSectionPayloadByValidatingCompletion(processedResult)
-        if let ebookProcessedPayloadAdmission,
-           !(await ebookProcessedPayloadAdmission(result)) {
-            result = EbookProcessedSectionPayload(
-                documentHTML: result.documentHTML,
-                segmentSidecar: result.segmentSidecar
-            )
+        if let ebookProcessedPayloadAdmission {
+            let isAdmitted = await ebookProcessedPayloadAdmission(result)
+            try Task.checkCancellation()
+            if !isAdmitted {
+                result = EbookProcessedSectionPayload(
+                    documentHTML: result.documentHTML,
+                    segmentSidecar: result.segmentSidecar
+                )
+            }
         }
         if !isCacheWarmer,
            ebookProcessedSectionPayloadHasDurableSegmentIdentities(result),
            let ebookProcessedTextCacheWriter {
             await ebookProcessedTextCacheWriter(contentURL, location, text, resolvedContentFingerprint, result)
+            try Task.checkCancellation()
         }
-        if let ebookProcessedPayloadAdmission,
-           !(await ebookProcessedPayloadAdmission(result)) {
-            return EbookProcessedSectionPayload(
-                documentHTML: result.documentHTML,
-                segmentSidecar: result.segmentSidecar
-            )
+        if let ebookProcessedPayloadAdmission {
+            let isAdmitted = await ebookProcessedPayloadAdmission(result)
+            try Task.checkCancellation()
+            if !isAdmitted {
+                return EbookProcessedSectionPayload(
+                    documentHTML: result.documentHTML,
+                    segmentSidecar: result.segmentSidecar
+                )
+            }
         }
         return result
     }
