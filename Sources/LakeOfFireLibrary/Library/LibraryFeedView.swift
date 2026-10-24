@@ -981,31 +981,36 @@ struct LibraryFeedFormSections: View {
     }
 
     private func refresh(entries: [FeedEntry]? = nil, forceRefresh: Bool = false) {
-        guard let feed = try! Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration).object(ofType: Feed.self, forPrimaryKey: viewModel.feed.id) else {
-            readerFeedEntry = nil
-            readerContent.content = nil
-            readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
-            return
-        }
-        
-        let entries: [FeedEntry] = entries ?? Array(feed.getEntries() ?? [])
-        Task { @MainActor in
-            //            if let entry = entries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) }) {
-            if let entry = entries.last {
-                if forceRefresh || (entry.url != readerViewModel.state.pageURL && !readerViewModel.state.isProvisionallyNavigating) {
-                    readerFeedEntry = entry
-                    if readerContent.content?.url != entry.url {
-                        readerContent.content = entry
-                        try await readerViewModel.navigator?.load(
-                            content: entry,
-                            readerModeViewModel: readerModeViewModel
-                        )
-                    }
-                }
-            } else {
+        LibraryFeedPreviewLoader.refresh(
+            feedID: viewModel.feedID,
+            configuration: ReaderContentLoader.feedEntryRealmConfiguration
+        ) { feed in
+            guard let feed else {
                 readerFeedEntry = nil
                 readerContent.content = nil
                 readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
+                return
+            }
+
+            let entries: [FeedEntry] = entries ?? Array(feed.getEntries() ?? [])
+            Task { @MainActor in
+                //            if let entry = entries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) }) {
+                if let entry = entries.last {
+                    if forceRefresh || (entry.url != readerViewModel.state.pageURL && !readerViewModel.state.isProvisionallyNavigating) {
+                        readerFeedEntry = entry
+                        if readerContent.content?.url != entry.url {
+                            readerContent.content = entry
+                            try await readerViewModel.navigator?.load(
+                                content: entry,
+                                readerModeViewModel: readerModeViewModel
+                            )
+                        }
+                    }
+                } else {
+                    readerFeedEntry = nil
+                    readerContent.content = nil
+                    readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
+                }
             }
         }
     }
