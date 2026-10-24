@@ -675,6 +675,7 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
         configureLakeOfFireMutationTrackingForTesting(&current)
         var replacement = current
         replacement.fileURL = directory.appendingPathComponent("replacement.realm")
+        configureLakeOfFireMutationTrackingForTesting(&replacement)
         var retired = current
         retired.fileURL = directory.appendingPathComponent("retired.realm")
         let captured = current
@@ -705,10 +706,18 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
                 }
             }
         }
+        let originalState = try diskState(current)
+        let replacementState = try diskState(replacement)
+        let expectedRecords: Set<String> = [
+            UserScript.className() + "." + scriptID.uuidString,
+            UserScriptAllowedDomain.className() + "." + domainID.uuidString
+        ]
+        XCTAssertEqual(Set(originalState.generations.keys), expectedRecords)
+        XCTAssertEqual(Set(replacementState.generations.keys), expectedRecords)
         return DiskFixture(
             current: current, replacement: replacement, retired: retired,
             commands: try diskCommands(current),
-            originalState: try diskState(current), replacementState: try diskState(replacement)
+            originalState: originalState, replacementState: replacementState
         )
     }
 
