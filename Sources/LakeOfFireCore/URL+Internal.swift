@@ -108,7 +108,10 @@ private extension URL {
         switch scheme {
         case "http", "https":
             return host?.isEmpty == false
-        case "reader-file":
+        case "reader-file", "ebook", "ebook-url", "epub", "pdf", "pdf-url":
+            // Older local-content transports include ebook chapters. Keep
+            // their original source identity while excluding script, data and
+            // file URLs from the privileged internal reader wrapper.
             return true
         case "internal", "about":
             if isReaderURLLoaderURL { return true } // Resolve legacy nested wrappers below.

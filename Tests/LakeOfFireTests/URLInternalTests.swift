@@ -90,6 +90,19 @@ final class URLInternalTests: XCTestCase {
         }
     }
 
+    func testReaderLoaderPreservesLegacyEbookSource() throws {
+        let source = try XCTUnwrap(URL(string:
+            "ebook://book/chapter%2Fpart.xhtml?literal=%2523#selection"))
+        let encoded = try XCTUnwrap(
+            source.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+        )
+        let loader = try XCTUnwrap(URL(string:
+            "internal://local/load/reader?reader-url=\(encoded)"))
+
+        XCTAssertEqual(loader.readerContentURL, source)
+        XCTAssertEqual(loader.readerLoaderContentURL, source)
+    }
+
     func testReaderLoaderPreservesLegacyAboutSnippetSource() throws {
         let legacySnippet = try XCTUnwrap(URL(string: "about:snippet?key=legacy%252Fnote"))
         let encoded = try XCTUnwrap(
