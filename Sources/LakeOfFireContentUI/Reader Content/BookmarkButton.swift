@@ -146,6 +146,21 @@ public final class BookmarkStatusCache: ObservableObject {
             bookmarkedCompoundKeys.remove(readerContent.compoundKey)
         }
     }
+    func toggleBookmarkIfNeeded<C: ReaderContentProtocol>(
+        for readerContent: C,
+        newValue: Bool,
+        isEnabled: Bool,
+        realmConfiguration: Realm.Configuration
+    ) async throws {
+        guard !readerContent.isInvalidated else { return }
+        guard newValue != (isEnabled && isBookmarked(readerContent)) else { return }
+
+        // A completed mutation describes its own transaction, not necessarily
+        // the current state after overlapping commands. Observer and command
+        // refreshes share the same current-store publication fence.
+        _ = try await readerContent.toggleBookmark(realmConfiguration: realmConfiguration)
+        await refreshAfterMutation(configuration: realmConfiguration)
+    }
 }
 
 public extension ReaderContentProtocol {
@@ -198,16 +213,12 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
             get: { showBookmarkExists },
             set: { newValue in
                 Task { @MainActor in
-                    guard !readerContent.isInvalidated else { return }
-                    if newValue != showBookmarkExists {
-                        // A completed mutation describes its own transaction, not
-                        // necessarily the latest state after overlapping commands.
-                        let configuration = ReaderContentLoader.bookmarkRealmConfiguration
-                        _ = try await readerContent.toggleBookmark(
-                            realmConfiguration: configuration
-                        )
-                        await bookmarkStatusCache.refreshAfterMutation(configuration: configuration)
-                    }
+                    try await bookmarkStatusCache.toggleBookmarkIfNeeded(
+                        for: readerContent,
+                        newValue: newValue,
+                        isEnabled: isEnabled,
+                        realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration
+                    )
                 }
             }
         )
