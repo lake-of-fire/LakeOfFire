@@ -1227,11 +1227,12 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.colorScheme) internal var colorScheme
 
     @State private var readerMessageHandlers: ReaderMessageHandlers?
-    @State private var lastAppendedHandlerKeys: [String] = []
 
     func body(content: Content) -> some View {
         content
-            .environment(\.webViewMessageHandlers, readerMessageHandlers?.webViewMessageHandlers ?? webViewMessageHandlers)
+            .environment(\.webViewMessageHandlers, readerMessageHandlers.map {
+                $0.webViewMessageHandlers + webViewMessageHandlers
+            } ?? webViewMessageHandlers)
             .task(id: colorScheme) { @MainActor in
                 if readerMessageHandlers == nil {
                     readerMessageHandlers = ReaderMessageHandlers(
@@ -1257,14 +1258,6 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.showOriginalWillBeginHandler = showOriginalWillBeginHandler
                     readerMessageHandlers.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
                     readerMessageHandlers.colorScheme = colorScheme
-                }
-            }
-            .task(id: webViewMessageHandlers.handlers.keys) {
-                let handlerKeys = Array(webViewMessageHandlers.handlers.keys).sorted()
-                guard handlerKeys != lastAppendedHandlerKeys else { return }
-                if let existing = readerMessageHandlers?.webViewMessageHandlers {
-                    readerMessageHandlers?.webViewMessageHandlers = existing + webViewMessageHandlers
-                    lastAppendedHandlerKeys = handlerKeys
                 }
             }
             .task(id: hideNavigationDueToScroll.wrappedValue) {

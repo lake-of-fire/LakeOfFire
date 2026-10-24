@@ -287,6 +287,7 @@ let package = Package(
                 .product(name: "BigSyncKit", package: "BigSyncKit"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
+                .product(name: "SwiftUIWebView", package: "swiftui-webview"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
                 "LakeOfFireContent",
                 "LakeOfFireContentUI",
