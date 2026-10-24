@@ -101,10 +101,11 @@ const safeRound = (value, digits = 1) =>
             : null);
 
 export class NavigationHUD {
-    constructor({ onJumpRequest, isJumpRequestCurrent, getRenderer, formatPercent, onHideNavigationDueToScrollChange } = {}) {
+    constructor({ onJumpRequest, isJumpRequestCurrent, getRenderer, getHistoryActionContext, formatPercent, onHideNavigationDueToScrollChange } = {}) {
         this.onJumpRequest = onJumpRequest;
         this.isJumpRequestCurrent = isJumpRequestCurrent;
         this.getRenderer = getRenderer;
+        this.getHistoryActionContext = getHistoryActionContext;
         this.formatPercent = formatPercent ?? (value => `${Math.round(value * 100)}%`);
         this.onHideNavigationDueToScrollChange = onHideNavigationDueToScrollChange;
         
@@ -211,6 +212,7 @@ export class NavigationHUD {
         this.onJumpRequest = null;
         this.isJumpRequestCurrent = null;
         this.getRenderer = null;
+        this.getHistoryActionContext = null;
         this.onHideNavigationDueToScrollChange = null;
         return true;
     }
@@ -830,6 +832,11 @@ export class NavigationHUD {
     }
 
     _postNativeOverlayState(source = 'refresh') {
+        if (this.destroyed) return;
+        const historyActionContext = this.getHistoryActionContext?.(this) ?? null;
+        // A production HUD can publish only after it belongs to the installed
+        // Reader. Stale messages must not clear a successor's native action.
+        if (this.getHistoryActionContext && !historyActionContext) return;
         const percentLabel = this.navHiddenOverlay?.percent?.textContent
             || this.navPrimaryTextCompact?.textContent
             || this.navPrimaryTextFull?.textContent
@@ -862,6 +869,7 @@ export class NavigationHUD {
                 currentPageNumber,
                 totalPages,
                 source,
+                historyActionContext,
             });
         } catch (_error) {}
     }
