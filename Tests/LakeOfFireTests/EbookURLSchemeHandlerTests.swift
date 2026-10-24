@@ -3027,7 +3027,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             try await deduper.process(key: key) {
                 producerStarted.fulfill()
                 return try await withTaskCancellationHandler {
-                    try await Task.sleep(for: .seconds(60))
+                    try await Task.sleep(nanoseconds: 60_000_000_000)
                     return ebookTestPayload("<html><body>unexpected</body></html>")
                 } onCancel: {
                     producerCancelled.fulfill()

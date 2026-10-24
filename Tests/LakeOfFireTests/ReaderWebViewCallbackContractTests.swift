@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import SwiftUIWebView
 import WebKit
@@ -269,18 +270,18 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
     #endif
 
     private func waitForMountedCondition(_ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
         while !condition() {
-            guard ContinuousClock.now < deadline else { throw URLError(.timedOut) }
-            try await Task.sleep(for: .milliseconds(20))
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw URLError(.timedOut) }
+            try await Task.sleep(nanoseconds: 20_000_000)
         }
     }
 
     private func waitForMountedJavaScript(_ script: String, in webView: WKWebView) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
         while (try? await webView.evaluateJavaScript(script)) as? Bool != true {
-            guard ContinuousClock.now < deadline else { throw URLError(.timedOut) }
-            try await Task.sleep(for: .milliseconds(20))
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw URLError(.timedOut) }
+            try await Task.sleep(nanoseconds: 20_000_000)
         }
     }
 
@@ -461,7 +462,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         manager.startOnNavigationCommitted {
             firstCommitStarted.fulfill()
             do {
-                try await Task.sleep(for: .seconds(30))
+                try await Task.sleep(nanoseconds: 30_000_000_000)
             } catch is CancellationError {
                 firstCommitCancelled.fulfill()
                 throw CancellationError()
@@ -490,7 +491,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         manager.startOnURLChanged {
             urlStarted.fulfill()
             do {
-                try await Task.sleep(for: .seconds(30))
+                try await Task.sleep(nanoseconds: 30_000_000_000)
             } catch is CancellationError {
                 urlCancelled.fulfill()
                 throw CancellationError()
@@ -522,7 +523,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         manager.startOnNavigationCommitted {
             commitStarted.fulfill()
             do {
-                try await Task.sleep(for: .seconds(30))
+                try await Task.sleep(nanoseconds: 30_000_000_000)
             } catch is CancellationError {
                 commitCancelled.fulfill()
                 throw CancellationError()
@@ -547,7 +548,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         manager.startOnNavigationCommitted {
             commitStarted.fulfill()
             do {
-                try await Task.sleep(for: .seconds(30))
+                try await Task.sleep(nanoseconds: 30_000_000_000)
             } catch is CancellationError {
                 commitCancelled.fulfill()
                 throw CancellationError()
