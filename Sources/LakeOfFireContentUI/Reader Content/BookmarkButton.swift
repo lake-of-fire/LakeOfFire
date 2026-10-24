@@ -18,6 +18,12 @@ import LakeOfFireContent
 
 let bookmarksQueue = DispatchQueue(label: "BookmarksQueue")
 
+// Holds an actual queried snapshot for deterministic publication-order tests.
+// Normal refreshes do not install an observer or suspend at this boundary.
+enum BookmarkStatusRefreshObservation {
+    @TaskLocal static var afterSnapshot: (@Sendable () async -> Void)? = nil
+}
+
 fileprivate struct BookmarkMenuLabel: View {
     let isBookmarked: Bool
 
@@ -38,17 +44,22 @@ public final class BookmarkStatusCache: ObservableObject {
 
     nonisolated(unsafe) private var cancellables = Set<AnyCancellable>()
     private var hasStartedObservation = false
+    private var refreshGeneration: UInt64 = 0
 
     init() { }
 
     func startIfNeeded() {
         guard !hasStartedObservation else { return }
         hasStartedObservation = true
+        let configuration = ReaderContentLoader.bookmarkRealmConfiguration
+        let admission = RealmBackgroundActor.shared.captureStorageAdmission(for: configuration)
         Task { @RealmBackgroundActor [weak self] in
             guard let self else { return }
             do {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration)
-                await self.refresh(from: realm)
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: configuration, storageAdmission: admission
+                )
+                try await self.refresh(configuration: configuration, storageAdmission: admission)
                 realm.objects(Bookmark.self)
                     .collectionPublisher(keyPaths: ["isDeleted", "compoundKey"])
                     .subscribe(on: bookmarksQueue)
@@ -58,8 +69,9 @@ public final class BookmarkStatusCache: ObservableObject {
                     .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                         Task { @RealmBackgroundActor [weak self] in
                             guard let self else { return }
-                            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration)
-                            await self.refresh(from: realm)
+                            try await self.refresh(
+                                configuration: configuration, storageAdmission: admission
+                            )
                         }
                     })
                     .store(in: &self.cancellables)
@@ -72,20 +84,59 @@ public final class BookmarkStatusCache: ObservableObject {
         }
     }
 
-    @RealmBackgroundActor
-    private func refresh(from realm: Realm) async {
-        let keys = Set(realm.objects(Bookmark.self).where { !$0.isDeleted }.map(\.compoundKey))
-        await MainActor.run { [weak self] in
-            guard let self, bookmarkedCompoundKeys != keys else { return }
-            bookmarkedCompoundKeys = keys
+    /// Reconcile a completed command from current store data. The command's
+    /// result can already have been superseded by another committed toggle.
+    func refreshAfterMutation(configuration: Realm.Configuration) async {
+        let admission = RealmBackgroundActor.shared.captureStorageAdmission(for: configuration)
+        do {
+            try await refresh(configuration: configuration, storageAdmission: admission)
+        } catch is CancellationError {
+            return
+        } catch {
+            print(error)
         }
     }
 
+    private func refresh(
+        configuration: Realm.Configuration,
+        storageAdmission: RealmStorageAdmission
+    ) async throws {
+        // An obsolete observer must not retire a current store's pending read.
+        guard !Task.isCancelled,
+              storageAdmission.matchesCurrentStorageIdentity({
+                  RealmBackgroundActor.shared.realmCacheKey(
+                      for: ReaderContentLoader.bookmarkRealmConfiguration
+                  )
+              }) else { return }
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        let keys = try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: configuration, storageAdmission: storageAdmission
+            )
+            realm.refresh()
+            try Task.checkCancellation()
+            let keys = Set(realm.objects(Bookmark.self).where { !$0.isDeleted }.map(\.compoundKey))
+            await BookmarkStatusRefreshObservation.afterSnapshot?()
+            return keys
+        }()
+        guard !Task.isCancelled, generation == refreshGeneration,
+              storageAdmission.matchesCurrentStorageIdentity({
+                  RealmBackgroundActor.shared.realmCacheKey(
+                      for: ReaderContentLoader.bookmarkRealmConfiguration
+                  )
+              }),
+              bookmarkedCompoundKeys != keys else { return }
+        bookmarkedCompoundKeys = keys
+    }
+
     public func isBookmarked(_ readerContent: any ReaderContentProtocol) -> Bool {
-        bookmarkedCompoundKeys.contains(readerContent.compoundKey)
+        guard !readerContent.isInvalidated else { return false }
+        return bookmarkedCompoundKeys.contains(readerContent.compoundKey)
     }
 
     public func setIsBookmarked(_ isBookmarked: Bool, for readerContent: any ReaderContentProtocol) {
+        guard !readerContent.isInvalidated else { return }
         guard bookmarkedCompoundKeys.contains(readerContent.compoundKey) != isBookmarked else {
             return
         }
@@ -147,11 +198,15 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
             get: { showBookmarkExists },
             set: { newValue in
                 Task { @MainActor in
+                    guard !readerContent.isInvalidated else { return }
                     if newValue != showBookmarkExists {
-                        let isBookmarked = try await readerContent.toggleBookmark(
-                            realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration
+                        // A completed mutation describes its own transaction, not
+                        // necessarily the latest state after overlapping commands.
+                        let configuration = ReaderContentLoader.bookmarkRealmConfiguration
+                        _ = try await readerContent.toggleBookmark(
+                            realmConfiguration: configuration
                         )
-                        bookmarkStatusCache.setIsBookmarked(isBookmarked, for: readerContent)
+                        await bookmarkStatusCache.refreshAfterMutation(configuration: configuration)
                     }
                 }
             }
