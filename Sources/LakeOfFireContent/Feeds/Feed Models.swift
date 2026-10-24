@@ -1120,7 +1120,7 @@ public enum FeedError: Error {
     case jsonFeedsUnsupported
 }
 
-fileprivate struct FeedFetchMetadata {
+struct FeedFetchMetadata {
     let etag: String?
     let lastModifiedAt: Date?
 }
@@ -1319,15 +1319,15 @@ fileprivate func feedFetchMetadata(from response: URLResponse) -> FeedFetchMetad
     return FeedFetchMetadata(etag: etag, lastModifiedAt: lastModifiedAt)
 }
 
-fileprivate func isFeedUnchanged(
+func isFeedUnchanged(
     remoteMetadata: FeedFetchMetadata,
     lastFetchedETag: String?,
     lastFetchedModifiedAt: Date?
 ) -> Bool {
     if let remoteETag = remoteMetadata.etag,
-       let lastFetchedETag,
-       remoteETag == lastFetchedETag {
-        return true
+       let lastFetchedETag {
+        // A changed entity tag must not be hidden by a coarse or older date.
+        return remoteETag == lastFetchedETag
     }
 
     if let remoteLastModifiedAt = remoteMetadata.lastModifiedAt,

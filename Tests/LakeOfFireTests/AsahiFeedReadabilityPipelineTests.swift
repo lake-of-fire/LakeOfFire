@@ -322,6 +322,23 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
     }
 
     @MainActor
+    func testChangedHEADTagFetchesBodyDespiteEqualOrOlderModificationDate() async throws {
+        for modificationDate in [
+            "Wed, 01 Jan 2020 00:00:00 GMT",
+            "Tue, 31 Dec 2019 00:00:00 GMT",
+        ] {
+            try await assertHTTPRefresh(
+                headStatus: 200,
+                headHeaders: [
+                    "ETag": "\"head-version\"", "Last-Modified": modificationDate,
+                ],
+                getHeaders: ["ETag": "\"get-version\""],
+                expectedETag: "\"get-version\"", expectedModifiedAt: nil
+            )
+        }
+    }
+
+    @MainActor
     func testFetchedBodyDoesNotInheritHEADOrStoredValidators() async throws {
         try await assertHTTPRefresh(headStatus: 200, expectedETag: nil, expectedModifiedAt: nil)
     }
