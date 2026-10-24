@@ -1148,15 +1148,29 @@ private func locallyRetrievableReaderHTML(
     for content: any ReaderContentProtocol,
     readerFileManager: ReaderFileManager
 ) async throws -> String? {
+    try await locallyRetrievableReaderHTML(for: content) {
+        try await content.htmlToDisplay(readerFileManager: readerFileManager)
+    }
+}
+
+@MainActor
+func locallyRetrievableReaderHTML(
+    for content: any ReaderContentProtocol,
+    loadHTML: @MainActor () async throws -> String?
+) async throws -> String? {
+    guard !content.isInvalidated else { return nil }
+    let contentURL = content.url
     let startedAt = CFAbsoluteTimeGetCurrent()
-    var html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
-    if html == nil, content.url.isSnippetURL {
+    var html = try await loadHTML()
+    try Task.checkCancellation()
+    guard !content.isInvalidated, content.url == contentURL else { return nil }
+    if html == nil, contentURL.isSnippetURL {
         html = content.html
     }
     guard let html else {
         debugPrint(
             "# READERLOAD stage=readerMode.localHTML",
-            "contentURL=\(content.url.absoluteString)",
+            "contentURL=\(contentURL.absoluteString)",
             "hasHTML=false",
             "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
         )
@@ -1166,7 +1180,7 @@ private func locallyRetrievableReaderHTML(
     let result = trimmed.isEmpty ? nil : trimmed
     debugPrint(
         "# READERLOAD stage=readerMode.localHTML",
-        "contentURL=\(content.url.absoluteString)",
+        "contentURL=\(contentURL.absoluteString)",
         "hasHTML=\(result != nil)",
         "bytes=\(result?.utf8.count ?? 0)",
         "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
