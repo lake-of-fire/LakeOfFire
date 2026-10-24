@@ -4,7 +4,7 @@ import {
 createTOCView
 } from './ui/tree.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
-import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
+import { forwardCustomReaderFontStyleToDocuments } from './ebook-font-forwarding.js'
 import { applyLayoutSettingsToEbookDocument } from './ebook-layout-settings.js'
 import {
     applyReaderPresentationStateToDocument,
@@ -1044,12 +1044,9 @@ window.manabiForwardReaderFontToEbookDocuments = (reason = 'manual', explicitDoc
     const sourceFontStyle = document.getElementById('mnb-custom-fonts-inline')
         || docs.map((doc) => doc?.getElementById?.('mnb-custom-fonts-inline')).find(Boolean)
         || null;
-    let forwardedCount = 0;
-    for (const doc of docs) {
-        if (doc !== document && copyCustomReaderFontStyleToDocument(sourceFontStyle, doc, reason)) {
-            forwardedCount += 1;
-        }
-    }
+    const forwardedCount = forwardCustomReaderFontStyleToDocuments(
+        sourceFontStyle, docs.filter((doc) => doc !== document), reason, globalThis,
+    );
     return {
         documentCount: docs.length,
         forwardedCount,

@@ -1959,7 +1959,9 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                         + ' fontsStatus=' + (document.fonts?.status || 'nil'));
                 };
                 const resolveStylesheetURL = (desiredFamily) => {
-                    const family = desiredFamily || 'YuKyokasho';
+                    // A system-font stylesheet serves both faces. Keep its admitted
+                    // resource family separate from the logical user selection.
+                    const family = stylesheetFamilyName || desiredFamily || 'YuKyokasho';
                     return stylesheetURLTemplate.replace('__MANABI_FONT_FAMILY__', encodeURIComponent(family));
                 };
                 const ensureReaderFontStyle = (desiredFamily) => {
@@ -2063,7 +2065,10 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             """
             try? await scriptCaller.evaluateJavaScript(
                 js,
-                arguments: ["stylesheetURLTemplate": stylesheetURLTemplate],
+                arguments: [
+                    "stylesheetURLTemplate": stylesheetURLTemplate,
+                    "stylesheetFamilyName": sharedReaderFontAsset?.horizontalFamilyName ?? "",
+                ],
                 duplicateInMultiTargetFrames: true
             )
             return
@@ -2120,10 +2125,8 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             };
             const replaceFontBlob = (css, fontHash, desiredFamily) => {
                 if (!css) return null;
-                const resolvedCSS = desiredFamily
-                    ? css.replace(/font-family:\\s*['"][^'"]+['"]\\s*;/g, "font-family: '" + desiredFamily + "';")
-                    : css;
-                const blob = new Blob([resolvedCSS], { type: 'text/css' });
+                // Preserve each face's name; directional styles select the family.
+                const blob = new Blob([css], { type: 'text/css' });
                 const nextBlobURL = URL.createObjectURL(blob);
                 const previousBlobURL = globalThis.manabiReaderFontCSSBlobURL || null;
                 globalThis.manabiReaderFontCSSBlobURL = nextBlobURL;

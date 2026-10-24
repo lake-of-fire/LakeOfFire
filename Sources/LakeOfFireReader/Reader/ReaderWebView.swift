@@ -613,7 +613,7 @@ fileprivate struct ReaderWebViewInternal: View {
             webViewPrewarmer: webViewPrewarmer
         )
         .environment(\.webViewMessageHandlers, readerWebViewMessageHandlersTransform(webViewMessageHandlers, scriptCaller))
-        .task(id: sharedReaderFontAsset?.localFileURL.path ?? "") { @MainActor in
+        .task(id: sharedReaderFontAsset) { @MainActor in
             internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
         }
     }
