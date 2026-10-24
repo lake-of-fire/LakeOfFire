@@ -2,7 +2,9 @@ import SwiftUI
 import SwiftUIWebView
 import WebKit
 import RealmSwift
+import BigSyncKit
 import LakeOfFireContent
+import LakeOfFireCore
 import LakeOfFireFiles
 #if os(iOS)
 import UIKit
@@ -11,6 +13,7 @@ import AppKit
 #endif
 import XCTest
 @testable import LakeOfFireReader
+@testable import RealmSwiftGaps
 
 private actor ReaderCallbackGate {
     private var continuation: CheckedContinuation<Void, Never>?
@@ -33,6 +36,158 @@ private enum ReaderCallbackTestError: Error {
 
 @MainActor
 final class ReaderWebViewCallbackContractTests: XCTestCase {
+    func testMountedReaderComposesCurrentInheritedProvidersWithoutReplacingItsBinding() async throws {
+        let fixture = try await makeProviderFixture { session in
+            session.provider(named: "readerProviderProbe", label: "A")
+        }
+        let session = fixture.session
+        let webView = try XCTUnwrap(descendantWebView(in: fixture.view))
+        let binding = try XCTUnwrap(session.reader?.scriptCaller.currentJavaScriptBindingToken)
+
+        // The local owner arrives asynchronously on the first mount. Its table
+        // and the inherited table must both reach the already-mounted WebView.
+        try await waitForMountedJavaScript(
+            "!!window.webkit.messageHandlers.ebookNavigationVisibility && !!window.webkit.messageHandlers.readerProviderProbe",
+            in: webView
+        )
+        try await sendProviderMessage("readerProviderProbe", id: "first", in: webView, session: session)
+        XCTAssertEqual(session.events, ["A:first"])
+        try await sendVisibilityMessage(id: "local-first", hidden: true, in: webView, session: session)
+        XCTAssertTrue(session.hidden)
+        XCTAssertEqual(session.events, ["A:first", "A:local-first:true"],
+            "The real local handler runs before the current inherited handler")
+
+        session.publish(session.provider(named: "readerProviderProbe", label: "B"))
+        try await waitForProviderPublication(session, in: webView)
+        try await sendProviderMessage("readerProviderProbe", id: "replacement", in: webView, session: session)
+        XCTAssertEqual(session.events.filter { $0.hasSuffix(":replacement") }, ["B:replacement"])
+
+        for index in 0..<3 {
+            session.publicationToggle.toggle() // An unrelated render keeps the same provider.
+            try await waitForProviderPublication(session, in: webView)
+            let id = "unrelated-\(index)"
+            try await sendProviderMessage("readerProviderProbe", id: id, in: webView, session: session)
+            XCTAssertEqual(session.events.filter { $0.hasSuffix(":" + id) }, ["B:" + id])
+        }
+        XCTAssertTrue(descendantWebView(in: fixture.view) === webView)
+        XCTAssertEqual(session.reader?.scriptCaller.currentJavaScriptBindingToken, binding)
+
+        session.publish(session.provider(named: "readerProviderRenamed", label: "C"))
+        try await waitForProviderPublication(session, in: webView)
+        try await waitForMountedJavaScript(
+            "!window.webkit.messageHandlers.readerProviderProbe && !!window.webkit.messageHandlers.readerProviderRenamed",
+            in: webView
+        )
+        try await sendProviderMessage("readerProviderRenamed", id: "renamed", in: webView, session: session)
+        XCTAssertEqual(session.events.filter { $0.hasSuffix(":renamed") }, ["C:renamed"])
+
+        let beforeRemoval = session.events
+        session.publish(WebViewMessageHandlers())
+        try await waitForProviderPublication(session, in: webView)
+        try await waitForMountedJavaScript(
+            "!window.webkit.messageHandlers.readerProviderProbe && !window.webkit.messageHandlers.readerProviderRenamed && !!window.webkit.messageHandlers.ebookNavigationVisibility",
+            in: webView
+        )
+        try await sendVisibilityMessage(id: "local-only", hidden: false, in: webView, session: session)
+        XCTAssertFalse(session.hidden)
+        XCTAssertEqual(session.events, beforeRemoval, "Removed providers must not remain appended to the local owner")
+        XCTAssertTrue(descendantWebView(in: fixture.view) === webView)
+        XCTAssertEqual(session.reader?.scriptCaller.currentJavaScriptBindingToken, binding)
+    }
+
+    func testMountedReaderPublishesCancellationOnlyReplacementForLaterCallbacks() async throws {
+        let gate = ReaderProviderCallbackGate()
+        let fixture = try await makeProviderFixture { session in
+            session.blockingProvider(gate: gate).updatingCancellationHandler("readerProviderBlocked") {
+                @MainActor [weak session] message in
+                session?.cancellations.append("A:" + ReaderProviderMountedSession.messageID(message))
+            }
+        }
+        let session = fixture.session
+        session.gates.append(gate)
+        let webView = try XCTUnwrap(descendantWebView(in: fixture.view))
+        let binding = try XCTUnwrap(session.reader?.scriptCaller.currentJavaScriptBindingToken)
+        try await waitForMountedJavaScript("!!window.webkit.messageHandlers.readerProviderBlocked", in: webView)
+        _ = try await webView.evaluateJavaScript("window.webkit.messageHandlers.readerProviderBlocked.postMessage('accepted-before')")
+        try await waitForMountedCondition { session.entered.contains("accepted-before") }
+
+        // Keep the exact ordinary handler table and replace only its cancellation
+        // callback. Future receipts must capture B; an accepted receipt keeps A.
+        let replacement = session.inherited.updatingCancellationHandler("readerProviderBlocked") {
+            @MainActor [weak session] message in
+            session?.cancellations.append("B:" + ReaderProviderMountedSession.messageID(message))
+        }
+        session.publish(replacement)
+        try await waitForProviderPublication(session, in: webView)
+        XCTAssertTrue(descendantWebView(in: fixture.view) === webView)
+        XCTAssertEqual(session.reader?.scriptCaller.currentJavaScriptBindingToken, binding)
+        _ = try await webView.evaluateJavaScript("window.webkit.messageHandlers.readerProviderBlocked.postMessage('accepted-after')")
+        try await waitForMountedCondition { session.entered.contains("accepted-after") }
+
+        // Real navigation invalidates the actual coordinator's callback context.
+        webView.loadHTMLString("<html><body id='provider-next'>Next</body></html>",
+            baseURL: URL(string: "https://example.com/provider-next")!)
+        try await waitForMountedCondition { session.cancellations.count == 2 }
+        XCTAssertEqual(session.cancellations.sorted(), ["A:accepted-before", "B:accepted-after"])
+        await gate.release()
+        try await waitForMountedCondition { session.finished.count == 2 }
+    }
+
+    private func makeProviderFixture(
+        initialHandlers: (ReaderProviderMountedSession) -> WebViewMessageHandlers
+    ) async throws -> ReaderProviderMountedFixture {
+        let session = try ReaderProviderMountedSession()
+        session.inherited = initialHandlers(session)
+        let fixture = ReaderProviderMountedFixture(session: session)
+        let readerReleased = session.readerReleased
+        addTeardownBlock {
+            await fixture.unmount()
+            for gate in await session.gates { await gate.release() }
+            let result = await XCTWaiter.fulfillment(of: [readerReleased], timeout: 5)
+            guard result == .completed else {
+                XCTFail("The real reader model must retire before shared fixture configuration is restored")
+                return
+            }
+            await session.finishCleanup()
+        }
+        try await waitForMountedCondition { self.descendantWebView(in: fixture.view) != nil }
+        let webView = try XCTUnwrap(descendantWebView(in: fixture.view))
+        fixture.webView = webView
+        webView.loadHTMLString("<html><body id='provider-ready'>Ready</body></html>",
+            baseURL: URL(string: "https://example.com/provider-test")!)
+        try await waitForMountedJavaScript("document.body.id === 'provider-ready'", in: webView)
+        try await waitForProviderPublication(session, in: webView)
+        return fixture
+    }
+
+    private func waitForProviderPublication(_ session: ReaderProviderMountedSession, in webView: WKWebView) async throws {
+        // Selected WebView updates coordinator.messageHandlers before applying
+        // this native property, including when the handler keys are unchanged.
+        try await waitForMountedCondition {
+            webView.allowsBackForwardNavigationGestures == session.publicationToggle
+        }
+    }
+
+    private func sendProviderMessage(
+        _ name: String, id: String, in webView: WKWebView, session: ReaderProviderMountedSession
+    ) async throws {
+        _ = try await webView.callAsyncJavaScript(
+            "window.webkit.messageHandlers[name].postMessage(id)",
+            arguments: ["name": name, "id": id], in: nil, contentWorld: .page
+        )
+        try await waitForMountedCondition { session.delivered.contains(id) }
+    }
+
+    private func sendVisibilityMessage(
+        id: String, hidden: Bool, in webView: WKWebView, session: ReaderProviderMountedSession
+    ) async throws {
+        _ = try await webView.callAsyncJavaScript(
+            "window.webkit.messageHandlers.ebookNavigationVisibility.postMessage({testID: id, hideNavigationDueToScroll: hidden, source: 'page-turn.fixture', direction: hidden ? 'forward' : 'backward'})",
+            arguments: ["id": id, "hidden": hidden], in: nil, contentWorld: .page
+        )
+        try await waitForMountedCondition { session.delivered.contains(id) }
+    }
+
     func testMountedReaderChangesWebViewAndCallbackStoreTogether() async throws {
         let originalResolver = ReaderContent.contentResolver
         defer { ReaderContent.contentResolver = originalResolver }
@@ -464,5 +619,235 @@ private struct ReaderMountedSessionView: View {
             .environmentObject(session.mode)
             .environmentObject(session.media)
             .environmentObject(session.files)
+    }
+}
+
+private actor ReaderProviderCallbackGate {
+    private var released = false
+    private var waiters = [CheckedContinuation<Void, Never>]()
+
+    func wait() async {
+        if !released { await withCheckedContinuation { waiters.append($0) } }
+    }
+
+    func release() {
+        released = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
+    }
+}
+
+@MainActor
+private final class ReaderProviderFixtureViewModel: ReaderViewModel {
+    private let released: XCTestExpectation
+
+    init(configuration: Realm.Configuration, released: XCTestExpectation) {
+        self.released = released
+        super.init(realmConfiguration: configuration, systemScripts: [])
+    }
+
+    deinit { released.fulfill() }
+}
+
+@MainActor
+private final class ReaderProviderMountedSession: ObservableObject {
+    @Published var inherited = WebViewMessageHandlers()
+    @Published var publicationToggle = false
+    @Published var hidden = false
+    let store = WKWebsiteDataStore.nonPersistent()
+    let navigator = WebViewNavigator()
+    let content = ReaderContent()
+    let mode = ReaderModeViewModel()
+    let media = ReaderMediaPlayerViewModel()
+    let files = ReaderFileManager()
+    let readerReleased = XCTestExpectation(description: "Provider fixture's real reader model released")
+    var reader: ReaderViewModel?
+    var events = [String]()
+    var delivered = Set<String>()
+    var entered = Set<String>()
+    var finished = Set<String>()
+    var cancellations = [String]()
+    var gates = [ReaderProviderCallbackGate]()
+    private let configuration: Realm.Configuration
+    private let previousLibraryConfiguration: Realm.Configuration
+    private let previousContentResolver: ReaderContent.ContentResolver?
+    private var libraryRealm: Realm?
+
+    init() throws {
+        previousLibraryConfiguration = LibraryDataManager.realmConfiguration
+        previousContentResolver = ReaderContent.contentResolver
+        var configuration = LakeOfFireContent.DefaultRealmConfiguration.configuration
+        configuration.fileURL = nil
+        configuration.inMemoryIdentifier = "reader-provider-\(UUID().uuidString)"
+        self.configuration = configuration
+        BigSyncMutationTracking.install(
+            configurations: [configuration],
+            excludedClassNames: (configuration.objectTypes ?? []).map { $0.className() }
+        )
+        let realm = try Realm(configuration: configuration)
+        try realm.write { realm.add(LibraryConfiguration()) }
+        libraryRealm = realm
+        LibraryDataManager.realmConfiguration = configuration
+        reader = ReaderProviderFixtureViewModel(configuration: configuration, released: readerReleased)
+        // These tests exercise message-table transport. Native navigation must
+        // not resolve or create content in the application's configured stores.
+        ReaderContent.contentResolver = { _, _, _ in nil }
+    }
+
+    static func messageID(_ message: WebViewMessage) -> String {
+        (message.body as? String) ?? ((message.body as? [String: Any])?["testID"] as? String) ?? ""
+    }
+
+    func provider(named name: String, label: String) -> WebViewMessageHandlers {
+        WebViewMessageHandlers([
+            (name, { @MainActor [weak self] message in
+                self?.events.append(label + ":" + Self.messageID(message))
+            }),
+            ("ebookNavigationVisibility", { @MainActor [weak self] message in
+                guard let self else { return }
+                events.append(label + ":" + Self.messageID(message) + ":" + String(hidden))
+            }),
+        ])
+    }
+
+    func blockingProvider(gate: ReaderProviderCallbackGate) -> WebViewMessageHandlers {
+        WebViewMessageHandlers([
+            ("readerProviderBlocked", { @MainActor [weak self] message in
+                guard let self else { return }
+                let id = Self.messageID(message)
+                entered.insert(id)
+                await gate.wait()
+                finished.insert(id)
+            }),
+        ])
+    }
+
+    func publish(_ handlers: WebViewMessageHandlers) {
+        inherited = handlers
+        publicationToggle.toggle()
+    }
+
+    func observingDelivery(of handlers: WebViewMessageHandlers) -> WebViewMessageHandlers {
+        // A downstream observer marks completion after every callback in the
+        // real composed table. It keeps exactly that table's registered names.
+        let observers: [(String, @Sendable (WebViewMessage) async -> Void)] = handlers.handlers.keys.map { name in
+            (name, { @MainActor [weak self] message in
+                let id = Self.messageID(message)
+                if !id.isEmpty { self?.delivered.insert(id) }
+            })
+        }
+        return handlers + WebViewMessageHandlers(observers)
+    }
+
+    func finishCleanup() async {
+        ReaderContent.contentResolver = previousContentResolver
+        LibraryDataManager.realmConfiguration = previousLibraryConfiguration
+        libraryRealm?.invalidate()
+        libraryRealm = nil
+        if let identifier = configuration.inMemoryIdentifier {
+            await releaseReaderProviderFixtureRealms(owner: .shared, identifier: identifier)
+        }
+    }
+}
+
+private func releaseReaderProviderFixtureRealms(owner: isolated RealmBackgroundActor, identifier: String) {
+    let cached = owner.cachedRealms.filter { $0.value.configuration.inMemoryIdentifier == identifier }
+    guard cached.values.allSatisfy({ !$0.isInWriteTransaction }) else {
+        XCTFail("Provider fixture observers must settle before cache cleanup")
+        return
+    }
+    for key in cached.keys { owner.cachedRealms.removeValue(forKey: key)?.invalidate() }
+}
+
+@MainActor
+private final class ReaderProviderMountedFixture {
+    let session: ReaderProviderMountedSession
+    weak var webView: WKWebView?
+    #if os(iOS)
+    private let controller: UIHostingController<AnyView>
+    private let window: UIWindow
+    #else
+    private let controller: NSHostingController<AnyView>
+    private let window: NSWindow
+    #endif
+
+    var view: ReaderMountedPlatformView { controller.view }
+
+    init(session: ReaderProviderMountedSession) {
+        self.session = session
+        let root = AnyView(ReaderProviderMountedView(session: session))
+        #if os(iOS)
+        controller = UIHostingController(rootView: root)
+        window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 600))
+        window.rootViewController = controller
+        window.isHidden = false
+        #else
+        controller = NSHostingController(rootView: root)
+        window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        window.orderFront(nil)
+        #endif
+    }
+
+    func unmount() {
+        webView?.stopLoading()
+        controller.rootView = AnyView(EmptyView())
+        #if os(iOS)
+        window.isHidden = true
+        window.rootViewController = nil
+        #else
+        window.close()
+        window.contentViewController = nil
+        #endif
+        session.reader = nil
+    }
+}
+
+private struct ReaderProviderMountedView: View {
+    @ObservedObject var session: ReaderProviderMountedSession
+
+    var body: some View {
+        if let reader = session.reader {
+            let publicationToggle = session.publicationToggle
+            ReaderWebView(obscuredInsets: nil)
+                .readerWebViewDataStore(session.store)
+                .modifier(ReaderMessageHandlersViewModifier(hideNavigationDueToScroll: $session.hidden))
+                .environment(\.webViewMessageHandlers, session.inherited)
+                .environment(\.readerWebViewMessageHandlersTransform, { handlers, _ in
+                    session.observingDelivery(of: handlers)
+                })
+                .environment(\.readerWebViewConfigurationTransform, { config in
+                    WebViewConfig(
+                        javaScriptEnabled: config.javaScriptEnabled,
+                        contentRules: config.contentRules,
+                        allowsBackForwardNavigationGestures: publicationToggle,
+                        allowsInlineMediaPlayback: config.allowsInlineMediaPlayback,
+                        mediaTypesRequiringUserActionForPlayback: config.mediaTypesRequiringUserActionForPlayback,
+                        dataDetectorsEnabled: config.dataDetectorsEnabled,
+                        isScrollEnabled: config.isScrollEnabled,
+                        pageZoom: config.pageZoom,
+                        isOpaque: config.isOpaque,
+                        backgroundColor: config.backgroundColor,
+                        usesSampledPageTopColorForUnderPageBackground: config.usesSampledPageTopColorForUnderPageBackground,
+                        usesConfiguredBackgroundForReaderDocuments: config.usesConfiguredBackgroundForReaderDocuments,
+                        adjustsScrollViewContentInsetsForSafeArea: config.adjustsScrollViewContentInsetsForSafeArea,
+                        hidesTopScrollEdgeEffect: config.hidesTopScrollEdgeEffect,
+                        nativeLookupHitTestingEnabled: config.nativeLookupHitTestingEnabled,
+                        userScripts: config.userScripts,
+                        darkModeSetting: config.darkModeSetting,
+                        paginationConfiguration: config.paginationConfiguration
+                    )
+                })
+                .environment(\.webViewNavigator, session.navigator)
+                .environmentObject(session.content)
+                .environmentObject(reader)
+                .environmentObject(reader.scriptCaller)
+                .environmentObject(session.mode)
+                .environmentObject(session.media)
+                .environmentObject(session.files)
+        }
     }
 }
