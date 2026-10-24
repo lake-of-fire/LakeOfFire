@@ -277,6 +277,7 @@ const makeReplaceText = (isCacheWarmer) => {
         if (!isCacheWarmer) {
             await ensureCacheWarmerPrecedingSectionsForHref(href);
         }
+        if (!owner.active) return text;
         const cacheKey = makeReplaceTextCacheKey({
             href,
             text,
@@ -370,7 +371,15 @@ const makeReplaceText = (isCacheWarmer) => {
                 }
             }
         };
-        const result = await owner.cache.getOrCreate(cacheKey, run);
+        let result;
+        try {
+            result = await owner.cache.getOrCreate(cacheKey, run);
+        } catch (error) {
+            // Clearing can retire a queued cache entry before run starts, so
+            // its AbortError originates outside run's fetch failure handler.
+            if (!owner.active && error?.name === 'AbortError') return text;
+            throw error;
+        }
         if (!owner.active) return text;
         if (!isCacheWarmer) {
             window.manabi_recordLiveProcessedSection?.(href);
