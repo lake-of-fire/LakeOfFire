@@ -17,7 +17,7 @@ import LakeOfFireContent
 import LakeOfFireContentUI
 import LakeOfFireReader
 
-fileprivate struct LibraryFeedFormIdentity: Hashable {
+struct LibraryFeedFormIdentity: Hashable, Sendable {
     let id: UUID
     let createdAt: Date
     let categoryID: UUID?
@@ -25,30 +25,100 @@ fileprivate struct LibraryFeedFormIdentity: Hashable {
     let storage: String
 
     @MainActor
-    init(feed: Feed) {
+    init(feed: Feed, storageAdmission: RealmStorageAdmission) {
         id = feed.id
         createdAt = feed.createdAt
         categoryID = feed.categoryID
         categoryCreatedAt = feed.getCategory()?.createdAt
-        let configuration = feed.realm?.configuration ?? LibraryDataManager.realmConfiguration
-        storage = configuration.inMemoryIdentifier.map { "memory:" + $0 }
-            ?? configuration.fileURL.map { "file:" + $0.resolvingSymlinksInPath().standardizedFileURL.path }
-            ?? "default"
+        storage = storageAdmission.scopeIdentity
+    }
+}
+
+struct LibraryFeedFormCapture: Sendable {
+    let identity: LibraryFeedFormIdentity
+    let realmConfiguration: Realm.Configuration
+    let storageAdmission: RealmStorageAdmission
+    private let sourceAccessor: ObjectIdentifier
+
+    @MainActor
+    init(feed: Feed) {
+        realmConfiguration = feed.realm?.configuration ?? LibraryDataManager.realmConfiguration
+        storageAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
+        identity = LibraryFeedFormIdentity(feed: feed, storageAdmission: storageAdmission)
+        sourceAccessor = ObjectIdentifier(feed)
+    }
+
+    @MainActor
+    func refreshingRowIdentity(for feed: Feed) -> Self? {
+        guard sourceAccessor == ObjectIdentifier(feed), !feed.isInvalidated else { return nil }
+        // Keep the captured physical owner, including before the first form
+        // task. Only a live row in that same store may refresh its identity.
+        guard isCurrentStorage else { return self }
+        return Self(
+            identity: LibraryFeedFormIdentity(feed: feed, storageAdmission: storageAdmission),
+            realmConfiguration: realmConfiguration, storageAdmission: storageAdmission,
+            sourceAccessor: sourceAccessor
+        )
+    }
+
+    private init(
+        identity: LibraryFeedFormIdentity, realmConfiguration: Realm.Configuration,
+        storageAdmission: RealmStorageAdmission, sourceAccessor: ObjectIdentifier
+    ) {
+        self.identity = identity
+        self.realmConfiguration = realmConfiguration
+        self.storageAdmission = storageAdmission
+        self.sourceAccessor = sourceAccessor
+    }
+
+    var isCurrentStorage: Bool {
+        storageAdmission.matchesCurrentStorageIdentity {
+            RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+        }
+    }
+
+    @MainActor
+    func admits(_ feed: Feed) -> Bool {
+        guard isCurrentStorage, !feed.isInvalidated, !feed.isDeleted,
+              sourceAccessor == ObjectIdentifier(feed) else { return false }
+        return feed.id == identity.id && feed.createdAt == identity.createdAt
+            && feed.categoryID == identity.categoryID
+            && feed.getCategory()?.createdAt == identity.categoryCreatedAt
     }
 }
 
 @available(iOS 16.0, macOS 13, *)
 struct LibraryFeedView: View {
     let feed: Feed
+
+    var body: some View {
+        LibraryFeedOwnedForm(feed: feed)
+            .id(ObjectIdentifier(feed))
+    }
+}
+
+@available(iOS 16.0, macOS 13, *)
+private struct LibraryFeedOwnedForm: View {
+    let feed: Feed
     
+    // The child is keyed to its source accessor. SwiftUI retains this first
+    // physical owner through rerenders even before the initial task runs.
+    @State private var capturedForm: LibraryFeedFormCapture?
     @State private var libraryFeedFormSectionsViewModel: LibraryFeedFormSectionsViewModel?
     @State private var initializedFeedIdentity: LibraryFeedFormIdentity?
+
+    @MainActor
+    init(feed: Feed) {
+        self.feed = feed
+        _capturedForm = State(initialValue: feed.isInvalidated ? nil : LibraryFeedFormCapture(feed: feed))
+    }
     
     func unfrozen(_ feed: Feed) -> Feed {
         return feed.isFrozen ? feed.thaw() ?? feed : feed
     }
     
     var body: some View {
+        let capture = capturedForm?.refreshingRowIdentity(for: feed)
         VStack(spacing: 0) {
             if let libraryFeedFormSectionsViewModel = libraryFeedFormSectionsViewModel {
                 Form {
@@ -65,12 +135,12 @@ struct LibraryFeedView: View {
         .toolbar {
             LibraryFeedMenu(feed: feed)
         }
-        .task(id: LibraryFeedFormIdentity(feed: feed)) { @MainActor in
-            let identity = LibraryFeedFormIdentity(feed: feed)
-            guard initializedFeedIdentity != identity else { return }
+        .task(id: capture?.identity) { @MainActor in
+            guard !Task.isCancelled, let capture, capture.admits(feed),
+                  initializedFeedIdentity != capture.identity else { return }
             libraryFeedFormSectionsViewModel?.finishEditing()
-            libraryFeedFormSectionsViewModel = LibraryFeedFormSectionsViewModel(feed: feed)
-            initializedFeedIdentity = identity
+            libraryFeedFormSectionsViewModel = LibraryFeedFormSectionsViewModel(feed: feed, formCapture: capture)
+            initializedFeedIdentity = capture.identity
         }
     }
 }
@@ -127,7 +197,8 @@ private struct LibraryFeedMenu: View {
 @MainActor
 class LibraryFeedFormSectionsViewModel: ObservableObject {
     let feed: Feed
-    fileprivate let editorIdentity: LibraryFeedFormIdentity
+    let formCapture: LibraryFeedFormCapture
+    var editorIdentity: LibraryFeedFormIdentity { formCapture.identity }
     let feedID: UUID
     private let feedCreatedAt: Date
     private let categoryID: UUID?
@@ -167,6 +238,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     private let writeOrdering: LibraryFeedWriteOrdering
     private let metadataAdmission = LibraryFeedMetadataAdmission()
     private var metadataRequest: LibraryFeedMetadataRequest?
+    private(set) var observationTask: Task<Void, Error>?
+
+    private var isCurrentStorage: Bool { formCapture.isCurrentStorage }
     
     var cancellables = Set<AnyCancellable>()
     
@@ -176,22 +250,28 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     private var objectNotificationToken: NotificationToken?
     
     init(
-        feed: Feed, observesRealm: Bool = true,
+        feed: Feed, formCapture: LibraryFeedFormCapture? = nil, observesRealm: Bool = true,
+        beforeObservation: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
         beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
         retirementDidFinish: (@RealmBackgroundActor @Sendable () -> Void)? = nil
     ) {
         self.beforeFieldWrite = beforeFieldWrite
         self.retirementDidFinish = retirementDidFinish
-        editorIdentity = LibraryFeedFormIdentity(feed: feed)
-        realmConfiguration = feed.realm?.configuration ?? LibraryDataManager.realmConfiguration
-        writeOrdering = .shared(configuration: realmConfiguration, feedID: feed.id, createdAt: feed.createdAt)
+        let capture = formCapture ?? LibraryFeedFormCapture(feed: feed)
+        self.formCapture = capture
+        realmConfiguration = capture.realmConfiguration
+        writeOrdering = .shared(
+            configuration: realmConfiguration, storageAdmission: capture.storageAdmission,
+            feedID: capture.identity.id, createdAt: capture.identity.createdAt,
+            categoryID: capture.identity.categoryID, categoryCreatedAt: capture.identity.categoryCreatedAt
+        )
         self.feed = feed.isFrozen ? feed.thaw() ?? feed : feed
-        feedID = feed.id
-        feedCreatedAt = feed.createdAt
-        categoryID = feed.categoryID
-        categoryCreatedAt = feed.getCategory()?.createdAt
+        feedID = capture.identity.id
+        feedCreatedAt = capture.identity.createdAt
+        categoryID = capture.identity.categoryID
+        categoryCreatedAt = capture.identity.categoryCreatedAt
         refresh()
-        let feedID = feed.id
+        let feedID = self.feedID
         let capturedCreatedAt = feedCreatedAt
         observeBuffered($feedTitle, field: .title) { value, feed in
             guard feed.title != value else { return false }
@@ -289,9 +369,17 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             .store(in: &cancellables)
         hasInitializedValues = true
         guard observesRealm else { return }
-        Task { @RealmBackgroundActor [weak self, realmConfiguration] in
+        observationTask = Task { @RealmBackgroundActor [weak self, realmConfiguration] in
+            try await beforeObservation?()
+            try Task.checkCancellation()
             guard let self else { return }
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: realmConfiguration, storageAdmission: capture.storageAdmission
+            )
+            try Task.checkCancellation()
+            guard capture.isCurrentStorage else {
+                throw RealmBackgroundActorError.realmFileChangedDuringOpen
+            }
             guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
                   feed.createdAt == capturedCreatedAt, !feed.isDeleted else { return }
             objectNotificationToken = feed
@@ -318,13 +406,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
-                        let realm = try await Realm.open(configuration: realmConfiguration)
-                        guard let currentFeed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
-                              currentFeed.createdAt == capturedCreatedAt, !currentFeed.isDeleted else {
-                            self.feedEntries = nil
-                            return
-                        }
-                        self.feedEntries = realm.objects(FeedEntry.self).where { $0.feedID == feedID }.map { $0 }
+                        try await self.refreshFeedEntries()
                     }
                 })
                 .store(in: &realmCancellables)
@@ -332,6 +414,24 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             await refresh()
             
         }
+    }
+
+    func refreshFeedEntries(
+        beforePublication: (@MainActor @Sendable () async throws -> Void)? = nil
+    ) async throws {
+        try Task.checkCancellation()
+        guard isCurrentStorage else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+        let realm = try await Realm(configuration: realmConfiguration, actor: MainActor.shared)
+        await realm.asyncRefresh()
+        try await beforePublication?()
+        try Task.checkCancellation()
+        guard isCurrentStorage else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+        guard let currentFeed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
+              currentFeed.createdAt == feedCreatedAt, !currentFeed.isDeleted else {
+            feedEntries = nil
+            return
+        }
+        feedEntries = realm.objects(FeedEntry.self).where { $0.feedID == feedID }.map { $0 }
     }
     
     private func observeBuffered(
@@ -345,7 +445,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 let command = LibraryFeedFieldCommand(
                     feedID: self.feedID, feedCreatedAt: self.feedCreatedAt,
                     categoryID: self.categoryID, categoryCreatedAt: self.categoryCreatedAt,
-                    realmConfiguration: self.realmConfiguration, field: field,
+                    realmConfiguration: self.realmConfiguration, storageAdmission: self.formCapture.storageAdmission,
+                    field: field,
                     sequence: sequence, metadataIntent: nil, writeOrdering: self.writeOrdering,
                     apply: { feed in apply(value, feed) }
                 )
@@ -420,6 +521,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     }
 
     deinit {
+        observationTask?.cancel()
         let commands = pendingFieldCommands.values.sorted { $0.sequence < $1.sequence }
         let writes = activeWrites
         let retirementDidFinish = retirementDidFinish
@@ -450,7 +552,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         let command = LibraryFeedFieldCommand(
             feedID: feedID, feedCreatedAt: feedCreatedAt,
             categoryID: categoryID, categoryCreatedAt: categoryCreatedAt,
-            realmConfiguration: realmConfiguration, field: field,
+            realmConfiguration: realmConfiguration, storageAdmission: formCapture.storageAdmission, field: field,
             sequence: sequence, metadataIntent: nil, writeOrdering: writeOrdering, apply: block
         )
         pendingFieldCommands[field] = command
@@ -460,8 +562,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
 
     @MainActor
     func refresh() {
+        guard isCurrentStorage else { return }
         if !feed.isFrozen { feed.realm?.refresh() }
-        guard !feed.isInvalidated else { return }
+        guard isCurrentStorage, !feed.isInvalidated else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         if pendingFieldCommands[.title] == nil { feedTitle = feed.title }
@@ -476,7 +579,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         if pendingFieldCommands[.publicationDate] == nil { feedDisplayPublicationDate = feed.displayPublicationDate }
     }
     var currentRSSURL: URL? {
-        guard !feed.isInvalidated, !feed.isDeleted else { return nil }
+        guard isCurrentStorage, !feed.isInvalidated, !feed.isDeleted else { return nil }
         return feed.rssUrl
     }
 
@@ -530,6 +633,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     }
 
     func beginMetadataRefresh(rssURL: URL, identifier: UUID) {
+        guard isCurrentStorage else { return }
         metadataRequest = metadataAdmission.begin(
             identifier: identifier, rssURL: rssURL, sharedIntents: writeOrdering.snapshot()
         )
@@ -548,7 +652,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             )
         }
     ) async {
-        guard let request = metadataRequest, request.identifier == expectedGeneration,
+        guard isCurrentStorage, let request = metadataRequest, request.identifier == expectedGeneration,
               request.rssURL == rssURL, !feed.isInvalidated, !feed.isDeleted,
               feed.rssUrl == rssURL, feed.isUserEditable(),
               !rssURL.isNativeReaderView else { return }
@@ -558,28 +662,28 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
 
         @MainActor
         func needsTitle() -> Bool {
-            !titleSet && metadataAdmission.admits(request, field: .title)
+            isCurrentStorage && !titleSet && metadataAdmission.admits(request, field: .title)
         }
 
         @MainActor
         func needsDescription() -> Bool {
-            !descriptionSet && metadataAdmission.admits(request, field: .description)
+            isCurrentStorage && !descriptionSet && metadataAdmission.admits(request, field: .description)
         }
 
         @MainActor
         func apply(_ metadata: LibraryFeedOpenGraphMetadata, allowDescription: Bool) async {
-            guard !Task.isCancelled, !feed.isInvalidated, !feed.isDeleted, feed.rssUrl == rssURL,
+            guard !Task.isCancelled, isCurrentStorage, !feed.isInvalidated, !feed.isDeleted, feed.rssUrl == rssURL,
                   metadata.url?.domainURL == baseDomain else { return }
             if !titleSet, let title = metadata.title, !title.isEmpty {
                 await applyMetadataValue(title, field: .title, request: request, beforeWrite: beforeWrite)
-                guard !feed.isInvalidated, !feed.isDeleted else { return }
+                guard isCurrentStorage, !feed.isInvalidated, !feed.isDeleted else { return }
                 titleSet = !feed.title.isEmpty
             }
             if allowDescription, !descriptionSet,
                let description = metadata.description?.trimmingCharacters(in: .whitespacesAndNewlines),
                !description.isEmpty {
                 await applyMetadataValue(description, field: .description, request: request, beforeWrite: beforeWrite)
-                guard !feed.isInvalidated, !feed.isDeleted else { return }
+                guard isCurrentStorage, !feed.isInvalidated, !feed.isDeleted else { return }
                 descriptionSet = feed.markdownDescription != nil
             }
         }
@@ -632,7 +736,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             }
         }
     ) async {
-        guard let request = metadataRequest, request.identifier == expectedGeneration,
+        guard isCurrentStorage, let request = metadataRequest, request.identifier == expectedGeneration,
               request.rssURL == expectedRSSURL, !feed.isInvalidated, !feed.isDeleted,
               feed.rssUrl == expectedRSSURL,
               feed.iconUrl.isNativeReaderView, !expectedRSSURL.isNativeReaderView else { return }
@@ -651,7 +755,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         _ value: String, field: LibraryFeedEditorField, request: LibraryFeedMetadataRequest,
         beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)?
     ) async {
-        guard !Task.isCancelled, !feed.isInvalidated, !feed.isDeleted, feed.rssUrl == request.rssURL,
+        guard !Task.isCancelled, isCurrentStorage, !feed.isInvalidated, !feed.isDeleted, feed.rssUrl == request.rssURL,
               metadataAdmission.admits(request, field: field) else { return }
         let admission = metadataAdmission
         do {
@@ -660,7 +764,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             let command = LibraryFeedFieldCommand(
                 feedID: feedID, feedCreatedAt: feedCreatedAt,
                 categoryID: categoryID, categoryCreatedAt: categoryCreatedAt,
-                realmConfiguration: realmConfiguration, field: field, sequence: 0,
+                realmConfiguration: realmConfiguration, storageAdmission: formCapture.storageAdmission,
+                field: field, sequence: 0,
                 metadataIntent: request.sharedIntents, writeOrdering: writeOrdering
             ) { feed in
                 guard feed.rssUrl == request.rssURL, admission.admits(request, field: field) else { return false }
@@ -688,10 +793,11 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             } onCancel: {
                 write.cancel()
             }
+            guard isCurrentStorage else { return }
             feed.realm?.refresh()
             // Hydrate only the admitted field. Another field may have buffered
             // input, and this completion must not reset the whole form.
-            guard !Task.isCancelled, !feed.isInvalidated, !feed.isDeleted,
+            guard !Task.isCancelled, isCurrentStorage, !feed.isInvalidated, !feed.isDeleted,
                   metadataAdmission.admits(request, field: field) else { return }
             isRefreshing = true
             defer { isRefreshing = false }
