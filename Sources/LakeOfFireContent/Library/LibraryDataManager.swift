@@ -771,7 +771,8 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                         try Task.checkCancellation()
                         let categoryID = categoryID ?? feedCategory?.id
 //                        await realm.asyncRefresh()
-                        try await realm.asyncWrite {
+                        try await realm.asyncWritePreservingOwnership {
+                            guard !feed.isInvalidated else { throw CancellationError() }
                             try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal)
                         }
                     }
@@ -783,7 +784,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                     feed.id = uuid
                     try Task.checkCancellation()
 //                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
+                    try await realm.asyncWritePreservingOwnership {
                         try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal)
                         realm.add(feed, update: .modified)
                         feed.refreshChangeMetadata(explicitlyModified: true)
@@ -1381,6 +1382,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         }
         if feed.rssUrl != feedURL {
             feed.rssUrl = feedURL
+            feed.lastFetchedETag = nil
+            feed.lastFetchedModifiedAt = nil
+            feed.lastRefreshedEntriesAt = nil
             didChange = true
         }
         if let newIconURL = newIconURL, feed.iconUrl != newIconURL {
