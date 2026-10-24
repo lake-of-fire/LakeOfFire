@@ -126,10 +126,12 @@ test('source A to B to A retires the pending publication but permits a fresh att
 })
 
 for (const change of ['adopt', 'reparent', 'source-aba']) {
-    test(`completed media publication cannot reload a retired owner after ${change} while a peer waits`, async t => {
+    test(`completed media publication cannot reload a retired owner after ${change} while its alternate waits`, async t => {
         const fixture = makeFixture(t)
         const original = fixture.makeAudio()
         const source = fixture.makeSource(original, 'voice.m4a')
+        // Hold this owner itself: another audio no longer delays its reload.
+        fixture.makeSource(original, 'held-alternate.m4a')
         const peer = fixture.makeAudio('peer.m4a')
         const firstPublished = fixture.published(source)
         const pending = fixture.hydrate()
@@ -146,8 +148,10 @@ for (const change of ['adopt', 'reparent', 'source-aba']) {
             source.src = packageURL('replacement.m4a')
             source.src = publishedSource
         }
+        fixture.release('held-alternate.m4a', false)
         fixture.release('peer.m4a')
-        assert.deepEqual(await pending, [true, true])
+        await assert.rejects(pending, /Failed to load ebook media: 404/)
+        await new Promise(setImmediate)
         assert.equal(original.loadCount, 0)
         assert.equal(replacement?.loadCount ?? 0, 0)
         assert.equal(peer.loadCount, 1)
@@ -224,6 +228,7 @@ for (const phase of ['pending', 'published']) {
             const audio = fixture.makeAudio()
             const source = fixture.makeSource(audio, 'voice.m4a')
             const originalSource = source.src
+            if (phase === 'published') fixture.makeSource(audio, 'held-alternate.m4a')
             const peer = fixture.makeAudio('peer.m4a')
             const firstPublished = phase === 'published' ? fixture.published(source) : null
             const pending = fixture.hydrate()
@@ -234,8 +239,9 @@ for (const phase of ['pending', 'published']) {
             audio.src = 'https://example.com/replacement.m4a'
             if (restore) audio.removeAttribute('src')
             if (phase === 'pending') fixture.release('voice.m4a')
+            if (phase === 'published') fixture.release('held-alternate.m4a')
             fixture.release('peer.m4a')
-            assert.deepEqual(await pending, [phase === 'published', true])
+            assert.deepEqual(await pending, phase === 'published' ? [true, false, true] : [false, true])
             if (phase === 'pending') assert.equal(source.src, originalSource)
             assert.equal(audio.loadCount, 0)
             assert.equal(peer.loadCount, 1)
