@@ -539,12 +539,182 @@ public extension ReaderContentProtocol {
 
 public extension ReaderContentProtocol {
     /// Returns whether the result is having a bookmark or not.
+    @MainActor
     func toggleBookmark(realmConfiguration: Realm.Configuration) async throws -> Bool {
-        if try await removeBookmark(realmConfiguration: realmConfiguration) {
-            return false
+        guard !isInvalidated else { throw CancellationError() }
+        try Task.checkCancellation()
+        // A source created or edited in an uncommitted caller transaction is
+        // not an admitted command snapshot. Leave that transaction untouched.
+        guard realm?.isInWriteTransaction != true else { throw CancellationError() }
+
+        let admission = RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
+        let followsConfiguredBookmarkStore = admission.matchesCurrentStorageIdentity {
+            RealmBackgroundActor.shared.realmCacheKey(for: ReaderContentLoader.bookmarkRealmConfiguration)
         }
-        try await addBookmark(realmConfiguration: realmConfiguration)
-        return true
+        let sourceConfiguration = realm?.configuration
+        let sourceAdmission = sourceConfiguration.map {
+            RealmBackgroundActor.shared.captureStorageAdmission(for: $0)
+        }
+        // ObjectKeyIdentifiable supplies the managed row's physical ObjKey.
+        // Keep its store and concrete type with it; zero is a valid row id.
+        let sourceObjectID: UInt64? = sourceConfiguration.map { _ in id }
+        let sourceType = objectSchema.objectClass as? RealmSwift.Object.Type
+        let sourceKey = compoundKey
+        let sourceCreatedAt = createdAt
+        let url = url
+        let title = title
+        let html = html
+        let content = content
+        let publicationDate = publicationDate
+        let imageURL = imageUrl
+        let sourceIconURL = sourceIconURL
+        let isFromClipboard = isFromClipboard
+        let isTitlePrefixOfContent = isTitlePrefixOfContent
+        let isReaderModeByDefault = isReaderModeByDefault
+        let rssContainsFullContent = rssContainsFullContent
+        let isReaderModeAvailable = isReaderModeAvailable
+        let isReaderModeOfferHidden = isReaderModeOfferHidden
+        let voiceFrameURL = voiceFrameUrl
+        let voiceAudioURLs = resolvedVoiceAudioURLs
+        let audioSubtitlesURL = audioSubtitlesURL
+        let audioSubtitlesRole = audioSubtitlesRoleRawValue
+        let redditTranslationsURL = redditTranslationsUrl
+        let redditTranslationsTitle = redditTranslationsTitle
+        let autoOpenMediaPlayer = autoOpenMediaPlayer
+        let readerContentKind = readerContentKind
+        let feedEntryCollectionKey = feedEntryCollectionKey
+        let feedEntryCollectionScheme = feedEntryCollectionScheme
+        let feedEntryCollectionTerm = feedEntryCollectionTerm
+        let feedEntryCollectionTitle = feedEntryCollectionTitle
+
+        let saved = try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: realmConfiguration, storageAdmission: admission
+            )
+            let sourceRealm: Realm?
+            if let sourceConfiguration, let sourceAdmission {
+                sourceRealm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: sourceConfiguration, storageAdmission: sourceAdmission
+                )
+            } else {
+                sourceRealm = nil
+            }
+            return try await realm.asyncWritePreservingOwnership {
+                try Task.checkCancellation()
+                guard admission.matchesCurrentStorageIdentity({
+                    RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+                }) else {
+                    throw RealmBackgroundActorError.realmFileChangedDuringOpen
+                }
+                if followsConfiguredBookmarkStore {
+                    guard admission.matchesCurrentStorageIdentity({
+                        RealmBackgroundActor.shared.realmCacheKey(for: ReaderContentLoader.bookmarkRealmConfiguration)
+                    }) else { throw CancellationError() }
+                }
+
+                let sourceContent: Self?
+                if let sourceRealm {
+                    guard let sourceObjectID, let sourceType, let sourceConfiguration, let sourceAdmission else {
+                        throw CancellationError()
+                    }
+                    guard sourceAdmission.matchesCurrentStorageIdentity({
+                        RealmBackgroundActor.shared.realmCacheKey(for: sourceConfiguration)
+                    }) else {
+                        throw RealmBackgroundActorError.realmFileChangedDuringOpen
+                    }
+                    if sourceRealm != realm {
+                        // Never copy another owner's uncommitted source metadata.
+                        guard !sourceRealm.isInWriteTransaction else { throw CancellationError() }
+                        sourceRealm.refresh()
+                    }
+                    guard let original = sourceRealm.object(ofType: sourceType, forPrimaryKey: sourceKey) as? Self,
+                          !original.isInvalidated,
+                          original.id == sourceObjectID,
+                          original.compoundKey == sourceKey,
+                          original.createdAt == sourceCreatedAt,
+                          original.url == url else { throw CancellationError() }
+                    sourceContent = original
+                } else {
+                    sourceContent = nil
+                }
+
+                let timestamp = Date()
+                let identityHTML = html ?? Bookmark.contentToHTML(content: content)
+                if let bookmark = realm.object(
+                    ofType: Bookmark.self,
+                    forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: identityHTML)
+                ), !bookmark.isDeleted {
+                    bookmark.isDeleted = true
+                    bookmark.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                    return false
+                }
+
+                _ = Bookmark.addInOwnedWrite(
+                    url: url,
+                    title: title,
+                    imageUrl: imageURL,
+                    sourceIconURL: sourceIconURL,
+                    html: html,
+                    content: content,
+                    publicationDate: publicationDate,
+                    isFromClipboard: isFromClipboard,
+                    isTitlePrefixOfContent: isTitlePrefixOfContent,
+                    rssContainsFullContent: rssContainsFullContent,
+                    isReaderModeByDefault: isReaderModeByDefault,
+                    isReaderModeAvailable: isReaderModeAvailable,
+                    isReaderModeOfferHidden: isReaderModeOfferHidden,
+                    autoOpenMediaPlayer: autoOpenMediaPlayer,
+                    readerContentKind: readerContentKind,
+                    feedEntryCollectionKey: feedEntryCollectionKey,
+                    feedEntryCollectionScheme: feedEntryCollectionScheme,
+                    feedEntryCollectionTerm: feedEntryCollectionTerm,
+                    feedEntryCollectionTitle: feedEntryCollectionTitle,
+                    realm: realm,
+                    at: timestamp,
+                    configure: { bookmark in
+                        // Selected callers copy these supplied fields when the
+                        // source does not live in the destination Realm. A
+                        // Bookmark/History override only associates history.
+                        if sourceContent == nil || sourceRealm != realm {
+                            bookmark.voiceFrameUrl = voiceFrameURL
+                            bookmark.voiceAudioURL = voiceAudioURLs.first
+                            bookmark.voiceAudioURLs.removeAll()
+                            bookmark.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
+                            bookmark.audioSubtitlesURL = audioSubtitlesURL
+                            bookmark.audioSubtitlesRoleRawValue = audioSubtitlesRole
+                                ?? (audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+                            bookmark.redditTranslationsUrl = redditTranslationsURL
+                            bookmark.redditTranslationsTitle = redditTranslationsTitle
+                        }
+                        sourceContent?.configureBookmark(bookmark)
+                    }
+                )
+
+                // Preserve selected same-store history promotion in this commit.
+                // A later throwing write must not turn a durable toggle into failure.
+                let hasHistory = realm.configuration.objectTypes?.contains { $0 == HistoryRecord.self } ?? true
+                if hasHistory,
+                   let history = HistoryRecord.getOpenedRecord(forURL: url, in: realm),
+                   history.isDemoted != false {
+                    history.isDemoted = false
+                    history.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                }
+                return true
+            }
+        }()
+
+        // Optional analysis cannot change the committed result. Do not enqueue
+        // it for a removed bookmark, cancelled caller or retired store selection.
+        if saved, !Task.isCancelled, let html,
+           admission.matchesCurrentStorageIdentity({
+               RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+           }),
+           !followsConfiguredBookmarkStore || admission.matchesCurrentStorageIdentity({
+               RealmBackgroundActor.shared.realmCacheKey(for: ReaderContentLoader.bookmarkRealmConfiguration)
+           }) {
+            await ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer?(url, imageURL, title, html)
+        }
+        return saved
     }
 
     @MainActor
