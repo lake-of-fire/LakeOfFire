@@ -666,6 +666,7 @@ final class LibraryCategoryFieldOwnershipTests: XCTestCase, @unchecked Sendable 
         configureLakeOfFireMutationTrackingForTesting(&configuration)
         var replacementConfiguration = configuration
         replacementConfiguration.fileURL = directory.appendingPathComponent("replacement.realm")
+        configureLakeOfFireMutationTrackingForTesting(&replacementConfiguration)
         var retiredConfiguration = configuration
         retiredConfiguration.fileURL = directory.appendingPathComponent("retired.realm")
         let captured = configuration
@@ -696,11 +697,19 @@ final class LibraryCategoryFieldOwnershipTests: XCTestCase, @unchecked Sendable 
                 }
             }
         }
+        let original = try diskSnapshot(configuration)
+        let replacement = try diskSnapshot(replacementConfiguration)
+        let expectedJournalRecords: Set<String> = [
+            "\(FeedCategory.className()).\(categoryID)",
+            "\(LibraryConfiguration.className()).\(libraryID)",
+        ]
+        XCTAssertEqual(Set(original.generations.keys), expectedJournalRecords)
+        XCTAssertEqual(Set(replacement.generations.keys), expectedJournalRecords)
         return CategoryFieldDiskFixture(
             configuration: configuration, replacementConfiguration: replacementConfiguration,
             retiredConfiguration: retiredConfiguration,
-            owner: try diskOwner(configuration), original: try diskSnapshot(configuration),
-            replacement: try diskSnapshot(replacementConfiguration)
+            owner: try diskOwner(configuration), original: original,
+            replacement: replacement
         )
     }
 
