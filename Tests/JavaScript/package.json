@@ -1,0 +1,10 @@
+{
+  "name": "lake-of-fire-javascript-tests",
+  "private": true,
+  "scripts": {
+    "test:publication-date": "node readability-publication-date.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}

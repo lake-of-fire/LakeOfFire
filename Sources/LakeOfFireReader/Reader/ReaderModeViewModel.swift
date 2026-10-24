@@ -1090,6 +1090,8 @@ private func rebuildCanonicalSnippetReadabilityHTML(
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     let extractedByline = (try? document.getElementById("reader-byline")?.text(trimAndNormaliseWhitespace: false))
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    let extractedPublicationDate = (try? document.getElementById("reader-publication-date")?.text(trimAndNormaliseWhitespace: false))
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     let extractedContent = (try? document.getElementById("reader-content")?.html())
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     guard let extractedContent, !extractedContent.isEmpty else {
@@ -1102,6 +1104,8 @@ private func rebuildCanonicalSnippetReadabilityHTML(
         ?? ""
     let sanitizedTitle = sanitizeReadabilityFragment(resolvedTitle)
     let sanitizedByline = sanitizeReadabilityFragment(extractedByline ?? "")
+    let resolvedPublishedTime = trimmedNonEmptyReadabilityText(publishedTime)
+        ?? trimmedNonEmptyReadabilityText(extractedPublicationDate)
     let sanitizedContent = sanitizeReadabilityFragment(extractedContent)
     let shouldHideReaderTitle = hideReaderTitleOverride
         ?? ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
@@ -1136,7 +1140,7 @@ private func rebuildCanonicalSnippetReadabilityHTML(
     return buildCanonicalReadabilityHTML(
         title: sanitizedTitle,
         byline: sanitizedByline,
-        publishedTime: publishedTime,
+        publishedTime: resolvedPublishedTime,
         content: sanitizedContent,
         contentURL: contentURL.canonicalReaderContentURLForHotfix(),
         hideReaderTitle: shouldHideReaderTitle
