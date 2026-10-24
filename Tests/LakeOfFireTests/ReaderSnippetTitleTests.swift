@@ -8,6 +8,25 @@ import SwiftUIWebView
 import SwiftSoup
 
 final class ReaderSnippetTitleTests: XCTestCase {
+    func testReaderLoaderBuilderProducesOnlyRecoverableContentURLs() throws {
+        let webURL = try XCTUnwrap(URL(
+            string: "https://example.org/read?chapter=1&source=a%26b#part"
+        ))
+        let snippetURL = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "alpha%2Fbeta"))
+        let readerFileURL = try XCTUnwrap(URL(string: "reader-file://file/load/local/book.html"))
+        for source in [webURL, snippetURL, readerFileURL] {
+            let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: source))
+            XCTAssertEqual(loaderURL.readerLoaderContentURL, source)
+        }
+
+        let nestedLoader = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: webURL))
+        let executableURL = try XCTUnwrap(URL(string: "javascript:alert(1)"))
+        let dataURL = try XCTUnwrap(URL(string: "data:text/html,hello"))
+        XCTAssertNil(ReaderContentLoader.readerLoaderURL(for: nestedLoader))
+        XCTAssertNil(ReaderContentLoader.readerLoaderURL(for: executableURL))
+        XCTAssertNil(ReaderContentLoader.readerLoaderURL(for: dataURL))
+    }
+
     private func makeRealmConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {
         let realmURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(name)
@@ -1604,3 +1623,4 @@ private final class OwnedImportWriteProbe: @unchecked Sendable {
         }
     }
 }
+

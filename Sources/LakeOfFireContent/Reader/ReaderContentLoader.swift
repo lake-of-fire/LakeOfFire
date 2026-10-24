@@ -22,9 +22,7 @@ fileprivate extension URL {
 }
 
 public extension URL {
-    var isReaderURLLoaderURL: Bool {
-        return scheme == "internal" && host == "local" && path == "/load/reader"
-    }
+    var isReaderURLLoaderURL: Bool { isReaderLoaderTransportURL }
 }
 
 /// Loads from any source by URL.
@@ -955,7 +953,11 @@ public struct ReaderContentLoader {
         guard let encodedURL = contentURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
             return nil
         }
-        return URL(string: "internal://local/load/reader?reader-url=\(encodedURL)")
+        guard let loaderURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)"),
+              loaderURL.readerLoaderContentURL == contentURL else {
+            return nil
+        }
+        return loaderURL
     }
     
     @MainActor
@@ -1949,3 +1951,4 @@ private extension ReaderContentLoader {
         record.displayPublicationDate = source.displayPublicationDate
     }
 }
+

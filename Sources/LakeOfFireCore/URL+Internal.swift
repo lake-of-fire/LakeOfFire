@@ -5,37 +5,54 @@ public extension URL {
         return absoluteString.hasPrefix("internal://local/snippet?key=")
     }
 
+    /// Only the exact reader-loader endpoint is a transport URL. A similarly
+    /// named path or an authority containing a port/userinfo is ordinary input.
+    var isReaderLoaderTransportURL: Bool {
+        scheme?.lowercased() == "internal"
+            && host?.lowercased() == "local"
+            && port == nil
+            && user == nil
+            && password == nil
+            && path == "/load/reader"
+    }
+
     var readerLoaderContentURL: URL? {
-        guard scheme?.lowercased() == "internal",
-              host?.lowercased() == "local",
-              path == "/load/reader" else {
+        guard isReaderLoaderTransportURL,
+              let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
+              let items = components.queryItems,
+              items.count == 1,
+              items[0].name == "reader-url",
+              let encodedReaderURL = items[0].value,
+              !encodedReaderURL.isEmpty else {
             return nil
         }
 
-        func absoluteURL(from value: String) -> URL? {
-            URL(string: value).flatMap { $0.scheme == nil ? nil : $0 }
-        }
-
-        if let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
-           let readerURLString = components.queryItems?.first(where: { $0.name == "reader-url" })?.value {
-            if let readerURL = absoluteURL(from: readerURLString) {
-                return readerURL
+        // URLComponents already removes the transport's one encoding layer.
+        // An older writer encoded that value twice, so permit one more decode
+        // only when it does not yet parse as an allowed absolute content URL.
+        var candidate = encodedReaderURL
+        for _ in 0..<2 {
+            if let contentURL = URL(string: candidate),
+               let contentScheme = contentURL.scheme?.lowercased(),
+               !contentURL.isReaderLoaderTransportURL {
+                let isWebURL = (contentScheme == "http" || contentScheme == "https")
+                    && contentURL.host?.isEmpty == false
+                let isLocalContent = contentURL.isSnippetURL
+                    || contentScheme == "reader-file"
+                if isWebURL || isLocalContent {
+                    // A same-document fragment on the loader belongs to the
+                    // visible source, never to the private transport URL.
+                    guard let fragment = components.fragment else { return contentURL }
+                    var source = URLComponents(url: contentURL, resolvingAgainstBaseURL: false)
+                    source?.fragment = fragment
+                    return source?.url
+                }
             }
-            if let decodedReaderURL = readerURLString.removingPercentEncoding,
-               let readerURL = absoluteURL(from: decodedReaderURL) {
-                return readerURL
-            }
+            guard let decoded = candidate.removingPercentEncoding,
+                  decoded != candidate else { break }
+            candidate = decoded
         }
-
-        guard let range = absoluteString.range(of: "reader-url=") else {
-            return nil
-        }
-        let rawReaderURL = String(absoluteString[range.upperBound...])
-        if let decodedReaderURL = rawReaderURL.removingPercentEncoding,
-           let readerURL = absoluteURL(from: decodedReaderURL) {
-            return readerURL
-        }
-        return absoluteURL(from: rawReaderURL)
+        return nil
     }
 
     var snippetKey: String? {
@@ -85,3 +102,4 @@ public func urlsMatchWithoutHash(_ lhs: URL?, _ rhs: URL?) -> Bool {
         return false
     }
 }
+

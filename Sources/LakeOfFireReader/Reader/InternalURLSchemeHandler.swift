@@ -26,6 +26,13 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
             urlSchemeTask.didFinish()
             return
         }
+        // The private reader transport must decode to one unambiguous source.
+        // Other /load/ endpoints (including optional reader fonts) retain their
+        // existing response behavior.
+        if url.path.hasPrefix("/load/reader"), url.readerLoaderContentURL == nil {
+            urlSchemeTask.didFailWithError(CustomSchemeHandlerError.notFound)
+            return
+        }
         if url.path.hasPrefix(ReaderExternalSegmentSidecarScheme.internalReader.endpointPathPrefix) {
             guard let sidecar = readerExternalSegmentSidecarResponse(
                 for: url,
@@ -52,3 +59,4 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
     public func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
     }
 }
+
