@@ -375,7 +375,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
             return contents.compactMap { ReaderContentLoader.ContentReference(content: $0) }
         }()
         for contentRef in contentRefs {
-            guard let content = try await contentRef.resolveOnMainActor() else { continue }
+            guard let content = try await contentRef.resolveOnMainActor(),
+                  !content.isInvalidated else { continue }
             let shouldStripClipboardIndicator = content.isFromClipboard || content.url.isSnippetURL
             let finalTitle = newTitle.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
             let existingTitle = content.title
@@ -386,10 +387,13 @@ public class ReaderViewModel: NSObject, ObservableObject {
             )
             if !finalTitle.isEmpty, existingTitle != finalTitle || content.author != author ?? "" {
                 try await content.asyncWrite { _, content in
+                    let desiredAuthor = author ?? ""
+                    guard content.title != finalTitle || content.author != desiredAuthor else { return }
                     content.title = finalTitle
-                    content.author = author ?? ""
+                    content.author = desiredAuthor
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }
+                guard !content.isInvalidated else { continue }
                 logTitleTrace(
                     "stage=readerViewModel.pageMetadataUpdated.persisted contentURL=\(content.url.absoluteString) key=\(content.compoundKey) persistedTitle=\(finalTitle.debugTitleFragment) persistedAuthor=\((author ?? "").debugTitleFragment)"
                 )

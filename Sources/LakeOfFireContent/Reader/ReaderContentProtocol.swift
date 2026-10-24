@@ -329,18 +329,39 @@ public extension ReaderContentProtocol {
 
     @MainActor
     func asyncWrite(_ block: @escaping @RealmBackgroundActor (Realm, any ReaderContentProtocol) -> Void) async throws {
-        let config = realm?.configuration ?? .defaultConfiguration
-        let compoundKey = compoundKey
-        let cls = type(of: self)// objectSchema.objectClass
+        // An unmanaged or retired row cannot nominate default storage, and
+        // invalidated rows must be rejected before reading persisted identity.
+        guard !isInvalidated, let sourceRealm = realm else { return }
+        let configuration = sourceRealm.configuration
+        let key = compoundKey
+        let contentType = type(of: self)
+        let creationDate = createdAt
+        let contentURL = url
+        let admission = RealmBackgroundActor.shared.captureStorageAdmission(for: configuration)
         try await { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config)
-            guard let content = realm.object(ofType: cls, forPrimaryKey: compoundKey) else { return }
-//            await realm.asyncRefresh()
-            try await realm.asyncWrite {
-                block(realm, content)
+            let targetRealm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: configuration, storageAdmission: admission
+            )
+            try await targetRealm.asyncWritePreservingOwnership {
+                guard admission.matchesCurrentStorageIdentity({
+                    RealmBackgroundActor.shared.realmCacheKey(for: configuration)
+                }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+                // Queued admission can advance the Realm and delete the row.
+                // Resolve in the admitted snapshot instead of retaining a
+                // managed accessor selected before the suspension.
+                guard let content = targetRealm.object(ofType: contentType, forPrimaryKey: key),
+                      !content.isInvalidated,
+                      content.createdAt == creationDate,
+                      content.url == contentURL else { return }
+                block(targetRealm, content)
+                guard admission.matchesCurrentStorageIdentity({
+                    RealmBackgroundActor.shared.realmCacheKey(for: configuration)
+                }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
             }
         }()
-        await realm?.asyncRefresh()
+        if !sourceRealm.isFrozen {
+            await sourceRealm.asyncRefresh()
+        }
     }
 }
 
