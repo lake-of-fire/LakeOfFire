@@ -794,11 +794,43 @@ public struct ReaderContentLoader {
         content: any ReaderContentProtocol,
         readerFileManager: ReaderFileManager
     ) async throws -> URL? {
+        try await load(
+            content: content,
+            readerFileManager: readerFileManager,
+            probeHTML: { candidate in
+                try await hasLocallyRetrievableHTML(
+                    for: candidate,
+                    readerFileManager: readerFileManager
+                )
+            },
+            lookupStoredContent: { url in
+                try await lookupStoredContent(url: url)
+            }
+        )
+    }
+
+    /// Shares the real routing and row admission with controlled producer tests.
+    @MainActor
+    internal static func load(
+        content: any ReaderContentProtocol,
+        readerFileManager: ReaderFileManager,
+        probeHTML: @MainActor (any ReaderContentProtocol) async throws -> Bool,
+        lookupStoredContent: @MainActor (URL) async throws -> (any ReaderContentProtocol)?
+    ) async throws -> URL? {
+        try Task.checkCancellation()
+        guard !content.isInvalidated else { throw CancellationError() }
         let startedAt = Date()
         let contentURL = content.url
+        func validateContent() throws {
+            try Task.checkCancellation()
+            guard !content.isInvalidated, content.url == contentURL else {
+                throw CancellationError()
+            }
+        }
         if contentURL.isEBookURL || contentURL.isReaderFileURL {
             _ = try? readerFileManager.localFileURL(forReaderFileURL: contentURL)
         }
+        try validateContent()
         logReaderLoad(
             "stage=contentLoader.loadContent.begin contentURL=\(contentURL.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault) readerAvailable=\(content.isReaderModeAvailable) hasHTML=\(content.hasHTML)"
         )
@@ -817,10 +849,14 @@ public struct ReaderContentLoader {
         }
 
         let htmlProbeStartedAt = Date()
-        let contentHasLocallyRetrievableHTML = try await hasLocallyRetrievableHTML(
-            for: content,
-            readerFileManager: readerFileManager
-        )
+        let contentHasLocallyRetrievableHTML: Bool
+        do {
+            contentHasLocallyRetrievableHTML = try await probeHTML(content)
+        } catch {
+            try validateContent()
+            throw error
+        }
+        try validateContent()
         logReaderLoad(
             "stage=contentLoader.loadContent.htmlProbe contentURL=\(contentURL.absoluteString) hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(htmlProbeStartedAt)))"
         )
@@ -833,9 +869,9 @@ public struct ReaderContentLoader {
                 return loaderURL
             }
             logReaderLoad(
-                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=snippetDirect elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(contentURL.absoluteString) reason=snippetDirect elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
             )
-            return content.url
+            return contentURL
         }
 
         if ["http", "https"].contains(contentURL.scheme?.lowercased()) {
@@ -848,22 +884,32 @@ public struct ReaderContentLoader {
                 return loaderURL
             }
 
-            if let matchingContent = try await lookupStoredContent(url: contentURL),
-               matchingContent.isReaderModeByDefault,
-               (try? await hasLocallyRetrievableHTML(
-                    for: matchingContent,
-                    readerFileManager: readerFileManager
-               )) == true,
-               let matchingURL = readerLoaderURL(for: matchingContent.url) {
-                logReaderLoad(
-                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(matchingURL.absoluteString) reason=matchingContentReaderDefault matchingContentURL=\(matchingContent.url.absoluteString) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
-                )
-                return matchingURL
+            let matchingContent: (any ReaderContentProtocol)?
+            do {
+                matchingContent = try await lookupStoredContent(contentURL)
+            } catch {
+                try validateContent()
+                throw error
+            }
+            try validateContent()
+            if let matchingContent, !matchingContent.isInvalidated,
+               matchingContent.isReaderModeByDefault {
+                let matchingContentURL = matchingContent.url
+                let matchingContentHasHTML = (try? await probeHTML(matchingContent)) == true
+                try validateContent()
+                if matchingContentHasHTML, !matchingContent.isInvalidated,
+                   matchingContent.url == matchingContentURL,
+                   let matchingURL = readerLoaderURL(for: matchingContentURL) {
+                    logReaderLoad(
+                        "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(matchingURL.absoluteString) reason=matchingContentReaderDefault matchingContentURL=\(matchingContentURL.absoluteString) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+                    )
+                    return matchingURL
+                }
             }
             logReaderLoad(
-                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=httpDirect elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(contentURL.absoluteString) reason=httpDirect elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
             )
-            return content.url
+            return contentURL
         }
 
         if contentURL.isReaderFileURL,
@@ -876,9 +922,9 @@ public struct ReaderContentLoader {
         }
 
         logReaderLoad(
-            "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=directFallback elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+            "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(contentURL.absoluteString) reason=directFallback elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
         )
-        return content.url
+        return contentURL
     }
 
     static func docIsPlainText(doc: SwiftSoup.Document) -> Bool {
