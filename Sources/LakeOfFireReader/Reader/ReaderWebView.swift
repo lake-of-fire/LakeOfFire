@@ -253,7 +253,8 @@ final class ReaderWebViewHandler {
         try await context.readerModeViewModel.onNavigationCommitted(
             readerContent: context.readerContent,
             newState: state,
-            scriptCaller: context.scriptCaller
+            scriptCaller: context.scriptCaller,
+            documentIsCurrent: { context.owns(requiringSelection: true) }
         )
         try requireCurrentContent()
         try await context.readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)

@@ -39,10 +39,28 @@ private final class NavigationLifetimeProbe {
     var finishEntered: XCTestExpectation?
     var failSettings = false
     var failFinish = false
+    var fontCount = 0
+    var paginationCount = 0
+    var fontGate: NavigationLifetimeGate?
+    var paginationGate: NavigationLifetimeGate?
+    var fontEntered: XCTestExpectation?
+    var paginationEntered: XCTestExpectation?
+    var failFont = false
+    var failPagination = false
 
     func evaluate(_ script: String, title: String?) async throws -> Bool? {
         if let title {
             titles.append(title)
+        } else if script.contains("stylesheetURLTemplate") {
+            fontCount += 1
+            fontEntered?.fulfill()
+            await fontGate?.wait()
+            if failFont { throw NavigationLifetimeError.controlledFailure }
+        } else if script.contains("window.paginationTrackingBookKey = bookKey") {
+            paginationCount += 1
+            paginationEntered?.fulfill()
+            await paginationGate?.wait()
+            if failPagination { throw NavigationLifetimeError.controlledFailure }
         } else if script.contains("isNextLoadInReaderMode") {
             finishCount += 1
             finishEntered?.fulfill()
@@ -134,7 +152,7 @@ private final class NavigationLifetimeFixture {
     let state: WebViewState
     var externalFinishCount = 0
 
-    init(managed: Bool, preload: Bool, bindCaller: Bool) throws {
+    init(managed: Bool, preload: Bool, bindCaller: Bool, snippet: Bool = false) throws {
         let content = ReaderContent()
         let mode = ReaderModeViewModel()
         let media = NavigationLifetimeMedia()
@@ -149,6 +167,11 @@ private final class NavigationLifetimeFixture {
         record.url = URL(string: "https://example.invalid/navigation-lifetime")!
         record.title = "Original title"
         record.rssContainsFullContent = true
+        if snippet {
+            record.url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: record.compoundKey))
+            record.html = "<p>Captured snippet content</p>"
+            record.isReaderModeByDefault = true
+        }
         let realm: Realm?
         if managed {
             var recordConfiguration = Realm.Configuration(
@@ -261,6 +284,8 @@ private final class NavigationLifetimeCleanup {
         for fixture in fixtures {
             await fixture.probe.settingsGate?.release()
             await fixture.probe.finishGate?.release()
+            await fixture.probe.fontGate?.release()
+            await fixture.probe.paginationGate?.release()
         }
 
         let joined = XCTestExpectation(description: "Fixture production tasks and observers settled")
@@ -300,9 +325,9 @@ final class ReaderNavigationCallbackLifetimeTests: XCTestCase {
         return owner
     }
 
-    private func fixture(managed: Bool = false, preload: Bool = false, bindCaller: Bool = true) throws -> NavigationLifetimeFixture {
+    private func fixture(managed: Bool = false, preload: Bool = false, bindCaller: Bool = true, snippet: Bool = false) throws -> NavigationLifetimeFixture {
         let owner = cleanupOwner()
-        let result = try NavigationLifetimeFixture(managed: managed, preload: preload, bindCaller: bindCaller)
+        let result = try NavigationLifetimeFixture(managed: managed, preload: preload, bindCaller: bindCaller, snippet: snippet)
         owner.fixtures.append(result)
         return result
     }
@@ -413,6 +438,223 @@ final class ReaderNavigationCallbackLifetimeTests: XCTestCase {
         XCTAssertTrue(current.content === currentRecord)
         XCTAssertEqual(f.externalFinishCount, 1)
         XCTAssertEqual(f.probe.titles, ["Replacement owner"])
+    }
+
+    func testCapturedModeRetirementDuringFontEvaluationDoesNotPublishPreparation() async throws {
+        guard #available(iOS 16.4, macOS 14, *) else { throw XCTSkip("Font injection requires the supported WebKit API") }
+        for retirement in ["account", "tombstone", "presentation"] {
+            let f = try fixture(managed: true, snippet: true)
+            var accountIsCurrent = true
+            var presentationIsCurrent = true
+            f.content.replaceSelection(with: f.record, admission: { [weak record = f.record] in
+                accountIsCurrent && presentationIsCurrent
+                    && record?.isInvalidated == false && record?.isDeleted == false
+            })
+            let selectionID = f.content.currentSelectionID
+            let selectionFence = f.content.makeSelectionCommitFence(requiring: selectionID)
+            let held = gate()
+            let entered = expectation(description: "Captured snippet font evaluation entered")
+            f.probe.fontGate = held
+            f.probe.fontEntered = entered
+            var publicCommits = 0
+            f.handler.onNavigationCommitted = { _ in publicCommits += 1 }
+            XCTAssertFalse(f.mode.isReaderMode)
+            XCTAssertFalse(f.mode.isReaderModeLoading)
+
+            f.handler.onNavigationCommitted(state: f.state)
+            let task = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+            await fulfillment(of: [entered], timeout: 2)
+            switch retirement {
+            case "account": accountIsCurrent = false
+            case "presentation": presentationIsCurrent = false
+            default:
+                try XCTUnwrap(f.realm).write { f.record.isDeleted = true }
+                XCTAssertFalse(f.record.isInvalidated)
+            }
+            XCTAssertEqual(f.content.currentSelectionID, selectionID)
+            // Checking the full receipt here would withdraw the token and hide
+            // the missing inner admission in the original implementation.
+            XCTAssertTrue(selectionFence(), retirement)
+            await held.release()
+            guard case .failure(let error)? = await settle(task, releasing: held) else {
+                XCTFail("Retired font continuation succeeded: \(retirement)")
+                continue
+            }
+            XCTAssertTrue(error is CancellationError)
+            XCTAssertFalse(f.mode.isReaderMode, retirement)
+            XCTAssertFalse(f.mode.isReaderModeLoading, retirement)
+            XCTAssertEqual(f.probe.fontCount, 1)
+            XCTAssertEqual(f.probe.paginationCount, 0)
+            XCTAssertTrue(f.media.committed.isEmpty)
+            XCTAssertEqual(publicCommits, 0)
+            XCTAssertFalse(f.content.isReaderMainFrameNavigating)
+        }
+    }
+
+    func testCapturedModeRetirementDuringPaginationSuccessOrErrorDoesNotPublishPreparation() async throws {
+        for failingEvaluation in [false, true] {
+            let f = try fixture(snippet: true)
+            var admitted = true
+            f.content.replaceSelection(with: f.record, admission: { admitted })
+            let selectionID = f.content.currentSelectionID
+            let selectionFence = f.content.makeSelectionCommitFence(requiring: selectionID)
+            let held = gate()
+            let entered = expectation(description: "Pagination evaluation entered after font admission")
+            f.probe.paginationGate = held
+            f.probe.paginationEntered = entered
+            f.probe.failPagination = failingEvaluation
+
+            f.handler.onNavigationCommitted(state: f.state)
+            let task = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+            await fulfillment(of: [entered], timeout: 2)
+            admitted = false
+            XCTAssertEqual(f.content.currentSelectionID, selectionID)
+            XCTAssertTrue(selectionFence())
+            await held.release()
+            guard case .failure(let error)? = await settle(task, releasing: held) else {
+                XCTFail("Retired pagination continuation succeeded")
+                continue
+            }
+            XCTAssertTrue(error is CancellationError)
+            XCTAssertFalse(f.mode.isReaderMode)
+            XCTAssertFalse(f.mode.isReaderModeLoading)
+            XCTAssertEqual(f.probe.paginationCount, 1)
+            XCTAssertTrue(f.media.committed.isEmpty)
+            XCTAssertFalse(f.content.isReaderMainFrameNavigating)
+        }
+    }
+
+    func testCurrentCapturedModePreservesSuccessfulAndFailedJavaScriptPreparation() async throws {
+        guard #available(iOS 16.4, macOS 14, *) else { throw XCTSkip("Font injection requires the supported WebKit API") }
+        for failure in ["none", "font", "pagination"] {
+            let f = try fixture(snippet: true)
+            f.content.replaceSelection(with: f.record, admission: { true })
+            f.probe.failFont = failure == "font"
+            f.probe.failPagination = failure == "pagination"
+            var publicCommits = 0
+            f.handler.onNavigationCommitted = { _ in publicCommits += 1 }
+            XCTAssertFalse(f.mode.isReaderMode)
+            XCTAssertFalse(f.mode.isReaderModeLoading)
+
+            try await commit(f)
+
+            XCTAssertTrue(f.mode.isReaderMode, failure)
+            XCTAssertTrue(f.mode.isReaderModeLoading, failure)
+            XCTAssertEqual(f.probe.fontCount, 1)
+            XCTAssertEqual(f.probe.paginationCount, 1)
+            XCTAssertEqual(f.media.committed, [ObjectIdentifier(f.record)])
+            XCTAssertEqual(publicCommits, 1)
+        }
+    }
+
+    func testRetiredModeCommitNeedsExplicitCapturedReplacementBeforeRetry() async throws {
+        let f = try fixture(snippet: true)
+        var admitted = true
+        f.content.replaceSelection(with: f.record, admission: { admitted })
+        let held = gate()
+        let entered = expectation(description: "Original preparation suspended")
+        f.probe.paginationGate = held
+        f.probe.paginationEntered = entered
+        f.handler.onNavigationCommitted(state: f.state)
+        let old = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+        await fulfillment(of: [entered], timeout: 2)
+        admitted = false
+        await held.release()
+        guard case .failure(let error)? = await settle(old, releasing: held) else {
+            return XCTFail("Retired preparation succeeded")
+        }
+        XCTAssertTrue(error is CancellationError)
+        XCTAssertFalse(f.mode.isReaderModeLoading)
+        XCTAssertFalse(f.mode.isReaderMode)
+        f.probe.paginationEntered = nil
+        admitted = true
+
+        f.handler.onNavigationCommitted(state: f.state)
+        guard case .failure(let retryError)? = await settle(try XCTUnwrap(f.tasks.onNavigationCommittedTask)) else {
+            return XCTFail("An admitted predicate revived the retired capture")
+        }
+        XCTAssertTrue(retryError is CancellationError)
+        XCTAssertEqual(f.probe.paginationCount, 1)
+
+        f.content.replaceSelection(with: f.record, admission: { admitted })
+        try await commit(f)
+        XCTAssertTrue(f.mode.isReaderMode)
+        XCTAssertTrue(f.mode.isReaderModeLoading)
+        XCTAssertEqual(f.probe.paginationCount, 2)
+        XCTAssertEqual(f.media.committed, [ObjectIdentifier(f.record)])
+    }
+
+    func testModeAdmissionReentryCannotPublishForItsSameURLSuccessor() async throws {
+        let f = try fixture(snippet: true)
+        let successor = HistoryRecord()
+        successor.compoundKey = UUID().uuidString
+        successor.url = f.record.url
+        successor.rssContainsFullContent = true
+        successor.isReaderModeByDefault = true
+        var replaceOnAdmission = false
+        f.content.replaceSelection(with: f.record, admission: { [weak content = f.content] in
+            if replaceOnAdmission {
+                replaceOnAdmission = false
+                content?.replaceSelection(with: successor, admission: { true })
+            }
+            return true
+        })
+        let originalSelectionID = f.content.currentSelectionID
+        let held = gate()
+        let entered = expectation(description: "Old mode pagination evaluation suspended")
+        f.probe.paginationGate = held
+        f.probe.paginationEntered = entered
+        f.handler.onNavigationCommitted(state: f.state)
+        let old = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+        await fulfillment(of: [entered], timeout: 2)
+        replaceOnAdmission = true
+        await held.release()
+        guard case .failure(let error)? = await settle(old, releasing: held) else {
+            return XCTFail("Old mode continuation adopted a reentrant successor")
+        }
+        XCTAssertTrue(error is CancellationError)
+        XCTAssertFalse(f.mode.isReaderMode)
+        XCTAssertFalse(f.mode.isReaderModeLoading)
+        XCTAssertTrue(f.content.content === successor)
+        XCTAssertNotEqual(f.content.currentSelectionID, originalSelectionID)
+        let successorFence = f.content.makeSelectionCommitFence(requiring: f.content.currentSelectionID)
+        XCTAssertTrue(successorFence())
+        f.probe.paginationEntered = nil
+
+        try await commit(f)
+        XCTAssertTrue(f.mode.isReaderMode)
+        XCTAssertTrue(f.mode.isReaderModeLoading)
+        XCTAssertTrue(successorFence())
+        XCTAssertEqual(f.media.committed, [ObjectIdentifier(successor)])
+    }
+
+    func testCancelledModeEvaluationPreservesTheCurrentCapturedSelectionForRetry() async throws {
+        let f = try fixture(snippet: true)
+        f.content.replaceSelection(with: f.record, admission: { true })
+        let selectionFence = f.content.makeSelectionCommitFence(requiring: f.content.currentSelectionID)
+        let held = gate()
+        let entered = expectation(description: "Current mode pagination evaluation suspended")
+        f.probe.paginationGate = held
+        f.probe.paginationEntered = entered
+        f.handler.onNavigationCommitted(state: f.state)
+        let cancelled = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+        await fulfillment(of: [entered], timeout: 2)
+        cancelled.cancel()
+        await held.release()
+        guard case .failure(let error)? = await settle(cancelled, releasing: held) else {
+            return XCTFail("Cancelled mode preparation succeeded")
+        }
+        XCTAssertTrue(error is CancellationError)
+        XCTAssertTrue(selectionFence())
+        XCTAssertFalse(f.mode.isReaderMode)
+        XCTAssertFalse(f.mode.isReaderModeLoading)
+        f.probe.paginationEntered = nil
+
+        try await commit(f)
+        XCTAssertTrue(f.mode.isReaderMode)
+        XCTAssertTrue(f.mode.isReaderModeLoading)
+        XCTAssertTrue(selectionFence())
+        XCTAssertEqual(f.media.committed, [ObjectIdentifier(f.record)])
     }
 
     func testCapturedAdmissionRejectsQueuedNativeCommitBeforeResolverPreparationAndPublicCallback() async throws {
