@@ -317,8 +317,9 @@ class LibraryCategoryViewModel: ObservableObject {
     ) -> Task<UUID?, Error>? {
         guard !Task.isCancelled, let owner, owner.isCurrentStorage, isUserEditable,
               category.id == owner.categoryID, category.createdAt == owner.createdAt else { return nil }
+        let previousSelectedFeed = selectedFeed
         let previousSelection: LibraryCategoryFeedSelection?
-        if let feed = selectedFeed {
+        if let feed = previousSelectedFeed {
             guard let selection = LibraryCategoryFeedSelection(feed: feed) else { return nil }
             previousSelection = selection
         } else {
@@ -344,24 +345,28 @@ class LibraryCategoryViewModel: ObservableObject {
             ) else { return nil }
             try await beforePublication?()
             guard !Task.isCancelled, self.feedCreationRequestID == requestID,
-                  owner.isCurrentStorage, self.selectionMatches(previousSelection),
+                  owner.isCurrentStorage, self.selectionMatches(previousSelection, original: previousSelectedFeed),
                   result.categoryID == owner.categoryID,
                   result.categoryCreatedAt == owner.createdAt else { return nil }
             let realm = try await Realm.open(configuration: owner.realmConfiguration)
             await realm.asyncRefresh()
             guard !Task.isCancelled, self.feedCreationRequestID == requestID,
-                  owner.isCurrentStorage, self.selectionMatches(previousSelection),
-                  let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: result.categoryID),
-                  category.createdAt == result.categoryCreatedAt,
-                  !category.isDeleted, category.isUserEditable,
-                  let feed = realm.object(ofType: Feed.self, forPrimaryKey: result.feedID),
-                  feed.createdAt == result.feedCreatedAt, !feed.isDeleted,
-                  feed.categoryID == result.categoryID else { return nil }
+                  owner.isCurrentStorage, self.selectionMatches(previousSelection, original: previousSelectedFeed),
+                  let rows = result.resolveCommittedRows(in: realm) else { return nil }
+            let category = rows.category
+            let feed = rows.feed
             self.selectedFeed = feed
             // A binding may synchronously select another row or retire the view.
             guard !Task.isCancelled, self.feedCreationRequestID == requestID,
                   owner.isCurrentStorage,
-                  self.selectionMatches(.init(id: result.feedID, createdAt: result.feedCreatedAt)) else { return nil }
+                  !category.isInvalidated, !feed.isInvalidated,
+                  category.createdAt == result.categoryCreatedAt,
+                  !category.isDeleted, category.isUserEditable,
+                  feed.createdAt == result.feedCreatedAt, !feed.isDeleted,
+                  feed.categoryID == result.categoryID,
+                  self.selectionMatches(
+                    .init(id: result.feedID, createdAt: result.feedCreatedAt), original: feed
+                  ) else { return nil }
             didPublish(result.feedID)
             return result.feedID
         }
@@ -369,9 +374,11 @@ class LibraryCategoryViewModel: ObservableObject {
         return task
     }
 
-    private func selectionMatches(_ expected: LibraryCategoryFeedSelection?) -> Bool {
+    private func selectionMatches(_ expected: LibraryCategoryFeedSelection?, original: Feed?) -> Bool {
         guard let feed = selectedFeed else { return expected == nil }
-        guard let selection = LibraryCategoryFeedSelection(feed: feed) else { return false }
+        guard let original, !original.isInvalidated,
+              let selection = LibraryCategoryFeedSelection(feed: feed),
+              feed.isSameObject(as: original) else { return false }
         return selection == expected
     }
 

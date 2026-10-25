@@ -165,6 +165,339 @@ final class LibraryFeedCreationTests: XCTestCase, @unchecked Sendable {
         )
     }
 
+    func testEqualFieldsCategoryReplacementBeforeWriteMakesNoFeedOrJournalChangeAndCanRetry() async throws {
+        let fixture = try await makeFixture()
+        let configuration = fixture.realm.configuration
+        let categoryID = fixture.category.id
+        let createdAt = fixture.category.createdAt
+        let reference = ThreadSafeReference(to: fixture.category)
+        let gate = FeedCreationGate()
+        let entered = expectation(description: "Original category resolved before replacement")
+        let task = Task { @RealmBackgroundActor in
+            try await LibraryDataManager.shared.createEmptyFeedWithIdentity(
+                inCategory: reference, realmConfiguration: configuration,
+                beforeWrite: { await gate.wait(onSuspension: { entered.fulfill() }) }
+            )
+        }
+        addTeardownBlock { task.cancel(); await gate.release(); _ = await task.result }
+        await fulfillment(of: [entered], timeout: 5)
+        try await Self.write(configuration) { writer in
+            let old = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+            let replacement = FeedCategory(value: old)
+            writer.delete(old)
+            writer.add(replacement)
+            replacement.refreshChangeMetadata(explicitlyModified: true)
+        }
+        fixture.realm.refresh()
+        let replacement = try XCTUnwrap(fixture.realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+        XCTAssertTrue(fixture.category.isInvalidated)
+        XCTAssertEqual(replacement.createdAt, createdAt)
+        let authoritativeReplacement = snapshot(fixture.realm)
+        await gate.release()
+        let rejected = try await task.value
+        fixture.realm.refresh()
+        XCTAssertNil(rejected)
+        XCTAssertEqual(snapshot(fixture.realm), authoritativeReplacement)
+        XCTAssertTrue(fixture.realm.objects(Feed.self).isEmpty)
+
+        let retry = try await LibraryDataManager.shared.createEmptyFeedWithIdentity(
+            inCategory: ThreadSafeReference(to: replacement), realmConfiguration: configuration
+        )
+        fixture.realm.refresh()
+        XCTAssertNotNil(retry)
+        XCTAssertEqual(fixture.realm.objects(Feed.self).count, 1)
+        XCTAssertEqual(fixture.realm.objects(BigSyncPendingMutation.self).count, 3)
+    }
+
+    func testEqualFieldsCategoryReplacementBehindQueuedAdmissionPreservesTheOtherWrite() async throws {
+        let fixture = try await makeFixture()
+        let configuration = fixture.realm.configuration
+        let categoryID = fixture.category.id
+        let reference = ThreadSafeReference(to: fixture.category)
+        let creationGate = FeedCreationGate()
+        let peerGate = FeedCreationGate()
+        let resolved = expectation(description: "Creator retains its original actor-owned category")
+        let peerEntered = expectation(description: "Peer owns the replacement transaction")
+        let submitted = expectation(description: "Creator queues its separate owned admission")
+        let task = RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+            Task { @RealmBackgroundActor in
+                try await LibraryDataManager.shared.createEmptyFeedWithIdentity(
+                    inCategory: reference, realmConfiguration: configuration,
+                    beforeWrite: { await creationGate.wait(onSuspension: { resolved.fulfill() }) }
+                )
+            }
+        }
+        addTeardownBlock {
+            task.cancel()
+            await creationGate.release()
+            await peerGate.release()
+            _ = await task.result
+        }
+        await fulfillment(of: [resolved], timeout: 5)
+        let peer = Task { @RealmBackgroundActor in
+            let writer = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try writer.beginWrite()
+            do {
+                let original = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+                let replacement = FeedCategory(value: original)
+                writer.delete(original)
+                writer.add(replacement)
+                replacement.refreshChangeMetadata(explicitlyModified: true)
+                await peerGate.wait(onSuspension: { peerEntered.fulfill() })
+                XCTAssertTrue(writer.isInWriteTransaction)
+                XCTAssertFalse(replacement.isInvalidated)
+                try writer.commitWrite()
+            } catch {
+                if writer.isInWriteTransaction { writer.cancelWrite() }
+                throw error
+            }
+            return Dictionary(uniqueKeysWithValues: writer.objects(BigSyncPendingMutation.self).map {
+                ($0.recordName, $0.generation)
+            })
+        }
+        addTeardownBlock { await peerGate.release(); _ = await peer.result }
+        await fulfillment(of: [peerEntered], timeout: 5)
+        await creationGate.release()
+        await fulfillment(of: [submitted], timeout: 5)
+        await peerGate.release()
+        let peerGenerations = try await peer.value
+        let rejected = try await task.value
+        fixture.realm.refresh()
+        XCTAssertNil(rejected)
+        XCTAssertTrue(fixture.category.isInvalidated)
+        XCTAssertTrue(fixture.realm.objects(Feed.self).isEmpty)
+        XCTAssertEqual(snapshot(fixture.realm).generations, peerGenerations)
+        XCTAssertEqual(peerGenerations.count, 2)
+    }
+
+    func testEqualFieldsCommittedFeedReplacementDoesNotSelectOrScroll() async throws {
+        let fixture = try await makeFixture()
+        let configuration = fixture.realm.configuration
+        let presentation = FeedCreationPresentation()
+        let model = model(fixture, selection: .init(
+            get: { presentation.selected }, set: { presentation.selected = $0 }
+        ))
+        let gate = FeedCreationGate()
+        let committed = expectation(description: "Feed committed before presentation")
+        let task = try XCTUnwrap(model.createFeed(
+            beforePublication: { await gate.wait(onSuspension: { committed.fulfill() }) },
+            didPublish: { presentation.published.append($0) }
+        ))
+        addTeardownBlock { task.cancel(); await gate.release(); _ = await task.result }
+        await fulfillment(of: [committed], timeout: 5)
+        fixture.realm.refresh()
+        let original = try XCTUnwrap(fixture.realm.objects(Feed.self).first)
+        let feedID = original.id
+        let createdAt = original.createdAt
+        try await Self.write(configuration) { writer in
+            let old = try XCTUnwrap(writer.object(ofType: Feed.self, forPrimaryKey: feedID))
+            let replacement = Feed(value: old)
+            replacement.title = "Equal-identity replacement"
+            writer.delete(old)
+            writer.add(replacement)
+            replacement.refreshChangeMetadata(explicitlyModified: true)
+        }
+        fixture.realm.refresh()
+        let authoritativeReplacement = snapshot(fixture.realm)
+        XCTAssertTrue(original.isInvalidated)
+        XCTAssertEqual(fixture.realm.objects(Feed.self).first?.createdAt, createdAt)
+        await gate.release()
+        let result = try await task.value
+        fixture.realm.refresh()
+        XCTAssertNil(result)
+        XCTAssertNil(presentation.selected)
+        XCTAssertTrue(presentation.published.isEmpty)
+        XCTAssertEqual(snapshot(fixture.realm), authoritativeReplacement)
+    }
+
+    func testEqualFieldsCategoryReplacementAfterCommitKeepsFeedWithoutPublishing() async throws {
+        let fixture = try await makeFixture()
+        let configuration = fixture.realm.configuration
+        let categoryID = fixture.category.id
+        let createdAt = fixture.category.createdAt
+        let presentation = FeedCreationPresentation()
+        let model = model(fixture, selection: .init(
+            get: { presentation.selected }, set: { presentation.selected = $0 }
+        ))
+        let gate = FeedCreationGate()
+        let committed = expectation(description: "Accepted feed awaits editor publication")
+        let task = try XCTUnwrap(model.createFeed(
+            beforePublication: { await gate.wait(onSuspension: { committed.fulfill() }) },
+            didPublish: { presentation.published.append($0) }
+        ))
+        addTeardownBlock { task.cancel(); await gate.release(); _ = await task.result }
+        await fulfillment(of: [committed], timeout: 5)
+        fixture.realm.refresh()
+        let feedID = try XCTUnwrap(fixture.realm.objects(Feed.self).first).id
+        try await Self.write(configuration) { writer in
+            let old = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+            let replacement = FeedCategory(value: old)
+            replacement.title = "Equal-identity category replacement"
+            writer.delete(old)
+            writer.add(replacement)
+            replacement.refreshChangeMetadata(explicitlyModified: true)
+        }
+        fixture.realm.refresh()
+        let authoritativeReplacement = snapshot(fixture.realm)
+        XCTAssertTrue(fixture.category.isInvalidated)
+        XCTAssertEqual(fixture.realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID)?.createdAt, createdAt)
+        await gate.release()
+        let result = try await task.value
+        fixture.realm.refresh()
+        XCTAssertNil(result)
+        XCTAssertNil(presentation.selected)
+        XCTAssertTrue(presentation.published.isEmpty)
+        XCTAssertEqual(fixture.realm.objects(Feed.self).first?.id, feedID)
+        XCTAssertEqual(snapshot(fixture.realm), authoritativeReplacement)
+    }
+
+    func testEqualFieldsReplacementDuringSelectionSetterCannotPublishStaleScroll() async throws {
+        let fixture = try await makeFixture()
+        let presentation = FeedCreationPresentation()
+        var replacedFeedID: UUID?
+        var replacedCreatedAt: Date?
+        let model = model(fixture, selection: .init(
+            get: { presentation.selected },
+            set: { value in
+                guard let value else { presentation.selected = nil; return }
+                do {
+                    let realm = try XCTUnwrap(value.realm)
+                    replacedFeedID = value.id
+                    replacedCreatedAt = value.createdAt
+                    try realm.write {
+                        let replacement = Feed(value: value)
+                        replacement.title = "Synchronous successor"
+                        realm.delete(value)
+                        realm.add(replacement)
+                        replacement.refreshChangeMetadata(explicitlyModified: true)
+                        presentation.selected = replacement
+                    }
+                } catch { XCTFail("Selection fixture failed: \(error)") }
+            }
+        ))
+        let task = try XCTUnwrap(model.createFeed(didPublish: { presentation.published.append($0) }))
+        let result = try await task.value
+        fixture.realm.refresh()
+        XCTAssertNil(result)
+        XCTAssertTrue(presentation.published.isEmpty)
+        XCTAssertNotNil(replacedFeedID)
+        XCTAssertEqual(presentation.selected?.id, replacedFeedID)
+        XCTAssertEqual(presentation.selected?.createdAt, replacedCreatedAt)
+        XCTAssertEqual(presentation.selected?.title, "Synchronous successor")
+        XCTAssertEqual(fixture.realm.objects(Feed.self).count, 1)
+    }
+
+    func testEqualFieldsPreviousSelectionReplacementSurvivesDelayedCreation() async throws {
+        let fixture = try await makeFixture()
+        let configuration = fixture.realm.configuration
+        let firstCreation = try await create(fixture)
+        let first = try XCTUnwrap(firstCreation)
+        fixture.realm.refresh()
+        let original = try XCTUnwrap(fixture.realm.object(ofType: Feed.self, forPrimaryKey: first.feedID))
+        let presentation = FeedCreationPresentation()
+        presentation.selected = original
+        let model = model(fixture, selection: .init(
+            get: { presentation.selected }, set: { presentation.selected = $0 }
+        ))
+        let gate = FeedCreationGate()
+        let committed = expectation(description: "Second feed committed with original selection captured")
+        let task = try XCTUnwrap(model.createFeed(
+            beforePublication: { await gate.wait(onSuspension: { committed.fulfill() }) },
+            didPublish: { presentation.published.append($0) }
+        ))
+        addTeardownBlock { task.cancel(); await gate.release(); _ = await task.result }
+        await fulfillment(of: [committed], timeout: 5)
+        try await Self.write(configuration) { writer in
+            let old = try XCTUnwrap(writer.object(ofType: Feed.self, forPrimaryKey: first.feedID))
+            let replacement = Feed(value: old)
+            replacement.title = "New selected incarnation"
+            writer.delete(old)
+            writer.add(replacement)
+            replacement.refreshChangeMetadata(explicitlyModified: true)
+        }
+        fixture.realm.refresh()
+        let successor = try XCTUnwrap(fixture.realm.object(ofType: Feed.self, forPrimaryKey: first.feedID))
+        presentation.selected = successor
+        let authoritativeReplacement = snapshot(fixture.realm)
+        await gate.release()
+        let result = try await task.value
+        fixture.realm.refresh()
+        XCTAssertNil(result)
+        XCTAssertTrue(original.isInvalidated)
+        XCTAssertTrue(presentation.selected?.isSameObject(as: successor) == true)
+        XCTAssertTrue(presentation.published.isEmpty)
+        XCTAssertEqual(fixture.realm.objects(Feed.self).count, 2)
+        XCTAssertEqual(snapshot(fixture.realm), authoritativeReplacement)
+    }
+
+    func testCommittedPhysicalReferencesResolveOnceWithoutChangingResultEquality() async throws {
+        let fixture = try await makeFixture()
+        let creation = try await create(fixture)
+        let result = try XCTUnwrap(creation)
+        let copy = result
+        fixture.realm.refresh()
+        XCTAssertEqual(result, copy)
+        let resolved = try XCTUnwrap(result.resolveCommittedRows(in: fixture.realm))
+        XCTAssertTrue(resolved.category.isSameObject(as: fixture.category))
+        XCTAssertTrue(resolved.feed.isSameObject(as:
+            fixture.realm.object(ofType: Feed.self, forPrimaryKey: result.feedID)
+        ))
+        XCTAssertEqual(result, copy)
+        XCTAssertNil(copy.resolveCommittedRows(in: fixture.realm))
+    }
+
+    func testWrongStoreAndActiveWriteDoNotConsumeCommittedPublicationReferences() async throws {
+        let fixture = try await makeFixture()
+        let other = try await makeFixture()
+        let otherBefore = snapshot(other.realm)
+        let creation = try await create(fixture)
+        let result = try XCTUnwrap(creation)
+        fixture.realm.refresh()
+        XCTAssertNil(result.resolveCommittedRows(in: other.realm))
+        try fixture.realm.write {
+            XCTAssertNil(result.resolveCommittedRows(in: fixture.realm))
+            XCTAssertTrue(fixture.realm.isInWriteTransaction)
+        }
+        XCTAssertNotNil(result.resolveCommittedRows(in: fixture.realm))
+        XCTAssertEqual(snapshot(other.realm), otherBefore)
+    }
+
+    func testSamePhysicalRowsCanChangeMetadataBeforeCreationPublication() async throws {
+        let fixture = try await makeFixture()
+        let configuration = fixture.realm.configuration
+        let categoryID = fixture.category.id
+        let presentation = FeedCreationPresentation()
+        let model = model(fixture, selection: .init(
+            get: { presentation.selected }, set: { presentation.selected = $0 }
+        ))
+        let gate = FeedCreationGate()
+        let committed = expectation(description: "Committed physical rows await an ordinary edit")
+        let task = try XCTUnwrap(model.createFeed(
+            beforePublication: { await gate.wait(onSuspension: { committed.fulfill() }) },
+            didPublish: { presentation.published.append($0) }
+        ))
+        addTeardownBlock { task.cancel(); await gate.release(); _ = await task.result }
+        await fulfillment(of: [committed], timeout: 5)
+        try await Self.write(configuration) { writer in
+            let category = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+            let feed = try XCTUnwrap(writer.objects(Feed.self).first)
+            category.title = "Edited original category"
+            feed.title = "Edited committed feed"
+            category.refreshChangeMetadata(explicitlyModified: true)
+            feed.refreshChangeMetadata(explicitlyModified: true)
+        }
+        fixture.realm.refresh()
+        let authoritativeEdits = snapshot(fixture.realm)
+        await gate.release()
+        let publishedID = try await task.value
+        let feedID = try XCTUnwrap(publishedID)
+        fixture.realm.refresh()
+        XCTAssertEqual(presentation.selected?.id, feedID)
+        XCTAssertEqual(presentation.selected?.title, "Edited committed feed")
+        XCTAssertEqual(presentation.published, [feedID])
+        XCTAssertEqual(snapshot(fixture.realm), authoritativeEdits)
+    }
+
     func testCreationPreservesDefaultsAndJournalsOnlyTheNewFeed() async throws {
         let fixture = try await makeFixture()
         let before = snapshot(fixture.realm)
