@@ -415,6 +415,177 @@ final class ReaderNavigationCallbackLifetimeTests: XCTestCase {
         XCTAssertEqual(f.probe.titles, ["Replacement owner"])
     }
 
+    func testCapturedAdmissionRejectsQueuedNativeCommitBeforeResolverPreparationAndPublicCallback() async throws {
+        let f = try fixture(managed: true)
+        var admitted = true
+        var resolverCalls = 0
+        var publicCommits = 0
+        ReaderContent.contentResolver = { _, _, _ in
+            resolverCalls += 1
+            return f.record
+        }
+        f.handler.onNavigationCommitted = { _ in publicCommits += 1 }
+        f.content.replaceSelection(with: f.record, admission: { admitted })
+        f.mode.readabilityContent = "Existing preparation"
+        f.handler.onNavigationCommitted(state: f.state)
+        let queued = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+        // No actor yield: dispatch occurred, but the actual commit consumer has
+        // not yet entered ReaderContent.loadWithSelectionReceipt.
+        admitted = false
+        guard case .failure(let error)? = await settle(queued) else {
+            return XCTFail("Retired capture reached native preparation")
+        }
+        XCTAssertTrue(error is CancellationError)
+        XCTAssertEqual(resolverCalls, 0)
+        XCTAssertEqual(f.reader.commitCount, 0)
+        XCTAssertTrue(f.media.committed.isEmpty)
+        XCTAssertEqual(publicCommits, 0)
+        XCTAssertEqual(f.mode.readabilityContent, "Existing preparation")
+        XCTAssertFalse(f.content.isReaderMainFrameNavigating)
+
+        // Rejection is one-way until an explicit, newly admitted selection.
+        admitted = true
+        do {
+            _ = try await f.content.loadWithSelectionReceipt(url: f.state.pageURL)
+            XCTFail("A rejected capture revived")
+        } catch is CancellationError { }
+        f.content.replaceSelection(with: f.record, admission: { admitted })
+        try await commit(f)
+        XCTAssertEqual(f.reader.commitCount, 1)
+        XCTAssertEqual(publicCommits, 1)
+        XCTAssertEqual(resolverCalls, 0)
+    }
+
+    func testCapturedReceiptRechecksAdmissionAfterActualReaderCommitAwait() async throws {
+        let f = try fixture(managed: true)
+        var admitted = true
+        var publicCommits = 0
+        let held = gate()
+        let entered = expectation(description: "Captured commit suspended in the reader")
+        f.content.replaceSelection(with: f.record, admission: { admitted })
+        f.mode.readabilityContent = "Unchanged preparation"
+        f.handler.onNavigationCommitted = { _ in publicCommits += 1 }
+        f.reader.beforeCommitReturns = {
+            entered.fulfill()
+            await held.wait()
+        }
+        f.handler.onNavigationCommitted(state: f.state)
+        let task = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+        await fulfillment(of: [entered], timeout: 2)
+        admitted = false
+        await held.release()
+        guard case .failure(let error)? = await settle(task, releasing: held) else {
+            return XCTFail("Receipt did not retain its original admission")
+        }
+        XCTAssertTrue(error is CancellationError)
+        XCTAssertEqual(f.reader.commitCount, 1)
+        XCTAssertTrue(f.media.committed.isEmpty)
+        XCTAssertEqual(publicCommits, 0)
+        XCTAssertEqual(f.mode.readabilityContent, "Unchanged preparation")
+    }
+
+    func testCapturedPredicateReentryCannotBorrowOrRetireAReplacementSelection() async throws {
+        let f = try fixture()
+        let successor = HistoryRecord(value: f.record)
+        successor.title = "Successor"
+        var replace = false
+        f.content.replaceSelection(with: f.record, admission: { [weak content = f.content] in
+            if replace { content?.replaceSelection(with: successor, admission: { true }) }
+            return true
+        })
+        let original = try await f.content.loadWithSelectionReceipt(url: f.state.pageURL)
+        replace = true
+        XCTAssertFalse(original.isCurrent)
+        XCTAssertTrue(f.content.content === successor)
+        let replacement = try await f.content.loadWithSelectionReceipt(url: f.state.pageURL)
+        XCTAssertTrue(replacement.isCurrent)
+        XCTAssertFalse(original.isCurrent)
+        XCTAssertTrue(replacement.isCurrent, "An old receipt must not withdraw the replacement token")
+    }
+
+    func testCapturedAdmissionQuietRetirementAndExplicitDifferentURLNavigation() async throws {
+        let f = try fixture()
+        var resolverCalls = 0
+        let successor = HistoryRecord()
+        successor.url = URL(string: "https://example.invalid/different-document")!
+        successor.updateCompoundKey()
+        ReaderContent.contentResolver = { url, _, _ in
+            resolverCalls += 1
+            XCTAssertEqual(url, successor.url)
+            return successor
+        }
+        f.content.replaceSelection(with: f.record, admission: { false })
+        try await f.content.load(url: f.state.pageURL)
+        XCTAssertEqual(resolverCalls, 0)
+        XCTAssertTrue(f.content.content === f.record)
+        do {
+            _ = try await f.content.loadWithSelectionReceipt(url: f.state.pageURL)
+            XCTFail("Strict native load accepted quietly retired content")
+        } catch is CancellationError { }
+        let current = try await f.content.loadWithSelectionReceipt(url: successor.url)
+        XCTAssertTrue(current.isCurrent)
+        XCTAssertTrue(f.content.content === successor)
+        XCTAssertEqual(resolverCalls, 1)
+        f.content.replaceSelection(with: f.record)
+        let explicit = try await f.content.loadWithSelectionReceipt(url: f.state.pageURL)
+        XCTAssertTrue(explicit.isCurrent)
+        XCTAssertFalse(current.isCurrent)
+        XCTAssertEqual(resolverCalls, 1)
+    }
+
+    func testCancelledNativeCallbackDoesNotRetireAnotherCurrentCapturedLoad() async throws {
+        let f = try fixture()
+        f.content.replaceSelection(with: f.record, admission: { true })
+        f.handler.onNavigationCommitted(state: f.state)
+        let cancelled = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+        cancelled.cancel()
+        guard case .failure(let error)? = await settle(cancelled) else {
+            return XCTFail("Cancelled native callback ran")
+        }
+        XCTAssertTrue(error is CancellationError)
+        XCTAssertEqual(f.reader.commitCount, 0)
+        let receipt = try await f.content.loadWithSelectionReceipt(url: f.state.pageURL)
+        XCTAssertTrue(receipt.isCurrent)
+        try await commit(f)
+        XCTAssertEqual(f.reader.commitCount, 1)
+    }
+
+    func testDifferentURLAlreadyPublishedContentRetiresOldCapturedAdmission() async throws {
+        let f = try fixture()
+        f.content.replaceSelection(with: f.record, admission: { false })
+        let oldSelection = f.content.currentSelectionID
+        let successor = HistoryRecord()
+        successor.url = URL(string: "https://example.invalid/published-successor")!
+        successor.updateCompoundKey()
+        f.content.content = successor
+        f.content.pageURL = successor.url
+        ReaderContent.contentResolver = { _, _, _ in
+            XCTFail("Already published successor unnecessarily entered generic resolution")
+            return nil
+        }
+        let receipt = try await f.content.loadWithSelectionReceipt(url: successor.url)
+        XCTAssertTrue(receipt.isCurrent)
+        XCTAssertTrue(f.content.content === successor)
+        XCTAssertNotEqual(f.content.currentSelectionID, oldSelection)
+    }
+
+    func testCapturedAdmissionAlsoFencesSuppressedBlankReceipt() async throws {
+        let f = try fixture()
+        var admitted = true
+        f.content.replaceSelection(with: f.record, admission: { admitted })
+        f.content.suppressTransientAboutBlank(untilNextNonBlankLoad: f.state.pageURL)
+        let blank = URL(string: "about:blank")!
+        let receipt = try await f.content.loadWithSelectionReceipt(url: blank)
+        XCTAssertTrue(receipt.isCurrent)
+        admitted = false
+        XCTAssertFalse(receipt.isCurrent)
+        XCTAssertEqual(f.content.pageURL, f.state.pageURL)
+        do {
+            _ = try await f.content.loadWithSelectionReceipt(url: blank)
+            XCTFail("Transient blank borrowed a retired source")
+        } catch is CancellationError { }
+    }
+
     func testQueuedFailureCannotPublishForAReplacedOwner() async throws {
         for preserves in [false, true] {
             let f = try fixture()
