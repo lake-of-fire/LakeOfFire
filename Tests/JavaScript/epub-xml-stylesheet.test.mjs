@@ -169,6 +169,88 @@ test('only stylesheet instructions in the prolog can introduce resource dependen
         })
 })
 
+test('stylesheet href references decode once before exact manifest lookup and fragment splitting', async t => {
+    const cases = [
+        ['theme&amp;night.css', 'theme&night.css', ''],
+        ['reader&apos;s.css', "reader's.css", ''],
+        ['theme&#46;css', 'theme.css', ''],
+        ['theme&#x2E;css', 'theme.css', ''],
+        ['flower&#x1F338;.css', 'flower🌸.css', ''],
+        ['one.css&#35;chapter', 'one.css', '#chapter'],
+        ['literal&amp;amp;.css', 'literal&amp;.css', ''],
+    ]
+    for (const [encoded, filename, fragment] of cases) {
+        await t.test(encoded, async () => {
+            const source = `<?xml-stylesheet href="${encoded}" type="text/css"?><svg/>`
+            // A wrong split at the '#' inside a numeric reference must not select
+            // the deliberately competing theme& / one.css& manifest resources.
+            await withFixture(source, [filename, 'theme&', 'one.css&'],
+                async ({ loader, reads, text, revoked, blobs }) => {
+                    const url = await loader.loadItem(svgItem)
+                    assert.deepEqual(reads, ['OPS/cover.svg', `OPS/${filename}`], encoded)
+                    assert.equal(await text(url), `<?xml-stylesheet href="blob:stylesheet-1${fragment}" type="text/css"?><svg/>`, encoded)
+                    loader.unloadItem(svgItem)
+                    assert.deepEqual(new Set(revoked), new Set(blobs.keys()), encoded)
+                    assert.equal(revoked.length, 2, encoded)
+                    assert.equal(globalThis.__manabiBlobResourceMap.size, 0, encoded)
+                })
+        })
+    }
+})
+
+test('rewritten href fragments retain valid XML quoting and ampersand escaping', async t => {
+    const cases = [
+        ["'", 'reader&apos;s&amp;page', 'reader&apos;s&amp;page'],
+        ['"', 'reader&quot;s&amp;page', 'reader&quot;s&amp;page'],
+        ['"', 'reader&apos;s&amp;page', "reader's&amp;page"],
+        ["'", 'reader&quot;s&amp;page', 'reader"s&amp;page'],
+        ['"', 'chapter&#38;part', 'chapter&amp;part'],
+        ['"', 'tail?&gt;next', 'tail?&gt;next'],
+    ]
+    for (const [quote, encoded, escaped] of cases) {
+        await t.test(`${quote} ${encoded}`, async () => {
+            const source = `<?xml-stylesheet href=${quote}one.css#${encoded}${quote}?><svg/>`
+            await withFixture(source, ['one.css'], async ({ loader, reads, text }) => {
+                const url = await loader.loadItem(svgItem)
+                assert.deepEqual(reads, ['OPS/cover.svg', 'OPS/one.css'])
+                // Both spellings represent the same value. Do not require cosmetic
+                // canonicalization of an opposite quote or an XML reference.
+                const validOutputs = [escaped, encoded].map(fragment =>
+                    `<?xml-stylesheet href=${quote}blob:stylesheet-1#${fragment}${quote}?><svg/>`)
+                assert.ok(validOutputs.includes(await text(url)))
+            })
+        })
+    }
+})
+
+test('unknown or invalid XML references and unchanged hrefs preserve their original lexical form', async t => {
+    const values = [
+        'https://example.test/theme.css?a=1&amp;b=2',
+        '&#x68;ttps://example.test/theme.css',
+        'missing&amp;theme.css',
+        '#reader&apos;s&amp;page',
+        'bad&custom;.css',
+        'bad&#0;.css',
+        'bad&#xD800;.css',
+        'bad&#x110000;.css',
+        'bad&#xFFFE;.css',
+        'bad&#X2E;.css',
+    ]
+    for (const value of values) {
+        await t.test(value, async () => {
+            const source = `<?xml-stylesheet href="${value}" title="literal &amp; metadata"?><svg/>`
+            // These trap resources would be selected by partial/invalid decoding or
+            // by treating the raw invalid href as a valid package resource.
+            await withFixture(source, ['bad&custom;.css', 'bad&', 'bad\uFFFD.css'],
+                async ({ loader, reads, text }) => {
+                    const url = await loader.loadItem(svgItem)
+                    assert.deepEqual(reads, ['OPS/cover.svg'], value)
+                    assert.equal(await text(url), source, value)
+                })
+        })
+    }
+})
+
 test('a suspended second stylesheet failure rolls back earlier children and permits a fresh complete retry', async () => {
     let failSecond = true
     let rejectSecond
@@ -244,4 +326,59 @@ test('destroy releases the SVG and all PI children exactly once while references
         assert.equal(loader.destroy(), false)
         assert.equal(revoked.length, 3)
     })
+})
+
+test('destroy during a suspended PI stylesheet retires both callers without late publication', { timeout: 5000 }, async () => {
+    for (const rejects of [false, true]) {
+        let resolveSecond
+        let rejectSecond
+        let signalSecondStarted
+        const secondStarted = new Promise(resolve => { signalSecondStarted = resolve })
+        const source = '<?xml-stylesheet href="one.css"?><?xml-stylesheet href="two.css"?><svg/>'
+        await withFixture(source, ['one.css', 'two.css'], async ({ loader, reads, revoked, blobs }) => {
+            const first = loader.loadItem(svgItem)
+            const joined = loader.loadItem(svgItem)
+            // Observe both rejections before releasing the suspended child.
+            const terminal = Promise.allSettled([first, joined])
+            await Promise.race([
+                secondStarted,
+                terminal.then(() => assert.fail('SVG settled before its second stylesheet started')),
+            ])
+            assert.deepEqual([...blobs.keys()], ['blob:stylesheet-1'])
+            assert.deepEqual(revoked, [])
+            assert.equal(globalThis.__manabiBlobResourceMap.size, 1)
+            assert.equal(loader.destroy(), true)
+            assert.deepEqual(revoked, ['blob:stylesheet-1'])
+            assert.equal(globalThis.__manabiBlobResourceMap.size, 0)
+
+            const failure = new Error('late stylesheet failure')
+            if (rejects) rejectSecond(failure)
+            else resolveSecond('svg { fill: blue }')
+            for (const result of await terminal) {
+                if (rejects) {
+                    assert.equal(result.status, 'rejected')
+                    assert.equal(result.reason, failure)
+                } else {
+                    assert.equal(result.status, 'fulfilled')
+                    assert.ok(!result.value, 'a retired caller must not receive a resource URL')
+                }
+            }
+            assert.deepEqual(reads, ['OPS/cover.svg', 'OPS/one.css', 'OPS/two.css'])
+            assert.deepEqual([...blobs.keys()], ['blob:stylesheet-1'], 'no child or parent publishes after destroy')
+            assert.equal(globalThis.__manabiBlobResourceMap.size, 0)
+            loader.unloadItem(svgItem)
+            assert.equal(await loader.loadItem(svgItem), null)
+            assert.equal(loader.destroy(), false)
+            assert.deepEqual(revoked, ['blob:stylesheet-1'], 'the first child is revoked exactly once')
+        }, {
+            loadStylesheet: href => {
+                if (href !== 'OPS/two.css') return 'svg { fill: blue }'
+                return new Promise((resolve, reject) => {
+                    resolveSecond = resolve
+                    rejectSecond = reject
+                    signalSecondStarted()
+                })
+            },
+        })
+    }
 })

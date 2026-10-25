@@ -149,6 +149,93 @@ class EPUBXMLStylesheetTests(unittest.TestCase):
             ["image.svg", "one.css", "two.css", "image.svg", "one.css", "two.css"],
         )
 
+    def test_encoded_stylesheet_references_round_trip_through_native_xml_and_apply(self):
+        page = self.new_fixture_page()
+        result = page.evaluate(r'''async () => {
+            const { Loader } = await import('/load/viewer-assets/foliate-js/epub.js')
+            const check = (value, message) => {
+                if (!value) throw new Error(message)
+            }
+            const parser = new DOMParser()
+            const image = { href: 'OPS/image.svg', mediaType: 'image/svg+xml' }
+            // Actual XML attributes decode references when constructing the
+            // manifest; PI.data retains their spelling until our Loader runs.
+            const opf = parser.parseFromString(`<manifest>
+                <item href="theme&amp;night.css"/>
+                <item href="other&#46;css"/>
+                <item href="other&amp;"/>
+            </manifest>`, 'application/xml')
+            const styles = [...opf.querySelectorAll('item')].map(item => ({
+                href: `OPS/${item.getAttribute('href')}`, mediaType: 'text/css',
+            }))
+            check(styles[0].href === 'OPS/theme&night.css', 'manifest ampersand is decoded')
+            check(styles[1].href === 'OPS/other.css', 'manifest numeric reference is decoded')
+            const source = `<?xml-stylesheet type="text/css" href='theme&amp;night.css#reader&apos;s&amp;page'?>
+                <?xml-stylesheet type="text/css" href="other&#46;css&#35;part"?>
+                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+                    <rect id="sample" width="10" height="10"/>
+                </svg>`
+            const original = parser.parseFromString(source, 'image/svg+xml')
+            const instructions = document => [...document.childNodes].filter(node =>
+                node.nodeType === Node.PROCESSING_INSTRUCTION_NODE)
+            check(instructions(original)[0].data.includes('&amp;'), 'native PI data remains encoded')
+            check(instructions(original)[1].data.includes('&#46;'), 'native PI numeric spelling is retained')
+            const reads = []
+            const loader = new Loader({
+                resources: { manifest: [image, ...styles] },
+                loadText: async href => {
+                    reads.push(href)
+                    if (href === image.href) return source
+                    if (href === styles[0].href) return 'rect { fill: rgb(4, 5, 6) }'
+                    if (href === styles[1].href) return 'rect { fill: rgb(1, 2, 3) }'
+                    throw new Error(`wrong manifest resource loaded: ${href}`)
+                },
+                loadBlob: async () => { throw new Error('unexpected raw resource') },
+            })
+            const frame = document.createElement('iframe')
+            try {
+                const imageURL = await loader.loadItem(image)
+                const serialized = await (await fetch(imageURL)).text()
+                const rewritten = parser.parseFromString(serialized, 'image/svg+xml')
+                check(!rewritten.querySelector('parsererror'), 'rewritten SVG remains XML')
+                const values = instructions(rewritten).map(instruction => {
+                    const attributes = parser.parseFromString(
+                        `<attributes ${instruction.data}/>`, 'application/xml')
+                    check(!attributes.querySelector('parsererror'), 'href keeps valid pseudoattribute quoting')
+                    return attributes.documentElement.getAttribute('href')
+                })
+                check(values[0].startsWith('blob:') && values[0].endsWith("#reader's&page"),
+                    'ampersand and quote survive the pseudoattribute round trip')
+                check(values[1].startsWith('blob:') && values[1].endsWith('#part'),
+                    'numeric fragment separator is decoded before URL resolution')
+                // Load completion, rather than a sleep, waits for the SVG and
+                // its stylesheet resources before inspecting visible styling.
+                await new Promise((resolve, reject) => {
+                    frame.onload = resolve
+                    frame.onerror = () => reject(new Error('rewritten SVG failed to load'))
+                    frame.src = imageURL
+                    document.body.append(frame)
+                })
+                const rect = frame.contentDocument.getElementById('sample')
+                const fill = frame.contentWindow.getComputedStyle(rect).fill
+                check(fill === 'rgb(1, 2, 3)', 'resolved stylesheets apply in document order')
+                frame.remove()
+                loader.unloadItem(image)
+                for (const url of [imageURL, ...values.map(value => value.split('#')[0])]) {
+                    check(!globalThis.__manabiBlobResourceMap?.has(url), 'decoded resource ownership is released')
+                    let revoked = false
+                    try { await fetch(url) } catch (_) { revoked = true }
+                    check(revoked, 'decoded resource URL is revoked')
+                }
+                return { reads, fill }
+            } finally {
+                frame.remove()
+                loader.destroy()
+            }
+        }''')
+        self.assertEqual(result["reads"], ["OPS/image.svg", "OPS/theme&night.css", "OPS/other.css"])
+        self.assertEqual(result["fill"], "rgb(1, 2, 3)")
+
     def test_nonstylesheet_and_trailing_instructions_never_load_dependencies(self):
         page = self.new_fixture_page()
         result = page.evaluate(r'''async () => {
