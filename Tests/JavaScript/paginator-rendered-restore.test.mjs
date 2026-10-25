@@ -7,6 +7,8 @@ const html = '<!doctype html><html><body data-mnb-writing-direction="horizontal"
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true, url: 'https://reader.invalid/' })
 const frames = []
 let nextSidecars = []
+let nextFonts = []
+const resizeObservers = []
 let fixtureTextWidth = 1200
 const rect = (width = 600, height = 800) => ({ x: 0, y: 0, top: 0, left: 0, right: width, bottom: height, width, height, toJSON() { return this } })
 const installGeometry = window => {
@@ -23,6 +25,13 @@ const installGeometry = window => {
 installGeometry(dom.window)
 const window = dom.window
 const document = window.document
+const shadowRoots = new WeakMap()
+const attachShadow = window.Element.prototype.attachShadow
+window.Element.prototype.attachShadow = function (options) {
+    const root = attachShadow.call(this, options)
+    shadowRoots.set(this, root)
+    return root
+}
 const createElement = document.createElement.bind(document)
 document.createElement = function (name, options) {
     const element = createElement(name, options)
@@ -30,6 +39,8 @@ document.createElement = function (name, options) {
         const section = new JSDOM(html, { pretendToBeVisual: true, url: 'https://reader.invalid/section' })
         installGeometry(section.window)
         section.window.manabi_waitForExternalSegmentSidecar = nextSidecars.shift()
+        const fontsReady = nextFonts.shift()
+        if (fontsReady) Object.defineProperty(section.window.document, 'fonts', { value: { ready: fontsReady } })
         frames.push(section)
         Object.defineProperties(element, {
             contentDocument: { get: () => section.window.document },
@@ -48,14 +59,19 @@ Object.assign(globalThis, {
     getComputedStyle: element => element.ownerDocument.defaultView.getComputedStyle(element),
     requestAnimationFrame: callback => setTimeout(() => callback(performance.now()), 0),
     cancelAnimationFrame: clearTimeout,
-    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+    ResizeObserver: class {
+        constructor(callback) { this.callback = callback; this.targets = new Set(); resizeObservers.push(this) }
+        observe(target) { this.targets.add(target) }
+        unobserve(target) { this.targets.delete(target) }
+        disconnect() { this.targets.clear() }
+    },
     IntersectionObserver: class {
         constructor(callback) { this.callback = callback }
         observe(target) { queueMicrotask(() => this.callback([{ target, isIntersecting: true, intersectionRatio: 1 }])) }
         unobserve() {} disconnect() {}
     },
 })
-const { Paginator } = await import(process.env.PAGINATOR_MODULE ?? new URL(
+const { Paginator, PaginatorContentView } = await import(process.env.PAGINATOR_MODULE ?? new URL(
     '../../Sources/LakeOfFireReader/Resources/foliate-js/paginator.js', import.meta.url,
 ))
 
@@ -72,9 +88,9 @@ const fixture = (sectionCount = 2, sectionOverrides = []) => {
     return renderer
 }
 const deferred = () => {
-    let resolve
-    const promise = new Promise(yes => { resolve = yes })
-    return { promise, resolve }
+    let resolve, reject
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no })
+    return { promise, resolve, reject }
 }
 const bounded = async operation => {
     let timer
@@ -89,6 +105,8 @@ const cleanup = renderer => {
     renderer.remove()
     for (const frame of frames.splice(0)) frame.window.close()
     nextSidecars = []
+    nextFonts = []
+    resizeObservers.length = 0
 }
 
 const holdNextFrame = () => {
@@ -111,6 +129,269 @@ const holdNextFrame = () => {
         },
     }
 }
+
+// Drain the real immediate display-prefetch measurement before installing a
+// gate for the separate fonts/resize anchor continuation.
+const settleDisplayPrefetch = async renderer => {
+    const measured = deferred()
+    const pageMetrics = renderer.pageMetrics.bind(renderer)
+    renderer.pageMetrics = async () => {
+        renderer.pageMetrics = pageMetrics
+        try { return await pageMetrics() }
+        finally { measured.resolve() }
+    }
+    await bounded(measured.promise)
+}
+const heldFonts = () => {
+    const gate = deferred()
+    const then = gate.promise.then.bind(gate.promise)
+    let completion
+    // Retain the actual callback promise, so retired work can settle without
+    // an obsolete relocation event being required to finish the fixture.
+    gate.promise.then = (...args) => { completion = then(...args); return completion }
+    return { ...gate, get completion() { return completion } }
+}
+const holdNextMetrics = renderer => {
+    const entered = deferred(), gate = deferred()
+    const original = renderer.pageMetrics.bind(renderer)
+    renderer.pageMetrics = () => {
+        renderer.pageMetrics = original
+        entered.resolve()
+        return gate.promise
+    }
+    return { entered: entered.promise, resolve: gate.resolve, reject: gate.reject,
+        restore: () => { renderer.pageMetrics = original } }
+}
+const emitBodyResize = renderer => {
+    const doc = renderer.getContents()[0].doc
+    const observer = resizeObservers.find(item => item.targets.has(doc.body))
+    assert.ok(observer, 'The loaded document must have its real body observer installed')
+    const expand = PaginatorContentView.prototype.expand
+    let completion
+    PaginatorContentView.prototype.expand = function (...args) {
+        const operation = expand.apply(this, args)
+        if (this.document === doc) completion = operation
+        return operation
+    }
+    try {
+        observer.callback([{ target: doc.body, contentRect: rect(600, 800) }])
+        observer.callback([{ target: doc.body, contentRect: rect(610, 800) }])
+    } finally { PaginatorContentView.prototype.expand = expand }
+    assert.ok(completion, 'The changed observer entry must call production expand')
+    return completion
+}
+
+test('expansion ownership: current fonts preserve their anchor and position receipt', async () => {
+    const fonts = heldFonts()
+    nextFonts.push(fonts.promise)
+    const renderer = fixture(1)
+    let held, previous
+    try {
+        const receipt = await bounded(renderer.goTo({ index: 0, anchor: 0 }, { requiresPositionReceipt: true }))
+        await settleDisplayPrefetch(renderer)
+        previous = await renderer.pageMetrics()
+        held = holdNextMetrics(renderer)
+        fonts.resolve()
+        await bounded(held.entered)
+        assert.equal(renderer.capturePositionProof(receipt), null)
+        held.resolve(previous)
+        await bounded(fonts.completion)
+        const current = await renderer.pageMetrics()
+        assert.equal(current.start, previous.start)
+        assert.equal(renderer.isPositionReceiptCurrent(receipt), true)
+        assert.equal(renderer.isPositionProofCurrent(renderer.capturePositionProof(receipt)), true)
+    } finally {
+        held?.restore(); held?.resolve(previous ?? {}); fonts.resolve()
+        cleanup(renderer)
+        await fonts.completion?.catch(() => {})
+    }
+})
+
+test('expansion ownership: late fonts cannot undo newer same-document navigation', async () => {
+    const fonts = heldFonts()
+    nextFonts.push(fonts.promise)
+    const renderer = fixture(1)
+    let held, previous
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await settleDisplayPrefetch(renderer)
+        previous = await renderer.pageMetrics()
+        const doc = renderer.getContents()[0].doc
+        held = holdNextMetrics(renderer)
+        fonts.resolve()
+        await bounded(held.entered)
+        const receipt = await bounded(renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true }))
+        const moved = await renderer.pageMetrics()
+        assert.equal(moved.page, moved.pages - 2)
+        assert.notEqual(moved.start, previous.start)
+        assert.equal(renderer.getContents()[0].doc, doc)
+        let staleRelocations = 0
+        renderer.addEventListener('relocate', () => { staleRelocations += 1 })
+        held.resolve(previous)
+        await bounded(fonts.completion)
+        assert.equal((await renderer.pageMetrics()).start, moved.start)
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+        assert.equal(staleRelocations, 0)
+    } finally {
+        held?.restore(); held?.resolve(previous ?? {}); fonts.resolve()
+        cleanup(renderer)
+        await fonts.completion?.catch(() => {})
+    }
+})
+
+test('expansion ownership: late fonts cannot undo an accepted relative next command', async () => {
+    const fonts = heldFonts()
+    nextFonts.push(fonts.promise)
+    const renderer = fixture(1)
+    let held, previous
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await settleDisplayPrefetch(renderer)
+        previous = await renderer.pageMetrics()
+        held = holdNextMetrics(renderer)
+        fonts.resolve()
+        await bounded(held.entered)
+        const receipt = await bounded(renderer.next(1, { requiresNavigationReceipt: true }))
+        const moved = await renderer.pageMetrics()
+        assert.equal(moved.page, previous.page + 1)
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+        held.resolve(previous)
+        await bounded(fonts.completion)
+        assert.equal((await renderer.pageMetrics()).start, moved.start)
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+    } finally {
+        held?.restore(); held?.resolve(previous ?? {}); fonts.resolve()
+        cleanup(renderer)
+        await fonts.completion?.catch(() => {})
+    }
+})
+
+test('expansion ownership: an already-admitted pending target cannot lend its later anchor to fonts', async () => {
+    const fonts = heldFonts(), target = deferred()
+    nextFonts.push(fonts.promise)
+    const renderer = fixture(1)
+    let held, previous, moving, frame, expandingFrame
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await settleDisplayPrefetch(renderer)
+        previous = await renderer.pageMetrics()
+        // The original load still owns the fonts callback when expansion
+        // begins. A command can then be admitted before its queued frame
+        // reaches onExpand, while its target remains unresolved.
+        frame = holdNextFrame()
+        fonts.resolve()
+        await bounded(frame.entered)
+        moving = renderer.goTo(target.promise, { requiresNavigationReceipt: true })
+        held = holdNextMetrics(renderer)
+        expandingFrame = frame.release()
+        await bounded(held.entered)
+        target.resolve({ index: 0, anchor: 1 })
+        const receipt = await bounded(moving)
+        const moved = await renderer.pageMetrics()
+        assert.equal(moved.page, moved.pages - 2)
+        assert.notEqual(moved.start, previous.start)
+        held.resolve(previous)
+        await bounded(fonts.completion)
+        assert.equal((await renderer.pageMetrics()).start, moved.start)
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+    } finally {
+        held?.restore(); held?.resolve(previous ?? {}); fonts.resolve()
+        frame?.restore(); await frame?.release()
+        target.resolve({ index: 0, anchor: 0 })
+        cleanup(renderer)
+        await fonts.completion?.catch(() => {})
+        await expandingFrame?.catch(() => {})
+        await moving?.catch(() => {})
+    }
+})
+
+test('expansion ownership: the actual body resize callback cannot undo newer navigation', async () => {
+    const renderer = fixture(1)
+    let held, previous, expanding
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await settleDisplayPrefetch(renderer)
+        previous = await renderer.pageMetrics()
+        held = holdNextMetrics(renderer)
+        expanding = emitBodyResize(renderer)
+        await bounded(held.entered)
+        const receipt = await bounded(renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true }))
+        const moved = await renderer.pageMetrics()
+        assert.equal(moved.page, moved.pages - 2)
+        held.resolve(previous)
+        await bounded(expanding)
+        assert.equal((await renderer.pageMetrics()).start, moved.start)
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+    } finally {
+        held?.restore(); held?.resolve(previous ?? {})
+        cleanup(renderer)
+        await expanding?.catch(() => {})
+    }
+})
+
+test('expansion ownership: a retired anchor cannot clear a pending successor loading state', async () => {
+    const fonts = heldFonts(), source = deferred(), sourceEntered = deferred()
+    nextFonts.push(fonts.promise)
+    // Section two is outside the initial neighbor-prefetch target.
+    const renderer = fixture(3, [{}, {}, { load: () => { sourceEntered.resolve(); return source.promise } }])
+    let held, previous, moving
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await settleDisplayPrefetch(renderer)
+        previous = await renderer.pageMetrics()
+        held = holdNextMetrics(renderer)
+        fonts.resolve()
+        await bounded(held.entered)
+        moving = renderer.goTo({ index: 2, anchor: 0 }, { requiresNavigationReceipt: true })
+        await bounded(sourceEntered.promise)
+        const top = shadowRoots.get(renderer).getElementById('top')
+        assert.equal(top.classList.contains('reader-loading'), true)
+        held.resolve(previous)
+        await bounded(fonts.completion)
+        assert.equal(top.classList.contains('reader-loading'), true,
+            'Only the successor display may settle its own loading presentation')
+        source.resolve('fixture:2')
+        const receipt = await bounded(moving)
+        assert.equal(renderer.getContents()[0].index, 2)
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+        assert.equal(top.classList.contains('reader-loading'), false)
+    } finally {
+        held?.restore(); held?.resolve(previous ?? {}); fonts.resolve(); source.resolve('fixture:2')
+        cleanup(renderer)
+        await fonts.completion?.catch(() => {})
+        await moving?.catch(() => {})
+    }
+})
+
+test('expansion ownership: current failure releases activity and permits a real render retry', async () => {
+    const fonts = heldFonts()
+    nextFonts.push(fonts.promise)
+    const renderer = fixture(1)
+    let held
+    try {
+        const receipt = await bounded(renderer.goTo({ index: 0, anchor: 0 }, { requiresPositionReceipt: true }))
+        await settleDisplayPrefetch(renderer)
+        held = holdNextMetrics(renderer)
+        fonts.resolve()
+        await bounded(held.entered)
+        assert.equal(renderer.capturePositionProof(receipt), null)
+        const failure = new Error('Controlled current expansion measurement failure')
+        const rejected = assert.rejects(fonts.completion, error => error === failure)
+        held.reject(failure)
+        await bounded(rejected)
+        assert.equal(renderer.isPositionProofCurrent(renderer.capturePositionProof(receipt)), true)
+        await bounded(renderer.render())
+        assert.equal(renderer.isPositionProofCurrent(renderer.capturePositionProof(receipt)), true)
+        const next = await bounded(renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true }))
+        const current = await renderer.pageMetrics()
+        assert.equal(renderer.isNavigationReceiptCurrent(next), true)
+        assert.equal(current.page, current.pages - 2)
+    } finally {
+        held?.restore(); held?.resolve({}); fonts.resolve()
+        cleanup(renderer)
+        await fonts.completion?.catch(() => {})
+    }
+})
 
 test('lifecycle: a newer render releases the held old layout and retains a current position proof', async () => {
     const renderer = fixture(1)

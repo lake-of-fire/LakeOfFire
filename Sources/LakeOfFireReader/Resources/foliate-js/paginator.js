@@ -1478,17 +1478,23 @@ export class Paginator extends HTMLElement {
     }
     async #onExpand(owner) {
         if (!this.#ownsExpansion(owner)) return
+        const command = this.#positionCommand
+        const anchor = this.#anchor
+        // Reflow may preserve the current anchor, but cannot lend that anchor
+        // to a later navigation. A command admitted before this callback can
+        // also still be resolving its target, so retain the anchor identity.
+        const ownsAnchor = () => this.#ownsExpansion(owner)
+            && this.#positionCommand === command && Object.is(this.#anchor, anchor)
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
         this.#invalidateViewGeometry();
         this.#cachedStart = null;
         this.#invalidateVisibleRangeCache()
         if (!this.#suspendOnExpandAnchor) {
-            await this.#scrollToAnchor(this.#anchor, 'anchor',
-                () => this.#ownsExpansion(owner))
+            await this.#scrollToAnchor(anchor, 'anchor', ownsAnchor)
         }
 
-        if (!this.#ownsExpansion(owner)) return
+        if (!ownsAnchor()) return
         if (!this.#isLoading) return
         this.#setLoading(false, 'expand.onExpand')
     }
