@@ -186,7 +186,7 @@ class EPUBXMLStylesheetTests(unittest.TestCase):
                 loadText: async href => {
                     reads.push(href)
                     if (href === image.href) return source
-                    if (href === styles[0].href) return 'rect { fill: rgb(4, 5, 6) }'
+                    if (href === styles[0].href) return 'rect { fill: rgb(4, 5, 6); stroke: rgb(7, 8, 9) }'
                     if (href === styles[1].href) return 'rect { fill: rgb(1, 2, 3) }'
                     throw new Error(`wrong manifest resource loaded: ${href}`)
                 },
@@ -217,8 +217,11 @@ class EPUBXMLStylesheetTests(unittest.TestCase):
                     document.body.append(frame)
                 })
                 const rect = frame.contentDocument.getElementById('sample')
-                const fill = frame.contentWindow.getComputedStyle(rect).fill
+                const computedStyle = frame.contentWindow.getComputedStyle(rect)
+                const fill = computedStyle.fill
+                const stroke = computedStyle.stroke
                 check(fill === 'rgb(1, 2, 3)', 'resolved stylesheets apply in document order')
+                check(stroke === 'rgb(7, 8, 9)', 'first resolved stylesheet applies independently of the later fill override')
                 frame.remove()
                 loader.unloadItem(image)
                 for (const url of [imageURL, ...values.map(value => value.split('#')[0])]) {
@@ -227,7 +230,7 @@ class EPUBXMLStylesheetTests(unittest.TestCase):
                     try { await fetch(url) } catch (_) { revoked = true }
                     check(revoked, 'decoded resource URL is revoked')
                 }
-                return { reads, fill }
+                return { reads, fill, stroke }
             } finally {
                 frame.remove()
                 loader.destroy()
@@ -235,6 +238,7 @@ class EPUBXMLStylesheetTests(unittest.TestCase):
         }''')
         self.assertEqual(result["reads"], ["OPS/image.svg", "OPS/theme&night.css", "OPS/other.css"])
         self.assertEqual(result["fill"], "rgb(1, 2, 3)")
+        self.assertEqual(result["stroke"], "rgb(7, 8, 9)")
 
     def test_nonstylesheet_and_trailing_instructions_never_load_dependencies(self):
         page = self.new_fixture_page()
