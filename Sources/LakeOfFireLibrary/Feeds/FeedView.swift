@@ -50,148 +50,227 @@ public class FeedViewModel: ObservableObject {
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
+    private let source: FeedViewProjectionSource?
     private let feedID: UUID
     private let feedTitle: String
     private let canonicalFeedURLKey: String
+    private var reloadIDs: [FeedViewProjectionKind: UUID] = [:]
+    private let beforeRead: (@MainActor @Sendable (FeedViewProjectionKind) async throws -> Void)?
+    private let beforePublication: (@MainActor @Sendable (FeedViewProjectionKind) async throws -> Void)?
+    private let observerDidRefresh: (@MainActor @Sendable (FeedViewProjectionKind) -> Void)?
+    private let fetchFeed: @MainActor @Sendable (Feed, Realm.Configuration) async throws -> Void
 
-    @MainActor
+    private func readProjection<Value>(
+        _ kind: FeedViewProjectionKind,
+        reason: String,
+        read: (Realm) -> Value,
+        publish: (Value) -> Void
+    ) async {
+        guard !Task.isCancelled, let source else { return }
+        let reloadID = UUID()
+        reloadIDs[kind] = reloadID
+        do {
+            let request = try source.request()
+            try await beforeRead?(kind)
+            let (realm, original) = try await request.openOnMainActor()
+            guard !Task.isCancelled, reloadIDs[kind] == reloadID else { return }
+            guard request.owner.contains(original, in: realm) else {
+                throw FeedViewProjectionFailure.retiredSource
+            }
+            let value = read(realm)
+            try await beforePublication?(kind)
+            guard !Task.isCancelled, reloadIDs[kind] == reloadID else { return }
+            guard request.owner.contains(original, in: realm) else {
+                throw FeedViewProjectionFailure.retiredSource
+            }
+            publish(value)
+        } catch is CancellationError {
+            // Cancellation of one request does not clear a newer projection.
+        } catch FeedViewProjectionFailure.retiredSource {
+            guard !Task.isCancelled, reloadIDs[kind] == reloadID else { return }
+            reloadIDs.removeAll()
+            entries = nil
+            collections = nil
+            isFeedGroupFollowed = false
+        } catch {
+            // Keep the previous valid projection on an ordinary open/read error.
+            // Later observer delivery or an explicit refresh retries this path.
+            logRSS("stage=feedView.reload.error feedID=\(feedID.uuidString) reason=\(reason) error=\(error)")
+        }
+    }
+
     private func reloadEntries(feedID: UUID, reason: String) async {
-        do {
-            let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+        await readProjection(.entries, reason: reason) { realm in
             let feedIDs = Feed.activeFeedGroupIDs(
                 canonicalFeedURLKey: canonicalFeedURLKey,
                 in: realm,
                 fallback: feedID
             )
-            let entries = Array(
-                realm.objects(FeedEntry.self)
-                    .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
-            )
-            logRSS("stage=feedView.reloadEntries feedID=\(feedID.uuidString) reason=\(reason) groupCount=\(feedIDs.count) count=\(entries.count)")
+            return Array(realm.objects(FeedEntry.self)
+                .where { $0.feedID.in(feedIDs) && !$0.isDeleted })
+        } publish: { entries in
             self.entries = entries
-        } catch {
-            logRSS("stage=feedView.reloadEntries.error feedID=\(feedID.uuidString) reason=\(reason) error=\(error)")
         }
     }
 
-    @MainActor
     private func reloadCollections(feedID: UUID, reason: String) async {
-        do {
-            let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+        await readProjection(.collections, reason: reason) { realm in
             let feedIDs = Feed.activeFeedGroupIDs(
                 canonicalFeedURLKey: canonicalFeedURLKey,
                 in: realm,
                 fallback: feedID
             )
-            collections = sortFeedEntryCollections(Array(
-                realm.objects(FeedEntryCollection.self)
-                    .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
-            ))
-            logRSS("stage=feedView.reloadCollections feedID=\(feedID.uuidString) reason=\(reason) groupCount=\(feedIDs.count) count=\(collections?.count ?? 0)")
-        } catch {
-            logRSS("stage=feedView.reloadCollections.error feedID=\(feedID.uuidString) reason=\(reason) error=\(error)")
+            return sortFeedEntryCollections(Array(realm.objects(FeedEntryCollection.self)
+                .where { $0.feedID.in(feedIDs) && !$0.isDeleted }))
+        } publish: { collections in
+            self.collections = collections
         }
     }
 
-    @MainActor
     private func reloadFollowedStatus(reason: String) async {
-        do {
-            let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
-            isFeedGroupFollowed = realm.objects(Feed.self)
+        await readProjection(.followedStatus, reason: reason) { realm in
+            realm.objects(Feed.self)
                 .where { !$0.isDeleted }
                 .filter { $0.canonicalFollowingFeedURLKey == self.canonicalFeedURLKey }
                 .contains(where: \.isFollowed)
-            logRSS("stage=feedView.reloadFollowedStatus feedURLKey=\(canonicalFeedURLKey) reason=\(reason) isFollowed=\(isFeedGroupFollowed)")
-        } catch {
-            logRSS("stage=feedView.reloadFollowedStatus.error feedURLKey=\(canonicalFeedURLKey) reason=\(reason) error=\(error)")
+        } publish: { isFollowed in
+            isFeedGroupFollowed = isFollowed
         }
     }
-    
-    public init(feed: Feed) {
-        self.feedID = feed.id
-        self.feedTitle = feed.title
-        self.canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey
-        self.isFeedGroupFollowed = feed.isFollowed
-        self.collections = feed.getCollections()
-        let feedID = feed.id
+
+    // The initializer and real feed observers use this same refresh boundary.
+    // It is internal so focused fixtures can await actual Realm-backed delivery.
+    func refreshProjection(reason: String = "refresh") async {
+        await reloadFollowedStatus(reason: reason)
+        await reloadEntries(feedID: feedID, reason: reason)
+        await reloadCollections(feedID: feedID, reason: reason)
+    }
+
+    public convenience init(feed: Feed) {
+        self.init(feed: feed, observesRealm: true)
+    }
+
+    init(
+        feed: Feed,
+        observesRealm: Bool,
+        beforeRead: (@MainActor @Sendable (FeedViewProjectionKind) async throws -> Void)? = nil,
+        beforePublication: (@MainActor @Sendable (FeedViewProjectionKind) async throws -> Void)? = nil,
+        beforeObserverOpen: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
+        observerDidRefresh: (@MainActor @Sendable (FeedViewProjectionKind) -> Void)? = nil,
+        fetchFeed: @escaping @MainActor @Sendable (Feed, Realm.Configuration) async throws -> Void = {
+            try await $0.fetch(realmConfiguration: $1)
+        }
+    ) {
+        let source = FeedViewProjectionSource(feed: feed)
+        self.source = source
+        feedID = source?.owner.feedID ?? UUID()
+        feedTitle = source?.title ?? ""
+        canonicalFeedURLKey = source?.owner.canonicalURLKey ?? ""
+        self.beforeRead = beforeRead
+        self.beforePublication = beforePublication
+        self.observerDidRefresh = observerDidRefresh
+        self.fetchFeed = fetchFeed
+        guard let source else { return }
+        // Preserve the original caller's live MainActor collection values.
+        isFeedGroupFollowed = feed.isFollowed
+        collections = feed.getCollections()
+        guard observesRealm else { return }
+
+        let feedID = feedID
         let canonicalFeedURLKey = canonicalFeedURLKey
+        guard let observerRequest = try? source.request() else { return }
         debugPrint("# FeedViewModel.init feedID=\(feedID.uuidString) title=\(feedTitle)")
-        Task { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) 
-            let feedIDs = Feed.activeFeedGroupIDs(
-                canonicalFeedURLKey: canonicalFeedURLKey,
-                in: realm,
-                fallback: feedID
-            )
-            realm.objects(FeedEntry.self)
-                .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
-                .collectionPublisher
-                .subscribe(on: feedQueue)
-                .map { @Sendable _ in }
-                .debounce(for: .seconds(0.3), scheduler: feedQueue)
-                .receive(on: feedQueue)
-                .sink(receiveCompletion: { @Sendable _ in}, receiveValue: { @Sendable [weak self] _ in
-                    debugPrint("# FeedViewModel.subscriptionTriggered feedID=\(feedID.uuidString)")
-                    Task { @MainActor [weak self] in
-                        await self?.reloadEntries(feedID: feedID, reason: "entriesChanged")
-                    }
-                })
-                .store(in: &cancellables)
+        Task { @RealmBackgroundActor [weak self] in
+            do {
+                try await beforeObserverOpen?()
+                let (realm, original) = try await observerRequest.openOnRealmActor()
+                guard !Task.isCancelled, observerRequest.owner.contains(original, in: realm),
+                      let self else { return }
+                let feedIDs = Feed.activeFeedGroupIDs(
+                    canonicalFeedURLKey: canonicalFeedURLKey,
+                    in: realm,
+                    fallback: feedID
+                )
+                realm.objects(FeedEntry.self)
+                    .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
+                    .collectionPublisher
+                    .subscribe(on: feedQueue)
+                    .map { @Sendable _ in }
+                    .debounce(for: .seconds(0.3), scheduler: feedQueue)
+                    .receive(on: feedQueue)
+                    .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
+                        Task { @MainActor [weak self] in
+                            await self?.reloadEntries(feedID: feedID, reason: "entriesChanged")
+                            self?.observerDidRefresh?(.entries)
+                        }
+                    })
+                    .store(in: &cancellables)
 
-            realm.objects(FeedEntryCollection.self)
-                .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
-                .collectionPublisher
-                .subscribe(on: feedQueue)
-                .map { @Sendable _ in }
-                .debounce(for: .seconds(0.3), scheduler: feedQueue)
-                .receive(on: feedQueue)
-                .sink(receiveCompletion: { @Sendable _ in}, receiveValue: { @Sendable [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        await self?.reloadCollections(feedID: feedID, reason: "collectionsChanged")
-                    }
-                })
-                .store(in: &cancellables)
+                realm.objects(FeedEntryCollection.self)
+                    .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
+                    .collectionPublisher
+                    .subscribe(on: feedQueue)
+                    .map { @Sendable _ in }
+                    .debounce(for: .seconds(0.3), scheduler: feedQueue)
+                    .receive(on: feedQueue)
+                    .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
+                        Task { @MainActor [weak self] in
+                            await self?.reloadCollections(feedID: feedID, reason: "collectionsChanged")
+                            self?.observerDidRefresh?(.collections)
+                        }
+                    })
+                    .store(in: &cancellables)
 
-            realm.objects(Feed.self)
-                .where { !$0.isDeleted }
-                .collectionPublisher
-                .subscribe(on: feedQueue)
-                .map { @Sendable _ in }
-                .debounce(for: .seconds(0.3), scheduler: feedQueue)
-                .receive(on: feedQueue)
-                .sink(receiveCompletion: { @Sendable _ in}, receiveValue: { @Sendable [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        await self?.reloadFollowedStatus(reason: "feedsChanged")
-                        await self?.reloadEntries(feedID: feedID, reason: "feedsChanged")
-                        await self?.reloadCollections(feedID: feedID, reason: "feedsChanged")
-                    }
-                })
-                .store(in: &cancellables)
+                realm.objects(Feed.self)
+                    .where { !$0.isDeleted }
+                    .collectionPublisher
+                    .subscribe(on: feedQueue)
+                    .map { @Sendable _ in }
+                    .debounce(for: .seconds(0.3), scheduler: feedQueue)
+                    .receive(on: feedQueue)
+                    .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
+                        Task { @MainActor [weak self] in
+                            await self?.refreshProjection(reason: "feedsChanged")
+                            self?.observerDidRefresh?(.followedStatus)
+                        }
+                    })
+                    .store(in: &cancellables)
+            } catch {
+                logRSS("stage=feedView.observer.error feedID=\(feedID.uuidString) error=\(error)")
+            }
         }
         Task { @MainActor [weak self] in
-            await self?.reloadFollowedStatus(reason: "init")
-            await self?.reloadEntries(feedID: feedID, reason: "init")
-            await self?.reloadCollections(feedID: feedID, reason: "init")
+            await self?.refreshProjection(reason: "init")
         }
     }
-    
-    @MainActor
+
     public func fetchIfNeeded(feed: Feed, force: Bool) async throws {
-        let shouldRefresh = feed.shouldRefreshAutomaticallyOnFeedAppear
+        try Task.checkCancellation()
+        guard let source, source.matchesPresentedFeed(feed) else { throw CancellationError() }
+        let request = try source.request()
+        let (realm, original) = try await request.openOnMainActor()
+        guard request.owner.contains(original, in: realm) else { throw CancellationError() }
+        let shouldRefresh = original.shouldRefreshAutomaticallyOnFeedAppear
+        let title = original.title
+        let url = original.rssUrl
         logRSS(
-            "stage=feedView.fetchDecision feedID=\(feed.id.uuidString) title=\(feed.title) url=\(feed.rssUrl.absoluteString) force=\(force) shouldRefreshOnAppear=\(shouldRefresh) lastRefresh=\(feed.lastRefreshedEntriesAt?.description ?? "nil") hasRecentlyRefreshed=\(feed.hasRecentlyRefreshedEntries)"
+            "stage=feedView.fetchDecision feedID=\(feedID.uuidString) title=\(title) url=\(url.absoluteString) force=\(force) shouldRefreshOnAppear=\(shouldRefresh) lastRefresh=\(original.lastRefreshedEntriesAt?.description ?? "nil") hasRecentlyRefreshed=\(original.hasRecentlyRefreshedEntries)"
         )
         if force || shouldRefresh {
             do {
-                try await feed.fetch()
-                await reloadEntries(feedID: feed.id, reason: force ? "forceFetchComplete" : "autoFetchComplete")
-                logRSS("stage=feedView.fetchFinished feedID=\(feed.id.uuidString) title=\(feed.title)")
+                try await fetchFeed(original, request.owner.configuration)
+                try Task.checkCancellation()
+                guard request.owner.contains(original, in: realm) else { throw CancellationError() }
+                await reloadEntries(feedID: feedID, reason: force ? "forceFetchComplete" : "autoFetchComplete")
+                try Task.checkCancellation()
+                guard request.owner.contains(original, in: realm) else { throw CancellationError() }
+                logRSS("stage=feedView.fetchFinished feedID=\(feedID.uuidString) title=\(title)")
             } catch {
-                logRSS("stage=feedView.fetchError feedID=\(feed.id.uuidString) title=\(feed.title) error=\(error)")
+                logRSS("stage=feedView.fetchError feedID=\(feedID.uuidString) title=\(title) error=\(error)")
                 throw error
             }
         } else {
-            logRSS("stage=feedView.fetchSkipped feedID=\(feed.id.uuidString) title=\(feed.title) reason=recentlyRefreshed")
+            logRSS("stage=feedView.fetchSkipped feedID=\(feedID.uuidString) title=\(title) reason=recentlyRefreshed")
         }
     }
 }
@@ -227,6 +306,8 @@ public struct FeedView: View {
     }
 
     public var body: some View {
+        let displayedFeed = feed
+        let commandSource = FeedViewCommandSource(feed: displayedFeed)
         let isFeedGroupFollowed = viewModel.isFeedGroupFollowed
         let allowsFollowing = feed.entryContentKind != .contentListing
         AsyncView(operation: { forceRefreshRequested in
@@ -305,8 +386,8 @@ public struct FeedView: View {
                 }
             }
     }
-        .task(id: feed.id) {
-            try? await markFeedAsViewed()
+        .task(id: feed.id) { @MainActor in
+            try? await commandSource?.markingViewed()?.write()
         }
         .toolbar {
             ToolbarItem(placement: .automatic) {
@@ -315,8 +396,11 @@ public struct FeedView: View {
                         if allowsFollowing {
                             Section {
                                 Button {
-                                    Task { @MainActor in
-                                        try? await setFollowed(!isFeedGroupFollowed)
+                                    guard let command = FeedViewCommand.following(
+                                        !isFeedGroupFollowed, feed: displayedFeed
+                                    ) else { return }
+                                    Task {
+                                        try? await command.write()
                                     }
                                 } label: {
                                     Label(isFeedGroupFollowed ? "Following" : "Follow", systemImage: isFeedGroupFollowed ? "checkmark" : "plus")
@@ -325,8 +409,11 @@ public struct FeedView: View {
                         }
                         if showsMarkAllAsSeenAction {
                             Button("Mark All as Seen") {
-                                Task { @MainActor in
-                                    try? await markAllEntriesAsSeen()
+                                guard let command = FeedViewCommand.markingAllEntriesSeen(
+                                    feed: displayedFeed, hasEntries: !entries.isEmpty
+                                ) else { return }
+                                Task {
+                                    try? await command.write()
                                 }
                             }
                         }
@@ -355,41 +442,6 @@ public struct FeedView: View {
         self.isHorizontal = isHorizontal
         self.showsToolbar = showsToolbar
         self.initialScrollEntryID = initialScrollEntryID
-    }
-
-    @MainActor
-    private func markFeedAsViewed() async throws {
-        guard feed.shouldMarkAsViewedOnAppear else { return }
-        try await Realm.asyncWrite(
-            ThreadSafeReference(to: feed),
-            configuration: ReaderContentLoader.feedEntryRealmConfiguration
-        ) { _, feed in
-            feed.lastViewedAt = Date()
-        }
-    }
-
-    @MainActor
-    private func markAllEntriesAsSeen() async throws {
-        guard feed.showsUnseenBadge, !entries.isEmpty else { return }
-        try await Realm.asyncWrite(
-            ThreadSafeReference(to: feed),
-            configuration: ReaderContentLoader.feedEntryRealmConfiguration
-        ) { _, feed in
-            feed.lastSeenFeedEntriesAt = Date()
-        }
-    }
-
-    @MainActor
-    private func setFollowed(_ isFollowed: Bool) async throws {
-        guard feed.entryContentKind != .contentListing else { return }
-        let canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey
-        try await Realm.asyncWrite(configuration: ReaderContentLoader.feedEntryRealmConfiguration) { realm in
-            Feed.setFollowingStatusForFeedGroup(
-                canonicalFeedURLKey: canonicalFeedURLKey,
-                isFollowed: isFollowed,
-                in: realm
-            )
-        }
     }
 }
 
