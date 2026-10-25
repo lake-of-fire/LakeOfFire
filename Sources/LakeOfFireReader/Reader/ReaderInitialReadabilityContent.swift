@@ -1,6 +1,33 @@
 import Foundation
 import SwiftSoup
 
+/// Exclude inert HTML fragments before extraction can copy their descendants
+/// into live content. Keep the full document so metadata and base URLs survive.
+internal func readerInitialReadabilityInput(_ html: String, contentURL: URL) -> String? {
+    // XML permits a namespace prefix before template, so this inexpensive
+    // admission check must not require the literal HTML opening tag.
+    guard html.range(of: "<template", options: .caseInsensitive) != nil
+            || html.range(of: ":template", options: .caseInsensitive) != nil else {
+        return html
+    }
+
+    do {
+        let document = try SwiftSoup.parse(html, contentURL.absoluteString)
+        guard ReaderDocumentTree.containsInertHTMLTemplate(in: document) else {
+            return html
+        }
+        guard let input = try ReaderDocumentTree.copyExcludingInertHTMLTemplates(document) as? Document else {
+            return nil
+        }
+        input.outputSettings().prettyPrint(pretty: false)
+        return try input.outerHtml()
+    } catch {
+        // Nil enters the caller's existing extraction-failure path. Passing the
+        // original source here would allow a producer to promote draft content.
+        return nil
+    }
+}
+
 /// Initial SwiftReadability output is HTML. Remove whole inert template trees
 /// before canonical construction; metadata values have a separate text policy.
 internal func readerInitialReadabilityContent(_ html: String) -> String? {
