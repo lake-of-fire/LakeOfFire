@@ -16,7 +16,7 @@ final class LibraryFeedRefreshMutationTests: XCTestCase {
             if paste {
                 try await model.pasteRSSURL(strings: [replacement.absoluteString]).value
             } else {
-                try await model.writeFeedAsync { feed in
+                try await model.writeFeedAsync(field: .url) { feed in
                     guard feed.rssUrl != replacement else { return false }
                     feed.rssUrl = replacement
                     return true
@@ -38,7 +38,7 @@ final class LibraryFeedRefreshMutationTests: XCTestCase {
         let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
         let original = feed.rssUrl
         let modifiedAt = feed.modifiedAt
-        try await model.writeFeedAsync { feed in
+        try await model.writeFeedAsync(field: .url) { feed in
             guard feed.rssUrl != original else { return false }
             feed.rssUrl = original
             return true
@@ -61,7 +61,7 @@ final class LibraryFeedRefreshMutationTests: XCTestCase {
         let started = expectation(description: "URL writer registered at admission gate")
         let gate = FeedURLWriteGate()
         let updatedURL = URL(string: "https://other.example/new.xml")!
-        let writer = model.writeFeedAsync(beforeWrite: {
+        let writer = model.writeFeedAsync(field: .url, beforeWrite: {
             await gate.wait { started.fulfill() }
         }) { feed in
             feed.rssUrl = updatedURL
@@ -95,7 +95,7 @@ final class LibraryFeedRefreshMutationTests: XCTestCase {
         let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
         let started = expectation(description: "URL writer registered before category change")
         let gate = FeedURLWriteGate()
-        let writer = model.writeFeedAsync(beforeWrite: {
+        let writer = model.writeFeedAsync(field: .url, beforeWrite: {
             await gate.wait { started.fulfill() }
         }) { feed in
             feed.rssUrl = URL(string: "https://other.example/new.xml")!
@@ -124,7 +124,7 @@ final class LibraryFeedRefreshMutationTests: XCTestCase {
         let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
         let started = expectation(description: "Cancellable URL writer registered")
         let gate = FeedURLWriteGate()
-        let writer = model.writeFeedAsync(beforeWrite: {
+        let writer = model.writeFeedAsync(field: .url, beforeWrite: {
             await gate.wait { started.fulfill() }
         }) { feed in
             feed.rssUrl = URL(string: "https://cancelled.example/feed.xml")!
@@ -137,7 +137,7 @@ final class LibraryFeedRefreshMutationTests: XCTestCase {
         }
         await fulfillment(of: [started], timeout: 5)
         writer.cancel()
-        try await model.writeFeedAsync { feed in
+        try await model.writeFeedAsync(field: .title) { feed in
             feed.title = "Peer edit"
             return true
         }.value
@@ -151,6 +151,17 @@ final class LibraryFeedRefreshMutationTests: XCTestCase {
         XCTAssertEqual(feed.title, "Peer edit")
         assertSeededMetadata(feed)
         XCTAssertFalse(realm.objects(BigSyncPendingMutation.self).isEmpty)
+
+        // Cancellation retains the human draft for an explicit finish/retirement
+        // retry. Supersede it with the original URL to leave this fixture settled.
+        try await model.writeFeedAsync(field: .url) { feed in
+            guard feed.rssUrl != original else { return false }
+            feed.rssUrl = original
+            return true
+        }.value
+        try await model.finishEditing().value
+        await realm.asyncRefresh()
+        assertSeededMetadata(feed)
     }
 
     private func configuration() -> Realm.Configuration {
