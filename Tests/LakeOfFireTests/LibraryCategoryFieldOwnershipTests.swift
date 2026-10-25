@@ -1,4 +1,5 @@
 import BigSyncKit
+import Combine
 import Foundation
 import RealmSwift
 @testable import RealmSwiftGaps
@@ -88,6 +89,76 @@ private struct CategoryFieldDiskFixture: Sendable {
     let owner: LibraryCategoryFieldOwner
     let original: CategoryFieldDiskSnapshot
     let replacement: CategoryFieldDiskSnapshot
+}
+
+private struct CategoryFieldRowSnapshot: Equatable, Sendable {
+    let title: String
+    let imageURL: URL
+    let createdAt: Date
+    let modifiedAt: Date
+    let explicitlyModifiedAt: Date?
+    let isDeleted: Bool
+    let generations: [String: String]
+}
+
+/// Only called synchronously on the supplied Realm's owner.
+private func categoryFieldRowSnapshot(_ category: FeedCategory, in realm: Realm) -> CategoryFieldRowSnapshot {
+    CategoryFieldRowSnapshot(
+        title: category.title, imageURL: category.backgroundImageUrl, createdAt: category.createdAt,
+        modifiedAt: category.modifiedAt, explicitlyModifiedAt: category.explicitlyModifiedAt,
+        isDeleted: category.isDeleted,
+        generations: Dictionary(uniqueKeysWithValues:
+            realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }
+        )
+    )
+}
+
+/// A real foreign transaction held across the production owned-write submission.
+@RealmBackgroundActor
+private final class CategoryFieldForeignWrite {
+    private enum FixtureError: Error { case transactionOwnership }
+    private var realm: Realm?
+    private var categoryID: UUID?
+    private var ownsWrite = false
+
+    func stageReplacement(configuration: Realm.Configuration, id: UUID, createdAt: Date) async throws {
+        let writer = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        guard !writer.isInWriteTransaction else { throw FixtureError.transactionOwnership }
+        writer.beginWrite()
+        realm = writer
+        categoryID = id
+        ownsWrite = true
+        do {
+            let old = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: id))
+            writer.delete(old)
+            let replacement = FeedCategory()
+            replacement.id = id
+            replacement.createdAt = createdAt
+            replacement.title = "Queued replacement"
+            replacement.backgroundImageUrl = URL(string: "https://replacement.example/queued.png")!
+            writer.add(replacement)
+            replacement.refreshChangeMetadata(explicitlyModified: true)
+        } catch {
+            rollback()
+            throw error
+        }
+    }
+
+    func commit() throws -> CategoryFieldRowSnapshot {
+        let writer = try XCTUnwrap(realm)
+        let id = try XCTUnwrap(categoryID)
+        guard ownsWrite, writer.isInWriteTransaction else { throw FixtureError.transactionOwnership }
+        try writer.commitWrite()
+        ownsWrite = false
+        let row = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: id))
+        return categoryFieldRowSnapshot(row, in: writer)
+    }
+
+    func rollback() {
+        guard ownsWrite, let realm else { return }
+        ownsWrite = false
+        if realm.isInWriteTransaction { realm.cancelWrite() }
+    }
 }
 
 @MainActor
@@ -666,6 +737,7 @@ final class LibraryCategoryFieldOwnershipTests: XCTestCase, @unchecked Sendable 
         configureLakeOfFireMutationTrackingForTesting(&configuration)
         var replacementConfiguration = configuration
         replacementConfiguration.fileURL = directory.appendingPathComponent("replacement.realm")
+        configureLakeOfFireMutationTrackingForTesting(&replacementConfiguration)
         var retiredConfiguration = configuration
         retiredConfiguration.fileURL = directory.appendingPathComponent("retired.realm")
         let captured = configuration
@@ -696,11 +768,19 @@ final class LibraryCategoryFieldOwnershipTests: XCTestCase, @unchecked Sendable 
                 }
             }
         }
+        let original = try diskSnapshot(configuration)
+        let replacement = try diskSnapshot(replacementConfiguration)
+        let expectedJournalRecords: Set<String> = [
+            "\(FeedCategory.className()).\(categoryID)",
+            "\(LibraryConfiguration.className()).\(libraryID)",
+        ]
+        XCTAssertEqual(Set(original.generations.keys), expectedJournalRecords)
+        XCTAssertEqual(Set(replacement.generations.keys), expectedJournalRecords)
         return CategoryFieldDiskFixture(
             configuration: configuration, replacementConfiguration: replacementConfiguration,
             retiredConfiguration: retiredConfiguration,
-            owner: try diskOwner(configuration), original: try diskSnapshot(configuration),
-            replacement: try diskSnapshot(replacementConfiguration)
+            owner: try diskOwner(configuration), original: original,
+            replacement: replacement
         )
     }
 
@@ -768,5 +848,362 @@ final class LibraryCategoryFieldOwnershipTests: XCTestCase, @unchecked Sendable 
         try await fresh.write()
         await Self.releaseDiskCache(fixture.configuration)
         XCTAssertEqual(try diskSnapshot(fixture.configuration), after, "Same-value delivery must not re-journal")
+    }
+
+    @RealmBackgroundActor
+    private static func replaceCategory(
+        configuration: Realm.Configuration,
+        id: UUID,
+        createdAt: Date
+    ) async throws {
+        let writer = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        try await writer.asyncWritePreservingOwnership {
+            let old = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: id))
+            writer.delete(old)
+            let replacement = FeedCategory()
+            replacement.id = id
+            replacement.createdAt = createdAt
+            replacement.title = "Replacement"
+            replacement.backgroundImageUrl = URL(string: "https://replacement.example/image.png")!
+            writer.add(replacement)
+            replacement.refreshChangeMetadata(explicitlyModified: true)
+        }
+    }
+
+    private func replacement(
+        in realm: Realm,
+        id: UUID,
+        createdAt: Date
+    ) async throws -> FeedCategory {
+        try await Self.replaceCategory(configuration: realm.configuration, id: id, createdAt: createdAt)
+        realm.refresh()
+        return try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: id))
+    }
+
+    func testBufferedFieldsRejectEqualIdentityPhysicalReplacement() async throws {
+        for useFrozenSource in [false, true] {
+            for edit in [
+                LibraryCategoryFieldEdit.title("Retired title"),
+                .imageURL("https://retired.example/image.png")
+            ] {
+                let (realm, category, library) = try await fixture()
+                let id = category.id
+                let createdAt = category.createdAt
+                let shownCategory = useFrozenSource ? category.freeze() : category
+                let shownLibrary = useFrozenSource ? library.freeze() : library
+                let originalOwner = try XCTUnwrap(LibraryCategoryFieldOwner(category: shownCategory))
+                let gate = CategoryFieldWriteGate()
+                let started = expectation(description: "Actual field binding reached the held command")
+                let editor = model(shownCategory, shownLibrary, beforeFieldWrite: {
+                    await gate.wait(onFirstWait: { started.fulfill() })
+                })
+                editor.isEditing = true
+                switch edit {
+                case .title(let value): editor.categoryTitle = value
+                case .imageURL(let value): editor.categoryBackgroundImageURL = value
+                }
+                let finished = editor.finishEditing()
+                addTeardownBlock {
+                    finished.cancel()
+                    await gate.release()
+                    _ = await finished.result
+                }
+                await fulfillment(of: [started], timeout: 5)
+                let current = try await replacement(in: realm, id: id, createdAt: createdAt)
+                let currentOwner = try XCTUnwrap(LibraryCategoryFieldOwner(category: current))
+                XCTAssertNotEqual(originalOwner.physicalRowID, currentOwner.physicalRowID)
+                XCTAssertEqual(current.createdAt, createdAt)
+                let beforeRelease = categoryFieldRowSnapshot(current, in: realm)
+
+                await gate.release()
+                try await finished.value
+                try await editor.finishEditing().value
+                realm.refresh()
+                XCTAssertEqual(categoryFieldRowSnapshot(current, in: realm), beforeRelease)
+
+                let successor = model(current, library)
+                try await successor.writeFieldAsync(edit).value
+                realm.refresh()
+                switch edit {
+                case .title(let value): XCTAssertEqual(current.title, value)
+                case .imageURL(let value): XCTAssertEqual(current.backgroundImageUrl.absoluteString, value)
+                }
+                let committed = categoryFieldRowSnapshot(current, in: realm)
+                XCTAssertNotEqual(committed.generations, beforeRelease.generations)
+                try await successor.writeFieldAsync(edit).value
+                realm.refresh()
+                XCTAssertEqual(categoryFieldRowSnapshot(current, in: realm), committed)
+            }
+        }
+    }
+
+    func testFailedFieldRetryCannotAdoptEqualIdentityReplacement() async throws {
+        for edit in [
+            LibraryCategoryFieldEdit.title("Retained failed title"),
+            .imageURL("https://failed.example/image.png")
+        ] {
+            let (realm, category, library) = try await fixture()
+            let id = category.id
+            let createdAt = category.createdAt
+            let editor = model(category, library)
+            do {
+                try await editor.writeFieldAsync(edit, beforeWrite: {
+                    throw InjectedFailure.admission
+                }).value
+                XCTFail("The first attempt must fail and retain its draft")
+            } catch InjectedFailure.admission {}
+            let current = try await replacement(in: realm, id: id, createdAt: createdAt)
+            let beforeRetry = categoryFieldRowSnapshot(current, in: realm)
+
+            try await editor.finishEditing().value
+            realm.refresh()
+            XCTAssertEqual(categoryFieldRowSnapshot(current, in: realm), beforeRetry)
+        }
+    }
+
+    func testRetirementRetryCannotAdoptEqualIdentityReplacement() async throws {
+        for edit in [
+            LibraryCategoryFieldEdit.title("Retired failed title"),
+            .imageURL("https://retirement.example/image.png")
+        ] {
+            let (realm, category, library) = try await fixture()
+            let id = category.id
+            let createdAt = category.createdAt
+            let gate = CategoryFieldWriteGate()
+            let started = expectation(description: "Retiring field attempt is suspended")
+            let retired = expectation(description: "The real retirement retry has settled")
+            var editor: LibraryCategoryViewModel? = model(
+                category, library,
+                beforeFieldWrite: {
+                    await gate.wait(onFirstWait: { started.fulfill() })
+                    throw InjectedFailure.admission
+                },
+                retirementDidFinish: { retired.fulfill() }
+            )
+            weak var retiringEditor = editor
+            let write = try XCTUnwrap(editor).writeFieldAsync(edit)
+            addTeardownBlock {
+                write.cancel()
+                await gate.release()
+                _ = await write.result
+            }
+            await fulfillment(of: [started], timeout: 5)
+            editor = nil
+            XCTAssertNil(retiringEditor)
+            let current = try await replacement(in: realm, id: id, createdAt: createdAt)
+            let beforeRetry = categoryFieldRowSnapshot(current, in: realm)
+            await gate.release()
+            do {
+                try await write.value
+                XCTFail("The held first attempt must fail")
+            } catch InjectedFailure.admission {}
+            await fulfillment(of: [retired], timeout: 5)
+            realm.refresh()
+            XCTAssertEqual(categoryFieldRowSnapshot(current, in: realm), beforeRetry)
+        }
+    }
+
+    func testReplacementFieldOrderingAndEditorIdentityIgnoreRetiredFrozenInput() async throws {
+        for edit in [
+            LibraryCategoryFieldEdit.title("Current title"),
+            .imageURL("https://current.example/image.png")
+        ] {
+            let (realm, category, library) = try await fixture()
+            let id = category.id
+            let createdAt = category.createdAt
+            let frozenCategory = category.freeze()
+            let frozenLibrary = library.freeze()
+            let originalIdentity = LibraryCategoryEditorIdentity(category: frozenCategory, library: frozenLibrary)
+            let oldEditor = model(frozenCategory, frozenLibrary)
+            let current = try await replacement(in: realm, id: id, createdAt: createdAt)
+            let currentIdentity = LibraryCategoryEditorIdentity(category: current, library: library)
+            XCTAssertNotNil(originalIdentity)
+            XCTAssertNotNil(currentIdentity)
+            XCTAssertNotEqual(originalIdentity, currentIdentity)
+            let before = categoryFieldRowSnapshot(current, in: realm)
+            let gate = CategoryFieldWriteGate()
+            let started = expectation(description: "Successor field command is held")
+            let newEditor = model(current, library)
+            let freshWrite = newEditor.writeFieldAsync(edit, beforeWrite: {
+                await gate.wait(onFirstWait: { started.fulfill() })
+            })
+            addTeardownBlock {
+                freshWrite.cancel()
+                await gate.release()
+                _ = await freshWrite.result
+            }
+            await fulfillment(of: [started], timeout: 5)
+            let retiredEdit: LibraryCategoryFieldEdit
+            switch edit {
+            case .title: retiredEdit = .title("Late retired title")
+            case .imageURL: retiredEdit = .imageURL("https://retired.example/late.png")
+            }
+            try await oldEditor.writeFieldAsync(retiredEdit).value
+            realm.refresh()
+            XCTAssertEqual(categoryFieldRowSnapshot(current, in: realm), before)
+
+            await gate.release()
+            try await freshWrite.value
+            realm.refresh()
+            switch edit {
+            case .title(let value): XCTAssertEqual(current.title, value)
+            case .imageURL(let value): XCTAssertEqual(current.backgroundImageUrl.absoluteString, value)
+            }
+            XCTAssertNotEqual(generations(realm), before.generations)
+        }
+    }
+
+    func testPhysicalCategoryIdentityMatchesLiveFrozenAndActorAccessors() async throws {
+        let (realm, category, library) = try await fixture()
+        let live = try XCTUnwrap(LibraryCategoryFieldOwner(category: category))
+        let frozen = category.freeze()
+        let frozenOwner = try XCTUnwrap(LibraryCategoryFieldOwner(category: frozen))
+        XCTAssertNotNil(live.physicalRowID)
+        XCTAssertEqual(live.physicalRowID, frozenOwner.physicalRowID)
+        XCTAssertTrue(live.matches(category))
+        XCTAssertTrue(live.matches(frozen))
+        XCTAssertEqual(LibraryCategoryFieldIdentity(owner: live), LibraryCategoryFieldIdentity(owner: frozenOwner))
+        XCTAssertEqual(
+            LibraryCategoryEditorIdentity(category: category, library: library),
+            LibraryCategoryEditorIdentity(category: frozen, library: library.freeze())
+        )
+        let configuration = realm.configuration
+        let id = category.id
+        let matchesOnActor = try await Task { @RealmBackgroundActor in
+            let writer = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            let row = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: id))
+            return live.matches(row) && live.resolve(in: writer) != nil
+        }.value
+        XCTAssertTrue(matchesOnActor)
+    }
+
+    func testUnmanagedAndInvalidatedCategoriesCannotLendManagedFieldAuthority() async throws {
+        let (realm, category, _) = try await fixture()
+        let id = category.id
+        let createdAt = category.createdAt
+        let originalOwner = try XCTUnwrap(LibraryCategoryFieldOwner(category: category))
+        let unmanaged = FeedCategory()
+        unmanaged.id = id
+        unmanaged.createdAt = createdAt
+        unmanaged.title = category.title
+        unmanaged.backgroundImageUrl = category.backgroundImageUrl
+        let unmanagedOwner = try XCTUnwrap(LibraryCategoryFieldOwner(
+            category: unmanaged, realmConfiguration: realm.configuration
+        ))
+        XCTAssertNil(unmanagedOwner.physicalRowID)
+        XCTAssertFalse(unmanagedOwner.matches(category))
+        XCTAssertFalse(originalOwner.matches(unmanaged))
+        let before = categoryFieldRowSnapshot(category, in: realm)
+        let command = diskCommand(owner: unmanagedOwner, title: "Unmanaged draft")
+        try await command.write()
+        realm.refresh()
+        XCTAssertEqual(categoryFieldRowSnapshot(category, in: realm), before)
+
+        _ = try await replacement(in: realm, id: id, createdAt: createdAt)
+        XCTAssertTrue(category.isInvalidated)
+        XCTAssertFalse(originalOwner.matches(category))
+        XCTAssertNil(LibraryCategoryFieldOwner(category: category))
+    }
+
+    func testObservationStartupRejectsEqualIdentityReplacement() async throws {
+        let (realm, category, library) = try await fixture()
+        let id = category.id
+        let createdAt = category.createdAt
+        let gate = CategoryFieldWriteGate()
+        let started = expectation(description: "Actual observer task is held before opening")
+        let completed = expectation(description: "Retired observer admission has completed")
+        let cleanupCompleted = expectation(description: "Observer setup drained before fixture cleanup")
+        let editor = LibraryCategoryViewModel(
+            category: category.freeze(), libraryConfiguration: library.freeze(), selectedFeed: .constant(nil),
+            beforeObservation: { await gate.wait(onFirstWait: { started.fulfill() }) },
+            observationDidFinish: { registered in
+                XCTAssertFalse(registered, "The old editor must not observe the replacement row")
+                completed.fulfill()
+                cleanupCompleted.fulfill()
+            }
+        )
+        addTeardownBlock {
+            await gate.release()
+            await self.fulfillment(of: [cleanupCompleted], timeout: 5)
+        }
+        await fulfillment(of: [started], timeout: 5)
+        let current = try await replacement(in: realm, id: id, createdAt: createdAt)
+        let before = categoryFieldRowSnapshot(current, in: realm)
+        await gate.release()
+        await fulfillment(of: [completed], timeout: 5)
+        XCTAssertEqual(editor.categoryTitle, "Original")
+        realm.refresh()
+        XCTAssertEqual(categoryFieldRowSnapshot(current, in: realm), before)
+    }
+
+    func testManagedReadOnlyCategoryKeepsActualObservationWithoutFieldWrites() async throws {
+        let (realm, category, library) = try await fixture()
+        let configuration = realm.configuration
+        let id = category.id
+        try await Task { @RealmBackgroundActor in
+            let writer = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await writer.asyncWritePreservingOwnership {
+                let row = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: id))
+                row.opmlURL = URL(string: "https://managed.example/library.opml")!
+                row.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }.value
+        realm.refresh()
+        let started = expectation(description: "Read-only category observer registered")
+        let refreshed = expectation(description: "The actual observer refreshed read-only title")
+        let editor = LibraryCategoryViewModel(
+            category: category, libraryConfiguration: library, selectedFeed: .constant(nil),
+            observationDidFinish: { registered in
+                XCTAssertTrue(registered)
+                started.fulfill()
+            }
+        )
+        let observation = editor.$categoryTitle.removeDuplicates().sink { value in
+            if value == "Managed update" { refreshed.fulfill() }
+        }
+        defer { observation.cancel() }
+        await fulfillment(of: [started], timeout: 5)
+        try await Task { @RealmBackgroundActor in
+            let writer = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await writer.asyncWritePreservingOwnership {
+                let row = try XCTUnwrap(writer.object(ofType: FeedCategory.self, forPrimaryKey: id))
+                row.title = "Managed update"
+                row.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }.value
+        await fulfillment(of: [refreshed], timeout: 5)
+        XCTAssertFalse(editor.isUserEditable)
+        realm.refresh()
+        let beforeAttempt = categoryFieldRowSnapshot(category, in: realm)
+        try await editor.writeFieldAsync(.title("Unauthorized local title")).value
+        try await editor.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(categoryFieldRowSnapshot(category, in: realm), beforeAttempt)
+    }
+
+    func testOwnedQueuedFieldRejectsEqualIdentityReplacement() async throws {
+        let (realm, category, library) = try await fixture()
+        let id = category.id
+        let createdAt = category.createdAt
+        let configuration = realm.configuration
+        let peer = await CategoryFieldForeignWrite()
+        let submitted = expectation(description: "Actual owned-write ticket has been submitted")
+        let editor = model(category, library)
+        let write = RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+            editor.writeFieldAsync(.title("Retired queued title"), beforeWrite: {
+                try await peer.stageReplacement(configuration: configuration, id: id, createdAt: createdAt)
+            })
+        }
+        addTeardownBlock {
+            write.cancel()
+            await peer.rollback()
+            _ = await write.result
+        }
+        await fulfillment(of: [submitted], timeout: 5)
+        let replacementCommit = try await peer.commit()
+        try await write.value
+        realm.refresh()
+        let current = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: id))
+        XCTAssertEqual(categoryFieldRowSnapshot(current, in: realm), replacementCommit)
     }
 }

@@ -76,7 +76,9 @@ class LibraryCategoryViewModel: ObservableObject {
         beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
         retirementDidFinish: (@RealmBackgroundActor @Sendable () -> Void)? = nil,
         fieldDebounceScheduler: DispatchQueue = .main,
-        debouncedWriteDidFinish: (@MainActor @Sendable (LibraryCategoryFieldEdit) -> Void)? = nil
+        debouncedWriteDidFinish: (@MainActor @Sendable (LibraryCategoryFieldEdit) -> Void)? = nil,
+        beforeObservation: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
+        observationDidFinish: (@RealmBackgroundActor @Sendable (Bool) -> Void)? = nil
     ) {
         self.beforeFieldWrite = beforeFieldWrite
         self.retirementDidFinish = retirementDidFinish
@@ -97,7 +99,10 @@ class LibraryCategoryViewModel: ObservableObject {
         let fieldOwner = owner
         if observesRealm {
             Task { @RealmBackgroundActor [weak self] in
+                var registered = false
+                defer { observationDidFinish?(registered) }
                 guard let self, let fieldOwner else { return }
+                try await beforeObservation?()
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(
                     for: fieldOwner.realmConfiguration,
                     storageAdmission: fieldOwner.storageAdmission
@@ -106,7 +111,7 @@ class LibraryCategoryViewModel: ObservableObject {
                       let category = realm.object(
                         ofType: FeedCategory.self,
                         forPrimaryKey: fieldOwner.categoryID
-                      ), category.createdAt == fieldOwner.createdAt else { return }
+                      ), fieldOwner.matches(category) else { return }
                 objectNotificationToken = category
                     .observe { [weak self] change in
                         switch change {
@@ -121,6 +126,7 @@ class LibraryCategoryViewModel: ObservableObject {
                             print("An error occurred: \(error)")
                         }
                     }
+                registered = true
             }
         }
         observe($categoryTitle, edit: LibraryCategoryFieldEdit.title, scheduler: fieldDebounceScheduler)
@@ -147,7 +153,7 @@ class LibraryCategoryViewModel: ObservableObject {
 
     private func capture(_ edit: LibraryCategoryFieldEdit) -> LibraryCategoryFieldCommand? {
         guard let owner, let ordering, owner.isCurrentStorage, isUserEditable,
-              category.id == owner.categoryID, category.createdAt == owner.createdAt else { return nil }
+              owner.matches(category) else { return nil }
         let command = LibraryCategoryFieldCommand(
             owner: owner, edit: edit, intent: ordering.issueIntent(field: edit.field), ordering: ordering
         )
@@ -250,9 +256,9 @@ class LibraryCategoryViewModel: ObservableObject {
 
     @MainActor
     func refresh() {
-        guard owner?.isCurrentStorage == true, !category.isInvalidated else { return }
+        guard let owner, owner.isCurrentStorage, owner.matches(category) else { return }
         if !category.isFrozen { category.realm?.refresh() }
-        guard !category.isInvalidated else { return }
+        guard owner.isCurrentStorage, owner.matches(category) else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         if pendingFieldCommands[.title] == nil { categoryTitle = category.title }
