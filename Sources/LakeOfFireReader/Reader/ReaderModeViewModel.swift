@@ -4131,8 +4131,8 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         let parseElapsed = CFAbsoluteTimeGetCurrent() - parseStart
 
         let canonicalBuildStart = CFAbsoluteTimeGetCurrent()
-        let rawContent = stripTemplateTagsForReadability(result.content)
-        guard !rawContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard let rawContent = readerInitialReadabilityContent(result.content),
+              !rawContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             debugPrint(
                 "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolveBreakdown",
                 "contentURL=\(url.absoluteString)",
