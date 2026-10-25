@@ -1,4 +1,5 @@
 import SwiftUI
+import LakeKit
 import RealmSwift
 import MarkdownKit
 import SwiftSoup
@@ -329,10 +330,11 @@ public struct ReaderContentLoader {
         return try await resolveContentReferences(references)
     }
 
-    /// Captured by a file deletion before its first suspension. The source
-    /// history Realm can have a narrower schema than the selected inventory.
+    /// Capture when presenting a destructive confirmation, or before a file
+    /// deletion's first suspension. Carry this value through follow-up cleanup.
+    /// The source history Realm can have a narrower schema than the selected inventory.
     /// Preserve both configurations; an omitted owner class is not proof of absence.
-    struct TranscriptDeletionContext: @unchecked Sendable {
+    public struct TranscriptDeletionContext: @unchecked Sendable {
         struct Store: @unchecked Sendable {
             let configuration: Realm.Configuration
             let admission: RealmStorageAdmission
@@ -370,7 +372,7 @@ public struct ReaderContentLoader {
         private let selectedTranscript: String
         private let sharesHistoryStorage: Bool
 
-        init(
+        public init(
             historyRealmConfiguration: Realm.Configuration,
             ownerHistoryRealmConfiguration: Realm.Configuration
         ) {
@@ -414,22 +416,100 @@ public struct ReaderContentLoader {
         }
     }
 
+    // Task-scoped native fixture observation of the real publication boundary.
+    // Neither hook runs while the account publication lock is held.
+    enum TranscriptDeletionObservation {
+        @TaskLocal static var beforeCommit: (@RealmBackgroundActor @Sendable () throws -> Void)? = nil
+        @TaskLocal static var didCommit: (@RealmBackgroundActor @Sendable () -> Void)? = nil
+    }
+
+    struct TranscriptDeletionAccount {
+        let access: AccountSessionAccess
+        let session: AccountSessionSnapshot
+
+        func validate() throws {
+            try Task.checkCancellation()
+            guard session.identity != .transitioning, access.snapshot == session else {
+                throw CancellationError()
+            }
+        }
+
+        @RealmBackgroundActor
+        func commit(_ realm: Realm) throws {
+            try Task.checkCancellation()
+            // The actual durable boundary must be inside the account fence.
+            // No account snapshot, provider or async work runs under this lock.
+            guard try access.publish(ifCurrent: session, {
+                try realm.commitWrite()
+            }) else { throw CancellationError() }
+            TranscriptDeletionObservation.didCommit?()
+        }
+    }
+
+    /// Earlier URLs have settled, including decisions to retain a live owner's
+    /// transcript. Retry only `remainingURLs` with the original captured context.
+    public struct TranscriptDeletionBatchError: Error, @unchecked Sendable {
+        public let completedURLs: [URL]
+        public let remainingURLs: [URL]
+        public let underlyingError: any Error
+    }
+
+    /// Clean up only the stores and provider inventory captured by the original
+    /// confirmation. A primary Settings deletion may already be committed; a
+    /// failure here is a separate, retryable cleanup result.
+    @RealmBackgroundActor
+    public static func softDeleteTranscriptsIfNoRemainingOwners(
+        contentURLs: [URL],
+        context: TranscriptDeletionContext,
+        accountSessionAccess: AccountSessionAccess,
+        accountSession: AccountSessionSnapshot,
+        explicitlyModified: Bool = true
+    ) async throws {
+        let account = TranscriptDeletionAccount(access: accountSessionAccess, session: accountSession)
+        try context.validate()
+        try account.validate()
+        let urls = Set(contentURLs.map { MediaTranscript.canonicalContentURL(from: $0) })
+            .sorted { $0.absoluteString < $1.absoluteString }
+        for (index, contentURL) in urls.enumerated() {
+            do {
+                try await softDeleteTranscriptsIfNoRemainingOwners(
+                    contentURL: contentURL,
+                    context: context,
+                    explicitlyModified: explicitlyModified,
+                    account: account
+                )
+            } catch {
+                guard index > 0 else { throw error }
+                throw TranscriptDeletionBatchError(
+                    completedURLs: Array(urls[..<index]),
+                    remainingURLs: Array(urls[index...]),
+                    underlyingError: error
+                )
+            }
+        }
+    }
+
     /// The file and index have already settled on their captured owner. Cleanup
     /// must not switch to newly selected stores after those awaits.
     @RealmBackgroundActor
     static func softDeleteTranscriptsIfNoRemainingOwners(
         contentURL: URL,
         context: TranscriptDeletionContext,
-        explicitlyModified: Bool = true
+        explicitlyModified: Bool = true,
+        account: TranscriptDeletionAccount? = nil
     ) async throws {
-        try context.validate()
+        func validate() throws {
+            try context.validate()
+            try account?.validate()
+        }
+        try validate()
         let canonicalContentURL = MediaTranscript.canonicalContentURL(from: contentURL)
         let ownerURLs = relatedURLStrings(for: canonicalContentURL)
         recentLoadAllCache.removeAll()
         let ownerRealm = try await context.historyStore.open()
-        try context.validate()
+        try validate()
         let feedRealm = try await context.feedStore.open()
-        try context.validate()
+        try validate()
         func canQuery(_ type: RealmSwift.Object.Type, in realm: Realm) -> Bool {
             realm.schema.objectSchema.contains { $0.className == type.className() }
         }
@@ -450,14 +530,14 @@ public struct ReaderContentLoader {
         var providerOwners: [(reference: ContentReference, realm: Realm, store: TranscriptDeletionContext.Store)] = []
         for provider in context.providers {
             let references = try await provider.load(canonicalContentURL)
-            try context.validate()
+            try validate()
             for reference in references {
                 let store = TranscriptDeletionContext.Store(configuration: reference.realmConfiguration)
                 let providerRealm = try await store.open()
-                try context.validate()
+                try validate()
                 guard canQuery(reference.contentType, in: providerRealm) else { return }
                 let content = try await reference.resolveOnBackgroundActor()
-                try context.validate()
+                try validate()
                 try store.validate()
                 if let content, !content.isInvalidated, !content.isDeleted { return }
                 // A missing reference can acquire a live owner while the
@@ -467,10 +547,10 @@ public struct ReaderContentLoader {
         }
 
         let realm = try await context.transcriptStore.open()
-        try context.validate()
+        try validate()
         guard canQuery(MediaTranscript.self, in: realm) else { return }
         try await realm.asyncWritePreservingOwnership {
-            try context.validate()
+            try validate()
             for owner in providerOwners { try owner.store.validate() }
 
             // Refresh known owner stores after queued write admission. Do not
@@ -483,7 +563,7 @@ public struct ReaderContentLoader {
                 owner.refresh()
                 refreshedRealms.append(owner)
             }
-            try context.validate()
+            try validate()
             for owner in providerOwners { try owner.store.validate() }
             guard !hasBuiltInOwner() else { return }
             for owner in providerOwners {
@@ -506,7 +586,16 @@ public struct ReaderContentLoader {
                 transcript.refreshChangeMetadata(explicitlyModified: explicitlyModified, at: timestamp)
             }
             for owner in providerOwners { try owner.store.validate() }
-            try context.validate()
+            try validate()
+            // The owned writer recognizes this synchronous commit and will not
+            // settle or roll back a notification callback's successor write.
+            // File deletion callers keep their existing async settlement.
+            if let account {
+                try TranscriptDeletionObservation.beforeCommit?()
+                for owner in providerOwners { try owner.store.validate() }
+                try context.validate()
+                try account.commit(realm)
+            }
         }
     }
 
