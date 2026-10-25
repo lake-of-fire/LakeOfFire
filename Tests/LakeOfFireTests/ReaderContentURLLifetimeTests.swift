@@ -1,6 +1,7 @@
 import Foundation
 import LakeOfFireCore
 import RealmSwift
+import RealmSwiftGaps
 import SwiftUIWebView
 import XCTest
 @testable import LakeOfFireContent
@@ -477,5 +478,289 @@ final class ReaderContentURLLifetimeTests: XCTestCase {
         XCTAssertEqual(handler.publications, 0)
         XCTAssertEqual(dispatches, 0)
         XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, "nil")
+    }
+
+    @MainActor
+    private struct StoredFixture {
+        let configuration: Realm.Configuration
+        let realm: Realm
+        let original: HistoryRecord
+        let matching: Bookmark?
+        let manager = ReaderFileManager()
+    }
+
+    private actor DiscoveryRecorder {
+        private(set) var count = 0
+
+        func record() {
+            count += 1
+        }
+    }
+
+    private func makeStoredFixture(includeBookmark: Bool = true) async throws -> StoredFixture {
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalBookmarks = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalFeeds = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalProviders = ReaderContentLoader.additionalContentProviders
+        var configuration = Realm.Configuration(
+            inMemoryIdentifier: "ReaderStoredURLLifetime-\(UUID().uuidString)",
+            objectTypes: [HistoryRecord.self, Bookmark.self, ContentFile.self,
+                          FeedEntry.self, Feed.self, MediaTranscript.self]
+        )
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let realm = try Realm(configuration: configuration)
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.additionalContentProviders = []
+        addTeardownBlock {
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            await MainActor.run {
+                ReaderContentLoader.historyRealmConfiguration = originalHistory
+                ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarks
+                ReaderContentLoader.feedEntryRealmConfiguration = originalFeeds
+                ReaderContentLoader.additionalContentProviders = originalProviders
+            }
+        }
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let original = HistoryRecord()
+        original.url = URL(string: "https://example.com/stored-url-lifetime")!
+        original.createdAt = Date(timeIntervalSince1970: 100)
+        original.lastVisitedAt = original.createdAt
+        original.isDemoted = false
+        original.isReaderModeByDefault = false
+        original.updateCompoundKey()
+        let matching: Bookmark?
+        if includeBookmark {
+            let bookmark = Bookmark()
+            bookmark.url = original.url
+            bookmark.createdAt = Date(timeIntervalSince1970: 200)
+            bookmark.isReaderModeByDefault = true
+            bookmark.rssContainsFullContent = true
+            bookmark.html = "<html><body><p>Stored optional article</p></body></html>"
+            bookmark.updateCompoundKey()
+            matching = bookmark
+        } else {
+            matching = nil
+        }
+        try realm.write {
+            realm.add(original)
+            if let matching { realm.add(matching) }
+        }
+        return StoredFixture(configuration: configuration, realm: realm,
+                             original: original, matching: matching)
+    }
+
+    func testPublicCachedMatchRetargetFallsBackAndFreshSourceCanRetry() async throws {
+        let fixture = try await makeStoredFixture()
+        let matching = try XCTUnwrap(fixture.matching)
+        let originalURL = fixture.original.url
+        let replacementURL = URL(string: "https://example.com/new-stored-source")!
+        let recorder = DiscoveryRecorder()
+        ReaderContentLoader.registerAdditionalContentProvider(.init(id: "cache-hit-control") { _ in
+            await recorder.record()
+            return []
+        })
+        let primed = try await ReaderContentLoader.lookupStoredContent(url: originalURL)
+        XCTAssertTrue(primed is Bookmark && !(primed is HistoryRecord))
+        XCTAssertEqual(primed?.url, originalURL)
+        let originalKey = matching.compoundKey
+        try fixture.realm.write { matching.url = replacementURL }
+
+        let result = try await ReaderContentLoader.load(
+            content: fixture.original, readerFileManager: fixture.manager
+        )
+        XCTAssertEqual(result, originalURL)
+        XCTAssertEqual(matching.compoundKey, originalKey)
+        XCTAssertEqual(matching.url, replacementURL)
+        XCTAssertEqual(fixture.original.url, originalURL)
+        let discoveries = await recorder.count
+        XCTAssertEqual(discoveries, 1, "The regression must exercise the completed public cache, not rediscovery")
+
+        let navigator = WebViewNavigator()
+        let handler = ModeHandler()
+        var dispatches = 0
+        try await navigator.load(
+            content: fixture.original,
+            readerFileManager: fixture.manager,
+            readerModeViewModel: handler,
+            willDispatchLoad: { dispatches += 1 }
+        )
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, originalURL.absoluteString)
+        XCTAssertEqual(dispatches, 1)
+        XCTAssertEqual(handler.publications, 1)
+
+        let fresh = try await ReaderContentLoader.lookupStoredContent(url: replacementURL)
+        XCTAssertEqual(fresh?.url, replacementURL)
+        let retry = try await ReaderContentLoader.load(
+            content: try XCTUnwrap(fresh), readerFileManager: fixture.manager
+        )
+        XCTAssertEqual(retry, ReaderContentLoader.readerLoaderURL(for: replacementURL))
+    }
+
+    func testPublicDiscoveryRetargetDuringProviderAwaitPreservesOriginalFallback() async throws {
+        let fixture = try await makeStoredFixture()
+        let matching = try XCTUnwrap(fixture.matching)
+        let originalURL = fixture.original.url
+        let gate = Gate()
+        ReaderContentLoader.registerAdditionalContentProvider(.init(id: "held-after-built-in-discovery") { _ in
+            await gate.wait()
+            return []
+        })
+        let task = Task { @MainActor in
+            try await ReaderContentLoader.load(content: fixture.original, readerFileManager: fixture.manager)
+        }
+        addTeardownBlock {
+            task.cancel()
+            await gate.open()
+            _ = try? await task.value
+        }
+        await fulfillment(of: [gate.entered], timeout: 1)
+        try fixture.realm.write { matching.url = URL(string: "https://example.com/retargeted-during-discovery")! }
+        gate.open()
+        let result = try await task.value
+        XCTAssertEqual(result, originalURL)
+        XCTAssertEqual(fixture.original.url, originalURL)
+    }
+
+    func testProviderReferenceRetargetDuringLaterProviderAwaitPreservesOriginalFallback() async throws {
+        let fixture = try await makeStoredFixture()
+        let matching = try XCTUnwrap(fixture.matching)
+        let originalURL = fixture.original.url
+        let aliasURL = URL(string: "https://example.com/provider-selected-alias")!
+        try fixture.realm.write { matching.url = aliasURL }
+        let reference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: matching))
+        let gate = Gate()
+        ReaderContentLoader.registerAdditionalContentProvider(.init(id: "alias-owner") { _ in [reference] })
+        ReaderContentLoader.registerAdditionalContentProvider(.init(id: "held-after-alias-discovery") { _ in
+            await gate.wait()
+            return []
+        })
+        let task = Task { @MainActor in
+            try await ReaderContentLoader.load(content: fixture.original, readerFileManager: fixture.manager)
+        }
+        addTeardownBlock {
+            task.cancel()
+            await gate.open()
+            _ = try? await task.value
+        }
+        await fulfillment(of: [gate.entered], timeout: 1)
+        try fixture.realm.write { matching.url = URL(string: "https://example.com/retired-provider-alias")! }
+        gate.open()
+        let result = try await task.value
+        XCTAssertEqual(result, originalURL)
+    }
+
+    func testHealthyProviderAliasAndLoaderInputKeepSelectedSource() async throws {
+        let fixture = try await makeStoredFixture()
+        let matching = try XCTUnwrap(fixture.matching)
+        let originalURL = fixture.original.url
+        let aliasURL = URL(string: "https://example.com/provider-owned-source")!
+        try fixture.realm.write { matching.url = aliasURL }
+        let reference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: matching))
+        ReaderContentLoader.registerAdditionalContentProvider(.init(id: "healthy-alias-owner") { requestedURL in
+            requestedURL == originalURL ? [reference] : []
+        })
+        let wrapper = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: originalURL))
+        let loaded = try await ReaderContentLoader.lookupStoredContent(url: wrapper)
+        XCTAssertEqual(loaded?.url, aliasURL)
+        let result = try await ReaderContentLoader.load(
+            content: fixture.original, readerFileManager: fixture.manager
+        )
+        XCTAssertEqual(result, ReaderContentLoader.readerLoaderURL(for: aliasURL))
+    }
+
+    func testHealthyHTTPSLookupRetainsHTTPFeedFallback() async throws {
+        let fixture = try await makeStoredFixture(includeBookmark: false)
+        let httpURL = URL(string: "http://example.com/stored-url-lifetime")!
+        let feed = Feed()
+        feed.rssUrl = URL(string: "https://example.com/feed.xml")!
+        feed.iconUrl = URL(string: "https://example.com/icon.png")!
+        feed.isReaderModeByDefault = true
+        feed.rssContainsFullContent = true
+        let entry = FeedEntry()
+        entry.feedID = feed.id
+        entry.url = httpURL
+        entry.createdAt = Date(timeIntervalSince1970: 300)
+        entry.html = "<html><body><p>HTTP feed article</p></body></html>"
+        entry.updateCompoundKey()
+        try fixture.realm.write {
+            fixture.realm.add(feed)
+            fixture.realm.add(entry)
+        }
+        let loaded = try await ReaderContentLoader.lookupStoredContent(url: fixture.original.url)
+        XCTAssertTrue(loaded is FeedEntry)
+        XCTAssertEqual(loaded?.url, httpURL)
+        let result = try await ReaderContentLoader.load(
+            content: fixture.original, readerFileManager: fixture.manager
+        )
+        XCTAssertEqual(result, ReaderContentLoader.readerLoaderURL(for: httpURL))
+    }
+
+    func testBothReferenceResolversRejectRetargetAndPreserveSoftDeletedURLPolicy() async throws {
+        let fixture = try await makeStoredFixture()
+        let matching = try XCTUnwrap(fixture.matching)
+        let originalURL = matching.url
+        let reference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: matching))
+        try fixture.realm.write { matching.url = URL(string: "https://example.com/reference-retarget")! }
+        let mainResolved = try await reference.resolveOnMainActor()
+        XCTAssertNil(mainResolved)
+        let backgroundRejected = try await { @RealmBackgroundActor in
+            try await reference.resolveOnBackgroundActor() == nil
+        }()
+        XCTAssertTrue(backgroundRejected)
+
+        try fixture.realm.write {
+            matching.url = originalURL
+            matching.isDeleted = true
+        }
+        let tombstone = try await reference.resolveOnMainActor()
+        XCTAssertEqual(tombstone?.url, originalURL)
+        XCTAssertEqual(tombstone?.isDeleted, true)
+        let backgroundPreserved = try await { @RealmBackgroundActor in
+            let content = try await reference.resolveOnBackgroundActor()
+            return content?.url == originalURL && content?.isDeleted == true
+        }()
+        XCTAssertTrue(backgroundPreserved)
+    }
+
+    func testLaterReferenceRefreshCannotRecaptureEarlierRetargetedCandidate() async throws {
+        let fixture = try await makeStoredFixture()
+        let matching = try XCTUnwrap(fixture.matching)
+        let originalURL = fixture.original.url
+        let matchingReference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: matching))
+        let originalReference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: fixture.original))
+        let gate = Gate()
+        let task = Task { @RealmBackgroundActor in
+            var earlierRealm: Realm?
+            return try await ReaderContentLoader.selectStoredContentReference(
+                [matchingReference, originalReference],
+                resolveReference: { reference in
+                    if reference.contentType == HistoryRecord.self {
+                        await gate.wait()
+                        await earlierRealm?.asyncRefresh()
+                    }
+                    let content = try await reference.resolveOnBackgroundActor()
+                    if reference.contentType == Bookmark.self {
+                        earlierRealm = content?.realm
+                    }
+                    return content
+                }
+            )
+        }
+        addTeardownBlock {
+            task.cancel()
+            await gate.open()
+            _ = try? await task.value
+        }
+        await fulfillment(of: [gate.entered], timeout: 1)
+        try fixture.realm.write { matching.url = URL(string: "https://example.com/retargeted-before-later-refresh")! }
+        gate.open()
+        let selectionResult = try await task.value
+        let selected = try XCTUnwrap(selectionResult)
+        XCTAssertTrue(selected.contentType == HistoryRecord.self)
+        let delivered = try await selected.resolveOnMainActor()
+        XCTAssertEqual(delivered?.url, originalURL)
     }
 }
