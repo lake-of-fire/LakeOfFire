@@ -2434,14 +2434,26 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         activeRenderOwnerByURL[key]?.generation.uuidString ?? "nil"
     }
 
-    private func renderGenerationDescription(for key: String) -> String {
+    // Preparation hands the same identity to completedRenderOwner before the
+    // native finish can settle. Keep that handoff current across its awaits.
+    private func renderGeneration(for key: String) -> UUID? {
         if let activeGeneration = activeRenderOwnerByURL[key]?.generation {
-            return activeGeneration.uuidString
+            return activeGeneration
         }
         if completedRenderOwner?.key == key {
-            return completedRenderOwner?.generation.uuidString ?? "nil"
+            return completedRenderOwner?.generation
         }
-        return "nil"
+        return nil
+    }
+
+    private func renderGenerationDescription(for key: String) -> String {
+        renderGeneration(for: key)?.uuidString ?? "nil"
+    }
+
+    private func isPendingRenderAwaitingDispatch(for pageURL: URL) -> Bool {
+        guard pendingKeysMatch(pendingReaderModeURL, pageURL) else { return false }
+        let key = canonicalRenderKey(pageURL)
+        return renderGeneration(for: key) != nil && syntheticLoadIssuedAtByURL[key] == nil
     }
 
     private func metadataRefreshGenerationDescription(for key: String) -> String {
@@ -2663,6 +2675,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         let scheduledAt = CFAbsoluteTimeGetCurrent()
         activeRenderOwnerByURL[key] = ActiveRenderOwner(generation: generation, selectionFence: selectionIsCurrent)
         completedRenderOwner = nil
+        clearSyntheticLoadIssued(for: canonicalURL)
         let task = Task { @ReaderViewModelActor [weak self] in
             guard let self else { return }
             let operationInvokeStartedAt = CFAbsoluteTimeGetCurrent()
@@ -4247,9 +4260,13 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         documentIsCurrent: @escaping @MainActor () -> Bool
     ) async {
         let binding = scriptCaller.currentJavaScriptBindingToken
+        let renderKey = canonicalRenderKey(newState.pageURL)
+        let capturedRenderGeneration = renderGeneration(for: renderKey)
         let isCurrent = { @MainActor in
             !Task.isCancelled && documentIsCurrent()
                 && !Task.isCancelled
+                && self.renderGeneration(for: renderKey) == capturedRenderGeneration
+                && !self.isPendingRenderAwaitingDispatch(for: newState.pageURL)
                 && scriptCaller.currentJavaScriptBindingToken == binding
                 && (binding != nil || !scriptCaller.canEvaluateJavaScript)
         }
@@ -4340,21 +4357,10 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         }
 
         if let expectedSyntheticReaderLoaderURL {
-            let pageURL = newState.pageURL
-            let pageMatchesPending = pendingKeysMatch(pendingReaderModeURL, pageURL)
-            let pageMatchesExpected = urlsMatchWithoutHashForHotfix(expectedSyntheticReaderLoaderURL, pageURL)
-            if hasRenderedReadabilityContent && pageMatchesPending {
-                debugPrint(
-                    "# READERPERF readerMode.expectedLoader.reset",
-                    "from=\(expectedSyntheticReaderLoaderURL.absoluteString)",
-                    "to=nil",
-                    "reason=\(pageMatchesExpected ? "navFinished.expectedPageArrived" : "navFinished.realContentArrived")",
-                    "pageURL=\(pageURL.absoluteString)"
-                )
-                self.expectedSyntheticReaderLoaderURL = nil
-            } else {
-                return .synthetic(pendingURL: pendingReaderModeURL, expectedURL: expectedSyntheticReaderLoaderURL)
-            }
+            // A previous render of the same URL can still be visible. Only the
+            // matching native commit or admitted render-ready event consumes
+            // this replacement document's expectation.
+            return .synthetic(pendingURL: pendingReaderModeURL, expectedURL: expectedSyntheticReaderLoaderURL)
         }
 
         if pendingReaderModeURL.isSnippetURL && !hasRenderedReadabilityContent {
