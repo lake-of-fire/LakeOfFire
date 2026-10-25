@@ -41,6 +41,10 @@ jobs:
         run: |
           python3 -m pip install playwright==1.57.0
           python3 -m playwright install --with-deps chromium
+      - name: EPUB XML stylesheet journeys
+        run: |
+          set -o pipefail
+          python3 Tests/Browser/test_epub_xml_stylesheets.py 2>&1 | tee book-actions-xml-stylesheet-results.txt
       - name: Renderer journeys
         run: |
           set -o pipefail
