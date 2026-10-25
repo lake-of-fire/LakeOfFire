@@ -634,4 +634,144 @@ extension ReaderContentHTMLLifetimeTests {
         XCTAssertTrue(mode.isReaderModeLoading, "Normal document readiness still owns completion")
         XCTAssertEqual(mode.pendingReaderModeURL, url)
     }
+    func testCapturedReadabilityCannotAdoptSameURLSelectionDuringPublicationDate() async throws {
+        for recreatesRow in [false, true] {
+            let (realm, row, reader, mode, navigator) = try renderFixture()
+            defer {
+                mode.readerPublicationDateLoader = nil
+                withExtendedLifetime(realm) {}
+            }
+            try prepareFinalTransformMetadata(row, in: realm)
+            // Use the captured-readability route: reader mode is already the
+            // stored default, so it is considered before the local-file fallback.
+            reader.content = nil
+            reader.preloadResolvedContent(row, for: fileURL)
+            try await reader.load(url: fileURL)
+            let originalSelection = try XCTUnwrap(reader.currentSelectionID)
+            let originalFence = reader.makeSelectionCommitFence(requiring: originalSelection)
+            let capturedHTML = "<html><body><div id='reader-content'>Retired captured article.</div></body></html>"
+            let successorHTML = "Successor capture"
+            mode.readabilityContent = capturedHTML
+            var dateLookups = 0
+            var successor: HistoryRecord?
+            mode.readerPublicationDateLoader = { url in
+                dateLookups += 1
+                XCTAssertEqual(url, self.fileURL)
+                await Task.yield()
+                do {
+                    let replacement: HistoryRecord
+                    if recreatesRow {
+                        replacement = HistoryRecord(value: row)
+                        try realm.write {
+                            realm.delete(row)
+                            realm.add(replacement)
+                        }
+                        XCTAssertTrue(row.isInvalidated)
+                    } else {
+                        replacement = try XCTUnwrap(realm.object(
+                            ofType: HistoryRecord.self, forPrimaryKey: row.compoundKey
+                        ))
+                        XCTAssertTrue(row.isSameObject(as: replacement))
+                    }
+                    reader.content = nil
+                    reader.preloadResolvedContent(replacement, for: self.fileURL)
+                    try await reader.load(url: self.fileURL)
+                    successor = replacement
+                    XCTAssertNotEqual(reader.currentSelectionID, originalSelection)
+                    XCTAssertFalse(originalFence())
+                    // The selection changes without starting another render:
+                    // the obsolete job's URL generation is deliberately intact.
+                    mode.beginReaderModeLoad(for: self.fileURL)
+                    reader.isRenderingReaderHTML = true
+                    mode.readabilityContent = successorHTML
+                    navigator.load(URLRequest(url: self.fileURL))
+                } catch {
+                    XCTFail("Could not replace the captured reader selection: \(error)")
+                }
+                return nil
+            }
+            var processed = false
+            mode.processHTMLBytes = { bytes, _ in
+                await MainActor.run { processed = true }
+                return bytes
+            }
+            await render(mode, reader: reader)
+
+            XCTAssertEqual(dateLookups, 1, "The captured route must reach its publication-date await")
+            XCTAssertNotNil(successor)
+            XCTAssertFalse(processed, "Retired captured HTML must not enter the successor's processing pipeline")
+            XCTAssertEqual(mode.readabilityContent, successorHTML)
+            XCTAssertTrue(mode.isReaderModeLoading)
+            XCTAssertTrue(reader.isRenderingReaderHTML)
+            XCTAssertEqual(mode.pendingReaderModeURL, fileURL)
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, fileURL.absoluteString)
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+        }
+    }
+
+    func testCapturedReadabilityRejectsDifferentRowWithoutSelectionChange() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer {
+            mode.readerPublicationDateLoader = nil
+            withExtendedLifetime(realm) {}
+        }
+        try prepareFinalTransformMetadata(row, in: realm)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Retired capture.</div></body></html>"
+        let originalSelection = reader.currentSelectionID
+        let replacement = HistoryRecord(value: row)
+        replacement.compoundKey += "-replacement"
+        try realm.write { realm.add(replacement) }
+        var dateLookups = 0
+        mode.readerPublicationDateLoader = { _ in
+            dateLookups += 1
+            await Task.yield()
+            reader.content = replacement
+            mode.beginReaderModeLoad(for: self.fileURL)
+            reader.isRenderingReaderHTML = true
+            mode.readabilityContent = "Successor capture"
+            return nil
+        }
+        await render(mode, reader: reader)
+
+        XCTAssertEqual(dateLookups, 1)
+        XCTAssertEqual(reader.currentSelectionID, originalSelection)
+        XCTAssertFalse(row.isSameObject(as: replacement))
+        XCTAssertEqual(mode.readabilityContent, "Successor capture")
+        XCTAssertTrue(mode.isReaderModeLoading)
+        XCTAssertTrue(reader.isRenderingReaderHTML)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+    }
+
+    func testCapturedReadabilityAllowsFreshWrapperForSameLiveRow() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer {
+            mode.readerPublicationDateLoader = nil
+            withExtendedLifetime(realm) {}
+        }
+        try prepareFinalTransformMetadata(row, in: realm)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Current captured article.</div></body></html>"
+        let originalSelection = reader.currentSelectionID
+        var dateLookups = 0
+        mode.readerPublicationDateLoader = { _ in
+            dateLookups += 1
+            await Task.yield()
+            do {
+                try self.renameWithFreshWrapper(row, in: realm, reader: reader)
+            } catch {
+                XCTFail("Could not rename the current content: \(error)")
+            }
+            return nil
+        }
+        await render(mode, reader: reader)
+
+        XCTAssertEqual(dateLookups, 1)
+        XCTAssertEqual(reader.currentSelectionID, originalSelection)
+        XCTAssertEqual(reader.content?.title, "Renamed snippet")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, fileURL.absoluteString)
+        XCTAssertTrue(mode.isReaderModeLoading, "The admitted render still waits for normal document readiness")
+        XCTAssertEqual(mode.pendingReaderModeURL, fileURL)
+    }
+
 }
