@@ -227,6 +227,8 @@ public struct FeedView: View {
     }
 
     public var body: some View {
+        let displayedFeed = feed
+        let commandSource = FeedViewCommandSource(feed: displayedFeed)
         let isFeedGroupFollowed = viewModel.isFeedGroupFollowed
         let allowsFollowing = feed.entryContentKind != .contentListing
         AsyncView(operation: { forceRefreshRequested in
@@ -305,8 +307,8 @@ public struct FeedView: View {
                 }
             }
     }
-        .task(id: feed.id) {
-            try? await markFeedAsViewed()
+        .task(id: feed.id) { @MainActor in
+            try? await commandSource?.markingViewed()?.write()
         }
         .toolbar {
             ToolbarItem(placement: .automatic) {
@@ -315,8 +317,11 @@ public struct FeedView: View {
                         if allowsFollowing {
                             Section {
                                 Button {
-                                    Task { @MainActor in
-                                        try? await setFollowed(!isFeedGroupFollowed)
+                                    guard let command = FeedViewCommand.following(
+                                        !isFeedGroupFollowed, feed: displayedFeed
+                                    ) else { return }
+                                    Task {
+                                        try? await command.write()
                                     }
                                 } label: {
                                     Label(isFeedGroupFollowed ? "Following" : "Follow", systemImage: isFeedGroupFollowed ? "checkmark" : "plus")
@@ -325,8 +330,11 @@ public struct FeedView: View {
                         }
                         if showsMarkAllAsSeenAction {
                             Button("Mark All as Seen") {
-                                Task { @MainActor in
-                                    try? await markAllEntriesAsSeen()
+                                guard let command = FeedViewCommand.markingAllEntriesSeen(
+                                    feed: displayedFeed, hasEntries: !entries.isEmpty
+                                ) else { return }
+                                Task {
+                                    try? await command.write()
                                 }
                             }
                         }
@@ -355,41 +363,6 @@ public struct FeedView: View {
         self.isHorizontal = isHorizontal
         self.showsToolbar = showsToolbar
         self.initialScrollEntryID = initialScrollEntryID
-    }
-
-    @MainActor
-    private func markFeedAsViewed() async throws {
-        guard feed.shouldMarkAsViewedOnAppear else { return }
-        try await Realm.asyncWrite(
-            ThreadSafeReference(to: feed),
-            configuration: ReaderContentLoader.feedEntryRealmConfiguration
-        ) { _, feed in
-            feed.lastViewedAt = Date()
-        }
-    }
-
-    @MainActor
-    private func markAllEntriesAsSeen() async throws {
-        guard feed.showsUnseenBadge, !entries.isEmpty else { return }
-        try await Realm.asyncWrite(
-            ThreadSafeReference(to: feed),
-            configuration: ReaderContentLoader.feedEntryRealmConfiguration
-        ) { _, feed in
-            feed.lastSeenFeedEntriesAt = Date()
-        }
-    }
-
-    @MainActor
-    private func setFollowed(_ isFollowed: Bool) async throws {
-        guard feed.entryContentKind != .contentListing else { return }
-        let canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey
-        try await Realm.asyncWrite(configuration: ReaderContentLoader.feedEntryRealmConfiguration) { realm in
-            Feed.setFollowingStatusForFeedGroup(
-                canonicalFeedURLKey: canonicalFeedURLKey,
-                isFollowed: isFollowed,
-                in: realm
-            )
-        }
     }
 }
 
