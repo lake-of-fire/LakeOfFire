@@ -33,12 +33,14 @@ private final class FeedEditorStorageLifetime {
 
     init(
         feed: Feed, formCapture: LibraryFeedFormCapture? = nil, observesRealm: Bool = false,
-        beforeObservation: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil
+        beforeObservation: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
+        beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil
     ) {
         let retired = XCTestExpectation(description: "Captured editor retirement settled")
         self.retired = retired
         model = LibraryFeedFormSectionsViewModel(
             feed: feed, formCapture: formCapture, observesRealm: observesRealm, beforeObservation: beforeObservation,
+            beforeFieldWrite: beforeFieldWrite,
             retirementDidFinish: { retired.fulfill() }
         )
     }
@@ -50,6 +52,19 @@ private final class FeedEditorStorageLifetime {
         let result = await XCTWaiter.fulfillment(of: [retired], timeout: 5)
         XCTAssertEqual(result, .completed)
     }
+}
+
+private enum FeedEditorPhysicalReplacement: CaseIterable, Equatable, Sendable {
+    case feed, category
+}
+
+private enum FeedEditorControlledFailure: Error {
+    case firstAttempt
+}
+
+private actor FeedEditorPhysicalWriteAttempts {
+    private(set) var count = 0
+    func record() -> Int { count += 1; return count }
 }
 
 private struct FeedEditorStorageSnapshot: Equatable, Sendable {
@@ -153,13 +168,15 @@ final class LibraryFeedEditorStorageOwnershipTests: XCTestCase, @unchecked Senda
     }
 
     private func editor(
-        _ fixture: DiskFixture, observesRealm: Bool = false,
-        beforeObservation: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil
+        _ fixture: DiskFixture, observesRealm: Bool = false, frozen: Bool = false,
+        beforeObservation: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
+        beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil
     ) async throws -> FeedEditorStorageLifetime {
         let realm = try await Realm(configuration: fixture.configuration, actor: MainActor.shared)
         let feed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: fixture.feedID))
         let lifetime = FeedEditorStorageLifetime(
-            feed: feed, observesRealm: observesRealm, beforeObservation: beforeObservation
+            feed: frozen ? feed.freeze() : feed, observesRealm: observesRealm,
+            beforeObservation: beforeObservation, beforeFieldWrite: beforeFieldWrite
         )
         addTeardownBlock { await lifetime.retire() }
         return lifetime
@@ -195,6 +212,63 @@ final class LibraryFeedEditorStorageOwnershipTests: XCTestCase, @unchecked Senda
             actor.cachedRealms.removeValue(forKey: key)
             realm.invalidate()
         }
+    }
+
+    @RealmBackgroundActor
+    private static func physicalIdentity(
+        configuration: Realm.Configuration, admission: RealmStorageAdmission, feedID: UUID
+    ) async throws -> LibraryFeedPhysicalIdentity {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: configuration, storageAdmission: admission
+        )
+        let feed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: feedID))
+        return LibraryFeedPhysicalIdentity(feed: feed)
+    }
+
+    @RealmBackgroundActor
+    private static func entryObservationCount(_ model: LibraryFeedFormSectionsViewModel) -> Int {
+        model.realmCancellables.count
+    }
+
+    @discardableResult
+    private func replacePhysicalRow(
+        _ replacement: FeedEditorPhysicalReplacement, fixture: DiskFixture, in realm: Realm
+    ) throws -> Feed {
+        let feed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: fixture.feedID))
+        let identity = LibraryFeedPhysicalIdentity(feed: feed)
+        let feedCreatedAt = feed.createdAt
+        let category = try XCTUnwrap(feed.getCategory())
+        let categoryCreatedAt = category.createdAt
+        switch replacement {
+        case .feed:
+            let successor = Feed()
+            for property in feed.objectSchema.properties {
+                successor[property.name] = feed[property.name]
+            }
+            // Separate committed delete/create phases preserve every persisted
+            // field, as a synchronized recreation can, but replace the ObjKey.
+            try realm.write { realm.delete(feed) }
+            try realm.write {
+                realm.add(successor)
+                successor.refreshChangeMetadata(explicitlyModified: true)
+            }
+        case .category:
+            let successor = FeedCategory()
+            for property in category.objectSchema.properties {
+                successor[property.name] = category[property.name]
+            }
+            try realm.write { realm.delete(category) }
+            try realm.write {
+                realm.add(successor)
+                successor.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }
+        let successor = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: fixture.feedID))
+        XCTAssertEqual(successor.createdAt, feedCreatedAt)
+        XCTAssertEqual(successor.categoryID, fixture.categoryID)
+        XCTAssertEqual(successor.getCategory()?.createdAt, categoryCreatedAt)
+        XCTAssertNotEqual(LibraryFeedPhysicalIdentity(feed: successor), identity)
+        return successor
     }
 
     nonisolated private static func snapshot(
@@ -554,15 +628,19 @@ final class LibraryFeedEditorStorageOwnershipTests: XCTestCase, @unchecked Senda
         let oldEditor = try await editor(fixture)
         try replaceFile(fixture)
         let admission = RealmBackgroundActor.shared.captureStorageAdmission(for: fixture.configuration)
+        let physicalIdentity = try await Self.physicalIdentity(
+            configuration: fixture.configuration, admission: admission, feedID: fixture.feedID
+        )
         let ordering = LibraryFeedWriteOrdering.shared(
             configuration: fixture.configuration, storageAdmission: admission,
             feedID: fixture.feedID, createdAt: createdAt,
-            categoryID: fixture.categoryID, categoryCreatedAt: createdAt
+            categoryID: fixture.categoryID, categoryCreatedAt: createdAt, physicalIdentity: physicalIdentity
         )
         let sequence = ordering.issueSequence(field: .title)
         let command = LibraryFeedFieldCommand(
             feedID: fixture.feedID, feedCreatedAt: createdAt,
             categoryID: fixture.categoryID, categoryCreatedAt: createdAt,
+            physicalIdentity: physicalIdentity,
             realmConfiguration: fixture.configuration, storageAdmission: admission,
             field: .title, sequence: sequence, metadataIntent: nil, writeOrdering: ordering
         ) { feed in
@@ -588,5 +666,346 @@ final class LibraryFeedEditorStorageOwnershipTests: XCTestCase, @unchecked Senda
         XCTAssertEqual(current.title, "Replacement owner's input")
         XCTAssertNotEqual(current.generations, fixture.replacement.generations)
         XCTAssertEqual(retired, fixture.original)
+    }
+
+    func testBufferedInputRejectsEqualFieldsPhysicalFeedAfterOpening() async throws {
+        for frozen in [false, true] {
+            let fixture = try await makeFixture()
+            let gate = FeedEditorStorageGate()
+            let entered = expectation(description: "Buffered command opened the original physical Feed")
+            let editor = try await editor(fixture, frozen: frozen, beforeFieldWrite: {
+                await gate.wait(entered: { entered.fulfill() })
+            })
+            addTeardownBlock { await gate.release() }
+            let realm = try XCTUnwrap(editor.model!.feed.realm)
+            editor.model!.feedTitle = "Retired draft"
+            await fulfillment(of: [entered], timeout: 5)
+            try replacePhysicalRow(.feed, fixture: fixture, in: realm)
+            let replacement = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+            await gate.release()
+            try await editor.model!.finishEditing().value
+            await editor.retire()
+            let settled = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+            XCTAssertEqual(settled, replacement)
+        }
+    }
+
+    func testImmediateInputRejectsEqualFieldsCategoryAndFreshFormCanEdit() async throws {
+        let fixture = try await makeFixture()
+        let gate = FeedEditorStorageGate()
+        let entered = expectation(description: "Immediate command opened the original category")
+        let editor = try await editor(fixture, beforeFieldWrite: {
+            await gate.wait(entered: { entered.fulfill() })
+        })
+        addTeardownBlock { await gate.release() }
+        let feed = editor.model!.feed
+        let realm = try XCTUnwrap(feed.realm)
+        let capture = editor.model!.formCapture
+        editor.model!.feedIsReaderModeByDefault = !fixture.original.readerMode
+        await fulfillment(of: [entered], timeout: 5)
+        try replacePhysicalRow(.category, fixture: fixture, in: realm)
+        let replacement = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+        let refreshed = try XCTUnwrap(capture.refreshingRowIdentity(for: feed))
+        XCTAssertNotEqual(refreshed.identity, capture.identity)
+        XCTAssertTrue(refreshed.storageAdmission === capture.storageAdmission)
+        XCTAssertFalse(capture.admits(feed))
+        XCTAssertTrue(refreshed.admits(feed))
+        await gate.release()
+        try await editor.model!.finishEditing().value
+        let settled = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+        XCTAssertEqual(settled, replacement)
+
+        let successor = FeedEditorStorageLifetime(feed: feed, formCapture: refreshed)
+        addTeardownBlock { await successor.retire() }
+        successor.model!.feedTitle = "Current category owner"
+        try await successor.model!.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Current category owner")
+        await successor.retire()
+        await editor.retire()
+    }
+
+    func testFailedDraftRetryCannotAdoptEqualFieldsPhysicalSuccessor() async throws {
+        for replacementKind in FeedEditorPhysicalReplacement.allCases {
+            let fixture = try await makeFixture()
+            let attempts = FeedEditorPhysicalWriteAttempts()
+            let editor = try await editor(fixture, beforeFieldWrite: {
+                if await attempts.record() == 1 { throw FeedEditorControlledFailure.firstAttempt }
+            })
+            let realm = try XCTUnwrap(editor.model!.feed.realm)
+            let firstAttempt = editor.model!.writeFeedAsync(field: .title) { feed in
+                guard feed.title != "Retained failed draft" else { return false }
+                feed.title = "Retained failed draft"
+                return true
+            }
+            do {
+                try await firstAttempt.value
+                XCTFail("The first production command must fail before application")
+            } catch FeedEditorControlledFailure.firstAttempt {}
+            try replacePhysicalRow(replacementKind, fixture: fixture, in: realm)
+            let replacement = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+            try await editor.model!.finishEditing().value
+            let attemptCount = await attempts.count
+            XCTAssertEqual(attemptCount, 2)
+            await editor.retire()
+            let settled = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+            XCTAssertEqual(settled, replacement)
+        }
+    }
+
+    func testRetiredInputCannotSuppressEqualFieldsPhysicalSuccessorsIntent() async throws {
+        for replacementKind in FeedEditorPhysicalReplacement.allCases {
+            let fixture = try await makeFixture()
+            let original = try await editor(fixture)
+            let realm = try XCTUnwrap(original.model!.feed.realm)
+            let feed = try replacePhysicalRow(replacementKind, fixture: fixture, in: realm)
+            let successor = FeedEditorStorageLifetime(feed: feed)
+            addTeardownBlock { await successor.retire() }
+            let gate = FeedEditorStorageGate()
+            let entered = expectation(description: "Physical successor reserved its title input")
+            let write = successor.model!.writeFeedAsync(field: .title, beforeWrite: {
+                await gate.wait(entered: { entered.fulfill() })
+            }) { feed in
+                guard feed.title != "Current physical owner" else { return false }
+                feed.title = "Current physical owner"
+                return true
+            }
+            addTeardownBlock { write.cancel(); await gate.release(); _ = await write.result }
+            await fulfillment(of: [entered], timeout: 5)
+            let replacement = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+            original.model!.feedTitle = "Later retired input"
+            try await original.model!.finishEditing().value
+            let afterRetiredInput = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+            XCTAssertEqual(afterRetiredInput, replacement)
+            await gate.release()
+            try await write.value
+            realm.refresh()
+            XCTAssertEqual(feed.title, "Current physical owner")
+            await successor.retire()
+            await original.retire()
+        }
+    }
+
+    func testOpenedMetadataCommandRejectsEqualFieldsPhysicalReplacement() async throws {
+        for replacementKind in FeedEditorPhysicalReplacement.allCases {
+            let fixture = try await makeFixture()
+            let editor = try await editor(fixture)
+            let realm = try XCTUnwrap(editor.model!.feed.realm)
+            let generation = UUID()
+            let rssURL = rssURL
+            editor.model!.beginMetadataRefresh(rssURL: rssURL, identifier: generation)
+            let gate = FeedEditorStorageGate()
+            let entered = expectation(description: "Metadata command opened its original physical rows")
+            let task = Task { @MainActor [model = editor.model!] in
+                await model.refreshIcon(
+                    expectedRSSURL: rssURL, expectedGeneration: generation,
+                    beforeWrite: { await gate.wait(entered: { entered.fulfill() }) },
+                    fetch: { _ in URL(string: "https://example.com/obsolete.png")! }
+                )
+            }
+            addTeardownBlock { task.cancel(); await gate.release(); await task.value }
+            await fulfillment(of: [entered], timeout: 5)
+            try replacePhysicalRow(replacementKind, fixture: fixture, in: realm)
+            let replacement = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+            await gate.release()
+            await task.value
+            XCTAssertEqual(editor.model!.feedIconURL, "")
+            XCTAssertNil(editor.model!.currentRSSURL)
+            await editor.retire()
+            let settled = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+            XCTAssertEqual(settled, replacement)
+        }
+    }
+
+    func testObserverStartupRejectsEqualFieldsSuccessorsAndKeepsCurrentOwner() async throws {
+        let replacements: [FeedEditorPhysicalReplacement?] = [nil, .feed, .category]
+        for replacementKind in replacements {
+            let fixture = try await makeFixture()
+            let gate = FeedEditorStorageGate()
+            let entered = expectation(description: "Observer waits before resolving its captured rows")
+            let editor = try await editor(fixture, observesRealm: true, beforeObservation: {
+                await gate.wait(entered: { entered.fulfill() })
+            })
+            let task = try XCTUnwrap(editor.model!.observationTask)
+            addTeardownBlock { task.cancel(); await gate.release(); _ = await task.result }
+            await fulfillment(of: [entered], timeout: 5)
+            if let replacementKind {
+                let realm = try XCTUnwrap(editor.model!.feed.realm)
+                try replacePhysicalRow(replacementKind, fixture: fixture, in: realm)
+            }
+            await gate.release()
+            try await task.value
+            let count = await Self.entryObservationCount(editor.model!)
+            XCTAssertEqual(count, replacementKind == nil ? 1 : 0)
+            if replacementKind != nil { XCTAssertNil(editor.model!.feedEntries) }
+            await editor.retire()
+        }
+    }
+
+    func testEntryPublicationRejectsEqualFieldsPhysicalReplacementAfterAwait() async throws {
+        for replacementKind in FeedEditorPhysicalReplacement.allCases {
+            let fixture = try await makeFixture()
+            let editor = try await editor(fixture)
+            let realm = try XCTUnwrap(editor.model!.feed.realm)
+            try await editor.model!.refreshFeedEntries()
+            XCTAssertEqual(editor.model!.feedEntries?.map(\.title), ["Original"])
+            let gate = FeedEditorStorageGate()
+            let entered = expectation(description: "Entry publication waits before current-row admission")
+            let task = Task { @MainActor [model = editor.model!] in
+                try await model.refreshFeedEntries(beforePublication: {
+                    await gate.wait(entered: { entered.fulfill() })
+                })
+            }
+            addTeardownBlock { task.cancel(); await gate.release(); _ = await task.result }
+            await fulfillment(of: [entered], timeout: 5)
+            try replacePhysicalRow(replacementKind, fixture: fixture, in: realm)
+            let replacement = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+            await gate.release()
+            try await task.value
+            XCTAssertNil(editor.model!.feedEntries)
+            await editor.retire()
+            let settled = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+            XCTAssertEqual(settled, replacement)
+        }
+    }
+
+    func testPhysicalIdentityAgreesAcrossLiveFrozenAndActorAccessors() async throws {
+        let fixture = try await makeFixture()
+        let realm = try await Realm(configuration: fixture.configuration, actor: MainActor.shared)
+        let feed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: fixture.feedID))
+        let frozen = feed.freeze()
+        let identity = LibraryFeedPhysicalIdentity(feed: feed)
+        XCTAssertNotNil(identity.feedRowID)
+        XCTAssertNotNil(identity.categoryRowID)
+        XCTAssertEqual(identity, LibraryFeedPhysicalIdentity(feed: frozen))
+        let admission = RealmBackgroundActor.shared.captureStorageAdmission(for: fixture.configuration)
+        let actorIdentity = try await Self.physicalIdentity(
+            configuration: fixture.configuration, admission: admission, feedID: fixture.feedID
+        )
+        XCTAssertEqual(identity, actorIdentity)
+        let editor = FeedEditorStorageLifetime(feed: frozen)
+        addTeardownBlock { await editor.retire() }
+        XCTAssertFalse(editor.model!.feed.isFrozen)
+        editor.model!.feedTitle = "Current frozen capture"
+        try await editor.model!.finishEditing().value
+        realm.refresh()
+        XCTAssertEqual(feed.title, "Current frozen capture")
+        XCTAssertEqual(editor.model!.feedTitle, "Current frozen capture")
+
+        let successor = try replacePhysicalRow(.feed, fixture: fixture, in: realm)
+        XCTAssertFalse(identity.matches(feed))
+        XCTAssertNil(LibraryFeedPhysicalIdentity(feed: feed).feedRowID)
+        XCTAssertFalse(identity.matches(successor))
+        XCTAssertNotEqual(identity, LibraryFeedPhysicalIdentity(feed: successor))
+        XCTAssertEqual(identity, LibraryFeedPhysicalIdentity(feed: frozen))
+        let feedSuccessorIdentity = LibraryFeedPhysicalIdentity(feed: successor)
+        try replacePhysicalRow(.category, fixture: fixture, in: realm)
+        let categorySuccessorIdentity = LibraryFeedPhysicalIdentity(feed: successor)
+        XCTAssertEqual(feedSuccessorIdentity.feedRowID, categorySuccessorIdentity.feedRowID)
+        XCTAssertNotEqual(feedSuccessorIdentity.categoryRowID, categorySuccessorIdentity.categoryRowID)
+        let unmanaged = Feed()
+        unmanaged.id = fixture.feedID
+        XCTAssertFalse(identity.matches(unmanaged))
+        XCTAssertNil(LibraryFeedPhysicalIdentity(feed: unmanaged).feedRowID)
+        await editor.retire()
+    }
+
+    func testCurrentRowsPreserveNoOpMetadataAndURLValidatorInvalidation() async throws {
+        let fixture = try await makeFixture()
+        let gate = FeedEditorStorageGate()
+        let entered = expectation(description: "Current-row no-op waits behind authoritative metadata")
+        let editor = try await editor(fixture, beforeFieldWrite: {
+            await gate.wait(entered: { entered.fulfill() })
+        })
+        addTeardownBlock { await gate.release() }
+        let feed = editor.model!.feed
+        let realm = try XCTUnwrap(feed.realm)
+        editor.model!.feedTitle = ""
+        await fulfillment(of: [entered], timeout: 5)
+        try realm.write {
+            feed.markdownDescription = "Intervening description"
+            feed.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let beforeNoOp = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+        await gate.release()
+        try await editor.model!.finishEditing().value
+        let afterNoOp = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+        XCTAssertEqual(afterNoOp, beforeNoOp)
+        XCTAssertEqual(editor.model!.feedDescription, "Intervening description")
+
+        let nextURL = URL(string: "https://example.com/current.xml")!
+        try await editor.model!.pasteRSSURL(strings: [nextURL.absoluteString]).value
+        let changed = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+        XCTAssertEqual(changed.rssURL, nextURL)
+        XCTAssertNil(changed.eTag)
+        XCTAssertNil(changed.modifiedHeader)
+        XCTAssertNil(changed.refreshedAt)
+        XCTAssertEqual(changed.description, "Intervening description")
+        XCTAssertNotEqual(changed.generations, beforeNoOp.generations)
+        await editor.retire()
+    }
+
+    func testQueuedCommandRechecksPhysicalCategoryAfterPeersOwnedTransaction() async throws {
+        let fixture = try await makeFixture()
+        let editor = try await editor(fixture)
+        let configuration = fixture.configuration
+        let categoryID = fixture.categoryID
+        let writerGate = FeedEditorStorageGate()
+        let peerGate = FeedEditorStorageGate()
+        let opened = expectation(description: "Command opened its captured store")
+        let peerEntered = expectation(description: "Peer owns an unchanged-category transaction")
+        let submitted = expectation(description: "Editor queues its separate owned SDK admission")
+        let task = RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+            editor.model!.writeFeedAsync(field: .title, beforeWrite: {
+                await writerGate.wait(entered: { opened.fulfill() })
+            }) { feed in
+                feed.title = "Retired queued title"
+                return true
+            }
+        }
+        addTeardownBlock {
+            task.cancel()
+            await writerGate.release()
+            await peerGate.release()
+            _ = await task.result
+        }
+        await fulfillment(of: [opened], timeout: 5)
+        let peer = Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try realm.beginWrite()
+            do {
+                let category = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+                await peerGate.wait(entered: { peerEntered.fulfill() })
+                XCTAssertTrue(realm.isInWriteTransaction)
+                let successor = FeedCategory()
+                for property in category.objectSchema.properties {
+                    successor[property.name] = category[property.name]
+                }
+                successor.title = "Peer category"
+                realm.delete(category)
+                realm.add(successor)
+                successor.refreshChangeMetadata(explicitlyModified: true)
+                try realm.commitWrite()
+            } catch {
+                if realm.isInWriteTransaction { realm.cancelWrite() }
+                throw error
+            }
+            return Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self).map {
+                ($0.recordName, $0.generation)
+            })
+        }
+        addTeardownBlock { await peerGate.release(); _ = await peer.result }
+        await fulfillment(of: [peerEntered], timeout: 5)
+        await writerGate.release()
+        await fulfillment(of: [submitted], timeout: 5)
+        await peerGate.release()
+        let peerGenerations = try await peer.value
+        try await task.value
+        await editor.retire()
+        let settled = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
+        XCTAssertEqual(settled.title, fixture.original.title)
+        XCTAssertEqual(settled.categoryTitle, "Peer category")
+        XCTAssertEqual(settled.categoryCreatedAt, fixture.original.categoryCreatedAt)
+        XCTAssertEqual(settled.generations, peerGenerations)
     }
 }
