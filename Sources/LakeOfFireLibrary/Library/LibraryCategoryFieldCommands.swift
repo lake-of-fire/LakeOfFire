@@ -3,6 +3,12 @@ import RealmSwift
 import RealmSwiftGaps
 import LakeOfFireContent
 
+// FeedCategory.id is its persisted UUID. The protocol requirement exposes the
+// managed Realm row key, which is stable across live/frozen/actor accessors.
+private func libraryCategoryPhysicalRowID<T: ObjectKeyIdentifiable>(_ object: T) -> UInt64 {
+    object.id
+}
+
 enum LibraryCategoryField: Hashable, Sendable {
     case title, imageURL
 }
@@ -35,6 +41,7 @@ enum LibraryCategoryFieldEdit: Equatable, Sendable {
 struct LibraryCategoryFieldOwner: Sendable {
     let categoryID: UUID
     let createdAt: Date
+    let physicalRowID: UInt64?
     let realmConfiguration: Realm.Configuration
     let storageAdmission: RealmStorageAdmission
 
@@ -43,6 +50,7 @@ struct LibraryCategoryFieldOwner: Sendable {
         guard !category.isInvalidated else { return nil }
         categoryID = category.id
         createdAt = category.createdAt
+        physicalRowID = category.realm == nil ? nil : libraryCategoryPhysicalRowID(category)
         self.realmConfiguration = category.realm?.configuration ?? realmConfiguration ?? LibraryDataManager.realmConfiguration
         storageAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: self.realmConfiguration)
     }
@@ -53,11 +61,20 @@ struct LibraryCategoryFieldOwner: Sendable {
         }
     }
 
+    // Call only on the supplied object's Realm owner. Unmanaged input cannot
+    // lend authority to a managed same-UUID row; zero remains a valid row key.
+    // Editability is deliberately separate so read-only categories can observe.
+    func matches(_ category: FeedCategory) -> Bool {
+        guard let physicalRowID, !category.isInvalidated, category.realm != nil,
+              category.id == categoryID, category.createdAt == createdAt else { return false }
+        return libraryCategoryPhysicalRowID(category) == physicalRowID
+    }
+
     @RealmBackgroundActor
     func resolve(in realm: Realm) -> FeedCategory? {
         guard isCurrentStorage,
               let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
-              category.createdAt == createdAt, !category.isDeleted, category.isUserEditable else { return nil }
+              matches(category), !category.isDeleted, category.isUserEditable else { return nil }
         return category
     }
 }
@@ -65,11 +82,13 @@ struct LibraryCategoryFieldOwner: Sendable {
 struct LibraryCategoryFieldIdentity: Hashable, Sendable {
     let categoryID: UUID
     let createdAt: Date
+    let physicalRowID: UInt64?
     let storageIdentity: String
 
     init(owner: LibraryCategoryFieldOwner) {
         categoryID = owner.categoryID
         createdAt = owner.createdAt
+        physicalRowID = owner.physicalRowID
         storageIdentity = owner.storageAdmission.scopeIdentity
     }
 }
