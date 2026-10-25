@@ -56,14 +56,34 @@ public extension WebViewNavigator {
         resolveURL: @MainActor () async throws -> URL?,
         resolvePreviousContent: @MainActor (URL) async throws -> (any ReaderContentProtocol)?
     ) async throws {
-        guard !Task.isCancelled, shouldLoad() else { return }
-        debugPrint("# FLASH WebViewNavigator.load begin", content.url)
-        let resolvedURL = try await resolveURL()
-        guard !Task.isCancelled, shouldLoad() else { return }
+        guard !Task.isCancelled, shouldLoad(), !Task.isCancelled,
+              !content.isInvalidated else { return }
+        let contentURL = content.url
+        var trackingIdentity: (content: any ReaderContentProtocol, url: URL)?
+        func isAdmitted() -> Bool {
+            guard !Task.isCancelled, shouldLoad(), !Task.isCancelled,
+                  !content.isInvalidated, content.url == contentURL else { return false }
+            if let trackingIdentity {
+                return !trackingIdentity.content.isInvalidated
+                    && trackingIdentity.content.url == trackingIdentity.url
+            }
+            return true
+        }
+        debugPrint("# FLASH WebViewNavigator.load begin", contentURL)
+        let resolvedURL: URL?
+        do {
+            resolvedURL = try await resolveURL()
+        } catch {
+            // A retired source cannot publish an error that makes its caller
+            // reload the current page as a fallback.
+            guard isAdmitted() else { return }
+            throw error
+        }
+        guard isAdmitted() else { return }
         if let url = resolvedURL {
             let navigationURL: URL
-            if forceReaderModeForSnippets, content.url.isSnippetURL {
-                navigationURL = ReaderContentLoader.readerLoaderURL(for: content.url) ?? url
+            if forceReaderModeForSnippets, contentURL.isSnippetURL {
+                navigationURL = ReaderContentLoader.readerLoaderURL(for: contentURL) ?? url
             } else {
                 navigationURL = url
             }
@@ -73,18 +93,32 @@ public extension WebViewNavigator {
                 if navigationURL.isEBookURL || navigationURL.isReaderFileURL {
                     previouslyLoadedContent = nil
                 } else {
-                    previouslyLoadedContent = try await resolvePreviousContent(navigationURL)
-                    guard !Task.isCancelled, shouldLoad() else { return }
+                    do {
+                        previouslyLoadedContent = try await resolvePreviousContent(navigationURL)
+                    } catch {
+                        guard isAdmitted() else { return }
+                        throw error
+                    }
+                    guard isAdmitted() else { return }
                 }
-                guard !Task.isCancelled, shouldLoad() else { return }
+                guard isAdmitted() else { return }
                 if navigationURL.isHTTP || navigationURL.isFileURL || navigationURL.isSnippetURL || navigationURL.isReaderURLLoaderURL {
                     let trackingContent = (previouslyLoadedContent ?? content)
+                    guard !trackingContent.isInvalidated else { return }
+                    let trackingContentURL = trackingContent.url
+                    trackingIdentity = (trackingContent, trackingContentURL)
+                    guard isAdmitted() else { return }
                     let loaderBaseURL = navigationURL.isReaderURLLoaderURL ? ReaderContentLoader.getContentURL(fromLoaderURL: navigationURL) : nil
-                    let trackingURL = loaderBaseURL ?? trackingContent.url
+                    let trackingURL = loaderBaseURL ?? trackingContentURL
                     let shouldTriggerReaderMode =
                         trackingContent.isReaderModeByDefault
                         || loaderBaseURL != nil
                         || (forceReaderModeForSnippets && trackingURL.isSnippetURL)
+                    // Mode publication can synchronously retire either row.
+                    // Keep diagnostics on values captured before that callback.
+                    let trackingHasHTML = trackingContent.hasHTML
+                    let trackingRSSContainsFullContent = trackingContent.rssContainsFullContent
+                    let trackingCompressedByteCount = trackingContent.content?.count ?? 0
                     if trackingURL.isSnippetURL || (loaderBaseURL?.isSnippetURL ?? false) {
                         debugPrint(
                             "# SNIPPETLOAD WebViewNavigator.load",
@@ -109,22 +143,22 @@ public extension WebViewNavigator {
                         "trackingURL=\(trackingURL.absoluteString)",
                         "shouldTrigger=\(shouldTriggerReaderMode)",
                         "forcedByLoader=\(loaderBaseURL != nil)",
-                        "hasHTML=\(trackingContent.hasHTML)",
-                        "rssFull=\(trackingContent.rssContainsFullContent)",
-                        "compressedBytes=\(trackingContent.content?.count ?? 0)",
+                        "hasHTML=\(trackingHasHTML)",
+                        "rssFull=\(trackingRSSContainsFullContent)",
+                        "compressedBytes=\(trackingCompressedByteCount)",
                         "requestURL=\(navigationURL.absoluteString)"
                     )
                 }
             }
-            guard !Task.isCancelled, shouldLoad() else { return }
+            guard isAdmitted() else { return }
             // Consumption belongs to this final accepted dispatch. A caller may
             // retire its receipt here, so do not re-admit the consumed receipt.
             willDispatchLoad()
             load(URLRequest(url: navigationURL))
             debugPrint("# FLASH WebViewNavigator.load request issued", navigationURL)
         } else {
-            debugPrint("# FLASH WebViewNavigator.load missing url", content.url)
-            throw ReaderContentNavigationError.unresolvedURL(content.url)
+            debugPrint("# FLASH WebViewNavigator.load missing url", contentURL)
+            throw ReaderContentNavigationError.unresolvedURL(contentURL)
         }
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import RealmSwift
 import LakeOfFireCore
 import SwiftUIWebView
 import XCTest
@@ -420,4 +421,356 @@ final class ReaderContentNavigationAdmissionTests: XCTestCase {
         XCTAssertEqual(handler.began, [newer.url])
         XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, newer.url.absoluteString)
     }
+
+    private enum ManagedRowRetirement: CaseIterable {
+        case removal
+        case sameKeyRecreation
+        case retarget
+    }
+
+    private enum ManagedProducerOutcome: CaseIterable {
+        case value
+        case missing
+        case failure
+    }
+
+    private func managedContent(
+        _ value: String = "https://example.com/managed-navigation",
+        readerMode: Bool = true
+    ) throws -> (Realm, HistoryRecord) {
+        let realm = try Realm(configuration: Realm.Configuration(
+            inMemoryIdentifier: "ReaderNavigationLifetime-\(UUID().uuidString)",
+            objectTypes: [HistoryRecord.self]
+        ))
+        let record = HistoryRecord()
+        record.url = URL(string: value)!
+        record.isReaderModeByDefault = readerMode
+        record.updateCompoundKey()
+        try realm.write { realm.add(record) }
+        return (realm, record)
+    }
+
+    @discardableResult
+    private func retire(
+        _ record: HistoryRecord,
+        in realm: Realm,
+        by retirement: ManagedRowRetirement
+    ) throws -> HistoryRecord? {
+        let key = record.compoundKey
+        let url = record.url
+        let createdAt = record.createdAt
+        var replacement: HistoryRecord?
+        try realm.write {
+            switch retirement {
+            case .removal:
+                realm.delete(record)
+            case .sameKeyRecreation:
+                realm.delete(record)
+                let successor = HistoryRecord()
+                successor.compoundKey = key
+                successor.url = url
+                successor.createdAt = createdAt
+                successor.isReaderModeByDefault = true
+                realm.add(successor)
+                replacement = successor
+            case .retarget:
+                record.url = URL(string: "https://example.com/retargeted-navigation")!
+            }
+        }
+        return replacement
+    }
+
+    private func verifyRetiredManagedProducer(
+        at point: SuspensionPoint,
+        retirement: ManagedRowRetirement,
+        outcome: ManagedProducerOutcome,
+        cancelTask: Bool = false
+    ) async throws {
+        let (realm, record) = try managedContent()
+        let originalURL = record.url
+        let navigator = WebViewNavigator()
+        let handler = ModeHandler()
+        let gate = Gate()
+        var dispatches = 0
+        var prefetches = 0
+        let task = Task { @MainActor in
+            try await navigator.loadResolvedContent(
+                content: record,
+                readerModeViewModel: handler,
+                willDispatchLoad: { dispatches += 1 },
+                resolveURL: {
+                    guard point == .contentURL else { return originalURL }
+                    await gate.wait()
+                    switch outcome {
+                    case .value: return originalURL
+                    case .missing: return nil
+                    case .failure: throw ResolutionError.failed
+                    }
+                },
+                resolvePreviousContent: { _ in
+                    prefetches += 1
+                    guard point == .previousContent else {
+                        XCTFail("A retired URL producer must not prefetch")
+                        return nil
+                    }
+                    await gate.wait()
+                    switch outcome {
+                    case .value: return record
+                    case .missing: return nil
+                    case .failure: throw ResolutionError.failed
+                    }
+                }
+            )
+        }
+        addTeardownBlock {
+            task.cancel()
+            await gate.open()
+            _ = try? await task.value
+        }
+        await fulfillment(of: [gate.entered], timeout: 1)
+        try retire(record, in: realm, by: retirement)
+        if cancelTask { task.cancel() }
+        gate.open()
+        // A retired error must not reach an ordinary caller's reload fallback.
+        try await task.value
+        XCTAssertEqual(prefetches, point == .contentURL ? 0 : 1)
+        assertNoPublication(navigator: navigator, handler: handler, dispatches: dispatches)
+    }
+
+    func testManagedRemovalDuringEitherProducerRejectsValueNilAndError() async throws {
+        for point in [SuspensionPoint.contentURL, .previousContent] {
+            for outcome in ManagedProducerOutcome.allCases {
+                try await verifyRetiredManagedProducer(
+                    at: point, retirement: .removal, outcome: outcome
+                )
+            }
+        }
+    }
+
+    func testSameKeyAndCreationReincarnationCannotAdoptOldNavigation() async throws {
+        for point in [SuspensionPoint.contentURL, .previousContent] {
+            for outcome in ManagedProducerOutcome.allCases {
+                try await verifyRetiredManagedProducer(
+                    at: point, retirement: .sameKeyRecreation, outcome: outcome
+                )
+            }
+        }
+    }
+
+    func testManagedURLReplacementDuringEitherProducerRejectsValueNilAndError() async throws {
+        for point in [SuspensionPoint.contentURL, .previousContent] {
+            for outcome in ManagedProducerOutcome.allCases {
+                try await verifyRetiredManagedProducer(
+                    at: point, retirement: .retarget, outcome: outcome
+                )
+            }
+        }
+    }
+
+    func testCancellationAndPhysicalRemovalDuringEitherProducerRemainQuiet() async throws {
+        for point in [SuspensionPoint.contentURL, .previousContent] {
+            try await verifyRetiredManagedProducer(
+                at: point, retirement: .removal, outcome: .value, cancelTask: true
+            )
+        }
+    }
+
+    func testAlreadyInvalidatedManagedEntryStartsNoProducer() async throws {
+        let (realm, record) = try managedContent()
+        try realm.write { realm.delete(record) }
+        let navigator = WebViewNavigator()
+        let handler = ModeHandler()
+        var dispatches = 0
+        try await navigator.loadResolvedContent(
+            content: record,
+            readerModeViewModel: handler,
+            willDispatchLoad: { dispatches += 1 },
+            resolveURL: { XCTFail("Invalidated entry must not resolve"); return nil },
+            resolvePreviousContent: { _ in XCTFail("Invalidated entry must not prefetch"); return nil }
+        )
+        assertNoPublication(navigator: navigator, handler: handler, dispatches: dispatches)
+    }
+
+    func testAdmissionCallbackCannotExposeAnInvalidatedInitialRow() async throws {
+        let (realm, record) = try managedContent()
+        let navigator = WebViewNavigator()
+        let handler = ModeHandler()
+        var dispatches = 0
+        try await navigator.loadResolvedContent(
+            content: record,
+            readerModeViewModel: handler,
+            shouldLoad: {
+                if !record.isInvalidated {
+                    try! realm.write { realm.delete(record) }
+                }
+                return true
+            },
+            willDispatchLoad: { dispatches += 1 },
+            resolveURL: { XCTFail("Retired admission must not resolve"); return nil },
+            resolvePreviousContent: { _ in XCTFail("Retired admission must not prefetch"); return nil }
+        )
+        assertNoPublication(navigator: navigator, handler: handler, dispatches: dispatches)
+    }
+
+    func testRetiredOriginalCannotAdoptAHealthyPreviousContentResult() async throws {
+        let (realm, record) = try managedContent()
+        let originalURL = record.url
+        let previous = content("https://example.com/healthy-previous")
+        let navigator = WebViewNavigator()
+        let handler = ModeHandler()
+        var dispatches = 0
+        try await navigator.loadResolvedContent(
+            content: record,
+            readerModeViewModel: handler,
+            willDispatchLoad: { dispatches += 1 },
+            resolveURL: { originalURL },
+            resolvePreviousContent: { _ in
+                try realm.write { realm.delete(record) }
+                return previous
+            }
+        )
+        assertNoPublication(navigator: navigator, handler: handler, dispatches: dispatches)
+    }
+
+    func testAdmissionAfterURLResolutionRevalidatesItsSynchronousCallback() async throws {
+        let (realm, record) = try managedContent()
+        let originalURL = record.url
+        let navigator = WebViewNavigator()
+        let handler = ModeHandler()
+        var resolved = false
+        var dispatches = 0
+        try await navigator.loadResolvedContent(
+            content: record,
+            readerModeViewModel: handler,
+            shouldLoad: {
+                if resolved, !record.isInvalidated {
+                    try! realm.write { realm.delete(record) }
+                }
+                return true
+            },
+            willDispatchLoad: { dispatches += 1 },
+            resolveURL: { resolved = true; return originalURL },
+            resolvePreviousContent: { _ in XCTFail("Retired callback must not prefetch"); return nil }
+        )
+        assertNoPublication(navigator: navigator, handler: handler, dispatches: dispatches)
+    }
+
+    func testInvalidatedPreviousContentIsRejectedBeforeMetadataReads() async throws {
+        let (realm, previous) = try managedContent("https://example.com/previous")
+        let original = content()
+        let originalURL = original.url
+        let navigator = WebViewNavigator()
+        let handler = ModeHandler()
+        var dispatches = 0
+        try await navigator.loadResolvedContent(
+            content: original,
+            readerModeViewModel: handler,
+            willDispatchLoad: { dispatches += 1 },
+            resolveURL: { originalURL },
+            resolvePreviousContent: { _ in
+                try realm.write { realm.delete(previous) }
+                return previous
+            }
+        )
+        assertNoPublication(navigator: navigator, handler: handler, dispatches: dispatches)
+    }
+
+    func testModePublicationMayDeleteOriginalWithoutDiagnosticReadOrDispatch() async throws {
+        let (realm, record) = try managedContent()
+        let originalURL = record.url
+        let navigator = WebViewNavigator()
+        let handler = ModeHandler()
+        var dispatches = 0
+        handler.onPublication = {
+            try! realm.write { realm.delete(record) }
+        }
+        try await navigator.loadResolvedContent(
+            content: record,
+            readerModeViewModel: handler,
+            willDispatchLoad: { dispatches += 1 },
+            resolveURL: { originalURL },
+            resolvePreviousContent: { _ in nil }
+        )
+        XCTAssertTrue(record.isInvalidated)
+        XCTAssertEqual(handler.began, [originalURL])
+        XCTAssertEqual(dispatches, 0)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, "nil")
+    }
+
+    func testModePublicationMayRetireTrackingRowBeforeFinalDispatch() async throws {
+        for retirement in ManagedRowRetirement.allCases {
+            let (realm, previous) = try managedContent("https://example.com/tracking")
+            let trackingURL = previous.url
+            let original = content()
+            let originalURL = original.url
+            let navigator = WebViewNavigator()
+            let handler = ModeHandler()
+            var dispatches = 0
+            handler.onPublication = {
+                try! self.retire(previous, in: realm, by: retirement)
+            }
+            try await navigator.loadResolvedContent(
+                content: original,
+                readerModeViewModel: handler,
+                willDispatchLoad: { dispatches += 1 },
+                resolveURL: { originalURL },
+                resolvePreviousContent: { _ in previous }
+            )
+            XCTAssertEqual(handler.began, [trackingURL])
+            XCTAssertEqual(dispatches, 0)
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, "nil")
+        }
+    }
+
+    func testFreshSameKeyRowCanRetryAfterRejectedOriginal() async throws {
+        let (realm, record) = try managedContent()
+        let originalURL = record.url
+        let navigator = WebViewNavigator()
+        let handler = ModeHandler()
+        var replacement: HistoryRecord?
+        var dispatches = 0
+        try await navigator.loadResolvedContent(
+            content: record,
+            readerModeViewModel: handler,
+            willDispatchLoad: { dispatches += 1 },
+            resolveURL: {
+                replacement = try self.retire(record, in: realm, by: .sameKeyRecreation)
+                return originalURL
+            },
+            resolvePreviousContent: { _ in XCTFail("Retired source must not prefetch"); return nil }
+        )
+        assertNoPublication(navigator: navigator, handler: handler, dispatches: dispatches)
+        let current = try XCTUnwrap(replacement)
+        try await navigator.loadResolvedContent(
+            content: current,
+            readerModeViewModel: handler,
+            willDispatchLoad: { dispatches += 1 },
+            resolveURL: { originalURL },
+            resolvePreviousContent: { _ in nil }
+        )
+        XCTAssertEqual(handler.began, [originalURL])
+        XCTAssertEqual(dispatches, 1)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, originalURL.absoluteString)
+    }
+
+    func testSoftDeletedCurrentPageRetainsExistingNavigationPolicy() async throws {
+        let (realm, record) = try managedContent()
+        let originalURL = record.url
+        try realm.write { record.isDeleted = true }
+        let navigator = WebViewNavigator()
+        let handler = ModeHandler()
+        var dispatches = 0
+        try await navigator.loadResolvedContent(
+            content: record,
+            readerModeViewModel: handler,
+            willDispatchLoad: { dispatches += 1 },
+            resolveURL: { originalURL },
+            resolvePreviousContent: { _ in nil }
+        )
+        XCTAssertFalse(record.isInvalidated)
+        XCTAssertEqual(handler.began, [originalURL])
+        XCTAssertEqual(dispatches, 1)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, originalURL.absoluteString)
+    }
+
 }
