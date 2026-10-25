@@ -2550,6 +2550,8 @@ public class ReaderModeViewModel: ObservableObject {
         let cachedReadabilityContent = readabilityContent
         let cachedContainerSelector = readabilityContainerSelector
         let cachedContainerFrameInfo = readabilityContainerFrameInfo
+        let renderBinding = scriptCaller.currentJavaScriptBindingToken
+        let requiresOriginalFrameBinding = cachedContainerFrameInfo?.isMainFrame == false
         let initialContent = readerContent.content
         let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
         let originatingContentIsCurrent = { @MainActor in
@@ -2557,6 +2559,8 @@ public class ReaderModeViewModel: ObservableObject {
                 && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
                 && (initialContent.map { self.readerModeContentIsCurrent($0, readerContent: readerContent) } ?? true)
                 && initialContent?.isInvalidated != true
+                && (!requiresOriginalFrameBinding
+                    || scriptCaller.currentJavaScriptBindingToken == renderBinding)
         }
         let publicationDateLoader = readerPublicationDateLoader
         beginReaderModeLoad(for: contentURL)
@@ -2583,6 +2587,7 @@ public class ReaderModeViewModel: ObservableObject {
                     navigator: navigator,
                     renderURL: contentURL,
                     renderGeneration: generation,
+                    renderBinding: renderBinding,
                     prefetchedContent: routeDecision.prefetchedContent,
                     prefetchedLocalHTML: routeDecision.prefetchedLocalHTML,
                     selectionIsCurrent: selectionIsCurrent,
@@ -2642,6 +2647,7 @@ public class ReaderModeViewModel: ObservableObject {
                         navigator: navigator,
                         renderURL: contentURL,
                         renderGeneration: generation,
+                        renderBinding: renderBinding,
                         selectionIsCurrent: selectionIsCurrent,
                         originatingContentIsCurrent: originatingContentIsCurrent
                     )
@@ -2697,6 +2703,7 @@ public class ReaderModeViewModel: ObservableObject {
         navigator: WebViewNavigator,
         renderURL: URL,
         renderGeneration: UUID,
+        renderBinding: WebViewScriptCaller.JavaScriptBindingToken?,
         prefetchedContent: (any ReaderContentProtocol)? = nil,
         prefetchedLocalHTML: String? = nil,
         selectionIsCurrent: @escaping @Sendable () -> Bool,
@@ -2825,6 +2832,7 @@ public class ReaderModeViewModel: ObservableObject {
                     navigator: navigator,
                     renderURL: contentURL,
                     renderGeneration: renderGeneration,
+                    renderBinding: renderBinding,
                     selectionIsCurrent: selectionIsCurrent,
                     originatingContentIsCurrent: originatingContentIsCurrent
                 )
@@ -2871,12 +2879,13 @@ public class ReaderModeViewModel: ObservableObject {
         navigator: WebViewNavigator,
         renderURL: URL,
         renderGeneration: UUID,
+        renderBinding: WebViewScriptCaller.JavaScriptBindingToken?,
         selectionIsCurrent: @escaping @Sendable () -> Bool,
         originatingContentIsCurrent: @escaping @MainActor () -> Bool
     ) async throws {
         let requestedURL = renderURL
         let frameReplacementHook = readerModeWillReplaceFrameContent
-        let frameReplacementBinding = scriptCaller.currentJavaScriptBindingToken
+        let frameReplacementBinding = renderBinding
         ReaderSnippetFinalDocumentDiagnostics.record("readability-start", contentURL: requestedURL, generation: renderGeneration)
         guard originatingContentIsCurrent(),
               isCurrentRender(for: requestedURL, generation: renderGeneration) else {
@@ -3300,7 +3309,8 @@ public class ReaderModeViewModel: ObservableObject {
                         // The handoff can suspend into WebKit or withdraw this
                         // render. Its original job, content and binding still
                         // own the subsequent in-place DOM effect.
-                        guard isCurrentRender(for: requestedURL, generation: renderGeneration),
+                        guard ownsContent(),
+                              isCurrentRender(for: requestedURL, generation: renderGeneration),
                               url.matchesReaderURL(readerContent.pageURL),
                               scriptCaller.currentJavaScriptBindingToken == frameReplacementBinding
                         else {
@@ -3343,7 +3353,7 @@ public class ReaderModeViewModel: ObservableObject {
                         let replaced = try await preparedReplacement(
                             replacementScript + "\nreturn true;", replacementArguments
                         )
-                        guard replaced,
+                        guard replaced, ownsContent(),
                               isCurrentRender(for: requestedURL, generation: renderGeneration),
                               url.matchesReaderURL(readerContent.pageURL),
                               scriptCaller.currentJavaScriptBindingToken == requiredReplacementBinding
@@ -3361,11 +3371,16 @@ public class ReaderModeViewModel: ObservableObject {
                             arguments: ["readerModeScript": Readability.shared.scripts],
                             in: frameInfo, requiring: requiredReplacementBinding)
                     } else {
+                        guard let frameReplacementBinding,
+                              scriptCaller.currentJavaScriptBindingToken == frameReplacementBinding else {
+                            throw CancellationError()
+                        }
                         _ = try await scriptCaller.evaluateJavaScript(
                             replacementScript + "\n" + readerModeInitializationScript,
-                            arguments: replacementArguments, in: frameInfo)
+                            arguments: replacementArguments, in: frameInfo,
+                            requiring: frameReplacementBinding)
                     }
-                    guard isCurrentRender(
+                    guard ownsContent(), isCurrentRender(
                         for: requestedURL,
                         generation: renderGeneration
                     ) else {

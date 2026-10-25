@@ -1,6 +1,7 @@
 import Foundation
 import RealmSwift
 import XCTest
+import WebKit
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 @testable import SwiftUIWebView
@@ -855,7 +856,10 @@ extension ReaderContentHTMLLifetimeTests {
 
     func testUnscopedCancellationStopsActiveHTMLPreparation() async throws {
         let (realm, row, reader, mode, navigator) = try renderFixture()
-        defer { withExtendedLifetime(realm) {} }
+        defer {
+            mode.processHTMLBytes = nil
+            withExtendedLifetime(realm) {}
+        }
         try prepareFinalTransformMetadata(row, in: realm)
         mode.readabilityContent = "<html><body><div id='reader-content'>Cancelled article.</div></body></html>"
         var reachedTransform = false
@@ -872,6 +876,196 @@ extension ReaderContentHTMLLifetimeTests {
         XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
         XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
         XCTAssertNil(mode.expectedSyntheticReaderLoaderURL)
+        XCTAssertNil(mode.pendingReaderModeURL)
+        XCTAssertFalse(mode.isReaderModeLoading)
+    }
+
+}
+
+// WebKit supplies the real child-frame identity; the script caller below records
+// dispatch without relying on timing of JavaScript execution in that document.
+private final class ReaderHTMLFrameProbe: NSObject, WKScriptMessageHandler {
+    var onMessage: ((WKScriptMessage) -> Void)?
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        onMessage?(message)
+    }
+}
+
+extension ReaderContentHTMLLifetimeTests {
+    private func childFrameFixture() async throws -> (WKWebView, WKFrameInfo) {
+        let configuration = WKWebViewConfiguration()
+        let probe = ReaderHTMLFrameProbe()
+        configuration.userContentController.add(probe, name: "readerHTMLFrameProbe")
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 320, height: 480),
+                                configuration: configuration)
+        let arrived = expectation(description: "reader child frame")
+        var childFrame: WKFrameInfo?
+        probe.onMessage = { message in
+            guard !message.frameInfo.isMainFrame, childFrame == nil else { return }
+            childFrame = message.frameInfo
+            arrived.fulfill()
+        }
+        let child = "<script>window.webkit.messageHandlers.readerHTMLFrameProbe.postMessage('ready')</script>"
+        let escapedChild = child.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+        webView.loadHTMLString("<iframe srcdoc=\"\(escapedChild)\"></iframe>",
+                              baseURL: URL(string: "https://example.com/reader-frame"))
+        await fulfillment(of: [arrived], timeout: 3)
+        return (webView, try XCTUnwrap(childFrame))
+    }
+
+    private func replaceFrameSelection(_ row: HistoryRecord, reader: ReaderContent,
+                                       mode: ReaderModeViewModel) async throws {
+        reader.content = nil
+        reader.preloadResolvedContent(row, for: fileURL)
+        try await reader.load(url: fileURL)
+        mode.beginReaderModeLoad(for: fileURL)
+        reader.isRenderingReaderHTML = true
+        mode.readabilityContent = "Successor frame capture"
+    }
+
+    func testFrameReplacementRetainsOriginatingSelectionAcrossEveryHandoff() async throws {
+        let (webView, frame) = try await childFrameFixture()
+        defer { withExtendedLifetime(webView) {} }
+        for retirementPhase in ["preparation", "replacement", "initialization"] {
+            let (realm, row, reader, mode, _) = try renderFixture()
+            defer {
+                mode.readerModeWillReplaceFrameContent = nil
+                withExtendedLifetime(realm) {}
+            }
+            try prepareFinalTransformMetadata(row, in: realm)
+            mode.readabilityContent = "<html><body><div id='reader-content'>Original frame article.</div></body></html>"
+            mode.readabilityContainerFrameInfo = frame
+            let caller = WebViewScriptCaller()
+            var initializationCalls = 0
+            caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+                initializationCalls += 1
+                if retirementPhase == "initialization" {
+                    try await self.replaceFrameSelection(row, reader: reader, mode: mode)
+                }
+                return WebViewScriptCaller.JavaScriptEvaluationResult(true)
+            }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+            var preparationCalls = 0
+            var replacementCalls = 0
+            mode.readerModeWillReplaceFrameContent = { _, _, _, _, _, _ in
+                preparationCalls += 1
+                await Task.yield()
+                if retirementPhase == "preparation" {
+                    do {
+                        try await self.replaceFrameSelection(row, reader: reader, mode: mode)
+                    } catch {
+                        XCTFail("Could not replace frame selection: \(error)")
+                    }
+                }
+                return { _, _ in
+                    replacementCalls += 1
+                    await Task.yield()
+                    if retirementPhase == "replacement" {
+                        try await self.replaceFrameSelection(row, reader: reader, mode: mode)
+                    }
+                    return true
+                }
+            }
+            mode.showReaderView(readerContent: reader, scriptCaller: caller)
+            await mode.waitForReaderModeRender(for: fileURL)
+
+            XCTAssertEqual(preparationCalls, 1, retirementPhase)
+            XCTAssertEqual(replacementCalls, retirementPhase == "preparation" ? 0 : 1, retirementPhase)
+            XCTAssertEqual(initializationCalls, retirementPhase == "initialization" ? 1 : 0, retirementPhase)
+            XCTAssertEqual(mode.readabilityContent, "Successor frame capture", retirementPhase)
+            XCTAssertEqual(mode.pendingReaderModeURL, fileURL, retirementPhase)
+            XCTAssertTrue(mode.isReaderModeLoading, retirementPhase)
+            XCTAssertTrue(reader.isRenderingReaderHTML, retirementPhase)
+        }
+    }
+
+    func testFrameFallbackUsesBindingCapturedBeforeHTMLPreparation() async throws {
+        let (webView, frame) = try await childFrameFixture()
+        defer { withExtendedLifetime(webView) {} }
+        for rebindsDuringPreparation in [false, true] {
+            let (realm, row, reader, mode, _) = try renderFixture()
+            defer {
+                mode.processHTMLBytes = nil
+                withExtendedLifetime(realm) {}
+            }
+            try prepareFinalTransformMetadata(row, in: realm)
+            mode.readabilityContent = "<html><body><div id='reader-content'>Current frame article.</div></body></html>"
+            mode.readabilityContainerFrameInfo = frame
+            let caller = WebViewScriptCaller()
+            var originalCalls = 0
+            var replacementCalls = 0
+            caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+                originalCalls += 1
+                return WebViewScriptCaller.JavaScriptEvaluationResult(true)
+            }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+            if rebindsDuringPreparation {
+                mode.processHTMLBytes = { bytes, _ in
+                    await MainActor.run {
+                        mode.beginReaderModeLoad(for: self.fileURL)
+                        reader.isRenderingReaderHTML = true
+                        mode.readabilityContent = "Successor frame capture"
+                        caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+                            replacementCalls += 1
+                            return WebViewScriptCaller.JavaScriptEvaluationResult(true)
+                        }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+                    }
+                    return bytes
+                }
+            }
+            mode.showReaderView(readerContent: reader, scriptCaller: caller)
+            await mode.waitForReaderModeRender(for: fileURL)
+
+            XCTAssertEqual(originalCalls, rebindsDuringPreparation ? 0 : 1)
+            XCTAssertEqual(replacementCalls, 0, "A prepared frame payload must not adopt a replacement binding")
+            if rebindsDuringPreparation {
+                XCTAssertEqual(mode.readabilityContent, "Successor frame capture")
+                XCTAssertEqual(mode.pendingReaderModeURL, fileURL)
+                XCTAssertTrue(mode.isReaderModeLoading)
+                XCTAssertTrue(reader.isRenderingReaderHTML)
+            } else {
+                XCTAssertNil(mode.pendingReaderModeURL)
+                XCTAssertFalse(mode.isReaderModeLoading)
+            }
+        }
+    }
+    func testFrameBindingReplacementAdmitsSuccessorRenderAtSameURL() async throws {
+        let (webView, frame) = try await childFrameFixture()
+        let (realm, row, reader, mode, _) = try renderFixture()
+        defer { withExtendedLifetime((webView, realm)) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Retired frame article.</div></body></html>"
+        mode.readabilityContainerFrameInfo = frame
+        let caller = WebViewScriptCaller()
+        var originalCalls = 0
+        var successorCalls = 0
+        caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+            originalCalls += 1
+            return .init(true)
+        }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+        let successorHTML = "<html><body><div id='reader-content'>Successor frame article.</div></body></html>"
+        mode.processHTMLBytes = { bytes, _ in
+            await MainActor.run {
+                caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+                    successorCalls += 1
+                    return .init(true)
+                }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+                mode.processHTMLBytes = nil
+                mode.readabilityContent = successorHTML
+                // The selection and URL stay the same; the original frame
+                // binding alone must retire duplicate-suppression authority.
+                mode.showReaderView(readerContent: reader, scriptCaller: caller)
+            }
+            return bytes
+        }
+        mode.showReaderView(readerContent: reader, scriptCaller: caller)
+        await mode.waitForReaderModeRender(for: fileURL)
+        await mode.waitForReaderModeRender(for: fileURL)
+
+        XCTAssertEqual(originalCalls, 0)
+        XCTAssertEqual(successorCalls, 1)
+        XCTAssertEqual(mode.readabilityContent, successorHTML)
         XCTAssertNil(mode.pendingReaderModeURL)
         XCTAssertFalse(mode.isReaderModeLoading)
     }
