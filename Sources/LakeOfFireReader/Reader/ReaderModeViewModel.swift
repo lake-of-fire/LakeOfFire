@@ -4043,12 +4043,36 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         readerContent: ReaderContent,
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller,
+        documentIsCurrent: @escaping @MainActor () -> Bool
+    ) async throws {
+        let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
+        try await onNavigationCommitted(
+            readerContent: readerContent,
+            newState: newState,
+            scriptCaller: scriptCaller,
+            selectionFence: selectionIsCurrent,
+            documentIsCurrent: documentIsCurrent,
+            loadHTML: { content, readerFileManager in
+                try await content.htmlToDisplay(readerFileManager: readerFileManager)
+            }
+        )
+    }
+
+    @MainActor
+    func onNavigationCommitted(
+        readerContent: ReaderContent,
+        newState: WebViewState,
+        scriptCaller: WebViewScriptCaller,
         selectionFence: (@Sendable () -> Bool)? = nil,
+        documentIsCurrent: (@MainActor () -> Bool)? = nil,
         loadHTML: @MainActor (any ReaderContentProtocol, ReaderFileManager) async throws -> String?
     ) async throws {
         let selectionIsCurrent = selectionFence
             ?? readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
         let requireCurrentSelection = { @MainActor in
+            try Task.checkCancellation()
+            guard documentIsCurrent?() != false else { throw CancellationError() }
+            // Admission can synchronously replace the document or selection.
             try Task.checkCancellation()
             guard selectionIsCurrent() else { throw CancellationError() }
         }
@@ -4085,7 +4109,18 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         }
         try requireCurrentContent()
 
-        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: committedURL)
+        await injectSharedFontIfNeeded(
+            scriptCaller: scriptCaller,
+            pageURL: committedURL,
+            documentIsCurrent: {
+                do {
+                    try requireCurrentContent()
+                    return true
+                } catch {
+                    return false
+                }
+            }
+        )
         try requireCurrentContent()
         logTrace(.navCommitted, url: committedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         logStateSnapshot("navCommitted", url: committedURL)
@@ -4116,6 +4151,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
 
         if isReaderMode != isReaderModeVerified && !newState.pageURL.isEBookURL {
             try withAnimation {
+                try requireCurrentContent()
                 readerModeLoading(isReaderModeVerified)
                 try requireCurrentContent()
                 isReaderMode = isReaderModeVerified // Reset and confirm via JS later

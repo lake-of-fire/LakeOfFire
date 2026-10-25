@@ -12,7 +12,11 @@ private final class HTMLNavigationModeProbe: ReaderModeViewModel, @unchecked Sen
     private(set) var readerPresentationRequests = 0
     private(set) var presentationSelectionFence: (@Sendable () -> Bool)?
 
-    override func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
+    override func injectSharedFontIfNeeded(
+        scriptCaller: WebViewScriptCaller,
+        pageURL: URL,
+        documentIsCurrent: @escaping @MainActor () -> Bool
+    ) async {
         await beforeFontReturns?()
     }
 
