@@ -102,6 +102,14 @@ public class ReaderContent: ObservableObject {
     // Selection ownership outlives its resolver task and queued result delivery.
     private var selectionID: UUID?
     private var selectionLifetime = ReaderContentSelectionLifetime()
+    @MainActor private struct CapturedSelectionAdmission {
+        let selectionID: UUID
+        let lifetime: ReaderContentSelectionLifetime
+        weak var content: (any ReaderContentProtocol)?
+        let contentURL: URL
+        let permits: @MainActor () -> Bool
+    }
+    private var capturedSelectionAdmission: CapturedSelectionAdmission?
     private var loadingResolvedContentURL: URL?
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
@@ -128,11 +136,28 @@ public class ReaderContent: ObservableObject {
     /// Selects caller-resolved content and retires any earlier asynchronous resolver.
     /// The caller retains responsibility for its navigation/display URL.
     public func replaceSelection(with content: (any ReaderContentProtocol)?) {
+        replaceSelection(with: content, admission: nil)
+    }
+
+    /// An optional admission keeps later same-source native loads on this exact
+    /// capture. Rejection cannot fall through to a fresh generic resolution.
+    public func replaceSelection(
+        with content: (any ReaderContentProtocol)?,
+        admission: (@MainActor () -> Bool)?
+    ) {
         let retiredTask = loadingTask
         let requestID = UUID()
         selectionLifetime.withdraw()
         selectionLifetime = ReaderContentSelectionLifetime()
         selectionID = requestID
+        capturedSelectionAdmission = nil
+        if let admission, let content = validReaderContent(content) {
+            capturedSelectionAdmission = CapturedSelectionAdmission(
+                selectionID: requestID, lifetime: selectionLifetime,
+                content: content, contentURL: content.url,
+                permits: admission
+            )
+        }
         loadingTask = nil
         loadingResolvedContentURL = nil
         retiredTask?.cancel()
@@ -304,22 +329,55 @@ public class ReaderContent: ObservableObject {
 
     private func makeLoadReceipt(
         selectionFence: @escaping @Sendable () -> Bool,
-        expectedContent: (any ReaderContentProtocol)?
+        expectedContent: (any ReaderContentProtocol)?,
+        admission: CapturedSelectionAdmission? = nil
     ) -> ReaderContentLoadReceipt {
         let expectedIdentity = expectedContent.map { ObjectIdentifier($0) }
         return .init(admission: { [weak self] in
             guard selectionFence(), let self else { return false }
+            if let admission, !self.admits(admission) { return false }
+            // A caller predicate may synchronously replace this selection.
+            guard selectionFence() else { return false }
             let currentContent = content
             guard currentContent?.isInvalidated != true else { return false }
             return currentContent.map { ObjectIdentifier($0) } == expectedIdentity
         })
     }
 
+    private func admits(_ admission: CapturedSelectionAdmission) -> Bool {
+        guard admission.lifetime.permitsCommit(),
+              selectionID == admission.selectionID else { return false }
+        guard admission.permits(), admission.lifetime.permitsCommit(),
+              selectionID == admission.selectionID,
+              let current = validReaderContent(content),
+              current === admission.content,
+              matchesResolvedContentURL(current.url, resolvedContentURL: admission.contentURL) else {
+            // Withdraw only the original token, including after predicate reentry.
+            // A predicate becoming true later must not revive a rejected capture.
+            admission.lifetime.withdraw()
+            return false
+        }
+        return true
+    }
+
     private func loadCapturingSelection(url: URL) async throws -> ReaderContentLoadReceipt {
         try Task.checkCancellation()
         let entryFence = makeSelectionCommitFence(requiring: selectionID)
+        let entryAdmission = capturedSelectionAdmission
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
         let displayURL = resolvedContentURL
+        if let entryAdmission,
+           matchesResolvedContentURL(entryAdmission.contentURL, resolvedContentURL: resolvedContentURL) {
+            guard admits(entryAdmission), entryFence() else { return .rejected }
+            let capturedContent = content
+            if !matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
+                pageURL = displayURL
+            }
+            guard entryFence(), admits(entryAdmission) else { return .rejected }
+            consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
+            return makeLoadReceipt(selectionFence: entryFence, expectedContent: capturedContent,
+                                   admission: entryAdmission)
+        }
         logReaderLoad(
             "stage=readerContent.load.begin requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) currentPageURL=\(pageURL.absoluteString) currentContentURL=\(validReaderContent(content)?.url.absoluteString ?? "nil") hasLoadingTask=\(loadingTask != nil)"
         )
@@ -330,7 +388,8 @@ public class ReaderContent: ObservableObject {
             logReaderLoad(
                 "stage=readerContent.load.skipTransientAboutBlank requestURL=\(url.absoluteString) targetURL=\(suppressedTargetURL.absoluteString)"
             )
-            return makeLoadReceipt(selectionFence: entryFence, expectedContent: content)
+            return makeLoadReceipt(selectionFence: entryFence, expectedContent: content,
+                                   admission: entryAdmission)
         }
 
         if resolvedContentURL.absoluteString == "about:blank",
@@ -338,7 +397,8 @@ public class ReaderContent: ObservableObject {
             logReaderLoad(
                 "stage=readerContent.load.skipActiveInternalLoaderAboutBlank requestURL=\(url.absoluteString)"
             )
-            return makeLoadReceipt(selectionFence: entryFence, expectedContent: content)
+            return makeLoadReceipt(selectionFence: entryFence, expectedContent: content,
+                                   admission: entryAdmission)
         }
 
         if resolvedContentURL.absoluteString != "about:blank",
@@ -347,7 +407,7 @@ public class ReaderContent: ObservableObject {
             suppressedTransientAboutBlankTargetURL = nil
         }
 
-        if let loadingTask,
+        if entryAdmission == nil, let loadingTask,
            !loadingTask.isCancelled,
            let loadingResolvedContentURL,
            matchesResolvedContentURL(loadingResolvedContentURL, resolvedContentURL: resolvedContentURL) {
@@ -359,16 +419,18 @@ public class ReaderContent: ObservableObject {
             logReaderLoad(
                 "stage=readerContent.load.awaitExistingTask requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) loadingResolvedContentURL=\(loadingResolvedContentURL.absoluteString) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
             )
-            return makeLoadReceipt(selectionFence: entryFence, expectedContent: loadedContent)
+            return makeLoadReceipt(selectionFence: entryFence, expectedContent: loadedContent,
+                                   admission: entryAdmission)
         }
 
         // Reusing an accepted display without pending work is not a new selection.
         // Keep readers of its completed resolver valid.
-        if loadingTask == nil, let existingContent = validReaderContent(content),
+        if entryAdmission == nil, loadingTask == nil, let existingContent = validReaderContent(content),
            matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL),
            matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
             consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
-            return makeLoadReceipt(selectionFence: entryFence, expectedContent: existingContent)
+            return makeLoadReceipt(selectionFence: entryFence, expectedContent: existingContent,
+                                   admission: entryAdmission)
         }
 
         // Retire the previous selection before cached or preloaded content can publish.
@@ -377,6 +439,7 @@ public class ReaderContent: ObservableObject {
         selectionLifetime.withdraw()
         selectionLifetime = ReaderContentSelectionLifetime()
         selectionID = requestID
+        capturedSelectionAdmission = nil
         let requestFence = makeSelectionCommitFence(requiring: requestID)
         loadingTask = nil
         loadingResolvedContentURL = nil
