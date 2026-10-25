@@ -4089,15 +4089,13 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             charThreshold: max(meaningfulContentMinChars, 1),
             classesToPreserve: readabilityClassesToPreserve
         )
-        let parser = SwiftReadability.Readability(
-            html: normalizedHTML,
-            url: url,
-            options: options
-        )
+        let parser = readerInitialReadabilityInput(normalizedHTML, contentURL: url).map {
+            SwiftReadability.Readability(html: $0, url: url, options: options)
+        }
         let parserSetupElapsed = CFAbsoluteTimeGetCurrent() - parserSetupStart
 
         let parseStart = CFAbsoluteTimeGetCurrent()
-        guard let result = try? parser.parse() else {
+        guard let result = try? parser?.parse() else {
             let parseElapsed = CFAbsoluteTimeGetCurrent() - parseStart
             if url.isSnippetURL,
                let snippetHTML = buildSnippetCanonicalReadabilityHTML(
