@@ -40,7 +40,7 @@ public enum OPDSParser {
 
     // Keep transport selection explicit for isolated hosts/tests without changing
     // the existing public entry point or mutating URLSession.shared globally.
-    static func parseURL(url: URL, session: URLSession, completion: @escaping @Sendable (sending ParseData?, Error?) -> Void) {
+    public static func parseURL(url: URL, session: URLSession, completion: @escaping @Sendable (sending ParseData?, Error?) -> Void) {
         loadDocument(url: url, session: session) { data, response, error in
             guard let data = data, let response = response else {
                 completion(nil, error ?? OPDSParserError.documentNotFound)

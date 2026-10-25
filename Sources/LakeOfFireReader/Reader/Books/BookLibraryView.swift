@@ -402,33 +402,16 @@ public class BookLibraryViewModel: ObservableObject {
     }
 
     static func fetchPublications(from url: URL) async -> ([Publication], String?) {
-        await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: url) { parseData, error in
-                if let error {
-                    continuation.resume(returning: ([], "Failed to fetch data: \(error.localizedDescription)"))
-                    return
-                }
+        await fetchPublications(from: url, session: .shared)
+    }
 
-                if let parseData,
-                   let mapped = BookCatalogPublicationMapper.publications(in: parseData) {
-                    continuation.resume(returning: (mapped, nil))
-                    return
-                }
-
-                if let navigationLinks = parseData?.feed?.navigation,
-                   let allBooksLink = navigationLinks.first(where: { $0.title?.hasPrefix("All Books") == true }) {
-                    guard let allBooksURL = allBooksLink.url(relativeTo: url.domainURL) ?? URL(string: allBooksLink.href) else {
-                        continuation.resume(returning: ([], "Invalid 'All Books' URL"))
-                        return
-                    }
-                    Task {
-                        continuation.resume(returning: await Self.fetchPublications(from: allBooksURL))
-                    }
-                    return
-                }
-
-                continuation.resume(returning: ([], "No publications or navigable links found"))
-            }
+    static func fetchPublications(from url: URL, session: URLSession) async -> ([Publication], String?) {
+        do {
+            return (try await BookCatalogLoading.publications(from: url, session: session), nil)
+        } catch let error as BookCatalogLoadingError {
+            return ([], error.localizedDescription)
+        } catch {
+            return ([], "Failed to fetch data: \(error.localizedDescription)")
         }
     }
 
