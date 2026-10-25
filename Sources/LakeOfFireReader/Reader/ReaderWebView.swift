@@ -121,6 +121,7 @@ final class ReaderNavigationCallbackContext {
     weak var taskManager: NavigationTaskManager?
     let binding: WebViewScriptCaller.JavaScriptBindingToken?
     let pageURL: URL
+    let renderAdmission: ReaderModeCommitRenderAdmission
     var documentIsCurrent: @MainActor () -> Bool = { true }
     private(set) var selectionIsCurrent: (@MainActor () -> Bool)?
     var navigationActivityToken: UUID?
@@ -136,6 +137,7 @@ final class ReaderNavigationCallbackContext {
         self.taskManager = taskManager
         binding = owner.scriptCaller.currentJavaScriptBindingToken
         pageURL = state.pageURL
+        renderAdmission = owner.readerModeViewModel.makeCommitRenderAdmission()
     }
 
     func captureSelection(using receipt: ReaderContentLoadReceipt) {
@@ -253,7 +255,8 @@ final class ReaderWebViewHandler {
         try await context.readerModeViewModel.onNavigationCommitted(
             readerContent: context.readerContent,
             newState: state,
-            scriptCaller: context.scriptCaller
+            scriptCaller: context.scriptCaller,
+            renderAdmission: context.renderAdmission
         )
         try requireCurrentContent()
         try await context.readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)

@@ -33,21 +33,32 @@ private final class NavigationLifetimeProbe {
     var settingsCount = 0
     var finishCount = 0
     var fontCount = 0
+    var paginationCount = 0
     var titles: [String] = []
     var settingsGate: NavigationLifetimeGate?
     var finishGate: NavigationLifetimeGate?
     var fontGate: NavigationLifetimeGate?
+    var paginationGate: NavigationLifetimeGate?
     var settingsEntered: XCTestExpectation?
     var finishEntered: XCTestExpectation?
     var fontEntered: XCTestExpectation?
+    var paginationEntered: XCTestExpectation?
     var failSettings = false
     var failFinish = false
+    var failFont = false
+    var failPagination = false
 
     func evaluate(_ script: String, title: String?, isFontInjection: Bool) async throws -> Bool? {
         if isFontInjection {
             fontCount += 1
             fontEntered?.fulfill()
             await fontGate?.wait()
+            if failFont { throw NavigationLifetimeError.controlledFailure }
+        } else if script.contains("window.paginationTrackingBookKey = bookKey;") {
+            paginationCount += 1
+            paginationEntered?.fulfill()
+            await paginationGate?.wait()
+            if failPagination { throw NavigationLifetimeError.controlledFailure }
         } else if let title {
             titles.append(title)
         } else if script.contains("isNextLoadInReaderMode") {
@@ -295,6 +306,7 @@ private final class NavigationLifetimeCleanup {
             await fixture.probe.settingsGate?.release()
             await fixture.probe.finishGate?.release()
             await fixture.probe.fontGate?.release()
+            await fixture.probe.paginationGate?.release()
         }
 
         let joined = XCTestExpectation(description: "Fixture production tasks and observers settled")
@@ -462,10 +474,11 @@ final class ReaderNavigationCallbackLifetimeTests: XCTestCase {
         return (task, held)
     }
 
-    private func startDispatchedReaderRender(
+    private func beginDispatchedReaderRender(
         _ fixture: NavigationLifetimeFixture,
-        handoffGate: NavigationLifetimeGate
-    ) async throws -> Task<Void, Never> {
+        handoffGate: NavigationLifetimeGate,
+        dispatched: XCTestExpectation
+    ) throws -> Task<Void, Never> {
         // Exercise the actual HTTP HTML pipeline and navigator data issue with
         // empty isolated propagation stores and no attached WKWebView.
         cleanupOwner().isolateRenderStores()
@@ -483,7 +496,6 @@ final class ReaderNavigationCallbackLifetimeTests: XCTestCase {
         let mode = fixture.mode
         let caller = fixture.reader.scriptCaller
         let selection = content.makeSelectionCommitFence(requiring: content.currentSelectionID)
-        let dispatched = expectation(description: "Actual Reader HTML issued to navigator")
         XCTAssertTrue(mode.startRenderTaskIfNeeded(
             for: url, reason: "fixture.actualDataIssue", selectionIsCurrent: selection
         ) { generation in
@@ -505,8 +517,505 @@ final class ReaderNavigationCallbackLifetimeTests: XCTestCase {
             await handoffGate.wait()
         })
         let task = own(try XCTUnwrap(mode.activeRenderTask(for: url)))
+        return task
+    }
+
+    private func startDispatchedReaderRender(
+        _ fixture: NavigationLifetimeFixture,
+        handoffGate: NavigationLifetimeGate
+    ) async throws -> Task<Void, Never> {
+        let dispatched = expectation(description: "Actual Reader HTML issued to navigator")
+        let task = try beginDispatchedReaderRender(
+            fixture, handoffGate: handoffGate, dispatched: dispatched
+        )
         await fulfillment(of: [dispatched], timeout: 2)
         return task
+    }
+
+    private func assertIssuedRenderStillPending(
+        _ fixture: NavigationLifetimeFixture,
+        generation: String,
+        html: String?,
+        priorExternalFinishes: Int = 0,
+        priorMediaCommits: Int = 0
+    ) {
+        XCTAssertTrue(fixture.mode.isReaderMode)
+        XCTAssertTrue(fixture.mode.isReaderModeLoading)
+        XCTAssertEqual(fixture.mode.pendingReaderModeURL, fixture.state.pageURL)
+        XCTAssertEqual(fixture.mode.expectedSyntheticReaderLoaderURL, fixture.state.pageURL)
+        XCTAssertEqual(fixture.mode.currentRenderGenerationDescription(for: fixture.state.pageURL), generation)
+        XCTAssertEqual(fixture.mode.readabilityContent, html)
+        XCTAssertNil(fixture.mode.lastRenderedURL)
+        XCTAssertEqual(fixture.externalFinishCount, priorExternalFinishes)
+        XCTAssertEqual(fixture.media.committed.count, priorMediaCommits)
+        XCTAssertFalse(fixture.content.isReaderMainFrameNavigating)
+    }
+
+    private func finishCurrentDispatchedRender(
+        _ fixture: NavigationLifetimeFixture,
+        render: Task<Void, Never>,
+        handoff: NavigationLifetimeGate
+    ) async throws {
+        let priorExternalFinishes = fixture.externalFinishCount
+        let priorMediaCommits = fixture.media.committed.count
+        fixture.reader.beforeCommitReturns = nil
+        fixture.probe.fontGate = nil
+        fixture.probe.paginationGate = nil
+        fixture.probe.failFont = false
+        fixture.probe.failPagination = false
+        await handoff.release()
+        await settle(render)
+        try await commit(fixture)
+        XCTAssertNil(fixture.mode.expectedSyntheticReaderLoaderURL)
+        fixture.handler.onNavigationFinished(state: fixture.state)
+        guard case .success? = await settle(try XCTUnwrap(fixture.tasks.onNavigationFinishedTask)) else {
+            return XCTFail("The newly committed Reader document could not finish")
+        }
+        await settle(try XCTUnwrap(fixture.reader.finishTasks.last))
+        XCTAssertFalse(fixture.mode.isReaderModeLoading)
+        XCTAssertNil(fixture.mode.pendingReaderModeURL)
+        XCTAssertEqual(fixture.mode.lastRenderedURL, fixture.state.pageURL)
+        XCTAssertEqual(fixture.externalFinishCount, priorExternalFinishes + 1)
+        XCTAssertEqual(fixture.media.committed.count, priorMediaCommits + 1)
+    }
+
+    func testCommitCapturedDuringPreparationCannotAdoptThatRendersLaterIssue() async throws {
+        for cancelAfterIssue in [false, true] {
+            let f = try fixture()
+            try await commit(f)
+            f.handler.onNavigationFinished(state: f.state)
+            guard case .success? = await settle(try XCTUnwrap(f.tasks.onNavigationFinishedTask)) else {
+                return XCTFail("The original document did not settle before its location callback")
+            }
+            await settle(try XCTUnwrap(f.reader.finishTasks.last))
+            let priorExternalFinishes = f.externalFinishCount
+            let priorMediaCommits = f.media.committed.count
+
+            let processing = gate()
+            let preparationEntered = expectation(description: "Real HTML byte processing suspended before data issue")
+            f.mode.processHTMLBytes = { bytes, _ in
+                preparationEntered.fulfill()
+                await processing.wait()
+                return bytes
+            }
+            let issued = expectation(description: "The same preparing render issued its actual document")
+            let handoff = gate()
+            let render = try beginDispatchedReaderRender(f, handoffGate: handoff, dispatched: issued)
+            await fulfillment(of: [preparationEntered], timeout: 2)
+            let generation = f.mode.currentRenderGenerationDescription(for: f.state.pageURL)
+            XCTAssertNotEqual(generation, "nil")
+            XCTAssertEqual(f.mode.syntheticLoadElapsedString(for: f.state.pageURL), "nil")
+            XCTAssertNil(f.mode.expectedSyntheticReaderLoaderURL)
+
+            let held = gate()
+            let commitEntered = expectation(description: "Actual location callback suspended before Mode entry")
+            f.reader.beforeCommitReturns = {
+                commitEntered.fulfill()
+                await held.wait()
+            }
+            f.handler.onURLChanged(state: f.state)
+            let originalCallback = own(try XCTUnwrap(f.tasks.onURLChangedTask))
+            await fulfillment(of: [commitEntered], timeout: 2)
+            await processing.release()
+            await fulfillment(of: [issued], timeout: 2)
+            XCTAssertEqual(f.mode.currentRenderGenerationDescription(for: f.state.pageURL), generation)
+            let html = f.mode.readabilityContent
+            var readerCompletions = 0
+            f.mode.readerModeLoadCompletionHandler = { _ in readerCompletions += 1 }
+            if cancelAfterIssue {
+                f.mode.cancelReaderModeLoad(for: f.state.pageURL, reason: "fixture.issueABA")
+                await handoff.release()
+                await settle(render)
+                XCTAssertEqual(f.mode.currentRenderGenerationDescription(for: f.state.pageURL), "nil")
+            }
+
+            await held.release()
+            guard case .failure(let error)? = await settle(originalCallback, releasing: held) else {
+                return XCTFail("A callback admitted before this render's issue acquired its later phase")
+            }
+            XCTAssertTrue(error is CancellationError)
+            XCTAssertEqual(readerCompletions, 0)
+            if cancelAfterIssue {
+                XCTAssertEqual(f.mode.readabilityContent, html)
+                XCTAssertNil(f.mode.expectedSyntheticReaderLoaderURL)
+                XCTAssertNil(f.mode.pendingReaderModeURL)
+                XCTAssertFalse(f.mode.isReaderModeLoading)
+                XCTAssertEqual(f.externalFinishCount, priorExternalFinishes)
+                XCTAssertEqual(f.media.committed.count, priorMediaCommits)
+                f.reader.beforeCommitReturns = nil
+                try await commit(f)
+                f.handler.onNavigationFinished(state: f.state)
+                guard case .success? = await settle(try XCTUnwrap(f.tasks.onNavigationFinishedTask)) else {
+                    return XCTFail("A fresh callback could not retry after issue cancellation")
+                }
+                await settle(try XCTUnwrap(f.reader.finishTasks.last))
+                XCTAssertEqual(f.externalFinishCount, priorExternalFinishes + 1)
+                XCTAssertEqual(f.media.committed.count, priorMediaCommits + 1)
+            } else {
+                assertIssuedRenderStillPending(
+                    f, generation: generation, html: html,
+                    priorExternalFinishes: priorExternalFinishes, priorMediaCommits: priorMediaCommits
+                )
+                try await finishCurrentDispatchedRender(f, render: render, handoff: handoff)
+                XCTAssertEqual(readerCompletions, 1)
+            }
+        }
+    }
+
+    func testCurrentReadyDuringCommitFontAwaitPreservesReaderModeAndCanonicalHTML() async throws {
+        guard #available(iOS 16.4, macOS 14, *) else {
+            throw XCTSkip("The production shared-font bridge requires iOS 16.4 or macOS 14")
+        }
+        for fails in [false, true] {
+            let f = try fixture()
+            // Rendering has no durable target for this supported unmanaged
+            // source; its default remains false while Reader is shown.
+            f.record.isReaderModeByDefault = false
+            let handoff = gate()
+            let render = try await startDispatchedReaderRender(f, handoffGate: handoff)
+            let generation = try XCTUnwrap(UUID(uuidString: f.mode.currentRenderGenerationDescription(for: f.state.pageURL)))
+            let html = try XCTUnwrap(f.mode.readabilityContent)
+            XCTAssertFalse(f.record.isReaderModeByDefault)
+            XCTAssertTrue(f.mode.isReaderMode)
+            f.mode.sharedFontCSSBase64 = Data("body { color: inherit; }".utf8).base64EncodedString()
+            let held = gate()
+            let entered = expectation(description: "Current synthetic commit font bridge suspended: \(fails)")
+            f.probe.fontGate = held
+            f.probe.fontEntered = entered
+            f.probe.failFont = fails
+            var readerCompletions = 0
+            f.mode.readerModeLoadCompletionHandler = { _ in readerCompletions += 1 }
+            f.handler.onNavigationCommitted(state: f.state)
+            let currentCommit = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+            await fulfillment(of: [entered], timeout: 2)
+            f.probe.fontEntered = nil
+            XCTAssertEqual(f.mode.readabilityContent, html)
+
+            XCTAssertTrue(f.mode.handleRenderedReaderDocumentReady(
+                pageURL: f.state.pageURL, hasReaderContent: true, renderGeneration: generation
+            ))
+            XCTAssertNil(f.mode.expectedSyntheticReaderLoaderURL)
+            XCTAssertNil(f.mode.pendingReaderModeURL)
+            XCTAssertFalse(f.mode.isReaderModeLoading)
+            XCTAssertEqual(readerCompletions, 1)
+            await held.release()
+            guard case .success? = await settle(currentCommit, releasing: held) else {
+                return XCTFail("Matching readiness incorrectly retired its own native commit: \(fails)")
+            }
+            XCTAssertTrue(f.mode.isReaderMode)
+            XCTAssertFalse(f.record.isReaderModeByDefault)
+            XCTAssertEqual(f.mode.readabilityContent, html)
+            XCTAssertEqual(f.mode.lastRenderedURL, f.state.pageURL)
+            XCTAssertEqual(readerCompletions, 1)
+
+            await handoff.release()
+            await settle(render)
+            f.handler.onNavigationFinished(state: f.state)
+            guard case .success? = await settle(try XCTUnwrap(f.tasks.onNavigationFinishedTask)) else {
+                return XCTFail("The already ready current document could not finish")
+            }
+            await settle(try XCTUnwrap(f.reader.finishTasks.last))
+            XCTAssertTrue(f.mode.isReaderMode)
+            XCTAssertFalse(f.mode.isReaderModeLoading)
+            XCTAssertEqual(f.mode.readabilityContent, html)
+            XCTAssertEqual(readerCompletions, 1)
+            XCTAssertEqual(f.externalFinishCount, 1)
+            XCTAssertEqual(f.media.committed.count, 1)
+        }
+    }
+
+    func testCommitCapturesRenderAdmissionBeforeTheReaderAwait() async throws {
+        let f = try fixture()
+        let held = gate()
+        let entered = expectation(description: "Original native commit suspended before Mode entry")
+        f.reader.beforeCommitReturns = {
+            entered.fulfill()
+            await held.wait()
+        }
+        f.handler.onNavigationCommitted(state: f.state)
+        let originalCommit = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+        await fulfillment(of: [entered], timeout: 2)
+        f.handler.onNavigationFinished(state: f.state)
+        let originalFinish = own(try XCTUnwrap(f.tasks.onNavigationFinishedTask))
+        let handoff = gate()
+        let render = try await startDispatchedReaderRender(f, handoffGate: handoff)
+        let generation = f.mode.currentRenderGenerationDescription(for: f.state.pageURL)
+        let html = f.mode.readabilityContent
+        var readerCompletions = 0
+        f.mode.readerModeLoadCompletionHandler = { _ in readerCompletions += 1 }
+
+        await held.release()
+        for task in [originalCommit, originalFinish] {
+            guard case .failure(let error)? = await settle(task, releasing: held) else {
+                return XCTFail("A pre-Mode commit acquired a later render's admission")
+            }
+            XCTAssertTrue(error is CancellationError)
+        }
+        assertIssuedRenderStillPending(f, generation: generation, html: html)
+        XCTAssertEqual(readerCompletions, 0)
+        XCTAssertEqual(f.probe.finishCount, 0)
+
+        try await finishCurrentDispatchedRender(f, render: render, handoff: handoff)
+        XCTAssertEqual(readerCompletions, 1)
+    }
+
+    func testCommitFontSuccessOrFailureCannotConsumeALaterIssuedRender() async throws {
+        guard #available(iOS 16.4, macOS 14, *) else {
+            throw XCTSkip("The production shared-font bridge requires iOS 16.4 or macOS 14")
+        }
+        for fails in [false, true] {
+            let f = try fixture()
+            f.mode.sharedFontCSSBase64 = Data("body { color: inherit; }".utf8).base64EncodedString()
+            let held = gate()
+            let entered = expectation(description: "Original commit font bridge suspended: \(fails)")
+            f.probe.fontGate = held
+            f.probe.fontEntered = entered
+            f.probe.failFont = fails
+            f.handler.onNavigationCommitted(state: f.state)
+            let originalCommit = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+            await fulfillment(of: [entered], timeout: 2)
+            f.probe.fontEntered = nil
+            f.handler.onNavigationFinished(state: f.state)
+            let originalFinish = own(try XCTUnwrap(f.tasks.onNavigationFinishedTask))
+            let handoff = gate()
+            let render = try await startDispatchedReaderRender(f, handoffGate: handoff)
+            let generation = f.mode.currentRenderGenerationDescription(for: f.state.pageURL)
+            let html = f.mode.readabilityContent
+            var readerCompletions = 0
+            f.mode.readerModeLoadCompletionHandler = { _ in readerCompletions += 1 }
+
+            await held.release()
+            for task in [originalCommit, originalFinish] {
+                guard case .failure(let error)? = await settle(task, releasing: held) else {
+                    return XCTFail("An old font result consumed the replacement expectation: \(fails)")
+                }
+                XCTAssertTrue(error is CancellationError)
+            }
+            assertIssuedRenderStillPending(f, generation: generation, html: html)
+            XCTAssertEqual(readerCompletions, 0)
+            XCTAssertEqual(f.probe.paginationCount, 0)
+
+            try await finishCurrentDispatchedRender(f, render: render, handoff: handoff)
+            XCTAssertEqual(readerCompletions, 1)
+        }
+    }
+
+    func testCommitPaginationSuccessOrFailureCannotConsumeALaterIssuedRender() async throws {
+        for fails in [false, true] {
+            let f = try fixture()
+            let held = gate()
+            let entered = expectation(description: "Original commit pagination bridge suspended: \(fails)")
+            f.probe.paginationGate = held
+            f.probe.paginationEntered = entered
+            f.probe.failPagination = fails
+            f.handler.onNavigationCommitted(state: f.state)
+            let originalCommit = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+            await fulfillment(of: [entered], timeout: 2)
+            f.probe.paginationEntered = nil
+            f.handler.onNavigationFinished(state: f.state)
+            let originalFinish = own(try XCTUnwrap(f.tasks.onNavigationFinishedTask))
+            let handoff = gate()
+            let render = try await startDispatchedReaderRender(f, handoffGate: handoff)
+            let generation = f.mode.currentRenderGenerationDescription(for: f.state.pageURL)
+            let html = f.mode.readabilityContent
+            var readerCompletions = 0
+            f.mode.readerModeLoadCompletionHandler = { _ in readerCompletions += 1 }
+
+            await held.release()
+            for task in [originalCommit, originalFinish] {
+                guard case .failure(let error)? = await settle(task, releasing: held) else {
+                    return XCTFail("An old pagination result consumed the replacement expectation: \(fails)")
+                }
+                XCTAssertTrue(error is CancellationError)
+            }
+            assertIssuedRenderStillPending(f, generation: generation, html: html)
+            XCTAssertEqual(readerCompletions, 0)
+            XCTAssertEqual(f.probe.paginationCount, 1)
+
+            try await finishCurrentDispatchedRender(f, render: render, handoff: handoff)
+            XCTAssertEqual(readerCompletions, 1)
+        }
+    }
+
+    func testCommitCannotResetAReplacementThatHasNotIssuedHTML() async throws {
+        let f = try fixture()
+        let held = gate()
+        let entered = expectation(description: "Old reader commit suspended before replacement preparation")
+        f.reader.beforeCommitReturns = {
+            entered.fulfill()
+            await held.wait()
+        }
+        f.handler.onNavigationCommitted(state: f.state)
+        let originalCommit = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+        await fulfillment(of: [entered], timeout: 2)
+        f.handler.onNavigationFinished(state: f.state)
+        let originalFinish = own(try XCTUnwrap(f.tasks.onNavigationFinishedTask))
+        let processing = gate()
+        _ = try await startHeldReaderRender(f, gate: processing)
+        let generation = f.mode.currentRenderGenerationDescription(for: f.state.pageURL)
+        let html = f.mode.readabilityContent
+        var readerCompletions = 0
+        f.mode.readerModeLoadCompletionHandler = { _ in readerCompletions += 1 }
+        XCTAssertEqual(f.mode.syntheticLoadElapsedString(for: f.state.pageURL), "nil")
+        XCTAssertNil(f.mode.expectedSyntheticReaderLoaderURL)
+
+        await held.release()
+        for task in [originalCommit, originalFinish] {
+            guard case .failure(let error)? = await settle(task, releasing: held) else {
+                return XCTFail("The old commit entered Mode after replacement preparation began")
+            }
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertTrue(f.mode.isReaderModeLoading)
+        XCTAssertEqual(f.mode.pendingReaderModeURL, f.state.pageURL)
+        XCTAssertEqual(f.mode.currentRenderGenerationDescription(for: f.state.pageURL), generation)
+        XCTAssertEqual(f.mode.readabilityContent, html)
+        XCTAssertNil(f.mode.lastRenderedURL)
+        XCTAssertNil(f.mode.expectedSyntheticReaderLoaderURL)
+        XCTAssertEqual(readerCompletions, 0)
+        XCTAssertEqual(f.externalFinishCount, 0)
+        XCTAssertTrue(f.media.committed.isEmpty)
+        XCTAssertFalse(f.content.isReaderMainFrameNavigating)
+    }
+
+    func testCancellingANewRenderDoesNotRestoreTheOldCommitAdmission() async throws {
+        let f = try fixture()
+        let held = gate()
+        let entered = expectation(description: "Original reader commit suspended across render allocation and cancellation")
+        f.reader.beforeCommitReturns = {
+            entered.fulfill()
+            await held.wait()
+        }
+        f.handler.onNavigationCommitted(state: f.state)
+        let originalCommit = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+        await fulfillment(of: [entered], timeout: 2)
+        f.handler.onNavigationFinished(state: f.state)
+        let originalFinish = own(try XCTUnwrap(f.tasks.onNavigationFinishedTask))
+        let processing = gate()
+        let render = try await startHeldReaderRender(f, gate: processing)
+        XCTAssertNotEqual(f.mode.currentRenderGenerationDescription(for: f.state.pageURL), "nil")
+        f.mode.cancelReaderModeLoad(for: f.state.pageURL, reason: "fixture.renderABA")
+        await processing.release()
+        await settle(render)
+        XCTAssertEqual(f.mode.currentRenderGenerationDescription(for: f.state.pageURL), "nil")
+        let html = f.mode.readabilityContent
+
+        await held.release()
+        for task in [originalCommit, originalFinish] {
+            guard case .failure(let error)? = await settle(task, releasing: held) else {
+                return XCTFail("A nil-to-render-to-nil transition restored old commit authority")
+            }
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(f.mode.readabilityContent, html)
+        XCTAssertNil(f.mode.pendingReaderModeURL)
+        XCTAssertNil(f.mode.expectedSyntheticReaderLoaderURL)
+        XCTAssertFalse(f.mode.isReaderModeLoading)
+        XCTAssertEqual(f.externalFinishCount, 0)
+        XCTAssertTrue(f.media.committed.isEmpty)
+
+        // A fresh callback captures the retained revision and can still retry.
+        f.reader.beforeCommitReturns = nil
+        try await commit(f)
+        f.mode.readerModeLoading(true)
+        f.handler.onNavigationFinished(state: f.state)
+        guard case .success? = await settle(try XCTUnwrap(f.tasks.onNavigationFinishedTask)) else {
+            return XCTFail("A fresh commit could not retry after render cancellation")
+        }
+        await settle(try XCTUnwrap(f.reader.finishTasks.last))
+        XCTAssertFalse(f.mode.isReaderModeLoading)
+        XCTAssertEqual(f.externalFinishCount, 1)
+        XCTAssertEqual(f.media.committed.count, 1)
+    }
+
+    func testDuplicateActiveRenderPreservesCurrentCommitAndOrdinaryPaginationFailure() async throws {
+        for fails in [false, true] {
+            let f = try fixture()
+            let handoff = gate()
+            let render = try await startDispatchedReaderRender(f, handoffGate: handoff)
+            let generation = f.mode.currentRenderGenerationDescription(for: f.state.pageURL)
+            let held = gate()
+            let entered = expectation(description: "Current replacement commit pagination suspended: \(fails)")
+            f.probe.paginationGate = held
+            f.probe.paginationEntered = entered
+            f.probe.failPagination = fails
+            f.handler.onNavigationCommitted(state: f.state)
+            let currentCommit = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
+            await fulfillment(of: [entered], timeout: 2)
+            f.probe.paginationEntered = nil
+            XCTAssertFalse(f.mode.startRenderTaskIfNeeded(
+                for: f.state.pageURL, reason: "fixture.duplicateActiveRender"
+            ) { _ in
+                XCTFail("An already active render ran a duplicate operation")
+            })
+            XCTAssertEqual(f.mode.currentRenderGenerationDescription(for: f.state.pageURL), generation)
+            XCTAssertNotEqual(f.mode.syntheticLoadElapsedString(for: f.state.pageURL), "nil")
+
+            await held.release()
+            guard case .success? = await settle(currentCommit, releasing: held) else {
+                return XCTFail("An unchanged active render retired its current native commit: \(fails)")
+            }
+            XCTAssertNil(f.mode.expectedSyntheticReaderLoaderURL)
+            await handoff.release()
+            await settle(render)
+            var readerCompletions = 0
+            f.mode.readerModeLoadCompletionHandler = { _ in readerCompletions += 1 }
+            f.handler.onNavigationFinished(state: f.state)
+            guard case .success? = await settle(try XCTUnwrap(f.tasks.onNavigationFinishedTask)) else {
+                return XCTFail("Current replacement finish did not settle")
+            }
+            await settle(try XCTUnwrap(f.reader.finishTasks.last))
+            XCTAssertEqual(f.mode.currentRenderGenerationDescription(for: f.state.pageURL), generation)
+            XCTAssertFalse(f.mode.isReaderModeLoading)
+            XCTAssertNil(f.mode.pendingReaderModeURL)
+            XCTAssertEqual(f.mode.lastRenderedURL, f.state.pageURL)
+            XCTAssertEqual(readerCompletions, 1)
+            XCTAssertEqual(f.externalFinishCount, 1)
+            XCTAssertEqual(f.media.committed.count, 1)
+        }
+    }
+
+    func testPublicModeCommitEntryCapturesItsOwnRenderAdmission() async throws {
+        let f = try fixture()
+        let held = gate()
+        let entered = expectation(description: "Public Mode commit pagination suspended")
+        f.probe.paginationGate = held
+        f.probe.paginationEntered = entered
+        let original = own(Task { @MainActor in
+            try await f.mode.onNavigationCommitted(
+                readerContent: f.content, newState: f.state, scriptCaller: f.reader.scriptCaller
+            )
+        })
+        await fulfillment(of: [entered], timeout: 2)
+        f.probe.paginationEntered = nil
+        let handoff = gate()
+        let render = try await startDispatchedReaderRender(f, handoffGate: handoff)
+        let html = f.mode.readabilityContent
+        let generation = f.mode.currentRenderGenerationDescription(for: f.state.pageURL)
+
+        await held.release()
+        guard case .failure(let error)? = await settle(original, releasing: held) else {
+            return XCTFail("The public Mode entry adopted a later render")
+        }
+        XCTAssertTrue(error is CancellationError)
+        assertIssuedRenderStillPending(f, generation: generation, html: html)
+
+        // Preserve the existing public signature and its fresh current path.
+        f.probe.paginationGate = nil
+        await handoff.release()
+        await settle(render)
+        try await f.mode.onNavigationCommitted(
+            readerContent: f.content, newState: f.state, scriptCaller: f.reader.scriptCaller
+        )
+        XCTAssertNil(f.mode.expectedSyntheticReaderLoaderURL)
+        XCTAssertTrue(f.mode.isReaderModeLoading)
+        let currentGeneration = try XCTUnwrap(UUID(uuidString: generation))
+        XCTAssertTrue(f.mode.handleRenderedReaderDocumentReady(
+            pageURL: f.state.pageURL, hasReaderContent: true, renderGeneration: currentGeneration
+        ))
+        XCTAssertFalse(f.mode.isReaderModeLoading)
+        XCTAssertNil(f.mode.pendingReaderModeURL)
+        XCTAssertEqual(f.mode.lastRenderedURL, f.state.pageURL)
     }
 
     func testFinishArrivingAfterReaderPreparationStartsCannotCompleteIt() async throws {

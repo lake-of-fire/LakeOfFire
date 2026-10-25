@@ -1257,8 +1257,34 @@ func readerModeReadyGenerationIsCurrent(
     return reportedGeneration == nil
 }
 
+/// Captured before a native commit's first suspension. A later render may use
+/// the same URL and selection without belonging to that native commit.
+struct ReaderModeCommitRenderAdmission: Sendable {
+    fileprivate let revision: UUID
+    fileprivate let issueRevision: UUID
+    fileprivate let issuedURL: URL?
+}
+
 @MainActor
 public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
+    // Keep the last allocation after completion/cancellation so an old commit
+    // cannot become current again through a nil -> render -> nil transition.
+    private var commitRenderRevision = UUID()
+    // Issuance can happen after a callback captured an already preparing
+    // render. Retain this identity after readiness consumes the expectation.
+    private var commitRenderIssueRevision = UUID()
+
+    func makeCommitRenderAdmission() -> ReaderModeCommitRenderAdmission {
+        let issuedURL = expectedSyntheticReaderLoaderURL.flatMap { url in
+            syntheticLoadIssuedAtByURL[canonicalRenderKey(url)] == nil ? nil : url
+        }
+        return ReaderModeCommitRenderAdmission(
+            revision: commitRenderRevision,
+            issueRevision: commitRenderIssueRevision,
+            issuedURL: issuedURL
+        )
+    }
+
     public var readerFileManager: ReaderFileManager?
     private var isBatchingProcessingDependencyChanges = false
     internal private(set) var processingDependencyRevision: UInt64 = 0
@@ -2312,6 +2338,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
     }
 
     private func expectSyntheticReaderLoaderCommit(for baseURL: URL?) {
+        commitRenderIssueRevision = UUID()
         expectedSyntheticReaderLoaderURL = baseURL
         debugPrint(
             "# READERLOAD stage=readerMode.syntheticExpectation.set",
@@ -2321,8 +2348,16 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
     }
 
     @discardableResult
-    private func consumeSyntheticReaderLoaderExpectationIfNeeded(for url: URL) -> Bool {
-        guard let expectedSyntheticReaderLoaderURL else { return false }
+    private func consumeSyntheticReaderLoaderExpectationIfNeeded(
+        for url: URL,
+        admittedBy admission: ReaderModeCommitRenderAdmission
+    ) -> Bool {
+        guard let issuedURL = admission.issuedURL,
+              urlsMatchWithoutHashForHotfix(issuedURL, url) else { return false }
+        // A matching ready message can complete this same issued render while
+        // its commit awaits the font bridge. Preserve its synthetic disposition
+        // instead of resetting the ready Reader document to its source default.
+        guard let expectedSyntheticReaderLoaderURL else { return true }
         if urlsMatchWithoutHashForHotfix(expectedSyntheticReaderLoaderURL, url) {
             self.expectedSyntheticReaderLoaderURL = nil
             debugPrint(
@@ -2672,6 +2707,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         }
 
         let generation = UUID()
+        commitRenderRevision = generation
         let scheduledAt = CFAbsoluteTimeGetCurrent()
         activeRenderOwnerByURL[key] = ActiveRenderOwner(generation: generation, selectionFence: selectionIsCurrent)
         completedRenderOwner = nil
@@ -4039,12 +4075,28 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller
     ) async throws {
+        try await onNavigationCommitted(
+            readerContent: readerContent,
+            newState: newState,
+            scriptCaller: scriptCaller,
+            renderAdmission: makeCommitRenderAdmission()
+        )
+    }
+
+    @MainActor
+    func onNavigationCommitted(
+        readerContent: ReaderContent,
+        newState: WebViewState,
+        scriptCaller: WebViewScriptCaller,
+        renderAdmission: ReaderModeCommitRenderAdmission
+    ) async throws {
         let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
         try await onNavigationCommitted(
             readerContent: readerContent,
             newState: newState,
             scriptCaller: scriptCaller,
             selectionFence: selectionIsCurrent,
+            renderAdmission: renderAdmission,
             loadHTML: { content, readerFileManager in
                 try await content.htmlToDisplay(readerFileManager: readerFileManager)
             }
@@ -4057,21 +4109,37 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller,
         selectionFence: (@Sendable () -> Bool)? = nil,
+        renderAdmission: ReaderModeCommitRenderAdmission? = nil,
         loadHTML: @MainActor (any ReaderContentProtocol, ReaderFileManager) async throws -> String?
     ) async throws {
+        let renderAdmission = renderAdmission ?? makeCommitRenderAdmission()
+        let admittedSyntheticCommit = renderAdmission.issuedURL.map {
+            urlsMatchWithoutHashForHotfix($0, newState.pageURL)
+        } ?? false
         let selectionIsCurrent = selectionFence
             ?? readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
         let requireCurrentSelection = { @MainActor in
             try Task.checkCancellation()
-            guard selectionIsCurrent() else { throw CancellationError() }
+            guard self.commitRenderRevision == renderAdmission.revision,
+                  self.commitRenderIssueRevision == renderAdmission.issueRevision,
+                  selectionIsCurrent(),
+                  self.commitRenderRevision == renderAdmission.revision,
+                  self.commitRenderIssueRevision == renderAdmission.issueRevision else {
+                throw CancellationError()
+            }
+            try Task.checkCancellation()
         }
         try requireCurrentSelection()
-        readabilityContainerFrameInfo = nil
-        try requireCurrentSelection()
-        readabilityContent = nil
-        try requireCurrentSelection()
-        readabilityContainerSelector = nil
-        try requireCurrentSelection()
+        // The generated document's own commit retains the canonical content
+        // that produced it, including when readiness arrives during its await.
+        if !admittedSyntheticCommit {
+            readabilityContainerFrameInfo = nil
+            try requireCurrentSelection()
+            readabilityContent = nil
+            try requireCurrentSelection()
+            readabilityContainerSelector = nil
+            try requireCurrentSelection()
+        }
 //        contentRules = nil
 
         guard let content = readerContent.content else {
@@ -4098,7 +4166,18 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         }
         try requireCurrentContent()
 
-        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: committedURL)
+        await injectSharedFontIfNeeded(
+            scriptCaller: scriptCaller,
+            pageURL: committedURL,
+            documentIsCurrent: {
+                do {
+                    try requireCurrentContent()
+                    return true
+                } catch {
+                    return false
+                }
+            }
+        )
         try requireCurrentContent()
         logTrace(.navCommitted, url: committedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         logStateSnapshot("navCommitted", url: committedURL)
@@ -4119,7 +4198,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         }
         try requireCurrentContent()
 
-        if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
+        if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL, admittedBy: renderAdmission) {
             return
         }
 
