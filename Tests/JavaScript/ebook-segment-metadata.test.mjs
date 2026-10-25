@@ -236,6 +236,42 @@ test('full stable alias indexing preserves the last tuple winner for a shared st
     assert.equal(result.byID.materializedSegmentCount, 3)
 })
 
+for (const [name, accessOrder] of [
+    ['cold runtime lookup before stable lookup', ['runtime-a', 'sentence-a-hash-a']],
+    ['full alias indexing before runtime lookup', ['absent', 'runtime-a', 'sentence-a-hash-a']],
+    ['stable winner before losing runtime lookup', ['sentence-a-hash-a', 'runtime-a', 'sentence-a-hash-a']],
+    ['winning runtime before losing runtime lookup', ['runtime-b', 'runtime-a', 'sentence-a-hash-a']],
+]) {
+    test(`shared stable aliases retain the last tuple winner: ${name}`, () => {
+        const payload = makePayload()
+        payload.s[1][1] = payload.s[0][1]
+        const { byID } = makeBootstrap().bootstrap(makeDocument(makeCanonical(payload)))
+        const firstHits = new Map()
+        for (const identifier of accessOrder) {
+            const metadata = byID.get(identifier)
+            if (identifier === 'absent') {
+                assert.equal(metadata, undefined)
+            } else if (!firstHits.has(identifier)) {
+                firstHits.set(identifier, metadata)
+            }
+        }
+        const winner = byID.get('sentence-a-hash-a')
+        assert.equal(winner.i, 'runtime-b')
+        assert.equal(winner.selectedLexicon, 'jmnedict')
+        assert.equal(winner.selectedEntryID, 2002)
+        assert.equal(byID.get('runtime-a'), firstHits.get('runtime-a'))
+        assert.equal(byID.get('runtime-a').i, 'runtime-a')
+        assert.equal(byID.get('runtime-b'), winner)
+        if (firstHits.has('runtime-b')) {
+            assert.equal(byID.get('runtime-b'), firstHits.get('runtime-b'))
+        }
+        assert.equal(firstHits.get('sentence-a-hash-a'), winner)
+        assert.equal(byID.get('sentence-a-hash-a'), winner)
+        assert.equal(byID.get('sentence-a-hash-a'), winner)
+        assert.equal(byID.materializedSegmentCount, 2)
+    })
+}
+
 test('sentence archives escape text, preserve both typed alternatives, and deduplicate primary JMDict IDs', () => {
     const payload = makePayload()
     payload.t.x[0] = `<読む&"'`

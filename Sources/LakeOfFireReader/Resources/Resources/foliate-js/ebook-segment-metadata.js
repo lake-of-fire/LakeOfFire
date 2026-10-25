@@ -161,8 +161,12 @@ export const createEbookSegmentMetadataBootstrap = ({
             const compactSegment = this.compactSegments[value - 1]
             if (!compactSegment || !this.tables) return undefined
             const metadata = manabiExpandCompactSegmentMetadata(compactSegment, this.tables)
+            // Runtime reads cannot claim an unindexed stable alias or overwrite
+            // a different tuple's stable winner.
             for (const alias of manabiSegmentMetadataAliases(metadata)) {
-                super.set(alias, metadata)
+                if (alias === metadata.i || super.get(alias) === value) {
+                    super.set(alias, metadata)
+                }
             }
             this.materializedSegmentCount += 1
             return metadata
