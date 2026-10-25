@@ -3,6 +3,40 @@ import RealmSwift
 import RealmSwiftGaps
 import LakeOfFireContent
 
+// The concrete Feed/FeedCategory `id` properties are persisted UUIDs. Select
+// Realm's UInt64 protocol requirement, which identifies the physical row.
+private func libraryFeedPhysicalRowID<T: ObjectKeyIdentifiable>(_ object: T) -> UInt64 {
+    object.id
+}
+
+struct LibraryFeedPhysicalIdentity: Hashable, Sendable {
+    let feedRowID: UInt64?
+    let categoryRowID: UInt64?
+
+    // Called only on the supplied Realm object's owner. No managed object is
+    // retained or transported by the immutable, repeatable command identity.
+    init(feed: Feed) {
+        guard !feed.isInvalidated, feed.realm != nil else {
+            feedRowID = nil
+            categoryRowID = nil
+            return
+        }
+        feedRowID = libraryFeedPhysicalRowID(feed)
+        categoryRowID = feed.getCategory().flatMap { category in
+            category.isInvalidated ? nil : libraryFeedPhysicalRowID(category)
+        }
+    }
+
+    func matches(_ feed: Feed) -> Bool {
+        guard let feedRowID, !feed.isInvalidated, feed.realm != nil,
+              libraryFeedPhysicalRowID(feed) == feedRowID else { return false }
+        let currentCategoryRowID = feed.getCategory().flatMap { category in
+            category.isInvalidated ? nil : libraryFeedPhysicalRowID(category)
+        }
+        return currentCategoryRowID == categoryRowID
+    }
+}
+
 final class LibraryFeedWriteOrdering: @unchecked Sendable {
     private struct Scope: Hashable {
         let storage: String
@@ -12,6 +46,7 @@ final class LibraryFeedWriteOrdering: @unchecked Sendable {
         let createdAt: Date
         let categoryID: UUID?
         let categoryCreatedAt: Date?
+        let physicalIdentity: LibraryFeedPhysicalIdentity
     }
     private final class WeakOrdering {
         weak var value: LibraryFeedWriteOrdering?
@@ -25,14 +60,16 @@ final class LibraryFeedWriteOrdering: @unchecked Sendable {
     @MainActor
     static func shared(
         configuration: Realm.Configuration, storageAdmission: RealmStorageAdmission,
-        feedID: UUID, createdAt: Date, categoryID: UUID?, categoryCreatedAt: Date?
+        feedID: UUID, createdAt: Date, categoryID: UUID?, categoryCreatedAt: Date?,
+        physicalIdentity: LibraryFeedPhysicalIdentity
     ) -> LibraryFeedWriteOrdering {
         orderings = orderings.filter { $0.value.value != nil }
         let scope = Scope(
             storage: storageAdmission.scopeIdentity,
             encryptionKey: configuration.encryptionKey, schemaVersion: configuration.schemaVersion,
             feedID: feedID, createdAt: createdAt,
-            categoryID: categoryID, categoryCreatedAt: categoryCreatedAt
+            categoryID: categoryID, categoryCreatedAt: categoryCreatedAt,
+            physicalIdentity: physicalIdentity
         )
         if let existing = orderings[scope]?.value { return existing }
         let ordering = LibraryFeedWriteOrdering()
@@ -142,6 +179,7 @@ struct LibraryFeedFieldCommand: Sendable {
     let feedCreatedAt: Date
     let categoryID: UUID?
     let categoryCreatedAt: Date?
+    let physicalIdentity: LibraryFeedPhysicalIdentity
     let realmConfiguration: Realm.Configuration
     let storageAdmission: RealmStorageAdmission
     let field: LibraryFeedEditorField
@@ -166,6 +204,7 @@ struct LibraryFeedFieldCommand: Sendable {
                 throw RealmBackgroundActorError.realmFileChangedDuringOpen
             }
             guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
+                  physicalIdentity.matches(feed),
                   feed.createdAt == feedCreatedAt, feed.categoryID == categoryID,
                   !feed.isDeleted, let categoryID,
                   let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
