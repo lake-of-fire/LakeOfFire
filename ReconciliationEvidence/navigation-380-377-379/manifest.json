@@ -1,0 +1,108 @@
+{
+  "repository": "lake-of-fire/LakeOfFire",
+  "classification": "Source composition and team self-review; native qualification pending",
+  "base": {
+    "commit": "e9113c6d34fb81ae2648beeabc0f302974b2a366",
+    "tree": "b21d312fc019cd5f0daf7c743407b560b5cfcad3",
+    "author_record": "https://github.com/lake-of-fire/LakeOfFire/pull/379#issuecomment-6394625845",
+    "retains_native377": "4d0e725e67cfd5640ed6bb1bec25ec9a11800e14",
+    "retains_finish379": "88289efaf81bfc9c9e916af05ffd2b7c0e1097f6"
+  },
+  "correction": {
+    "pull_request": "https://github.com/lake-of-fire/LakeOfFire/pull/380",
+    "commit": "8c81376f38212b9bc1cfa63c1c994500cd6d58a3",
+    "sole_parent": "88289efaf81bfc9c9e916af05ffd2b7c0e1097f6",
+    "finding": "https://github.com/lake-of-fire/LakeOfFire/pull/379#pullrequestreview-5641873471"
+  },
+  "source_only_result_tree": "e3c6343cd2f92b458c6e3aeb225685ebd8e17245",
+  "source_only_tree_definition": "Base e911 tree with only the three changed source/test blobs below; excludes this new evidence directory.",
+  "files": [
+    {
+      "path": "Sources/LakeOfFireContent/Reader/ReaderContent.swift",
+      "base_blob": "7a82372861ce1b7927bd6e4504590f93f34c5ed4",
+      "result_blob": "7a82372861ce1b7927bd6e4504590f93f34c5ed4",
+      "bytes": 30914,
+      "changed": false
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+      "base_blob": "05104954c417ab7bc2d9db602744f19d8f64436d",
+      "result_blob": "f3fee594f129467f5630f28560e8b2551d320dda",
+      "bytes": 210969,
+      "changed": true
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Reader/ReaderWebView.swift",
+      "base_blob": "1ced02ae77a408d7d2d409bf8848f81eb403ef97",
+      "result_blob": "dcbc9671e89e2196d237c48a38bf99c0ecd69145",
+      "bytes": 36239,
+      "changed": true
+    },
+    {
+      "path": "Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift",
+      "base_blob": "5993e9b100ef8841c7cfa1c87c002f31bb816daf",
+      "result_blob": "5993e9b100ef8841c7cfa1c87c002f31bb816daf",
+      "bytes": 36708,
+      "changed": false
+    },
+    {
+      "path": "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift",
+      "base_blob": "0376ba495a51459018a29a3139ab27fa873690dd",
+      "result_blob": "23e1b9cf79ca05ca5da73d32afd985041094f2f8",
+      "bytes": 118650,
+      "changed": true
+    }
+  ],
+  "test_body_preservation": {
+    "author_composition_callback_methods": 49,
+    "standalone380_callback_methods": 45,
+    "combined_callback_methods": 58,
+    "combined_HTML_methods": 34,
+    "all_input_method_bodies_byte_identical": true,
+    "HTML_file_byte_identical_to377": true,
+    "duplicate_method_names": 0
+  },
+  "artifact_checks": {
+    "immutable_input_blob_verification": true,
+    "complete_base_tree_reconstructed": true,
+    "base_complete_leaves": 581,
+    "changed_source_paths": 3,
+    "all_other_base_leaves_preserved": true,
+    "strict_patch_forward_check_and_apply": true,
+    "strict_patch_reverse_check_and_apply": true,
+    "forward_and_reverse_byte_equality": true,
+    "whitespace_diagnostics": [],
+    "reanchored_patch_sha256": "273f8bef86d200025740a5459527c4a0d940da445e86dd623e35a9b260e03410"
+  },
+  "overlap_resolution": {
+    "textual_conflicts": {
+      "Mode": 2,
+      "native_handler": 1,
+      "callback_fixture": 2
+    },
+    "native_entry": "Pass original documentIsCurrent and context.renderAdmission to the same Mode driver.",
+    "wrapper_entry": "Resolve an omitted renderAdmission synchronously before the document-aware wrapper first awaits.",
+    "driver": "Keep document predicate, selection fence and persistent allocation/issue receipt checks together.",
+    "fixture": "Deduplicate shared font/pagination controls; retain both real font argument forms, failure injection and gate cleanup."
+  },
+  "integration_snapshot": {
+    "Package.swift_blob": "f9183a227e52ae194046cec4ddfca727c1b3c141",
+    "owning_test_target": "LakeOfFireTests",
+    "root523_commit": "4fa2127f0fad4701f4d47a4ccf0df1fcb5987fad",
+    "root_Project.swift_blob": "eaa06ea01324916d86caabc2cd677bca9aadf360",
+    "root_test_registration_pending": [
+      "Vendor/LakeOfFire/Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift",
+      "Vendor/LakeOfFire/Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift"
+    ],
+    "root_pins_and_generated_projects_modified": false,
+    "declared377_companion_qualification": "Carried forward; not independently requalified by this source composition."
+  },
+  "execution": {
+    "Swift_parsing": false,
+    "compilation": false,
+    "native_tests": false,
+    "browser": false,
+    "generation": false,
+    "CI": false
+  }
+}
