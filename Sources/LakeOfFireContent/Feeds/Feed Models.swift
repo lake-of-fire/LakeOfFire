@@ -1447,34 +1447,48 @@ fileprivate let entryImageExtensions = ["jpg", "jpeg", "png", "webp", "gif"]
 
 public extension Feed {
     @MainActor
+    @discardableResult
     private func persistFetchMetadata(
         _ metadata: FeedFetchMetadata,
         replacesValidators: Bool = false,
+        expectedValidators: FeedFetchMetadata? = nil,
         expectedRSSURL: URL,
         refreshLease: FeedRefreshLease,
         realmConfiguration: Realm.Configuration
-    ) async throws {
+    ) async throws -> Bool {
         let feedID = id
         let rssUrl = rssUrl
         logRSS(
             "stage=metadata.persist.start feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) etag=\(metadata.etag ?? "nil") lastModified=\(metadata.lastModifiedAt.map(formatFeedHTTPDate) ?? "nil")"
         )
-        try await { @RealmBackgroundActor in
+        let didPersist = try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             await realm.asyncRefresh()
-            try await realm.asyncWritePreservingOwnership {
+            return try await realm.asyncWritePreservingOwnership {
                 try checkFeedRefreshIsCurrent(
                     in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease
                 )
                 guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else {
                     throw CancellationError()
                 }
+                if let expectedValidators {
+                    // A 304 validates the request's stored representation, not any newer partial write.
+                    guard expectedValidators.etag?.isEmpty == false || expectedValidators.lastModifiedAt != nil,
+                          feed.lastFetchedETag == expectedValidators.etag,
+                          feed.lastFetchedModifiedAt == expectedValidators.lastModifiedAt,
+                          !realm.objects(FeedEntry.self)
+                            .where({ $0.feedID == feedID && !$0.isDeleted }).isEmpty else {
+                        return false
+                    }
+                }
                 feed.lastRefreshedEntriesAt = Date()
                 feed.lastFetchedETag = replacesValidators ? metadata.etag : metadata.etag ?? feed.lastFetchedETag
                 feed.lastFetchedModifiedAt = replacesValidators ? metadata.lastModifiedAt : metadata.lastModifiedAt ?? feed.lastFetchedModifiedAt
+                return true
             }
         }()
-        logRSS("stage=metadata.persist.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
+        logRSS("stage=metadata.persist.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) accepted=\(didPersist)")
+        return didPersist
     }
 
     @MainActor
@@ -1492,8 +1506,11 @@ public extension Feed {
         var incomingIDs = [String]()
         var skippedItems = 0
         let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
-            guard let link = item.link?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed),
+            // Existing escapes and fragment delimiters belong to the URL;
+            // apply the legacy escaping fallback only when parsing fails.
+            guard let link = item.link,
                   let url = URL(string: link)
+                    ?? link.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
             else {
                 skippedItems += 1
                 return nil
@@ -1633,13 +1650,15 @@ public extension Feed {
             var url: URL?
             var imageUrl: URL?
             item.links?.forEach { (link: AtomFeedEntryLink) in
-                guard let linkHref = link.attributes?.href?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
+                guard let linkHref = link.attributes?.href,
+                      let linkURL = URL(string: linkHref)
+                        ?? linkHref.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
                 else { return }
 
                 if (link.attributes?.rel ?? "alternate") == "alternate" {
-                    url = URL(string: linkHref)
+                    url = linkURL
                 } else if let rel = link.attributes?.rel, let type = link.attributes?.type, rel == "enclosure" && type.hasPrefix("image/") {
-                    imageUrl = URL(string: linkHref)
+                    imageUrl = linkURL
                 }
             }
             guard let url = url else {
@@ -1679,10 +1698,10 @@ public extension Feed {
                     return (link.attributes?.rel ?? "") == "reddit-translations"
                 })
                     .first?.attributes,
-               let rawRedditTranslationsUrl = redditTranslationsAttrs.href?
-                .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+               let rawRedditTranslationsUrl = redditTranslationsAttrs.href
             {
                 redditTranslationsUrl = URL(string: rawRedditTranslationsUrl)
+                    ?? rawRedditTranslationsUrl.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed).flatMap(URL.init(string:))
                 redditTranslationsTitle = redditTranslationsAttrs.title
             }
 
@@ -1738,24 +1757,27 @@ public extension Feed {
         )
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            if !collectionObjects.isEmpty {
+            if !collectionObjects.isEmpty || deleteOrphans {
                 try await realm.asyncWritePreservingOwnership {
                     try checkFeedRefreshIsCurrent(
                         in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease
                     )
+                    let collectionOrphans: [FeedEntryCollection] = deleteOrphans
+                        ? Array(realm.objects(FeedEntryCollection.self)
+                            .where { $0.feedID == feedID && !$0.isDeleted && !$0.compoundKey.in(incomingCollectionKeys) })
+                        : []
+                    guard !collectionObjects.isEmpty || !collectionOrphans.isEmpty else { return }
+                    // Collections commit before entries and the final GET metadata can settle.
+                    try retireFeedFetchValidators(in: realm, feedID: feedID)
                     for collection in collectionObjects {
                         if let existing = realm.object(ofType: FeedEntryCollection.self, forPrimaryKey: collection.compoundKey) {
                             collection.createdAt = existing.createdAt
                         }
                     }
                     realm.add(collectionObjects, update: .modified)
-                    if deleteOrphans {
-                        let collectionOrphans = realm.objects(FeedEntryCollection.self)
-                            .where { $0.feedID == feedID && !$0.isDeleted && !$0.compoundKey.in(incomingCollectionKeys) }
-                        for orphan in collectionOrphans {
-                            orphan.isDeleted = true
-                            orphan.refreshChangeMetadata(explicitlyModified: true)
-                        }
+                    for orphan in collectionOrphans {
+                        orphan.isDeleted = true
+                        orphan.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -1825,8 +1847,20 @@ public extension Feed {
             throw error
         }
         try checkRequestIsCurrent()
-        if case .notModified = fetchResult,
-           getEntries()?.isEmpty != false {
+        if case .notModified(let metadata) = fetchResult {
+            let accepted = try await persistFetchMetadata(
+                metadata,
+                expectedValidators: FeedFetchMetadata(
+                    etag: lastFetchedETag, lastModifiedAt: lastFetchedModifiedAt
+                ),
+                expectedRSSURL: rssUrl, refreshLease: refreshLease,
+                realmConfiguration: realmConfiguration
+            )
+            if accepted {
+                logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=notModified")
+                return
+            }
+            // Missing entries or a retired baseline require a body, even if this caller is frozen.
             fetchResult = try await getRssData(
                 rssUrl: rssUrl,
                 lastFetchedETag: nil,
@@ -1836,15 +1870,9 @@ public extension Feed {
             try checkRequestIsCurrent()
         }
         switch fetchResult {
-        case .notModified(let metadata):
-            logRSS("stage=fetch.notModified feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
-            try checkRequestIsCurrent()
-            try await persistFetchMetadata(
-                metadata, expectedRSSURL: rssUrl, refreshLease: refreshLease,
-                realmConfiguration: realmConfiguration
-            )
-            logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=notModified")
-            return
+        case .notModified:
+            // The unconditional retry must provide a body; getRssData rejects a second 304.
+            throw FeedError.downloadFailed
         case .fetched(var rssData, let metadata):
             logRSS("stage=fetch.fetched feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) bytesBeforeClean=\(rssData.count)")
             rssData = cleanRssData(rssData)
@@ -1969,6 +1997,17 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
     return differentEntries
 }
 
+/// These are local-only cache fields. A partial content commit must retire its old HTTP baseline.
+@RealmBackgroundActor
+fileprivate func retireFeedFetchValidators(in realm: Realm, feedID: UUID) throws {
+    guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else {
+        throw CancellationError()
+    }
+    if feed.lastFetchedETag != nil { feed.lastFetchedETag = nil }
+    if feed.lastFetchedModifiedAt != nil { feed.lastFetchedModifiedAt = nil }
+    if feed.lastRefreshedEntriesAt != nil { feed.lastRefreshedEntriesAt = nil }
+}
+
 @RealmBackgroundActor
 fileprivate func upsertFeedEntries(
     realm: Realm,
@@ -2059,6 +2098,9 @@ fileprivate func upsertFeedEntries(
                 newEntry.refreshChangeMetadata(explicitlyModified: true)
                 createdCount += 1
             }
+        }
+        if createdCount > 0 || updatedCount > 0 || orphanCount > 0 {
+            try retireFeedFetchValidators(in: realm, feedID: refreshLease.feedID)
         }
         logRSS(
             "stage=upsert.write feedID=\(feedIDDescription) created=\(createdCount) updated=\(updatedCount) unchangedPayloads=\(unchangedPayloadCount) deletedOrphans=\(orphanCount)"

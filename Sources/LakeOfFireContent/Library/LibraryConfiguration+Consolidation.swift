@@ -58,15 +58,24 @@ private func replaceLibraryListIfNeeded<T: RealmCollectionValue>(
 extension LibraryConfiguration {
     @RealmBackgroundActor
     public static func getConsolidatedOrCreate(
-        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration,
+        storageAdmission: RealmStorageAdmission? = nil
     ) async throws -> LibraryConfiguration {
         try Task.checkCancellation()
+        let storageAdmission = storageAdmission
+            ?? RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
-            for: realmConfiguration
+            for: realmConfiguration,
+            storageAdmission: storageAdmission
         )
 
-        let primaryID: UUID = try await realm.asyncWrite {
+        let primaryID: UUID = try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
+            guard storageAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+            }) else {
+                throw RealmBackgroundActorError.realmFileChangedDuringOpen
+            }
             let configurations = Array(
                 realm.objects(LibraryConfiguration.self).where { !$0.isDeleted }
             ).sorted(by: libraryConfigurationPrecedes)
@@ -102,7 +111,9 @@ extension LibraryConfiguration {
                     ) else {
                         return true
                     }
-                    return !script.isDeleted && !script.isArchived
+                    // Disabled scripts remain in the Library for re-enabling;
+                    // execution filters their archive state separately.
+                    return !script.isDeleted
                 }
             }
 
@@ -139,7 +150,7 @@ extension LibraryConfiguration {
             let referencedScriptIDs = Set(scriptIDs)
             let orphanScriptIDs = Array(
                 realm.objects(UserScript.self).where {
-                    !$0.isDeleted && !$0.isArchived
+                    !$0.isDeleted
                 }
             ).filter {
                 !referencedScriptIDs.contains($0.id)
@@ -177,6 +188,11 @@ extension LibraryConfiguration {
             return primary.id
         }
 
+        guard storageAdmission.matchesCurrentStorageIdentity({
+            RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+        }) else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+        }
         guard let primary = realm.object(
             ofType: LibraryConfiguration.self,
             forPrimaryKey: primaryID

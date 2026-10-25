@@ -10,6 +10,7 @@ import LakeOfFireContent
 
 @available(iOS 16.0, macOS 13.0, *)
 struct LibraryCategoriesView: View {
+    @State private var exportViewRegistrationID = UUID()
     @Binding var contentRoute: ContentPaneRoute?
     
     @StateObject private var viewModel = LibraryCategoriesViewModel()
@@ -30,21 +31,47 @@ struct LibraryCategoriesView: View {
 #endif
     
     @ViewBuilder var importExportView: some View {
-        ShareLink(item: libraryManagerViewModel.exportedOPMLFileURL ?? URL(string: "about:blank")!, message: Text(""), preview: SharePreview("Manabi Reader User Feeds OPML File", image: Image(systemName: "doc"))) {
+        Group {
+            if let shareItem = libraryManagerViewModel.exportedOPMLShareItem {
+                ShareLink(
+                    item: shareItem,
+                    message: Text(""),
+                    preview: SharePreview(
+                        "Manabi Reader User Feeds OPML File",
+                        image: Image(systemName: "doc")
+                    )
+                ) {
 #if os(macOS)
-            Text("Share My Library…")
-                .frame(maxWidth: .infinity)
+                    Text("Share My Library…")
+                        .frame(maxWidth: .infinity)
 #else
-            Text("Export My Library…")
+                    Text("Export My Library…")
 #endif
+                }
+                .labelStyle(.titleAndIcon)
+                .accessibilityIdentifier("library-opml-share")
+            } else {
+                Button {
+                } label: {
+#if os(macOS)
+                    Text("Share My Library…")
+                        .frame(maxWidth: .infinity)
+#else
+                    Text("Export My Library…")
+#endif
+                }
+                .disabled(true)
+            }
         }
-        .labelStyle(.titleAndIcon)
-        .disabled(libraryManagerViewModel.exportedOPML == nil)
-        .task {
-            libraryManagerViewModel.ensureOPMLExportPrepared()
+        if libraryManagerViewModel.opmlExportFailed {
+            Button("Export failed. Retry") {
+                libraryManagerViewModel.refreshOPMLExport()
+            }
+            .accessibilityIdentifier("library-opml-retry")
         }
 #if os(macOS)
         Button {
+            guard let exportedXML = libraryManagerViewModel.exportedOPML?.xml else { return }
             savePanel = savePanel ?? NSSavePanel()
             guard let savePanel = savePanel else { return }
             savePanel.allowedContentTypes = [UTType(exportedAs: "public.opml")]
@@ -57,11 +84,11 @@ struct LibraryCategoriesView: View {
             savePanel.nameFieldStringValue = "ManabiReaderUserLibrary.opml"
             guard let window = window else { return }
             savePanel.beginSheetModal(for: window) { result in
-                if result == NSApplication.ModalResponse.OK, let url = savePanel.url, let opml = libraryManagerViewModel.exportedOPML {
+                if result == NSApplication.ModalResponse.OK, let url = savePanel.url {
                     Task { @MainActor in
                         //                                    let filename = url.lastPathComponent
                         do {
-                            try opml.xml.write(to: url, atomically: true, encoding: String.Encoding.utf8)
+                            try exportedXML.write(to: url, atomically: true, encoding: String.Encoding.utf8)
                         }
                         catch let error as NSError {
                             NSApplication.shared.presentError(error)
@@ -237,6 +264,12 @@ struct LibraryCategoriesView: View {
 
                 Section(header: EmptyView(), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. My Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
                     importExportView
+                }
+                .onAppear {
+                    libraryManagerViewModel.registerOPMLExportUI(exportViewRegistrationID)
+                }
+                .onDisappear {
+                    libraryManagerViewModel.unregisterOPMLExportUI(exportViewRegistrationID)
                 }
                 .labelStyle(.titleOnly)
                 .accentColor(appTint)
