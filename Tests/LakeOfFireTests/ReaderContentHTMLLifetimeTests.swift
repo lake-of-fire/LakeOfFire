@@ -634,6 +634,7 @@ extension ReaderContentHTMLLifetimeTests {
         XCTAssertTrue(mode.isReaderModeLoading, "Normal document readiness still owns completion")
         XCTAssertEqual(mode.pendingReaderModeURL, url)
     }
+
     func testCapturedReadabilityCannotAdoptSameURLSelectionDuringPublicationDate() async throws {
         for recreatesRow in [false, true] {
             let (realm, row, reader, mode, navigator) = try renderFixture()
@@ -772,6 +773,107 @@ extension ReaderContentHTMLLifetimeTests {
         XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, fileURL.absoluteString)
         XCTAssertTrue(mode.isReaderModeLoading, "The admitted render still waits for normal document readiness")
         XCTAssertEqual(mode.pendingReaderModeURL, fileURL)
+    }
+
+    func testSameURLSuccessorStartsRenderWithoutWaitingForRetiredTask() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer {
+            mode.readerPublicationDateLoader = nil
+            withExtendedLifetime(realm) {}
+        }
+        try prepareFinalTransformMetadata(row, in: realm)
+        reader.content = nil
+        reader.preloadResolvedContent(row, for: fileURL)
+        try await reader.load(url: fileURL)
+        let originalSelection = reader.currentSelectionID
+        mode.readabilityContent = "<html><body><div id='reader-content'>Retired article.</div></body></html>"
+        let successorHTML = "<html><body><div id='reader-content'>Successor article.</div></body></html>"
+        var successorDateLookups = 0
+        var displayedHTML: String?
+        mode.processHTMLBytes = { bytes, _ in
+            await MainActor.run { displayedHTML = String(decoding: bytes, as: UTF8.self) }
+            return bytes
+        }
+        mode.readerPublicationDateLoader = { _ in
+            await Task.yield()
+            do {
+                reader.content = nil
+                reader.preloadResolvedContent(row, for: self.fileURL)
+                try await reader.load(url: self.fileURL)
+            } catch {
+                XCTFail("Could not select the successor: \(error)")
+                return nil
+            }
+            XCTAssertNotEqual(reader.currentSelectionID, originalSelection)
+            mode.readabilityContent = successorHTML
+            mode.readerPublicationDateLoader = { _ in
+                successorDateLookups += 1
+                return nil
+            }
+            // No explicit cancellation: render coalescing must retire the old
+            // selection and admit this request even though its URL is identical.
+            mode.showReaderView(readerContent: reader, scriptCaller: WebViewScriptCaller())
+            return nil
+        }
+        await render(mode, reader: reader)
+        await mode.waitForReaderModeRender(for: fileURL)
+
+        XCTAssertEqual(successorDateLookups, 1, "The successor request must not be dropped")
+        XCTAssertTrue(try XCTUnwrap(displayedHTML).contains("Successor article."))
+        XCTAssertFalse(try XCTUnwrap(displayedHTML).contains("Retired article."))
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, fileURL.absoluteString)
+        XCTAssertEqual(mode.pendingReaderModeURL, fileURL)
+        XCTAssertTrue(mode.isReaderModeLoading)
+    }
+
+    func testDuplicateRenderForCurrentSelectionReusesActivePreparation() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer {
+            mode.readerPublicationDateLoader = nil
+            withExtendedLifetime(realm) {}
+        }
+        try prepareFinalTransformMetadata(row, in: realm)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Current article.</div></body></html>"
+        var dateLookups = 0
+        mode.readerPublicationDateLoader = { _ in
+            dateLookups += 1
+            await Task.yield()
+            mode.readerPublicationDateLoader = { _ in
+                dateLookups += 1
+                return nil
+            }
+            mode.showReaderView(readerContent: reader, scriptCaller: WebViewScriptCaller())
+            return nil
+        }
+        await render(mode, reader: reader)
+        await mode.waitForReaderModeRender(for: fileURL)
+
+        XCTAssertEqual(dateLookups, 1, "A live owner's duplicate request should reuse its preparation")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, fileURL.absoluteString)
+        XCTAssertTrue(mode.isReaderModeLoading)
+    }
+
+    func testUnscopedCancellationStopsActiveHTMLPreparation() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Cancelled article.</div></body></html>"
+        var reachedTransform = false
+        mode.processHTMLBytes = { bytes, _ in
+            await MainActor.run {
+                reachedTransform = true
+                mode.cancelReaderModeLoad()
+            }
+            return bytes
+        }
+        await render(mode, reader: reader)
+
+        XCTAssertTrue(reachedTransform)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+        XCTAssertNil(mode.expectedSyntheticReaderLoaderURL)
+        XCTAssertNil(mode.pendingReaderModeURL)
+        XCTAssertFalse(mode.isReaderModeLoading)
     }
 
 }
