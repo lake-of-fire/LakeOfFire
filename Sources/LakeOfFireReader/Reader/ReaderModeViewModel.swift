@@ -1438,7 +1438,7 @@ public class ReaderModeViewModel: ObservableObject {
     internal var swiftReadabilityProcessor: (@MainActor (String, URL, String?, Int) async -> String?)?
 
     internal func waitForReaderModeRender(for url: URL) async {
-        let task = activeRenderTaskByURL[canonicalRenderKey(url)]
+        let task = activeRendersByURL[canonicalRenderKey(url)]?.task
         await task?.value
     }
     private var isBatchingProcessingDependencyChanges = false
@@ -1572,8 +1572,13 @@ public class ReaderModeViewModel: ObservableObject {
         let generation: UUID
     }
 
-    private var activeRenderTaskByURL: [String: Task<Void, Never>] = [:]
-    private var activeRenderGenerationByURL: [String: UUID] = [:]
+    private struct ActiveRender {
+        let task: Task<Void, Never>
+        let generation: UUID
+        let originatingContentIsCurrent: @MainActor () -> Bool
+    }
+
+    private var activeRendersByURL: [String: ActiveRender] = [:]
     private var completedRenderOwner: CompletedRenderOwner?
 
 //    private var contentRulesForReadabilityLoading = """
@@ -1632,6 +1637,8 @@ public class ReaderModeViewModel: ObservableObject {
         let completedURL = pendingReaderModeURL ?? url ?? lastRenderedURL
         if let url {
             cancelActiveRender(for: url)
+        } else {
+            cancelOtherActiveRenders(except: nil)
         }
         updatePendingReaderModeURL(nil)
         expectedSyntheticReaderLoaderURL = nil
@@ -1677,7 +1684,7 @@ public class ReaderModeViewModel: ObservableObject {
         expectedSyntheticReaderLoaderURL = nil
         readerModeLoading(false)
         let renderKey = canonicalRenderKey(canonicalURL)
-        if let activeGeneration = activeRenderGenerationByURL[renderKey] {
+        if let activeGeneration = activeRendersByURL[renderKey]?.generation {
             completedRenderOwner = CompletedRenderOwner(
                 key: renderKey,
                 generation: activeGeneration
@@ -2259,7 +2266,7 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     private func renderGenerationDescription(for key: String) -> String {
-        if let activeGeneration = activeRenderGenerationByURL[key] {
+        if let activeGeneration = activeRendersByURL[key]?.generation {
             return activeGeneration.uuidString
         }
         if completedRenderOwner?.key == key {
@@ -2274,7 +2281,7 @@ public class ReaderModeViewModel: ObservableObject {
     ) -> Bool {
         let key = canonicalRenderKey(url)
         return readerModeReadyGenerationIsCurrent(
-            activeGeneration: activeRenderGenerationByURL[key],
+            activeGeneration: activeRendersByURL[key]?.generation,
             completedGeneration: completedRenderOwner?.key == key
                 ? completedRenderOwner?.generation
                 : nil,
@@ -2289,24 +2296,24 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func hasActiveRender(for url: URL) -> Bool {
         let key = canonicalRenderKey(url)
-        guard let task = activeRenderTaskByURL[key] else {
+        guard let render = activeRendersByURL[key] else {
             return false
         }
-        if task.isCancelled {
-            activeRenderTaskByURL.removeValue(forKey: key)
-            activeRenderGenerationByURL.removeValue(forKey: key)
+        guard !render.task.isCancelled, render.originatingContentIsCurrent() else {
+            activeRendersByURL.removeValue(forKey: key)
+            render.task.cancel()
             return false
         }
         return true
     }
 
     private func ownsRender(for url: URL, generation: UUID) -> Bool {
-        activeRenderGenerationByURL[canonicalRenderKey(url)] == generation
+        activeRendersByURL[canonicalRenderKey(url)]?.generation == generation
     }
 
     private func isCurrentRender(for url: URL, generation: UUID) -> Bool {
         readerModeRenderGenerationIsCurrent(
-            activeGeneration: activeRenderGenerationByURL[canonicalRenderKey(url)],
+            activeGeneration: activeRendersByURL[canonicalRenderKey(url)]?.generation,
             expectedGeneration: generation,
             taskIsCancelled: Task.isCancelled
         )
@@ -2346,34 +2353,27 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func finishRenderTask(for url: URL, generation: UUID) {
         let key = canonicalRenderKey(url)
-        guard let activeGeneration = activeRenderGenerationByURL[key], activeGeneration == generation else {
+        guard let render = activeRendersByURL[key], render.generation == generation else {
             return
         }
-        completedRenderOwner = CompletedRenderOwner(
-            key: key,
-            generation: generation
-        )
-        activeRenderTaskByURL.removeValue(forKey: key)
-        activeRenderGenerationByURL.removeValue(forKey: key)
+        if !render.task.isCancelled, render.originatingContentIsCurrent() {
+            completedRenderOwner = CompletedRenderOwner(key: key, generation: generation)
+        }
+        activeRendersByURL.removeValue(forKey: key)
     }
 
     private func cancelActiveRender(for url: URL) {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let key = canonicalRenderKey(canonicalURL)
-        guard let task = activeRenderTaskByURL[key] else {
-            return
-        }
-        task.cancel()
-        activeRenderTaskByURL.removeValue(forKey: key)
-        activeRenderGenerationByURL.removeValue(forKey: key)
+        let render = activeRendersByURL.removeValue(forKey: key)
+        render?.task.cancel()
     }
 
-    private func cancelOtherActiveRenders(except keyToKeep: String) {
-        let staleKeys = activeRenderTaskByURL.keys.filter { $0 != keyToKeep }
+    private func cancelOtherActiveRenders(except keyToKeep: String?) {
+        let staleKeys = activeRendersByURL.keys.filter { $0 != keyToKeep }
         for staleKey in staleKeys {
-            activeRenderTaskByURL[staleKey]?.cancel()
-            activeRenderTaskByURL.removeValue(forKey: staleKey)
-            activeRenderGenerationByURL.removeValue(forKey: staleKey)
+            let render = activeRendersByURL.removeValue(forKey: staleKey)
+            render?.task.cancel()
         }
     }
 
@@ -2381,26 +2381,33 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     private func startRenderTaskIfNeeded(
         for url: URL,
+        originatingContentIsCurrent: @escaping @MainActor () -> Bool,
         operation: @escaping @ReaderViewModelActor (_ generation: UUID) async -> Void
     ) -> Bool {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let key = canonicalRenderKey(canonicalURL)
         cancelOtherActiveRenders(except: key)
 
-        if let existingTask = activeRenderTaskByURL[key], !existingTask.isCancelled {
+        // Reuse work only for its still-current owner. A replacement selection
+        // at the same URL needs its own render instead of inheriting or waiting
+        // for an obsolete task that will correctly discard its output.
+        if hasActiveRender(for: canonicalURL) {
             return false
         }
 
         let generation = UUID()
         ReaderSnippetFinalDocumentDiagnostics.record("render-start", contentURL: canonicalURL, generation: generation)
-        activeRenderGenerationByURL[key] = generation
         completedRenderOwner = nil
         let task = Task { @ReaderViewModelActor [weak self] in
             guard let self else { return }
             await operation(generation)
             await self.finishRenderTask(for: canonicalURL, generation: generation)
         }
-        activeRenderTaskByURL[key] = task
+        activeRendersByURL[key] = ActiveRender(
+            task: task,
+            generation: generation,
+            originatingContentIsCurrent: originatingContentIsCurrent
+        )
         return true
     }
 
@@ -2553,7 +2560,10 @@ public class ReaderModeViewModel: ObservableObject {
         }
         let publicationDateLoader = readerPublicationDateLoader
         beginReaderModeLoad(for: contentURL)
-        let didStart = startRenderTaskIfNeeded(for: contentURL) { [weak self] generation in
+        startRenderTaskIfNeeded(
+            for: contentURL,
+            originatingContentIsCurrent: originatingContentIsCurrent
+        ) { [weak self] generation in
             guard let self else { return }
             guard await self.isCurrentRender(for: contentURL, generation: generation) else {
                 return

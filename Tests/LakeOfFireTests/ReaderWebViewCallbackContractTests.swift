@@ -891,4 +891,76 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
 
         XCTAssertEqual(order, ["commit", "finish", "recoverable-failure", "url"])
     }
+    func testDocumentInvalidationStopsSuspendedHTMLPreparation() async throws {
+        for reason in [WebViewDocumentContextInvalidationReason.webViewDetached,
+                       .navigationCommitted, .webContentProcessTerminated] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            let mode = fixture.readerModeViewModel
+            let reader = fixture.readerContent
+            let navigator = fixture.handler.navigator
+            let url = URL(string: "reader-file://file/load/local/retired-render.txt")!
+            let (realm, row) = try cachedHistoryRecord(url: url)
+            defer {
+                mode.processHTMLBytes = nil
+                withExtendedLifetime(realm) {}
+            }
+            try realm.write {
+                row.isReaderModeByDefault = true
+                row.isReaderModeAvailable = false
+                row.isReaderModeOfferHidden = false
+                row.rssContainsFullContent = true
+            }
+            reader.content = row
+            reader.pageURL = url
+            reader.isRenderingReaderHTML = true
+            mode.navigator = navigator
+            mode.readerPublicationDateLoader = { _ in nil }
+            mode.readabilityContent = "<html><body><div id='reader-content'>Retired article.</div></body></html>"
+            var invalidated = false
+            mode.processHTMLBytes = { bytes, _ in
+                await MainActor.run {
+                    invalidated = true
+                    var state = WebViewState.empty
+                    state.pageURL = url
+                    if reason != .navigationCommitted {
+                        // A detached or terminated host cannot preserve work
+                        // just because a synthetic commit was expected there.
+                        mode.expectSyntheticReaderLoaderCommit(for: url)
+                    }
+                    fixture.handler.onDocumentContextInvalidated(state: state, reason: reason)
+                }
+                return bytes
+            }
+
+            mode.showReaderView(readerContent: reader, scriptCaller: fixture.handler.scriptCaller)
+            await mode.waitForReaderModeRender(for: url)
+
+            XCTAssertTrue(invalidated, "The regression must reach preparation: \(reason)")
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil", "\(reason)")
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil", "\(reason)")
+            XCTAssertNil(mode.expectedSyntheticReaderLoaderURL, "\(reason)")
+            XCTAssertNil(mode.pendingReaderModeURL, "\(reason)")
+            XCTAssertFalse(mode.isReaderModeLoading, "\(reason)")
+            XCTAssertFalse(reader.isRenderingReaderHTML, "\(reason)")
+        }
+    }
+
+    func testExpectedProcessedDocumentCommitPreservesReaderReadiness() {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let url = URL(string: "https://example.com/prepared-reader")!
+        fixture.readerContent.pageURL = url
+        fixture.readerContent.isRenderingReaderHTML = true
+        fixture.readerModeViewModel.beginReaderModeLoad(for: url)
+        fixture.readerModeViewModel.expectSyntheticReaderLoaderCommit(for: url)
+        var state = WebViewState.empty
+        state.pageURL = url
+
+        fixture.handler.onDocumentContextInvalidated(state: state, reason: .navigationCommitted)
+
+        XCTAssertTrue(fixture.readerContent.isRenderingReaderHTML)
+        XCTAssertTrue(fixture.readerModeViewModel.isReaderModeLoading)
+        XCTAssertEqual(fixture.readerModeViewModel.pendingReaderModeURL, url)
+        XCTAssertEqual(fixture.readerModeViewModel.expectedSyntheticReaderLoaderURL, url)
+    }
+
 }
