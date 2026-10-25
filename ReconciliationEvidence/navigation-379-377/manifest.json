@@ -1,0 +1,248 @@
+{
+  "repository": "lake-of-fire/LakeOfFire",
+  "inputs": {
+    "base358": "294db208af88952b31ed5e9693373cd35f4aed33",
+    "finish379": "88289efaf81bfc9c9e916af05ffd2b7c0e1097f6",
+    "native377": "4d0e725e67cfd5640ed6bb1bec25ec9a11800e14"
+  },
+  "input_trees": {
+    "base358": "12641b25dc2ce55afd81ff9f0938bec1bb1ee6b4",
+    "native377": "1246104022a5fce19c2898f28f78abd74bc4e6a7",
+    "finish379": "d372264a95ccd0f1ccf80b902d1e09d9ee07f819"
+  },
+  "computed_composed_tree": "f7d5e19bff4da13bbda5051b6620743ff9bf8820",
+  "complete_leaf_counts": {
+    "base358": 571,
+    "native377": 571,
+    "finish379": 571
+  },
+  "files": [
+    {
+      "path": "Sources/LakeOfFireContent/Reader/ReaderContent.swift",
+      "base358": {
+        "git_blob": "7807631b4388a2fc941968c09d8fc62ac6b4e7de",
+        "sha256": "cf31153832a4fb899a4cfcb8c6709767d74675976c1c07c591fc18a767251cc5",
+        "bytes": 27650,
+        "lines": 564
+      },
+      "native377": {
+        "git_blob": "7a82372861ce1b7927bd6e4504590f93f34c5ed4",
+        "sha256": "52ef2510a164b6084f97b5ba2b94522b80b1aa2f358f943eb6f50254d1dd1966",
+        "bytes": 30914,
+        "lines": 627
+      },
+      "finish379": {
+        "git_blob": "7807631b4388a2fc941968c09d8fc62ac6b4e7de",
+        "sha256": "cf31153832a4fb899a4cfcb8c6709767d74675976c1c07c591fc18a767251cc5",
+        "bytes": 27650,
+        "lines": 564
+      },
+      "composed": {
+        "git_blob": "7a82372861ce1b7927bd6e4504590f93f34c5ed4",
+        "sha256": "52ef2510a164b6084f97b5ba2b94522b80b1aa2f358f943eb6f50254d1dd1966",
+        "bytes": 30914,
+        "lines": 627
+      }
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+      "base358": {
+        "git_blob": "5b35577a4071bb44677ed5acf69b7f2d0b230ead",
+        "sha256": "f60aafdb4cf38827625147fcbd2fa8ffe607177cce773eeac3a2ca6335e1ea5d",
+        "bytes": 205986,
+        "lines": 4597
+      },
+      "native377": {
+        "git_blob": "5391387fa6ecdc42a9ccfc34aec751a06b030a9c",
+        "sha256": "832f2dcd5e3509e8e724235f1dcc5e09018dc71c67978801d62c0a53dee255a8",
+        "bytes": 207332,
+        "lines": 4633
+      },
+      "finish379": {
+        "git_blob": "59dd411b3c125e5b82d731b7f6a0bd59c459afc7",
+        "sha256": "e543461fb7d266eb16feaea86b9bf2ff45fe2f8a3d9eb4e6368e370ff64a3e08",
+        "bytes": 206293,
+        "lines": 4603
+      },
+      "composed": {
+        "git_blob": "05104954c417ab7bc2d9db602744f19d8f64436d",
+        "sha256": "b46adec4f39b34f63f79dc84ffb337c2168fb43de2e1871cb5246c259d9f1bc0",
+        "bytes": 207639,
+        "lines": 4639
+      }
+    },
+    {
+      "path": "Sources/LakeOfFireReader/Reader/ReaderWebView.swift",
+      "base358": {
+        "git_blob": "374a80fb55d85e6257a5ed6496b839716bee9f75",
+        "sha256": "70580a667a2120d365fdc2a46645b34a469fb13a8d1e32aaac45ebc4a199c95f",
+        "bytes": 35973,
+        "lines": 760
+      },
+      "native377": {
+        "git_blob": "1ced02ae77a408d7d2d409bf8848f81eb403ef97",
+        "sha256": "ea976377dd23745c7bab0e16e6d8a7d1a5b609546b752c0a59a33617c59311d3",
+        "bytes": 36048,
+        "lines": 761
+      },
+      "finish379": {
+        "git_blob": "374a80fb55d85e6257a5ed6496b839716bee9f75",
+        "sha256": "70580a667a2120d365fdc2a46645b34a469fb13a8d1e32aaac45ebc4a199c95f",
+        "bytes": 35973,
+        "lines": 760
+      },
+      "composed": {
+        "git_blob": "1ced02ae77a408d7d2d409bf8848f81eb403ef97",
+        "sha256": "ea976377dd23745c7bab0e16e6d8a7d1a5b609546b752c0a59a33617c59311d3",
+        "bytes": 36048,
+        "lines": 761
+      }
+    },
+    {
+      "path": "Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift",
+      "base358": {
+        "git_blob": "d4674509ecefb25457b535dea8f36b24ef9ecdf9",
+        "sha256": "cc78518cbb4e5e3f8b2b58934f55d0320338a4f6bee1953e6da414530ab9b0c6",
+        "bytes": 36626,
+        "lines": 827
+      },
+      "native377": {
+        "git_blob": "5993e9b100ef8841c7cfa1c87c002f31bb816daf",
+        "sha256": "dd734931281efa835a3c7d7fc8de0483ebe0450327d6dbf5e254fe8b4947840e",
+        "bytes": 36708,
+        "lines": 831
+      },
+      "finish379": {
+        "git_blob": "d4674509ecefb25457b535dea8f36b24ef9ecdf9",
+        "sha256": "cc78518cbb4e5e3f8b2b58934f55d0320338a4f6bee1953e6da414530ab9b0c6",
+        "bytes": 36626,
+        "lines": 827
+      },
+      "composed": {
+        "git_blob": "5993e9b100ef8841c7cfa1c87c002f31bb816daf",
+        "sha256": "dd734931281efa835a3c7d7fc8de0483ebe0450327d6dbf5e254fe8b4947840e",
+        "bytes": 36708,
+        "lines": 831
+      }
+    },
+    {
+      "path": "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift",
+      "base358": {
+        "git_blob": "8f5d19ff85c6b0860a5ec952400f14aa5c542b53",
+        "sha256": "05a13d87f1fb851318c3154fad221df834147e1cdb497c52d63e7be40606f1bc",
+        "bytes": 49769,
+        "lines": 1122
+      },
+      "native377": {
+        "git_blob": "258fb500462e3c932e96d6a901a5a569431978a8",
+        "sha256": "2ec93c03bf1e2605214f328c87af179ca9bc2e686095490b44e796eb09cf65aa",
+        "bytes": 69852,
+        "lines": 1535
+      },
+      "finish379": {
+        "git_blob": "e7e524d7deda368b2656f5e2d7f2be983df850c7",
+        "sha256": "3c5ae943e635b4eeabefb57ce669048cb95e4f7dc917254d72a870dff14b5434",
+        "bytes": 73041,
+        "lines": 1588
+      },
+      "composed": {
+        "git_blob": "0376ba495a51459018a29a3139ab27fa873690dd",
+        "sha256": "a2e5c797cb6265ed4d829497e2e450dfba8ab3950778e5c5fdf6c4d25092eaff",
+        "bytes": 92810,
+        "lines": 1993
+      }
+    }
+  ],
+  "changed_paths_by_input": {
+    "base358": [
+      "Sources/LakeOfFireContent/Reader/ReaderContent.swift",
+      "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+      "Sources/LakeOfFireReader/Reader/ReaderWebView.swift",
+      "Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift",
+      "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift"
+    ],
+    "native377": [
+      "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+      "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift"
+    ],
+    "finish379": [
+      "Sources/LakeOfFireContent/Reader/ReaderContent.swift",
+      "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+      "Sources/LakeOfFireReader/Reader/ReaderWebView.swift",
+      "Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift",
+      "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift"
+    ]
+  },
+  "test_methods": {
+    "callback": 49,
+    "HTML": 34,
+    "total": 83,
+    "native_execution": false,
+    "input_bodies_preserved": true
+  },
+  "root523": "4fa2127f0fad4701f4d47a4ccf0df1fcb5987fad",
+  "rootProjectBlob": "eaa06ea01324916d86caabc2cd677bca9aadf360",
+  "known_required_correction": {
+    "finding": "5641873471",
+    "review": "https://github.com/lake-of-fire/LakeOfFire/pull/379#pullrequestreview-5641873471",
+    "reservation": "reconcile-fix-lakeoffire-5641873471",
+    "status": "actively owned; not supplied by this composition"
+  },
+  "remote_mutations": false,
+  "patches": [
+    {
+      "from": "base358",
+      "to": "native377",
+      "patch": "native377-over-base358.patch",
+      "patch_sha256": "c44770316b38b0790b12937d381f2736ed4941532c039918aa5ef13cf747a813",
+      "changed_paths": [
+        "Sources/LakeOfFireContent/Reader/ReaderContent.swift",
+        "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+        "Sources/LakeOfFireReader/Reader/ReaderWebView.swift",
+        "Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift",
+        "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift"
+      ],
+      "forward_exact_bytes": true,
+      "reverse_exact_bytes": true
+    },
+    {
+      "from": "base358",
+      "to": "finish379",
+      "patch": "finish379-over-base358.patch",
+      "patch_sha256": "184b0a7d21b300ffca08e1a782186d27df8b816a176ee776b565f66fcbc82d19",
+      "changed_paths": [
+        "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+        "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift"
+      ],
+      "forward_exact_bytes": true,
+      "reverse_exact_bytes": true
+    },
+    {
+      "from": "native377",
+      "to": "candidate",
+      "patch": "composition-over-native377.patch",
+      "patch_sha256": "8ad147fe04266500c407e283026ebd8cc0144c53a04088055dbe6bac1fdf0188",
+      "changed_paths": [
+        "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+        "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift"
+      ],
+      "forward_exact_bytes": true,
+      "reverse_exact_bytes": true
+    },
+    {
+      "from": "finish379",
+      "to": "candidate",
+      "patch": "composition-over-finish379.patch",
+      "patch_sha256": "328bdf58ed07a8249b089b548e8b140919f7edc1c511cc01717e07ed40351a4c",
+      "changed_paths": [
+        "Sources/LakeOfFireContent/Reader/ReaderContent.swift",
+        "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+        "Sources/LakeOfFireReader/Reader/ReaderWebView.swift",
+        "Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift",
+        "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift"
+      ],
+      "forward_exact_bytes": true,
+      "reverse_exact_bytes": true
+    }
+  ]
+}

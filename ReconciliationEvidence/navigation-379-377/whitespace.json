@@ -1,0 +1,27 @@
+[
+  {
+    "path": "Sources/LakeOfFireContent/Reader/ReaderContent.swift",
+    "exit": 1,
+    "diagnostics": ""
+  },
+  {
+    "path": "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+    "exit": 1,
+    "diagnostics": ""
+  },
+  {
+    "path": "Sources/LakeOfFireReader/Reader/ReaderWebView.swift",
+    "exit": 1,
+    "diagnostics": ""
+  },
+  {
+    "path": "Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift",
+    "exit": 1,
+    "diagnostics": ""
+  },
+  {
+    "path": "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift",
+    "exit": 1,
+    "diagnostics": ""
+  }
+]

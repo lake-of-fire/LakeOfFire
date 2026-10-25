@@ -1,0 +1,45 @@
+diff --git a/Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift b/Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift
+index c53639a..0376ba4 100644
+--- a/Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift
++++ b/Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift
+@@ -42,11 +42,8 @@ private final class NavigationLifetimeProbe {
+     var fontEntered: XCTestExpectation?
+     var failSettings = false
+     var failFinish = false
+-    var fontCount = 0
+     var paginationCount = 0
+-    var fontGate: NavigationLifetimeGate?
+     var paginationGate: NavigationLifetimeGate?
+-    var fontEntered: XCTestExpectation?
+     var paginationEntered: XCTestExpectation?
+     var failFont = false
+     var failPagination = false
+@@ -56,13 +53,9 @@ private final class NavigationLifetimeProbe {
+             fontCount += 1
+             fontEntered?.fulfill()
+             await fontGate?.wait()
++            if failFont { throw NavigationLifetimeError.controlledFailure }
+         } else if let title {
+             titles.append(title)
+-        } else if script.contains("stylesheetURLTemplate") {
+-            fontCount += 1
+-            fontEntered?.fulfill()
+-            await fontGate?.wait()
+-            if failFont { throw NavigationLifetimeError.controlledFailure }
+         } else if script.contains("window.paginationTrackingBookKey = bookKey") {
+             paginationCount += 1
+             paginationEntered?.fulfill()
+@@ -317,13 +310,8 @@ private final class NavigationLifetimeCleanup {
+         for fixture in fixtures {
+             await fixture.probe.settingsGate?.release()
+             await fixture.probe.finishGate?.release()
+-<<<<<<< navigation379-377-composition/inputs/native377/Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift
+             await fixture.probe.fontGate?.release()
+             await fixture.probe.paginationGate?.release()
+-||||||| navigation379-377-composition/inputs/base358/Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift
+-=======
+-            await fixture.probe.fontGate?.release()
+->>>>>>> navigation379-377-composition/inputs/finish379/Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift
+         }
+ 
+         let joined = XCTestExpectation(description: "Fixture production tasks and observers settled")

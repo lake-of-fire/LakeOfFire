@@ -1,0 +1,735 @@
+diff --git a/Sources/LakeOfFireContent/Reader/ReaderContent.swift b/Sources/LakeOfFireContent/Reader/ReaderContent.swift
+index 7807631..7a82372 100644
+--- a/Sources/LakeOfFireContent/Reader/ReaderContent.swift
++++ b/Sources/LakeOfFireContent/Reader/ReaderContent.swift
+@@ -102,6 +102,14 @@ public class ReaderContent: ObservableObject {
+     // Selection ownership outlives its resolver task and queued result delivery.
+     private var selectionID: UUID?
+     private var selectionLifetime = ReaderContentSelectionLifetime()
++    @MainActor private struct CapturedSelectionAdmission {
++        let selectionID: UUID
++        let lifetime: ReaderContentSelectionLifetime
++        weak var content: (any ReaderContentProtocol)?
++        let contentURL: URL
++        let permits: @MainActor () -> Bool
++    }
++    private var capturedSelectionAdmission: CapturedSelectionAdmission?
+     private var loadingResolvedContentURL: URL?
+     private var suppressedTransientAboutBlankTargetURL: URL?
+     private var preloadedResolvedContentURL: URL?
+@@ -128,11 +136,28 @@ public class ReaderContent: ObservableObject {
+     /// Selects caller-resolved content and retires any earlier asynchronous resolver.
+     /// The caller retains responsibility for its navigation/display URL.
+     public func replaceSelection(with content: (any ReaderContentProtocol)?) {
++        replaceSelection(with: content, admission: nil)
++    }
++
++    /// An optional admission keeps later same-source native loads on this exact
++    /// capture. Rejection cannot fall through to a fresh generic resolution.
++    public func replaceSelection(
++        with content: (any ReaderContentProtocol)?,
++        admission: (@MainActor () -> Bool)?
++    ) {
+         let retiredTask = loadingTask
+         let requestID = UUID()
+         selectionLifetime.withdraw()
+         selectionLifetime = ReaderContentSelectionLifetime()
+         selectionID = requestID
++        capturedSelectionAdmission = nil
++        if let admission, let content = validReaderContent(content) {
++            capturedSelectionAdmission = CapturedSelectionAdmission(
++                selectionID: requestID, lifetime: selectionLifetime,
++                content: content, contentURL: content.url,
++                permits: admission
++            )
++        }
+         loadingTask = nil
+         loadingResolvedContentURL = nil
+         retiredTask?.cancel()
+@@ -304,22 +329,55 @@ public class ReaderContent: ObservableObject {
+ 
+     private func makeLoadReceipt(
+         selectionFence: @escaping @Sendable () -> Bool,
+-        expectedContent: (any ReaderContentProtocol)?
++        expectedContent: (any ReaderContentProtocol)?,
++        admission: CapturedSelectionAdmission? = nil
+     ) -> ReaderContentLoadReceipt {
+         let expectedIdentity = expectedContent.map { ObjectIdentifier($0) }
+         return .init(admission: { [weak self] in
+             guard selectionFence(), let self else { return false }
++            if let admission, !self.admits(admission) { return false }
++            // A caller predicate may synchronously replace this selection.
++            guard selectionFence() else { return false }
+             let currentContent = content
+             guard currentContent?.isInvalidated != true else { return false }
+             return currentContent.map { ObjectIdentifier($0) } == expectedIdentity
+         })
+     }
+ 
++    private func admits(_ admission: CapturedSelectionAdmission) -> Bool {
++        guard admission.lifetime.permitsCommit(),
++              selectionID == admission.selectionID else { return false }
++        guard admission.permits(), admission.lifetime.permitsCommit(),
++              selectionID == admission.selectionID,
++              let current = validReaderContent(content),
++              current === admission.content,
++              matchesResolvedContentURL(current.url, resolvedContentURL: admission.contentURL) else {
++            // Withdraw only the original token, including after predicate reentry.
++            // A predicate becoming true later must not revive a rejected capture.
++            admission.lifetime.withdraw()
++            return false
++        }
++        return true
++    }
++
+     private func loadCapturingSelection(url: URL) async throws -> ReaderContentLoadReceipt {
+         try Task.checkCancellation()
+         let entryFence = makeSelectionCommitFence(requiring: selectionID)
++        let entryAdmission = capturedSelectionAdmission
+         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+         let displayURL = resolvedContentURL
++        if let entryAdmission,
++           matchesResolvedContentURL(entryAdmission.contentURL, resolvedContentURL: resolvedContentURL) {
++            guard admits(entryAdmission), entryFence() else { return .rejected }
++            let capturedContent = content
++            if !matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
++                pageURL = displayURL
++            }
++            guard entryFence(), admits(entryAdmission) else { return .rejected }
++            consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
++            return makeLoadReceipt(selectionFence: entryFence, expectedContent: capturedContent,
++                                   admission: entryAdmission)
++        }
+         logReaderLoad(
+             "stage=readerContent.load.begin requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) currentPageURL=\(pageURL.absoluteString) currentContentURL=\(validReaderContent(content)?.url.absoluteString ?? "nil") hasLoadingTask=\(loadingTask != nil)"
+         )
+@@ -330,7 +388,8 @@ public class ReaderContent: ObservableObject {
+             logReaderLoad(
+                 "stage=readerContent.load.skipTransientAboutBlank requestURL=\(url.absoluteString) targetURL=\(suppressedTargetURL.absoluteString)"
+             )
+-            return makeLoadReceipt(selectionFence: entryFence, expectedContent: content)
++            return makeLoadReceipt(selectionFence: entryFence, expectedContent: content,
++                                   admission: entryAdmission)
+         }
+ 
+         if resolvedContentURL.absoluteString == "about:blank",
+@@ -338,7 +397,8 @@ public class ReaderContent: ObservableObject {
+             logReaderLoad(
+                 "stage=readerContent.load.skipActiveInternalLoaderAboutBlank requestURL=\(url.absoluteString)"
+             )
+-            return makeLoadReceipt(selectionFence: entryFence, expectedContent: content)
++            return makeLoadReceipt(selectionFence: entryFence, expectedContent: content,
++                                   admission: entryAdmission)
+         }
+ 
+         if resolvedContentURL.absoluteString != "about:blank",
+@@ -347,7 +407,7 @@ public class ReaderContent: ObservableObject {
+             suppressedTransientAboutBlankTargetURL = nil
+         }
+ 
+-        if let loadingTask,
++        if entryAdmission == nil, let loadingTask,
+            !loadingTask.isCancelled,
+            let loadingResolvedContentURL,
+            matchesResolvedContentURL(loadingResolvedContentURL, resolvedContentURL: resolvedContentURL) {
+@@ -359,16 +419,18 @@ public class ReaderContent: ObservableObject {
+             logReaderLoad(
+                 "stage=readerContent.load.awaitExistingTask requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) loadingResolvedContentURL=\(loadingResolvedContentURL.absoluteString) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
+             )
+-            return makeLoadReceipt(selectionFence: entryFence, expectedContent: loadedContent)
++            return makeLoadReceipt(selectionFence: entryFence, expectedContent: loadedContent,
++                                   admission: entryAdmission)
+         }
+ 
+         // Reusing an accepted display without pending work is not a new selection.
+         // Keep readers of its completed resolver valid.
+-        if loadingTask == nil, let existingContent = validReaderContent(content),
++        if entryAdmission == nil, loadingTask == nil, let existingContent = validReaderContent(content),
+            matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL),
+            matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
+             consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
+-            return makeLoadReceipt(selectionFence: entryFence, expectedContent: existingContent)
++            return makeLoadReceipt(selectionFence: entryFence, expectedContent: existingContent,
++                                   admission: entryAdmission)
+         }
+ 
+         // Retire the previous selection before cached or preloaded content can publish.
+@@ -377,6 +439,7 @@ public class ReaderContent: ObservableObject {
+         selectionLifetime.withdraw()
+         selectionLifetime = ReaderContentSelectionLifetime()
+         selectionID = requestID
++        capturedSelectionAdmission = nil
+         let requestFence = makeSelectionCommitFence(requiring: requestID)
+         loadingTask = nil
+         loadingResolvedContentURL = nil
+diff --git a/Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift b/Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift
+index 59dd411..0510495 100644
+--- a/Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift
++++ b/Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift
+@@ -4051,17 +4051,41 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
+         )
+     }
+ 
++    @MainActor
++    func onNavigationCommitted(
++        readerContent: ReaderContent,
++        newState: WebViewState,
++        scriptCaller: WebViewScriptCaller,
++        documentIsCurrent: @escaping @MainActor () -> Bool
++    ) async throws {
++        let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
++        try await onNavigationCommitted(
++            readerContent: readerContent,
++            newState: newState,
++            scriptCaller: scriptCaller,
++            selectionFence: selectionIsCurrent,
++            documentIsCurrent: documentIsCurrent,
++            loadHTML: { content, readerFileManager in
++                try await content.htmlToDisplay(readerFileManager: readerFileManager)
++            }
++        )
++    }
++
+     @MainActor
+     func onNavigationCommitted(
+         readerContent: ReaderContent,
+         newState: WebViewState,
+         scriptCaller: WebViewScriptCaller,
+         selectionFence: (@Sendable () -> Bool)? = nil,
++        documentIsCurrent: (@MainActor () -> Bool)? = nil,
+         loadHTML: @MainActor (any ReaderContentProtocol, ReaderFileManager) async throws -> String?
+     ) async throws {
+         let selectionIsCurrent = selectionFence
+             ?? readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
+         let requireCurrentSelection = { @MainActor in
++            try Task.checkCancellation()
++            guard documentIsCurrent?() != false else { throw CancellationError() }
++            // Admission can synchronously replace the document or selection.
+             try Task.checkCancellation()
+             guard selectionIsCurrent() else { throw CancellationError() }
+         }
+@@ -4098,7 +4122,18 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
+         }
+         try requireCurrentContent()
+ 
+-        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: committedURL)
++        await injectSharedFontIfNeeded(
++            scriptCaller: scriptCaller,
++            pageURL: committedURL,
++            documentIsCurrent: {
++                do {
++                    try requireCurrentContent()
++                    return true
++                } catch {
++                    return false
++                }
++            }
++        )
+         try requireCurrentContent()
+         logTrace(.navCommitted, url: committedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
+         logStateSnapshot("navCommitted", url: committedURL)
+@@ -4129,6 +4164,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
+ 
+         if isReaderMode != isReaderModeVerified && !newState.pageURL.isEBookURL {
+             try withAnimation {
++                try requireCurrentContent()
+                 readerModeLoading(isReaderModeVerified)
+                 try requireCurrentContent()
+                 isReaderMode = isReaderModeVerified // Reset and confirm via JS later
+diff --git a/Sources/LakeOfFireReader/Reader/ReaderWebView.swift b/Sources/LakeOfFireReader/Reader/ReaderWebView.swift
+index 374a80f..1ced02a 100644
+--- a/Sources/LakeOfFireReader/Reader/ReaderWebView.swift
++++ b/Sources/LakeOfFireReader/Reader/ReaderWebView.swift
+@@ -253,7 +253,8 @@ final class ReaderWebViewHandler {
+         try await context.readerModeViewModel.onNavigationCommitted(
+             readerContent: context.readerContent,
+             newState: state,
+-            scriptCaller: context.scriptCaller
++            scriptCaller: context.scriptCaller,
++            documentIsCurrent: { context.owns(requiringSelection: true) }
+         )
+         try requireCurrentContent()
+         try await context.readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
+diff --git a/Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift b/Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift
+index d467450..5993e9b 100644
+--- a/Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift
++++ b/Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift
+@@ -12,7 +12,11 @@ private final class HTMLNavigationModeProbe: ReaderModeViewModel, @unchecked Sen
+     private(set) var readerPresentationRequests = 0
+     private(set) var presentationSelectionFence: (@Sendable () -> Bool)?
+ 
+-    override func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
++    override func injectSharedFontIfNeeded(
++        scriptCaller: WebViewScriptCaller,
++        pageURL: URL,
++        documentIsCurrent: @escaping @MainActor () -> Bool
++    ) async {
+         await beforeFontReturns?()
+     }
+ 
+diff --git a/Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift b/Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift
+index e7e524d..0376ba4 100644
+--- a/Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift
++++ b/Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift
+@@ -42,14 +42,25 @@ private final class NavigationLifetimeProbe {
+     var fontEntered: XCTestExpectation?
+     var failSettings = false
+     var failFinish = false
++    var paginationCount = 0
++    var paginationGate: NavigationLifetimeGate?
++    var paginationEntered: XCTestExpectation?
++    var failFont = false
++    var failPagination = false
+ 
+     func evaluate(_ script: String, title: String?, isFontInjection: Bool) async throws -> Bool? {
+         if isFontInjection {
+             fontCount += 1
+             fontEntered?.fulfill()
+             await fontGate?.wait()
++            if failFont { throw NavigationLifetimeError.controlledFailure }
+         } else if let title {
+             titles.append(title)
++        } else if script.contains("window.paginationTrackingBookKey = bookKey") {
++            paginationCount += 1
++            paginationEntered?.fulfill()
++            await paginationGate?.wait()
++            if failPagination { throw NavigationLifetimeError.controlledFailure }
+         } else if script.contains("isNextLoadInReaderMode") {
+             finishCount += 1
+             finishEntered?.fulfill()
+@@ -146,7 +157,7 @@ private final class NavigationLifetimeFixture {
+     let state: WebViewState
+     var externalFinishCount = 0
+ 
+-    init(managed: Bool, preload: Bool, bindCaller: Bool) throws {
++    init(managed: Bool, preload: Bool, bindCaller: Bool, snippet: Bool = false) throws {
+         let content = ReaderContent()
+         let mode = ReaderModeViewModel()
+         let media = NavigationLifetimeMedia()
+@@ -161,6 +172,11 @@ private final class NavigationLifetimeFixture {
+         record.url = URL(string: "https://example.invalid/navigation-lifetime")!
+         record.title = "Original title"
+         record.rssContainsFullContent = true
++        if snippet {
++            record.url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: record.compoundKey))
++            record.html = "<p>Captured snippet content</p>"
++            record.isReaderModeByDefault = true
++        }
+         let realm: Realm?
+         if managed {
+             var recordConfiguration = Realm.Configuration(
+@@ -295,6 +311,7 @@ private final class NavigationLifetimeCleanup {
+             await fixture.probe.settingsGate?.release()
+             await fixture.probe.finishGate?.release()
+             await fixture.probe.fontGate?.release()
++            await fixture.probe.paginationGate?.release()
+         }
+ 
+         let joined = XCTestExpectation(description: "Fixture production tasks and observers settled")
+@@ -340,9 +357,9 @@ final class ReaderNavigationCallbackLifetimeTests: XCTestCase {
+         return owner
+     }
+ 
+-    private func fixture(managed: Bool = false, preload: Bool = false, bindCaller: Bool = true) throws -> NavigationLifetimeFixture {
++    private func fixture(managed: Bool = false, preload: Bool = false, bindCaller: Bool = true, snippet: Bool = false) throws -> NavigationLifetimeFixture {
+         let owner = cleanupOwner()
+-        let result = try NavigationLifetimeFixture(managed: managed, preload: preload, bindCaller: bindCaller)
++        let result = try NavigationLifetimeFixture(managed: managed, preload: preload, bindCaller: bindCaller, snippet: snippet)
+         owner.fixtures.append(result)
+         return result
+     }
+@@ -881,6 +898,394 @@ final class ReaderNavigationCallbackLifetimeTests: XCTestCase {
+         XCTAssertEqual(f.probe.titles, ["Replacement owner"])
+     }
+ 
++    func testCapturedModeRetirementDuringFontEvaluationDoesNotPublishPreparation() async throws {
++        guard #available(iOS 16.4, macOS 14, *) else { throw XCTSkip("Font injection requires the supported WebKit API") }
++        for retirement in ["account", "tombstone", "presentation"] {
++            let f = try fixture(managed: true, snippet: true)
++            var accountIsCurrent = true
++            var presentationIsCurrent = true
++            f.content.replaceSelection(with: f.record, admission: { [weak record = f.record] in
++                accountIsCurrent && presentationIsCurrent
++                    && record?.isInvalidated == false && record?.isDeleted == false
++            })
++            let selectionID = f.content.currentSelectionID
++            let selectionFence = f.content.makeSelectionCommitFence(requiring: selectionID)
++            let held = gate()
++            let entered = expectation(description: "Captured snippet font evaluation entered")
++            f.probe.fontGate = held
++            f.probe.fontEntered = entered
++            var publicCommits = 0
++            f.handler.onNavigationCommitted = { _ in publicCommits += 1 }
++            XCTAssertFalse(f.mode.isReaderMode)
++            XCTAssertFalse(f.mode.isReaderModeLoading)
++
++            f.handler.onNavigationCommitted(state: f.state)
++            let task = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
++            await fulfillment(of: [entered], timeout: 2)
++            switch retirement {
++            case "account": accountIsCurrent = false
++            case "presentation": presentationIsCurrent = false
++            default:
++                try XCTUnwrap(f.realm).write { f.record.isDeleted = true }
++                XCTAssertFalse(f.record.isInvalidated)
++            }
++            XCTAssertEqual(f.content.currentSelectionID, selectionID)
++            // Checking the full receipt here would withdraw the token and hide
++            // the missing inner admission in the original implementation.
++            XCTAssertTrue(selectionFence(), retirement)
++            await held.release()
++            guard case .failure(let error)? = await settle(task, releasing: held) else {
++                XCTFail("Retired font continuation succeeded: \(retirement)")
++                continue
++            }
++            XCTAssertTrue(error is CancellationError)
++            XCTAssertFalse(f.mode.isReaderMode, retirement)
++            XCTAssertFalse(f.mode.isReaderModeLoading, retirement)
++            XCTAssertEqual(f.probe.fontCount, 1)
++            XCTAssertEqual(f.probe.paginationCount, 0)
++            XCTAssertTrue(f.media.committed.isEmpty)
++            XCTAssertEqual(publicCommits, 0)
++            XCTAssertFalse(f.content.isReaderMainFrameNavigating)
++        }
++    }
++
++    func testCapturedModeRetirementDuringPaginationSuccessOrErrorDoesNotPublishPreparation() async throws {
++        for failingEvaluation in [false, true] {
++            let f = try fixture(snippet: true)
++            var admitted = true
++            f.content.replaceSelection(with: f.record, admission: { admitted })
++            let selectionID = f.content.currentSelectionID
++            let selectionFence = f.content.makeSelectionCommitFence(requiring: selectionID)
++            let held = gate()
++            let entered = expectation(description: "Pagination evaluation entered after font admission")
++            f.probe.paginationGate = held
++            f.probe.paginationEntered = entered
++            f.probe.failPagination = failingEvaluation
++
++            f.handler.onNavigationCommitted(state: f.state)
++            let task = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
++            await fulfillment(of: [entered], timeout: 2)
++            admitted = false
++            XCTAssertEqual(f.content.currentSelectionID, selectionID)
++            XCTAssertTrue(selectionFence())
++            await held.release()
++            guard case .failure(let error)? = await settle(task, releasing: held) else {
++                XCTFail("Retired pagination continuation succeeded")
++                continue
++            }
++            XCTAssertTrue(error is CancellationError)
++            XCTAssertFalse(f.mode.isReaderMode)
++            XCTAssertFalse(f.mode.isReaderModeLoading)
++            XCTAssertEqual(f.probe.paginationCount, 1)
++            XCTAssertTrue(f.media.committed.isEmpty)
++            XCTAssertFalse(f.content.isReaderMainFrameNavigating)
++        }
++    }
++
++    func testCurrentCapturedModePreservesSuccessfulAndFailedJavaScriptPreparation() async throws {
++        guard #available(iOS 16.4, macOS 14, *) else { throw XCTSkip("Font injection requires the supported WebKit API") }
++        for failure in ["none", "font", "pagination"] {
++            let f = try fixture(snippet: true)
++            f.content.replaceSelection(with: f.record, admission: { true })
++            f.probe.failFont = failure == "font"
++            f.probe.failPagination = failure == "pagination"
++            var publicCommits = 0
++            f.handler.onNavigationCommitted = { _ in publicCommits += 1 }
++            XCTAssertFalse(f.mode.isReaderMode)
++            XCTAssertFalse(f.mode.isReaderModeLoading)
++
++            try await commit(f)
++
++            XCTAssertTrue(f.mode.isReaderMode, failure)
++            XCTAssertTrue(f.mode.isReaderModeLoading, failure)
++            XCTAssertEqual(f.probe.fontCount, 1)
++            XCTAssertEqual(f.probe.paginationCount, 1)
++            XCTAssertEqual(f.media.committed, [ObjectIdentifier(f.record)])
++            XCTAssertEqual(publicCommits, 1)
++        }
++    }
++
++    func testRetiredModeCommitNeedsExplicitCapturedReplacementBeforeRetry() async throws {
++        let f = try fixture(snippet: true)
++        var admitted = true
++        f.content.replaceSelection(with: f.record, admission: { admitted })
++        let held = gate()
++        let entered = expectation(description: "Original preparation suspended")
++        f.probe.paginationGate = held
++        f.probe.paginationEntered = entered
++        f.handler.onNavigationCommitted(state: f.state)
++        let old = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
++        await fulfillment(of: [entered], timeout: 2)
++        admitted = false
++        await held.release()
++        guard case .failure(let error)? = await settle(old, releasing: held) else {
++            return XCTFail("Retired preparation succeeded")
++        }
++        XCTAssertTrue(error is CancellationError)
++        XCTAssertFalse(f.mode.isReaderModeLoading)
++        XCTAssertFalse(f.mode.isReaderMode)
++        f.probe.paginationEntered = nil
++        admitted = true
++
++        f.handler.onNavigationCommitted(state: f.state)
++        guard case .failure(let retryError)? = await settle(try XCTUnwrap(f.tasks.onNavigationCommittedTask)) else {
++            return XCTFail("An admitted predicate revived the retired capture")
++        }
++        XCTAssertTrue(retryError is CancellationError)
++        XCTAssertEqual(f.probe.paginationCount, 1)
++
++        f.content.replaceSelection(with: f.record, admission: { admitted })
++        try await commit(f)
++        XCTAssertTrue(f.mode.isReaderMode)
++        XCTAssertTrue(f.mode.isReaderModeLoading)
++        XCTAssertEqual(f.probe.paginationCount, 2)
++        XCTAssertEqual(f.media.committed, [ObjectIdentifier(f.record)])
++    }
++
++    func testModeAdmissionReentryCannotPublishForItsSameURLSuccessor() async throws {
++        let f = try fixture(snippet: true)
++        let successor = HistoryRecord()
++        successor.compoundKey = UUID().uuidString
++        successor.url = f.record.url
++        successor.rssContainsFullContent = true
++        successor.isReaderModeByDefault = true
++        var replaceOnAdmission = false
++        f.content.replaceSelection(with: f.record, admission: { [weak content = f.content] in
++            if replaceOnAdmission {
++                replaceOnAdmission = false
++                content?.replaceSelection(with: successor, admission: { true })
++            }
++            return true
++        })
++        let originalSelectionID = f.content.currentSelectionID
++        let held = gate()
++        let entered = expectation(description: "Old mode pagination evaluation suspended")
++        f.probe.paginationGate = held
++        f.probe.paginationEntered = entered
++        f.handler.onNavigationCommitted(state: f.state)
++        let old = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
++        await fulfillment(of: [entered], timeout: 2)
++        replaceOnAdmission = true
++        await held.release()
++        guard case .failure(let error)? = await settle(old, releasing: held) else {
++            return XCTFail("Old mode continuation adopted a reentrant successor")
++        }
++        XCTAssertTrue(error is CancellationError)
++        XCTAssertFalse(f.mode.isReaderMode)
++        XCTAssertFalse(f.mode.isReaderModeLoading)
++        XCTAssertTrue(f.content.content === successor)
++        XCTAssertNotEqual(f.content.currentSelectionID, originalSelectionID)
++        let successorFence = f.content.makeSelectionCommitFence(requiring: f.content.currentSelectionID)
++        XCTAssertTrue(successorFence())
++        f.probe.paginationEntered = nil
++
++        try await commit(f)
++        XCTAssertTrue(f.mode.isReaderMode)
++        XCTAssertTrue(f.mode.isReaderModeLoading)
++        XCTAssertTrue(successorFence())
++        XCTAssertEqual(f.media.committed, [ObjectIdentifier(successor)])
++    }
++
++    func testCancelledModeEvaluationPreservesTheCurrentCapturedSelectionForRetry() async throws {
++        let f = try fixture(snippet: true)
++        f.content.replaceSelection(with: f.record, admission: { true })
++        let selectionFence = f.content.makeSelectionCommitFence(requiring: f.content.currentSelectionID)
++        let held = gate()
++        let entered = expectation(description: "Current mode pagination evaluation suspended")
++        f.probe.paginationGate = held
++        f.probe.paginationEntered = entered
++        f.handler.onNavigationCommitted(state: f.state)
++        let cancelled = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
++        await fulfillment(of: [entered], timeout: 2)
++        cancelled.cancel()
++        await held.release()
++        guard case .failure(let error)? = await settle(cancelled, releasing: held) else {
++            return XCTFail("Cancelled mode preparation succeeded")
++        }
++        XCTAssertTrue(error is CancellationError)
++        XCTAssertTrue(selectionFence())
++        XCTAssertFalse(f.mode.isReaderMode)
++        XCTAssertFalse(f.mode.isReaderModeLoading)
++        f.probe.paginationEntered = nil
++
++        try await commit(f)
++        XCTAssertTrue(f.mode.isReaderMode)
++        XCTAssertTrue(f.mode.isReaderModeLoading)
++        XCTAssertTrue(selectionFence())
++        XCTAssertEqual(f.media.committed, [ObjectIdentifier(f.record)])
++    }
++
++    func testCapturedAdmissionRejectsQueuedNativeCommitBeforeResolverPreparationAndPublicCallback() async throws {
++        let f = try fixture(managed: true)
++        var admitted = true
++        var resolverCalls = 0
++        var publicCommits = 0
++        ReaderContent.contentResolver = { _, _, _ in
++            resolverCalls += 1
++            return f.record
++        }
++        f.handler.onNavigationCommitted = { _ in publicCommits += 1 }
++        f.content.replaceSelection(with: f.record, admission: { admitted })
++        f.mode.readabilityContent = "Existing preparation"
++        f.handler.onNavigationCommitted(state: f.state)
++        let queued = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
++        // No actor yield: dispatch occurred, but the actual commit consumer has
++        // not yet entered ReaderContent.loadWithSelectionReceipt.
++        admitted = false
++        guard case .failure(let error)? = await settle(queued) else {
++            return XCTFail("Retired capture reached native preparation")
++        }
++        XCTAssertTrue(error is CancellationError)
++        XCTAssertEqual(resolverCalls, 0)
++        XCTAssertEqual(f.reader.commitCount, 0)
++        XCTAssertTrue(f.media.committed.isEmpty)
++        XCTAssertEqual(publicCommits, 0)
++        XCTAssertEqual(f.mode.readabilityContent, "Existing preparation")
++        XCTAssertFalse(f.content.isReaderMainFrameNavigating)
++
++        // Rejection is one-way until an explicit, newly admitted selection.
++        admitted = true
++        do {
++            _ = try await f.content.loadWithSelectionReceipt(url: f.state.pageURL)
++            XCTFail("A rejected capture revived")
++        } catch is CancellationError { }
++        f.content.replaceSelection(with: f.record, admission: { admitted })
++        try await commit(f)
++        XCTAssertEqual(f.reader.commitCount, 1)
++        XCTAssertEqual(publicCommits, 1)
++        XCTAssertEqual(resolverCalls, 0)
++    }
++
++    func testCapturedReceiptRechecksAdmissionAfterActualReaderCommitAwait() async throws {
++        let f = try fixture(managed: true)
++        var admitted = true
++        var publicCommits = 0
++        let held = gate()
++        let entered = expectation(description: "Captured commit suspended in the reader")
++        f.content.replaceSelection(with: f.record, admission: { admitted })
++        f.mode.readabilityContent = "Unchanged preparation"
++        f.handler.onNavigationCommitted = { _ in publicCommits += 1 }
++        f.reader.beforeCommitReturns = {
++            entered.fulfill()
++            await held.wait()
++        }
++        f.handler.onNavigationCommitted(state: f.state)
++        let task = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
++        await fulfillment(of: [entered], timeout: 2)
++        admitted = false
++        await held.release()
++        guard case .failure(let error)? = await settle(task, releasing: held) else {
++            return XCTFail("Receipt did not retain its original admission")
++        }
++        XCTAssertTrue(error is CancellationError)
++        XCTAssertEqual(f.reader.commitCount, 1)
++        XCTAssertTrue(f.media.committed.isEmpty)
++        XCTAssertEqual(publicCommits, 0)
++        XCTAssertEqual(f.mode.readabilityContent, "Unchanged preparation")
++    }
++
++    func testCapturedPredicateReentryCannotBorrowOrRetireAReplacementSelection() async throws {
++        let f = try fixture()
++        let successor = HistoryRecord(value: f.record)
++        successor.title = "Successor"
++        var replace = false
++        f.content.replaceSelection(with: f.record, admission: { [weak content = f.content] in
++            if replace { content?.replaceSelection(with: successor, admission: { true }) }
++            return true
++        })
++        let original = try await f.content.loadWithSelectionReceipt(url: f.state.pageURL)
++        replace = true
++        XCTAssertFalse(original.isCurrent)
++        XCTAssertTrue(f.content.content === successor)
++        let replacement = try await f.content.loadWithSelectionReceipt(url: f.state.pageURL)
++        XCTAssertTrue(replacement.isCurrent)
++        XCTAssertFalse(original.isCurrent)
++        XCTAssertTrue(replacement.isCurrent, "An old receipt must not withdraw the replacement token")
++    }
++
++    func testCapturedAdmissionQuietRetirementAndExplicitDifferentURLNavigation() async throws {
++        let f = try fixture()
++        var resolverCalls = 0
++        let successor = HistoryRecord()
++        successor.url = URL(string: "https://example.invalid/different-document")!
++        successor.updateCompoundKey()
++        ReaderContent.contentResolver = { url, _, _ in
++            resolverCalls += 1
++            XCTAssertEqual(url, successor.url)
++            return successor
++        }
++        f.content.replaceSelection(with: f.record, admission: { false })
++        try await f.content.load(url: f.state.pageURL)
++        XCTAssertEqual(resolverCalls, 0)
++        XCTAssertTrue(f.content.content === f.record)
++        do {
++            _ = try await f.content.loadWithSelectionReceipt(url: f.state.pageURL)
++            XCTFail("Strict native load accepted quietly retired content")
++        } catch is CancellationError { }
++        let current = try await f.content.loadWithSelectionReceipt(url: successor.url)
++        XCTAssertTrue(current.isCurrent)
++        XCTAssertTrue(f.content.content === successor)
++        XCTAssertEqual(resolverCalls, 1)
++        f.content.replaceSelection(with: f.record)
++        let explicit = try await f.content.loadWithSelectionReceipt(url: f.state.pageURL)
++        XCTAssertTrue(explicit.isCurrent)
++        XCTAssertFalse(current.isCurrent)
++        XCTAssertEqual(resolverCalls, 1)
++    }
++
++    func testCancelledNativeCallbackDoesNotRetireAnotherCurrentCapturedLoad() async throws {
++        let f = try fixture()
++        f.content.replaceSelection(with: f.record, admission: { true })
++        f.handler.onNavigationCommitted(state: f.state)
++        let cancelled = own(try XCTUnwrap(f.tasks.onNavigationCommittedTask))
++        cancelled.cancel()
++        guard case .failure(let error)? = await settle(cancelled) else {
++            return XCTFail("Cancelled native callback ran")
++        }
++        XCTAssertTrue(error is CancellationError)
++        XCTAssertEqual(f.reader.commitCount, 0)
++        let receipt = try await f.content.loadWithSelectionReceipt(url: f.state.pageURL)
++        XCTAssertTrue(receipt.isCurrent)
++        try await commit(f)
++        XCTAssertEqual(f.reader.commitCount, 1)
++    }
++
++    func testDifferentURLAlreadyPublishedContentRetiresOldCapturedAdmission() async throws {
++        let f = try fixture()
++        f.content.replaceSelection(with: f.record, admission: { false })
++        let oldSelection = f.content.currentSelectionID
++        let successor = HistoryRecord()
++        successor.url = URL(string: "https://example.invalid/published-successor")!
++        successor.updateCompoundKey()
++        f.content.content = successor
++        f.content.pageURL = successor.url
++        ReaderContent.contentResolver = { _, _, _ in
++            XCTFail("Already published successor unnecessarily entered generic resolution")
++            return nil
++        }
++        let receipt = try await f.content.loadWithSelectionReceipt(url: successor.url)
++        XCTAssertTrue(receipt.isCurrent)
++        XCTAssertTrue(f.content.content === successor)
++        XCTAssertNotEqual(f.content.currentSelectionID, oldSelection)
++    }
++
++    func testCapturedAdmissionAlsoFencesSuppressedBlankReceipt() async throws {
++        let f = try fixture()
++        var admitted = true
++        f.content.replaceSelection(with: f.record, admission: { admitted })
++        f.content.suppressTransientAboutBlank(untilNextNonBlankLoad: f.state.pageURL)
++        let blank = URL(string: "about:blank")!
++        let receipt = try await f.content.loadWithSelectionReceipt(url: blank)
++        XCTAssertTrue(receipt.isCurrent)
++        admitted = false
++        XCTAssertFalse(receipt.isCurrent)
++        XCTAssertEqual(f.content.pageURL, f.state.pageURL)
++        do {
++            _ = try await f.content.loadWithSelectionReceipt(url: blank)
++            XCTFail("Transient blank borrowed a retired source")
++        } catch is CancellationError { }
++    }
++
+     func testQueuedFailureCannotPublishForAReplacedOwner() async throws {
+         for preserves in [false, true] {
+             let f = try fixture()

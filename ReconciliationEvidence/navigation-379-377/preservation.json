@@ -1,0 +1,18 @@
+{
+  "callbackMethods": {
+    "base358": 27,
+    "native377": 40,
+    "finish379": 36,
+    "composed": 49
+  },
+  "changedInputMethods": {
+    "base358": [],
+    "native377": [],
+    "finish379": []
+  },
+  "HTMLMethods": 34,
+  "HTMLInputByteIdentical": true,
+  "nativeOnlyPathsByteIdentical": true,
+  "sharedProbePropertiesUnique": true,
+  "nativeExecution": false
+}

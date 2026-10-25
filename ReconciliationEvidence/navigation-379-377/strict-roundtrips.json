@@ -1,0 +1,240 @@
+[
+  {
+    "from": "base358",
+    "to": "native377",
+    "patch": "native377-over-base358.patch",
+    "patch_sha256": "c44770316b38b0790b12937d381f2736ed4941532c039918aa5ef13cf747a813",
+    "changed_paths": [
+      "Sources/LakeOfFireContent/Reader/ReaderContent.swift",
+      "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+      "Sources/LakeOfFireReader/Reader/ReaderWebView.swift",
+      "Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift",
+      "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift"
+    ],
+    "forward_exact_bytes": true,
+    "reverse_exact_bytes": true,
+    "checks": [
+      {
+        "arguments": [
+          "apply",
+          "--check",
+          "--whitespace=error",
+          "native377-over-base358.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "arguments": [
+          "apply",
+          "--whitespace=error",
+          "native377-over-base358.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "arguments": [
+          "apply",
+          "--reverse",
+          "--check",
+          "--whitespace=error",
+          "native377-over-base358.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "arguments": [
+          "apply",
+          "--reverse",
+          "--whitespace=error",
+          "native377-over-base358.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    ]
+  },
+  {
+    "from": "base358",
+    "to": "finish379",
+    "patch": "finish379-over-base358.patch",
+    "patch_sha256": "184b0a7d21b300ffca08e1a782186d27df8b816a176ee776b565f66fcbc82d19",
+    "changed_paths": [
+      "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+      "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift"
+    ],
+    "forward_exact_bytes": true,
+    "reverse_exact_bytes": true,
+    "checks": [
+      {
+        "arguments": [
+          "apply",
+          "--check",
+          "--whitespace=error",
+          "finish379-over-base358.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "arguments": [
+          "apply",
+          "--whitespace=error",
+          "finish379-over-base358.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "arguments": [
+          "apply",
+          "--reverse",
+          "--check",
+          "--whitespace=error",
+          "finish379-over-base358.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "arguments": [
+          "apply",
+          "--reverse",
+          "--whitespace=error",
+          "finish379-over-base358.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    ]
+  },
+  {
+    "from": "native377",
+    "to": "candidate",
+    "patch": "composition-over-native377.patch",
+    "patch_sha256": "8ad147fe04266500c407e283026ebd8cc0144c53a04088055dbe6bac1fdf0188",
+    "changed_paths": [
+      "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+      "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift"
+    ],
+    "forward_exact_bytes": true,
+    "reverse_exact_bytes": true,
+    "checks": [
+      {
+        "arguments": [
+          "apply",
+          "--check",
+          "--whitespace=error",
+          "composition-over-native377.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "arguments": [
+          "apply",
+          "--whitespace=error",
+          "composition-over-native377.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "arguments": [
+          "apply",
+          "--reverse",
+          "--check",
+          "--whitespace=error",
+          "composition-over-native377.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "arguments": [
+          "apply",
+          "--reverse",
+          "--whitespace=error",
+          "composition-over-native377.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    ]
+  },
+  {
+    "from": "finish379",
+    "to": "candidate",
+    "patch": "composition-over-finish379.patch",
+    "patch_sha256": "328bdf58ed07a8249b089b548e8b140919f7edc1c511cc01717e07ed40351a4c",
+    "changed_paths": [
+      "Sources/LakeOfFireContent/Reader/ReaderContent.swift",
+      "Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift",
+      "Sources/LakeOfFireReader/Reader/ReaderWebView.swift",
+      "Tests/LakeOfFireTests/ReaderContentHTMLLifetimeTests.swift",
+      "Tests/LakeOfFireTests/ReaderNavigationCallbackLifetimeTests.swift"
+    ],
+    "forward_exact_bytes": true,
+    "reverse_exact_bytes": true,
+    "checks": [
+      {
+        "arguments": [
+          "apply",
+          "--check",
+          "--whitespace=error",
+          "composition-over-finish379.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "arguments": [
+          "apply",
+          "--whitespace=error",
+          "composition-over-finish379.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "arguments": [
+          "apply",
+          "--reverse",
+          "--check",
+          "--whitespace=error",
+          "composition-over-finish379.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "arguments": [
+          "apply",
+          "--reverse",
+          "--whitespace=error",
+          "composition-over-finish379.patch"
+        ],
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    ]
+  }
+]
