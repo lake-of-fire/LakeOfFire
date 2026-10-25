@@ -83,10 +83,13 @@ public struct ReaderContentLoader {
     public struct ContentReference: @unchecked Sendable {
         public let contentType: RealmSwift.Object.Type
         public let contentKey: String
+        /// The source selected before cached resolution or a later producer awaits.
+        public let contentURL: URL
         public let realmConfiguration: Realm.Configuration
 
         public init?(content: any ReaderContentProtocol) {
-            guard let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type,
+            guard !content.isInvalidated,
+                  let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type,
                   var config = content.realm?.configuration else { return nil }
             if var objectTypes = config.objectTypes,
                !objectTypes.contains(where: { $0 == contentType }) {
@@ -95,21 +98,32 @@ public struct ReaderContentLoader {
             }
             self.contentType = contentType
             contentKey = content.compoundKey
+            contentURL = content.url
             realmConfiguration = config
+        }
+
+        fileprivate func matchesSelectedURL(of content: any ReaderContentProtocol) -> Bool {
+            !content.isInvalidated && content.url == contentURL
         }
 
         @RealmBackgroundActor
         public func resolveOnBackgroundActor() async throws -> (any ReaderContentProtocol)? {
             let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
             try await realm.asyncRefresh()
-            return realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentProtocol
+            guard let content = realm.object(ofType: contentType, forPrimaryKey: contentKey)
+                    as? any ReaderContentProtocol,
+                  matchesSelectedURL(of: content) else { return nil }
+            return content
         }
 
         @MainActor
         public func resolveOnMainActor() async throws -> (any ReaderContentProtocol)? {
             let realm = try await Realm.open(configuration: realmConfiguration)
             try await realm.asyncRefresh()
-            return realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentProtocol
+            guard let content = realm.object(ofType: contentType, forPrimaryKey: contentKey)
+                    as? any ReaderContentProtocol,
+                  matchesSelectedURL(of: content) else { return nil }
+            return content
         }
     }
 
@@ -205,18 +219,43 @@ public struct ReaderContentLoader {
     private static func resolveContentReferences(
         _ references: [ContentReference]
     ) async throws -> [(any ReaderContentProtocol)] {
-        var resolvedContents = [(any ReaderContentProtocol)]()
-        resolvedContents.reserveCapacity(references.count)
+        let candidates = try await resolveContentCandidates(references)
+        return candidates.map { $0.content }
+    }
+
+    @RealmBackgroundActor
+    private static func resolveContentCandidates(
+        _ references: [ContentReference],
+        resolveReference: @RealmBackgroundActor (ContentReference) async throws -> (any ReaderContentProtocol)? = {
+            try await $0.resolveOnBackgroundActor()
+        }
+    ) async throws -> [(reference: ContentReference, content: any ReaderContentProtocol)] {
+        var candidates = [(reference: ContentReference, content: any ReaderContentProtocol)]()
+        candidates.reserveCapacity(references.count)
         for reference in references {
-            if let content = try await reference.resolveOnBackgroundActor() {
-                resolvedContents.append(content)
+            if let content = try await resolveReference(reference) {
+                candidates.append((reference, content))
             }
         }
-        return resolvedContents
+        // Resolving later rows may refresh the same Realm and retire an earlier
+        // candidate. Keep its original witness instead of capturing a new URL.
+        return candidates.filter { $0.reference.matchesSelectedURL(of: $0.content) }
     }
 
     @RealmBackgroundActor
     public static func loadAll(url: URL, skipContentFiles: Bool = false, skipFeedEntries: Bool = false) async throws -> [(any ReaderContentProtocol)] {
+        let references = try await loadAllReferences(
+            url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries
+        )
+        return try await resolveContentReferences(references)
+    }
+
+    @RealmBackgroundActor
+    private static func loadAllReferences(
+        url: URL,
+        skipContentFiles: Bool = false,
+        skipFeedEntries: Bool = false
+    ) async throws -> [ContentReference] {
         let revisionKey = HistoryRecord.canonicalHistoryURL(for: url).absoluteString
         let taskKey = loadAllTaskKey(
             url: url,
@@ -226,7 +265,7 @@ public struct ReaderContentLoader {
         )
         if let cached = recentLoadAllCache[taskKey],
            Date().timeIntervalSince(cached.timestamp) < loadAllCacheTTL {
-            return try await resolveContentReferences(cached.references)
+            return cached.references
         }
         if let existingTask = inFlightLoadAllTasks[taskKey] {
             if readerContentLoaderVerboseLoggingEnabled {
@@ -234,7 +273,7 @@ public struct ReaderContentLoader {
                     "stage=contentLoader.loadAll.coalesced url=\(url.absoluteString) taskKey=\(taskKey)"
                 )
             }
-            return try await resolveContentReferences(existingTask.value)
+            return try await existingTask.value
         }
 
         let task = Task<[ContentReference], Error> { @RealmBackgroundActor in
@@ -248,10 +287,11 @@ public struct ReaderContentLoader {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
             await realm.asyncRefresh()
 
-            var contentFile: ContentFile?
+            var contentFileReference: ContentReference?
             if !skipContentFiles {
                 let contentFileStartedAt = Date()
-                contentFile = try await ContentFile.get(forURL: url, realm: realm)
+                let contentFile = try await ContentFile.get(forURL: url, realm: realm)
+                contentFileReference = contentFile.flatMap(ContentReference.init(content:))
                 let elapsed = Date().timeIntervalSince(contentFileStartedAt)
                 if shouldLogLoadAllStep(found: contentFile != nil, elapsed: elapsed) {
                     logReaderLoad(
@@ -261,6 +301,7 @@ public struct ReaderContentLoader {
             }
             let historyStartedAt = Date()
             let history = HistoryRecord.getOpenedRecord(forURL: url, in: realm)
+            let historyReference = history.flatMap(ContentReference.init(content:))
             let historyElapsed = Date().timeIntervalSince(historyStartedAt)
             if shouldLogLoadAllStep(found: history != nil, elapsed: historyElapsed) {
                 logReaderLoad(
@@ -269,6 +310,7 @@ public struct ReaderContentLoader {
             }
             let bookmarkStartedAt = Date()
             let bookmark = try await Bookmark.get(forURL: url, realm: realm)
+            let bookmarkReference = bookmark.flatMap(ContentReference.init(content:))
             let bookmarkElapsed = Date().timeIntervalSince(bookmarkStartedAt)
             if shouldLogLoadAllStep(found: bookmark != nil, elapsed: bookmarkElapsed) {
                 logReaderLoad(
@@ -276,7 +318,7 @@ public struct ReaderContentLoader {
                 )
             }
 
-            var feed: FeedEntry?
+            var feedReference: ContentReference?
             if !skipFeedEntries {
                 let feedStartedAt = Date()
                 let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
@@ -285,11 +327,13 @@ public struct ReaderContentLoader {
                     .where { !$0.isDeleted }
                     .sorted(by: \.createdAt, ascending: false)
 
+                var feed: FeedEntry?
                 if url.scheme == "https" {
                     feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
                 } else if !url.isReaderFileURL {
                     feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
                 }
+                feedReference = feed.flatMap(ContentReference.init(content:))
                 let feedElapsed = Date().timeIntervalSince(feedStartedAt)
                 if shouldLogLoadAllStep(found: feed != nil, elapsed: feedElapsed) {
                     logReaderLoad(
@@ -298,35 +342,35 @@ public struct ReaderContentLoader {
                 }
             }
 
-            var candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
+            var references = [contentFileReference, bookmarkReference, historyReference, feedReference].compactMap { $0 }
             for provider in additionalContentProviders {
                 try Task.checkCancellation()
                 let providerStartedAt = Date()
                 let providerReferences = try await provider.load(url)
-                let providerContents = try await resolveContentReferences(providerReferences)
-                candidates.append(contentsOf: providerContents)
+                let providerCandidates = try await resolveContentCandidates(providerReferences)
+                references.append(contentsOf: providerCandidates.map { $0.reference })
                 let providerElapsed = Date().timeIntervalSince(providerStartedAt)
-                if shouldLogLoadAllStep(found: !providerContents.isEmpty, elapsed: providerElapsed) {
+                if shouldLogLoadAllStep(found: !providerCandidates.isEmpty, elapsed: providerElapsed) {
                     logReaderLoad(
-                        "stage=contentLoader.loadAll.additionalProvider id=\(provider.id) elapsed=\(String(format: "%.3fs", providerElapsed)) found=\(!providerContents.isEmpty) count=\(providerContents.count) url=\(url.absoluteString)"
+                        "stage=contentLoader.loadAll.additionalProvider id=\(provider.id) elapsed=\(String(format: "%.3fs", providerElapsed)) found=\(!providerCandidates.isEmpty) count=\(providerCandidates.count) url=\(url.absoluteString)"
                     )
                 }
             }
 
             let totalElapsed = Date().timeIntervalSince(startedAt)
-            if shouldLogLoadAllSummary(candidateCount: candidates.count, elapsed: totalElapsed) {
+            if shouldLogLoadAllSummary(candidateCount: references.count, elapsed: totalElapsed) {
                 logReaderLoad(
-                    "stage=contentLoader.loadAll.finish url=\(url.absoluteString) candidates=\(candidates.map { String(describing: type(of: $0)) }.joined(separator: ",")) count=\(candidates.count) elapsed=\(String(format: "%.3fs", totalElapsed))"
+                    "stage=contentLoader.loadAll.finish url=\(url.absoluteString) candidates=\(references.map { String(describing: $0.contentType) }.joined(separator: ",")) count=\(references.count) elapsed=\(String(format: "%.3fs", totalElapsed))"
                 )
             }
-            return candidates.compactMap(ContentReference.init(content:))
+            return references
         }
 
         inFlightLoadAllTasks[taskKey] = task
         defer { inFlightLoadAllTasks[taskKey] = nil }
         let references = try await task.value
         recentLoadAllCache[taskKey] = (timestamp: Date(), references: references)
-        return try await resolveContentReferences(references)
+        return references
     }
 
     @RealmBackgroundActor
@@ -425,14 +469,24 @@ public struct ReaderContentLoader {
             return nil
         }
 
-        let candidates = try await loadAll(url: url)
-        let match = candidates.max(by: {
-            ($0 as? HistoryRecord)?.lastVisitedAt ?? $0.createdAt < ($1 as? HistoryRecord)?.lastVisitedAt ?? $1.createdAt
-        })
-        guard let match else {
-            return nil
+        let references = try await loadAllReferences(url: url)
+        return try await selectStoredContentReference(references)
+    }
+
+    /// Shares final selection with tests that suspend real reference resolution.
+    /// Keep the discovered reference through later opens and actor delivery.
+    @RealmBackgroundActor
+    internal static func selectStoredContentReference(
+        _ references: [ContentReference],
+        resolveReference: @RealmBackgroundActor (ContentReference) async throws -> (any ReaderContentProtocol)? = {
+            try await $0.resolveOnBackgroundActor()
         }
-        return ReaderContentLoader.ContentReference(content: match)
+    ) async throws -> ContentReference? {
+        let candidates = try await resolveContentCandidates(references, resolveReference: resolveReference)
+        let match = candidates.max(by: {
+            ($0.content as? HistoryRecord)?.lastVisitedAt ?? $0.content.createdAt < ($1.content as? HistoryRecord)?.lastVisitedAt ?? $1.content.createdAt
+        })
+        return match?.reference
     }
 
     @MainActor
