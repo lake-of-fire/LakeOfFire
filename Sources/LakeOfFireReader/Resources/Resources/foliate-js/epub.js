@@ -884,20 +884,25 @@ export class Loader {
                 effectiveMediaType = MIME.HTML
                 doc = new DOMParser().parseFromString(replacedStr, effectiveMediaType)
             }
-            // replace hrefs in XML processing instructions
-            // this is mainly for SVGs that use xml-stylesheet
+            // Resolve stylesheet instructions in the XML prolog (not editor
+            // metadata or instructions after the document element).
             if ([MIME.XHTML, MIME.SVG].includes(effectiveMediaType)) {
-                let child = doc.firstChild
-                while (child instanceof ProcessingInstruction) {
-                    if (child.data) {
-                        const replacedData = await replaceSeries(child.data,
-                            /(?:^|\s*)(href\s*=\s*['"])([^'"]*)(['"])/i,
-                            (_, p1, p2, p3) => this.loadHref(p2, href, parents)
-                            .then(p2 => `${p1}${p2}${p3}`))
-                        child.replaceWith(doc.createProcessingInstruction(
-                            child.target, replacedData))
-                    }
-                    child = child.nextSibling
+                for (let child = doc.firstChild;
+                    child && child !== doc.documentElement;
+                    child = child.nextSibling) {
+                    if (!(child instanceof ProcessingInstruction)
+                        || child.target !== 'xml-stylesheet' || !child.data) continue
+                    // Updating data keeps the sibling chain intact. Comments and
+                    // doctypes may precede or separate stylesheet instructions.
+                    // Consume every quoted pseudoattribute so href-like text in
+                    // another name or value cannot be mistaken for a resource.
+                    child.data = await replaceSeries(child.data,
+                        /(^|[\t\n\r ]+)([^\s=]+)([\t\n\r ]*=[\t\n\r ]*)(["'])([\s\S]*?)\4/g,
+                        (match, prefix, name, assignment, quote, value) => {
+                            if (name !== 'href') return match
+                            return this.loadHref(value, href, parents)
+                                .then(url => `${prefix}${name}${assignment}${quote}${url}${quote}`)
+                        })
                 }
             }
             // replace hrefs (excluding anchors)
