@@ -612,3 +612,61 @@ test('a receipt consumed while current is not rolled back by later body retireme
         assert.equal(f.messages.length, 2, 'Consumption admitted before later retirement is retained')
     }
 })
+
+test('review only child echo getter reentry preserves newer ordinary mouse state', () => {
+    const f = fixture()
+    const post = f.makeChildProducer()
+    const source = 'content-document.blank'
+    post(f.event(), source, 1)
+    assert.equal(f.messages.length, 1)
+    let key = f.child.__manabiLastBlankPointerPostKey
+    let echo = f.context.__manabiPendingContentDocumentBlankNavigationEcho
+    let armed = false, echoReads = 0, recursed = false
+    Object.defineProperty(f.child, '__manabiLastBlankPointerPostKey', {
+        configurable: true,
+        get() { return key },
+        set(value) {
+            key = value
+            if (value === source + ':touchend:2:10:20') {
+                armed = true
+                echoReads = 0
+            }
+        },
+    })
+    Object.defineProperty(f.context, '__manabiPendingContentDocumentBlankNavigationEcho', {
+        configurable: true,
+        get() {
+            // After the outer key setter, sourceIsCurrent checks its receipt
+            // before and after physical-document admission. The following
+            // explicit receipt check is the last callout before local writes.
+            if (armed && !recursed && ++echoReads === 3) {
+                recursed = true
+                post({ ...f.event(), screenX: 90, screenY: 91 }, source, 3)
+            }
+            return echo
+        },
+        set(value) { echo = value },
+    })
+    post({ ...f.event(), type: 'touchend' }, source, 2)
+    const afterOuter = {
+        times: f.messages.map(message => message.touchstartAtMs),
+        key,
+        echo: echo == null ? null : JSON.parse(JSON.stringify(echo)),
+    }
+    post(f.event(), source, 4)
+    assert.deepEqual({
+        recursed,
+        echoReads,
+        afterOuter,
+        afterMatchingMouse: f.messages.map(message => message.touchstartAtMs),
+    }, {
+        recursed: true,
+        echoReads: 3,
+        afterOuter: {
+            times: [1, 3],
+            key: source + ':mousedown:3:90:91',
+            echo: null,
+        },
+        afterMatchingMouse: [1, 3, 4],
+    })
+})
