@@ -1187,9 +1187,41 @@ const recordPageTurnNavigationIntent = (direction, _source, _details = {}) => {
     }
 };
 
-const requestLookupCloseForPageMotion = (reason, _details = {}) => {
+const createReaderTouchstartPoster = (view, isCurrent) => {
+    const postingDocument = view.document;
+    const ownsPostingDocument = () => view.document === postingDocument
+        && isCurrent() && view.document === postingDocument;
+    const mayPost = (sourceIsCurrent = () => true) => ownsPostingDocument()
+        && sourceIsCurrent() && ownsPostingDocument();
+    const post = (payload, sourceIsCurrent, commit = () => {}) => {
+        try {
+            if (!mayPost(sourceIsCurrent)) return false;
+            // A missing origin may acquire Core's canonical stamp later, but
+            // this callback must never sample a replacement Document's clock.
+            const documentStartedAtMs = readerDocumentStartedAtMs(view);
+            const handler = view.webkit?.messageHandlers?.touchstartCallbackHandler;
+            const postMessage = handler?.postMessage;
+            const packet = { ...payload, documentStartedAtMs };
+            // Native bridge getters and payload accessors may synchronously
+            // retire this owner. Admit only after all those callouts finish.
+            if (typeof postMessage !== 'function' || !mayPost(sourceIsCurrent)) return false;
+            commit();
+            if (!mayPost(sourceIsCurrent)) return false;
+            // A throwing bridge does not roll back committed local admission.
+            // A true return means the call did not throw, not a native receipt.
+            Reflect.apply(postMessage, handler, [packet]);
+            return true;
+        } catch (_error) {
+            return false;
+        }
+    };
+    post.isCurrent = mayPost;
+    return post;
+};
+
+const requestLookupCloseForPageMotion = (reason, _details = {}, postTouchstartCallback) => {
     try {
-        window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+        postTouchstartCallback({
             touchedEntryWithElementId: null,
             wasAlreadySelected: false,
             lookupCloseReason: reason,
@@ -5014,6 +5046,7 @@ const navSpinnerMaximumMs = 1200;
 
 class Reader {
     #closed = false;
+    #postTouchstartCallback;
     #pageLifetime = {};
     #successfulBookReadPublication = null;
     #pendingMarkReadAdvance = null;
@@ -5858,6 +5891,9 @@ class Reader {
         }
     }
     constructor() {
+        this.#postTouchstartCallback = createReaderTouchstartPoster(
+            window, () => !this.#closed && globalThis.reader === this
+        );
         applyStoredChromeInsets('reader.constructor');
         this.#listen(window, 'pagehide', () => {
             this.#pageLifetime = {};
@@ -9146,50 +9182,62 @@ class Reader {
 
         let pendingMainDocumentBlankNavigationTouch = null;
         let lastPostedMainDocumentBlankTouchTap = null;
-        const shouldSuppressMainDocumentSyntheticMouseBlankTap = (event) => {
+        const shouldSuppressMainDocumentSyntheticMouseBlankTap = (event, lastTouchTap) => {
             if (event.type !== 'mousedown') {
-                return false;
+                return { suppress: false, consumeTouchTap: false };
             }
             if (event.sourceCapabilities?.firesTouchEvents === true) {
-                return true;
+                return { suppress: true, consumeTouchTap: false };
             }
-            const lastTouchTap = lastPostedMainDocumentBlankTouchTap;
-            lastPostedMainDocumentBlankTouchTap = null;
-            if (!lastTouchTap) {
-                return false;
-            }
-            const point = manabiEventScreenPoint(event);
+            const point = lastTouchTap ? manabiEventScreenPoint(event) : null;
+            if (!lastTouchTap) return { suppress: false, consumeTouchTap: false };
             if (!point || point.x === null || point.y === null) {
-                return true;
+                return { suppress: true, consumeTouchTap: true };
             }
             const dx = point.x - lastTouchTap.x;
             const dy = point.y - lastTouchTap.y;
-            return (dx * dx + dy * dy) <= (manabiSyntheticTouchMouseDistanceThreshold * manabiSyntheticTouchMouseDistanceThreshold);
+            return {
+                suppress: (dx * dx + dy * dy) <= (manabiSyntheticTouchMouseDistanceThreshold * manabiSyntheticTouchMouseDistanceThreshold),
+                consumeTouchTap: true,
+            };
         };
         const postNoElementNavigationTouchStart = (event, source, touchstartAtMs = Date.now()) => {
-            if (shouldSuppressMainDocumentSyntheticMouseBlankTap(event)) {
+            if (!this.#postTouchstartCallback.isCurrent()) return;
+            const touchTapForMouseSuppression = lastPostedMainDocumentBlankTouchTap;
+            const mouseSuppression = shouldSuppressMainDocumentSyntheticMouseBlankTap(event, touchTapForMouseSuppression);
+            // Capability/point getters may retire this owner. A mouse that
+            // proceeds waits for final post admission before consuming a tap.
+            if (!this.#postTouchstartCallback.isCurrent()) return;
+            if (mouseSuppression.suppress) {
+                if (mouseSuppression.consumeTouchTap
+                    && lastPostedMainDocumentBlankTouchTap === touchTapForMouseSuppression) {
+                    lastPostedMainDocumentBlankTouchTap = null;
+                }
                 return;
             }
             const ebookNavigationHidden =
                 globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
                 || document?.body?.__manabiNavigationHiddenDueToScroll === true
                 || document?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
-            if (event.type === 'touchend') {
-                const point = manabiEventScreenPoint(event);
-                lastPostedMainDocumentBlankTouchTap = point && point.x !== null && point.y !== null
-                    ? {
-                        x: point.x,
-                        y: point.y,
-                    }
-                    : null;
-            }
-            window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+            const eventType = event.type;
+            const point = eventType === 'touchend' ? manabiEventScreenPoint(event) : null;
+            const blankTouchTap = point && point.x !== null && point.y !== null
+                ? { x: point.x, y: point.y }
+                : null;
+            this.#postTouchstartCallback({
                 touchedEntryWithElementId: null,
                 wasAlreadySelected: false,
                 touchstartAtMs,
-                touchstartEventType: event.type,
+                touchstartEventType: eventType,
                 ebookNavigationHidden,
                 source,
+            }, undefined, () => {
+                if (eventType === 'touchend') {
+                    lastPostedMainDocumentBlankTouchTap = blankTouchTap;
+                } else if (mouseSuppression.consumeTouchTap
+                    && lastPostedMainDocumentBlankTouchTap === touchTapForMouseSuppression) {
+                    lastPostedMainDocumentBlankTouchTap = null;
+                }
             });
         };
         const clearPendingMainDocumentBlankNavigationTouch = () => {
@@ -10650,7 +10698,7 @@ class Reader {
         this.#invalidateVisiblePageSegmentSnapshot('renderer.goTo');
         requestLookupCloseForPageMotion('renderer.goTo', {
             willLoadNewIndex: true,
-        });
+        }, this.#postTouchstartCallback);
         this.setLoadingIndicator(true, 'renderer.goTo');
     }
     async #onDidDisplay({}) {
@@ -10900,30 +10948,38 @@ class Reader {
             const clearPendingBlankPointerTap = () => {
                 pendingBlankPointerTap = null;
             };
-            const shouldSuppressSyntheticMouseBlankTap = (event) => {
-                const lastTouchTap = lastPostedBlankTouchTap || lastBlankTouchEnd;
-                if (event.type !== 'mousedown') {
+            const sourceIsCurrent = () => {
+                try {
+                    return this.#isDocumentScopeCurrent(scope)
+                        && doc.defaultView?.document === doc
+                        && this.#isDocumentScopeCurrent(scope);
+                } catch (_error) {
                     return false;
                 }
-                if (event.sourceCapabilities?.firesTouchEvents === true) {
-                    lastPostedBlankTouchTap = null;
-                    lastBlankTouchEnd = null;
-                    return true;
+            };
+            const ownsBlankPointerSource = () =>
+                this.#postTouchstartCallback.isCurrent(sourceIsCurrent);
+            const shouldSuppressSyntheticMouseBlankTap = (event, lastTouchTap) => {
+                if (event.type !== 'mousedown') {
+                    return { suppress: false, consumeTouchTap: false };
+                }
+                const firesTouchEvents = event.sourceCapabilities?.firesTouchEvents === true;
+                const point = !firesTouchEvents && lastTouchTap ? blankPointerPoint(event) : null;
+                if (firesTouchEvents) {
+                    return { suppress: true, consumeTouchTap: true };
                 }
                 if (!lastTouchTap) {
-                    return false;
+                    return { suppress: false, consumeTouchTap: false };
                 }
-                lastPostedBlankTouchTap = null;
-                lastBlankTouchEnd = null;
-                const point = blankPointerPoint(event);
                 if (!point || point.x === null || point.y === null) {
-                    return true;
+                    return { suppress: true, consumeTouchTap: true };
                 }
                 const dx = point.x - lastTouchTap.x;
                 const dy = point.y - lastTouchTap.y;
-                const shouldSuppress =
-                    (dx * dx + dy * dy) <= (manabiSyntheticTouchMouseDistanceThreshold * manabiSyntheticTouchMouseDistanceThreshold);
-                return shouldSuppress;
+                return {
+                    suppress: (dx * dx + dy * dy) <= (manabiSyntheticTouchMouseDistanceThreshold * manabiSyntheticTouchMouseDistanceThreshold),
+                    consumeTouchTap: true,
+                };
             };
             const blankPointerMovedPastTapThreshold = (event, pending) => {
                 const point = touchPointForBlankPointer(event);
@@ -10946,6 +11002,7 @@ class Reader {
                 return null;
             };
             const postContentDocumentBlankPointerTap = (event, source, touchstartAtMs = Date.now()) => {
+                if (!ownsBlankPointerSource()) return;
                 const target = event.target;
                 const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
                 const excludedTarget = targetElement?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], m-m, m-s, m-t, .m-m, .m-sentence, ruby, rt');
@@ -10954,10 +11011,32 @@ class Reader {
                 if (segmentTarget) {
                     return;
                 }
-                if (shouldSuppressSyntheticMouseBlankTap(event)) {
+                const postedTouchTapForMouseSuppression = lastPostedBlankTouchTap;
+                const touchEndForMouseSuppression = lastBlankTouchEnd;
+                const mouseSuppression = shouldSuppressSyntheticMouseBlankTap(
+                    event, postedTouchTapForMouseSuppression || touchEndForMouseSuppression
+                );
+                const consumeMouseSuppression = () => {
+                    if (!mouseSuppression.consumeTouchTap) return;
+                    // A point/key getter may admit a newer current touch. Only
+                    // consume the receipts used to make this mouse's decision.
+                    if (lastPostedBlankTouchTap === postedTouchTapForMouseSuppression) {
+                        lastPostedBlankTouchTap = null;
+                    }
+                    if (lastBlankTouchEnd === touchEndForMouseSuppression) {
+                        lastBlankTouchEnd = null;
+                    }
+                };
+                // Finish capability and point callouts before consuming an
+                // admitted tap. A rejected callback keeps both fallback flags.
+                if (!ownsBlankPointerSource()) return;
+                if (mouseSuppression.suppress) {
+                    consumeMouseSuppression();
                     return;
                 }
                 if (excludedTarget) {
+                    // Preserve the inherited excluded-target mouse policy.
+                    consumeMouseSuppression();
                     return;
                 }
                 const eventKey = [
@@ -10967,33 +11046,38 @@ class Reader {
                     Math.round(point?.screenX ?? point?.clientX ?? -1),
                     Math.round(point?.screenY ?? point?.clientY ?? -1),
                 ].join(':');
-                if (doc.__manabiLastBlankPointerPostKey !== eventKey) {
+                if (doc.__manabiLastBlankPointerPostKey === eventKey) return;
+                const ebookNavigationHidden =
+                    globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
+                    || doc?.body?.__manabiNavigationHiddenDueToScroll === true
+                    || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
+                const eventType = event.type;
+                const blankX = point?.screenX ?? point?.clientX ?? null;
+                const blankY = point?.screenY ?? point?.clientY ?? null;
+                const blankTouchTap = eventType === 'touchend' && blankX !== null && blankY !== null
+                    ? { x: blankX, y: blankY }
+                    : null;
+                const pendingEcho = blankTouchTap
+                    ? { ...blankTouchTap, source, touchstartAtMs }
+                    : null;
+                this.#postTouchstartCallback({
+                    touchedEntryWithElementId: null,
+                    wasAlreadySelected: false,
+                    touchstartAtMs,
+                    touchstartEventType: eventType,
+                    ebookNavigationHidden,
+                    source,
+                }, sourceIsCurrent, () => {
                     doc.__manabiLastBlankPointerPostKey = eventKey;
-                    const ebookNavigationHidden =
-                        globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
-                        || doc?.body?.__manabiNavigationHiddenDueToScroll === true
-                        || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
-                    if (event.type === 'touchend' && point) {
-                        const blankX = point.screenX ?? point.clientX ?? null;
-                        const blankY = point.screenY ?? point.clientY ?? null;
-                        lastPostedBlankTouchTap = blankX !== null && blankY !== null
-                            ? { x: blankX, y: blankY }
-                            : null;
-                        globalThis.__manabiPendingContentDocumentBlankNavigationEcho = lastPostedBlankTouchTap
-                            ? { ...lastPostedBlankTouchTap, source, touchstartAtMs }
-                            : null;
-                    } else {
-                        globalThis.__manabiPendingContentDocumentBlankNavigationEcho = null;
+                    // The key may be an accessor which retires this scope or
+                    // installs a successor echo before control returns.
+                    if (!ownsBlankPointerSource()) return;
+                    consumeMouseSuppression();
+                    if (eventType === 'touchend' && point) {
+                        lastPostedBlankTouchTap = blankTouchTap;
                     }
-                    window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
-                        touchedEntryWithElementId: null,
-                        wasAlreadySelected: false,
-                        touchstartAtMs,
-                        touchstartEventType: event.type,
-                        ebookNavigationHidden,
-                        source,
-                    });
-                }
+                    globalThis.__manabiPendingContentDocumentBlankNavigationEcho = pendingEcho;
+                });
             };
             const handleBlankPointerTouchStart = (event) => {
                 const target = event.target;
@@ -11428,7 +11512,7 @@ class Reader {
             fraction: safeRound(fraction),
             currentLocation: location?.current ?? null,
             totalLocation: location?.total ?? null,
-        });
+        }, this.#postTouchstartCallback);
         this.#publishCurrentContentPage(
             `relocate:${reason ?? 'unknown'}`
         );
