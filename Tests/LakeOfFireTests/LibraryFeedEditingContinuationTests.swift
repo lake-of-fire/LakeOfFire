@@ -361,88 +361,106 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
     }
 
     func testDeinitJoinsFailingActiveAttemptBeforeRetryingCapturedDraft() async throws {
-        let realm = try await Realm(configuration: configuration(), actor: MainActor.shared)
+        let fixtureConfiguration = configuration()
+        let realm = try await Realm(configuration: fixtureConfiguration, actor: MainActor.shared)
         let feed = try installFeed(in: realm)
         let started = expectation(description: "Active writer registered before retirement")
         let retired = expectation(description: "Retirement batch durably settled")
         let gate = LibraryFeedContinuationGate()
-        let retirementFinished = LibraryFeedContinuationGate()
+        let retirementQueued = XCTestExpectation(description: "Captured-draft retirement queued its actual write")
         var model: LibraryFeedFormSectionsViewModel? = LibraryFeedFormSectionsViewModel(
             feed: feed, observesRealm: false, observesFormInput: true,
             beforeFieldWrite: {
                 await gate.wait(onFirstWait: { started.fulfill() })
                 throw InjectedFailure.admission
             },
-            retirementDidFinish: {
-                retired.fulfill()
-                Task { await retirementFinished.release() }
-            }
+            retirementDidFinish: { retired.fulfill() }
         )
         weak var retiringModel = model
         model?.feedTitle = "Retired captured draft"
-        await fulfillment(of: [started], timeout: 5)
-        let finish = try XCTUnwrap(model).finishEditing()
-        addTeardownBlock {
+        let finish = model?.finishEditing()
+        addTeardownBlock { [weak retiringModel] in
             await gate.release()
-            _ = await finish.result
-            await retirementFinished.wait()
+            _ = await finish?.result
+            if let retainedModel = retiringModel {
+                _ = await retainedModel.finishEditing().result
+                await retainedModel.stopObserving()
+            }
+            try await self.settleSubmittedRetirement(retirementQueued, configuration: fixtureConfiguration)
         }
-        model = nil
-        XCTAssertNil(retiringModel, "An in-flight command must not retain its editor")
-        await gate.release()
-        do { try await finish.value; XCTFail("Injected first attempt succeeded") }
-        catch InjectedFailure.admission {}
-        await fulfillment(of: [retired], timeout: 5)
-        realm.refresh()
-        XCTAssertEqual(feed.title, "Retired captured draft")
-        XCTAssertFalse(realm.objects(BigSyncPendingMutation.self).isEmpty)
+        try await RealmWriteSubmissionObservation.$willSubmit.withValue({
+            // This same-actor turn follows actual SDK ticket submission.
+            Task { @RealmBackgroundActor in retirementQueued.fulfill() }
+        }) {
+            defer { model = nil }
+            let joinedFinish = try XCTUnwrap(finish)
+            await fulfillment(of: [started], timeout: 5)
+            model = nil
+            XCTAssertNil(retiringModel, "An in-flight command must not retain its editor")
+            await gate.release()
+            do { try await joinedFinish.value; XCTFail("Injected first attempt succeeded") }
+            catch InjectedFailure.admission {}
+            await fulfillment(of: [retired], timeout: 5)
+            realm.refresh()
+            XCTAssertEqual(feed.title, "Retired captured draft")
+            XCTAssertFalse(realm.objects(BigSyncPendingMutation.self).isEmpty)
+        }
     }
 
     func testRetirementFlushesTrailingURLInputBeforeOlderPasteCompletes() async throws {
-        let realm = try await Realm(configuration: configuration(), actor: MainActor.shared)
+        let fixtureConfiguration = configuration()
+        let realm = try await Realm(configuration: fixtureConfiguration, actor: MainActor.shared)
         let feed = try installFeed(in: realm)
         try realm.write { feed.lastFetchedETag = "\"original\"" }
         let started = expectation(description: "Older paste registered before retirement")
         let retired = expectation(description: "Trailing URL command durably settled")
         let gate = LibraryFeedContinuationGate()
-        let retirementFinished = LibraryFeedContinuationGate()
+        let retirementQueued = XCTestExpectation(description: "Trailing-URL retirement queued its actual write")
         var model: LibraryFeedFormSectionsViewModel? = LibraryFeedFormSectionsViewModel(
             feed: feed, observesRealm: false, observesFormInput: true,
             beforeFieldWrite: { await gate.wait(onFirstWait: { started.fulfill() }) },
-            retirementDidFinish: {
-                retired.fulfill()
-                Task { await retirementFinished.release() }
-            }
+            retirementDidFinish: { retired.fulfill() }
         )
-        let paste = try XCTUnwrap(model).pasteRSSURL(strings: ["https://older.example/feed.xml"])
-        addTeardownBlock {
-            paste.cancel()
+        weak var retiringModel = model
+        let paste = model?.pasteRSSURL(strings: ["https://older.example/feed.xml"])
+        addTeardownBlock { [weak retiringModel] in
+            paste?.cancel()
             await gate.release()
-            _ = try? await paste.value
-            await retirementFinished.wait()
+            _ = await paste?.result
+            if let retainedModel = retiringModel {
+                _ = await retainedModel.finishEditing().result
+                await retainedModel.stopObserving()
+            }
+            try await self.settleSubmittedRetirement(retirementQueued, configuration: fixtureConfiguration)
         }
         await fulfillment(of: [started], timeout: 5)
         model?.feedURL = "https://latest.example/feed.xml"
-        weak var retiringModel = model
-        model = nil
-        XCTAssertNil(retiringModel)
-        // No finish call or trailing timer emission is needed to capture this
-        // last input. Retirement can settle it while the obsolete paste waits.
-        await fulfillment(of: [retired], timeout: 5)
-        realm.refresh()
-        XCTAssertEqual(feed.rssUrl.absoluteString, "https://latest.example/feed.xml")
-        XCTAssertNil(feed.lastFetchedETag)
-        let generations = Dictionary(uniqueKeysWithValues:
-            realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }
-        )
-        XCTAssertFalse(generations.isEmpty)
-        await gate.release()
-        try await paste.value
-        realm.refresh()
-        XCTAssertEqual(feed.rssUrl.absoluteString, "https://latest.example/feed.xml")
-        XCTAssertEqual(Dictionary(uniqueKeysWithValues:
-            realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }
-        ), generations)
+        try await RealmWriteSubmissionObservation.$willSubmit.withValue({
+            // Foreground tasks were created before this retirement-only marker.
+            Task { @RealmBackgroundActor in retirementQueued.fulfill() }
+        }) {
+            defer { model = nil }
+            let joinedPaste = try XCTUnwrap(paste)
+            model = nil
+            XCTAssertNil(retiringModel)
+            // No finish call or trailing timer emission is needed to capture this
+            // last input. Retirement can settle it while the obsolete paste waits.
+            await fulfillment(of: [retired], timeout: 5)
+            realm.refresh()
+            XCTAssertEqual(feed.rssUrl.absoluteString, "https://latest.example/feed.xml")
+            XCTAssertNil(feed.lastFetchedETag)
+            let generations = Dictionary(uniqueKeysWithValues:
+                realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }
+            )
+            XCTAssertFalse(generations.isEmpty)
+            await gate.release()
+            try await joinedPaste.value
+            realm.refresh()
+            XCTAssertEqual(feed.rssUrl.absoluteString, "https://latest.example/feed.xml")
+            XCTAssertEqual(Dictionary(uniqueKeysWithValues:
+                realm.objects(BigSyncPendingMutation.self).map { ($0.recordName, $0.generation) }
+            ), generations)
+        }
     }
 
     func testURLFieldChangeInvalidatesValidatorsButNoOpPreservesThem() async throws {
@@ -1186,19 +1204,45 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
                     return true
                 }
             }
-            addTeardownBlock { editor.cancel(); await gate.release(); _ = await editor.result }
+            let editorSettled = XCTestExpectation(description: "Queued editor settles before the foreign writer is released")
+            let settlement = Task { @MainActor in
+                let result = await editor.result
+                editorSettled.fulfill()
+                return result
+            }
+            addTeardownBlock {
+                editor.cancel()
+                await gate.release()
+                _ = await foreign.result
+                _ = await settlement.value
+            }
             await fulfillment(of: [queued], timeout: 5)
             if cancelQueuedEditor {
                 editor.cancel()
-                do {
-                    try await editor.value
-                    XCTFail("A cancelled queued attempt must report cancellation")
-                } catch is CancellationError {
-                    // The foreign owner still has its transaction until release.
+                let promptSettlement = await XCTWaiter.fulfillment(of: [editorSettled], timeout: 5)
+                XCTAssertEqual(promptSettlement, .completed, "Queued cancellation must settle while the foreign gate remains held")
+                if promptSettlement == .completed {
+                    switch await settlement.value {
+                    case .success:
+                        XCTFail("A cancelled queued attempt must report cancellation")
+                    case .failure(let error):
+                        XCTAssertTrue(error is CancellationError)
+                    }
                 }
+                let foreignState = try await { @RealmBackgroundActor in
+                    let writerRealm = try await RealmBackgroundActor.shared.cachedRealm(for: config)
+                    let original = try XCTUnwrap(writerRealm.object(ofType: Feed.self, forPrimaryKey: feedID))
+                    return (writerRealm.isInWriteTransaction, original.title, original.markdownDescription)
+                }()
+                XCTAssertTrue(foreignState.0, "Cancellation must leave the foreign owner active before release")
+                XCTAssertEqual(foreignState.1, "Original", "The queued editor must not mutate the held transaction")
+                XCTAssertEqual(foreignState.2, "Foreign description")
             }
+            // Always break the foreign-writer dependency before final joins,
+            // including when the bounded prompt-cancellation assertion failed.
             await gate.release()
             try await foreign.value
+            _ = await settlement.value
             if !cancelQueuedEditor { try await editor.value }
             try await model.finishEditing().value
             realm.refresh()
@@ -1227,14 +1271,14 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         addTeardownBlock { await model.stopObserving() }
         model.isEditing = true
         model.feedTitle = "Retained human draft"
-        await fulfillment(of: [started], timeout: 5)
-        try realm.write { category.opmlURL = URL(string: "https://example.com/managed.opml") }
         let deferred = model.finishEditing()
         addTeardownBlock {
             await gate.release()
             _ = await deferred.result
             _ = await model.finishEditing().result
         }
+        await fulfillment(of: [started], timeout: 5)
+        try realm.write { category.opmlURL = URL(string: "https://example.com/managed.opml") }
         await gate.release()
         try await deferred.value
         realm.refresh()
@@ -1258,7 +1302,8 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
     }
 
     func testDeinitRetriesAnActiveDeferredCommandOnceWhenItsOriginalCategoryBecomesEditable() async throws {
-        let realm = try await Realm(configuration: configuration(), actor: MainActor.shared)
+        let fixtureConfiguration = configuration()
+        let realm = try await Realm(configuration: fixtureConfiguration, actor: MainActor.shared)
         let feed = try installFeed(in: realm)
         let category = try XCTUnwrap(feed.getCategory())
         let started = expectation(description: "Active human command held before policy admission")
@@ -1266,44 +1311,75 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         let retired = expectation(description: "Deferred retirement retry completed")
         let gate = LibraryFeedContinuationGate()
         let retryGate = LibraryFeedContinuationGate()
-        let retirementFinished = LibraryFeedContinuationGate()
+        let retirementQueued = XCTestExpectation(description: "Retirement's actual owned-write ticket was submitted")
         var model: LibraryFeedFormSectionsViewModel? = LibraryFeedFormSectionsViewModel(
             feed: feed, observesRealm: false, observesFormInput: true,
             beforeFieldWrite: { await gate.wait(onFirstWait: { started.fulfill() }) },
-            retirementDidFinish: {
-                retired.fulfill()
-                Task { await retirementFinished.release() }
-            }
+            retirementDidFinish: { retired.fulfill() }
         )
         weak var retiringModel = model
         model?.feedTitle = "Retired deferred draft"
-        await fulfillment(of: [started], timeout: 5)
-        try realm.write { category.opmlURL = URL(string: "https://example.com/managed.opml") }
-        let finish = try XCTUnwrap(model).finishEditing()
-        addTeardownBlock {
+        let finish = model?.finishEditing()
+        addTeardownBlock { [weak retiringModel] in
             await gate.release()
             await retryGate.release()
-            _ = await finish.result
-            await retirementFinished.wait()
+            _ = await finish?.result
+            // A retention regression must not strand the real active command
+            // or presentation resources while the weak-reference assertion fails.
+            if let retainedModel = retiringModel {
+                _ = await retainedModel.finishEditing().result
+                await retainedModel.stopObserving()
+            }
+            try await self.settleSubmittedRetirement(retirementQueued, configuration: fixtureConfiguration)
         }
-        RealmStorageAdmissionObservation.$didOpenRealm.withValue({
+        try await RealmStorageAdmissionObservation.$didOpenRealm.withValue({
             await retryGate.wait(onFirstWait: { retryStarted.fulfill() })
         }) {
-            model = nil
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({
+                // Foreground tasks predate this marker. Its same-actor witness
+                // follows the retirement caller's actual SDK begin submission.
+                Task { @RealmBackgroundActor in retirementQueued.fulfill() }
+            }) {
+                defer { model = nil }
+                let joinedFinish = try XCTUnwrap(finish)
+                await fulfillment(of: [started], timeout: 5)
+                try realm.write { category.opmlURL = URL(string: "https://example.com/managed.opml") }
+                model = nil
+                XCTAssertNil(retiringModel)
+                await gate.release()
+                try await joinedFinish.value
+                await fulfillment(of: [retryStarted], timeout: 5)
+                realm.refresh()
+                XCTAssertEqual(feed.title, "Original")
+                XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+                try realm.write { category.opmlURL = nil }
+                await retryGate.release()
+                await fulfillment(of: [retired], timeout: 5)
+                realm.refresh()
+                XCTAssertEqual(feed.title, "Retired deferred draft")
+                XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 1)
+            }
         }
-        XCTAssertNil(retiringModel)
-        await gate.release()
-        try await finish.value
-        await fulfillment(of: [retryStarted], timeout: 5)
-        realm.refresh()
-        XCTAssertEqual(feed.title, "Original")
-        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
-        try realm.write { category.opmlURL = nil }
-        await retryGate.release()
-        await fulfillment(of: [retired], timeout: 5)
-        realm.refresh()
-        XCTAssertEqual(feed.title, "Retired deferred draft")
-        XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 1)
+    }
+
+    private func settleSubmittedRetirement(
+        _ queued: XCTestExpectation, configuration: Realm.Configuration
+    ) async throws {
+        let submitted = await XCTWaiter.fulfillment(of: [queued], timeout: 5)
+        XCTAssertEqual(submitted, .completed, "Missing retirement submission must fail boundedly")
+        guard submitted == .completed else {
+            // No witnessed ticket means no claim to drain a private future task.
+            return
+        }
+        // The same-actor witness runs only after the actual begin ticket was
+        // queued. This read-only transaction settles that prior admitted write,
+        // independently of the retirement callback being asserted by the test.
+        try await { @RealmBackgroundActor in
+            let writerRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await writerRealm.asyncWritePreservingOwnership {
+                _ = writerRealm.objects(Feed.self).count
+            }
+        }()
     }
 
     private func fileConfiguration(at url: URL) -> Realm.Configuration {
