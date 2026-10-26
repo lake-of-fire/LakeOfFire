@@ -499,6 +499,37 @@ public class BookLibraryViewModel: ObservableObject {
         }
     }
 
+    /// Convert the parser's publication graph to detached Reader values.
+    /// Standalone OPDS entry documents have the same Reader presentation as
+    /// feed entries; navigation/empty feeds remain the loader's responsibility.
+    static func mappedPublications(in document: ParseData, relativeTo url: URL) -> [Publication]? {
+        let publications: [LakeOfFireOPDS.Publication]
+        if let entries = document.feed?.publications, !entries.isEmpty {
+            publications = entries
+        } else if let standalone = document.publication {
+            publications = [standalone]
+        } else {
+            return nil
+        }
+        return publications.map { publication in
+            let coverLink = publication.images.first(withRel: .cover)
+                ?? publication.images.first(withRel: .opdsImage)
+                ?? publication.images.first(withRel: .opdsImageThumbnail)
+            // Keep the existing generic acquisition priority. Purchase, loan,
+            // sample and subscription URLs are not full-book downloads.
+            let acquisitionLink = publication.links.first(withRel: .opdsAcquisition)
+                ?? publication.links.first(withRel: .opdsAcquisitionOpenAccess)
+            return Publication(
+                title: publication.metadata.title,
+                author: publication.metadata.authors.map(\.name).joined(separator: ", "),
+                publicationDate: publication.metadata.published,
+                coverURL: coverLink?.url(relativeTo: url),
+                downloadURL: acquisitionLink?.url(relativeTo: url),
+                summary: publication.metadata.description ?? publication.metadata.subtitle
+            )
+        }
+    }
+
     static func fetchPublications(from url: URL) async -> ([Publication], String?) {
         await withCheckedContinuation { continuation in
             OPDSParser.parseURL(url: url) { parseData, error in
@@ -508,20 +539,7 @@ public class BookLibraryViewModel: ObservableObject {
                         return
                     }
 
-                    if let publications = parseData?.feed?.publications, !publications.isEmpty {
-                        let mapped = publications.map { publication -> Publication in
-                            let coverLink = publication.images.first(withRel: .cover) ?? publication.images.first(withRel: .opdsImage) ?? publication.images.first(withRel: .opdsImageThumbnail)
-                            let acquisitionLink = publication.links.first(withRel: .opdsAcquisition)
-                            let summary = publication.metadata.description ?? publication.metadata.subtitle
-                            return Publication(
-                                title: publication.metadata.title,
-                                author: publication.metadata.authors.map(\.name).joined(separator: ", "),
-                                publicationDate: publication.metadata.published,
-                                coverURL: coverLink?.url(relativeTo: url.domainURL),
-                                downloadURL: acquisitionLink?.url(relativeTo: url.domainURL),
-                                summary: summary
-                            )
-                        }
+                    if let parseData, let mapped = mappedPublications(in: parseData, relativeTo: url) {
                         continuation.resume(returning: (mapped, nil))
                         return
                     }
