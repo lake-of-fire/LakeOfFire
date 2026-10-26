@@ -69,6 +69,8 @@ const childStart = source.indexOf('            let pendingBlankPointerTap =')
 const childProducer = declaration('postContentDocumentBlankPointerTap')
 const childBlock = source.slice(childStart, source.indexOf(childProducer.slice(0, -1), childStart)
     + childProducer.length)
+const childGestureBlock = source.slice(childStart,
+    source.indexOf('\n        }\n        const restorePositionTrackingCleanup', childStart))
 const documentLikeStart = source.indexOf('const isDocumentLike =')
 const documentLike = source.slice(documentLikeStart,
     source.indexOf('const visibleRangeForNavigationHUDDocument =', documentLikeStart))
@@ -78,10 +80,13 @@ const posterAssignment = source.slice(posterStart, source.indexOf(';', posterSta
 
 const thresholdStart = source.indexOf('const manabiSyntheticTouchMouseDistanceThreshold =')
 const syntheticThreshold = source.slice(thresholdStart, source.indexOf(';', thresholdStart) + 1)
+const moveThresholdStart = source.indexOf('const manabiBlankNavigationMoveThreshold =')
+const moveThreshold = source.slice(moveThresholdStart, source.indexOf(';', moveThresholdStart) + 1)
 
 const wrapper = `
 ${declaration('manabiEventScreenPoint')}
 ${syntheticThreshold}
+${moveThreshold}
 ${declaration('createReaderTouchstartPoster')}
 ${declaration('requestLookupCloseForPageMotion')}
 ${documentLike}
@@ -97,6 +102,7 @@ class ReaderProducerFixture {
     ${method('beginDocumentScope')}
     ${method('isDocumentScopeCurrent')}
     ${method('releaseDocumentScope')}
+    ${method('listenInDocumentScope')}
     ${method('onGoTo')}
     #clearVisiblePageReadChrome() { this.beforePageMotionPost?.(); }
     #invalidateVisiblePageSegmentSnapshot() {}
@@ -109,6 +115,11 @@ class ReaderProducerFixture {
     childProducer(doc) {
         const scope = this.#beginDocumentScope({doc});
         ${childBlock}
+        return postContentDocumentBlankPointerTap;
+    }
+    childGestures(doc) {
+        const scope = this.#beginDocumentScope({doc});
+        ${childGestureBlock}
         return postContentDocumentBlankPointerTap;
     }
     retireChild(doc) { this.#releaseDocumentScope(doc); }
@@ -163,6 +174,457 @@ function fixture({ origin = 101 } = {}) {
         event,
     }
 }
+
+// Supply only the event target surface. Registration, gesture state, movement
+// checks, admission and suppression all execute the shipping child code above.
+function gestureFixture() {
+    const f = fixture()
+    const listeners = new Map()
+    f.child.addEventListener = (type, listener, options) => {
+        const registrations = listeners.get(type) ?? []
+        registrations.push({ listener, options })
+        listeners.set(type, registrations)
+    }
+    f.child.removeEventListener = (type, listener) => {
+        listeners.set(type, (listeners.get(type) ?? []).filter(entry => entry.listener !== listener))
+    }
+    let now = 1000
+    f.context.Date = { now: () => ++now }
+    const wrapperProducer = f.reader.childGestures(f.child)
+    const targets = Object.fromEntries(['blank', 'excluded', 'segment'].map(kind => {
+        const target = { nodeType: 1, closest(selector) {
+            if (kind === 'segment' && (selector === 'm-m, .m-m' || selector.startsWith('a, button,'))) return target
+            if (kind === 'excluded' && selector.startsWith('a, button,')) return target
+            return null
+        } }
+        return [kind, target]
+    }))
+    const event = (type, { target = 'blank', x = 10, y = 20, client = false } = {}) => {
+        const point = client ? { clientX: x, clientY: y } : { screenX: x, screenY: y }
+        return { type, target: targets[target], composedPath: () => [],
+            ...(type.startsWith('touch') ? { changedTouches: [point] } : point) }
+    }
+    const dispatch = event => {
+        for (const { listener } of [...(listeners.get(event.type) ?? [])]) listener(event)
+    }
+    return { ...f, listeners, wrapperProducer, gestureEvent: event, dispatch,
+        send(type, options) { dispatch(event(type, options)) },
+    }
+}
+
+for (const target of ['excluded', 'segment']) {
+    test(`shipping child wrappers suppress one retargeted blank mouse after ${target} touchend`, () => {
+        const f = gestureFixture()
+        f.send('touchstart', { target: target === 'segment' ? 'segment' : 'blank' })
+        f.send('touchend', { target })
+        assert.equal(f.messages.length, 0, 'the original target does not publish a blank touch')
+        f.send('mousedown')
+        assert.equal(f.messages.length, 0, 'the matching retargeted mouse is suppressed')
+        f.send('mousedown')
+        assert.equal(f.messages.length, 1, 'suppression is consumed exactly once')
+        assert.equal(f.messages[0].source, 'content-document.blank.mouse')
+        assert.equal(f.messages[0].touchstartEventType, 'mousedown')
+        assert.equal(f.messages[0].documentStartedAtMs, 101)
+    })
+}
+
+test('shipping child registrations retain a normal blank touch and suppress its mouse once', () => {
+    const f = gestureFixture()
+    assert.deepEqual([...f.listeners.keys()], ['touchstart', 'touchmove', 'touchend', 'touchcancel', 'mousedown'])
+    for (const registrations of f.listeners.values()) {
+        assert.equal(registrations.length, 1)
+        assert.equal(registrations[0].options.capture, true)
+        assert.equal(registrations[0].options.passive, true)
+    }
+    f.send('touchstart')
+    f.send('touchend')
+    assert.equal(f.messages.length, 1)
+    assert.equal(f.messages[0].source, 'content-document.blank')
+    assert.equal(f.messages[0].touchstartEventType, 'touchend')
+    f.send('mousedown')
+    assert.equal(f.messages.length, 1)
+    f.send('mousedown')
+    assert.equal(f.messages.length, 2)
+    assert.equal(f.messages[1].touchstartEventType, 'mousedown')
+})
+
+for (const ending of ['move', 'end-moved', 'cancel', 'excluded-start']) {
+    test(`shipping child ${ending} gesture does not suppress a subsequent blank mouse`, () => {
+        const f = gestureFixture()
+        f.send('touchstart', { target: ending === 'excluded-start' ? 'excluded' : 'blank' })
+        if (ending === 'move') f.send('touchmove', { x: 100, y: 100 })
+        f.send(ending === 'cancel' ? 'touchcancel' : 'touchend', {
+            target: 'excluded', ...(ending === 'end-moved' ? { x: 100, y: 100 } : {}),
+        })
+        assert.equal(f.messages.length, 0)
+        f.send('mousedown')
+        assert.equal(f.messages.length, 1, 'an uncompleted tap cannot arm synthetic-mouse suppression')
+    })
+}
+
+test('shipping child fallback admits a far mouse and consumes the prior touch receipt', () => {
+    const f = gestureFixture()
+    f.send('touchstart')
+    f.send('touchend', { target: 'excluded' })
+    f.send('mousedown', { x: 100, y: 100 })
+    assert.equal(f.messages.length, 1, 'a distant mouse is valid input')
+    f.send('mousedown')
+    assert.equal(f.messages.length, 2, 'the admitted far mouse consumed the old fallback')
+})
+
+for (const target of ['excluded', 'segment']) {
+    test(`shipping child latest ${target} gesture supersedes an older posted blank-touch receipt`, () => {
+        const f = gestureFixture()
+        f.send('touchstart')
+        f.send('touchend')
+        assert.equal(f.messages.length, 1)
+        const laterPoint = { x: 90, y: 91 }
+        f.send('touchstart', { ...laterPoint, target: target === 'segment' ? 'segment' : 'blank' })
+        f.send('touchend', { ...laterPoint, target })
+        assert.equal(f.messages.length, 1, 'the later target does not publish a blank touch')
+        f.send('mousedown', laterPoint)
+        assert.equal(f.messages.length, 1, 'the latest physical gesture supplies the matching suppression point')
+        f.send('mousedown', laterPoint)
+        assert.equal(f.messages.length, 2, 'the latest receipt is consumed exactly once')
+    })
+}
+
+test('shipping child wrappers use client coordinates when touch screen coordinates are absent', () => {
+    const f = gestureFixture()
+    f.send('touchstart', { client: true })
+    f.send('touchend', { target: 'excluded', client: true })
+    f.send('mousedown', { client: true })
+    assert.equal(f.messages.length, 0, 'client-coordinate fallback suppresses the matching mouse')
+    f.send('mousedown', { client: true })
+    assert.equal(f.messages.length, 1)
+})
+
+for (const replacement of ['parent', 'child', 'reader']) {
+    test(`shipping child rejected wrapper touchend cannot arm suppression across ${replacement} replacement`, () => {
+        const f = gestureFixture()
+        f.send('touchstart')
+        if (replacement === 'parent') f.window.document = makeDocument()
+        else if (replacement === 'child') f.childWindow.document = makeDocument()
+        else f.context.reader = {}
+        f.send('touchend', { target: 'excluded' })
+        assert.equal(f.messages.length, 0)
+        f.window.document = f.document
+        f.childWindow.document = f.child
+        f.context.reader = f.reader
+        f.send('mousedown')
+        assert.equal(f.messages.length, 1, 'the rejected wrapper did not create a future suppression receipt')
+    })
+}
+
+for (const replacement of ['parent', 'child', 'scope', 'reader', 'closed']) {
+    test(`shipping child touchend coordinate reentry rejects ${replacement} retirement before fallback commit`, () => {
+        const f = gestureFixture()
+        f.send('touchstart')
+        const end = f.gestureEvent('touchend', { target: 'excluded' })
+        const retainedMouse = f.listeners.get('mousedown')[0].listener
+        let retired = false
+        Object.defineProperty(end.changedTouches[0], 'screenX', {
+            get() {
+                retired = true
+                if (replacement === 'parent') f.window.document = makeDocument()
+                else if (replacement === 'child') f.childWindow.document = makeDocument()
+                else if (replacement === 'scope') f.reader.retireChild(f.child)
+                else if (replacement === 'reader') f.context.reader = {}
+                else f.reader.closeOwner()
+                return 10
+            },
+        })
+        f.dispatch(end)
+        assert.equal(retired, true, 'the shipping coordinate helper crossed the getter')
+        assert.equal(f.messages.length, 0)
+        if (replacement === 'closed' || replacement === 'scope') {
+            // Retained listeners must still fail closed after removal/closure.
+            retainedMouse(f.gestureEvent('mousedown'))
+            assert.equal(f.messages.length, 0)
+        } else {
+            f.window.document = f.document
+            f.childWindow.document = f.child
+            f.context.reader = f.reader
+            f.send('mousedown')
+            assert.equal(f.messages.length, 1, 'retirement during point extraction did not poison a later valid mouse')
+        }
+    })
+}
+
+test('shipping child scope cleanup removes registrations and retained old wrappers cannot affect the successor', () => {
+    const f = gestureFixture()
+    f.send('touchstart')
+    const oldEnd = f.listeners.get('touchend')[0].listener
+    f.reader.retireChild(f.child)
+    for (const registrations of f.listeners.values()) assert.equal(registrations.length, 0)
+    f.reader.childGestures(f.child)
+    oldEnd(f.gestureEvent('touchend', { target: 'excluded' }))
+    f.send('mousedown')
+    assert.equal(f.messages.length, 1, 'a retired registration cannot suppress successor input')
+})
+
+for (const replacement of ['parent', 'child', 'reader']) {
+    test(`shipping child rejected start neither seeds nor erases a gesture across ${replacement} replacement`, () => {
+        for (const hasPending of [false, true]) {
+            const f = gestureFixture()
+            if (hasPending) f.send('touchstart')
+            if (replacement === 'parent') f.window.document = makeDocument()
+            else if (replacement === 'child') f.childWindow.document = makeDocument()
+            else f.context.reader = {}
+            f.send('touchstart', { x: 90, y: 91 })
+            f.window.document = f.document
+            f.childWindow.document = f.child
+            f.context.reader = f.reader
+            f.send('touchend', { target: 'segment', ...(hasPending ? {} : { x: 90, y: 91 }) })
+            f.send('mousedown', hasPending ? {} : { x: 90, y: 91 })
+            assert.equal(f.messages.length, hasPending ? 0 : 1,
+                `a rejected start ${hasPending ? 'preserved the original' : 'did not seed a'} pending gesture`)
+        }
+    })
+    for (const type of ['touchmove', 'touchcancel']) {
+        test(`shipping child rejected ${type} preserves the pending gesture across ${replacement} replacement`, () => {
+            const f = gestureFixture()
+            f.send('touchstart')
+            if (replacement === 'parent') f.window.document = makeDocument()
+            else if (replacement === 'child') f.childWindow.document = makeDocument()
+            else f.context.reader = {}
+            f.send(type, { x: 100, y: 100 })
+            f.window.document = f.document
+            f.childWindow.document = f.child
+            f.context.reader = f.reader
+            f.send('touchend', { target: 'segment' })
+            f.send('mousedown')
+            assert.equal(f.messages.length, 0, 'the rejected callback did not erase the owned pending gesture')
+            f.send('mousedown')
+            assert.equal(f.messages.length, 1)
+        })
+    }
+}
+
+for (const boundary of ['target', 'coordinate', 'throw']) {
+    test(`shipping child nested start survives an older start ${boundary} getter`, () => {
+        const f = gestureFixture()
+        const olderStart = f.gestureEvent('touchstart')
+        let recursed = false
+        const replace = () => {
+            if (!recursed) {
+                recursed = true
+                f.send('touchstart', { x: 90, y: 91 })
+            }
+        }
+        if (boundary === 'target') {
+            olderStart.target = { nodeType: 1, closest() { replace(); return null } }
+        } else {
+            Object.defineProperty(olderStart.changedTouches[0], 'screenX', {
+                get() { replace(); if (boundary === 'throw') throw new Error('aborted older start'); return 10 },
+            })
+        }
+        f.dispatch(olderStart)
+        assert.equal(recursed, true)
+        f.send('touchend', { target: 'segment', x: 90, y: 91 })
+        f.send('mousedown', { x: 90, y: 91 })
+        assert.equal(f.messages.length, 0, 'the outer start did not replace or erase the nested pending gesture')
+        f.send('mousedown', { x: 90, y: 91 })
+        assert.equal(f.messages.length, 1)
+    })
+}
+
+for (const boundary of ['coordinate', 'target', 'handler']) {
+    test(`shipping child newer completed touch survives an older touchend ${boundary} getter`, () => {
+        const f = gestureFixture()
+        f.send('touchstart')
+        const olderEnd = f.gestureEvent('touchend')
+        let recursed = false
+        const replace = () => {
+            if (!recursed) {
+                recursed = true
+                f.send('touchstart', { x: 90, y: 91 })
+                f.send('touchend', { target: 'segment', x: 90, y: 91 })
+            }
+        }
+        if (boundary === 'coordinate') {
+            Object.defineProperty(olderEnd.changedTouches[0], 'screenX', {
+                get() { replace(); return 10 },
+            })
+        } else if (boundary === 'target') {
+            olderEnd.target = { nodeType: 1, closest() { replace(); return null } }
+        } else {
+            const handlers = f.window.webkit.messageHandlers
+            const handler = handlers.touchstartCallbackHandler
+            Object.defineProperty(handlers, 'touchstartCallbackHandler', {
+                get() { replace(); return handler },
+            })
+        }
+        f.dispatch(olderEnd)
+        assert.equal(recursed, true)
+        assert.equal(f.messages.length, 0, 'the superseded blank touch did not publish')
+        f.send('mousedown', { x: 90, y: 91 })
+        assert.equal(f.messages.length, 0, 'the newer completed touch retained its fallback receipt')
+        f.send('mousedown', { x: 90, y: 91 })
+        assert.equal(f.messages.length, 1)
+    })
+}
+
+for (const type of ['touchmove', 'touchcancel']) {
+    test(`shipping child nested start survives an older ${type} getter`, () => {
+        const f = gestureFixture()
+        f.send('touchstart')
+        const event = f.gestureEvent(type, { x: 100, y: 100 })
+        let recursed = false
+        const replace = () => {
+            if (!recursed) {
+                recursed = true
+                f.send('touchstart', { x: 90, y: 91 })
+            }
+        }
+        if (type === 'touchmove') {
+            Object.defineProperty(event.changedTouches[0], 'screenX', {
+                get() { replace(); return 100 },
+            })
+        } else {
+            Object.defineProperty(event, 'type', { get() { replace(); return type } })
+        }
+        // Invoke the actual retained callback directly so the dispatcher's type
+        // lookup does not trigger the cancellation getter before entry.
+        f.listeners.get(type)[0].listener(event)
+        assert.equal(recursed, true)
+        f.send('touchend', { target: 'segment', x: 90, y: 91 })
+        f.send('mousedown', { x: 90, y: 91 })
+        assert.equal(f.messages.length, 0, 'the older callback did not clear the nested pending gesture')
+        f.send('mousedown', { x: 90, y: 91 })
+        assert.equal(f.messages.length, 1)
+    })
+}
+
+for (const type of ['touchstart', 'touchmove', 'touchend']) {
+    test(`shipping child malformed ${type} aborts only its pending gesture`, () => {
+        const f = gestureFixture()
+        if (type !== 'touchstart') f.send('touchstart')
+        const event = f.gestureEvent(type)
+        Object.defineProperty(event.changedTouches[0], 'screenX', {
+            get() { throw new Error('malformed touch coordinates') },
+        })
+        assert.doesNotThrow(() => f.dispatch(event))
+        f.send('touchend', { target: 'segment' })
+        f.send('mousedown')
+        assert.equal(f.messages.length, 1, 'an aborted gesture did not leave a usable pending tap')
+    })
+}
+
+for (const type of ['touchstart', 'touchmove', 'touchend']) {
+    test(`shipping child nested start during ${type} entry ownership check retains its pending gesture`, () => {
+        const f = gestureFixture()
+        f.send('touchstart')
+        let recursed = false
+        Object.defineProperty(f.context, 'reader', {
+            configurable: true,
+            get() {
+                if (!recursed) {
+                    recursed = true
+                    f.send('touchstart', { x: 90, y: 91 })
+                }
+                return f.reader
+            },
+        })
+        f.send(type, type === 'touchmove' ? { x: 100, y: 100 } : {})
+        assert.equal(recursed, true, 'the actual ownership check crossed the Reader getter')
+        assert.equal(f.messages.length, 0, 'the older event did not complete the nested gesture')
+        f.send('touchend', { target: 'segment', x: 90, y: 91 })
+        f.send('mousedown', { x: 90, y: 91 })
+        assert.equal(f.messages.length, 0, 'the nested gesture retained its pending coordinates')
+        f.send('mousedown', { x: 90, y: 91 })
+        assert.equal(f.messages.length, 1)
+    })
+}
+
+test('shipping child commit ownership getter cannot overwrite a newer completed gesture receipt', () => {
+    const f = gestureFixture()
+    let key
+    let armed = false
+    let recursed = false
+    Object.defineProperty(f.child, '__manabiLastBlankPointerPostKey', {
+        configurable: true,
+        get() { return key },
+        set(value) {
+            key = value
+            if (!recursed) armed = true
+        },
+    })
+    Object.defineProperty(f.context, 'reader', {
+        configurable: true,
+        get() {
+            if (armed && !recursed) {
+                armed = false
+                recursed = true
+                f.send('touchstart', { x: 90, y: 91 })
+                f.send('touchend', { x: 90, y: 91 })
+            }
+            return f.reader
+        },
+    })
+    f.send('touchstart')
+    f.send('touchend')
+    assert.equal(recursed, true, 'the commit key setter armed the subsequent ownership getter')
+    assert.equal(f.messages.length, 1, 'only the newer completed touch published')
+    assert.equal(f.messages[0].touchstartEventType, 'touchend')
+    const echo = f.context.__manabiPendingContentDocumentBlankNavigationEcho
+    assert.equal(echo?.x, 90, 'the old commit preserved the newer navigation echo')
+    assert.equal(echo?.y, 91)
+    f.send('mousedown', { x: 90, y: 91 })
+    assert.equal(f.messages.length, 1, 'the old commit preserved the newer matching suppression receipt')
+    f.send('mousedown', { x: 90, y: 91 })
+    assert.equal(f.messages.length, 2)
+})
+
+test('child producer final private gesture check preserves a newer wrapper touch after ownership getter reentry', () => {
+    const f = gestureFixture()
+    let key
+    let commitStage = false
+    let armReader = false
+    let recursed = false
+    let outerGestureCurrent = true
+    Object.defineProperty(f.child, '__manabiLastBlankPointerPostKey', {
+        configurable: true,
+        get() { return key },
+        set(value) {
+            key = value
+            if (!recursed) commitStage = true
+        },
+    })
+    Object.defineProperty(f.context, 'reader', {
+        configurable: true,
+        get() {
+            if (armReader && !recursed) {
+                armReader = false
+                recursed = true
+                f.send('touchstart', { x: 90, y: 91 })
+                f.send('touchend', { x: 90, y: 91 })
+                outerGestureCurrent = false
+            }
+            return f.reader
+        },
+    })
+    // Use the producer's internal gesture-admission seam to arm the final
+    // posting-owner getter after the key setter, without counting getter reads.
+    // The newer touch itself uses the actual registered shipping wrappers.
+    const isOuterGestureCurrent = () => {
+        if (commitStage && !recursed) armReader = true
+        return outerGestureCurrent
+    }
+    f.wrapperProducer(f.gestureEvent('touchend'), 'content-document.blank', 777,
+        isOuterGestureCurrent)
+    assert.equal(recursed, true, 'the final posting-owner getter completed the newer wrapper touch')
+    assert.equal(outerGestureCurrent, false)
+    assert.equal(f.messages.length, 1, 'only the newer wrapper touch published')
+    assert.equal(f.messages[0].touchstartEventType, 'touchend')
+    const echo = f.context.__manabiPendingContentDocumentBlankNavigationEcho
+    assert.equal(echo?.x, 90, 'the superseded producer did not overwrite the newer echo')
+    assert.equal(echo?.y, 91)
+    f.send('mousedown', { x: 90, y: 91 })
+    assert.equal(f.messages.length, 1, 'the newer matching suppression receipt survived the old commit')
+    f.send('mousedown', { x: 90, y: 91 })
+    assert.equal(f.messages.length, 2, 'the newer receipt was consumed exactly once')
+})
 
 for (const producer of ['motion', 'main', 'child']) {
     test(`${producer} touch producer sends the canonical posting-document stamp after origin drift`, () => {
