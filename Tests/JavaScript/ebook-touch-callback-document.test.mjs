@@ -612,3 +612,221 @@ test('a receipt consumed while current is not rolled back by later body retireme
         assert.equal(f.messages.length, 2, 'Consumption admitted before later retirement is retained')
     }
 })
+
+test('child echo getter reentry cannot publish old bookkeeping at any post-key observation', () => {
+    const exercise = (reenterAt = Infinity) => {
+        const f = fixture()
+        const post = f.makeChildProducer()
+        const source = 'content-document.blank'
+        post(f.event(), source, 1)
+        let key = f.child.__manabiLastBlankPointerPostKey
+        let echo = f.context.__manabiPendingContentDocumentBlankNavigationEcho
+        let armed = false, reads = 0, recursed = false
+        Object.defineProperty(f.child, '__manabiLastBlankPointerPostKey', {
+            configurable: true,
+            get() { return key },
+            set(value) {
+                key = value
+                if (value === source + ':touchend:2:10:20') {
+                    armed = true
+                    reads = 0
+                }
+            },
+        })
+        Object.defineProperty(f.context, '__manabiPendingContentDocumentBlankNavigationEcho', {
+            configurable: true,
+            get() {
+                if (armed && !recursed && ++reads === reenterAt) {
+                    recursed = true
+                    post({ ...f.event(), screenX: 90, screenY: 91 }, source, 3)
+                }
+                return echo
+            },
+            set(value) { echo = value },
+        })
+        post({ ...f.event(), type: 'touchend' }, source, 2)
+        armed = false
+        const afterOuter = {
+            times: f.messages.map(message => message.touchstartAtMs), key,
+            echo: echo == null ? null : JSON.parse(JSON.stringify(echo)),
+        }
+        post(f.event(), source, 4)
+        return { reads, recursed, afterOuter,
+            afterMatchingMouse: f.messages.map(message => message.touchstartAtMs) }
+    }
+    // Discover all reachable observations on the real production path. A
+    // refactor may change their number; it must not silently disarm the probe.
+    const observations = exercise().reads
+    assert.ok(observations > 0, 'The post-key echo observation must be exercised')
+    for (let read = 1; read <= observations; read++) {
+        const result = exercise(read)
+        assert.equal(result.recursed, true, `Echo observation ${read} was not reached`)
+        assert.deepEqual(result.afterOuter, {
+            times: [1, 3],
+            key: 'content-document.blank:mousedown:3:90:91',
+            echo: null,
+        }, `Echo observation ${read} replaced newer input`)
+        assert.deepEqual(result.afterMatchingMouse, [1, 3, 4],
+            `Echo observation ${read} left an obsolete suppression receipt`)
+    }
+})
+
+for (const producer of ['main', 'child']) {
+    test(`${producer} Reader getter reentry rejects old publication at every final ownership observation`, () => {
+        const exercise = (reenterAt = Infinity) => {
+            const f = fixture()
+            const post = producer === 'main' ? f.main : f.makeChildProducer()
+            const source = producer === 'main' ? 'main-document.blank' : 'content-document.blank'
+            post(f.event(), source, 1)
+            const handler = f.window.webkit.messageHandlers.touchstartCallbackHandler
+            const originalPost = handler.postMessage
+            let installed = false, recursed = false, reads = 0
+            Object.defineProperty(handler, 'postMessage', {
+                configurable: true,
+                get() {
+                    if (!installed) {
+                        installed = true
+                        Object.defineProperty(f.context, 'reader', {
+                            configurable: true,
+                            get() {
+                                if (!recursed && ++reads === reenterAt) {
+                                    recursed = true
+                                    post({ ...f.event(), screenX: 90, screenY: 91 }, source, 3)
+                                }
+                                return f.reader
+                            },
+                        })
+                    }
+                    return originalPost
+                },
+            })
+            post({ ...f.event(), type: 'touchend' }, source, 2)
+            const result = { installed, recursed, reads,
+                times: f.messages.map(message => message.touchstartAtMs) }
+            if (producer === 'child') {
+                result.key = f.child.__manabiLastBlankPointerPostKey
+                result.echo = f.context.__manabiPendingContentDocumentBlankNavigationEcho
+            }
+            return result
+        }
+        const observations = exercise().reads
+        assert.ok(observations > 0, 'The post-bridge Reader observation must be exercised')
+        for (let read = 1; read <= observations; read++) {
+            const result = exercise(read)
+            assert.equal(result.installed, true)
+            assert.equal(result.recursed, true, `Reader observation ${read} was not reached`)
+            assert.deepEqual(result.times, [1, 3], `Reader observation ${read} emitted obsolete input`)
+            if (producer === 'child') {
+                assert.equal(result.key, 'content-document.blank:mousedown:3:90:91')
+                assert.equal(result.echo, null)
+            }
+        }
+    })
+}
+
+for (const replacement of ['reader', 'scope']) {
+    test(`child final echo getter ${replacement} retirement precedes private bookkeeping admission`, () => {
+        const exercise = (retireAt = Infinity) => {
+            const f = fixture()
+            const post = f.makeChildProducer()
+            const source = 'content-document.blank'
+            post(f.event(), source, 1)
+            let key = f.child.__manabiLastBlankPointerPostKey
+            let echo = f.context.__manabiPendingContentDocumentBlankNavigationEcho
+            let armed = false, reads = 0, retired = false
+            Object.defineProperty(f.child, '__manabiLastBlankPointerPostKey', {
+                configurable: true,
+                get() { return key },
+                set(value) {
+                    key = value
+                    if (value === source + ':touchend:2:10:20') {
+                        armed = true
+                        reads = 0
+                    }
+                },
+            })
+            let echoAtRetirement
+            Object.defineProperty(f.context, '__manabiPendingContentDocumentBlankNavigationEcho', {
+                configurable: true,
+                get() {
+                    if (armed && !retired && ++reads === retireAt) {
+                        retired = true
+                        echoAtRetirement = echo
+                        if (replacement === 'reader') f.context.reader = {}
+                        else f.reader.retireChild(f.child)
+                    }
+                    return echo
+                },
+                set(value) { echo = value },
+            })
+            post({ ...f.event(), type: 'touchend' }, source, 2)
+            return { reads, retired, times: f.messages.map(message => message.touchstartAtMs),
+                echo, echoAtRetirement }
+        }
+        const observations = exercise().reads
+        assert.ok(observations > 0)
+        for (let read = 1; read <= observations; read++) {
+            const result = exercise(read)
+            assert.equal(result.retired, true, `Echo observation ${read} was not reached`)
+            assert.deepEqual(result.times, [1])
+            // Earlier admitted writes are not rolled back. No write after the
+            // getter's retirement may replace the echo present at that point.
+            assert.equal(result.echo, result.echoAtRetirement,
+                `Echo observation ${read} wrote after ${replacement} retirement`)
+        }
+    })
+}
+
+for (const producer of ['main', 'child', 'motion']) {
+    test(`${producer} final Reader getter closure stops native publication`, () => {
+        const exercise = (closeAt = Infinity) => {
+            const f = fixture()
+            const post = producer === 'motion' ? () => f.invoke.motion()
+                : producer === 'main' ? f.main : f.makeChildProducer()
+            const source = producer === 'main' ? 'main-document.blank' : 'content-document.blank'
+            post(f.event(), source, 1)
+            const handler = f.window.webkit.messageHandlers.touchstartCallbackHandler
+            const originalPost = handler.postMessage
+            let installed = false, closed = false, reads = 0
+            let keyAtClose, echoAtClose
+            Object.defineProperty(handler, 'postMessage', {
+                configurable: true,
+                get() {
+                    if (!installed) {
+                        installed = true
+                        Object.defineProperty(f.context, 'reader', {
+                            configurable: true,
+                            get() {
+                                if (!closed && ++reads === closeAt) {
+                                    closed = true
+                                    keyAtClose = f.child.__manabiLastBlankPointerPostKey
+                                    echoAtClose = f.context.__manabiPendingContentDocumentBlankNavigationEcho
+                                    f.reader.closeOwner()
+                                }
+                                return f.reader
+                            },
+                        })
+                    }
+                    return originalPost
+                },
+            })
+            post({ ...f.event(), type: 'touchend' }, source, 2)
+            return { reads, installed, closed, messages: f.messages.length,
+                key: f.child.__manabiLastBlankPointerPostKey,
+                echo: f.context.__manabiPendingContentDocumentBlankNavigationEcho,
+                keyAtClose, echoAtClose }
+        }
+        const observations = exercise().reads
+        assert.ok(observations > 0)
+        for (let read = 1; read <= observations; read++) {
+            const result = exercise(read)
+            assert.equal(result.installed, true)
+            assert.equal(result.closed, true, `Reader observation ${read} was not reached`)
+            assert.equal(result.messages, 1, `Reader observation ${read} emitted after closure`)
+            if (producer === 'child') {
+                assert.equal(result.key, result.keyAtClose)
+                assert.equal(result.echo, result.echoAtClose)
+            }
+        }
+    })
+}
