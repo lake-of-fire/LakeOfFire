@@ -520,3 +520,39 @@ test('explicit touch-capability mouse retains main suppression but consumes chil
         assert.equal(f.messages.length, producer === 'child' ? 3 : 2)
     }
 })
+
+// Append unchanged to ebook-touch-callback-document.test.mjs so these cases
+// execute its actual shipping producers, scope guards and point helpers.
+for (const producer of ['main', 'child']) {
+    test(`${producer} coordinate reentry preserves a newer current touch suppression receipt`, () => {
+        const f = fixture()
+        const post = producer === 'main' ? f.main : f.makeChildProducer()
+        const source = producer === 'main' ? 'main-document.blank' : 'content-document.blank'
+        post({ ...f.event(), type: 'touchend' }, source, 1)
+        assert.equal(f.messages.length, 1)
+
+        let recursed = false
+        const olderMouse = f.event()
+        Object.defineProperty(olderMouse, 'screenX', {
+            get() {
+                if (!recursed) {
+                    recursed = true
+                    post({ ...f.event(), type: 'touchend', screenX: 90, screenY: 91 }, source, 3)
+                }
+                return 10
+            },
+        })
+        post(olderMouse, source, 2)
+        assert.equal(recursed, true, 'the actual coordinate helper invoked the getter')
+        assert.equal(f.messages.length, 2, 'both touches posted and the older matching mouse was suppressed')
+        assert.deepEqual(f.messages.map(message => message.touchstartAtMs), [1, 3])
+
+        post({ ...f.event(), screenX: 90, screenY: 91 }, source, 4)
+        assert.equal(f.messages.length, 2, 'the newer touch must retain suppression for its own matching mouse')
+        post({ ...f.event(), screenX: 90, screenY: 91 }, source, 5)
+        assert.equal(f.messages.length, 3, 'the newer matching mouse suppression is consumed exactly once')
+        assert.equal(f.messages[2].touchstartAtMs, 5)
+        assert.equal(f.messages[2].touchstartEventType, 'mousedown')
+        assert.equal(f.messages[2].documentStartedAtMs, 101)
+    })
+}
