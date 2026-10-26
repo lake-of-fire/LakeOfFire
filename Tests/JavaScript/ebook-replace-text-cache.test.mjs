@@ -34,7 +34,12 @@ const startedWithinTurn = promise => Promise.race([
 ])
 const original = '<html><body>original</body></html>'
 const processed = '<html><body><m-s><m-m>processed</m-m></m-s></body></html>'
-const sourceURL = 'ebook://book/source.epub'
+const sourceURL = 'ebook://ebook/load/zip-book.epub'
+const nativeSource = {
+    kind: 'native',
+    url: 'ebook://ebook/load/native-book.epub',
+    packageSessionID: '9c5645c3-a20c-4c5c-9702-465dbe494b82',
+}
 const response = ({ html = processed, authoritative = true, read = async () => html, ok = true } = {}) => ({
     ok,
     status: ok ? 200 : 503,
@@ -50,6 +55,7 @@ const makeViewer = (transport = async () => response()) => {
         manabiTimelineMark: () => {},
         manabiTimelineMeasure: () => {},
         console: { error: (...args) => errors.push(args) },
+        reader: { view: { ownerDocument: { defaultView: { top: { location: { href: sourceURL } } } } } },
         fetch: (url, options) => {
             requests.push({ url, options })
             return transport(options, requests.length)
@@ -58,7 +64,7 @@ const makeViewer = (transport = async () => response()) => {
     }
     context.window = context
     const { makeReplaceText } = vm.runInNewContext(`${declarations}\n({ makeReplaceText })`, context, { filename: viewerURL.pathname, timeout: 1000 })
-    const makeOwner = (options = {}) => makeReplaceText({ nativeSource: { url: sourceURL, packageSessionID: 'session' }, ...options })
+    const makeOwner = (options = {}) => makeReplaceText({ isCurrent: () => true, ...options })
     return { context, requests, published, errors, makeOwner }
 }
 const replace = owner => owner('chapter.xhtml', original, 'application/xhtml+xml')
@@ -67,9 +73,9 @@ const assertIdle = viewer => {
     assert.equal(viewer.context.__manabiInflightLiveReplaceTextCount ?? 0, 0)
 }
 
-test('current loader coalesces and retains authoritative processed-section GET results', async () => {
+test('replaceText helper contract coalesces and retains explicit native-source GET results', async () => {
     const viewer = makeViewer()
-    const owner = viewer.makeOwner()
+    const owner = viewer.makeOwner({ nativeSource })
     const [first, follower] = await Promise.all([replace(owner), replace(owner)])
     assert.equal(first, follower)
     assert.match(first, /data-mnb-source-href="chapter.xhtml"/)
@@ -79,15 +85,40 @@ test('current loader coalesces and retains authoritative processed-section GET r
     assert.equal(viewer.requests.length, 1)
     const { url, options } = viewer.requests[0]
     assert.equal(new URL(url).pathname, '/processed-section')
-    assert.equal(new URL(url).searchParams.get('sourceURL'), sourceURL)
+    assert.equal(new URL(url).searchParams.get('sourceURL'), nativeSource.url)
     assert.equal(new URL(url).searchParams.get('subpath'), 'chapter.xhtml')
-    assert.equal(new URL(url).searchParams.get('packageSessionID'), 'session')
+    assert.equal(new URL(url).searchParams.get('packageSessionID'), nativeSource.packageSessionID)
     assert.equal(options.method, 'GET')
-    assert.equal(options.headers['X-Ebook-Package-Session'], 'session')
-    assert.equal(options.headers['X-Content-Location'], sourceURL)
+    assert.equal(options.headers['X-Ebook-Package-Session'], nativeSource.packageSessionID)
+    assert.equal(options.headers['X-Content-Location'], nativeSource.url)
     assert.equal(options.body, undefined)
     assert.equal(options.signal.aborted, false)
     assert.deepEqual(viewer.published, ['chapter.xhtml', 'chapter.xhtml', 'chapter.xhtml'])
+    assertIdle(viewer)
+})
+
+test('ZIP-configured replaceText captures the reader source and retains authoritative results without a package session', async () => {
+    const viewer = makeViewer()
+    const owner = viewer.makeOwner()
+    const first = await replace(owner)
+    assert.match(first, /<m-m>processed<\/m-m>/)
+    assert.match(first, /data-mnb-source-href="chapter.xhtml"/)
+    assert.match(first, /data-mnb-has-sentences="true"/)
+    assert.match(first, /data-mnb-has-segments="true"/)
+    assert.equal(await replace(owner), first)
+    assert.equal(viewer.requests.length, 1)
+    const { url, options } = viewer.requests[0]
+    const query = new URL(url).searchParams
+    assert.equal(new URL(url).pathname, '/processed-section')
+    assert.equal(query.get('sourceURL'), sourceURL)
+    assert.equal(query.get('subpath'), 'chapter.xhtml')
+    assert.equal(query.has('packageSessionID'), false)
+    assert.equal(Object.hasOwn(options.headers, 'X-Ebook-Package-Session'), false)
+    assert.equal(options.headers['X-Content-Location'], sourceURL)
+    assert.equal(options.headers['X-Ebook-Source-URL'], sourceURL)
+    assert.equal(options.method, 'GET')
+    assert.equal(options.body, undefined)
+    assert.deepEqual(viewer.published, ['chapter.xhtml', 'chapter.xhtml'])
     assertIdle(viewer)
 })
 
@@ -172,6 +203,13 @@ for (const failure of ['network', 'HTTP', 'non-authoritative']) {
         })
         const owner = viewer.makeOwner()
         const fallback = await replace(owner)
+        assert.equal(typeof fallback, 'string', 'a current failure must retain readable original HTML')
+        const body = fallback.match(/<body\b([^>]*)>([\s\S]*?)<\/body\s*>/i)
+        assert.ok(body, 'the original HTML body must survive the fallback')
+        assert.equal(body[2].trim(), 'original', 'fallback must retain the original readable content')
+        assert.match(body[1], /\bdata-mnb-source-href\s*=\s*(["'])chapter\.xhtml\1/i)
+        assert.doesNotMatch(body[1], /\bdata-mnb-has-(?:sentences|segments)\s*=\s*["']?true\b/i)
+        assert.doesNotMatch(fallback, /<m-(?:s|m)\b/i)
         const fresh = await replace(owner)
         assert.notEqual(fresh, fallback)
         assert.equal(await replace(owner), fresh)
@@ -183,7 +221,7 @@ for (const failure of ['network', 'HTTP', 'non-authoritative']) {
 
 test('native direct-section owners reject foreground HTML while unsupported media bypasses processing', async () => {
     const viewer = makeViewer()
-    const owner = viewer.makeOwner({ allowForegroundHTML: false })
+    const owner = viewer.makeOwner({ nativeSource, allowForegroundHTML: false })
     await assert.rejects(replace(owner), /must load through processed-section direct URL/)
     assert.equal(await owner('style.css', 'body {}', 'text/css'), 'body {}')
     owner.destroy()
