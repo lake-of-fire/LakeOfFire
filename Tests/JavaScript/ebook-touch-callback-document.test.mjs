@@ -365,3 +365,54 @@ test('an admitted main touchend still suppresses its matching synthetic mouse ev
     assert.equal(f.messages.length, 2)
     assert.equal(f.messages[1].touchstartEventType, 'mousedown')
 })
+// Append these focused cases to the canonical ebook-touch-callback-document.test.mjs
+// in the executor's scratch staging tree; reuse its shipping-production fixture.
+// The scope is never released, and the physical original Document is restored.
+for (const replacement of ['parent', 'child']) {
+    test(`rejected child mouse callback preserves suppression after ${replacement} Document replacement`, () => {
+        const f = fixture()
+        const content = f.makeChildProducer()
+        content({ ...f.event(), type: 'touchend' }, 'content-document.blank', 77)
+        assert.equal(f.messages.length, 1)
+        const rejectedMouse = f.event()
+        Object.defineProperty(rejectedMouse, 'sourceCapabilities', {
+            get() {
+                if (replacement === 'parent') f.window.document = makeDocument()
+                else f.childWindow.document = makeDocument()
+                return null
+            },
+        })
+        content(rejectedMouse, 'content-document.blank', 78)
+        assert.equal(f.messages.length, 1)
+        f.window.document = f.document
+        f.childWindow.document = f.child
+        content(f.event(), 'content-document.blank', 79)
+        assert.equal(f.messages.length, 1,
+            `${replacement}: rejected callback must not consume prior touch suppression`)
+        content(f.event(), 'content-document.blank', 80)
+        assert.equal(f.messages.length, 2,
+            `${replacement}: admitted synthetic suppression is consumed exactly once`)
+    })
+}
+
+test('rejected main mouse callback preserves suppression from an admitted touchend', () => {
+    const f = fixture()
+    f.main({ ...f.event(), type: 'touchend' }, 'main-document.blank', 77)
+    assert.equal(f.messages.length, 1)
+    const rejectedMouse = f.event()
+    Object.defineProperty(rejectedMouse, 'sourceCapabilities', {
+        get() {
+            f.window.document = makeDocument()
+            return null
+        },
+    })
+    f.main(rejectedMouse, 'main-document.blank', 78)
+    assert.equal(f.messages.length, 1)
+    f.window.document = f.document
+    f.main(f.event(), 'main-document.blank', 79)
+    assert.equal(f.messages.length, 1,
+        'rejected callback must not consume prior touch suppression')
+    f.main(f.event(), 'main-document.blank', 80)
+    assert.equal(f.messages.length, 2,
+        'admitted synthetic suppression is consumed exactly once')
+})
