@@ -365,3 +365,158 @@ test('an admitted main touchend still suppresses its matching synthetic mouse ev
     assert.equal(f.messages.length, 2)
     assert.equal(f.messages[1].touchstartEventType, 'mousedown')
 })
+
+for (const replacement of ['parent', 'child']) {
+    test(`rejected child mouse callback preserves suppression after ${replacement} Document replacement`, () => {
+        const f = fixture()
+        const content = f.makeChildProducer()
+        content({ ...f.event(), type: 'touchend' }, 'content-document.blank', 77)
+        assert.equal(f.messages.length, 1)
+        const rejectedMouse = f.event()
+        Object.defineProperty(rejectedMouse, 'sourceCapabilities', {
+            get() {
+                if (replacement === 'parent') f.window.document = makeDocument()
+                else f.childWindow.document = makeDocument()
+                return null
+            },
+        })
+        content(rejectedMouse, 'content-document.blank', 78)
+        assert.equal(f.messages.length, 1)
+        f.window.document = f.document
+        f.childWindow.document = f.child
+        content(f.event(), 'content-document.blank', 79)
+        assert.equal(f.messages.length, 1,
+            `${replacement}: rejected callback must not consume prior touch suppression`)
+        content(f.event(), 'content-document.blank', 80)
+        assert.equal(f.messages.length, 2,
+            `${replacement}: admitted synthetic suppression is consumed exactly once`)
+    })
+}
+
+test('rejected main mouse callback preserves suppression from an admitted touchend', () => {
+    const f = fixture()
+    f.main({ ...f.event(), type: 'touchend' }, 'main-document.blank', 77)
+    assert.equal(f.messages.length, 1)
+    const rejectedMouse = f.event()
+    Object.defineProperty(rejectedMouse, 'sourceCapabilities', {
+        get() {
+            f.window.document = makeDocument()
+            return null
+        },
+    })
+    f.main(rejectedMouse, 'main-document.blank', 78)
+    assert.equal(f.messages.length, 1)
+    f.window.document = f.document
+    f.main(f.event(), 'main-document.blank', 79)
+    assert.equal(f.messages.length, 1,
+        'rejected callback must not consume prior touch suppression')
+    f.main(f.event(), 'main-document.blank', 80)
+    assert.equal(f.messages.length, 2,
+        'admitted synthetic suppression is consumed exactly once')
+})
+
+for (const replacement of ['scope', 'reader']) {
+    test(`child commit key setter cannot overwrite ${replacement} successor echo`, () => {
+        const f = fixture()
+        const content = f.makeChildProducer()
+        const successorEcho = { x: 90, y: 91, source: 'successor' }
+        let key = 'previous-key'
+        let setterCalls = 0
+        Object.defineProperty(f.child, '__manabiLastBlankPointerPostKey', {
+            configurable: true,
+            get() { return key },
+            set() {
+                setterCalls++
+                if (replacement === 'scope') f.reader.retireChild(f.child)
+                else f.context.reader = {}
+                key = 'successor-key'
+                f.context.__manabiPendingContentDocumentBlankNavigationEcho = successorEcho
+            },
+        })
+        content({ ...f.event(), type: 'touchend' }, 'content-document.blank', 77)
+        assert.equal(setterCalls, 1, 'the actual commit crossed the page-visible setter')
+        assert.equal(f.messages.length, 0, 'retired owner did not reach the native bridge')
+        assert.equal(f.child.__manabiLastBlankPointerPostKey, 'successor-key')
+        assert.equal(f.context.__manabiPendingContentDocumentBlankNavigationEcho, successorEcho,
+            'old commit did not overwrite successor echo')
+    })
+}
+
+test('an admitted child touchend suppresses its matching mouse callback once', () => {
+    const f = fixture()
+    const content = f.makeChildProducer()
+    content({ ...f.event(), type: 'touchend' }, 'content-document.blank', 77)
+    assert.equal(f.messages.length, 1)
+    content(f.event(), 'content-document.blank', 78)
+    assert.equal(f.messages.length, 1)
+    content(f.event(), 'content-document.blank', 79)
+    assert.equal(f.messages.length, 2)
+    assert.equal(f.messages[1].touchstartEventType, 'mousedown')
+})
+
+for (const producer of ['main', 'child']) {
+    test(`${producer} coordinate getter retirement preserves prior touch suppression`, () => {
+        const f = fixture()
+        const content = producer === 'child' ? f.makeChildProducer() : f.main
+        const source = producer === 'child' ? 'content-document.blank' : 'main-document.blank'
+        content({ ...f.event(), type: 'touchend' }, source, 77)
+        assert.equal(f.messages.length, 1)
+        const rejectedMouse = f.event()
+        Object.defineProperty(rejectedMouse, 'screenX', {
+            get() {
+                if (producer === 'child') f.childWindow.document = makeDocument()
+                else f.window.document = makeDocument()
+                return 10
+            },
+        })
+        content(rejectedMouse, source, 78)
+        assert.equal(f.messages.length, 1)
+        f.window.document = f.document
+        f.childWindow.document = f.child
+        content(f.event(), source, 79)
+        assert.equal(f.messages.length, 1)
+        content(f.event(), source, 80)
+        assert.equal(f.messages.length, 2)
+    })
+}
+
+for (const producer of ['main', 'child']) {
+    test(`${producer} later hidden-state getter retirement preserves unconsumed touch suppression`, () => {
+        const f = fixture()
+        const content = producer === 'child' ? f.makeChildProducer() : f.main
+        const source = producer === 'child' ? 'content-document.blank' : 'main-document.blank'
+        const postingDocument = producer === 'child' ? f.child : f.document
+        content({ ...f.event(), type: 'touchend' }, source, 77)
+        assert.equal(f.messages.length, 1)
+        postingDocument.body.classList.contains = () => {
+            if (producer === 'child') f.childWindow.document = makeDocument()
+            else f.window.document = makeDocument()
+            return false
+        }
+        content({ ...f.event(), screenX: 100, screenY: 100 }, source, 78)
+        assert.equal(f.messages.length, 1, 'later reentry rejects the far mouse')
+        f.window.document = f.document
+        f.childWindow.document = f.child
+        postingDocument.body.classList.contains = () => false
+        content(f.event(), source, 79)
+        assert.equal(f.messages.length, 1, 'rejected far mouse did not consume the original tap')
+        content(f.event(), source, 80)
+        assert.equal(f.messages.length, 2, 'first owned matching mouse consumed suppression once')
+    })
+}
+
+test('explicit touch-capability mouse retains main suppression but consumes child suppression', () => {
+    for (const producer of ['main', 'child']) {
+        const f = fixture()
+        const content = producer === 'child' ? f.makeChildProducer() : f.main
+        const source = producer === 'child' ? 'content-document.blank' : 'main-document.blank'
+        content({ ...f.event(), type: 'touchend' }, source, 77)
+        assert.equal(f.messages.length, 1)
+        content({ ...f.event(), sourceCapabilities: { firesTouchEvents: true } }, source, 78)
+        assert.equal(f.messages.length, 1)
+        content(f.event(), source, 79)
+        assert.equal(f.messages.length, producer === 'child' ? 2 : 1)
+        content(f.event(), source, 80)
+        assert.equal(f.messages.length, producer === 'child' ? 3 : 2)
+    }
+})
