@@ -160,26 +160,59 @@ private final class LibraryFeedMetadataAdmission: @unchecked Sendable {
     }
 }
 
+// Input publication must fence older attempts before a newer draft reaches Realm.
+private final class LibraryFeedHumanInputAdmission: @unchecked Sendable {
+    private let lock = NSLock()
+    private var newest: [LibraryFeedEditorField: UInt64] = [:]
+
+    func record(field: LibraryFeedEditorField, sequence: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        newest[field] = sequence
+    }
+
+    func withAdmission(field: LibraryFeedEditorField, sequence: UInt64, apply: () -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard newest[field] == sequence else { return }
+        apply()
+    }
+}
+
 private struct LibraryFeedFieldCommand: Sendable {
     let feedID: UUID
     let realmConfiguration: Realm.Configuration
     let field: LibraryFeedEditorField
     let sequence: UInt64
     let writeOrdering: LibraryEditorWriteOrdering
+    let inputAdmission: LibraryFeedHumanInputAdmission?
     let apply: @RealmBackgroundActor @Sendable (Feed) -> Bool
 
     @RealmBackgroundActor
-    func write(beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil) async throws {
+    func write(beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil) async throws {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        await beforeWrite?()
+        try await beforeWrite?()
         try Task.checkCancellation()
         try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
-                  !feed.isDeleted, feed.isUserEditable(),
-                  writeOrdering.admits(recordID: feedID, field: field.rawValue, sequence: sequence),
-                  apply(feed) else { return }
-            feed.refreshChangeMetadata(explicitlyModified: true)
+                  !feed.isDeleted, feed.isUserEditable() else { return }
+            let applyChange = {
+                guard writeOrdering.admits(recordID: feedID, field: field.rawValue, sequence: sequence) else { return }
+                let previousRSSURL = feed.rssUrl
+                guard apply(feed) else { return }
+                if feed.rssUrl != previousRSSURL {
+                    feed.lastFetchedETag = nil
+                    feed.lastFetchedModifiedAt = nil
+                    feed.lastRefreshedEntriesAt = nil
+                }
+                feed.refreshChangeMetadata(explicitlyModified: true)
+            }
+            if let inputAdmission {
+                inputAdmission.withAdmission(field: field, sequence: sequence, apply: applyChange)
+            } else {
+                applyChange()
+            }
         }
     }
 }
@@ -215,7 +248,12 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     var hasInitializedValues = false
     private var isRefreshing = false
     private var pendingFieldCommands: [LibraryFeedEditorField: LibraryFeedFieldCommand] = [:]
+    private var activeWrites: [UInt64: Task<Void, Error>] = [:]
+    private let beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)?
+    private let retirementDidFinish: (@RealmBackgroundActor @Sendable () -> Void)?
+    private let observesFormInput: Bool
     private let writeOrdering: LibraryEditorWriteOrdering
+    private let humanInputAdmission = LibraryFeedHumanInputAdmission()
     private let metadataAdmission = LibraryFeedMetadataAdmission()
     private var metadataRequest: LibraryFeedMetadataRequest?
     
@@ -226,12 +264,20 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     @RealmBackgroundActor
     private var objectNotificationToken: NotificationToken?
     
-    init(feed: Feed, observesRealm: Bool = true) {
+    init(
+        feed: Feed, observesRealm: Bool = true, observesFormInput: Bool? = nil,
+        beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
+        retirementDidFinish: (@RealmBackgroundActor @Sendable () -> Void)? = nil
+    ) {
+        self.observesFormInput = observesFormInput ?? observesRealm
+        self.beforeFieldWrite = beforeFieldWrite
+        self.retirementDidFinish = retirementDidFinish
         realmConfiguration = feed.realm?.configuration ?? LibraryDataManager.realmConfiguration
         writeOrdering = .shared(configuration: realmConfiguration, recordKind: "feed")
         self.feed = feed
         feedID = feed.id
         refresh()
+        if self.observesFormInput { observeFormInput() }
         // TODO: only resolve this once instead of repeatedly below...
         let feedID = feed.id
         guard observesRealm else { return }
@@ -270,108 +316,107 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 .store(in: &realmCancellables)
             
             await refresh()
-            
-            try await { @MainActor [weak self] in
-                guard let self else { return }
-                observeBuffered($feedTitle, field: .title) { value, feed in
-                    guard feed.title != value else { return false }
-                    feed.title = value
-                    return true
-                }
-                observeBuffered($feedDescription, field: .description) { value, feed in
-                    guard feed.markdownDescription != value else { return false }
-                    feed.markdownDescription = value
-                    return true
-                }
-                $feedEnabled
-                    .dropFirst()
-                    .filter { [weak self] _ in self?.isRefreshing == false }
-                    .sink { [weak self] feedEnabled in
-                        guard let self else { return }
-                        writeFeedAsync(field: .enabled) { feed in
-                            guard feed.isArchived != !feedEnabled else { return false }
-                            feed.isArchived = !feedEnabled
-                            return true
-                        }
-                    }
-                    .store(in: &cancellables)
-                observeBuffered($feedURL, field: .url) { value, feed in
-                    guard let url = URL(string: value.isEmpty ? "about:blank" : value),
-                          feed.rssUrl != url else { return false }
-                    feed.rssUrl = url
-                    return true
-                }
-                observeBuffered($feedIconURL, field: .iconURL) { value, feed in
-                    guard let url = URL(string: value.isEmpty ? "about:blank" : value),
-                          feed.iconUrl != url else { return false }
-                    feed.iconUrl = url
-                    return true
-                }
-                $feedIsReaderModeByDefault
-                    .dropFirst()
-                    .filter { [weak self] _ in self?.isRefreshing == false }
-                    .sink { [weak self] feedIsReaderModeByDefault in
-                        guard let self else { return }
-                        writeFeedAsync(field: .readerMode) { feed in
-                            guard feed.isReaderModeByDefault != feedIsReaderModeByDefault else { return false }
-                            feed.isReaderModeByDefault = feedIsReaderModeByDefault
-                            return true
-                        }
-                    }
-                    .store(in: &cancellables)
-                $feedInjectEntryImageIntoHeader
-                    .dropFirst()
-                    .filter { [weak self] _ in self?.isRefreshing == false }
-                    .sink { [weak self] feedInjectEntryImageIntoHeader in
-                        guard let self else { return }
-                        writeFeedAsync(field: .headerImage) { feed in
-                            guard feed.injectEntryImageIntoHeader != feedInjectEntryImageIntoHeader else { return false }
-                            feed.injectEntryImageIntoHeader = feedInjectEntryImageIntoHeader
-                            return true
-                        }
-                    }
-                    .store(in: &cancellables)
-                $feedExtractImageFromContent
-                    .dropFirst()
-                    .filter { [weak self] _ in self?.isRefreshing == false }
-                    .sink { [weak self] feedExtractImageFromContent in
-                        guard let self else { return }
-                        writeFeedAsync(field: .extractImage) { feed in
-                            guard feed.extractImageFromContent != feedExtractImageFromContent else { return false }
-                            feed.extractImageFromContent = feedExtractImageFromContent
-                            return true
-                        }
-                    }
-                    .store(in: &cancellables)
-                $feedRssContainsFullContent
-                    .dropFirst()
-                    .filter { [weak self] _ in self?.isRefreshing == false }
-                    .sink { [weak self] feedRssContainsFullContent in
-                        guard let self else { return }
-                        writeFeedAsync(field: .fullContent) { feed in
-                            guard feed.rssContainsFullContent != feedRssContainsFullContent else { return false }
-                            feed.rssContainsFullContent = feedRssContainsFullContent
-                            return true
-                        }
-                    }
-                    .store(in: &cancellables)
-                $feedDisplayPublicationDate
-                    .dropFirst()
-                    .filter { [weak self] _ in self?.isRefreshing == false }
-                    .sink { [weak self] feedDisplayPublicationDate in
-                        guard let self else { return }
-                        writeFeedAsync(field: .publicationDate) { feed in
-                            guard feed.displayPublicationDate != feedDisplayPublicationDate else { return false }
-                            feed.displayPublicationDate = feedDisplayPublicationDate
-                            return true
-                        }
-                    }
-                    .store(in: &cancellables)
-                hasInitializedValues = true
-            }()
         }
     }
-    
+
+    private func observeFormInput() {
+        observeBuffered($feedTitle, field: .title) { value, feed in
+            guard feed.title != value else { return false }
+            feed.title = value
+            return true
+        }
+        observeBuffered($feedDescription, field: .description) { value, feed in
+            guard feed.markdownDescription != value else { return false }
+            feed.markdownDescription = value
+            return true
+        }
+        $feedEnabled
+            .dropFirst()
+            .filter { [weak self] _ in self?.isRefreshing == false }
+            .sink { [weak self] feedEnabled in
+                guard let self else { return }
+                writeFeedAsync(field: .enabled) { feed in
+                    guard feed.isArchived != !feedEnabled else { return false }
+                    feed.isArchived = !feedEnabled
+                    return true
+                }
+            }
+            .store(in: &cancellables)
+        observeBuffered($feedURL, field: .url) { value, feed in
+            guard let url = URL(string: value.isEmpty ? "about:blank" : value),
+                  feed.rssUrl != url else { return false }
+            feed.rssUrl = url
+            return true
+        }
+        observeBuffered($feedIconURL, field: .iconURL) { value, feed in
+            guard let url = URL(string: value.isEmpty ? "about:blank" : value),
+                  feed.iconUrl != url else { return false }
+            feed.iconUrl = url
+            return true
+        }
+        $feedIsReaderModeByDefault
+            .dropFirst()
+            .filter { [weak self] _ in self?.isRefreshing == false }
+            .sink { [weak self] feedIsReaderModeByDefault in
+                guard let self else { return }
+                writeFeedAsync(field: .readerMode) { feed in
+                    guard feed.isReaderModeByDefault != feedIsReaderModeByDefault else { return false }
+                    feed.isReaderModeByDefault = feedIsReaderModeByDefault
+                    return true
+                }
+            }
+            .store(in: &cancellables)
+        $feedInjectEntryImageIntoHeader
+            .dropFirst()
+            .filter { [weak self] _ in self?.isRefreshing == false }
+            .sink { [weak self] feedInjectEntryImageIntoHeader in
+                guard let self else { return }
+                writeFeedAsync(field: .headerImage) { feed in
+                    guard feed.injectEntryImageIntoHeader != feedInjectEntryImageIntoHeader else { return false }
+                    feed.injectEntryImageIntoHeader = feedInjectEntryImageIntoHeader
+                    return true
+                }
+            }
+            .store(in: &cancellables)
+        $feedExtractImageFromContent
+            .dropFirst()
+            .filter { [weak self] _ in self?.isRefreshing == false }
+            .sink { [weak self] feedExtractImageFromContent in
+                guard let self else { return }
+                writeFeedAsync(field: .extractImage) { feed in
+                    guard feed.extractImageFromContent != feedExtractImageFromContent else { return false }
+                    feed.extractImageFromContent = feedExtractImageFromContent
+                    return true
+                }
+            }
+            .store(in: &cancellables)
+        $feedRssContainsFullContent
+            .dropFirst()
+            .filter { [weak self] _ in self?.isRefreshing == false }
+            .sink { [weak self] feedRssContainsFullContent in
+                guard let self else { return }
+                writeFeedAsync(field: .fullContent) { feed in
+                    guard feed.rssContainsFullContent != feedRssContainsFullContent else { return false }
+                    feed.rssContainsFullContent = feedRssContainsFullContent
+                    return true
+                }
+            }
+            .store(in: &cancellables)
+        $feedDisplayPublicationDate
+            .dropFirst()
+            .filter { [weak self] _ in self?.isRefreshing == false }
+            .sink { [weak self] feedDisplayPublicationDate in
+                guard let self else { return }
+                writeFeedAsync(field: .publicationDate) { feed in
+                    guard feed.displayPublicationDate != feedDisplayPublicationDate else { return false }
+                    feed.displayPublicationDate = feedDisplayPublicationDate
+                    return true
+                }
+            }
+            .store(in: &cancellables)
+        hasInitializedValues = true
+    }
+
     private func observeBuffered(
         _ publisher: Published<String>.Publisher, field: LibraryFeedEditorField,
         apply: @escaping @RealmBackgroundActor @Sendable (String, Feed) -> Bool
@@ -379,44 +424,86 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         publisher.dropFirst()
             .compactMap { [weak self] value -> LibraryFeedFieldCommand? in
                 guard let self, !self.isRefreshing else { return nil }
-                let sequence = self.writeOrdering.issueSequence()
-                let command = LibraryFeedFieldCommand(
-                    feedID: self.feedID, realmConfiguration: self.realmConfiguration, field: field,
-                    sequence: sequence, writeOrdering: self.writeOrdering,
-                    apply: { feed in apply(value, feed) }
-                )
+                let command = self.makeCommand(field: field) { feed in apply(value, feed) }
                 self.pendingFieldCommands[field] = command
                 return command
             }
             .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { [weak self] command in self?.submit(command) }
+            .sink { [weak self] command in
+                guard let self else { return }
+                self.observeCompletion(self.submit(command))
+            }
             .store(in: &cancellables)
     }
 
-    private func submit(_ command: LibraryFeedFieldCommand) {
-        Task { @RealmBackgroundActor [weak self] in
-            do { try await command.write() }
+    private func submit(
+        _ command: LibraryFeedFieldCommand,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil
+    ) -> Task<Void, Error> {
+        if let active = activeWrites[command.sequence] { return active }
+        guard pendingFieldCommands[command.field]?.sequence == command.sequence else {
+            return Task<Void, Error> {}
+        }
+        let beforeWrite = beforeWrite ?? beforeFieldWrite
+        let task = Task<Void, Error> { @RealmBackgroundActor [weak self] in
+            do {
+                try await command.write(beforeWrite: beforeWrite)
+                await self?.settle(command, succeeded: true)
+            } catch {
+                await self?.settle(command, succeeded: false)
+                throw error
+            }
+        }
+        activeWrites[command.sequence] = task
+        return task
+    }
+
+    private func settle(_ command: LibraryFeedFieldCommand, succeeded: Bool) {
+        activeWrites[command.sequence] = nil
+        // Retain failed drafts, and never let an older completion clear newer input.
+        guard succeeded, pendingFieldCommands[command.field]?.sequence == command.sequence else { return }
+        pendingFieldCommands[command.field] = nil
+        if !isEditing { refresh(only: command.field == .other ? nil : command.field) }
+    }
+
+    private func observeCompletion(_ task: Task<Void, Error>) {
+        Task { @MainActor in
+            do { try await task.value }
             catch { print("LibraryFeedEditor field write failed: \(error)") }
-            await self?.settle(command)
         }
     }
 
-    private func settle(_ command: LibraryFeedFieldCommand) {
-        guard pendingFieldCommands[command.field]?.sequence == command.sequence else { return }
-        pendingFieldCommands[command.field] = nil
-        if !isEditing { refresh() }
-    }
-
-    func finishEditing() {
+    @discardableResult
+    func finishEditing() -> Task<Void, Error> {
         isEditing = false
-        for command in pendingFieldCommands.values { submit(command) }
+        for command in pendingFieldCommands.values.sorted(by: { $0.sequence < $1.sequence }) {
+            _ = submit(command)
+        }
+        let writes = activeWrites.sorted(by: { $0.key < $1.key }).map(\.value)
         refresh()
+        let completion = Task<Void, Error> { @RealmBackgroundActor in
+            var firstError: Error?
+            for write in writes {
+                do { try await write.value }
+                catch { if firstError == nil { firstError = error } }
+            }
+            if let firstError { throw firstError }
+        }
+        observeCompletion(completion)
+        return completion
     }
 
     deinit {
-        let commands = Array(pendingFieldCommands.values)
+        let commands = pendingFieldCommands.values.sorted { $0.sequence < $1.sequence }
+        let writes = activeWrites
+        let retirementDidFinish = retirementDidFinish
         Task { @RealmBackgroundActor in
+            defer { retirementDidFinish?() }
             for command in commands {
+                if let active = writes[command.sequence] {
+                    do { try await active.value; continue }
+                    catch { /* Retry the retained command below. */ }
+                }
                 do { try await command.write() }
                 catch { print("LibraryFeedEditor retirement write failed: \(error)") }
             }
@@ -429,34 +516,45 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     @discardableResult
     func writeFeedAsync(
         field: LibraryFeedEditorField = .other,
-        beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
         _ block: @escaping @RealmBackgroundActor @Sendable (Feed) -> Bool
     ) -> Task<Void, Error> {
+        let command = makeCommand(field: field, apply: block)
+        pendingFieldCommands[field] = command
+        return submit(command, beforeWrite: beforeWrite)
+    }
+
+    private func makeCommand(
+        field: LibraryFeedEditorField,
+        isHumanInput: Bool = true,
+        apply: @escaping @RealmBackgroundActor @Sendable (Feed) -> Bool
+    ) -> LibraryFeedFieldCommand {
         let sequence = writeOrdering.issueSequence()
-        let command = LibraryFeedFieldCommand(
+        if isHumanInput { humanInputAdmission.record(field: field, sequence: sequence) }
+        return LibraryFeedFieldCommand(
             feedID: feedID, realmConfiguration: realmConfiguration, field: field,
-            sequence: sequence, writeOrdering: writeOrdering, apply: block
+            sequence: sequence, writeOrdering: writeOrdering,
+            inputAdmission: isHumanInput ? humanInputAdmission : nil, apply: apply
         )
-        return Task { @RealmBackgroundActor in try await command.write(beforeWrite: beforeWrite) }
     }
     
 
     @MainActor
-    func refresh() {
+    func refresh(only field: LibraryFeedEditorField? = nil) {
         if !feed.isFrozen { feed.realm?.refresh() }
         guard !feed.isInvalidated else { return }
         isRefreshing = true
         defer { isRefreshing = false }
-        if pendingFieldCommands[.title] == nil { feedTitle = feed.title }
-        if pendingFieldCommands[.description] == nil { feedDescription = feed.markdownDescription ?? "" }
-        feedEnabled = !(feed.isArchived || feed.isDeleted)
-        if pendingFieldCommands[.url] == nil { feedURL = feed.rssUrl.absoluteString == "about:blank" ? "" : feed.rssUrl.absoluteString }
-        if pendingFieldCommands[.iconURL] == nil { feedIconURL = feed.iconUrl.absoluteString == "about:blank" ? "" : feed.iconUrl.absoluteString }
-        feedIsReaderModeByDefault = feed.isReaderModeByDefault
-        feedInjectEntryImageIntoHeader = feed.injectEntryImageIntoHeader
-        feedExtractImageFromContent = feed.extractImageFromContent
-        feedRssContainsFullContent = feed.rssContainsFullContent
-        feedDisplayPublicationDate = feed.displayPublicationDate
+        if (field == nil || field == .title), pendingFieldCommands[.title] == nil { feedTitle = feed.title }
+        if (field == nil || field == .description), pendingFieldCommands[.description] == nil { feedDescription = feed.markdownDescription ?? "" }
+        if (field == nil || field == .enabled), pendingFieldCommands[.enabled] == nil { feedEnabled = !(feed.isArchived || feed.isDeleted) }
+        if (field == nil || field == .url), pendingFieldCommands[.url] == nil { feedURL = feed.rssUrl.absoluteString == "about:blank" ? "" : feed.rssUrl.absoluteString }
+        if (field == nil || field == .iconURL), pendingFieldCommands[.iconURL] == nil { feedIconURL = feed.iconUrl.absoluteString == "about:blank" ? "" : feed.iconUrl.absoluteString }
+        if (field == nil || field == .readerMode), pendingFieldCommands[.readerMode] == nil { feedIsReaderModeByDefault = feed.isReaderModeByDefault }
+        if (field == nil || field == .headerImage), pendingFieldCommands[.headerImage] == nil { feedInjectEntryImageIntoHeader = feed.injectEntryImageIntoHeader }
+        if (field == nil || field == .extractImage), pendingFieldCommands[.extractImage] == nil { feedExtractImageFromContent = feed.extractImageFromContent }
+        if (field == nil || field == .fullContent), pendingFieldCommands[.fullContent] == nil { feedRssContainsFullContent = feed.rssContainsFullContent }
+        if (field == nil || field == .publicationDate), pendingFieldCommands[.publicationDate] == nil { feedDisplayPublicationDate = feed.displayPublicationDate }
     }
     
     var currentRSSURL: URL? {
@@ -620,7 +718,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
               metadataAdmission.admits(request, field: field) else { return }
         let admission = metadataAdmission
         do {
-            let write = writeFeedAsync(field: field, beforeWrite: beforeWrite) { feed in
+            // Metadata is a transient cancellable attempt, never a retained human draft.
+            let command = makeCommand(field: field, isHumanInput: false) { feed in
                 guard feed.rssUrl == request.rssURL, admission.admits(request, field: field) else { return false }
                 switch field {
                 case .title:
@@ -637,6 +736,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     return false
                 }
                 return true
+            }
+            let write = Task { @RealmBackgroundActor in
+                try await command.write(beforeWrite: beforeWrite)
             }
             try await withTaskCancellationHandler {
                 try await write.value
@@ -672,23 +774,16 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     @discardableResult
     func pasteRSSURL(strings: [String]) -> Task<Void, Error> {
         let url = URL(string: strings.first ?? "") ?? URL(string: "about:blank")!
-        // Explicit paste is the newest edit, so replace any buffered URL input
-        // through the same publisher before its immediate write.
+        // Capture one URL intent through the publisher, then join or flush it.
         feedURL = url.absoluteString
-        let write = writeFeedAsync(field: .url) { feed in
+        if observesFormInput, let command = pendingFieldCommands[.url] {
+            return submit(command)
+        }
+        // Preserve the observer-disabled model API used by direct writer callers.
+        return writeFeedAsync(field: .url) { feed in
             guard feed.rssUrl != url else { return false }
             feed.rssUrl = url
             return true
-        }
-        return Task { @MainActor [weak self] in
-            try await write.value
-            guard let self else { return }
-            feed.realm?.refresh()
-            guard let rssURL = currentRSSURL else { return }
-            // Paste owns URL input only; other fields can still have drafts.
-            isRefreshing = true
-            defer { isRefreshing = false }
-            feedURL = rssURL.isNativeReaderView ? "" : rssURL.absoluteString
         }
     }
 }
