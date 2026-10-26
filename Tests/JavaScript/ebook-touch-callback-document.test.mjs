@@ -69,6 +69,8 @@ const childStart = source.indexOf('            let pendingBlankPointerTap =')
 const childProducer = declaration('postContentDocumentBlankPointerTap')
 const childBlock = source.slice(childStart, source.indexOf(childProducer.slice(0, -1), childStart)
     + childProducer.length)
+const childHandlersBlock = source.slice(childStart, source.indexOf(
+    "this.#listenInDocumentScope(scope, doc, 'touchstart', handleBlankPointerTouchStart", childStart))
 const documentLikeStart = source.indexOf('const isDocumentLike =')
 const documentLike = source.slice(documentLikeStart,
     source.indexOf('const visibleRangeForNavigationHUDDocument =', documentLikeStart))
@@ -78,10 +80,13 @@ const posterAssignment = source.slice(posterStart, source.indexOf(';', posterSta
 
 const thresholdStart = source.indexOf('const manabiSyntheticTouchMouseDistanceThreshold =')
 const syntheticThreshold = source.slice(thresholdStart, source.indexOf(';', thresholdStart) + 1)
+const movementThresholdStart = source.indexOf('const manabiBlankNavigationMoveThreshold =')
+const movementThreshold = source.slice(movementThresholdStart, source.indexOf(';', movementThresholdStart) + 1)
 
 const wrapper = `
 ${declaration('manabiEventScreenPoint')}
 ${syntheticThreshold}
+${movementThreshold}
 ${declaration('createReaderTouchstartPoster')}
 ${declaration('requestLookupCloseForPageMotion')}
 ${documentLike}
@@ -110,6 +115,12 @@ class ReaderProducerFixture {
         const scope = this.#beginDocumentScope({doc});
         ${childBlock}
         return postContentDocumentBlankPointerTap;
+    }
+    childHandlers(doc) {
+        const scope = this.#beginDocumentScope({doc});
+        ${childHandlersBlock}
+        return { start: handleBlankPointerTouchStart, end: handleBlankPointerTouchEnd,
+            mouse: handleBlankPointerMouseDown };
     }
     retireChild(doc) { this.#releaseDocumentScope(doc); }
     closeOwner() { this.#closed = true; }
@@ -364,4 +375,240 @@ test('an admitted main touchend still suppresses its matching synthetic mouse ev
     f.main(f.event(), 'main-document.blank', 3)
     assert.equal(f.messages.length, 2)
     assert.equal(f.messages[1].touchstartEventType, 'mousedown')
+})
+
+for (const replacement of ['scope', 'reader']) {
+    test(`child commit setter ${replacement} retirement preserves successor bookkeeping`, () => {
+        const f = fixture()
+        const content = f.makeChildProducer()
+        const successorEcho = { x: 90, y: 91, source: 'successor' }
+        let key = 'before'
+        Object.defineProperty(f.child, '__manabiLastBlankPointerPostKey', {
+            configurable: true,
+            get() { return key },
+            set() {
+                if (replacement === 'scope') f.reader.retireChild(f.child)
+                else f.context.reader = {}
+                key = 'successor-key'
+                f.context.__manabiPendingContentDocumentBlankNavigationEcho = successorEcho
+            },
+        })
+        content({ ...f.event(), type: 'touchend' }, 'content-document.blank', 77)
+        assert.equal(f.messages.length, 0)
+        assert.equal(key, 'successor-key')
+        assert.equal(f.context.__manabiPendingContentDocumentBlankNavigationEcho, successorEcho)
+    })
+}
+
+for (const [producer, replacement] of [['main', 'parent'], ['child', 'parent'], ['child', 'child']]) {
+    for (const boundary of ['capabilities', 'firesTouchEvents', 'screenX']) {
+        test(`${producer} ${boundary} retirement of ${replacement} preserves the unconsumed touch receipt`, () => {
+            const f = fixture()
+            const post = producer === 'main' ? f.main : f.makeChildProducer()
+            const source = `${producer}-document.blank`
+            post({ ...f.event(), type: 'touchend' }, source, 1)
+            assert.equal(f.messages.length, 1)
+            const retire = () => {
+                if (replacement === 'parent') f.window.document = makeDocument()
+                else f.childWindow.document = makeDocument()
+            }
+            const event = f.event()
+            if (boundary === 'capabilities') {
+                Object.defineProperty(event, 'sourceCapabilities', {
+                    get() { retire(); return { firesTouchEvents: false } },
+                })
+            } else if (boundary === 'firesTouchEvents') {
+                event.sourceCapabilities = { get firesTouchEvents() { retire(); return false } }
+            } else {
+                Object.defineProperty(event, 'screenX', { get() { retire(); return 10 } })
+            }
+            post(event, source, 2)
+            assert.equal(f.messages.length, 1)
+            f.window.document = f.document
+            f.childWindow.document = f.child
+            post(f.event(), source, 3)
+            assert.equal(f.messages.length, 1, 'First valid retry must consume the original receipt')
+            post(f.event(), source, 4)
+            assert.equal(f.messages.length, 2, 'Only one valid matching mouse is suppressed')
+            assert.equal(f.messages[1].documentStartedAtMs, 101)
+        })
+    }
+}
+
+for (const producer of ['main', 'child']) {
+    for (const boundary of ['capabilities', 'screenX', 'type', 'postMessage']) {
+        test(`${producer} ${boundary} recursive current touch preserves its successor receipt`, () => {
+            const f = fixture()
+            const post = producer === 'main' ? f.main : f.makeChildProducer()
+            const source = `${producer}-document.blank`
+            post({ ...f.event(), type: 'touchend' }, source, 1)
+            let recursed = false
+            const newer = () => {
+                if (recursed) return
+                recursed = true
+                post({ ...f.event(), type: 'touchend', screenX: 90, screenY: 91 }, source, 3)
+            }
+            const event = f.event()
+            if (boundary === 'capabilities') {
+                Object.defineProperty(event, 'sourceCapabilities', { get() { newer(); return null } })
+            } else if (boundary === 'screenX') {
+                Object.defineProperty(event, 'screenX', { get() { newer(); return 10 } })
+            } else if (boundary === 'type') {
+                Object.defineProperty(event, 'type', { get() { newer(); return 'mousedown' } })
+            } else {
+                // A touchend reaches the bridge rather than being suppressed.
+                event.type = 'touchend'
+                const handler = f.window.webkit.messageHandlers.touchstartCallbackHandler
+                const original = handler.postMessage
+                Object.defineProperty(handler, 'postMessage', { get() { newer(); return original } })
+            }
+            post(event, source, 2)
+            assert.equal(f.messages.length, 2, 'Only the initial and recursively newer touches post')
+            if (producer === 'child') {
+                assert.equal(f.child.__manabiLastBlankPointerPostKey, `${source}:touchend:3:90:91`)
+                assert.equal(f.context.__manabiPendingContentDocumentBlankNavigationEcho.touchstartAtMs, 3)
+            }
+            post({ ...f.event(), screenX: 90, screenY: 91 }, source, 4)
+            assert.equal(f.messages.length, 2, 'Old work must not consume the newer suppression receipt')
+            post({ ...f.event(), screenX: 90, screenY: 91 }, source, 5)
+            assert.equal(f.messages.length, 3)
+        })
+    }
+}
+
+test('child key setter recursively admitting a current touch preserves its key and echo', () => {
+    const f = fixture()
+    const post = f.makeChildProducer()
+    Object.defineProperty(f.child, '__manabiLastBlankPointerPostKey', {
+        configurable: true,
+        get() { return 'before' },
+        set() {
+            Object.defineProperty(f.child, '__manabiLastBlankPointerPostKey', {
+                configurable: true, writable: true, value: 'before',
+            })
+            post({ ...f.event(), type: 'touchend', screenX: 90, screenY: 91 }, 'content-document.blank', 3)
+        },
+    })
+    post({ ...f.event(), type: 'touchend' }, 'content-document.blank', 2)
+    assert.equal(f.messages.length, 1)
+    assert.equal(f.messages[0].touchstartAtMs, 3)
+    assert.equal(f.child.__manabiLastBlankPointerPostKey, 'content-document.blank:touchend:3:90:91')
+    assert.equal(f.context.__manabiPendingContentDocumentBlankNavigationEcho.touchstartAtMs, 3)
+    post({ ...f.event(), screenX: 90, screenY: 91 }, 'content-document.blank', 4)
+    assert.equal(f.messages.length, 1)
+})
+
+for (const boundary of ['postMessage', 'keySetter']) {
+    test(`child ${boundary} recursive ordinary mouse preserves the newer publication`, () => {
+        const f = fixture()
+        const post = f.makeChildProducer()
+        post(f.event(), 'content-document.blank', 1)
+        assert.equal(f.messages.length, 1)
+        let recursed = false
+        const newer = () => {
+            if (recursed) return
+            recursed = true
+            post({ ...f.event(), screenX: 90, screenY: 91 }, 'content-document.blank', 3)
+        }
+        if (boundary === 'postMessage') {
+            const handler = f.window.webkit.messageHandlers.touchstartCallbackHandler
+            const original = handler.postMessage
+            Object.defineProperty(handler, 'postMessage', { get() { newer(); return original } })
+        } else {
+            let key = f.child.__manabiLastBlankPointerPostKey
+            Object.defineProperty(f.child, '__manabiLastBlankPointerPostKey', {
+                configurable: true,
+                get() { return key },
+                set(value) {
+                    key = value
+                    newer()
+                },
+            })
+        }
+        post(f.event(), 'content-document.blank', 2)
+        assert.equal(f.messages.length, 2)
+        assert.equal(f.messages[1].touchstartAtMs, 3)
+        assert.equal(f.child.__manabiLastBlankPointerPostKey, 'content-document.blank:mousedown:3:90:91')
+        assert.equal(f.context.__manabiPendingContentDocumentBlankNavigationEcho, null)
+    })
+}
+
+test('main bridge getter ordinary mouse supersedes an older touch without installing its receipt', () => {
+    const f = fixture()
+    let recursed = false
+    const handler = f.window.webkit.messageHandlers.touchstartCallbackHandler
+    const original = handler.postMessage
+    Object.defineProperty(handler, 'postMessage', {
+        get() {
+            if (!recursed) {
+                recursed = true
+                f.main({ ...f.event(), screenX: 90, screenY: 91 }, 'main-document.blank', 3)
+            }
+            return original
+        },
+    })
+    f.main({ ...f.event(), type: 'touchend' }, 'main-document.blank', 2)
+    assert.equal(f.messages.length, 1)
+    assert.equal(f.messages[0].touchstartAtMs, 3)
+    assert.equal(f.messages[0].touchstartEventType, 'mousedown')
+    f.main(f.event(), 'main-document.blank', 4)
+    assert.equal(f.messages.length, 2, 'The obsolete touch must not install a coordinate suppression receipt')
+})
+
+test('main and child retain their distinct capability-marked mouse suppression policies', () => {
+    for (const producer of ['main', 'child']) {
+        const f = fixture()
+        const post = producer === 'main' ? f.main : f.makeChildProducer()
+        const source = `${producer}-document.blank`
+        post({ ...f.event(), type: 'touchend' }, source, 1)
+        post({ ...f.event(), sourceCapabilities: { firesTouchEvents: true } }, source, 2)
+        assert.equal(f.messages.length, 1)
+        post(f.event(), source, 3)
+        assert.equal(f.messages.length, producer === 'main' ? 1 : 2)
+        post(f.event(), source, 4)
+        assert.equal(f.messages.length, producer === 'main' ? 2 : 3)
+    }
+})
+
+test('child actual touch wrappers still post one tap and suppress one matching mouse', () => {
+    const f = fixture()
+    const handlers = f.reader.childHandlers(f.child)
+    handlers.start({ ...f.event(), type: 'touchstart' })
+    handlers.end({ ...f.event(), type: 'touchend' })
+    assert.equal(f.messages.length, 1)
+    handlers.mouse(f.event())
+    assert.equal(f.messages.length, 1)
+    handlers.mouse(f.event())
+    assert.equal(f.messages.length, 2)
+})
+
+test('child missing-handler rejection permits an identical event retry after bridge repair', () => {
+    const f = fixture()
+    const handler = f.window.webkit.messageHandlers.touchstartCallbackHandler
+    delete f.window.webkit.messageHandlers.touchstartCallbackHandler
+    const post = f.makeChildProducer()
+    const event = { ...f.event(), type: 'touchend' }
+    post(event, 'content-document.blank', 77)
+    assert.equal(f.messages.length, 0)
+    assert.equal(f.child.__manabiLastBlankPointerPostKey, undefined)
+    f.window.webkit.messageHandlers.touchstartCallbackHandler = handler
+    post(event, 'content-document.blank', 77)
+    assert.equal(f.messages.length, 1)
+})
+
+test('a receipt consumed while current is not rolled back by later body retirement', () => {
+    for (const producer of ['main', 'child']) {
+        const f = fixture()
+        const post = producer === 'main' ? f.main : f.makeChildProducer()
+        const source = `${producer}-document.blank`
+        post({ ...f.event(), type: 'touchend' }, source, 1)
+        const body = producer === 'main' ? f.document.body : f.child.body
+        body.classList.contains = () => { f.window.document = makeDocument(); return false }
+        post({ ...f.event(), screenX: 90, screenY: 91 }, source, 2)
+        assert.equal(f.messages.length, 1)
+        f.window.document = f.document
+        body.classList.contains = () => false
+        post(f.event(), source, 3)
+        assert.equal(f.messages.length, 2, 'Consumption admitted before later retirement is retained')
+    }
 })
