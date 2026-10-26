@@ -670,3 +670,58 @@ test('review only child echo getter reentry preserves newer ordinary mouse state
         afterMatchingMouse: [1, 3, 4],
     })
 })
+
+
+for (const [producer, finalOwnershipRead] of [['main', 4], ['child', 6]]) {
+    test('review only ' + producer + ' final Reader getter rejects a superseded outer publication', () => {
+        const f = fixture()
+        const post = producer === 'main' ? f.main : f.makeChildProducer()
+        const source = producer === 'main' ? 'main-document.blank' : 'content-document.blank'
+        post(f.event(), source, 1)
+        assert.equal(f.messages.length, 1)
+        const handler = f.window.webkit.messageHandlers.touchstartCallbackHandler
+        const originalPost = handler.postMessage
+        let installed = false, recursed = false, readerReads = 0
+        Object.defineProperty(handler, 'postMessage', {
+            configurable: true,
+            get() {
+                if (!installed) {
+                    installed = true
+                    Object.defineProperty(f.context, 'reader', {
+                        configurable: true,
+                        get() {
+                            // Count the ownership checks only after the outer
+                            // bridge getter, stopping before nested admission.
+                            if (!recursed && ++readerReads === finalOwnershipRead) {
+                                recursed = true
+                                post({ ...f.event(), screenX: 90, screenY: 91 }, source, 3)
+                            }
+                            return f.reader
+                        },
+                    })
+                }
+                return originalPost
+            },
+        })
+        post({ ...f.event(), type: 'touchend' }, source, 2)
+        const actual = {
+            installed,
+            recursed,
+            readerReads,
+            times: f.messages.map(message => message.touchstartAtMs),
+        }
+        const expected = {
+            installed: true,
+            recursed: true,
+            readerReads: finalOwnershipRead,
+            times: [1, 3],
+        }
+        if (producer === 'child') {
+            actual.key = f.child.__manabiLastBlankPointerPostKey
+            actual.echo = f.context.__manabiPendingContentDocumentBlankNavigationEcho
+            expected.key = source + ':mousedown:3:90:91'
+            expected.echo = null
+        }
+        assert.deepEqual(actual, expected)
+    })
+}
