@@ -611,7 +611,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func seekAITTS(toProgressValue value: Double, shouldPlay: Bool) {
-        guard !ttsUtterances.isEmpty else { return }
+        guard value.isFinite, !ttsUtterances.isEmpty else { return }
         let upperBound = max(ttsProgressUpperBound, 1)
         let clamped = min(max(value, 0), upperBound)
         let endScrubEpsilon = 0.001
@@ -643,6 +643,10 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     private func seekAITTS(toUtteranceIndex index: Int, shouldPlay: Bool) {
         guard !ttsUtterances.isEmpty else { return }
+        // A valid seek is a newer playback intent, including a seek back to
+        // this sentence. An older section advance must not replace it.
+        cancelReadAloudPreparation()
+        ttsPlaybackCompletedQueueGeneration = nil
         let boundedIndex = min(max(index, 0), ttsUtterances.count - 1)
         ttsCurrentUtteranceIndex = boundedIndex
         ttsCurrentCharacterRange = nil
@@ -662,6 +666,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     private func seekAITTSToEnd() {
         guard !ttsUtterances.isEmpty else { return }
+        cancelReadAloudPreparation()
+        ttsPlaybackCompletedQueueGeneration = nil
         let lastIndex = ttsUtterances.count - 1
         ttsCurrentUtteranceIndex = lastIndex
         let utterance = ttsUtterances[lastIndex]
