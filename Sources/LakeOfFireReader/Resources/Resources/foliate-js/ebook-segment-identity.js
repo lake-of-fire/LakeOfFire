@@ -115,25 +115,29 @@ export const expandCompactEbookSegmentResolution = (
         return null
     }
     const selected = resolution.se
-    const selectedLexicon = selected?.namespace === 'jmdict'
-        || selected?.namespace === 'jmnedict'
-        ? selected.namespace
-        : (Number.isSafeInteger(resolution.e) && resolution.e > 0 ? 'jmdict' : null)
-    const selectedEntryID = Number.isSafeInteger(selected?.entryID) && selected.entryID > 0
-        ? selected.entryID
-        : (selectedLexicon === 'jmdict'
-            && Number.isSafeInteger(resolution.e)
-            && resolution.e > 0
-            ? resolution.e
-            : null)
+    const legacyEntryID = resolution.e
+    // Validate both wire identities before applying typed precedence, as the native decoder
+    // does. Neither a malformed shadow ID nor a malformed typed selection may be masked.
+    if (legacyEntryID != null
+        && (!Number.isSafeInteger(legacyEntryID) || legacyEntryID <= 0)) {
+        return null
+    }
+    if (selected != null
+        && (typeof selected !== 'object'
+            || Array.isArray(selected)
+            || (selected.namespace !== 'jmdict' && selected.namespace !== 'jmnedict')
+            || !Number.isSafeInteger(selected.entryID)
+            || selected.entryID <= 0)) {
+        return null
+    }
+    const selectedLexicon = selected?.namespace ?? (legacyEntryID != null ? 'jmdict' : null)
+    const selectedEntryID = selected?.entryID ?? legacyEntryID ?? null
     const selectedCandidates = selectedLexicon === 'jmdict'
         ? jmdictEntryIDs
         : selectedLexicon === 'jmnedict'
             ? jmnedictEntryIDs
             : []
-    if (selectedLexicon !== null
-        && (!Number.isSafeInteger(selectedEntryID)
-            || !selectedCandidates.includes(selectedEntryID))) {
+    if (selectedLexicon !== null && !selectedCandidates.includes(selectedEntryID)) {
         return null
     }
     return {

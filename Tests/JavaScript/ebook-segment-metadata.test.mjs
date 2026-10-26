@@ -173,6 +173,62 @@ test('wrong schema, duplicate runtime IDs, and invalid committed selections fail
     }
 })
 
+for (const transport of ['canonical', 'external']) {
+    test(`${transport} selection admission rejects malformed replacements and recovers with a valid sidecar`, () => {
+        const { bootstrap } = makeBootstrap()
+        const doc = makeDocument()
+        let generation = 0
+        const install = payload => {
+            generation += 1
+            if (transport === 'canonical') {
+                doc.canonical = makeCanonical(payload)
+                // An invalid canonical owner must not expose this valid fallback.
+                doc.manabiExternalSegmentSidecar = {
+                    payload: makePayload(), signature: 'unused-external',
+                }
+            } else {
+                doc.manabiExternalSegmentSidecar = {
+                    payload, signature: `selection-${generation}`,
+                }
+            }
+        }
+        install(makePayload())
+        let previous = bootstrap(doc)
+        assert.equal(previous.byID.get('runtime-a').selectedEntryID, 1002)
+        assert.equal(previous.sentenceArchive.get('sentence-a').sentenceHTML, '  読む愛。\n')
+        for (const resolution of [
+            { se: { namespace: 'jmdict', entryID: 1002 }, e: 0, s: '読む' },
+            { se: { namespace: 'jmnedict', entryID: 2002 }, e: -1, s: '読む' },
+            { se: { namespace: 'jmdict', entryID: 0 }, e: 1001, s: '読む' },
+            { se: { namespace: 'other', entryID: 1001 }, e: 1001, s: '読む' },
+            { se: {}, e: 1001, s: '読む' },
+        ]) {
+            const malformed = makePayload()
+            malformed.t.res[0] = resolution
+            install(malformed)
+            const rejected = bootstrap(doc)
+            assertEmpty(rejected)
+            assert.notEqual(rejected.byID, previous.byID)
+            assert.notEqual(rejected.sentenceArchive, previous.sentenceArchive)
+
+            const valid = makePayload()
+            valid.t.res[0] = {
+                se: { namespace: 'jmnedict', entryID: 2002 }, e: 1001, s: '読む',
+            }
+            install(valid)
+            const recovered = bootstrap(doc)
+            const metadata = recovered.byID.get('runtime-a')
+            assert.equal(metadata.selectedLexicon, 'jmnedict')
+            assert.equal(metadata.selectedEntryID, 2002)
+            assert.equal(metadata.requiresCommittedDictionarySelection, true)
+            assert.equal(recovered.sentenceArchive.get('sentence-a').sentenceHTML, '  読む愛。\n')
+            assert.notEqual(recovered.byID, rejected.byID)
+            assert.equal(bootstrap(doc).byID, recovered.byID)
+            previous = recovered
+        }
+    })
+}
+
 test('full tuples preserve typed selection, canonical search, and exact scope text', () => {
     const result = makeBootstrap().bootstrap(makeDocument(makeCanonical(makePayload())))
     const first = result.byID.get('runtime-a')
