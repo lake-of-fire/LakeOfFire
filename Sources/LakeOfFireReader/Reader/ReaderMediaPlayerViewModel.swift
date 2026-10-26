@@ -89,7 +89,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private var ttsUtteranceObjectIdentifierToIndex = [ObjectIdentifier: Int]()
     private var ttsCurrentUtteranceIndex: Int = 0
     private var ttsCurrentCharacterRange: NSRange?
-    private var readAloudAudioSessionLease: ManabiSpokenAudioSessionLease?
+    private let readAloudAudioSessionLeaseFactory: () throws -> any ReaderReadAloudAudioSessionLease
+    private var readAloudAudioSessionLease: (any ReaderReadAloudAudioSessionLease)?
     private var ttsVoiceLanguage = "ja-JP"
     private var cachedReadAloudVoiceConfiguration: ReaderReadAloudVoiceConfiguration?
     private var cachedReadAloudVoice: AVSpeechSynthesisVoice?
@@ -107,10 +108,14 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     init(
         readAloudController: ReaderReadAloudController,
+        readAloudAudioSessionLeaseFactory: @escaping () throws -> any ReaderReadAloudAudioSessionLease = {
+            try ManabiSpokenAudioSession.acquire(.readAloud)
+        },
         readAloudVoiceResolver: @escaping (String, String) -> AVSpeechSynthesisVoice? =
             resolveReaderReadAloudVoice
     ) {
         self.readAloudController = readAloudController
+        self.readAloudAudioSessionLeaseFactory = readAloudAudioSessionLeaseFactory
         self.readAloudVoiceResolver = readAloudVoiceResolver
         super.init()
         readAloudController.delegate = self
@@ -559,7 +564,10 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             return
         }
         if readAloudController.isPaused {
-            activateReadAloudAudioSession()
+            guard activateReadAloudAudioSession() else {
+                isPlaying = false
+                return
+            }
             guard readAloudController.continueSpeaking() else {
                 deactivateReadAloudAudioSession()
                 mediaDebugPrint("# READALOUD ai.play.resumeFailed")
@@ -679,7 +687,10 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         ttsUtteranceObjectIdentifierToIndex.removeAll(keepingCapacity: true)
 
         stopAITTSSynthesizerForQueueSwap()
-        activateReadAloudAudioSession()
+        guard activateReadAloudAudioSession() else {
+            isPlaying = false
+            return
+        }
 
         guard shouldEnqueueSpeechSynthesizerUtterances else {
             isPlaying = true
@@ -882,27 +893,25 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         ))
     }
 
-    private func activateReadAloudAudioSession() {
-#if os(iOS)
-        guard readAloudAudioSessionLease == nil else { return }
+    private func activateReadAloudAudioSession() -> Bool {
+        guard readAloudAudioSessionLease == nil else { return true }
         do {
-            readAloudAudioSessionLease = try ManabiSpokenAudioSession.acquire(.readAloud)
+            readAloudAudioSessionLease = try readAloudAudioSessionLeaseFactory()
+            return true
         } catch {
             mediaDebugPrint("# READALOUD audioSession.activate.failed", error.localizedDescription)
+            return false
         }
-#endif
     }
 
     private func deactivateReadAloudAudioSession() {
-#if os(iOS)
+        guard let lease = readAloudAudioSessionLease else { return }
+        readAloudAudioSessionLease = nil
         do {
-            let lease = readAloudAudioSessionLease
-            readAloudAudioSessionLease = nil
-            try lease?.release()
+            try lease.release()
         } catch {
             mediaDebugPrint("# READALOUD audioSession.deactivate.failed", error.localizedDescription)
         }
-#endif
     }
 
 #if os(iOS)
