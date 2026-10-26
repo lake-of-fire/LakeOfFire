@@ -36,7 +36,7 @@ jobs:
       - name: JavaScript behavioral tests
         run: |
           set -o pipefail
-          node --test Tests/JavaScript/*.test.mjs 2>&1 | tee book-actions-unit-results.txt
+          node --test Tests/JavaScript/*.test.mjs Tests/JavaScript/*.test.cjs 2>&1 | tee book-actions-unit-results.txt
       - name: Install browser dependencies
         run: |
           python3 -m pip install playwright==1.57.0
