@@ -346,7 +346,7 @@ export const createEbookSegmentMetadataBootstrap = ({
         const vocabularyCandidateGroups = []
         const archiveSegments = []
         for (const segment of segments) {
-            text += segment.x || segment.s || segment.ns || ''
+            text += segment.scopeText ?? (segment.x || segment.s || segment.ns || '')
             const jmdictEntryIDs = manabiSidecarNumberArray(segment.j)
             const jmnedictEntryIDs = manabiSidecarNumberArray(segment.n)
             const primaryEntryID = jmdictEntryIDs[0]
