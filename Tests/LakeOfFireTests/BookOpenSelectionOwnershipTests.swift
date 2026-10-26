@@ -29,6 +29,126 @@ private actor BookOpenSelectionGate {
 
 final class BookOpenSelectionOwnershipTests: XCTestCase {
     @MainActor
+    func testOPDS2RelationlessImagesUseDocumentOrderAndFinalDocumentBase() throws {
+        let document = try catalogDocument(#"""
+        {"metadata":{"title":"Ordinary OPDS2 book"},"images":[
+          {"href":"covers/first.jpg","type":"image/jpeg","width":800,"height":1200},
+          {"href":"covers/larger.png","type":"image/png","width":1600,"height":2400}]}
+        """#)
+        let images = try XCTUnwrap(document.publication?.images)
+        XCTAssertEqual(images.count, 2)
+        XCTAssertTrue(images.allSatisfy { $0.rels.isEmpty })
+        let books = try XCTUnwrap(BookLibraryViewModel.mappedPublications(
+            in: document, relativeTo: catalogRequestURL))
+        XCTAssertEqual(books.first?.coverURL?.absoluteString,
+            "https://cdn.example/releases/v2/covers/first.jpg")
+    }
+
+    @MainActor
+    func testOPDS2RelationlessImagesNeverReplaceExistingCoverPriorities() throws {
+        let image = #"{"href":"image.png","rel":"http://opds-spec.org/image"}"#
+        let thumbnail = #"{"href":"thumbnail.png","rel":"http://opds-spec.org/image/thumbnail"}"#
+        let cover = #"{"href":"cover.png","rel":"cover"}"#
+        for (tagged, expected) in [
+            ([thumbnail], "thumbnail.png"),
+            ([thumbnail, image], "image.png"),
+            ([thumbnail, image, cover], "cover.png"),
+        ] {
+            let document = try catalogDocument("""
+            {"metadata":{"title":"Priority"},"images":[{"href":"unrelated-first.png"},
+             \(tagged.joined(separator: ","))]}
+            """)
+            let books = try XCTUnwrap(BookLibraryViewModel.mappedPublications(
+                in: document, relativeTo: catalogRequestURL))
+            XCTAssertEqual(books.first?.coverURL?.lastPathComponent, expected)
+        }
+    }
+
+    @MainActor
+    func testOPDS2ImageFallbackLeavesAbsentAndEmptyImagesWithoutACover() throws {
+        for images in ["", ",\"images\":[]"] {
+            let document = try catalogDocument("{\"metadata\":{\"title\":\"No cover\"}\(images)}")
+            let books = try XCTUnwrap(BookLibraryViewModel.mappedPublications(
+                in: document, relativeTo: catalogRequestURL))
+            XCTAssertEqual(books.map(\.title), ["No cover"])
+            XCTAssertNil(books.first?.coverURL)
+        }
+    }
+
+    @MainActor
+    func testOPDS2AcquisitionAliasesReachCanonicalRelationsAndReaderDownloads() throws {
+        for (alias, canonical) in [("acquisition", LinkRelation.opdsAcquisition),
+                                   ("download", LinkRelation.opdsAcquisitionOpenAccess)] {
+            for relationJSON in ["\"\(alias)\"", "[\"alternate\",\"\(alias)\"]"] {
+                let document = try catalogDocument("""
+                {"metadata":{"title":"Alias book"},"links":[{"href":"../books/alias.epub",
+                 "rel":\(relationJSON)}]}
+                """)
+                let publication = try XCTUnwrap(document.publication)
+                let acquisition = try XCTUnwrap(publication.links.first(withRel: canonical))
+                XCTAssertTrue(acquisition.rels.contains(canonical))
+                XCTAssertTrue(acquisition.rels.contains(where: \.isOPDSAcquisition))
+                let books = try XCTUnwrap(BookLibraryViewModel.mappedPublications(
+                    in: document, relativeTo: catalogRequestURL))
+                XCTAssertEqual(books.map(\.title), ["Alias book"])
+                XCTAssertEqual(books.first?.downloadURL?.absoluteString,
+                    "https://cdn.example/releases/books/alias.epub")
+            }
+        }
+    }
+
+    @MainActor
+    func testOPDS2AliasSpellingsKeepGenericAcquisitionPriority() throws {
+        for generic in ["acquisition", LinkRelation.opdsAcquisition.string] {
+            for openAccess in ["download", LinkRelation.opdsAcquisitionOpenAccess.string] {
+                let document = try catalogDocument("""
+                {"metadata":{"title":"Feed"},"publications":[{"metadata":{"title":"Priority"},
+                  "links":[{"href":"open.epub","rel":"\(openAccess)"},
+                           {"href":"generic.epub","rel":"\(generic)"}]}]}
+                """)
+                let books = try XCTUnwrap(BookLibraryViewModel.mappedPublications(
+                    in: document, relativeTo: catalogRequestURL))
+                XCTAssertEqual(books.first?.downloadURL?.lastPathComponent, "generic.epub")
+            }
+        }
+    }
+
+    @MainActor
+    func testOPDS2AliasNormalizationPreservesRestrictedCustomAndLookalikeRelations() throws {
+        let relations = ["buy", "borrow", "preview", "subscribe", "download-preview", "download/preview",
+                         "downloaded", "acquisition-extra", "acquisition/open-access", " download ",
+                         "https://custom.example/download"]
+        for relation in relations {
+            let document = try catalogDocument("""
+            {"metadata":{"title":"Not a direct download"},"links":[{"href":"not-full.epub",
+             "rel":["alternate","\(relation)"]}]}
+            """)
+            let parsedRelations = try XCTUnwrap(document.publication?.links.first?.rels)
+            XCTAssertEqual(parsedRelations, [.alternate, LinkRelation(relation)], relation)
+            let books = try XCTUnwrap(BookLibraryViewModel.mappedPublications(
+                in: document, relativeTo: catalogRequestURL))
+            XCTAssertNil(books.first?.downloadURL, relation)
+        }
+    }
+
+    @MainActor
+    func testShortAcquisitionAliasesDoNotChangeAtomOrDirectRelationConstruction() throws {
+        for alias in ["acquisition", "download"] {
+            let document = try catalogDocument("""
+            <entry xmlns="http://www.w3.org/2005/Atom"><title>Custom Atom role</title>
+              <link href="custom.epub" rel="\(alias)"/>
+            </entry>
+            """, atom: true)
+            let link = try XCTUnwrap(document.publication?.links.first)
+            XCTAssertEqual(link.rels, [LinkRelation(alias)])
+            XCTAssertFalse(LinkRelation(alias).isOPDSAcquisition)
+            let books = try XCTUnwrap(BookLibraryViewModel.mappedPublications(
+                in: document, relativeTo: catalogRequestURL))
+            XCTAssertNil(books.first?.downloadURL)
+        }
+    }
+
+    @MainActor
     func testCatalogNavigationCyclesStopBeforeRepeatingARequest() async throws {
         for kind in ["self", "fragment", "two-documents"] {
             let fixture = catalogLoadingFixture()

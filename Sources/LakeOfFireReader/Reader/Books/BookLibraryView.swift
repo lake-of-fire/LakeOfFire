@@ -512,9 +512,12 @@ public class BookLibraryViewModel: ObservableObject {
             return nil
         }
         return publications.map { publication in
-            let coverLink = publication.images.first(withRel: .cover)
-                ?? publication.images.first(withRel: .opdsImage)
-                ?? publication.images.first(withRel: .opdsImageThumbnail)
+            let coverURL = publication.images.first(withRel: .cover)?.url(relativeTo: url)
+                ?? publication.images.first(withRel: .opdsImage)?.url(relativeTo: url)
+                ?? publication.images.first(withRel: .opdsImageThumbnail)?.url(relativeTo: url)
+                // OPDS 2.0 images already identify visual representations;
+                // the collection's links do not require legacy image relations.
+                ?? publication.images.lazy.compactMap { $0.url(relativeTo: url) }.first
             // Keep the existing generic acquisition priority. Purchase, loan,
             // sample and subscription URLs are not full-book downloads.
             let acquisitionLink = publication.links.first(withRel: .opdsAcquisition)
@@ -523,7 +526,7 @@ public class BookLibraryViewModel: ObservableObject {
                 title: publication.metadata.title,
                 author: publication.metadata.authors.map(\.name).joined(separator: ", "),
                 publicationDate: publication.metadata.published,
-                coverURL: coverLink?.url(relativeTo: url),
+                coverURL: coverURL,
                 downloadURL: acquisitionLink?.url(relativeTo: url),
                 summary: publication.metadata.description ?? publication.metadata.subtitle
             )
