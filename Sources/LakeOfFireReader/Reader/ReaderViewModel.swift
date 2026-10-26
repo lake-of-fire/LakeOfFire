@@ -236,17 +236,22 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @MainActor
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
         if let historyRecord = content as? HistoryRecord {
-            let contentRef = ReaderContentLoader.ContentReference(content: historyRecord)
+            try Task.checkCancellation()
+            guard let contentRef = ReaderContentLoader.ContentReference(content: historyRecord) else { return }
+            let historyRef = ThreadSafeReference(to: historyRecord)
+            let historyURL = historyRecord.url
             try await { @RealmBackgroundActor in
                 try Task.checkCancellation()
-                guard let contentRef else { return }
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: contentRef.realmConfiguration)
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: contentRef.realmConfiguration,
+                    storageAdmission: contentRef.storageAdmission
+                )
                 try await realm.asyncRefresh()
                 try await realm.asyncWritePreservingOwnership {
-                    guard let content = realm.object(
-                        ofType: HistoryRecord.self, forPrimaryKey: contentRef.contentKey
-                    ), !content.isDeleted else { return }
+                    try contentRef.validateStorage()
                     try Task.checkCancellation()
+                    guard let content = realm.resolve(historyRef),
+                          !content.isDeleted, content.url == historyURL else { return }
                     content.lastVisitedAt = Date()
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }
