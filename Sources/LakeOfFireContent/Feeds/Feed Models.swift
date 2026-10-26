@@ -1155,13 +1155,6 @@ private func isNiponicaFeedURL(_ url: URL) -> Bool {
 fileprivate struct FeedFetchMetadata {
     let etag: String?
     let lastModifiedAt: Date?
-
-    func merged(with newer: FeedFetchMetadata) -> FeedFetchMetadata {
-        FeedFetchMetadata(
-            etag: newer.etag ?? etag,
-            lastModifiedAt: newer.lastModifiedAt ?? lastModifiedAt
-        )
-    }
 }
 
 fileprivate enum FeedFetchResult {
