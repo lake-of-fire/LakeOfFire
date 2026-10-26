@@ -15,7 +15,7 @@ const makePayload = () => ({
         s: ['読む', '愛', '次'],
         ns: ['よむ', 'あい'],
         p: ['動詞', '名詞'],
-        x: ['読む', '愛', '次', '  読む愛。\n', '  読む愛。\n次。  ', '次。'],
+        x: ['読む', '愛', '次', '  読む', '  読む愛。\n', '次。', '愛。\n'],
         sid: ['sentence-a', 'sentence-b'],
         pid: ['paragraph-a', 'paragraph-b'],
         res: [
@@ -26,7 +26,7 @@ const makePayload = () => ({
     },
     s: [
         ['!runtime-a', 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 3, 4],
-        ['!runtime-b', 1, 0, 0, 1, 1, 1, 3, 1, 0, 0, 1, 3, 4],
+        ['!runtime-b', 1, 0, 0, 1, 1, 1, 3, 1, 0, 0, 1, 6, null],
         ['!runtime-c', 2, 1, null, 2, null, 1, null, 2, 1, 1, 2, 5, 5],
     ],
 })
@@ -118,14 +118,15 @@ test('canonical node replacement retires both metadata and sentence archive cach
     const firstArchive = first.sentenceArchive.get('sentence-a')
     const replacement = makePayload()
     replacement.t.x[0] = '新しい'
+    replacement.t.x[3] = '  新しい'
     replacement.t.h[0] = 'replacement-hash'
     doc.canonical = makeCanonical(replacement)
     const second = bootstrap(doc)
     assert.notEqual(second.byID, first.byID)
     assert.notEqual(second.sentenceArchive, first.sentenceArchive)
     assert.equal(second.byID.get('runtime-a').sid, 'sentence-a-replacement-hash')
-    assert.equal(second.sentenceArchive.get('sentence-a').sentenceHTML, '新しい愛')
-    assert.equal(firstArchive.sentenceHTML, '読む愛')
+    assert.equal(second.sentenceArchive.get('sentence-a').sentenceHTML, '  新しい愛。\n')
+    assert.equal(firstArchive.sentenceHTML, '  読む愛。\n')
 })
 
 test('canonical ownership suppresses external payload until canonical removal', () => {
@@ -179,7 +180,7 @@ test('full tuples preserve typed selection, canonical search, and exact scope te
         i: 'runtime-a', h: 'hash-a', sid: 'sentence-a-hash-a',
         sentenceID: 'sentence-a', paragraphID: 'paragraph-a', pid: 'paragraph-a',
         j: [1001, 1002], n: [2001, 2002], s: '読む', ns: 'よむ', p: '動詞',
-        l: 2, x: '読む', scopeText: '  読む愛。\n', paragraphScopeText: '  読む愛。\n次。  ',
+        l: 2, x: '読む', scopeText: '  読む', paragraphScopeText: '  読む愛。\n',
         selectedLexicon: 'jmdict', selectedEntryID: 1002, canonicalSearchString: '読む',
         requiresCommittedDictionarySelection: true,
     })
@@ -187,6 +188,8 @@ test('full tuples preserve typed selection, canonical search, and exact scope te
     assert.equal(second.selectedLexicon, 'jmnedict')
     assert.equal(second.selectedEntryID, 2002)
     assert.equal(second.canonicalSearchString, '愛')
+    assert.equal(second.scopeText, '愛。\n')
+    assert.equal(second.paragraphScopeText, null)
     assert.deepEqual(second.j, [1001, 1002])
     assert.deepEqual(second.n, [2001, 2002])
 })
@@ -276,6 +279,8 @@ test('sentence archives escape text, preserve both typed alternatives, and dedup
     const payload = makePayload()
     payload.t.x[0] = `<読む&"'`
     payload.t.x[1] = '>愛'
+    payload.t.x[3] = payload.t.x[0]
+    payload.t.x[6] = payload.t.x[1]
     const result = makeBootstrap().bootstrap(makeDocument(makeCanonical(payload)))
     const archive = result.sentenceArchive.get('sentence-a')
     assert.equal(archive.sentenceHTML, '&lt;読む&amp;&quot;&#39;&gt;愛')
@@ -295,6 +300,8 @@ test('sentence archive truncation counts Unicode codepoints and preserves a boun
     const payload = makePayload()
     payload.t.x[0] = 'あ'.repeat(6999) + '😀' + 'discarded'
     payload.t.x[1] = 'also discarded'
+    payload.t.x[3] = payload.t.x[0]
+    payload.t.x[6] = payload.t.x[1]
     const archive = makeBootstrap().bootstrap(makeDocument(makeCanonical(payload)))
         .sentenceArchive.get('sentence-a')
     assert.equal(archive.sentenceHTML, 'あ'.repeat(6999) + '😀')
