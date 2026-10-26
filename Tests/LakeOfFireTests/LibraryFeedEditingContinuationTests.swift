@@ -367,12 +367,13 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         let started = expectation(description: "Active writer registered before retirement")
         let retired = expectation(description: "Retirement batch durably settled")
         let gate = LibraryFeedContinuationGate()
+        let admissionFailure = LibraryFeedInjectedAdmissionFailure()
         let retirementQueued = XCTestExpectation(description: "Captured-draft retirement queued its actual write")
         var model: LibraryFeedFormSectionsViewModel? = LibraryFeedFormSectionsViewModel(
             feed: feed, observesRealm: false, observesFormInput: true,
             beforeFieldWrite: {
                 await gate.wait(onFirstWait: { started.fulfill() })
-                throw InjectedFailure.admission
+                if await admissionFailure.shouldFail() { throw InjectedFailure.admission }
             },
             retirementDidFinish: { retired.fulfill() }
         )
@@ -382,6 +383,10 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         addTeardownBlock { [weak retiringModel] in
             await gate.release()
             _ = await finish?.result
+            // Preserve the injected failure through the original attempt, but
+            // let a retained-model cleanup settle its pending command before
+            // releasing that model outside the retirement observation scope.
+            await admissionFailure.disable()
             if let retainedModel = retiringModel {
                 _ = await retainedModel.finishEditing().result
                 await retainedModel.stopObserving()
@@ -1436,6 +1441,12 @@ private actor LibraryFeedContinuationGate {
         continuations.removeAll()
         for continuation in waiting { continuation.resume() }
     }
+}
+
+private actor LibraryFeedInjectedAdmissionFailure {
+    private var enabled = true
+    func shouldFail() -> Bool { enabled }
+    func disable() { enabled = false }
 }
 
 private actor LibraryFeedWriteAttempts {
