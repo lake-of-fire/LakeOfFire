@@ -769,8 +769,11 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     }
 
     private func refreshFeed(expectedRSSURL: URL) async {
-        guard currentRSSURL == expectedRSSURL else { return }
-        try? await feed.fetch(realmConfiguration: realmConfiguration)
+        guard currentRSSURL == expectedRSSURL, let physicalOwner else { return }
+        try? await feed.fetch(
+            realmConfiguration: realmConfiguration,
+            storageAdmission: physicalOwner.storageAdmission
+        )
     }
 
     func beginMetadataRefresh(rssURL: URL, identifier: UUID) {

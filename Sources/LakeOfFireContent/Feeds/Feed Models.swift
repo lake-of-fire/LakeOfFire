@@ -1475,6 +1475,26 @@ struct FeedRefreshLease: Sendable, Equatable {
     let generation: UUID
 }
 
+// Feed's stored UUID shadows ObjectKeyIdentifiable.id on the concrete type.
+// The protocol witness supplies Realm's physical row key for managed and
+// frozen objects, so a same-UUID delete/recreate cannot adopt an old fetch.
+fileprivate func feedRefreshRowKey<T: ObjectKeyIdentifiable>(_ object: T) -> UInt64 { object.id }
+
+fileprivate struct FeedFetchOwner: Sendable {
+    let configuration: Realm.Configuration
+    let storageAdmission: RealmStorageAdmission
+    let feedID: UUID
+    let feedRowKey: UInt64
+    let expectedRSSURL: URL
+    let refreshLease: FeedRefreshLease
+
+    func validateStorage() throws {
+        guard storageAdmission.matchesCurrentStorageIdentity({
+            RealmBackgroundActor.shared.realmCacheKey(for: configuration)
+        }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+    }
+}
+
 final class FeedRefreshRegistry: @unchecked Sendable {
     static let shared = FeedRefreshRegistry()
 
@@ -1511,16 +1531,16 @@ public extension Feed {
         _ metadata: FeedFetchMetadata,
         replacesValidators: Bool = false,
         expectedValidators: FeedFetchMetadata? = nil,
-        expectedRSSURL: URL,
-        refreshLease: FeedRefreshLease,
-        realmConfiguration: Realm.Configuration
+        owner: FeedFetchOwner
     ) async throws -> Bool {
-        let feedID = id
+        let feedID = owner.feedID
         return try await { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: owner.configuration, storageAdmission: owner.storageAdmission
+            )
             await realm.asyncRefresh()
             return try await realm.asyncWritePreservingOwnership {
-                try checkFeedRefreshIsCurrent(in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease)
+                try checkFeedRefreshIsCurrent(in: realm, owner: owner)
                 guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else {
                     throw CancellationError()
                 }
@@ -1543,19 +1563,19 @@ public extension Feed {
     @MainActor
     private func persist(
         rssItems: [RSSFeedItem],
-        expectedRSSURL: URL,
-        refreshLease: FeedRefreshLease,
-        realmConfiguration: Realm.Configuration,
+        owner: FeedFetchOwner,
         deleteOrphans: Bool
     ) async throws {
-        let feedID = id
+        let feedID = owner.feedID
         let iconUrl = iconUrl
         let entryContentKind = entryContentKind
         let containsFullContent = rssContainsFullContent
         try await { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: owner.configuration, storageAdmission: owner.storageAdmission
+            )
             await realm.asyncRefresh()
-            try checkFeedRefreshIsCurrent(in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease)
+            try checkFeedRefreshIsCurrent(in: realm, owner: owner)
             // A missing completion stamp also covers an earlier body commit whose
             // related-content projection failed. Identical-body retries must retry it.
             let needsRelatedContentRecovery = realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.lastRefreshedEntriesAt == nil
@@ -1640,7 +1660,7 @@ public extension Feed {
             if deleteOrphans || !entriesToPersist.isEmpty {
                 await realm.asyncRefresh()
                 didCommit = try await realm.asyncWritePreservingOwnership {
-                    try checkFeedRefreshIsCurrent(in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease)
+                    try checkFeedRefreshIsCurrent(in: realm, owner: owner)
                     let orphans = realm.objects(FeedEntry.self)
                         .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
                     if !entriesToPersist.isEmpty || (deleteOrphans && !orphans.isEmpty) {
@@ -1662,10 +1682,10 @@ public extension Feed {
                 }
             }
             for payload in didCommit ? payloads : [] {
-                try checkFeedRefreshIsCurrent(in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease)
-                try await syncRelatedReaderContent(with: payload, sourceRealm: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease)
+                try checkFeedRefreshIsCurrent(in: realm, owner: owner)
+                try await syncRelatedReaderContent(with: payload, sourceRealm: realm, owner: owner)
                 await realm.asyncRefresh()
-                try checkFeedRefreshIsCurrent(in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease)
+                try checkFeedRefreshIsCurrent(in: realm, owner: owner)
             }
         }()
     }
@@ -1674,19 +1694,19 @@ public extension Feed {
     private func persist(
         atomItems: [AtomFeedEntry],
         collections: [ParsedFeedEntryCollection],
-        expectedRSSURL: URL,
-        refreshLease: FeedRefreshLease,
-        realmConfiguration: Realm.Configuration,
+        owner: FeedFetchOwner,
         deleteOrphans: Bool
     ) async throws {
-        let feedID = id
+        let feedID = owner.feedID
         let sourceIconURL = iconUrl
         let entryContentKind = entryContentKind
         let containsFullContent = rssContainsFullContent
         try await { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: owner.configuration, storageAdmission: owner.storageAdmission
+            )
             await realm.asyncRefresh()
-            try checkFeedRefreshIsCurrent(in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease)
+            try checkFeedRefreshIsCurrent(in: realm, owner: owner)
             // A missing completion stamp also covers an earlier body commit whose
             // related-content projection failed. Identical-body retries must retry it.
             let needsRelatedContentRecovery = realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.lastRefreshedEntriesAt == nil
@@ -1843,7 +1863,7 @@ public extension Feed {
             if !entriesToPersist.isEmpty || !collectionObjects.isEmpty || deleteOrphans {
                 await realm.asyncRefresh()
                 didCommit = try await realm.asyncWritePreservingOwnership {
-                    try checkFeedRefreshIsCurrent(in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease)
+                    try checkFeedRefreshIsCurrent(in: realm, owner: owner)
                     let hasCollectionOrphans = deleteOrphans && !realm.objects(FeedEntryCollection.self)
                         .where({ !$0.isDeleted && $0.compoundKey.in(existingCollectionKeys) && !$0.compoundKey.in(incomingCollectionKeys) }).isEmpty
                     let hasEntryOrphans = deleteOrphans && !realm.objects(FeedEntry.self)
@@ -1881,25 +1901,52 @@ public extension Feed {
                 }
             }
             for payload in didCommit ? payloads : [] {
-                try checkFeedRefreshIsCurrent(in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease)
-                try await syncRelatedReaderContent(with: payload, sourceRealm: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease)
+                try checkFeedRefreshIsCurrent(in: realm, owner: owner)
+                try await syncRelatedReaderContent(with: payload, sourceRealm: realm, owner: owner)
                 await realm.asyncRefresh()
-                try checkFeedRefreshIsCurrent(in: realm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease)
+                try checkFeedRefreshIsCurrent(in: realm, owner: owner)
             }
         }()
     }
     
     @MainActor
-    func fetch(realmConfiguration: Realm.Configuration) async throws {
+    func fetch(
+        realmConfiguration: Realm.Configuration,
+        storageAdmission: RealmStorageAdmission? = nil
+    ) async throws {
+        // A refresh must originate from a physical Realm row. The default
+        // capture serves ordinary callers; an editor can transfer the earlier
+        // admission it captured before its own debounce and child task.
+        guard !isInvalidated, let sourceRealm = realm else { throw CancellationError() }
+        let admittedStorage = storageAdmission
+            ?? RealmBackgroundActor.shared.captureStorageAdmission(for: realmConfiguration)
+        // Realm.configuration materializes an explicit objectTypes array even
+        // when the caller opened automatic discovery with nil. Restore that
+        // one requested representation for comparing the source Realm; keep
+        // every other schema, mode, encryption and storage key field strict.
+        var sourceConfiguration = sourceRealm.configuration
+        if realmConfiguration.objectTypes == nil { sourceConfiguration.objectTypes = nil }
+        guard admittedStorage.matchesCurrentStorageIdentity({
+            RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+        }), admittedStorage.matchesCurrentStorageIdentity({
+            RealmBackgroundActor.shared.realmCacheKey(for: sourceConfiguration)
+        }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
         let requestedRSSURL = rssUrl
         let diagnosticFeedID = id
         let diagnosticTitle = title
         let refreshLease = FeedRefreshRegistry.shared.begin(feedID: id)
         defer { FeedRefreshRegistry.shared.end(refreshLease) }
+        let owner = FeedFetchOwner(
+            configuration: realmConfiguration, storageAdmission: admittedStorage,
+            feedID: diagnosticFeedID, feedRowKey: feedRefreshRowKey(self),
+            expectedRSSURL: requestedRSSURL, refreshLease: refreshLease
+        )
         func checkRequestIsCurrent() throws {
             try Task.checkCancellation()
+            try owner.validateStorage()
             guard !isInvalidated,
                   rssUrl == requestedRSSURL,
+                  feedRefreshRowKey(self) == owner.feedRowKey,
                   FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
                 throw CancellationError()
             }
@@ -1931,8 +1978,7 @@ public extension Feed {
         if case .notModified(let metadata) = fetchResult {
             let accepted = try await persistFetchMetadata(
                 metadata, expectedValidators: requestedValidators,
-                expectedRSSURL: requestedRSSURL, refreshLease: refreshLease,
-                realmConfiguration: realmConfiguration
+                owner: owner
             )
             if accepted {
                 if shouldLogNiponica {
@@ -1995,8 +2041,7 @@ public extension Feed {
                     itemCount = items.count
                     if shouldLogNiponica { logNiponica("stage=feed.fetch.parsed feedID=\(diagnosticFeedID.uuidString) title=\(diagnosticTitle) rssURL=\(requestedRSSURL.absoluteString) feedType=rss items=\(items.count)") }
                     try await persist(
-                        rssItems: items, expectedRSSURL: requestedRSSURL,
-                        refreshLease: refreshLease, realmConfiguration: realmConfiguration,
+                        rssItems: items, owner: owner,
                         deleteOrphans: deleteOrphans
                     )
                 case .atom(let atomFeed):
@@ -2009,8 +2054,7 @@ public extension Feed {
                     if shouldLogNiponica { logNiponica("stage=feed.fetch.parsed feedID=\(diagnosticFeedID.uuidString) title=\(diagnosticTitle) rssURL=\(requestedRSSURL.absoluteString) feedType=atom entries=\(items.count) collections=\(atomCollections.count)") }
                     try await persist(
                         atomItems: items, collections: atomCollections,
-                        expectedRSSURL: requestedRSSURL, refreshLease: refreshLease,
-                        realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans
+                        owner: owner, deleteOrphans: deleteOrphans
                     )
                 case .json:
                     if shouldLogNiponica { logNiponica("stage=feed.fetch.parserError feedID=\(diagnosticFeedID.uuidString) title=\(diagnosticTitle) rssURL=\(requestedRSSURL.absoluteString) feedType=json reason=unsupported") }
@@ -2018,8 +2062,7 @@ public extension Feed {
                 }
                 try checkRequestIsCurrent()
                 try await persistFetchMetadata(
-                    metadata, replacesValidators: true, expectedRSSURL: requestedRSSURL,
-                    refreshLease: refreshLease, realmConfiguration: realmConfiguration
+                    metadata, replacesValidators: true, owner: owner
                 )
                 if shouldLogNiponica { logNiponica("stage=feed.fetch.persisted feedID=\(diagnosticFeedID.uuidString) title=\(diagnosticTitle) rssURL=\(requestedRSSURL.absoluteString) feedType=\(feedType) items=\(itemCount) collections=\(atomCollections.count)") }
             } catch {
@@ -2032,12 +2075,14 @@ public extension Feed {
 
 @RealmBackgroundActor
 fileprivate func checkFeedRefreshIsCurrent(
-    in realm: Realm, expectedRSSURL: URL, refreshLease: FeedRefreshLease
+    in realm: Realm, owner: FeedFetchOwner
 ) throws {
     try Task.checkCancellation()
-    guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: refreshLease.feedID),
-          !feed.isDeleted, feed.rssUrl == expectedRSSURL,
-          FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
+    try owner.validateStorage()
+    guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: owner.feedID),
+          !feed.isDeleted, feed.rssUrl == owner.expectedRSSURL,
+          feedRefreshRowKey(feed) == owner.feedRowKey,
+          FeedRefreshRegistry.shared.isCurrent(owner.refreshLease) else {
         throw CancellationError()
     }
 }
@@ -2257,11 +2302,11 @@ func applyPayload(_ payload: FeedEntryPayload, to content: any ReaderContentProt
 @RealmBackgroundActor
 fileprivate func syncRelatedReaderContent(
     with payload: FeedEntryPayload, sourceRealm: Realm,
-    expectedRSSURL: URL, refreshLease: FeedRefreshLease
+    owner: FeedFetchOwner
 ) async throws {
     let mirrors = try await ReaderContentLoader.loadAll(url: payload.url, skipFeedEntries: true)
     await sourceRealm.asyncRefresh()
-    try checkFeedRefreshIsCurrent(in: sourceRealm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease)
+    try checkFeedRefreshIsCurrent(in: sourceRealm, owner: owner)
     let timestamp = Date()
     for case let object as (Object & ReaderContentProtocol) in mirrors {
         guard let realm = object.realm else { continue }
@@ -2269,7 +2314,7 @@ fileprivate func syncRelatedReaderContent(
             // The mirror may live in a different Realm, and acquiring its write
             // can suspend after the source refresh above.
             if sourceRealm != realm { sourceRealm.refresh() }
-            try checkFeedRefreshIsCurrent(in: sourceRealm, expectedRSSURL: expectedRSSURL, refreshLease: refreshLease)
+            try checkFeedRefreshIsCurrent(in: sourceRealm, owner: owner)
             if applyPayload(payload, to: object) {
                 object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
             }
