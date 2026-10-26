@@ -1187,15 +1187,19 @@ const recordPageTurnNavigationIntent = (direction, _source, _details = {}) => {
     }
 };
 
-const createReaderTouchstartPoster = (view, isCurrent) => {
+const createReaderTouchstartPoster = (view, observeReader, ownerIsCurrent) => {
     const postingDocument = view.document;
-    const ownsPostingDocument = () => view.document === postingDocument
-        && isCurrent() && view.document === postingDocument;
-    const mayPost = (sourceIsCurrent = () => true) => ownsPostingDocument()
-        && sourceIsCurrent() && ownsPostingDocument();
-    const post = (payload, sourceIsCurrent, commit = () => {}) => {
+    // Page getters may reenter. Finish observations before terminal private
+    // ownership checks, including Reader identity after child observations.
+    const mayPost = ({ observe = () => true, isCurrent = () => true } = {}) => {
+        const observed = view.document === postingDocument
+            && observeReader() && observe() && observeReader()
+            && view.document === postingDocument;
+        return observed && ownerIsCurrent() && isCurrent();
+    };
+    const post = (payload, sourceAdmission, commit = () => {}) => {
         try {
-            if (!mayPost(sourceIsCurrent)) return false;
+            if (!mayPost(sourceAdmission)) return false;
             // A missing origin may acquire Core's canonical stamp later, but
             // this callback must never sample a replacement Document's clock.
             const documentStartedAtMs = readerDocumentStartedAtMs(view);
@@ -1204,9 +1208,9 @@ const createReaderTouchstartPoster = (view, isCurrent) => {
             const packet = { ...payload, documentStartedAtMs };
             // Native bridge getters and payload accessors may synchronously
             // retire this owner. Admit only after all those callouts finish.
-            if (typeof postMessage !== 'function' || !mayPost(sourceIsCurrent)) return false;
-            commit();
-            if (!mayPost(sourceIsCurrent)) return false;
+            if (typeof postMessage !== 'function' || !mayPost(sourceAdmission)) return false;
+            if (commit() === false) return false;
+            if (!mayPost(sourceAdmission)) return false;
             // A throwing bridge does not roll back committed local admission.
             // A true return means the call did not throw, not a native receipt.
             Reflect.apply(postMessage, handler, [packet]);
@@ -5892,7 +5896,7 @@ class Reader {
     }
     constructor() {
         this.#postTouchstartCallback = createReaderTouchstartPoster(
-            window, () => !this.#closed && globalThis.reader === this
+            window, () => globalThis.reader === this, () => !this.#closed
         );
         applyStoredChromeInsets('reader.constructor');
         this.#listen(window, 'pagehide', () => {
@@ -9182,6 +9186,7 @@ class Reader {
 
         let pendingMainDocumentBlankNavigationTouch = null;
         let lastPostedMainDocumentBlankTouchTap = null;
+        let mainDocumentBlankPostSequence = 0;
         const shouldSuppressMainDocumentSyntheticMouseBlankTap = (event, lastTouchTap) => {
             if (event.type !== 'mousedown') {
                 return { suppress: false, consumeTouchTap: false };
@@ -9202,12 +9207,19 @@ class Reader {
             };
         };
         const postNoElementNavigationTouchStart = (event, source, touchstartAtMs = Date.now()) => {
-            if (!this.#postTouchstartCallback.isCurrent()) return;
-            const touchTapForMouseSuppression = lastPostedMainDocumentBlankTouchTap;
+            const receipt = {
+                sequence: mainDocumentBlankPostSequence,
+                touchTap: lastPostedMainDocumentBlankTouchTap,
+            };
+            const attemptIsCurrent = () => mainDocumentBlankPostSequence === receipt.sequence
+                && lastPostedMainDocumentBlankTouchTap === receipt.touchTap;
+            const sourceAdmission = { isCurrent: attemptIsCurrent };
+            if (!this.#postTouchstartCallback.isCurrent(sourceAdmission)) return;
+            const touchTapForMouseSuppression = receipt.touchTap;
             const mouseSuppression = shouldSuppressMainDocumentSyntheticMouseBlankTap(event, touchTapForMouseSuppression);
             // Capability/point getters may retire this owner. A mouse that
             // proceeds waits for final post admission before consuming a tap.
-            if (!this.#postTouchstartCallback.isCurrent()) return;
+            if (!this.#postTouchstartCallback.isCurrent(sourceAdmission)) return;
             if (mouseSuppression.suppress) {
                 if (mouseSuppression.consumeTouchTap
                     && lastPostedMainDocumentBlankTouchTap === touchTapForMouseSuppression) {
@@ -9231,12 +9243,16 @@ class Reader {
                 touchstartEventType: eventType,
                 ebookNavigationHidden,
                 source,
-            }, undefined, () => {
+            }, sourceAdmission, () => {
+                if (!attemptIsCurrent()) return false;
+                receipt.sequence = ++mainDocumentBlankPostSequence;
                 if (eventType === 'touchend') {
                     lastPostedMainDocumentBlankTouchTap = blankTouchTap;
+                    receipt.touchTap = blankTouchTap;
                 } else if (mouseSuppression.consumeTouchTap
                     && lastPostedMainDocumentBlankTouchTap === touchTapForMouseSuppression) {
                     lastPostedMainDocumentBlankTouchTap = null;
+                    receipt.touchTap = null;
                 }
             });
         };
@@ -10936,6 +10952,7 @@ class Reader {
             let pendingBlankPointerTap = null;
             let lastBlankTouchEnd = null;
             let lastPostedBlankTouchTap = null;
+            let blankPointerPostSequence = 0;
             const touchPointForBlankPointer = event => event.changedTouches?.[0] ?? event.touches?.[0] ?? event;
             const blankPointerPoint = event => {
                 const point = touchPointForBlankPointer(event);
@@ -10948,17 +10965,6 @@ class Reader {
             const clearPendingBlankPointerTap = () => {
                 pendingBlankPointerTap = null;
             };
-            const sourceIsCurrent = () => {
-                try {
-                    return this.#isDocumentScopeCurrent(scope)
-                        && doc.defaultView?.document === doc
-                        && this.#isDocumentScopeCurrent(scope);
-                } catch (_error) {
-                    return false;
-                }
-            };
-            const ownsBlankPointerSource = () =>
-                this.#postTouchstartCallback.isCurrent(sourceIsCurrent);
             const shouldSuppressSyntheticMouseBlankTap = (event, lastTouchTap) => {
                 if (event.type !== 'mousedown') {
                     return { suppress: false, consumeTouchTap: false };
@@ -11002,6 +11008,29 @@ class Reader {
                 return null;
             };
             const postContentDocumentBlankPointerTap = (event, source, touchstartAtMs = Date.now()) => {
+                const lifecycleGeneration = scope.lifecycleGeneration;
+                const receipt = {
+                    sequence: blankPointerPostSequence,
+                    touchTap: lastPostedBlankTouchTap,
+                    touchEnd: lastBlankTouchEnd,
+                    echo: globalThis.__manabiPendingContentDocumentBlankNavigationEcho,
+                };
+                const receiptIsCurrent = () => blankPointerPostSequence === receipt.sequence
+                    && lastPostedBlankTouchTap === receipt.touchTap
+                    && lastBlankTouchEnd === receipt.touchEnd;
+                const sourceIsCurrent = () => !this.#closed
+                    && this.#lifecycleGeneration === lifecycleGeneration
+                    && this.#documentScopes.get(doc) === scope && receiptIsCurrent();
+                const observeSource = () => {
+                    try {
+                        return doc.defaultView?.document === doc
+                            && globalThis.__manabiPendingContentDocumentBlankNavigationEcho === receipt.echo;
+                    } catch (_error) {
+                        return false;
+                    }
+                };
+                const sourceAdmission = { observe: observeSource, isCurrent: sourceIsCurrent };
+                const ownsBlankPointerSource = () => this.#postTouchstartCallback.isCurrent(sourceAdmission);
                 if (!ownsBlankPointerSource()) return;
                 const target = event.target;
                 const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
@@ -11022,9 +11051,11 @@ class Reader {
                     // consume the receipts used to make this mouse's decision.
                     if (lastPostedBlankTouchTap === postedTouchTapForMouseSuppression) {
                         lastPostedBlankTouchTap = null;
+                        receipt.touchTap = null;
                     }
                     if (lastBlankTouchEnd === touchEndForMouseSuppression) {
                         lastBlankTouchEnd = null;
+                        receipt.touchEnd = null;
                     }
                 };
                 // Finish capability and point callouts before consuming an
@@ -11067,16 +11098,20 @@ class Reader {
                     touchstartEventType: eventType,
                     ebookNavigationHidden,
                     source,
-                }, sourceIsCurrent, () => {
+                }, sourceAdmission, () => {
+                    if (!receiptIsCurrent()) return false;
+                    receipt.sequence = ++blankPointerPostSequence;
                     doc.__manabiLastBlankPointerPostKey = eventKey;
                     // The key may be an accessor which retires this scope or
                     // installs a successor echo before control returns.
-                    if (!ownsBlankPointerSource()) return;
+                    if (!ownsBlankPointerSource()) return false;
                     consumeMouseSuppression();
                     if (eventType === 'touchend' && point) {
                         lastPostedBlankTouchTap = blankTouchTap;
+                        receipt.touchTap = blankTouchTap;
                     }
                     globalThis.__manabiPendingContentDocumentBlankNavigationEcho = pendingEcho;
+                    receipt.echo = pendingEcho;
                 });
             };
             const handleBlankPointerTouchStart = (event) => {
