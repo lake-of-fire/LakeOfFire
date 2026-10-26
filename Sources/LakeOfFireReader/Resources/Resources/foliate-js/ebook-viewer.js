@@ -9182,14 +9182,13 @@ class Reader {
 
         let pendingMainDocumentBlankNavigationTouch = null;
         let lastPostedMainDocumentBlankTouchTap = null;
-        const shouldSuppressMainDocumentSyntheticMouseBlankTap = (event) => {
+        const shouldSuppressMainDocumentSyntheticMouseBlankTap = (event, lastTouchTap) => {
             if (event.type !== 'mousedown') {
                 return { suppress: false, consumeTouchTap: false };
             }
             if (event.sourceCapabilities?.firesTouchEvents === true) {
                 return { suppress: true, consumeTouchTap: false };
             }
-            const lastTouchTap = lastPostedMainDocumentBlankTouchTap;
             const point = lastTouchTap ? manabiEventScreenPoint(event) : null;
             if (!lastTouchTap) return { suppress: false, consumeTouchTap: false };
             if (!point || point.x === null || point.y === null) {
@@ -9204,12 +9203,16 @@ class Reader {
         };
         const postNoElementNavigationTouchStart = (event, source, touchstartAtMs = Date.now()) => {
             if (!this.#postTouchstartCallback.isCurrent()) return;
-            const mouseSuppression = shouldSuppressMainDocumentSyntheticMouseBlankTap(event);
+            const touchTapForMouseSuppression = lastPostedMainDocumentBlankTouchTap;
+            const mouseSuppression = shouldSuppressMainDocumentSyntheticMouseBlankTap(event, touchTapForMouseSuppression);
             // Capability/point getters may retire this owner. A mouse that
             // proceeds waits for final post admission before consuming a tap.
             if (!this.#postTouchstartCallback.isCurrent()) return;
             if (mouseSuppression.suppress) {
-                if (mouseSuppression.consumeTouchTap) lastPostedMainDocumentBlankTouchTap = null;
+                if (mouseSuppression.consumeTouchTap
+                    && lastPostedMainDocumentBlankTouchTap === touchTapForMouseSuppression) {
+                    lastPostedMainDocumentBlankTouchTap = null;
+                }
                 return;
             }
             const ebookNavigationHidden =
@@ -9231,7 +9234,8 @@ class Reader {
             }, undefined, () => {
                 if (eventType === 'touchend') {
                     lastPostedMainDocumentBlankTouchTap = blankTouchTap;
-                } else if (mouseSuppression.consumeTouchTap) {
+                } else if (mouseSuppression.consumeTouchTap
+                    && lastPostedMainDocumentBlankTouchTap === touchTapForMouseSuppression) {
                     lastPostedMainDocumentBlankTouchTap = null;
                 }
             });
@@ -10955,8 +10959,7 @@ class Reader {
             };
             const ownsBlankPointerSource = () =>
                 this.#postTouchstartCallback.isCurrent(sourceIsCurrent);
-            const shouldSuppressSyntheticMouseBlankTap = (event) => {
-                const lastTouchTap = lastPostedBlankTouchTap || lastBlankTouchEnd;
+            const shouldSuppressSyntheticMouseBlankTap = (event, lastTouchTap) => {
                 if (event.type !== 'mousedown') {
                     return { suppress: false, consumeTouchTap: false };
                 }
@@ -11008,23 +11011,32 @@ class Reader {
                 if (segmentTarget) {
                     return;
                 }
-                const mouseSuppression = shouldSuppressSyntheticMouseBlankTap(event);
+                const postedTouchTapForMouseSuppression = lastPostedBlankTouchTap;
+                const touchEndForMouseSuppression = lastBlankTouchEnd;
+                const mouseSuppression = shouldSuppressSyntheticMouseBlankTap(
+                    event, postedTouchTapForMouseSuppression || touchEndForMouseSuppression
+                );
+                const consumeMouseSuppression = () => {
+                    if (!mouseSuppression.consumeTouchTap) return;
+                    // A point/key getter may admit a newer current touch. Only
+                    // consume the receipts used to make this mouse's decision.
+                    if (lastPostedBlankTouchTap === postedTouchTapForMouseSuppression) {
+                        lastPostedBlankTouchTap = null;
+                    }
+                    if (lastBlankTouchEnd === touchEndForMouseSuppression) {
+                        lastBlankTouchEnd = null;
+                    }
+                };
                 // Finish capability and point callouts before consuming an
                 // admitted tap. A rejected callback keeps both fallback flags.
                 if (!ownsBlankPointerSource()) return;
                 if (mouseSuppression.suppress) {
-                    if (mouseSuppression.consumeTouchTap) {
-                        lastPostedBlankTouchTap = null;
-                        lastBlankTouchEnd = null;
-                    }
+                    consumeMouseSuppression();
                     return;
                 }
                 if (excludedTarget) {
                     // Preserve the inherited excluded-target mouse policy.
-                    if (mouseSuppression.consumeTouchTap) {
-                        lastPostedBlankTouchTap = null;
-                        lastBlankTouchEnd = null;
-                    }
+                    consumeMouseSuppression();
                     return;
                 }
                 const eventKey = [
@@ -11060,10 +11072,7 @@ class Reader {
                     // The key may be an accessor which retires this scope or
                     // installs a successor echo before control returns.
                     if (!ownsBlankPointerSource()) return;
-                    if (mouseSuppression.consumeTouchTap) {
-                        lastPostedBlankTouchTap = null;
-                        lastBlankTouchEnd = null;
-                    }
+                    consumeMouseSuppression();
                     if (eventType === 'touchend' && point) {
                         lastPostedBlankTouchTap = blankTouchTap;
                     }

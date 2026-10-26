@@ -556,3 +556,42 @@ for (const producer of ['main', 'child']) {
         assert.equal(f.messages[2].documentStartedAtMs, 101)
     })
 }
+
+for (const producer of ['main', 'child']) {
+    test(`${producer} admitted far mouse preserves a newer current touch suppression receipt`, () => {
+        const f = fixture()
+        const post = producer === 'main' ? f.main : f.makeChildProducer()
+        const source = producer === 'main' ? 'main-document.blank' : 'content-document.blank'
+        post({ ...f.event(), type: 'touchend' }, source, 1)
+        assert.equal(f.messages.length, 1)
+
+        let recursed = false
+        const olderFarMouse = { ...f.event(), screenY: 100 }
+        Object.defineProperty(olderFarMouse, 'screenX', {
+            get() {
+                if (!recursed) {
+                    recursed = true
+                    post({ ...f.event(), type: 'touchend', screenX: 90, screenY: 91 }, source, 3)
+                }
+                return 100
+            },
+        })
+        post(olderFarMouse, source, 2)
+        assert.equal(recursed, true, 'the actual coordinate helper invoked the getter')
+        assert.equal(f.messages.length, 3, 'both touches and the still-current far mouse must post')
+        assert.deepEqual(f.messages.map(message => message.touchstartAtMs), [1, 3, 2])
+        assert.equal(f.messages[2].touchstartEventType, 'mousedown')
+        if (producer === 'child') {
+            assert.equal(f.child.__manabiLastBlankPointerPostKey, `${source}:mousedown:2:100:100`)
+            assert.equal(f.context.__manabiPendingContentDocumentBlankNavigationEcho, null)
+        }
+
+        post({ ...f.event(), screenX: 90, screenY: 91 }, source, 4)
+        assert.equal(f.messages.length, 3, 'admitting the far mouse must preserve the newer touch suppression')
+        post({ ...f.event(), screenX: 90, screenY: 91 }, source, 5)
+        assert.equal(f.messages.length, 4, 'the newer matching mouse suppression is consumed exactly once')
+        assert.equal(f.messages[3].touchstartAtMs, 5)
+        assert.equal(f.messages[3].touchstartEventType, 'mousedown')
+        assert.equal(f.messages[3].documentStartedAtMs, 101)
+    })
+}
