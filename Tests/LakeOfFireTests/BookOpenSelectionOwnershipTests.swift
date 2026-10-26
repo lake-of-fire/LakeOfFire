@@ -228,6 +228,41 @@ final class BookOpenSelectionOwnershipTests: XCTestCase {
     }
 
     @MainActor
+    func testReleasingLibraryModelStopsAnActiveRetryNativeRequest() async throws {
+        let fixture = catalogLoadingFixture()
+        let url = fixture.url("owner-release.json")
+        let started = expectation(description: "Retry native request started")
+        let stopped = expectation(description: "Released owner's native request stopped")
+        fixture.set(.held(started: started, stopped: stopped), at: url)
+        var model: BookLibraryViewModel? = BookLibraryViewModel(opdsURL: url)
+        weak var weakModel = model
+        model?.publicationFetcher = {
+            await BookLibraryViewModel.fetchPublications(from: $0, session: fixture.session)
+        }
+        let operation = try XCTUnwrap(model?.fetchEditorsPicks())
+        fixture.operations.append(operation)
+        let startedResult = await XCTWaiter.fulfillment(of: [started], timeout: 5)
+        XCTAssertEqual(startedResult, .completed)
+        guard startedResult == .completed else {
+            model = nil
+            await fixture.close()
+            return
+        }
+        XCTAssertEqual(fixture.requests, [url])
+        model = nil
+        XCTAssertNil(weakModel, "An active Retry must not retain its library model")
+        let stoppedResult = await XCTWaiter.fulfillment(of: [stopped], timeout: 5)
+        XCTAssertEqual(stoppedResult, .completed,
+            "Model release must stop the native request before manual cleanup or its 15-second timeout")
+        guard stoppedResult == .completed else {
+            await fixture.close()
+            return
+        }
+        await operation.value
+        XCTAssertEqual(fixture.requests, [url])
+    }
+
+    @MainActor
     func testCancelledCatalogEntrantNeverStartsARequest() async {
         let fixture = catalogLoadingFixture()
         let operation = Task { @MainActor in

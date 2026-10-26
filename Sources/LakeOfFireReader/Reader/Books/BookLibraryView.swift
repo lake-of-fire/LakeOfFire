@@ -385,6 +385,10 @@ public class BookLibraryViewModel: ObservableObject {
     private var openSelectionGeneration: UInt64 = 0
     private var openSelectionTask: Task<Void, Never>?
 
+    deinit {
+        editorsPicksFetchTask?.cancel()
+    }
+
     @discardableResult
     func startOpenSelection(
         _ operation: @escaping @MainActor (OpenSelection) async -> Void
