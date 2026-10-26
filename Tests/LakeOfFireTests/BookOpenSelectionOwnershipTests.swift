@@ -29,6 +29,133 @@ private actor BookOpenSelectionGate {
 
 final class BookOpenSelectionOwnershipTests: XCTestCase {
     @MainActor
+    func testCatalogNavigationCyclesStopBeforeRepeatingARequest() async throws {
+        for kind in ["self", "fragment", "two-documents"] {
+            let fixture = catalogLoadingFixture()
+            let first = fixture.url("first.json"), second = fixture.url("second.json")
+            fixture.set(.document(catalogNavigation(kind == "two-documents" ? second :
+                (kind == "fragment" ? first.appending(fragment: "another-position") : first))), at: first)
+            if kind == "two-documents" {
+                fixture.set(.document(catalogNavigation(first)), at: second)
+            }
+            let result = await BookLibraryViewModel.fetchPublications(from: first, session: fixture.session)
+            XCTAssertTrue(result.0.isEmpty)
+            XCTAssertNotNil(result.1)
+            XCTAssertEqual(fixture.requests, kind == "two-documents" ? [first, second] : [first], kind)
+        }
+    }
+
+    @MainActor
+    func testCatalogQueriesRemainDistinctAndFiniteChainsHaveNoArbitraryLimit() async throws {
+        let fixture = catalogLoadingFixture()
+        let urls = (0..<20).map { fixture.url("catalog.json?cursor=\($0)") }
+        for index in urls.indices {
+            fixture.set(.document(index == urls.count - 1 ? catalogBook("Reached book") :
+                catalogNavigation(urls[index + 1])), at: urls[index])
+        }
+        let result = await BookLibraryViewModel.fetchPublications(from: urls[0], session: fixture.session)
+        XCTAssertEqual(result.0.map(\.title), ["Reached book"])
+        XCTAssertEqual(result.0.first?.downloadURL?.lastPathComponent, "full.epub")
+        XCTAssertNil(result.1)
+        XCTAssertEqual(fixture.requests, urls)
+    }
+
+    @MainActor
+    func testCatalogFinalResponseAliasesCannotReenterAnAlreadyLoadedDocument() async throws {
+        let fixture = catalogLoadingFixture()
+        let first = fixture.url("first.json"), alias = fixture.url("actual.json")
+        let second = fixture.url("second.json"), unwanted = fixture.url("unwanted.json")
+        fixture.set(.document(catalogNavigation(second), finalURL: alias), at: first)
+        fixture.set(.document(catalogNavigation(unwanted), finalURL: alias), at: second)
+        let result = await BookLibraryViewModel.fetchPublications(from: first, session: fixture.session)
+        XCTAssertTrue(result.0.isEmpty)
+        XCTAssertNotNil(result.1)
+        XCTAssertEqual(fixture.requests, [first, second],
+            "Controlled response metadata proves final-document identity, not actual HTTP redirect delivery")
+    }
+
+    @MainActor
+    func testCancellingCatalogRefreshStopsItsNativeRequestAndAllowsSameURLRetry() async throws {
+        let fixture = catalogLoadingFixture()
+        let url = fixture.url("held.json")
+        let started = expectation(description: "Native catalog request started")
+        let stopped = expectation(description: "Native catalog request stopped")
+        fixture.set(.held(started: started, stopped: stopped), at: url)
+        let model = BookLibraryViewModel(opdsURL: url)
+        model.publicationFetcher = { await BookLibraryViewModel.fetchPublications(from: $0, session: fixture.session) }
+        let operation = Task { @MainActor in await model.fetchAllData() }
+        fixture.operations.append(operation)
+        await fulfillment(of: [started], timeout: 5)
+        operation.cancel()
+        let stoppedResult = await XCTWaiter.fulfillment(of: [stopped], timeout: 5)
+        XCTAssertEqual(stoppedResult, .completed,
+            "Cancellation must stop the native request before its transport timeout")
+        guard stoppedResult == .completed else {
+            fixture.session.invalidateAndCancel()
+            await operation.value
+            return
+        }
+        await operation.value
+        XCTAssertEqual(fixture.requests, [url])
+        XCTAssertTrue(model.editorsPicks.isEmpty)
+        XCTAssertNil(model.errorMessage)
+
+        fixture.set(.document(catalogBook("Retry book")), at: url)
+        await model.fetchAllData()
+        XCTAssertEqual(model.editorsPicks.map(\.title), ["Retry book"])
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(fixture.requests, [url, url])
+    }
+
+    @MainActor
+    func testCancelledCatalogEntrantNeverStartsARequest() async {
+        let fixture = catalogLoadingFixture()
+        let operation = Task { @MainActor in
+            let result = await BookLibraryViewModel.fetchPublications(
+                from: fixture.url("unused.json"), session: fixture.session)
+            XCTAssertTrue(result.0.isEmpty)
+            XCTAssertNil(result.1)
+        }
+        fixture.operations.append(operation)
+        operation.cancel()
+        await operation.value
+        XCTAssertTrue(fixture.requests.isEmpty)
+    }
+
+    @MainActor
+    func testAsyncCatalogParserRetainsHTTPAndPartialDocumentAdmission() async throws {
+        let fixture = catalogLoadingFixture()
+        for status in [503, 206] {
+            let url = fixture.url("status-\(status).json")
+            fixture.set(.document(catalogBook("Must not be admitted"), status: status), at: url)
+            do {
+                _ = try await OPDSParser.parseURL(url: url, session: fixture.session)
+                XCTFail("A complete-looking body cannot waive HTTP status \(status)")
+            } catch OPDSParserError.httpStatus(let actual) {
+                XCTAssertEqual(actual, status)
+                XCTAssertEqual(status, 503)
+            } catch OPDSParserError.partialDocument {
+                XCTAssertEqual(status, 206)
+            }
+        }
+    }
+
+    @MainActor
+    private func catalogLoadingFixture() -> BookCatalogLoadingFixture {
+        let fixture = BookCatalogLoadingFixture()
+        addTeardownBlock { @MainActor in await fixture.close() }
+        return fixture
+    }
+
+    private func catalogNavigation(_ target: URL) -> String {
+        "{\"metadata\":{\"title\":\"Catalog\"},\"navigation\":[{\"title\":\"All Books\",\"href\":\"\(target.absoluteString)\"}]}"
+    }
+
+    private func catalogBook(_ title: String) -> String {
+        "{\"metadata\":{\"title\":\"\(title)\"},\"links\":[{\"href\":\"full.epub\",\"rel\":\"http://opds-spec.org/acquisition/open-access\"}]}"
+    }
+
+    @MainActor
     func testStandaloneJSONCatalogEntryKeepsOpenAccessDownloadAndMetadata() throws {
         let document = try catalogDocument(#"""
         {"metadata":{"title":"Standalone","author":["First","Second"],
@@ -441,5 +568,120 @@ final class BookOpenSelectionOwnershipTests: XCTestCase {
                 "older-navigator-returned",
             ]
         )
+    }
+}
+
+@MainActor
+private final class BookCatalogLoadingFixture {
+    let identifier = UUID().uuidString
+    let session: URLSession
+    var operations: [Task<Void, Never>] = []
+
+    init() {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BookCatalogLoadingProtocol.self]
+        // Longer than the stopLoading assertion: an ordinary transport timeout
+        // must not masquerade as propagation of the caller's cancellation.
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 15
+        session = URLSession(configuration: configuration)
+    }
+
+    func url(_ path: String) -> URL { URL(string: "https://catalog-loading.test/\(identifier)/\(path)")! }
+
+    func set(_ reply: BookCatalogLoadingReplies.Reply, at url: URL) {
+        BookCatalogLoadingProtocol.replies.set(reply, at: url)
+    }
+
+    var requests: [URL] { BookCatalogLoadingProtocol.replies.requests(for: identifier) }
+
+    func close() async {
+        operations.forEach { $0.cancel() }
+        session.invalidateAndCancel()
+        for operation in operations { await operation.value }
+        BookCatalogLoadingProtocol.replies.remove(identifier: identifier)
+    }
+}
+
+private final class BookCatalogLoadingReplies: @unchecked Sendable {
+    enum Reply {
+        case document(String, finalURL: URL? = nil, status: Int = 200)
+        case held(started: XCTestExpectation, stopped: XCTestExpectation)
+    }
+    private let lock = NSLock()
+    private var replies: [URL: Reply] = [:]
+    private var recorded: [URL] = []
+
+    func set(_ reply: Reply, at url: URL) {
+        lock.lock()
+        defer { lock.unlock() }
+        replies[url] = reply
+    }
+
+    func take(at url: URL) -> Reply? {
+        lock.lock()
+        defer { lock.unlock() }
+        recorded.append(url)
+        // Finite replies make a regressed cycle settle with an unexpected
+        // request failure instead of spinning indefinitely in the test host.
+        return replies.removeValue(forKey: url)
+    }
+
+    func requests(for identifier: String) -> [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded.filter { $0.pathComponents.contains(identifier) }
+    }
+
+    func remove(identifier: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        replies = replies.filter { !$0.key.pathComponents.contains(identifier) }
+        recorded.removeAll { $0.pathComponents.contains(identifier) }
+    }
+}
+
+private final class BookCatalogLoadingProtocol: URLProtocol {
+    static let replies = BookCatalogLoadingReplies()
+    private let lock = NSLock()
+    private var stopped: XCTestExpectation?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url, let reply = Self.replies.take(at: url) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.resourceUnavailable))
+            return
+        }
+        switch reply {
+        case let .held(started, stopped):
+            lock.lock()
+            self.stopped = stopped
+            lock.unlock()
+            started.fulfill()
+        case let .document(body, finalURL, status):
+            let response = HTTPURLResponse(url: finalURL ?? url, statusCode: status,
+                httpVersion: nil, headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(body.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    override func stopLoading() {
+        lock.lock()
+        let expectation = stopped
+        stopped = nil
+        lock.unlock()
+        expectation?.fulfill()
+    }
+}
+
+private extension URL {
+    func appending(fragment: String) -> URL {
+        var components = URLComponents(url: self, resolvingAgainstBaseURL: true)!
+        components.fragment = fragment
+        return components.url!
     }
 }

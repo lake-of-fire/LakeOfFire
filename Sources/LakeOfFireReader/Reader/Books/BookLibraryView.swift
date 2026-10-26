@@ -530,36 +530,47 @@ public class BookLibraryViewModel: ObservableObject {
         }
     }
 
-    static func fetchPublications(from url: URL) async -> ([Publication], String?) {
-        await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: url) { parseData, error in
-                Task { @MainActor in
-                    if let error {
-                        continuation.resume(returning: ([], "Failed to fetch data: \(error.localizedDescription)"))
-                        return
-                    }
-
-                    if let parseData, let mapped = mappedPublications(in: parseData, relativeTo: url) {
-                        continuation.resume(returning: (mapped, nil))
-                        return
-                    }
-
-                    if let navigationLinks = parseData?.feed?.navigation,
-                       let allBooksLink = navigationLinks.first(where: { $0.title?.hasPrefix("All Books") == true }) {
-                        guard let allBooksURL = allBooksLink.url(relativeTo: url.domainURL) ?? URL(string: allBooksLink.href) else {
-                            continuation.resume(returning: ([], "Invalid 'All Books' URL"))
-                            return
-                        }
-                        Task {
-                            continuation.resume(returning: await Self.fetchPublications(from: allBooksURL))
-                        }
-                        return
-                    }
-
-                    continuation.resume(returning: ([], "No publications or navigable links found"))
+    static func fetchPublications(from url: URL, session: URLSession = .shared) async -> ([Publication], String?) {
+        var nextURL = url
+        var visited = Set<URL>()
+        while true {
+            do {
+                try Task.checkCancellation()
+                let requestURL = catalogDocumentIdentity(nextURL)
+                guard visited.insert(requestURL).inserted else {
+                    return ([], "The catalog links back to a document that was already opened.")
                 }
+                let document = try await OPDSParser.parseURL(url: requestURL, session: session)
+                try Task.checkCancellation()
+                let documentURL = catalogDocumentIdentity(document.documentURL)
+                if documentURL != requestURL, !visited.insert(documentURL).inserted {
+                    return ([], "The catalog links back to a document that was already opened.")
+                }
+                if let mapped = mappedPublications(in: document, relativeTo: documentURL) {
+                    return (mapped, nil)
+                }
+                guard let allBooksLink = document.feed?.navigation.first(where: {
+                    $0.title?.hasPrefix("All Books") == true
+                }) else {
+                    return ([], "No publications or navigable links found")
+                }
+                guard let allBooksURL = allBooksLink.url(relativeTo: documentURL) else {
+                    return ([], "Invalid 'All Books' URL")
+                }
+                nextURL = allBooksURL
+            } catch {
+                if Task.isCancelled || error is CancellationError { return ([], nil) }
+                return ([], "Failed to fetch data: \(error.localizedDescription)")
             }
         }
+    }
+
+    private static func catalogDocumentIdentity(_ url: URL) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return url }
+        // Fragments address positions in one response; queries remain distinct
+        // catalog documents and are never stripped or reordered.
+        components.fragment = nil
+        return components.url ?? url
     }
 
     @MainActor
