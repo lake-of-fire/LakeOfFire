@@ -626,6 +626,51 @@ test('child producer final private gesture check preserves a newer wrapper touch
     assert.equal(f.messages.length, 2, 'the newer receipt was consumed exactly once')
 })
 
+test('shipping child keeps a newer gesture key when the final posting owner getter admits it', () => {
+    const f = gestureFixture()
+    const handlers = f.window.webkit.messageHandlers
+    const handler = handlers.touchstartCallbackHandler
+    let bridgeResolved = false
+    let armed = false
+    let recursed = false
+    Object.defineProperty(handlers, 'touchstartCallbackHandler', {
+        get() { bridgeResolved = true; return handler },
+    })
+    Object.defineProperty(f.childWindow, 'document', {
+        get() {
+            if (bridgeResolved && !recursed) armed = true
+            return f.child
+        },
+    })
+    Object.defineProperty(f.window, 'document', {
+        get() {
+            if (armed && !recursed) {
+                armed = false
+                recursed = true
+                f.send('touchstart', { x: 90, y: 91 })
+                f.send('touchend', { x: 90, y: 91 })
+            }
+            return f.document
+        },
+    })
+    f.send('touchstart')
+    f.send('touchend')
+    assert.equal(recursed, true, 'the final posting owner getter completed the newer registered touch')
+    assert.equal(f.messages.length, 1, 'only the newer touch reached the native bridge')
+    const newer = f.messages[0]
+    assert.equal(newer.touchstartEventType, 'touchend')
+    assert.equal(f.child.__manabiLastBlankPointerPostKey,
+        `content-document.blank:touchend:${newer.touchstartAtMs}:90:91`,
+        'the superseded touch did not overwrite the newer document deduplication key')
+    const echo = f.context.__manabiPendingContentDocumentBlankNavigationEcho
+    assert.equal(echo?.x, 90)
+    assert.equal(echo?.y, 91)
+    f.send('mousedown', { x: 90, y: 91 })
+    assert.equal(f.messages.length, 1, 'the newer matching suppression receipt survived')
+    f.send('mousedown', { x: 90, y: 91 })
+    assert.equal(f.messages.length, 2, 'the newer suppression receipt was consumed once')
+})
+
 for (const producer of ['motion', 'main', 'child']) {
     test(`${producer} touch producer sends the canonical posting-document stamp after origin drift`, () => {
         const f = fixture()
