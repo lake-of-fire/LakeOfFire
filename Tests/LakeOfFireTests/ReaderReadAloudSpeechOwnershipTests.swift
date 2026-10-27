@@ -397,6 +397,78 @@ final class ReaderReadAloudSpeechOwnershipTests: XCTestCase {
         XCTAssertEqual(lease.releaseCount, 1)
     }
 
+    func testDelayedFinishAfterRefusedResumeDefersRefillUntilSuccessfulLeaseRetry() throws {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let firstLease = SpeechOwnershipTestAudioSessionLease()
+        let resumedLease = SpeechOwnershipTestAudioSessionLease()
+        var acquisitions = 0
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+            readAloudAudioSessionLeaseFactory: {
+                acquisitions += 1
+                if acquisitions == 2 { throw SpeechOwnershipTestFailure.rejected }
+                return acquisitions == 1 ? firstLease : resumedLease
+            }
+        )
+        defer { viewModel.clearAITTSPlaybackQueue() }
+        let queue = (0..<10).map {
+            ReaderTTSUtterance(sentenceIdentifier: "refill-\($0)", text: "続きの文章\($0)です。")
+        }
+        XCTAssertTrue(viewModel.presentAITTS(utterances: queue, autoplay: true))
+        XCTAssertEqual(synthesizer.utterances.count, 8)
+        let originalWindow = synthesizer.utterances
+        let first = try XCTUnwrap(originalWindow.first)
+        let next = try XCTUnwrap(originalWindow.dropFirst().first)
+        let generation = viewModel.ttsQueueGeneration
+        let completion = viewModel.ttsPlaybackCompletionGeneration
+        viewModel.pauseAITTS()
+        XCTAssertTrue(synthesizer.isPaused)
+        XCTAssertEqual(firstLease.releaseCount, 1)
+        viewModel.playAITTS()
+        XCTAssertEqual(acquisitions, 2)
+        XCTAssertEqual(synthesizer.continueCount, 0)
+        XCTAssertEqual(synthesizer.utterances.count, 8)
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertEqual(resumedLease.releaseCount, 0)
+
+        let callbackSource = AVSpeechSynthesizer()
+        viewModel.speechSynthesizer(callbackSource, didFinish: first)
+        XCTAssertEqual(synthesizer.utterances.count, 8, "A delayed finish cannot enqueue speech without a lease.")
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "refill-1")
+        XCTAssertEqual(viewModel.ttsProgressValue, 1)
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertEqual(viewModel.ttsPlaybackCompletionGeneration, completion)
+        viewModel.speechSynthesizer(callbackSource, didFinish: first)
+        XCTAssertEqual(synthesizer.utterances.count, 8)
+        XCTAssertEqual(viewModel.ttsProgressValue, 1)
+        XCTAssertEqual(viewModel.ttsPlaybackCompletionGeneration, completion)
+
+        viewModel.playAITTS()
+        XCTAssertEqual(acquisitions, 3)
+        XCTAssertEqual(synthesizer.continueCount, 1)
+        XCTAssertTrue(viewModel.isPlaying)
+        XCTAssertEqual(synthesizer.utterances.count, 9, "A successful resume must fill the slot deferred while unleased.")
+        XCTAssertEqual(synthesizer.utterances.last?.speechString, queue[8].text)
+        XCTAssertEqual(viewModel.ttsQueueGeneration, generation)
+        for index in 1..<8 {
+            XCTAssertTrue(synthesizer.utterances[index] === originalWindow[index])
+        }
+        XCTAssertEqual(firstLease.releaseCount, 1)
+        XCTAssertEqual(resumedLease.releaseCount, 0)
+
+        viewModel.speechSynthesizer(callbackSource, didFinish: next)
+        XCTAssertEqual(synthesizer.utterances.count, 10)
+        XCTAssertEqual(synthesizer.utterances.last?.speechString, queue[9].text)
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "refill-2")
+        XCTAssertEqual(viewModel.ttsProgressValue, 2)
+        XCTAssertTrue(viewModel.isPlaying)
+        XCTAssertEqual(viewModel.ttsPlaybackCompletionGeneration, completion)
+        XCTAssertEqual(viewModel.ttsQueueGeneration, generation)
+        viewModel.clearAITTSPlaybackQueue()
+        XCTAssertEqual(firstLease.releaseCount, 1)
+        XCTAssertEqual(resumedLease.releaseCount, 1)
+    }
+
     private func makeModel(
         synthesizer: SpeechOwnershipTestSpeechSynthesizer,
         lease: SpeechOwnershipTestAudioSessionLease

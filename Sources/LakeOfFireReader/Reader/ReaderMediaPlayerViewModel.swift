@@ -575,6 +575,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
                 mediaDebugPrint("# READALOUD ai.play.resumeFailed")
                 return
             }
+            if shouldEnqueueSpeechSynthesizerUtterances {
+                fillAITTSQueueWindow()
+            }
             isPlaying = true
             registerPlaybackStart(contentKey: currentContentKey)
             mediaDebugPrint("# READALOUD ai.play.resumed")
@@ -854,6 +857,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     private func fillAITTSQueueWindow(voice: AVSpeechSynthesisVoice? = nil) {
+        guard readAloudAudioSessionLease != nil else { return }
         let voice = voice ?? configuredReadAloudVoice()
         while ttsUtteranceObjectIdentifierToIndex.count < aittsQueueWindowSize,
               nextAITTSUtteranceIndexToEnqueue < ttsUtterances.count {
