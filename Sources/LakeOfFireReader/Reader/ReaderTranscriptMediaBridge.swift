@@ -6,6 +6,8 @@ public struct ReaderTranscriptMediaSnapshot: Decodable, Sendable {
     public let documentURL: URL
     public let documentID: String
     public let title: String
+    /// Physical document that owns the selected media, distinct from article provenance.
+    public let mediaDocumentURL: URL?
     public let mediaURL: URL?
     public let mediaIdentity: String
     public let stableProviderIdentity: String?
@@ -21,10 +23,11 @@ public struct ReaderTranscriptMediaSnapshot: Decodable, Sendable {
                 mediaURL: URL?, mediaIdentity: String, stableProviderIdentity: String? = nil,
                 duration: TimeInterval? = nil,
                 languageCode: String? = nil, webVTT: String? = nil,
-                captionURL: URL? = nil, captionSelectionIdentity: String? = nil, mimeType: String = "") {
+                captionURL: URL? = nil, captionSelectionIdentity: String? = nil, mimeType: String = "", mediaDocumentURL: URL? = nil) {
         self.documentURL = documentURL
         self.documentID = documentID
         self.title = title
+        self.mediaDocumentURL = mediaDocumentURL
         self.mediaURL = mediaURL
         self.mediaIdentity = mediaIdentity
         self.stableProviderIdentity = stableProviderIdentity

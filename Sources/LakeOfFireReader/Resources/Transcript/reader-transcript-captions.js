@@ -14,7 +14,9 @@ const controller = new AbortController();
 const timer = setTimeout(() => controller.abort(), 10000);
 let response;
 try {
-  response = await fetch(url.href, { credentials: 'same-origin', signal: controller.signal });
+  response = await capture((current, view) => isCurrent(current)
+    ? view.fetch(url.href, { credentials: 'same-origin', signal: controller.signal }) : null);
+  if (!response) return null;
   if (!response.ok || !isCurrent(capture?.())) return null;
   const text = await response.text();
   if (!isCurrent(capture?.()) || !/^\uFEFF?WEBVTT(?:\s|$)/.test(text)) return null;

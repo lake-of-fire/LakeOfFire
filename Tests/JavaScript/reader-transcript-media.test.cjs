@@ -17,12 +17,19 @@ function fixture({ cues = [], captionURL = null, pageURL = 'https://example.com/
     paused: true, ended: false, textTracks: [track], getAttribute: () => null,
     querySelector: selector => selector.startsWith('track') ? trackElement : null,
     querySelectorAll: selector => selector === 'track[src]' && trackElement ? [trackElement] : [] };
-  const document = { title: 'Page title', scripts: [], querySelectorAll: () => [media] };
+  const frames = [];
+  const document = { title: 'Page title', scripts: [], isConnected: true,
+    querySelectorAll: selector => selector === 'iframe' ? frames : [media] };
   let fetches = 0;
   const context = vm.createContext({ document, location: new URL(pageURL), navigator: { languages: ['en-US'] },
     URL, setTimeout, clearTimeout, AbortController,
     crypto: { randomUUID: () => `uuid-${++nextUUID}` },
     fetch: async () => { fetches++; return { ok: true, text: async () => 'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nCaption\n' }; } });
+  document.defaultView = context;
+  Object.defineProperties(media, {
+    ownerDocument: { configurable: true, enumerable: true, get: () => context.document },
+    isConnected: { configurable: true, enumerable: true, value: true, writable: true }
+  });
   const run = source => new vm.Script(`(async function() {\n${source}\n}).call(globalThis)`).runInContext(context);
   const capture = async () => JSON.parse(await run(snapshotSource));
   const captions = async snapshot => {
@@ -32,7 +39,7 @@ function fixture({ cues = [], captionURL = null, pageURL = 'https://example.com/
     context.expectedCaptionSelectionIdentity = snapshot.captionSelectionIdentity;
     return run(captionsSource);
   };
-  return { context, document, media, track, capture, captions, fetches: () => fetches };
+  return { context, document, media, track, frames, capture, captions, fetches: () => fetches };
 }
 
 test('capture selects loaded cues without fetching and preserves source identity', async () => {
@@ -288,4 +295,210 @@ test('unassociated HTML fallback cannot pair Japanese URL with selected English 
   const fallback = await f.capture();
   assert.equal(fallback.captionURL, japanese.src);
   assert.equal(fallback.languageCode, 'ja');
+});
+
+async function captureMedia(f) {
+  const snapshot = await f.capture();
+  assert.notEqual(snapshot, null, 'Expected a discoverable media selection');
+  return snapshot;
+}
+
+function frameFixture(f, { parent = f.document, url = 'https://example.com/embedded',
+                            cues = [], captionURL = null } = {}) {
+  const frames = [];
+  const track = { kind: 'subtitles', language: 'en', mode: 'showing', cues };
+  const element = captionURL ? { track, src: captionURL, srclang: 'en' } : null;
+  const doc = { title: 'Embedded title', scripts: [], isConnected: true };
+  const media = { ...f.media, ownerDocument: doc, textTracks: [track],
+    querySelector: selector => selector.startsWith('track') ? element : null,
+    querySelectorAll: selector => selector === 'track[src]' && element ? [element] : [] };
+  const nodes = [media];
+  doc.querySelectorAll = selector => selector === 'iframe' ? frames : nodes;
+  const frame = { ownerDocument: parent, isConnected: true, contentDocument: doc };
+  const view = { document: doc, frameElement: frame, location: new URL(url),
+    navigator: { languages: ['en-US'] }, fetch: (...args) => f.context.fetch(...args) };
+  doc.defaultView = view;
+  return { doc, media, nodes, frames, frame, view, track };
+}
+
+function iframeOnly(f, options) {
+  f.document.querySelectorAll = selector => selector === 'iframe' ? f.frames : [];
+  const child = frameFixture(f, options);
+  f.frames.push(child.frame);
+  return child;
+}
+
+test('iframe loaded captions preserve article identity and capture owning document without fetch', async () => {
+  const f = fixture();
+  const child = iframeOnly(f, { cues: [captionCue('Child words')] });
+  const snapshot = await captureMedia(f);
+  assert.equal(snapshot.documentURL, f.context.location.href);
+  assert.equal(snapshot.title, 'Page title');
+  assert.equal(snapshot.mediaDocumentURL, child.view.location.href);
+  assert.match(await f.captions(snapshot), /Child words/);
+  assert.equal(f.fetches(), 0);
+});
+
+test('iframe remote captions use the owning window fetch and selected language after saved lookup', async () => {
+  const f = fixture();
+  const child = iframeOnly(f, { captionURL: 'https://example.com/child.vtt' });
+  child.track.language = 'ja';
+  let childFetches = 0;
+  child.view.fetch = async function(url, options) {
+    assert.equal(this, child.view);
+    assert.equal(url, 'https://example.com/child.vtt');
+    assert.equal(options.credentials, 'same-origin');
+    childFetches++;
+    return new Response(captionText('日本語'));
+  };
+  const snapshot = await captureMedia(f);
+  assert.equal(childFetches, 0);
+  assert.equal(snapshot.languageCode, 'ja');
+  assert.match(await f.captions(snapshot), /日本語/);
+  assert.equal(childFetches, 1);
+  assert.equal(f.fetches(), 0);
+});
+
+test('nested accessible frames participate; inaccessible and detached frames are skipped', async () => {
+  const f = fixture();
+  const outer = iframeOnly(f);
+  outer.nodes.length = 0;
+  const inner = frameFixture(f, { parent: outer.doc, cues: [captionCue('Nested')] });
+  outer.frames.push(inner.frame);
+  const inaccessible = { ownerDocument: f.document, isConnected: true,
+    get contentDocument() { throw new Error('SecurityError'); } };
+  const detached = frameFixture(f, { cues: [captionCue('Detached')] });
+  detached.frame.isConnected = false;
+  f.frames.unshift(inaccessible, detached.frame);
+  const snapshot = await captureMedia(f);
+  assert.match(await f.captions(snapshot), /Nested/);
+  inner.doc.isConnected = false;
+  assert.equal(await f.capture(), null);
+});
+
+test('candidate order is main then frames in DOM order, with playing media preferred', async () => {
+  const f = fixture({ cues: [captionCue('Main')] });
+  const first = frameFixture(f, { cues: [captionCue('First child')] });
+  const second = frameFixture(f, { cues: [captionCue('Second child')] });
+  f.frames.push(first.frame, second.frame);
+  assert.match((await captureMedia(f)).webVTT, /Main/);
+  second.media.paused = false;
+  assert.match((await captureMedia(f)).webVTT, /Second child/);
+  first.media.paused = false;
+  assert.match((await captureMedia(f)).webVTT, /First child/);
+  f.media.paused = false;
+  assert.match((await captureMedia(f)).webVTT, /Main/);
+});
+
+test('same-URL child replacement preserves root document but rejects old capture and accepts fresh', async () => {
+  const f = fixture();
+  const oldChild = iframeOnly(f, { cues: [captionCue('Old')] });
+  const old = await captureMedia(f);
+  const replacement = frameFixture(f, { cues: [captionCue('Fresh')] });
+  replacement.view.frameElement = oldChild.frame;
+  oldChild.frame.contentDocument = replacement.doc;
+  const fresh = await captureMedia(f);
+  assert.equal(fresh.documentID, old.documentID);
+  assert.equal(fresh.mediaDocumentURL, old.mediaDocumentURL);
+  assert.notEqual(fresh.mediaIdentity, old.mediaIdentity);
+  assert.equal(await f.captions(old), null);
+  assert.match(await f.captions(fresh), /Fresh/);
+});
+
+test('detached frame and replaced ancestor cannot retain ownership of a reachable old document', async () => {
+  const f = fixture();
+  const outer = iframeOnly(f);
+  outer.nodes.length = 0;
+  const inner = frameFixture(f, { parent: outer.doc, cues: [captionCue('Inner')] });
+  outer.frames.push(inner.frame);
+  const old = await captureMedia(f);
+  outer.frame.isConnected = false;
+  assert.equal(await f.captions(old), null);
+  outer.frame.isConnected = true;
+  const replacement = frameFixture(f);
+  replacement.nodes.length = 0;
+  replacement.view.frameElement = outer.frame;
+  outer.frame.contentDocument = replacement.doc;
+  assert.equal(await f.captions(old), null);
+});
+
+test('adopting the identical node into a sibling document changes ownership identity', async () => {
+  const f = fixture();
+  const first = iframeOnly(f, { cues: [captionCue('Adopted')] });
+  const second = frameFixture(f);
+  second.nodes.length = 0;
+  f.frames.push(second.frame);
+  const old = await captureMedia(f);
+  first.nodes.length = 0;
+  first.media.ownerDocument = second.doc;
+  second.nodes.push(first.media);
+  const fresh = await captureMedia(f);
+  assert.notEqual(old.mediaIdentity, fresh.mediaIdentity);
+  assert.equal(await f.captions(old), null);
+  assert.match(await f.captions(fresh), /Adopted/);
+});
+
+test('child URL, source and same-language track replacements invalidate captured ownership', async () => {
+  const f = fixture();
+  const child = iframeOnly(f, { cues: [captionCue('Child')] });
+  let old = await captureMedia(f);
+  child.view.location = new URL('https://example.com/new-child');
+  assert.equal(await f.captions(old), null);
+  old = await captureMedia(f);
+  child.media.currentSrc = 'https://example.com/new.mp4';
+  assert.equal(await f.captions(old), null);
+  old = await captureMedia(f);
+  child.media.textTracks = [{ ...child.track }];
+  assert.equal(await f.captions(old), null);
+  assert.match(await f.captions(await captureMedia(f)), /Child/);
+});
+
+for (const at of ['headers', 'body']) {
+  test(`iframe replacement during ${at} await aborts old request; fresh child retry succeeds`, async () => {
+    const f = fixture();
+    const child = iframeOnly(f, { captionURL: 'https://example.com/child.vtt' });
+    const old = await captureMedia(f);
+    let release, started, signal;
+    const waiting = new Promise(resolve => { started = resolve; });
+    child.view.fetch = async (_url, options) => {
+      signal = options.signal;
+      if (at === 'headers') { started(); await new Promise(resolve => { release = resolve; }); }
+      return { ok: true, text: async () => {
+        if (at === 'body') { started(); await new Promise(resolve => { release = resolve; }); }
+        return captionText('Stale child');
+      } };
+    };
+    const pending = f.captions(old);
+    await waiting;
+    const replacement = frameFixture(f, { captionURL: 'https://example.com/fresh.vtt' });
+    replacement.view.frameElement = child.frame;
+    child.frame.contentDocument = replacement.doc;
+    release();
+    assert.equal(await pending, null);
+    assert.equal(signal.aborted, true);
+    replacement.view.fetch = async () => new Response(captionText('Fresh child'));
+    assert.match(await f.captions(await captureMedia(f)), /Fresh child/);
+  });
+}
+
+test('child provider uses its own URL and globals and rejects a previous video response', async () => {
+  const f = fixture({ pageURL: 'https://www.youtube.com/article' });
+  const child = iframeOnly(f, { url: 'https://www.youtube.com/watch?v=child' });
+  child.media.textTracks = [];
+  f.context.ytInitialPlayerResponse = { videoDetails: { videoId: 'child' },
+    captions: { playerCaptionsTracklistRenderer: { captionTracks: [
+      { languageCode: 'ja', baseUrl: '/wrong-parent' }
+    ] } } };
+  assert.equal((await captureMedia(f)).captionURL, null);
+  child.view.ytInitialPlayerResponse = { videoDetails: { videoId: 'previous' },
+    captions: { playerCaptionsTracklistRenderer: { captionTracks: [
+      { languageCode: 'en', baseUrl: '/api/timedtext?v=child' }
+    ] } } };
+  assert.equal((await captureMedia(f)).captionURL, null);
+  child.view.ytInitialPlayerResponse.videoDetails.videoId = 'child';
+  const snapshot = await captureMedia(f);
+  assert.equal(snapshot.captionURL, 'https://www.youtube.com/api/timedtext?v=child&fmt=vtt');
+  assert.equal(snapshot.stableProviderIdentity, 'youtube:child');
+  assert.equal(snapshot.documentURL, 'https://www.youtube.com/article');
+  assert.equal(snapshot.mediaDocumentURL, child.view.location.href);
 });

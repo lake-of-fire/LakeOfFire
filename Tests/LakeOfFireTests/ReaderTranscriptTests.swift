@@ -288,6 +288,96 @@ final class ReaderTranscriptTests: XCTestCase {
         XCTAssertNotEqual(first.documentID, replacement.documentID)
     }
 
+    private func installTranscriptFrames(in webView: WKWebView, nested: Bool, loadedCues: Bool) async throws {
+        _ = try await webView.callAsyncJavaScript("""
+            document.querySelector('iframe')?.remove();
+            const frame = async parent => {
+              const value = parent.createElement('iframe');
+              value.srcdoc = '<!doctype html><title>Child player</title><body></body>';
+              await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error('iframe load timeout')), 3000);
+                value.onload = () => { clearTimeout(timer); resolve(); };
+                parent.body.append(value);
+              });
+              return value;
+            };
+            const outer = await frame(document);
+            const leaf = nested ? await frame(outer.contentDocument) : outer;
+            window.transcriptLeaf = leaf;
+            const child = leaf.contentWindow;
+            child.document.body.innerHTML = '<video preload="none" src="https://example.com/child.m4a"></video>';
+            const media = child.document.querySelector('video');
+            if (loadedCues) {
+              const track = media.addTextTrack('subtitles', 'Japanese', 'ja');
+              track.mode = 'showing';
+              track.addCue(new child.VTTCue(1, 2, 'Child caption'));
+            } else {
+              const track = child.document.createElement('track');
+              track.kind = 'subtitles'; track.srclang = 'ja';
+              track.src = 'https://example.com/child.vtt';
+              media.append(track);
+            }
+            window.rootFetches = 0; child.childFetches = 0;
+            window.fetch = () => { window.rootFetches++; throw new Error('wrong fetch realm'); };
+            child.fetch = async () => {
+              child.childFetches++;
+              return new child.Response('WEBVTT\\n\\n00:00:01.000 --> 00:00:02.000\\nFetched child caption\\n',
+                {status: 200, headers: {'Content-Type': 'text/vtt'}});
+            };
+            """, arguments: ["nested": nested, "loadedCues": loadedCues],
+            in: nil, contentWorld: .page)
+    }
+
+    func testActualSameOriginSrcdocAndNestedCaptureRetiresReplacedOrDetachedChild() async throws {
+        for nested in [false, true] {
+            let webView = WKWebView()
+            let delegate = TranscriptNavigation()
+            try await load("<title>Article title</title><body>Article</body>", in: webView, delegate: delegate)
+            try await installTranscriptFrames(in: webView, nested: nested, loadedCues: true)
+            let first = try await capture(webView)
+            let repeated = try await capture(webView)
+            XCTAssertEqual(first.title, "Article title")
+            XCTAssertEqual(first.documentURL, repeated.documentURL)
+            XCTAssertEqual(first.documentID, repeated.documentID)
+            XCTAssertEqual(first.mediaIdentity, repeated.mediaIdentity)
+            XCTAssertEqual(first.mediaDocumentURL?.absoluteString, "about:srcdoc")
+            XCTAssertEqual(first.languageCode, "ja")
+            XCTAssertTrue(first.webVTT?.contains("Child caption") == true)
+            try await installTranscriptFrames(in: webView, nested: nested, loadedCues: true)
+            let replacement = try await capture(webView)
+            XCTAssertEqual(replacement.documentURL, first.documentURL)
+            XCTAssertEqual(replacement.documentID, first.documentID)
+            XCTAssertEqual(replacement.title, first.title)
+            XCTAssertEqual(replacement.mediaURL, first.mediaURL)
+            XCTAssertNotEqual(replacement.mediaIdentity, first.mediaIdentity)
+            _ = try await webView.evaluateJavaScript("document.querySelector('iframe').remove()")
+            let detached = try await webView.callAsyncJavaScript(
+                ReaderTranscriptMediaBridge.snapshotJavaScript, arguments: [:], in: nil, contentWorld: .page)
+            XCTAssertEqual(detached as? String, "null")
+        }
+    }
+
+    func testActualNestedChildCaptionFetchUsesOwningWindow() async throws {
+        let webView = WKWebView()
+        let delegate = TranscriptNavigation()
+        try await load("<title>Article title</title><body>Article</body>", in: webView, delegate: delegate)
+        try await installTranscriptFrames(in: webView, nested: true, loadedCues: false)
+        let selected = try await capture(webView)
+        XCTAssertNil(selected.webVTT)
+        let output = try await webView.callAsyncJavaScript(
+            ReaderTranscriptMediaBridge.captionsJavaScript,
+            arguments: ["expectedDocumentID": selected.documentID,
+                "expectedDocumentURL": selected.documentURL.absoluteString,
+                "expectedMediaIdentity": selected.mediaIdentity,
+                "expectedCaptionSelectionIdentity": try XCTUnwrap(selected.captionSelectionIdentity)],
+            in: nil, contentWorld: .page)
+        XCTAssertTrue((output as? String)?.contains("Fetched child caption") == true)
+        let rootFetches = try await webView.evaluateJavaScript("window.rootFetches")
+        let childFetches = try await webView.evaluateJavaScript("window.transcriptLeaf.contentWindow.childFetches")
+        XCTAssertEqual(rootFetches as? Int, 0)
+        XCTAssertEqual(childFetches as? Int, 1)
+    }
+
     func testRegisteredAssetRoutesRequireExactURLAndResolveThroughCurrentLoader() async throws {
         let key = UUID().uuidString
         let source = URL(string: "https://example.com/watch")!
