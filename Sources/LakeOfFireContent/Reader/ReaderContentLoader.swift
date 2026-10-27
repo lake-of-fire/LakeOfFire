@@ -463,6 +463,12 @@ public struct ReaderContentLoader {
         source: String = "ReaderContentLoader.getContent"
     ) async throws -> (any ReaderContentProtocol)? {
         let backingURL = backingContentURL(fromLoaderURL: pageURL)
+        if pageURL.isTranscriptURL {
+            try Task.checkCancellation()
+            let content = await TranscriptPageRegistry.shared.makeReaderContent(for: pageURL)
+            try Task.checkCancellation()
+            return content
+        }
         guard !pageURL.isReaderURLLoaderURL || backingURL != nil else { return nil }
         let resolvedURL = backingURL ?? pageURL
         let storage = DiscoveryStorage()
@@ -549,7 +555,13 @@ public struct ReaderContentLoader {
         countsAsHistoryVisit: Bool = false,
         source: String = "ReaderContentLoader.load"
     ) async throws -> (any ReaderContentProtocol)? {
-        try await load(
+        if url.isTranscriptURL {
+            try Task.checkCancellation()
+            let content = await TranscriptPageRegistry.shared.makeReaderContent(for: url)
+            try Task.checkCancellation()
+            return content
+        }
+        return try await load(
             url: url,
             persist: persist,
             countsAsHistoryVisit: countsAsHistoryVisit,
