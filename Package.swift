@@ -217,6 +217,7 @@ let package = Package(
         .testTarget(
             name: "LakeOfFireTests",
             dependencies: [
+                .product(name: "JapaneseLanguageTools", package: "JapaneseLanguageTools"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
