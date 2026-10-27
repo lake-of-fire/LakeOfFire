@@ -223,6 +223,28 @@ final class ReaderTranscriptTests: XCTestCase {
         XCTAssertEqual(literals.map(\.text), ["Voice: a < b, <name>, &lt; \u{00A0}\u{200E}\u{200F}"])
     }
 
+    func testRendererDeclaresTranscriptLanguageAndUsesUnknownForLegacyOrInvalidInput() {
+        let source = URL(string: "https://example.com/watch")!
+        let vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nこんにちは\n"
+        let japanese = TranscriptPageAsset.fromWebVTT(
+            key: "japanese", canonicalContentURL: source, title: "日本語", webVTT: vtt,
+            languageCode: "ja")
+        XCTAssertTrue(japanese.html.contains("<html lang=\"ja\">"))
+        XCTAssertTrue(japanese.html.contains("こんにちは"))
+        let regional = TranscriptPageAsset.makeHTML(
+            title: "English", canonicalContentURL: source, cues: [], languageCode: "en_US")
+        XCTAssertTrue(regional.contains("<html lang=\"en-US\">"))
+        let legacy = TranscriptPageAsset.fromWebVTT(
+            key: "legacy", canonicalContentURL: source, title: "Unknown", webVTT: vtt)
+        XCTAssertTrue(legacy.html.contains("<html lang=\"und\">"))
+        for language in ["", " \n", "ja\" onload=\"alert(1)"] {
+            let html = TranscriptPageAsset.makeHTML(
+                title: "Unknown", canonicalContentURL: source, cues: [], languageCode: language)
+            XCTAssertTrue(html.contains("<html lang=\"und\">"))
+            XCTAssertFalse(html.contains("onload="))
+        }
+    }
+
     func testCueAdmissionRequiresActualTimestampGrammarAndPositiveDuration() {
         let text = """
         WEBVTT

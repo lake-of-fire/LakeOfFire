@@ -71,7 +71,8 @@ public struct TranscriptPageAsset: Sendable, Hashable {
     public static func makeHTML(
         title: String,
         canonicalContentURL: URL,
-        cues: [Cue]
+        cues: [Cue],
+        languageCode: String? = nil
     ) -> String {
         let cueMarkup = cues.enumerated().map { index, cue -> String in
             let identifierAttribute = cue.identifier.map {
@@ -84,7 +85,7 @@ public struct TranscriptPageAsset: Sendable, Hashable {
 
         return """
         <!doctype html>
-        <html lang="en">
+        <html lang="\(escapeHTML(documentLanguage(for: languageCode)))">
         <head>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -217,13 +218,15 @@ public struct TranscriptPageAsset: Sendable, Hashable {
         title: String,
         webVTT: String,
         stableContentKey: String? = nil,
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        languageCode: String? = nil
     ) -> TranscriptPageAsset {
         let cues = cues(fromWebVTT: webVTT)
         let html = makeHTML(
             title: title,
             canonicalContentURL: canonicalContentURL,
-            cues: cues
+            cues: cues,
+            languageCode: languageCode
         )
         return TranscriptPageAsset(
             key: key,
@@ -234,6 +237,18 @@ public struct TranscriptPageAsset: Sendable, Hashable {
             stableContentKey: stableContentKey,
             createdAt: createdAt
         )
+    }
+
+    private static func documentLanguage(for languageCode: String?) -> String {
+        let requested = (languageCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+            .replacingOccurrences(of: "_", with: "-")
+        let languagePattern = #"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$"#
+        guard requested.range(of: languagePattern, options: .regularExpression) != nil else { return "und" }
+        let canonical = Locale.canonicalLanguageIdentifier(from: requested)
+            .replacingOccurrences(of: "_", with: "-")
+        guard canonical.range(of: languagePattern,
+                              options: .regularExpression) != nil else { return "und" }
+        return canonical
     }
 
     private static func escapeHTML(_ string: String) -> String {
