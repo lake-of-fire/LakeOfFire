@@ -1097,7 +1097,7 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
             forPrimaryKey: object.objectSchema.className + "." + identifier)
     }
 
-    private func assertPendingMutation(for object: Bookmark, in realm: Realm) throws {
+    private func assertPendingMutation(for object: Object & ChangeMetadataRecordable, in realm: Realm) throws {
         let pending = try XCTUnwrap(pendingMutation(for: object, in: realm))
         XCTAssertFalse(pending.generation.isEmpty)
         XCTAssertEqual(pending.changedAt, object.explicitlyModifiedAt)
@@ -1111,7 +1111,7 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         let explicitlyModifiedAt: Date?
     }
 
-    private func journalState(for object: Bookmark, in realm: Realm) throws -> JournalState {
+    private func journalState(for object: Object & ChangeMetadataRecordable, in realm: Realm) throws -> JournalState {
         try assertPendingMutation(for: object, in: realm)
         let pending = try XCTUnwrap(pendingMutation(for: object, in: realm))
         return JournalState(generation: pending.generation, changedAt: pending.changedAt,
@@ -1576,6 +1576,187 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         )
         XCTAssertEqual(try journalState(for: related, in: realm), changed,
                        "A repeated render must not publish another BigSync mutation")
+    }
+
+    @RealmBackgroundActor
+    func testFeedEntryReaderPropagationJournalsEachChangedOwnerOnce() async throws {
+        for defaultMode in [false, true] {
+            try await assertFeedEntryReaderPropagation(defaultMode: defaultMode, entryHasContent: false)
+        }
+    }
+
+    @RealmBackgroundActor
+    func testFeedOnlyReaderPropagationLeavesEntryJournalUnchanged() async throws {
+        for defaultMode in [false, true] {
+            try await assertFeedEntryReaderPropagation(defaultMode: defaultMode, entryHasContent: true)
+        }
+    }
+
+    @RealmBackgroundActor
+    private func assertFeedEntryReaderPropagation(defaultMode: Bool, entryHasContent: Bool) async throws {
+        let configuration = makeConfiguration(objectTypes: storageObjectTypes + [Feed.self])
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeed
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        addTeardownBlock {
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        let path = UUID().uuidString
+        let url = try XCTUnwrap(URL(string: "https://example.com/feed-reader/\(path)"))
+        let entryURL = try XCTUnwrap(URL(string: "http://example.com/feed-reader/\(path)"))
+        let primary = HistoryRecord()
+        primary.url = url
+        primary.title = "Selected history"
+        primary.updateCompoundKey()
+        let feed = Feed()
+        feed.rssUrl = try XCTUnwrap(URL(string: "https://example.com/feed-reader/\(path).rss"))
+        feed.isReaderModeByDefault = defaultMode
+        let entry = FeedEntry()
+        entry.url = entryURL
+        entry.feedID = feed.id
+        entry.title = entryHasContent ? "Existing entry title" : ""
+        let html = "<article><p>Complete feed article.</p></article>"
+        if entryHasContent { entry.html = html }
+        entry.updateCompoundKey()
+        let seedDate = Date(timeIntervalSince1970: 1_700_000_000)
+        try await realm.asyncWritePreservingOwnership {
+            realm.add(primary)
+            primary.refreshChangeMetadata(explicitlyModified: true, at: seedDate)
+            realm.add(feed)
+            feed.refreshChangeMetadata(explicitlyModified: true, at: seedDate)
+            realm.add(entry)
+            entry.refreshChangeMetadata(explicitlyModified: true, at: seedDate)
+        }
+        let primarySeeded = try journalState(for: primary, in: realm)
+        let feedSeeded = try journalState(for: feed, in: realm)
+        let entrySeeded = try journalState(for: entry, in: realm)
+
+        try await ReaderContentLoader.propagateReaderModeDefaults(
+            for: url,
+            excludingPrimaryKey: primary.compoundKey,
+            primaryClassName: primary.objectSchema.className,
+            readabilityHTML: html,
+            resolvedTitle: "Inferred entry title",
+            permitsCommit: { true }
+        )
+        XCTAssertEqual(feed.isReaderModeByDefault, defaultMode,
+                       "An entry render must preserve the Feed's reader-mode preference")
+        XCTAssertEqual(entry.isReaderModeByDefault, defaultMode)
+        XCTAssertEqual(entry.isReaderModeAvailable, defaultMode)
+        XCTAssertEqual(entry.html, html)
+        XCTAssertEqual(entry.title, entryHasContent ? "Existing entry title" : "Inferred entry title")
+        XCTAssertTrue(feed.rssContainsFullContent)
+        XCTAssertEqual(try journalState(for: primary, in: realm), primarySeeded)
+        let feedChanged = try journalState(for: feed, in: realm)
+        let entryChanged = try journalState(for: entry, in: realm)
+        XCTAssertNotEqual(feedChanged.generation, feedSeeded.generation,
+                          "The Feed-owned policy change must be journaled on the Feed")
+        if entryHasContent {
+            XCTAssertEqual(entryChanged, entrySeeded,
+                           "Changing only the Feed must not manufacture an entry mutation")
+        } else {
+            XCTAssertNotEqual(entryChanged.generation, entrySeeded.generation)
+            XCTAssertEqual(entryChanged.changedAt, feedChanged.changedAt,
+                           "Both owners use the admitted writer's one batch timestamp")
+        }
+
+        try await ReaderContentLoader.propagateReaderModeDefaults(
+            for: url,
+            excludingPrimaryKey: primary.compoundKey,
+            primaryClassName: primary.objectSchema.className,
+            readabilityHTML: html,
+            resolvedTitle: "Inferred entry title",
+            permitsCommit: { true }
+        )
+        XCTAssertEqual(try journalState(for: entry, in: realm), entryChanged)
+        XCTAssertEqual(try journalState(for: feed, in: realm), feedChanged)
+        XCTAssertEqual(try journalState(for: primary, in: realm), primarySeeded)
+    }
+
+    @RealmBackgroundActor
+    func testReaderPropagationDoesNotMutateMissingOrDeletedFeed() async throws {
+        for hasDeletedFeed in [false, true] {
+            let configuration = makeConfiguration(objectTypes: storageObjectTypes + [Feed.self])
+            let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+            let previousHistory = ReaderContentLoader.historyRealmConfiguration
+            let previousFeed = ReaderContentLoader.feedEntryRealmConfiguration
+            defer {
+                ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+                ReaderContentLoader.historyRealmConfiguration = previousHistory
+                ReaderContentLoader.feedEntryRealmConfiguration = previousFeed
+            }
+            ReaderContentLoader.bookmarkRealmConfiguration = configuration
+            ReaderContentLoader.historyRealmConfiguration = configuration
+            ReaderContentLoader.feedEntryRealmConfiguration = configuration
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            addTeardownBlock {
+                await ReaderContentLoader.resetTransientCachesForTesting()
+                _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+            }
+
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            let url = try XCTUnwrap(URL(string: "https://example.com/missing-feed/\(UUID().uuidString)"))
+            let primary = HistoryRecord()
+            primary.url = url
+            primary.updateCompoundKey()
+            let feed = Feed()
+            feed.rssUrl = try XCTUnwrap(URL(string: "https://example.com/missing-feed.rss"))
+            feed.isDeleted = true
+            let entry = FeedEntry()
+            entry.url = url
+            entry.feedID = feed.id
+            entry.title = "Existing entry title"
+            entry.html = "<p>Existing full article</p>"
+            entry.updateCompoundKey()
+            try await realm.asyncWritePreservingOwnership {
+                realm.add(primary)
+                primary.refreshChangeMetadata(explicitlyModified: true)
+                if hasDeletedFeed {
+                    realm.add(feed)
+                    feed.refreshChangeMetadata(explicitlyModified: true)
+                }
+                realm.add(entry)
+                entry.refreshChangeMetadata(explicitlyModified: true)
+            }
+            let seededEntry = try journalState(for: entry, in: realm)
+            let seededFeed: JournalState?
+            if hasDeletedFeed {
+                seededFeed = try journalState(for: feed, in: realm)
+            } else {
+                seededFeed = nil
+            }
+
+            try await ReaderContentLoader.propagateReaderModeDefaults(
+                for: url,
+                excludingPrimaryKey: primary.compoundKey,
+                primaryClassName: primary.objectSchema.className,
+                readabilityHTML: "<p>Later render must preserve existing content</p>",
+                resolvedTitle: "Later title",
+                permitsCommit: { true }
+            )
+            XCTAssertEqual(entry.html, "<p>Existing full article</p>")
+            XCTAssertEqual(entry.title, "Existing entry title")
+            XCTAssertEqual(try journalState(for: entry, in: realm), seededEntry)
+            if let seededFeed {
+                XCTAssertTrue(feed.isDeleted)
+                XCTAssertFalse(feed.rssContainsFullContent)
+                XCTAssertEqual(try journalState(for: feed, in: realm), seededFeed)
+            } else {
+                XCTAssertNil(entry.getFeed())
+            }
+        }
     }
 
     @MainActor
