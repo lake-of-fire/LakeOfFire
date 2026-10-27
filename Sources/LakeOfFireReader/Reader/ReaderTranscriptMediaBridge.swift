@@ -13,13 +13,15 @@ public struct ReaderTranscriptMediaSnapshot: Decodable, Sendable {
     public let languageCode: String?
     public let webVTT: String?
     public let captionURL: URL?
+    /// Opaque selection token, scoped to this document, including track URL and language.
+    public let captionSelectionIdentity: String?
     public let mimeType: String
 
     public init(documentURL: URL, documentID: String, title: String,
                 mediaURL: URL?, mediaIdentity: String, stableProviderIdentity: String? = nil,
                 duration: TimeInterval? = nil,
                 languageCode: String? = nil, webVTT: String? = nil,
-                captionURL: URL? = nil, mimeType: String = "") {
+                captionURL: URL? = nil, captionSelectionIdentity: String? = nil, mimeType: String = "") {
         self.documentURL = documentURL
         self.documentID = documentID
         self.title = title
@@ -30,6 +32,7 @@ public struct ReaderTranscriptMediaSnapshot: Decodable, Sendable {
         self.languageCode = languageCode
         self.webVTT = webVTT
         self.captionURL = captionURL
+        self.captionSelectionIdentity = captionSelectionIdentity
         self.mimeType = mimeType
     }
 }

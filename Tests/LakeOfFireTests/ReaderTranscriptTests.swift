@@ -6,6 +6,20 @@ import LakeOfFireCore
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
+private actor TranscriptLoadGate {
+    private var isOpen = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() {
+        isOpen = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 @MainActor
 private final class TranscriptNavigation: NSObject, WKNavigationDelegate {
     var completion: CheckedContinuation<Void, Error>?
@@ -63,13 +77,13 @@ final class ReaderTranscriptTests: XCTestCase {
         try realm.write { realm.add(original) }
         let stableKey = MediaTranscript.makeCompoundKey(contentURL: source,
             stableMediaIdentity: "youtube:videoA", languageCode: "en")
-        func asset(_ key: String) -> TranscriptPageAsset {
+        func asset(_ key: String, title: String = "Transcript", caption: String = "Caption") -> TranscriptPageAsset {
             .fromWebVTT(key: UUID().uuidString, canonicalContentURL: source,
-                title: "Transcript", webVTT: "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nCaption\n",
+                title: title, webVTT: "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n\(caption)\n",
                 stableContentKey: key)
         }
         let first = asset(stableKey)
-        let second = asset(stableKey)
+        let second = asset(stableKey, title: "Replacement transcript", caption: "Replacement caption")
         let otherMedia = asset(MediaTranscript.makeCompoundKey(contentURL: source,
             stableMediaIdentity: "youtube:videoB", languageCode: "en"))
         let otherLanguage = asset(MediaTranscript.makeCompoundKey(contentURL: source,
@@ -83,19 +97,28 @@ final class ReaderTranscriptTests: XCTestCase {
         XCTAssertNotEqual(stableURL, source)
         XCTAssertTrue(TranscriptReaderProtocol.providesNativeReaderView(forURL: stableURL))
         let reader = ReaderContent()
+        var precedingFence: (() -> Bool)?
         for current in [first, second] {
             await TranscriptPageRegistry.shared.register(current)
+            addTeardownBlock { await TranscriptPageRegistry.shared.remove(key: current.key) }
             let servingURL = try XCTUnwrap(current.pageURL)
             XCTAssertEqual(ReaderContentLoader.getContentURL(fromLoaderURL: servingURL), stableURL)
             XCTAssertTrue(servingURL.matchesReaderURL(stableURL))
             let resolved = try await ReaderContentLoader.getContent(forURL: servingURL)
             XCTAssertEqual(resolved?.url, stableURL)
             try await reader.load(url: servingURL)
+            if let precedingFence { XCTAssertFalse(precedingFence()) }
             XCTAssertEqual(reader.pageURL, stableURL)
             XCTAssertEqual(reader.content?.url, stableURL)
-            XCTAssertEqual(reader.content?.title, "Transcript")
+            XCTAssertEqual(reader.content?.title, current.title)
+            XCTAssertEqual((reader.content as? HistoryRecord)?.html, current.html)
             XCTAssertEqual((reader.content as? HistoryRecord)?.sourceDownloadURL, source)
-            await TranscriptPageRegistry.shared.remove(key: current.key)
+            let selectionID = reader.currentSelectionID
+            precedingFence = reader.makeSelectionCommitFence(requiring: selectionID)
+            // Reopening this exact payload retains its selection authority.
+            try await reader.load(url: servingURL)
+            XCTAssertEqual(reader.currentSelectionID, selectionID)
+            XCTAssertEqual(precedingFence?(), true)
         }
         XCTAssertEqual(original.url, source)
         XCTAssertEqual(original.title, "Original article")
@@ -103,6 +126,86 @@ final class ReaderTranscriptTests: XCTestCase {
         XCTAssertFalse(original.isReaderModeByDefault)
         XCTAssertFalse(original.rssContainsFullContent)
         XCTAssertEqual(realm.objects(HistoryRecord.self).count, 1)
+    }
+
+    func testDistinctTranscriptPayloadDoesNotConsumeAnotherRoutesPreload() async throws {
+        let source = URL(string: "https://example.com/preload")!
+        let stableKey = MediaTranscript.makeCompoundKey(contentURL: source,
+            stableMediaIdentity: "video", languageCode: "en")
+        func asset(_ title: String) -> TranscriptPageAsset {
+            .fromWebVTT(key: UUID().uuidString, canonicalContentURL: source,
+                title: title, webVTT: "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n\(title)\n",
+                stableContentKey: stableKey)
+        }
+        let first = asset("Old preload")
+        let replacement = asset("New payload")
+        await TranscriptPageRegistry.shared.register(first)
+        await TranscriptPageRegistry.shared.register(replacement)
+        addTeardownBlock {
+            await TranscriptPageRegistry.shared.remove(key: first.key)
+            await TranscriptPageRegistry.shared.remove(key: replacement.key)
+        }
+        let firstURL = try XCTUnwrap(first.pageURL)
+        let replacementURL = try XCTUnwrap(replacement.pageURL)
+        let loaded = try await ReaderContentLoader.getContent(forURL: firstURL)
+        let preload = try XCTUnwrap(loaded)
+        let reader = ReaderContent()
+        reader.preloadResolvedContent(preload, for: firstURL)
+        try await reader.load(url: replacementURL)
+        XCTAssertEqual(reader.content?.title, replacement.title)
+        XCTAssertEqual((reader.content as? HistoryRecord)?.html, replacement.html)
+        XCTAssertEqual(reader.content?.url, first.readerContentURL)
+    }
+
+    func testSameIdentityTranscriptReplacementRetiresSuspendedOldPayload() async throws {
+        let source = URL(string: "https://example.com/replacement")!
+        let stableKey = MediaTranscript.makeCompoundKey(contentURL: source,
+            stableMediaIdentity: "video", languageCode: "en")
+        func asset(_ title: String) -> TranscriptPageAsset {
+            .fromWebVTT(key: UUID().uuidString, canonicalContentURL: source,
+                title: title, webVTT: "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n\(title)\n",
+                stableContentKey: stableKey)
+        }
+        let first = asset("Delayed payload")
+        let replacement = asset("Current payload")
+        await TranscriptPageRegistry.shared.register(first)
+        await TranscriptPageRegistry.shared.register(replacement)
+        addTeardownBlock {
+            await TranscriptPageRegistry.shared.remove(key: first.key)
+            await TranscriptPageRegistry.shared.remove(key: replacement.key)
+        }
+        let firstURL = try XCTUnwrap(first.pageURL)
+        let replacementURL = try XCTUnwrap(replacement.pageURL)
+        let reader = ReaderContent()
+        let entered = expectation(description: "first payload resolved but held")
+        let gate = TranscriptLoadGate()
+        let old = Task { @MainActor in
+            try await reader.load(url: firstURL) { url in
+                let content = try await ReaderContentLoader.getContent(forURL: url)
+                entered.fulfill()
+                await gate.wait()
+                return content
+            }
+        }
+        addTeardownBlock { await gate.release(); _ = await old.result }
+        await fulfillment(of: [entered], timeout: 5)
+        let oldFence = reader.makeSelectionCommitFence(requiring: reader.currentSelectionID)
+        let replacementFinished = expectation(description: "replacement does not join old payload")
+        let fresh = Task { @MainActor in
+            defer { replacementFinished.fulfill() }
+            try await reader.load(url: replacementURL)
+        }
+        addTeardownBlock { await gate.release(); _ = await fresh.result }
+        await fulfillment(of: [replacementFinished], timeout: 5)
+        // Release even when the expectation fails: the old cache/coalescing
+        // behavior must produce an assertion failure rather than a stuck test.
+        await gate.release()
+        _ = await old.result
+        try await fresh.value
+        XCTAssertFalse(oldFence())
+        XCTAssertEqual(reader.content?.title, replacement.title)
+        XCTAssertEqual((reader.content as? HistoryRecord)?.html, replacement.html)
+        XCTAssertEqual(reader.content?.url, first.readerContentURL)
     }
 
     func testTypedBackingQueryDoesNotGrantUnregisteredServingRouteAdmission() async throws {
@@ -174,6 +277,8 @@ final class ReaderTranscriptTests: XCTestCase {
         let repeated = try await capture(webView)
         XCTAssertEqual(first.documentID, repeated.documentID)
         XCTAssertEqual(first.mediaIdentity, repeated.mediaIdentity)
+        XCTAssertNotNil(first.captionSelectionIdentity)
+        XCTAssertEqual(first.captionSelectionIdentity, repeated.captionSelectionIdentity)
         XCTAssertEqual(first.title, "Transcript source")
         XCTAssertEqual(first.webVTT, "WEBVTT\n\n00:00:01.250 --> 00:00:02.500\nHello world &amp; &lt;name&gt;\n")
         let count = try await webView.evaluateJavaScript("window.fetchCount")

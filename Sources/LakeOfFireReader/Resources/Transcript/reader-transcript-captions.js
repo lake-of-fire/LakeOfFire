@@ -1,7 +1,9 @@
 const doc = document;
 const capture = doc.__manabiTranscriptCapture;
 const isCurrent = value => document === doc && value && value.documentID === expectedDocumentID
-  && value.mediaIdentity === expectedMediaIdentity && value.documentURL === expectedDocumentURL;
+  && value.mediaIdentity === expectedMediaIdentity && value.documentURL === expectedDocumentURL
+  && typeof expectedCaptionSelectionIdentity === 'string'
+  && value.captionSelectionIdentity === expectedCaptionSelectionIdentity;
 const snapshot = capture?.();
 if (!isCurrent(snapshot)) return null;
 if (snapshot.webVTT) return snapshot.webVTT;
@@ -10,8 +12,9 @@ const url = new URL(snapshot.captionURL);
 if (!['http:', 'https:'].includes(url.protocol)) return null;
 const controller = new AbortController();
 const timer = setTimeout(() => controller.abort(), 10000);
+let response;
 try {
-  const response = await fetch(url.href, { credentials: 'same-origin', signal: controller.signal });
+  response = await fetch(url.href, { credentials: 'same-origin', signal: controller.signal });
   if (!response.ok || !isCurrent(capture?.())) return null;
   const text = await response.text();
   if (!isCurrent(capture?.()) || !/^\uFEFF?WEBVTT(?:\s|$)/.test(text)) return null;
@@ -20,4 +23,8 @@ try {
   return null;
 } finally {
   clearTimeout(timer);
+  // Headers may arrive after ownership changed, before text() owns the body.
+  // Abort also covers a failed/partial text read; cancellation is best effort.
+  controller.abort();
+  try { response?.body?.cancel()?.catch(() => {}); } catch (_) {}
 }

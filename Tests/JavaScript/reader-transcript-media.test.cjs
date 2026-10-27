@@ -29,6 +29,7 @@ function fixture({ cues = [], captionURL = null, pageURL = 'https://example.com/
     context.expectedDocumentID = snapshot.documentID;
     context.expectedMediaIdentity = snapshot.mediaIdentity;
     context.expectedDocumentURL = snapshot.documentURL;
+    context.expectedCaptionSelectionIdentity = snapshot.captionSelectionIdentity;
     return run(captionsSource);
   };
   return { context, document, media, track, capture, captions, fetches: () => fetches };
@@ -175,4 +176,116 @@ test('loaded cues reject negative, reversed and nonfinite timing', async () => {
   assert.equal((await f.capture()).webVTT, 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nWords\n');
   f.track.cues = [cue(-1, 1)];
   assert.equal((await f.capture()).webVTT, null);
+});
+
+const captionCue = text => ({ startTime: 0, endTime: 1, getCueAsHTML: () => ({ textContent: text }) });
+const captionText = text => `WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n${text}\n`;
+
+for (const remote of [false, true]) {
+  test(`${remote ? 'remote' : 'loaded'} replacement after saved lookup rejects old language; fresh request works`, async () => {
+    const f = fixture({ captionURL: 'https://example.com/en.vtt' });
+    const english = await f.capture();
+    const japanese = { ...f.track, language: 'ja', cues: remote ? [] : [captionCue('日本語')] };
+    const element = { track: japanese, src: 'https://example.com/ja.vtt', srclang: 'ja' };
+    f.media.textTracks = [japanese];
+    f.media.querySelectorAll = () => [element];
+    const urls = [];
+    f.context.fetch = async url => { urls.push(url); return new Response(captionText('日本語')); };
+    assert.equal(await f.captions(english), null);
+    assert.deepEqual(urls, []);
+    const fresh = await f.capture();
+    assert.equal(fresh.languageCode, 'ja');
+    assert.match(await f.captions(fresh), /日本語/);
+    assert.deepEqual(urls, remote ? [element.src] : []);
+  });
+}
+
+test('same-language replacement has distinct selection identity even with identical URL', async () => {
+  const f = fixture({ captionURL: 'https://example.com/en.vtt' });
+  const old = await f.capture();
+  const replacement = { ...f.track, cues: [captionCue('Replacement')] };
+  f.media.textTracks = [replacement];
+  f.media.querySelectorAll = () => [{ track: replacement, src: old.captionURL, srclang: 'en' }];
+  const fresh = await f.capture();
+  assert.equal(fresh.languageCode, old.languageCode);
+  assert.notEqual(fresh.captionSelectionIdentity, old.captionSelectionIdentity);
+  assert.equal(await f.captions(old), null);
+  assert.match(await f.captions(fresh), /Replacement/);
+});
+
+for (const changeAt of ['headers', 'body']) {
+  test(`track replacement during ${changeAt} await rejects response and allows fresh retry`, async () => {
+    const f = fixture({ captionURL: 'https://example.com/en.vtt' });
+    const old = await f.capture();
+    let release, started;
+    const waiting = new Promise(resolve => { started = resolve; });
+    f.context.fetch = async () => {
+      if (changeAt === 'headers') { started(); await new Promise(resolve => { release = resolve; }); }
+      return { ok: true, text: async () => {
+        if (changeAt === 'body') { started(); await new Promise(resolve => { release = resolve; }); }
+        return captionText('Old English');
+      } };
+    };
+    const pending = f.captions(old);
+    await waiting;
+    f.track.language = 'ja';
+    release();
+    assert.equal(await pending, null);
+    f.context.fetch = async () => new Response(captionText('日本語'));
+    assert.match(await f.captions(await f.capture()), /日本語/);
+  });
+}
+
+for (const failure of ['status', 'ownership']) {
+  test(`unread body after ${failure} rejection is cancelled or aborted; fresh retry reads body`, async () => {
+    const f = fixture({ captionURL: 'https://example.com/en.vtt' });
+    const snapshot = await f.capture();
+    let cancelled = false, signal;
+    const body = new ReadableStream({ cancel() { cancelled = true; } });
+    const response = new Response(body, { status: failure === 'status' ? 503 : 200 });
+    f.context.fetch = async (_url, options) => {
+      signal = options.signal;
+      if (failure === 'ownership') f.media.currentSrc = 'https://example.com/new.mp4';
+      return response;
+    };
+    assert.equal(await f.captions(snapshot), null);
+    assert.ok(cancelled || signal.aborted);
+    f.context.fetch = async () => new Response(captionText('Retry'));
+    assert.match(await f.captions(await f.capture()), /Retry/);
+  });
+}
+
+test('YouTube ranks matching manual, matching ASR, then unmatched language fallback', async () => {
+  const f = fixture({ pageURL: 'https://www.youtube.com/watch?v=current' });
+  f.media.textTracks = [];
+  const options = [
+    { languageCode: 'ja', baseUrl: 'https://www.youtube.com/ja' },
+    { languageCode: 'en', kind: 'asr', baseUrl: 'https://www.youtube.com/en-asr' }
+  ];
+  f.context.ytInitialPlayerResponse = { videoDetails: { videoId: 'current' },
+    captions: { playerCaptionsTracklistRenderer: { captionTracks: options } } };
+  assert.match((await f.capture()).captionURL, /en-asr/);
+  options.push({ languageCode: 'en-GB', baseUrl: 'https://www.youtube.com/en-manual' });
+  assert.match((await f.capture()).captionURL, /en-manual/);
+  options.push({ languageCode: 'en-US', baseUrl: 'https://www.youtube.com/en-exact' });
+  assert.match((await f.capture()).captionURL, /en-exact/);
+  options.splice(1);
+  const fallback = await f.capture();
+  assert.equal(fallback.languageCode, 'ja');
+  assert.match(fallback.captionURL, /\/ja\?/);
+});
+
+test('unassociated HTML fallback cannot pair Japanese URL with selected English language', async () => {
+  const f = fixture({ captionURL: 'https://example.com/en.vtt' });
+  assert.equal((await f.capture()).languageCode, 'en');
+  const japanese = { track: { language: 'ja' }, src: 'https://example.com/ja.vtt', srclang: 'ja' };
+  f.media.querySelectorAll = () => [japanese];
+  f.media.querySelector = () => japanese;
+  const selected = await f.capture();
+  assert.equal(selected.captionURL, null);
+  assert.equal(selected.languageCode, 'en');
+  f.media.textTracks = [];
+  const fallback = await f.capture();
+  assert.equal(fallback.captionURL, japanese.src);
+  assert.equal(fallback.languageCode, 'ja');
 });
