@@ -12,6 +12,22 @@ if (!doc.__manabiTranscriptCapture) {
     const ms = Math.round(Math.max(0, seconds) * 1000);
     return `${String(Math.floor(ms / 3600000)).padStart(2, '0')}:${String(Math.floor(ms / 60000) % 60).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}.${String(ms % 1000).padStart(3, '0')}`;
   };
+  const youtubeVideoID = view => {
+    const url = new URL(view.location.href)
+    const youtube = /(^|\.)youtube\.com$/.test(url.hostname)
+    const privateEmbed = /(^|\.)youtube-nocookie\.com$/.test(url.hostname)
+    if (!['https:', 'http:'].includes(url.protocol) || (!youtube && !privateEmbed)) return null
+    if (youtube && /^\/watch\/?$/.test(url.pathname)) {
+      const values = url.searchParams.getAll('v')
+      return values.length === 1 && /^[A-Za-z0-9_-]+$/.test(values[0]) ? values[0] : null
+    }
+    // A path video is authoritative on embed/Shorts routes; a stray `v` query
+    // must not select another video. Playlist-only embeds have no URL video ID.
+    const match = url.pathname.match(/^\/(embed|shorts)\/([A-Za-z0-9_-]+)\/?$/)
+    if (!match || (privateEmbed && match[1] !== 'embed')
+        || (match[1] === 'embed' && match[2] === 'videoseries')) return null
+    return match[2]
+  }
   // Discover each document's light DOM and open shadow trees before its frames.
   // Only the actual root/host/frame ancestry grants access; slots do not create
   // another owner, and closed roots or inaccessible documents are not opened.
@@ -82,15 +98,15 @@ if (!doc.__manabiTranscriptCapture) {
     let stableProviderIdentity = null;
     // YouTube often exposes provider tracks rather than HTML textTracks.
     // A response from the previous SPA video must never supply captions.
-    if (/(^|\.)youtube\.com$/.test(view.location.hostname)) {
+    const videoID = youtubeVideoID(view)
+    if (videoID) {
       let response = view.ytInitialPlayerResponse;
       if (!response) {
         const script = Array.from(ownerDocument.scripts).find(value => value.textContent.includes('ytInitialPlayerResponse ='));
         const match = script?.textContent.match(/ytInitialPlayerResponse\s*=\s*(\{.*?\});/s);
         try { if (match) response = JSON.parse(match[1]); } catch (_) {}
       }
-      const videoID = new URL(view.location.href).searchParams.get('v');
-      if (videoID && response?.videoDetails?.videoId === videoID) {
+      if (response?.videoDetails?.videoId === videoID) {
         stableProviderIdentity = `youtube:${videoID}`;
         const options = response.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
         const normalize = value => (value || '').trim().toLowerCase().replace(/_/g, '-');

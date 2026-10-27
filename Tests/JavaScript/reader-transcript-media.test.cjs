@@ -824,3 +824,203 @@ test('a fresh shadow request can finish before an older request without transfer
   assert.equal(oldOutput, null)
   assert.equal(oldSignal.aborted, true)
 })
+
+function youtubeResponse(videoID, baseURL = `/api/timedtext?v=${videoID}`) {
+  return { videoDetails: { videoId: videoID }, captions: {
+    playerCaptionsTracklistRenderer: { captionTracks: [
+      { languageCode: 'en', baseUrl: baseURL, vssId: '.en' }
+    ] }
+  } }
+}
+
+for (const route of ['watch?v=video_A-1', 'embed/video_A-1', 'shorts/video_A-1']) {
+  test(`YouTube ${route.split(/[/?]/)[0]} route admits only its matched current player response`, async () => {
+    const f = fixture({ pageURL: `https://www.youtube.com/${route}` })
+    f.media.currentSrc = 'blob:https://www.youtube.com/current'
+    f.context.ytInitialPlayerResponse = youtubeResponse('previous')
+    const stale = await captureMedia(f)
+    assert.equal(stale.stableProviderIdentity, null)
+    assert.equal(stale.captionURL, null)
+    f.context.ytInitialPlayerResponse = youtubeResponse('video_A-1')
+    const current = await captureMedia(f)
+    assert.equal(current.stableProviderIdentity, 'youtube:video_A-1')
+    assert.equal(current.languageCode, 'en')
+    assert.equal(current.captionURL, 'https://www.youtube.com/api/timedtext?v=video_A-1&fmt=vtt')
+    assert.equal(current.documentURL, f.context.location.href)
+    assert.equal(current.mediaDocumentURL, f.context.location.href)
+    assert.equal(f.fetches(), 0)
+    assert.match(await f.captions(current), /Caption/)
+    assert.equal(f.fetches(), 1)
+  })
+}
+
+test('embed and Shorts path identities do not borrow a different v query parameter', async () => {
+  for (const path of ['embed/video_A-1', 'shorts/video_A-1/']) {
+    const f = fixture({ pageURL: `https://www.youtube.com/${path}?v=decoy` })
+    f.context.ytInitialPlayerResponse = youtubeResponse('decoy')
+    assert.equal((await captureMedia(f)).stableProviderIdentity, null)
+    assert.equal((await captureMedia(f)).captionURL, null)
+    f.context.ytInitialPlayerResponse = youtubeResponse('video_A-1')
+    const current = await captureMedia(f)
+    assert.equal(current.stableProviderIdentity, 'youtube:video_A-1')
+    assert.match(current.captionURL, /v=video_A-1&fmt=vtt$/)
+    assert.equal(f.fetches(), 0)
+  }
+})
+
+test('privacy-enhanced embedded player keeps its own caption origin and stable video identity', async () => {
+  const f = fixture({ pageURL: 'https://www.youtube-nocookie.com/embed/video_A-1?rel=0' })
+  f.context.ytInitialPlayerResponse = youtubeResponse('video_A-1')
+  const snapshot = await captureMedia(f)
+  assert.equal(snapshot.stableProviderIdentity, 'youtube:video_A-1')
+  assert.equal(snapshot.captionURL, 'https://www.youtube-nocookie.com/api/timedtext?v=video_A-1&fmt=vtt')
+  assert.equal(snapshot.mediaDocumentURL, f.context.location.href)
+  let requested
+  f.context.fetch = async (url, options) => {
+    requested = { url, credentials: options.credentials }
+    return new Response(captionText('Embedded caption'))
+  }
+  assert.match(await f.captions(snapshot), /Embedded caption/)
+  assert.deepEqual(requested, { url: snapshot.captionURL, credentials: 'same-origin' })
+})
+
+test('only explicit unambiguous video routes can grant provider identity; ordinary loaded captions remain usable', async () => {
+  const routes = [
+    'https://www.youtube.com/?v=video_A-1',
+    'https://www.youtube.com/results?v=video_A-1',
+    'https://www.youtube.com/watch?v=video_A-1&v=other',
+    'https://www.youtube.com/watch?v=',
+    'https://www.youtube.com/embed/?v=video_A-1',
+    'https://www.youtube.com/embed/videoseries?list=playlist&v=video_A-1',
+    'https://www.youtube.com/embed/video_A-1/extra?v=video_A-1',
+    'https://www.youtube.com/shorts/video%2FA-1?v=video_A-1',
+    'https://www.youtube.com/watch?v=video%2FA-1',
+    'https://www.youtube-nocookie.com/watch?v=video_A-1',
+    'https://www.youtube-nocookie.com/shorts/video_A-1?v=video_A-1',
+    'https://youtube.com.example.invalid/watch?v=video_A-1',
+    'https://notyoutube.com/embed/video_A-1?v=video_A-1',
+    'https://youtube-nocookie.com.example.invalid/embed/video_A-1?v=video_A-1'
+  ]
+  for (const pageURL of routes) {
+    const f = fixture({ pageURL, cues: [captionCue('Local caption')] })
+    f.context.ytInitialPlayerResponse = youtubeResponse('video_A-1')
+    const snapshot = await captureMedia(f)
+    assert.equal(snapshot.stableProviderIdentity, null, pageURL)
+    assert.equal(snapshot.captionURL, null, pageURL)
+    assert.match(await f.captions(snapshot), /Local caption/)
+    assert.equal(f.fetches(), 0)
+  }
+})
+
+for (const route of ['embed', 'shorts']) {
+  test(`${route} same-node SPA replacement cannot accept a preceding video's caption response`, async () => {
+    const f = fixture({ pageURL: `https://www.youtube.com/${route}/video_A-1` })
+    f.media.currentSrc = 'blob:https://www.youtube.com/retained-player'
+    f.context.ytInitialPlayerResponse = youtubeResponse('video_A-1')
+    const old = await captureMedia(f)
+    assert.notEqual(old.captionURL, null)
+    let release, started, signal
+    const entered = new Promise(resolve => { started = resolve })
+    f.context.fetch = async (_url, options) => {
+      signal = options.signal
+      started()
+      await new Promise(resolve => { release = resolve })
+      return new Response(captionText('Old video'))
+    }
+    const pending = f.captions(old)
+    try {
+      await entered
+      f.context.location = new URL(`https://www.youtube.com/${route}/video_B-2`)
+      const notYetCurrent = await captureMedia(f)
+      assert.equal(notYetCurrent.stableProviderIdentity, null)
+      assert.equal(notYetCurrent.captionURL, null)
+    } finally {
+      release?.()
+    }
+    assert.equal(await pending, null)
+    assert.equal(signal.aborted, true)
+    f.context.ytInitialPlayerResponse = youtubeResponse('video_B-2')
+    const fresh = await captureMedia(f)
+    assert.equal(fresh.documentID, old.documentID)
+    assert.equal(fresh.mediaURL, old.mediaURL)
+    assert.notEqual(fresh.mediaIdentity, old.mediaIdentity)
+    assert.equal(fresh.stableProviderIdentity, 'youtube:video_B-2')
+    let freshURL
+    f.context.fetch = async url => { freshURL = url; return new Response(captionText('New video')) }
+    assert.match(await f.captions(fresh), /New video/)
+    assert.match(freshURL, /v=video_B-2&fmt=vtt$/)
+  })
+}
+
+test('accessible embedded player uses its own route and response, never matching parent page globals', async () => {
+  const f = fixture({ pageURL: 'https://www.youtube.com/article' })
+  const child = iframeOnly(f, { url: 'https://www.youtube.com/embed/video_A-1' })
+  child.media.currentSrc = 'blob:https://www.youtube.com/child'
+  f.context.ytInitialPlayerResponse = youtubeResponse('video_A-1', '/wrong-parent')
+  child.view.ytInitialPlayerResponse = youtubeResponse('previous')
+  assert.equal((await captureMedia(f)).captionURL, null)
+  child.view.ytInitialPlayerResponse = youtubeResponse('video_A-1', '/child-caption')
+  const snapshot = await captureMedia(f)
+  assert.equal(snapshot.documentURL, f.context.location.href)
+  assert.equal(snapshot.mediaDocumentURL, child.view.location.href)
+  assert.equal(snapshot.captionURL, 'https://www.youtube.com/child-caption?fmt=vtt')
+  assert.equal(snapshot.stableProviderIdentity, 'youtube:video_A-1')
+  let childFetches = 0
+  child.view.fetch = async function(url) {
+    assert.equal(this, child.view)
+    assert.equal(url, snapshot.captionURL)
+    childFetches++
+    return new Response(captionText('Owned embedded caption'))
+  }
+  assert.match(await f.captions(snapshot), /Owned embedded caption/)
+  assert.equal(childFetches, 1)
+  assert.equal(f.fetches(), 0)
+})
+
+test('matching embedded provider does not replace selected loaded HTML captions or their language', async () => {
+  const f = shadowFixture({ pageURL: 'https://www.youtube.com/embed/video_A-1',
+    cues: [captionCue('Loaded Japanese')] })
+  f.track.language = 'ja'
+  f.context.ytInitialPlayerResponse = youtubeResponse('video_A-1')
+  const snapshot = await captureMedia(f)
+  assert.equal(snapshot.stableProviderIdentity, 'youtube:video_A-1')
+  assert.equal(snapshot.languageCode, 'ja')
+  assert.equal(snapshot.captionURL, null)
+  assert.match(await f.captions(snapshot), /Loaded Japanese/)
+  assert.equal(f.fetches(), 0)
+})
+
+test('a video keeps its provider identity across explicit routes and new physical documents', async () => {
+  const routes = ['https://www.youtube.com/watch?v=video_A-1',
+    'https://m.youtube.com/shorts/video_A-1', 'https://www.youtube.com/embed/video_A-1',
+    'https://www.youtube-nocookie.com/embed/video_A-1']
+  const snapshots = []
+  for (const pageURL of routes) {
+    const f = fixture({ pageURL })
+    f.media.currentSrc = `blob:${f.context.location.origin}/unique-${snapshots.length}`
+    f.context.ytInitialPlayerResponse = youtubeResponse('video_A-1')
+    snapshots.push(await captureMedia(f))
+    assert.equal(f.fetches(), 0)
+  }
+  assert.equal(new Set(snapshots.map(value => value.documentID)).size, routes.length)
+  assert.equal(new Set(snapshots.map(value => value.mediaIdentity)).size, routes.length)
+  assert.deepEqual(snapshots.map(value => value.stableProviderIdentity), routes.map(() => 'youtube:video_A-1'))
+  assert.deepEqual(snapshots.map(value => value.documentURL), routes)
+})
+
+test('an embedded document can use its own inert initial-player JSON without evaluating page code', async () => {
+  const f = fixture({ pageURL: 'https://www.youtube.com/article' })
+  const child = iframeOnly(f, { url: 'https://www.youtube.com/embed/video_A-1' })
+  f.document.scripts = [{ textContent: `ytInitialPlayerResponse = ${JSON.stringify(youtubeResponse('video_A-1', '/parent-caption'))};` }]
+  child.doc.scripts = [{ textContent: `ytInitialPlayerResponse = ${JSON.stringify(youtubeResponse('previous'))};` }]
+  assert.equal((await captureMedia(f)).captionURL, null)
+  child.doc.scripts = [{ textContent: `ytInitialPlayerResponse = ${JSON.stringify(youtubeResponse('video_A-1', '/own-script-caption'))};` }]
+  const selected = await captureMedia(f)
+  assert.equal(selected.stableProviderIdentity, 'youtube:video_A-1')
+  assert.equal(selected.captionURL, 'https://www.youtube.com/own-script-caption?fmt=vtt')
+  assert.equal(f.fetches(), 0)
+  child.doc.scripts = [{ textContent: 'ytInitialPlayerResponse = {not JSON};' }]
+  const invalid = await captureMedia(f)
+  assert.equal(invalid.captionURL, null)
+  assert.equal(invalid.stableProviderIdentity, null)
+})
