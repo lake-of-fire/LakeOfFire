@@ -509,3 +509,225 @@ final class ReaderTranscriptTests: XCTestCase {
         await TranscriptPageRegistry.shared.remove(key: key)
     }
 }
+
+extension ReaderTranscriptTests {
+    private func shadowCaptionArguments(_ snapshot: ReaderTranscriptMediaSnapshot) throws -> [String: Any] {
+        ["expectedDocumentID": snapshot.documentID,
+         "expectedDocumentURL": snapshot.documentURL.absoluteString,
+         "expectedMediaIdentity": snapshot.mediaIdentity,
+         "expectedCaptionSelectionIdentity": try XCTUnwrap(snapshot.captionSelectionIdentity)]
+    }
+
+    private func shadowCaptions(_ snapshot: ReaderTranscriptMediaSnapshot, in webView: WKWebView) async throws -> String? {
+        let value = try await webView.callAsyncJavaScript(
+            ReaderTranscriptMediaBridge.captionsJavaScript,
+            arguments: shadowCaptionArguments(snapshot), in: nil, contentWorld: .page)
+        return value as? String
+    }
+
+    private func installShadowTranscriptPlayer(in webView: WKWebView, inFrame: Bool = false, remote: Bool = false) async throws {
+        _ = try await webView.callAsyncJavaScript("""
+            window.shadowTranscript?.host.remove()
+            const host = document.createElement('div')
+            const root = host.attachShadow({mode: 'open'})
+            document.body.append(host)
+            let view = window
+            let parent = root
+            let frame = null
+            if (inFrame) {
+              frame = document.createElement('iframe')
+              frame.srcdoc = '<!doctype html><title>Shadow child</title><body></body>'
+              await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error('shadow iframe load timeout')), 3000)
+                frame.onload = () => { clearTimeout(timer); resolve() }
+                root.append(frame)
+              })
+              view = frame.contentWindow
+              parent = view.document.body
+            }
+            const innerHost = view.document.createElement('div')
+            const innerRoot = innerHost.attachShadow({mode: 'open'})
+            parent.append(innerHost)
+            const media = view.document.createElement(inFrame ? 'audio' : 'video')
+            media.preload = 'none'
+            media.src = 'https://example.com/shadow.m4a'
+            innerRoot.append(media)
+            if (remote) {
+              const element = view.document.createElement('track')
+              element.kind = 'subtitles'
+              element.srclang = 'ja'
+              element.src = 'https://example.com/shadow.vtt'
+              media.append(element)
+              element.track.mode = 'disabled'
+            } else {
+              const track = media.addTextTrack('subtitles', 'Japanese', 'ja')
+              track.mode = 'showing'
+              track.addCue(new view.VTTCue(1, 2, 'Shadow <i>caption</i> &amp; &lt;safe&gt;'))
+            }
+            const fixture = {host, root, innerHost, innerRoot, media, view, frame, ownerFetches: 0, rootFetches: 0}
+            window.shadowTranscript = fixture
+            window.fetch = () => { fixture.rootFetches++; throw new Error('unexpected root fetch') }
+            if (remote) view.fetch = async function(url, options) {
+              if (this !== view || options.credentials !== 'same-origin') throw new Error('wrong caption transport owner')
+              fixture.ownerFetches++
+              return new view.Response('WEBVTT\\n\\n00:00:01.000 --> 00:00:02.000\\nFetched shadow caption\\n',
+                {status: 200, headers: {'Content-Type': 'text/vtt'}})
+            }
+            """, arguments: ["inFrame": inFrame, "remote": remote], in: nil, contentWorld: .page)
+    }
+
+    func testActualOpenShadowCaptureExcludesClosedAndDetachedTrees() async throws {
+        let webView = WKWebView()
+        let delegate = TranscriptNavigation()
+        defer { webView.stopLoading(); webView.navigationDelegate = nil }
+        try await load("<title>Shadow article</title><body>Article</body>", in: webView, delegate: delegate)
+        try await installShadowTranscriptPlayer(in: webView)
+        let first = try await capture(webView)
+        let repeated = try await capture(webView)
+        XCTAssertEqual(first.title, "Shadow article")
+        XCTAssertEqual(first.documentURL, first.mediaDocumentURL)
+        XCTAssertEqual(first.languageCode, "ja")
+        XCTAssertEqual(first.mediaIdentity, repeated.mediaIdentity)
+        XCTAssertEqual(first.captionSelectionIdentity, repeated.captionSelectionIdentity)
+        XCTAssertEqual(first.webVTT, "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nShadow caption &amp; &lt;safe&gt;\n")
+        let loaded = try await shadowCaptions(first, in: webView)
+        XCTAssertEqual(loaded, first.webVTT)
+        let fetches = try await webView.evaluateJavaScript("window.shadowTranscript.rootFetches")
+        XCTAssertEqual(fetches as? Int, 0)
+
+        _ = try await webView.evaluateJavaScript("window.shadowTranscript.host.remove()")
+        let detached = try await webView.callAsyncJavaScript(
+            ReaderTranscriptMediaBridge.snapshotJavaScript, arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(detached as? String, "null")
+        _ = try await webView.callAsyncJavaScript("""
+            const closedHost = document.createElement('div')
+            document.body.append(closedHost)
+            closedHost.attachShadow({mode: 'closed'}).append(window.shadowTranscript.media)
+            """, arguments: [:], in: nil, contentWorld: .page)
+        let closed = try await webView.callAsyncJavaScript(
+            ReaderTranscriptMediaBridge.snapshotJavaScript, arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(closed as? String, "null")
+        _ = try await webView.callAsyncJavaScript("""
+            const fixture = window.shadowTranscript
+            fixture.innerRoot.append(fixture.media)
+            document.body.append(fixture.host)
+            """, arguments: [:], in: nil, contentWorld: .page)
+        let fresh = try await capture(webView)
+        let retry = try await shadowCaptions(fresh, in: webView)
+        XCTAssertEqual(retry, first.webVTT)
+    }
+
+    func testActualNestedShadowHostReparentRetiresOriginalCapture() async throws {
+        let webView = WKWebView()
+        let delegate = TranscriptNavigation()
+        defer { webView.stopLoading(); webView.navigationDelegate = nil }
+        try await load("<title>Shadow article</title><body>Article</body>", in: webView, delegate: delegate)
+        try await installShadowTranscriptPlayer(in: webView)
+        let old = try await capture(webView)
+        let sameNode = try await webView.callAsyncJavaScript("""
+            const fixture = window.shadowTranscript
+            const replacementHost = document.createElement('div')
+            document.body.append(replacementHost)
+            replacementHost.attachShadow({mode: 'open'}).append(fixture.innerHost)
+            return fixture.innerRoot.querySelector('video') === fixture.media
+            """, arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(sameNode as? Bool, true)
+        let fresh = try await capture(webView)
+        XCTAssertEqual(fresh.documentID, old.documentID)
+        XCTAssertEqual(fresh.mediaURL, old.mediaURL)
+        XCTAssertEqual(fresh.captionSelectionIdentity, old.captionSelectionIdentity)
+        XCTAssertNotEqual(fresh.mediaIdentity, old.mediaIdentity)
+        let stale = try await shadowCaptions(old, in: webView)
+        let current = try await shadowCaptions(fresh, in: webView)
+        XCTAssertNil(stale)
+        XCTAssertEqual(current, old.webVTT)
+        _ = try await webView.evaluateJavaScript("document.body.append(window.shadowTranscript.media)")
+        let staleShadow = try await shadowCaptions(fresh, in: webView)
+        XCTAssertNil(staleShadow)
+        let light = try await capture(webView)
+        let lightCaptions = try await shadowCaptions(light, in: webView)
+        XCTAssertEqual(lightCaptions, old.webVTT)
+    }
+
+    func testActualShadowIframeWithChildShadowUsesOwningCaptionTransport() async throws {
+        let webView = WKWebView()
+        let delegate = TranscriptNavigation()
+        defer { webView.stopLoading(); webView.navigationDelegate = nil }
+        try await load("<title>Shadow article</title><body>Article</body>", in: webView, delegate: delegate)
+        try await installShadowTranscriptPlayer(in: webView, inFrame: true, remote: true)
+        let snapshot = try await capture(webView)
+        XCTAssertEqual(snapshot.title, "Shadow article")
+        XCTAssertEqual(snapshot.mediaDocumentURL?.absoluteString, "about:srcdoc")
+        XCTAssertEqual(snapshot.languageCode, "ja")
+        XCTAssertNil(snapshot.webVTT)
+        let before = try await webView.evaluateJavaScript("window.shadowTranscript.ownerFetches")
+        XCTAssertEqual(before as? Int, 0)
+        let captions = try await shadowCaptions(snapshot, in: webView)
+        XCTAssertTrue(captions?.contains("Fetched shadow caption") == true)
+        let rootFetches = try await webView.evaluateJavaScript("window.shadowTranscript.rootFetches")
+        let ownerFetches = try await webView.evaluateJavaScript("window.shadowTranscript.ownerFetches")
+        XCTAssertEqual(rootFetches as? Int, 0)
+        XCTAssertEqual(ownerFetches as? Int, 1)
+        _ = try await webView.evaluateJavaScript("window.shadowTranscript.host.remove()")
+        let retired = try await shadowCaptions(snapshot, in: webView)
+        XCTAssertNil(retired)
+        let after = try await webView.evaluateJavaScript("window.shadowTranscript.ownerFetches")
+        XCTAssertEqual(after as? Int, 1)
+        try await installShadowTranscriptPlayer(in: webView, inFrame: true, remote: true)
+        let fresh = try await capture(webView)
+        let retry = try await shadowCaptions(fresh, in: webView)
+        XCTAssertTrue(retry?.contains("Fetched shadow caption") == true)
+    }
+
+    func testActualShadowReparentDuringBodyReadRejectsStaleTextAndAllowsRetry() async throws {
+        let webView = WKWebView()
+        let delegate = TranscriptNavigation()
+        defer { webView.stopLoading(); webView.navigationDelegate = nil }
+        try await load("<title>Shadow article</title><body>Article</body>", in: webView, delegate: delegate)
+        try await installShadowTranscriptPlayer(in: webView, remote: true)
+        let old = try await capture(webView)
+        let output = try await webView.callAsyncJavaScript("""
+            let release, entered, timer
+            const started = new Promise(resolve => { entered = resolve })
+            window.fetch = async (_url, options) => {
+              window.shadowCaptionSignal = options.signal
+              const stream = new ReadableStream({start(controller) {
+                release = () => {
+                  controller.enqueue(new TextEncoder().encode('WEBVTT\\n\\n00:00:01.000 --> 00:00:02.000\\nStale shadow\\n'))
+                  controller.close()
+                }
+              }})
+              const response = new Response(stream)
+              const read = response.text.bind(response)
+              response.text = () => { entered(); return read() }
+              return response
+            }
+            const pending = (async () => {
+              \(ReaderTranscriptMediaBridge.captionsJavaScript)
+            })()
+            try {
+              await Promise.race([started, new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error('caption body never started')), 3000)
+              })])
+              const host = document.createElement('div')
+              document.body.append(host)
+              host.attachShadow({mode: 'open'}).append(window.shadowTranscript.media)
+            } finally {
+              clearTimeout(timer)
+              release?.()
+            }
+            return await pending
+            """, arguments: shadowCaptionArguments(old), in: nil, contentWorld: .page)
+        XCTAssertNil(output as? String)
+        let aborted = try await webView.evaluateJavaScript("window.shadowCaptionSignal.aborted")
+        XCTAssertEqual(aborted as? Bool, true)
+        _ = try await webView.callAsyncJavaScript("""
+            window.fetch = async () => new Response('WEBVTT\\n\\n00:00:01.000 --> 00:00:02.000\\nFresh shadow\\n')
+            """, arguments: [:], in: nil, contentWorld: .page)
+        let fresh = try await capture(webView)
+        XCTAssertEqual(fresh.captionSelectionIdentity, old.captionSelectionIdentity)
+        XCTAssertNotEqual(fresh.mediaIdentity, old.mediaIdentity)
+        let retry = try await shadowCaptions(fresh, in: webView)
+        XCTAssertTrue(retry?.contains("Fresh shadow") == true)
+    }
+}

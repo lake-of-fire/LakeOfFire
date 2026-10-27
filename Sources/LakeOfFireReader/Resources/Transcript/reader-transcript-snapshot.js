@@ -12,35 +12,51 @@ if (!doc.__manabiTranscriptCapture) {
     const ms = Math.round(Math.max(0, seconds) * 1000);
     return `${String(Math.floor(ms / 3600000)).padStart(2, '0')}:${String(Math.floor(ms / 60000) % 60).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}.${String(ms % 1000).padStart(3, '0')}`;
   };
-  // All candidates stay under the captured main document. A child window is
-  // used only while its complete physical iframe ancestry is still reachable.
+  // Discover each document's light DOM and open shadow trees before its frames.
+  // Only the actual root/host/frame ancestry grants access; slots do not create
+  // another owner, and closed roots or inaccessible documents are not opened.
   const candidates = () => {
-    const result = [];
-    const visited = new Set();
+    const result = []
+    const visited = new Set()
     const visit = (ownerDocument, path) => {
-      if (visited.has(ownerDocument)) return;
-      visited.add(ownerDocument);
-      const view = ownerDocument.defaultView;
-      if (!view || view.document !== ownerDocument || !ownerDocument.isConnected) return;
-      const documentPath = [...path, identity(ownerDocument), view.location.href];
-      for (const node of ownerDocument.querySelectorAll('video, audio')) {
-        if (node.isConnected && node.ownerDocument === ownerDocument) {
-          result.push({ node, ownerDocument, view, documentPath });
+      if (visited.has(ownerDocument)) return
+      const view = ownerDocument.defaultView
+      if (!view || view.document !== ownerDocument || !ownerDocument.isConnected) return
+      const documentPath = [...path, identity(ownerDocument), view.location.href]
+      const frames = []
+      const visitRoot = (root, rootPath) => {
+        if (visited.has(root)) return
+        visited.add(root)
+        const belongsToRoot = node => node.isConnected && node.ownerDocument === ownerDocument
+          && node.getRootNode() === root
+        for (const node of root.querySelectorAll('video, audio')) {
+          if (belongsToRoot(node)) {
+            result.push({ node, ownerDocument, view, documentPath: rootPath })
+          }
+        }
+        for (const element of root.querySelectorAll('*')) {
+          if (!belongsToRoot(element)) continue
+          if (element.localName === 'iframe') frames.push({ frame: element, path: rootPath })
+          const shadow = element.shadowRoot
+          if (shadow?.mode === 'open' && shadow.host === element && shadow.isConnected) {
+            visitRoot(shadow, [...rootPath, identity(element), identity(shadow)])
+          }
         }
       }
-      for (const frame of ownerDocument.querySelectorAll('iframe')) {
-        if (!frame.isConnected || frame.ownerDocument !== ownerDocument) continue;
+      visitRoot(ownerDocument, documentPath)
+      for (const { frame, path: framePath } of frames) {
+        if (!frame.isConnected || frame.ownerDocument !== ownerDocument) continue
         try {
-          const child = frame.contentDocument;
+          const child = frame.contentDocument
           if (child && child.defaultView?.frameElement === frame) {
-            visit(child, [...documentPath, identity(frame)]);
+            visit(child, [...framePath, identity(frame)])
           }
         } catch (_) { /* Inaccessible documents do not participate. */ }
       }
-    };
-    visit(doc, []);
-    return result;
-  };
+    }
+    visit(doc, [])
+    return result
+  }
   doc.__manabiTranscriptCapture = withContext => {
     if (document !== doc) return null;
     const media = candidates();

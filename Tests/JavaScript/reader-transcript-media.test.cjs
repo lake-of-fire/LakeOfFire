@@ -13,13 +13,13 @@ let nextUUID = 0;
 function fixture({ cues = [], captionURL = null, pageURL = 'https://example.com/watch' } = {}) {
   const track = { kind: 'subtitles', language: 'en', mode: 'showing', cues };
   const trackElement = captionURL ? { track, src: captionURL, srclang: 'en' } : null;
-  const media = { currentSrc: 'https://example.com/video.mp4', src: '', duration: 90,
+  const media = { localName: 'video', getRootNode() { return this.ownerDocument }, currentSrc: 'https://example.com/video.mp4', src: '', duration: 90,
     paused: true, ended: false, textTracks: [track], getAttribute: () => null,
     querySelector: selector => selector.startsWith('track') ? trackElement : null,
     querySelectorAll: selector => selector === 'track[src]' && trackElement ? [trackElement] : [] };
   const frames = [];
   const document = { title: 'Page title', scripts: [], isConnected: true,
-    querySelectorAll: selector => selector === 'iframe' ? frames : [media] };
+    querySelectorAll: selector => selector === 'iframe' ? frames : selector === '*' ? [media, ...frames] : [media] };
   let fetches = 0;
   const context = vm.createContext({ document, location: new URL(pageURL), navigator: { languages: ['en-US'] },
     URL, setTimeout, clearTimeout, AbortController,
@@ -30,15 +30,19 @@ function fixture({ cues = [], captionURL = null, pageURL = 'https://example.com/
     ownerDocument: { configurable: true, enumerable: true, get: () => context.document },
     isConnected: { configurable: true, enumerable: true, value: true, writable: true }
   });
-  const run = source => new vm.Script(`(async function() {\n${source}\n}).call(globalThis)`).runInContext(context);
+  // WK arguments are per invocation. A later request must not overwrite the
+  // expected identities of a request that is still awaiting fetch or its body.
+  const run = (source, args = {}) => {
+    const evaluate = new vm.Script(`(async function(${Object.keys(args).join(',')}) {\n${source}\n})`).runInContext(context)
+    return evaluate.call(context, ...Object.values(args))
+  }
   const capture = async () => JSON.parse(await run(snapshotSource));
-  const captions = async snapshot => {
-    context.expectedDocumentID = snapshot.documentID;
-    context.expectedMediaIdentity = snapshot.mediaIdentity;
-    context.expectedDocumentURL = snapshot.documentURL;
-    context.expectedCaptionSelectionIdentity = snapshot.captionSelectionIdentity;
-    return run(captionsSource);
-  };
+  const captions = snapshot => run(captionsSource, {
+    expectedDocumentID: snapshot.documentID,
+    expectedMediaIdentity: snapshot.mediaIdentity,
+    expectedDocumentURL: snapshot.documentURL,
+    expectedCaptionSelectionIdentity: snapshot.captionSelectionIdentity
+  })
   return { context, document, media, track, frames, capture, captions, fetches: () => fetches };
 }
 
@@ -309,12 +313,14 @@ function frameFixture(f, { parent = f.document, url = 'https://example.com/embed
   const track = { kind: 'subtitles', language: 'en', mode: 'showing', cues };
   const element = captionURL ? { track, src: captionURL, srclang: 'en' } : null;
   const doc = { title: 'Embedded title', scripts: [], isConnected: true };
-  const media = { ...f.media, ownerDocument: doc, textTracks: [track],
+  const media = { ...f.media, ownerDocument: doc, isConnected: true,
+    getRootNode() { return this.ownerDocument }, textTracks: [track],
     querySelector: selector => selector.startsWith('track') ? element : null,
     querySelectorAll: selector => selector === 'track[src]' && element ? [element] : [] };
   const nodes = [media];
-  doc.querySelectorAll = selector => selector === 'iframe' ? frames : nodes;
-  const frame = { ownerDocument: parent, isConnected: true, contentDocument: doc };
+  doc.querySelectorAll = selector => selector === 'iframe' ? frames : selector === '*' ? [...nodes, ...frames] : nodes;
+  const frame = { localName: 'iframe', getRootNode() { return this.ownerDocument },
+    ownerDocument: parent, isConnected: true, contentDocument: doc };
   const view = { document: doc, frameElement: frame, location: new URL(url),
     navigator: { languages: ['en-US'] }, fetch: (...args) => f.context.fetch(...args) };
   doc.defaultView = view;
@@ -322,7 +328,7 @@ function frameFixture(f, { parent = f.document, url = 'https://example.com/embed
 }
 
 function iframeOnly(f, options) {
-  f.document.querySelectorAll = selector => selector === 'iframe' ? f.frames : [];
+  f.document.querySelectorAll = selector => selector === 'iframe' || selector === '*' ? f.frames : [];
   const child = frameFixture(f, options);
   f.frames.push(child.frame);
   return child;
@@ -365,7 +371,8 @@ test('nested accessible frames participate; inaccessible and detached frames are
   outer.nodes.length = 0;
   const inner = frameFixture(f, { parent: outer.doc, cues: [captionCue('Nested')] });
   outer.frames.push(inner.frame);
-  const inaccessible = { ownerDocument: f.document, isConnected: true,
+  const inaccessible = { localName: 'iframe', getRootNode() { return this.ownerDocument },
+    ownerDocument: f.document, isConnected: true,
     get contentDocument() { throw new Error('SecurityError'); } };
   const detached = frameFixture(f, { cues: [captionCue('Detached')] });
   detached.frame.isConnected = false;
@@ -502,3 +509,318 @@ test('child provider uses its own URL and globals and rejects a previous video r
   assert.equal(snapshot.documentURL, 'https://www.youtube.com/article');
   assert.equal(snapshot.mediaDocumentURL, child.view.location.href);
 });
+
+// Model physical tree roots, not the flattened slot tree. Every reparent updates
+// getRootNode/ownerDocument/isConnected, just as the production discovery sees.
+function installTreeRoot(root) {
+  root.members = []
+  root.querySelectorAll = selector => root.members.filter(node => selector === '*'
+    || selector === 'video, audio' && ['video', 'audio'].includes(node.localName)
+    || selector === 'iframe' && node.localName === 'iframe')
+  return root
+}
+
+function mountInRoot(root, node) {
+  const ownerDocument = root ? root.ownerDocument || root : node.ownerDocument
+  if (node.mountRoot) {
+    const index = node.mountRoot.members.indexOf(node)
+    if (index !== -1) node.mountRoot.members.splice(index, 1)
+  }
+  node.mountRoot = root
+  node.getRootNode = function() { return this.mountRoot || this }
+  Object.defineProperties(node, {
+    ownerDocument: { configurable: true, enumerable: true,
+      get() { return this.mountRoot?.ownerDocument || this.mountRoot || ownerDocument } },
+    isConnected: { configurable: true, enumerable: true,
+      get() { return this.mountRoot?.isConnected === true } }
+  })
+  root?.members.push(node)
+  return node
+}
+
+function attachShadowFixture(parent, mode = 'open') {
+  const host = mountInRoot(parent, { localName: 'media-player' })
+  const root = installTreeRoot({ host, mode,
+    get ownerDocument() { return host.ownerDocument },
+    get isConnected() { return host.isConnected } })
+  host.shadowRoot = mode === 'open' ? root : null
+  return { host, root }
+}
+
+function shadowFixture(options) {
+  const f = fixture(options)
+  installTreeRoot(f.document)
+  const shadow = attachShadowFixture(f.document)
+  mountInRoot(shadow.root, f.media)
+  return { ...f, ...shadow }
+}
+
+test('open shadow media captures loaded captions without network and retains article identity', async () => {
+  const f = shadowFixture({ cues: [captionCue('Shadow words & <literal>')] })
+  const first = await captureMedia(f)
+  const repeated = await captureMedia(f)
+  assert.equal(first.documentURL, f.context.location.href)
+  assert.equal(first.mediaDocumentURL, f.context.location.href)
+  assert.equal(first.title, 'Page title')
+  assert.equal(first.mediaURL, f.media.currentSrc)
+  assert.equal(first.mediaIdentity, repeated.mediaIdentity)
+  assert.equal(first.captionSelectionIdentity, repeated.captionSelectionIdentity)
+  assert.match(await f.captions(first), /Shadow words &amp; &lt;literal&gt;/)
+  assert.equal(f.fetches(), 0)
+})
+
+test('nested open roots are discovered, but closed and disconnected hosts are not', async () => {
+  const f = shadowFixture({ cues: [captionCue('Nested shadow')] })
+  const inner = attachShadowFixture(f.root)
+  mountInRoot(inner.root, f.media)
+  assert.match((await captureMedia(f)).webVTT, /Nested shadow/)
+  mountInRoot(null, f.host)
+  assert.equal(await f.capture(), null)
+  mountInRoot(f.document, f.host)
+  assert.match((await captureMedia(f)).webVTT, /Nested shadow/)
+  const closed = attachShadowFixture(f.document, 'closed')
+  mountInRoot(closed.root, f.media)
+  assert.equal(await f.capture(), null)
+  mountInRoot(inner.root, f.media)
+  assert.match(await f.captions(await captureMedia(f)), /Nested shadow/)
+})
+
+test('shadow audio is discovered independently of video elements', async () => {
+  const f = shadowFixture({ cues: [captionCue('Audio caption')] })
+  f.media.localName = 'audio'
+  assert.match(await f.captions(await captureMedia(f)), /Audio caption/)
+})
+
+test('local light media precedes shadow media, both precede frames, and playing media still wins', async () => {
+  const f = shadowFixture({ cues: [captionCue('Shadow')] })
+  const light = fixture({ cues: [captionCue('Light')] }).media
+  mountInRoot(f.document, light)
+  const child = frameFixture(f, { cues: [captionCue('Frame')] })
+  mountInRoot(f.document, child.frame)
+  assert.match((await captureMedia(f)).webVTT, /Light/)
+  f.media.paused = false
+  assert.match((await captureMedia(f)).webVTT, /Shadow/)
+  child.media.paused = false
+  assert.match((await captureMedia(f)).webVTT, /Shadow/)
+  light.paused = false
+  assert.match((await captureMedia(f)).webVTT, /Light/)
+  mountInRoot(null, light)
+  f.media.paused = true
+  assert.match((await captureMedia(f)).webVTT, /Frame/)
+  child.media.paused = true
+  assert.match((await captureMedia(f)).webVTT, /Shadow/)
+})
+
+test('moving the identical media and track to a sibling shadow root retires the old capture', async () => {
+  const f = shadowFixture({ cues: [captionCue('Same node and track')] })
+  const old = await captureMedia(f)
+  const other = attachShadowFixture(f.document)
+  mountInRoot(other.root, f.media)
+  const fresh = await captureMedia(f)
+  assert.equal(fresh.documentID, old.documentID)
+  assert.equal(fresh.mediaURL, old.mediaURL)
+  assert.equal(fresh.captionSelectionIdentity, old.captionSelectionIdentity)
+  assert.notEqual(fresh.mediaIdentity, old.mediaIdentity)
+  assert.equal(await f.captions(old), null)
+  assert.match(await f.captions(fresh), /Same node and track/)
+})
+
+test('moving an intact nested host changes its outer ownership without replacing media or inner root', async () => {
+  const f = shadowFixture({ cues: [captionCue('Retained inner tree')] })
+  const inner = attachShadowFixture(f.root)
+  mountInRoot(inner.root, f.media)
+  const old = await captureMedia(f)
+  const other = attachShadowFixture(f.document)
+  mountInRoot(other.root, inner.host)
+  const fresh = await captureMedia(f)
+  assert.equal(f.media.getRootNode(), inner.root)
+  assert.equal(fresh.captionSelectionIdentity, old.captionSelectionIdentity)
+  assert.notEqual(fresh.mediaIdentity, old.mediaIdentity)
+  assert.equal(await f.captions(old), null)
+  assert.match(await f.captions(fresh), /Retained inner tree/)
+})
+
+test('unrelated shadow hosts and slot distribution do not replace a light DOM media owner', async () => {
+  const f = shadowFixture({ cues: [captionCue('Slotted light media')] })
+  mountInRoot(f.document, f.media)
+  const old = await captureMedia(f)
+  mountInRoot(f.root, { localName: 'slot', assignedNodes() { throw new Error('not a physical owner') } })
+  attachShadowFixture(f.document)
+  const fresh = await captureMedia(f)
+  assert.equal(fresh.mediaIdentity, old.mediaIdentity)
+  assert.equal(fresh.captionSelectionIdentity, old.captionSelectionIdentity)
+  assert.match(await f.captions(old), /Slotted light media/)
+})
+
+test('moving media from shadow into light DOM rejects a previously captured request', async () => {
+  const f = shadowFixture({ cues: [captionCue('Moved to light')] })
+  const old = await captureMedia(f)
+  mountInRoot(f.document, f.media)
+  assert.equal(await f.captions(old), null)
+  assert.match(await f.captions(await captureMedia(f)), /Moved to light/)
+})
+
+test('same-source physical replacement inside a shadow root changes media identity', async () => {
+  const f = shadowFixture({ cues: [captionCue('Original')] })
+  const old = await captureMedia(f)
+  const replacement = fixture({ cues: [captionCue('Replacement')] }).media
+  mountInRoot(null, f.media)
+  mountInRoot(f.root, replacement)
+  const fresh = await captureMedia(f)
+  assert.equal(fresh.mediaURL, old.mediaURL)
+  assert.notEqual(fresh.mediaIdentity, old.mediaIdentity)
+  assert.equal(await f.captions(old), null)
+  assert.match(await f.captions(fresh), /Replacement/)
+})
+
+test('an iframe inside an open root uses its own fetch context and keeps article provenance', async () => {
+  const f = shadowFixture()
+  mountInRoot(null, f.media)
+  const child = frameFixture(f, { captionURL: 'https://example.com/shadow-frame.vtt' })
+  mountInRoot(f.root, child.frame)
+  child.track.language = 'ja'
+  let fetches = 0
+  child.view.fetch = async function(url, options) {
+    assert.equal(this, child.view)
+    assert.equal(url, 'https://example.com/shadow-frame.vtt')
+    assert.equal(options.credentials, 'same-origin')
+    fetches++
+    return new Response(captionText('Frame in shadow'))
+  }
+  const selected = await captureMedia(f)
+  assert.equal(fetches, 0)
+  assert.equal(selected.documentURL, f.context.location.href)
+  assert.equal(selected.mediaDocumentURL, child.view.location.href)
+  assert.equal(selected.languageCode, 'ja')
+  assert.match(await f.captions(selected), /Frame in shadow/)
+  assert.equal(fetches, 1)
+  assert.equal(f.fetches(), 0)
+  mountInRoot(null, f.host)
+  assert.equal(await f.captions(selected), null)
+  assert.equal(fetches, 1)
+})
+
+test('open roots in accessible child documents retain the complete iframe ancestry', async () => {
+  const f = fixture()
+  const child = iframeOnly(f, { cues: [captionCue('Child shadow')] })
+  installTreeRoot(child.doc)
+  const shadow = attachShadowFixture(child.doc)
+  mountInRoot(shadow.root, child.media)
+  const old = await captureMedia(f)
+  assert.equal(old.mediaDocumentURL, child.view.location.href)
+  assert.match(await f.captions(old), /Child shadow/)
+  const replacement = frameFixture(f, { cues: [captionCue('New child shadow')] })
+  installTreeRoot(replacement.doc)
+  const newShadow = attachShadowFixture(replacement.doc)
+  mountInRoot(newShadow.root, replacement.media)
+  replacement.view.frameElement = child.frame
+  child.frame.contentDocument = replacement.doc
+  assert.equal(await f.captions(old), null)
+  assert.match(await f.captions(await captureMedia(f)), /New child shadow/)
+})
+
+for (const at of ['headers', 'body']) {
+  test(`shadow reparent during ${at} await retires response and aborts transport; fresh retry succeeds`, async () => {
+    const f = shadowFixture({ captionURL: 'https://example.com/shadow.vtt' })
+    const other = attachShadowFixture(f.document)
+    const old = await captureMedia(f)
+    let release, started, signal
+    const entered = new Promise(resolve => { started = resolve })
+    f.context.fetch = async (_url, options) => {
+      signal = options.signal
+      if (at === 'headers') { started(); await new Promise(resolve => { release = resolve }) }
+      return { ok: true, text: async () => {
+        if (at === 'body') { started(); await new Promise(resolve => { release = resolve }) }
+        return captionText('Retired response')
+      } }
+    }
+    const pending = f.captions(old)
+    try {
+      await entered
+      mountInRoot(other.root, f.media)
+    } finally {
+      release?.()
+    }
+    assert.equal(await pending, null)
+    assert.equal(signal.aborted, true)
+    f.context.fetch = async () => new Response(captionText('Current shadow'))
+    assert.match(await f.captions(await captureMedia(f)), /Current shadow/)
+  })
+}
+
+test('moving the frame between shadow roots invalidates a suspended child request even with unchanged child document', async () => {
+  const f = shadowFixture()
+  mountInRoot(null, f.media)
+  const child = frameFixture(f, { captionURL: 'https://example.com/child.vtt' })
+  mountInRoot(f.root, child.frame)
+  const old = await captureMedia(f)
+  let release, started, signal
+  const entered = new Promise(resolve => { started = resolve })
+  child.view.fetch = async (_url, options) => {
+    signal = options.signal
+    started()
+    await new Promise(resolve => { release = resolve })
+    return new Response(captionText('Old parent root'))
+  }
+  const pending = f.captions(old)
+  try {
+    await entered
+    const other = attachShadowFixture(f.document)
+    mountInRoot(other.root, child.frame)
+  } finally {
+    release?.()
+  }
+  assert.equal(await pending, null)
+  assert.equal(signal.aborted, true)
+  child.view.fetch = async () => new Response(captionText('Fresh parent root'))
+  const fresh = await captureMedia(f)
+  assert.equal(fresh.mediaDocumentURL, old.mediaDocumentURL)
+  assert.notEqual(fresh.mediaIdentity, old.mediaIdentity)
+  assert.match(await f.captions(fresh), /Fresh parent root/)
+})
+
+for (const remote of [false, true]) {
+  test(`shadow ${remote ? 'remote' : 'loaded'} captions cannot change language during saved lookup`, async () => {
+    const f = shadowFixture({ captionURL: 'https://example.com/en.vtt' })
+    const english = await captureMedia(f)
+    const japanese = { ...f.track, language: 'ja', cues: remote ? [] : [captionCue('日本語')] }
+    const element = { track: japanese, src: 'https://example.com/ja.vtt', srclang: 'ja' }
+    f.media.textTracks = [japanese]
+    f.media.querySelectorAll = () => [element]
+    const urls = []
+    f.context.fetch = async url => { urls.push(url); return new Response(captionText('日本語')) }
+    assert.equal(await f.captions(english), null)
+    assert.deepEqual(urls, [])
+    const fresh = await captureMedia(f)
+    assert.equal(fresh.languageCode, 'ja')
+    assert.match(await f.captions(fresh), /日本語/)
+    assert.deepEqual(urls, remote ? [element.src] : [])
+  })
+}
+
+test('a fresh shadow request can finish before an older request without transferring its authority', async () => {
+  const f = shadowFixture({ captionURL: 'https://example.com/shared.vtt' })
+  const other = attachShadowFixture(f.document)
+  const old = await captureMedia(f)
+  let release, started, oldSignal, oldOutput
+  const entered = new Promise(resolve => { started = resolve })
+  f.context.fetch = async (_url, options) => {
+    oldSignal = options.signal
+    started()
+    await new Promise(resolve => { release = resolve })
+    return new Response(captionText('Old root response'))
+  }
+  const pending = f.captions(old)
+  try {
+    await entered
+    mountInRoot(other.root, f.media)
+    const fresh = await captureMedia(f)
+    f.context.fetch = async () => new Response(captionText('Current root response'))
+    assert.match(await f.captions(fresh), /Current root response/)
+  } finally {
+    release?.()
+    oldOutput = await pending
+  }
+  assert.equal(oldOutput, null)
+  assert.equal(oldSignal.aborted, true)
+})
