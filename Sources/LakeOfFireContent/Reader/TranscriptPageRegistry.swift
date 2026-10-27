@@ -26,6 +26,7 @@ public struct TranscriptPageAsset: Sendable, Hashable {
     public let title: String
     public let html: String
     public let webVTT: String?
+    public let stableContentKey: String?
     public let createdAt: Date
 
     public init(
@@ -34,6 +35,7 @@ public struct TranscriptPageAsset: Sendable, Hashable {
         title: String,
         html: String,
         webVTT: String? = nil,
+        stableContentKey: String? = nil,
         createdAt: Date = .now
     ) {
         self.key = key
@@ -41,15 +43,29 @@ public struct TranscriptPageAsset: Sendable, Hashable {
         self.title = title
         self.html = html
         self.webVTT = webVTT
+        self.stableContentKey = stableContentKey
         self.createdAt = createdAt
     }
 
     public var pageURL: URL? {
-        .transcriptPageURL(key: key, contentURL: canonicalContentURL)
+        if let stableContentKey {
+            guard let backing = URL.transcriptContentIdentityURL(key: stableContentKey) else { return nil }
+            return .transcriptPageURL(key: key, contentURL: canonicalContentURL, backingContentURL: backing)
+        }
+        return .transcriptPageURL(key: key, contentURL: canonicalContentURL)
     }
 
     public var webVTTURL: URL? {
-        .transcriptVTTURL(key: key, contentURL: canonicalContentURL)
+        if let stableContentKey {
+            guard let backing = URL.transcriptContentIdentityURL(key: stableContentKey) else { return nil }
+            return .transcriptVTTURL(key: key, contentURL: canonicalContentURL, backingContentURL: backing)
+        }
+        return .transcriptVTTURL(key: key, contentURL: canonicalContentURL)
+    }
+
+    public var readerContentURL: URL? {
+        if let stableContentKey { return .transcriptContentIdentityURL(key: stableContentKey) }
+        return pageURL
     }
 
     public static func makeHTML(
@@ -200,6 +216,7 @@ public struct TranscriptPageAsset: Sendable, Hashable {
         canonicalContentURL: URL,
         title: String,
         webVTT: String,
+        stableContentKey: String? = nil,
         createdAt: Date = .now
     ) -> TranscriptPageAsset {
         let cues = cues(fromWebVTT: webVTT)
@@ -214,6 +231,7 @@ public struct TranscriptPageAsset: Sendable, Hashable {
             title: title,
             html: html,
             webVTT: webVTT,
+            stableContentKey: stableContentKey,
             createdAt: createdAt
         )
     }
@@ -284,7 +302,8 @@ public actor TranscriptPageRegistry {
         }
 
         let record = HistoryRecord()
-        record.url = expectedURL
+        guard let readerContentURL = asset.readerContentURL else { return nil }
+        record.url = readerContentURL
         record.title = asset.title
         record.sourceDownloadURL = asset.canonicalContentURL
         record.rssContainsFullContent = true

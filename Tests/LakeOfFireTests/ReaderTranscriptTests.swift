@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import WebKit
+import RealmSwift
 import LakeOfFireCore
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
@@ -36,6 +37,113 @@ private final class TranscriptSchemeTask: NSObject, WKURLSchemeTask {
 
 @MainActor
 final class ReaderTranscriptTests: XCTestCase {
+    func testRegisteredServingRoutesLoadOneStableNativeContentWithoutChangingOriginalArticle() async throws {
+        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        configuration.objectTypes = [Bookmark.self, ContentFile.self, HistoryRecord.self, FeedEntry.self]
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeed
+        }
+        let source = URL(string: "https://example.com/article")!
+        let original = HistoryRecord()
+        original.url = source
+        original.title = "Original article"
+        original.html = "<p>Original article body</p>"
+        original.isReaderModeByDefault = false
+        original.rssContainsFullContent = false
+        original.updateCompoundKey()
+        try realm.write { realm.add(original) }
+        let stableKey = MediaTranscript.makeCompoundKey(contentURL: source,
+            stableMediaIdentity: "youtube:videoA", languageCode: "en")
+        func asset(_ key: String) -> TranscriptPageAsset {
+            .fromWebVTT(key: UUID().uuidString, canonicalContentURL: source,
+                title: "Transcript", webVTT: "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nCaption\n",
+                stableContentKey: key)
+        }
+        let first = asset(stableKey)
+        let second = asset(stableKey)
+        let otherMedia = asset(MediaTranscript.makeCompoundKey(contentURL: source,
+            stableMediaIdentity: "youtube:videoB", languageCode: "en"))
+        let otherLanguage = asset(MediaTranscript.makeCompoundKey(contentURL: source,
+            stableMediaIdentity: "youtube:videoA", languageCode: "ja"))
+        XCTAssertNotEqual(first.pageURL, second.pageURL)
+        XCTAssertEqual(first.readerContentURL, second.readerContentURL)
+        XCTAssertNotEqual(first.readerContentURL, otherMedia.readerContentURL)
+        XCTAssertNotEqual(first.readerContentURL, otherLanguage.readerContentURL)
+        let stableURL = try XCTUnwrap(first.readerContentURL)
+        XCTAssertTrue(stableURL.isTranscriptContentURL)
+        XCTAssertNotEqual(stableURL, source)
+        XCTAssertTrue(TranscriptReaderProtocol.providesNativeReaderView(forURL: stableURL))
+        let reader = ReaderContent()
+        for current in [first, second] {
+            await TranscriptPageRegistry.shared.register(current)
+            let servingURL = try XCTUnwrap(current.pageURL)
+            XCTAssertEqual(ReaderContentLoader.getContentURL(fromLoaderURL: servingURL), stableURL)
+            XCTAssertTrue(servingURL.matchesReaderURL(stableURL))
+            let resolved = try await ReaderContentLoader.getContent(forURL: servingURL)
+            XCTAssertEqual(resolved?.url, stableURL)
+            try await reader.load(url: servingURL)
+            XCTAssertEqual(reader.pageURL, stableURL)
+            XCTAssertEqual(reader.content?.url, stableURL)
+            XCTAssertEqual(reader.content?.title, "Transcript")
+            XCTAssertEqual((reader.content as? HistoryRecord)?.sourceDownloadURL, source)
+            await TranscriptPageRegistry.shared.remove(key: current.key)
+        }
+        XCTAssertEqual(original.url, source)
+        XCTAssertEqual(original.title, "Original article")
+        XCTAssertEqual(original.html, "<p>Original article body</p>")
+        XCTAssertFalse(original.isReaderModeByDefault)
+        XCTAssertFalse(original.rssContainsFullContent)
+        XCTAssertEqual(realm.objects(HistoryRecord.self).count, 1)
+    }
+
+    func testTypedBackingQueryDoesNotGrantUnregisteredServingRouteAdmission() async throws {
+        let source = URL(string: "https://example.com/article")!
+        let key = String(repeating: "a", count: 64)
+        let asset = TranscriptPageAsset.fromWebVTT(key: UUID().uuidString,
+            canonicalContentURL: source, title: "Transcript", webVTT: "WEBVTT",
+            stableContentKey: key)
+        await TranscriptPageRegistry.shared.register(asset)
+        let servingURL = try XCTUnwrap(asset.pageURL)
+        var components = try XCTUnwrap(URLComponents(url: servingURL, resolvingAgainstBaseURL: false))
+        components.queryItems = [URLQueryItem(name: "transcript-content-url", value: source.absoluteString)]
+        let httpForgery = try XCTUnwrap(components.url)
+        XCTAssertNil(ReaderContentLoader.getContentURL(fromLoaderURL: httpForgery))
+        let forgedHTTP = try await ReaderContentLoader.getContent(forURL: httpForgery)
+        XCTAssertNil(forgedHTTP)
+        let otherNative = try XCTUnwrap(URL.transcriptContentIdentityURL(key: String(repeating: "b", count: 64)))
+        components.queryItems = [URLQueryItem(name: "transcript-content-url", value: otherNative.absoluteString)]
+        let nativeForgery = try XCTUnwrap(components.url)
+        XCTAssertEqual(ReaderContentLoader.getContentURL(fromLoaderURL: nativeForgery), otherNative)
+        let forgedNative = try await ReaderContentLoader.getContent(forURL: nativeForgery)
+        let forgedData = await TranscriptPageRegistry.shared.htmlData(for: nativeForgery)
+        XCTAssertNil(forgedNative)
+        XCTAssertNil(forgedData)
+        components.queryItems?.append(URLQueryItem(name: "transcript-content-url", value: otherNative.absoluteString))
+        XCTAssertNil(try XCTUnwrap(components.url).transcriptBackingContentURL)
+        XCTAssertNil(URL.transcriptContentIdentityURL(key: "not-a-compound-key"))
+        XCTAssertNil(URL.transcriptContentIdentityURL(key: key + "\n"))
+        for value in [
+            "https://local/content/\(key)",
+            "transcript://local/other/\(key)",
+            "transcript://user@local/content/\(key)",
+            "transcript://local/content/\(key)?extra=1",
+            "transcript://local/content/\(key)#fragment",
+            "transcript://local/content/\(key.uppercased())"
+        ] {
+            XCTAssertFalse(try XCTUnwrap(URL(string: value)).isTranscriptContentURL)
+        }
+        await TranscriptPageRegistry.shared.remove(key: asset.key)
+    }
+
     private func load(_ html: String, in webView: WKWebView, delegate: TranscriptNavigation) async throws {
         webView.navigationDelegate = delegate
         try await withCheckedThrowingContinuation { continuation in

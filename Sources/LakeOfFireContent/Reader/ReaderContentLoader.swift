@@ -234,7 +234,8 @@ public struct ReaderContentLoader {
     }
     
     public static func getContentURL(fromLoaderURL pageURL: URL) -> URL? {
-        pageURL.isReaderURLLoaderURL ? pageURL.readerContentURL : nil
+        if pageURL.isTranscriptPageURL { return pageURL.transcriptBackingContentURL }
+        return pageURL.isReaderURLLoaderURL ? pageURL.readerContentURL : nil
     }
 
     // The fragment on a loader document belongs to same-page navigation.
