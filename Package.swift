@@ -82,7 +82,7 @@ let package = Package(
                 "LakeOfFireCore",
                 "LakeOfFireAdblock",
                 .product(name: "BigSyncKit", package: "BigSyncKit"),
-                .product(name: "Collections", package: "swift-collections"),
+                .product(name: "OrderedCollections", package: "swift-collections"),
                 .product(name: "FeedKit", package: "FeedKit"),
                 .product(name: "LakeKit", package: "LakeKit"),
                 .product(name: "MarkdownKit", package: "Swift-MarkdownKit"),
