@@ -35,8 +35,8 @@ final class OPMLScriptDomainAdmissionTests: XCTestCase {
                 XCTAssertEqual(Self.generations(in: realm), originalJournal)
                 XCTAssertEqual(realm.objects(UserScript.self).count, 1)
                 XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 1)
-                let descriptor = try XCTUnwrap(script.getWebViewUserScript())
-                XCTAssertEqual(descriptor.allowedDomains, ["restricted.example"])
+                let domains = try await Self.webViewDomains(script.freeze())
+                XCTAssertEqual(domains, ["restricted.example"])
             }
         }
     }
@@ -61,7 +61,8 @@ final class OPMLScriptDomainAdmissionTests: XCTestCase {
                 XCTAssertEqual(realm.objects(UserScript.self).count, 0)
                 XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 0)
                 XCTAssertEqual(Self.generations(in: realm), originalJournal)
-                XCTAssertTrue(library.getActiveWebViewUserScripts()?.isEmpty == true)
+                let activeCount = await Self.activeWebViewScriptCount(library.freeze())
+                XCTAssertEqual(activeCount, 0)
             }
 
             let retryURL = try Self.writeEntry(
@@ -70,10 +71,10 @@ final class OPMLScriptDomainAdmissionTests: XCTestCase {
             )
             try await manager.importOPML(fileURL: retryURL, realmConfiguration: configuration)
             let script = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: retryID))
-            let descriptor = try XCTUnwrap(script.getWebViewUserScript())
+            let domains = try await Self.webViewDomains(script.freeze())
             XCTAssertEqual(script.title, "Restricted retry")
             XCTAssertFalse(script.isArchived)
-            XCTAssertEqual(descriptor.allowedDomains, ["retry.example"])
+            XCTAssertEqual(domains, ["retry.example"])
             XCTAssertEqual(Array(library.userScriptIDs), [retryID])
             XCTAssertEqual(realm.objects(UserScript.self).count, 1)
             XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 1)
@@ -91,8 +92,8 @@ final class OPMLScriptDomainAdmissionTests: XCTestCase {
             )
             try await manager.importOPML(fileURL: url, realmConfiguration: configuration)
             let script = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: id))
-            let descriptor = try XCTUnwrap(script.getWebViewUserScript())
-            XCTAssertEqual(descriptor.allowedDomains, ["example.org", "sub.example.net"])
+            let domains = try await Self.webViewDomains(script.freeze())
+            XCTAssertEqual(domains, ["example.org", "sub.example.net"])
             XCTAssertEqual(script.allowedDomainIDs.count, 2)
             XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 2)
             XCTAssertFalse(script.isArchived)
@@ -126,11 +127,25 @@ final class OPMLScriptDomainAdmissionTests: XCTestCase {
                 XCTAssertEqual(script.allowedDomainIDs.count, expectedDomains.count)
                 XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).where { !$0.isDeleted }.count,
                                expectedDomains.count)
-                let webViewScript = try XCTUnwrap(script.getWebViewUserScript())
-                XCTAssertEqual(webViewScript.allowedDomains, expectedDomains)
-                XCTAssertEqual(try XCTUnwrap(library.getActiveWebViewUserScripts()).count, 1)
+                let domains = try await Self.webViewDomains(script.freeze())
+                XCTAssertEqual(domains, expectedDomains)
+                let activeCount = await Self.activeWebViewScriptCount(library.freeze())
+                XCTAssertEqual(activeCount, 1)
             }
         }
+    }
+
+    // Keep Realm fixture reads on their owning actor and construct WebKit
+    // descriptors on MainActor, as the production browser does. Frozen values
+    // retain the original fixture snapshot across that boundary.
+    @MainActor
+    private static func webViewDomains(_ script: UserScript) throws -> Set<String> {
+        try XCTUnwrap(script.getWebViewUserScript()).allowedDomains
+    }
+
+    @MainActor
+    private static func activeWebViewScriptCount(_ library: LibraryConfiguration) -> Int? {
+        library.getActiveWebViewUserScripts()?.count
     }
 
     @MainActor

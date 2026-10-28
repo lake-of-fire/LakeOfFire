@@ -184,12 +184,13 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         }
         await fulfillment(of: [successfulStarted], timeout: 5)
         let finish = model.finishEditing()
-        let finishSettled = expectation(description: "Finish awaits all captured attempts")
+        let finishSettled = XCTestExpectation(description: "Finish awaits all captured attempts")
+        var observesEarlySettlement = true
         finishSettled.isInverted = true
         let observedFinish = Task { @MainActor in
             do { try await finish.value; XCTFail("Mixed finish lost admission error") }
             catch InjectedFailure.admission {}
-            finishSettled.fulfill()
+            if observesEarlySettlement { finishSettled.fulfill() }
         }
         addTeardownBlock {
             await failedGate.release()
@@ -200,7 +201,7 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         do { try await failed.value; XCTFail("Earlier attempt succeeded") }
         catch InjectedFailure.admission {}
         await fulfillment(of: [finishSettled], timeout: 0.1)
-        finishSettled.isInverted = false
+        observesEarlySettlement = false
         await successfulGate.release()
         try await successful.value
         try await observedFinish.value
@@ -1014,7 +1015,7 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
             let category = try XCTUnwrap(feed.getCategory())
             let identity = try XCTUnwrap(LibraryFeedPresentationIdentity(feed: feed))
             let originalKey = RealmBackgroundActor.shared.realmCacheKey(for: config)
-            let retired = expectation(description: "Captured storage editor retirement finished")
+            let retired = XCTestExpectation(description: "Captured storage editor retirement finished")
             let model = LibraryFeedFormSectionsViewModel(
                 feed: feed, observesRealm: false, retirementDidFinish: { retired.fulfill() }
             )
@@ -1042,13 +1043,14 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
                 replacementRealm.invalidate()
             }
             let replacementBytes = try Data(contentsOf: replacementURL)
-            let started = expectation(description: "Captured store opened before write suspension")
             let gate = LibraryFeedContinuationGate()
             var writer: Task<Void, Error>?
             if holdAfterOpen {
+                let started = expectation(description: "Captured store opened before write suspension")
                 writer = model.writeFeedAsync(field: .title, beforeWrite: {
                     await gate.wait(onFirstWait: { started.fulfill() })
                 }) { feed in feed.title = "Obsolete"; return true }
+                await fulfillment(of: [started], timeout: 5)
             }
             let suspendedWriter = writer
             addTeardownBlock {
@@ -1056,7 +1058,6 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
                 await gate.release()
                 _ = await suspendedWriter?.result
             }
-            if holdAfterOpen { await fulfillment(of: [started], timeout: 5) }
             try FileManager.default.moveItem(at: originalURL, to: retainedURL)
             try FileManager.default.moveItem(at: replacementURL, to: originalURL)
             XCTAssertNotEqual(RealmBackgroundActor.shared.realmCacheKey(for: config), originalKey,
