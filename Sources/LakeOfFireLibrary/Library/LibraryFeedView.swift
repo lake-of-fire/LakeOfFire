@@ -299,6 +299,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     guard let url = URL(string: value.isEmpty ? "about:blank" : value),
                           feed.rssUrl != url else { return false }
                     feed.rssUrl = url
+                    feed.retireFetchMetadata()
                     return true
                 }
                 observeBuffered($feedIconURL, field: .iconURL) { value, feed in
@@ -678,6 +679,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         let write = writeFeedAsync(field: .url) { feed in
             guard feed.rssUrl != url else { return false }
             feed.rssUrl = url
+            feed.retireFetchMetadata()
             return true
         }
         return Task { @MainActor [weak self] in

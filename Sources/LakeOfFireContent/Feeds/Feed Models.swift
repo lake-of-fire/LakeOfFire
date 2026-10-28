@@ -276,6 +276,8 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var lastViewedAt: Date?
     @Persisted public var lastSeenFeedEntriesAt: Date?
     @Persisted public var lastRefreshedEntriesAt: Date?
+    /// URL of this device's settled refresh; legacy metadata has no provenance.
+    @Persisted public var lastFetchedRSSURL: URL?
     @Persisted public var lastFetchedETag: String?
     @Persisted public var lastFetchedModifiedAt: Date?
     @Persisted public var showsUnseenBadge = true
@@ -407,6 +409,7 @@ extension Feed: SyncSkippablePropertiesModel {
             "lastViewedAt",
             "lastSeenFeedEntriesAt",
             "lastRefreshedEntriesAt",
+            "lastFetchedRSSURL",
             "lastFetchedETag",
             "lastFetchedModifiedAt",
         ]
@@ -1512,24 +1515,46 @@ final class FeedRefreshRegistry: @unchecked Sendable {
 }
 
 public extension Feed {
+    /// Call in the transaction that changes the URL or partially commits feed content.
+    func retireFetchMetadata() {
+        lastFetchedRSSURL = nil
+        lastFetchedETag = nil
+        lastFetchedModifiedAt = nil
+        lastRefreshedEntriesAt = nil
+    }
+
     @MainActor
+    @discardableResult
     private func persistFetchMetadata(
         _ metadata: FeedFetchMetadata,
+        replacesValidators: Bool = false,
+        expectedValidators: FeedFetchMetadata? = nil,
         expectedRSSURL: URL,
         refreshLease: FeedRefreshLease,
         realmConfiguration: Realm.Configuration
-    ) async throws {
+    ) async throws -> Bool {
         let feedID = id
-        try await { @RealmBackgroundActor in
+        return try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             await realm.asyncRefresh()
-            try await realm.asyncWritePreservingOwnership {
+            return try await realm.asyncWritePreservingOwnership {
                 guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
                       feed.rssUrl == expectedRSSURL,
-                      FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return }
+                      FeedRefreshRegistry.shared.isCurrent(refreshLease) else { throw CancellationError() }
+                if let expectedValidators {
+                    guard feed.lastFetchedRSSURL == expectedRSSURL,
+                          expectedValidators.etag?.isEmpty == false || expectedValidators.lastModifiedAt != nil,
+                          feed.lastFetchedETag == expectedValidators.etag,
+                          feed.lastFetchedModifiedAt == expectedValidators.lastModifiedAt,
+                          !realm.objects(FeedEntry.self).where({ $0.feedID == feedID && !$0.isDeleted }).isEmpty else {
+                        return false
+                    }
+                }
+                feed.lastFetchedRSSURL = expectedRSSURL
                 feed.lastRefreshedEntriesAt = Date()
-                feed.lastFetchedETag = metadata.etag ?? feed.lastFetchedETag
-                feed.lastFetchedModifiedAt = metadata.lastModifiedAt ?? feed.lastFetchedModifiedAt
+                feed.lastFetchedETag = replacesValidators ? metadata.etag : metadata.etag ?? feed.lastFetchedETag
+                feed.lastFetchedModifiedAt = replacesValidators ? metadata.lastModifiedAt : metadata.lastModifiedAt ?? feed.lastFetchedModifiedAt
+                return true
             }
         }()
     }
@@ -1633,6 +1658,7 @@ public extension Feed {
                         return false
                     }
                     guard FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return false }
+                    realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.retireFetchMetadata()
                     let orphans = realm.objects(FeedEntry.self)
                         .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
                     if deleteOrphans {
@@ -1828,6 +1854,7 @@ public extension Feed {
                         return false
                     }
                     guard FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return false }
+                    realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.retireFetchMetadata()
                     for collection in collectionObjects {
                         if let existing = realm.object(ofType: FeedEntryCollection.self, forPrimaryKey: collection.compoundKey) {
                             collection.createdAt = existing.createdAt
@@ -1883,12 +1910,18 @@ public extension Feed {
                 "stage=feed.fetch.begin feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) lastViewedAt=\(lastViewedAt?.description ?? "nil") lastRefreshedEntriesAt=\(lastRefreshedEntriesAt?.description ?? "nil") lastFetchedModifiedAt=\(lastFetchedModifiedAt?.description ?? "nil") lastFetchedETag=\(lastFetchedETag ?? "nil")"
             )
         }
+        let hasMatchingFetchURL = lastFetchedRSSURL == requestedRSSURL
+        let requestedValidators = FeedFetchMetadata(
+            etag: hasMatchingFetchURL ? lastFetchedETag : nil,
+            lastModifiedAt: hasMatchingFetchURL ? lastFetchedModifiedAt : nil
+        )
         var fetchResult: FeedFetchResult
         do {
             fetchResult = try await getRssData(
                 rssUrl: requestedRSSURL,
-                lastFetchedETag: lastFetchedETag,
-                lastFetchedModifiedAt: lastFetchedModifiedAt
+                lastFetchedETag: requestedValidators.etag,
+                lastFetchedModifiedAt: requestedValidators.lastModifiedAt,
+                allowNotModified: hasMatchingFetchURL
             )
         } catch {
             if shouldLogNiponica {
@@ -1899,8 +1932,12 @@ public extension Feed {
             throw error
         }
         try checkRequestIsCurrent()
-        if case .notModified = fetchResult,
-           getEntries()?.isEmpty != false {
+        if case .notModified(let metadata) = fetchResult {
+            if try await persistFetchMetadata(
+                metadata, expectedValidators: requestedValidators,
+                expectedRSSURL: requestedRSSURL, refreshLease: refreshLease,
+                realmConfiguration: realmConfiguration
+            ) { return }
             // A validator can outlive a purged/failed local feed cache. Retry
             // once without conditions and require a response body rather than
             // accepting a second 304 that would leave the feed permanently
@@ -1914,20 +1951,8 @@ public extension Feed {
             try checkRequestIsCurrent()
         }
         switch fetchResult {
-        case .notModified(let metadata):
-            if shouldLogNiponica {
-                logNiponica(
-                    "stage=feed.fetch.notModified feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) etag=\(metadata.etag ?? "nil") lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
-                )
-            }
-            try checkRequestIsCurrent()
-            try await persistFetchMetadata(
-                metadata,
-                expectedRSSURL: requestedRSSURL,
-                refreshLease: refreshLease,
-                realmConfiguration: realmConfiguration
-            )
-            return
+        case .notModified:
+            throw FeedError.downloadFailed
         case .fetched(var rssData, let metadata):
             if shouldLogNiponica {
                 logNiponica(
@@ -1942,7 +1967,8 @@ public extension Feed {
                 )
             }
             let parser = FeedKit.FeedParser(data: rssData)
-            return try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
                 parser.parseAsync { parserResult in
                     switch parserResult {
                     case .success(let feed):
@@ -1964,7 +1990,8 @@ public extension Feed {
                             }
                             Task { @MainActor in
                                 do {
-                                    guard !self.isInvalidated, self.rssUrl == requestedRSSURL else {
+                                    guard !Task.isCancelled, !self.isInvalidated, self.rssUrl == requestedRSSURL,
+                                          FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
                                         throw CancellationError()
                                     }
                                     try await self.persist(
@@ -1974,11 +2001,13 @@ public extension Feed {
                                         realmConfiguration: realmConfiguration,
                                         deleteOrphans: self.deleteOrphans
                                     )
-                                    guard !self.isInvalidated, self.rssUrl == requestedRSSURL else {
+                                    guard !Task.isCancelled, !self.isInvalidated, self.rssUrl == requestedRSSURL,
+                                          FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
                                         throw CancellationError()
                                     }
                                     try await self.persistFetchMetadata(
                                         metadata,
+                                        replacesValidators: true,
                                         expectedRSSURL: requestedRSSURL,
                                         refreshLease: refreshLease,
                                         realmConfiguration: realmConfiguration
@@ -2016,7 +2045,8 @@ public extension Feed {
                             }
                             Task { @MainActor in
                                 do {
-                                    guard !self.isInvalidated, self.rssUrl == requestedRSSURL else {
+                                    guard !Task.isCancelled, !self.isInvalidated, self.rssUrl == requestedRSSURL,
+                                          FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
                                         throw CancellationError()
                                     }
                                     try await self.persist(
@@ -2027,11 +2057,13 @@ public extension Feed {
                                         realmConfiguration: realmConfiguration,
                                         deleteOrphans: self.deleteOrphans
                                     )
-                                    guard !self.isInvalidated, self.rssUrl == requestedRSSURL else {
+                                    guard !Task.isCancelled, !self.isInvalidated, self.rssUrl == requestedRSSURL,
+                                          FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
                                         throw CancellationError()
                                     }
                                     try await self.persistFetchMetadata(
                                         metadata,
+                                        replacesValidators: true,
                                         expectedRSSURL: requestedRSSURL,
                                         refreshLease: refreshLease,
                                         realmConfiguration: realmConfiguration
@@ -2071,7 +2103,11 @@ public extension Feed {
                         return
                     }
                 }
-            })
+                })
+            } onCancel: {
+                // FeedKit's callback creates an unstructured task; revoke its write authority too.
+                FeedRefreshRegistry.shared.end(refreshLease)
+            }
         }
     }
 }
