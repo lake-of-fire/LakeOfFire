@@ -166,10 +166,11 @@ final class OPMLScriptDomainAdmissionTests: XCTestCase {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
             try await body(realm, configuration, directory)
         } catch {
-            RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
             throw error
         }
-        XCTAssertTrue(RealmBackgroundActor.shared.removeCachedRealm(for: configuration))
+        let removed = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        XCTAssertTrue(removed)
         let remaining = await RealmBackgroundActor.shared.existingCachedRealm(for: configuration)
         XCTAssertNil(remaining, "Release only the quiesced fixture's cached Realm.")
     }
