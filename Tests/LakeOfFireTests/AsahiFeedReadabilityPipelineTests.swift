@@ -626,7 +626,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         XCTAssertEqual(feed.lastFetchedETag, expectedETag)
         XCTAssertEqual(feed.lastFetchedModifiedAt, expectedModifiedAt)
         if !expectsFailure, expectsGET, getStatus == 200 {
-            XCTAssertEqual(realm.objects(FeedEntry.self).where { $0.url == entryURL && !$0.isDeleted }.count, 1)
+            XCTAssertEqual(realm.objects(FeedEntry.self).where { !$0.isDeleted }.filter { $0.url == entryURL }.count, 1)
         }
         if expectsFailure {
             XCTAssertEqual(feed.lastFetchedRSSURL, storedRSSURL)
