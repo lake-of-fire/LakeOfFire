@@ -1107,6 +1107,8 @@ public struct Reader: View {
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     
     @StateObject private var ebookChromeInsetSynchronization = ReaderEBookChromeInsetSynchronization()
+    @StateObject private var titleSynchronization = ReaderTitleSynchronization()
+    @State private var titleProjectionEventRevision: UInt64 = 0
     @State private var obscuredInsets: EdgeInsets? = nil
     @State private var obscuredGeometrySize: CGSize? = nil
     
@@ -1223,6 +1225,14 @@ public struct Reader: View {
             obscuredBottomInset: toolbarReferenceBottomInset,
             additionalBottomSafeAreaInset: additionalBottomInset
         )
+        let titleSnapshot = readerContent.captureTitleSnapshot()
+        let titleTaskID = ReaderTitleSynchronizationTaskID(
+            source: titleSnapshot?.identity, binding: scriptCaller.currentJavaScriptBindingToken,
+            nativePageURL: readerContent.pageURL, renderedURL: readerViewModel.state.pageURL,
+            renderReady: readerViewModel.state.hasReaderRenderReady,
+            provisionallyNavigating: readerContent.isReaderProvisionallyNavigating
+                || readerViewModel.state.isProvisionallyNavigating,
+            eventRevision: titleProjectionEventRevision)
         let insetNativePageURL = readerContent.pageURL
         let insetBinding = scriptCaller.currentJavaScriptBindingToken
         let insetRenderedURL = readerViewModel.state.pageURL
@@ -1387,42 +1397,38 @@ public struct Reader: View {
             }
         }
         .onDisappear { ebookChromeInsetSynchronization.retire() }
-        .onReceive(readerContent.contentTitleSubject.receive(on: RunLoop.main)) { _ in
-            Task { @MainActor in
-                guard scriptCaller.hasAsyncCaller else { return }
-                let rawTitle = readerContent.contentTitle
-                let needsClipboardIndicator = readerContent.content?.needsClipboardIndicator ?? false
-                let displayTitle = ReaderContentLoader.resolvedDisplayTitle(
-                    rawTitle,
-                    needsClipboardIndicator: needsClipboardIndicator
-                )
-                let hideRedundantSnippetTitle =
-                    readerContent.content?.url.isSnippetURL == true &&
-                    readerContent.snippetTitleIsGeneratedFromPrefix
-                do {
-                    try await scriptCaller.evaluateJavaScript(
-                        """
-                        (function() {
-                          const el = document.getElementById('reader-title');
-                          const body = document.body;
-                          if (el && el.textContent !== title) {
-                            el.textContent = title;
-                          }
-                          if (body) {
-                            body.classList.toggle(bodyClassName, !!hideReaderTitle);
-                          }
-                        })();
-                        """,
-                        arguments: [
-                            "title": displayTitle,
-                            "bodyClassName": ReaderContentLoader.snippetReaderTitleSuppressionBodyClass,
-                            "hideReaderTitle": hideRedundantSnippetTitle,
-                        ],
-                        duplicateInMultiTargetFrames: true
-                    )
-                } catch {
+        .onReceive(readerContent.titleSnapshotSubject) { _ in
+            // The typed producer invalidates the value projection. Capture the
+            // current source in body before scheduling, rather than reading a
+            // mutable title from inside an unretained delayed task.
+            titleProjectionEventRevision &+= 1
+        }
+        .task(id: titleTaskID) { @MainActor in
+            guard !Task.isCancelled else { return }
+            guard let snapshot = titleSnapshot, let binding = titleTaskID.binding,
+                  titleTaskID.renderedURL.matchesReaderURL(snapshot.contentURL),
+                  !titleTaskID.provisionallyNavigating else {
+                titleSynchronization.retire()
+                return
+            }
+            let caller = scriptCaller
+            let content = readerContent
+            let viewModel = readerViewModel
+            await titleSynchronization.deliver(snapshot: snapshot, binding: binding,
+                renderReady: titleTaskID.renderReady,
+                isCurrent: {
+                    caller.currentJavaScriptBindingToken == binding
+                        && content.pageURL == titleTaskID.nativePageURL
+                        && viewModel.state.pageURL == titleTaskID.renderedURL
+                        && !content.isReaderProvisionallyNavigating
+                        && !viewModel.state.isProvisionallyNavigating
                 }
+            ) { script, arguments, current in
+                _ = try await caller.evaluateJavaScriptInMultiTargetFrames(
+                    script, arguments: arguments, propagatesFrameErrors: true, continueWhile: current)
             }
         }
+        .onDisappear { titleSynchronization.retire() }
+
     }
 }

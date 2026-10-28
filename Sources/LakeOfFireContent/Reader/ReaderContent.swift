@@ -39,6 +39,35 @@ private final class ReaderContentSelectionLifetime: @unchecked Sendable {
     }
 }
 
+/// Immutable title presentation from one live native content selection.
+/// A missing snapshot means loading/unavailable, never an empty-title command.
+public struct ReaderContentTitleSnapshot: Sendable {
+    public struct Identity: Hashable, Sendable {
+        public let selectionID: UUID?
+        public let contentIdentity: ObjectIdentifier
+        public let contentURL: URL
+        public let titleBytes: [UInt8]
+        public let needsClipboardIndicator: Bool
+        public let hidesReaderTitle: Bool
+    }
+
+    public let identity: Identity
+    public let rawTitle: String
+    public var contentURL: URL { identity.contentURL }
+    public var needsClipboardIndicator: Bool { identity.needsClipboardIndicator }
+    public var hidesReaderTitle: Bool { identity.hidesReaderTitle }
+    private let admission: @MainActor @Sendable () -> Bool
+
+    fileprivate init(identity: Identity, rawTitle: String,
+                     admission: @escaping @MainActor @Sendable () -> Bool) {
+        self.identity = identity
+        self.rawTitle = rawTitle
+        self.admission = admission
+    }
+
+    @MainActor public var isCurrent: Bool { admission() }
+}
+
 @MainActor
 public class ReaderContent: ObservableObject {
     @Published public var content: (any ReaderContentProtocol)? {
@@ -50,6 +79,7 @@ public class ReaderContent: ObservableObject {
     @Published public var pageURL = URL(string: "about:blank")! {
         didSet {
             syncLocationBarTitle()
+            publishTitleSnapshotIfChanged()
         }
     }
     @Published public var currentSectionIndex: Int?
@@ -57,6 +87,8 @@ public class ReaderContent: ObservableObject {
     @Published public var isReaderProvisionallyNavigating = false
     @Published public var isRenderingReaderHTML = false
     public let contentTitleSubject = PassthroughSubject<String, Never>()
+    public let titleSnapshotSubject = PassthroughSubject<ReaderContentTitleSnapshot?, Never>()
+    public private(set) var titleSnapshot: ReaderContentTitleSnapshot?
     public private(set) var contentTitle: String = ""
     private var contentTitleURL: URL?
     public private(set) var snippetTitleIsGeneratedFromPrefix = false
@@ -187,17 +219,55 @@ public class ReaderContent: ObservableObject {
         )
     }
 
-    private func syncContentTitle() {
-        guard let content, !content.isInvalidated else {
-            return
+    /// Capture before scheduling native presentation. Recovery after a binding
+    /// or appearance change deliberately captures a fresh original selection.
+    public func captureTitleSnapshot() -> ReaderContentTitleSnapshot? {
+        guard let content, !content.isInvalidated,
+              content.url.matchesReaderURL(pageURL) else { return nil }
+        let source = content
+        let selection = selectionID
+        let fence = makeSelectionCommitFence(requiring: selection)
+        let rawTitle = source.title
+        let sourceURL = source.url
+        let clipboard = source.needsClipboardIndicator
+        let hidesTitle = sourceURL.isSnippetURL && source.isTitlePrefixOfContent
+        let identity = ReaderContentTitleSnapshot.Identity(selectionID: selection,
+            contentIdentity: ObjectIdentifier(source), contentURL: sourceURL,
+            titleBytes: Array(rawTitle.utf8), needsClipboardIndicator: clipboard,
+            hidesReaderTitle: hidesTitle)
+        return ReaderContentTitleSnapshot(identity: identity, rawTitle: rawTitle) { [weak self, weak source] in
+            guard let self, let source, !source.isInvalidated, fence(),
+                  self.selectionID == selection, self.content === source,
+                  source.url == sourceURL, source.url.matchesReaderURL(self.pageURL),
+                  source.title.utf8.elementsEqual(rawTitle.utf8),
+                  source.needsClipboardIndicator == clipboard,
+                  (source.url.isSnippetURL && source.isTitlePrefixOfContent) == hidesTitle
+            else { return false }
+            return fence() && self.selectionID == selection && self.content === source
         }
-        let newTitle = content.title
-        let newTitleURL = content.url
-        guard contentTitle != newTitle || contentTitleURL?.absoluteString != newTitleURL.absoluteString else { return }
-        contentTitle = newTitle
-        contentTitleURL = newTitleURL
-        guard !newTitle.isEmpty else { return }
-        contentTitleSubject.send(newTitle)
+    }
+
+    private func publishTitleSnapshotIfChanged() {
+        let snapshot = captureTitleSnapshot()
+        guard titleSnapshot?.identity != snapshot?.identity else { return }
+        titleSnapshot = snapshot
+        titleSnapshotSubject.send(snapshot)
+    }
+
+    private func syncContentTitle() {
+        // Preserve the legacy String publisher's nonempty-only semantics.
+        // The additive typed projection distinguishes an authoritative empty
+        // model title from unavailable/loading content and includes its flags.
+        if let content, !content.isInvalidated {
+            let newTitle = content.title
+            let newTitleURL = content.url
+            if contentTitle != newTitle || contentTitleURL?.absoluteString != newTitleURL.absoluteString {
+                contentTitle = newTitle
+                contentTitleURL = newTitleURL
+                if !newTitle.isEmpty { contentTitleSubject.send(newTitle) }
+            }
+        }
+        publishTitleSnapshotIfChanged()
     }
 
     private func matchesResolvedContentURL(_ contentURL: URL, resolvedContentURL: URL) -> Bool {
