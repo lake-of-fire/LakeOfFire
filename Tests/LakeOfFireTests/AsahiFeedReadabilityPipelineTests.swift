@@ -224,6 +224,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         )
         let feed = Feed()
         feed.rssUrl = rssURL
+        feed.lastFetchedRSSURL = feed.rssUrl
         feed.lastFetchedETag = "\"stale-validator\""
         try realm.write {
             realm.add(feed)
@@ -379,6 +380,610 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         XCTAssertTrue(registry.isCurrent(later))
         registry.end(later)
         XCTAssertFalse(registry.isCurrent(later))
+    }
+
+    @MainActor
+    func testLegacyRefreshMetadataRequiresAnUnconditionalBody() async throws {
+        try await assertHTTPRefresh(
+            headStatus: 200, headHeaders: ["ETag": "\"stored-version\""],
+            getHeaders: ["ETag": "\"new-version\""],
+            expectedETag: "\"new-version\"", expectedModifiedAt: nil,
+            storedFetchProvenance: .legacy,
+            storedRefreshedAt: Date().addingTimeInterval(-60)
+        )
+    }
+
+    @MainActor
+    func testURLOnlyReplacementIgnoresPreviousURLValidatorsAndRefreshDate() async throws {
+        try await assertHTTPRefresh(
+            headStatus: 200, headHeaders: ["ETag": "\"stored-version\""],
+            getHeaders: ["ETag": "\"new-version\""],
+            expectedETag: "\"new-version\"", expectedModifiedAt: nil,
+            storedFetchProvenance: .previousURL,
+            storedRefreshedAt: Date().addingTimeInterval(-60)
+        )
+    }
+
+    @MainActor
+    func testUnprovenHEAD304StillRequiresAnUnconditionalBody() async throws {
+        for provenance in [StoredFetchProvenance.legacy, .previousURL] {
+            try await assertHTTPRefresh(
+                headStatus: 304, headHeaders: [:],
+                getHeaders: ["ETag": "\"new-version\""],
+                expectedETag: "\"new-version\"", expectedModifiedAt: nil,
+                storedFetchProvenance: provenance,
+                storedRefreshedAt: Date().addingTimeInterval(-60)
+            )
+        }
+    }
+
+    @MainActor
+    func testUnprovenGET304CannotPublishRefreshMetadataForCurrentURL() async throws {
+        for provenance in [StoredFetchProvenance.legacy, .previousURL] {
+            try await assertHTTPRefresh(
+                headStatus: 405, getStatus: 304,
+                expectedETag: "\"stored-version\"",
+                expectedModifiedAt: Date(timeIntervalSince1970: 1577836800),
+                expectsFailure: true, storedFetchProvenance: provenance,
+                storedRefreshedAt: Date().addingTimeInterval(-60)
+            )
+        }
+    }
+
+    @MainActor
+    func testFetchedURLProvenanceIsLocalOnlyAndStartsUnknown() {
+        let feed = Feed()
+        XCTAssertNil(feed.lastFetchedRSSURL)
+        XCTAssertTrue(feed.skipSyncingProperties()?.contains("lastFetchedRSSURL") == true)
+    }
+
+    @MainActor
+    func testFrozenCallerCannotRevalidateSameValidatorsFetchedFromAnotherURL() async throws {
+        let originalURL = URL(string: "https://example.com/\(UUID().uuidString)/original.xml")!
+        let replacementURL = originalURL.deletingLastPathComponent().appendingPathComponent("replacement.xml")
+        let entryURL = originalURL.deletingLastPathComponent().appendingPathComponent("entry")
+        let configuration = makeRealmConfiguration()
+        let previousLibrary = LibraryDataManager.realmConfiguration
+        let previousBookmarks = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousEntries = ReaderContentLoader.feedEntryRealmConfiguration
+        let previousSession = makeFeedSessionOverrideForTesting
+        let previousHandler = FeedURLProtocol.requestHandler
+        defer {
+            LibraryDataManager.realmConfiguration = previousLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmarks
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousEntries
+            makeFeedSessionOverrideForTesting = previousSession
+            FeedURLProtocol.requestHandler = previousHandler
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = originalURL
+        feed.lastFetchedRSSURL = originalURL
+        feed.lastFetchedETag = "\"shared-validator\""
+        feed.lastFetchedModifiedAt = Date(timeIntervalSince1970: 1577836800)
+        feed.lastRefreshedEntriesAt = Date()
+        let cached = FeedEntry()
+        cached.feedID = feed.id
+        cached.url = entryURL
+        cached.title = "Original"
+        cached.html = "Original body"
+        cached.updateCompoundKey()
+        try await realm.asyncWrite { realm.add(feed); realm.add(cached) }
+        let staleFeed = feed.freeze()
+        var requests = [URLRequest]()
+        FeedURLProtocol.requestHandler = { request in
+            requests.append(request)
+            let headers = [
+                "ETag": "\"shared-validator\"",
+                "Last-Modified": "Wed, 01 Jan 2020 00:00:00 GMT",
+                "Content-Type": "application/xml",
+            ]
+            if request.value(forHTTPHeaderField: "If-None-Match") == "\"shared-validator\"" {
+                return (304, headers, Data())
+            }
+            let title = request.url == originalURL ? "Original" : "Replacement"
+            return (200, headers, RefreshFixtureFormat.rss.data(entryURL: entryURL, title: title))
+        }
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+
+        // URL-only sync edits can surround a successful fetch of another resource with equal validators.
+        try await realm.asyncWrite { feed.rssUrl = replacementURL }
+        try await feed.fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(cached.title, "Replacement")
+        XCTAssertEqual(feed.lastFetchedRSSURL, replacementURL)
+        try await realm.asyncWrite { feed.rssUrl = originalURL }
+        XCTAssertTrue(feed.shouldRefreshAutomaticallyOnFeedAppear)
+
+        try await staleFeed.fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(requests.map(\.url), [replacementURL, replacementURL, originalURL, originalURL, originalURL])
+        XCTAssertEqual(requests.map(\.httpMethod), ["HEAD", "GET", "HEAD", "HEAD", "GET"])
+        XCTAssertEqual(
+            requests.map { $0.value(forHTTPHeaderField: "If-None-Match") },
+            [nil, nil, "\"shared-validator\"", nil, nil]
+        )
+        XCTAssertEqual(cached.title, "Original")
+        XCTAssertEqual(cached.html, "Original body")
+        XCTAssertEqual(feed.lastFetchedRSSURL, originalURL)
+        XCTAssertNotNil(feed.lastRefreshedEntriesAt)
+        XCTAssertFalse(feed.shouldRefreshAutomaticallyOnFeedAppear)
+    }
+
+    private enum StoredFetchProvenance: Equatable {
+        case matching, legacy, previousURL
+    }
+
+    @MainActor
+    private func assertHTTPRefresh(
+        headStatus: Int,
+        headHeaders: [String: String] = [
+            "ETag": "\"head-version\"", "Last-Modified": "Sat, 01 Jan 2022 00:00:00 GMT"
+        ],
+        getStatus: Int = 200,
+        getHeaders: [String: String] = [:],
+        expectedETag: String?, expectedModifiedAt: Date?,
+        expectsGET: Bool = true, expectsFailure: Bool = false,
+        storedETag: String? = "\"stored-version\"",
+        storedFetchProvenance: StoredFetchProvenance = .matching,
+        storedRefreshedAt: Date? = nil
+    ) async throws {
+        let rssURL = URL(string: "https://example.com/\(UUID().uuidString)/feed.xml")!
+        let entryURL = rssURL.deletingLastPathComponent().appendingPathComponent("new-entry")
+        let data = Data("""
+            <rss version="2.0"><channel><title>Test</title><link>https://example.com/</link>
+            <description>Test</description><item><guid>new-entry</guid><title>New body</title>
+            <link>\(entryURL.absoluteString)</link><description>New body content</description>
+            </item></channel></rss>
+            """.utf8)
+        let configuration = makeRealmConfiguration()
+        let previousLibrary = LibraryDataManager.realmConfiguration
+        let previousBookmarks = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousEntries = ReaderContentLoader.feedEntryRealmConfiguration
+        let previousSession = makeFeedSessionOverrideForTesting
+        let previousHandler = FeedURLProtocol.requestHandler
+        defer {
+            LibraryDataManager.realmConfiguration = previousLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmarks
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousEntries
+            makeFeedSessionOverrideForTesting = previousSession
+            FeedURLProtocol.requestHandler = previousHandler
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        let storedRSSURL: URL?
+        switch storedFetchProvenance {
+        case .matching: storedRSSURL = rssURL
+        case .legacy: storedRSSURL = nil
+        case .previousURL:
+            storedRSSURL = rssURL.deletingLastPathComponent().appendingPathComponent("previous.xml")
+        }
+        feed.rssUrl = storedRSSURL ?? rssURL
+        feed.lastFetchedRSSURL = storedRSSURL
+        feed.lastFetchedETag = storedETag
+        feed.lastFetchedModifiedAt = Date(timeIntervalSince1970: 1577836800)
+        feed.lastRefreshedEntriesAt = storedRefreshedAt
+        let cached = FeedEntry()
+        cached.feedID = feed.id
+        cached.url = rssURL.appendingPathComponent("cached-entry")
+        cached.compoundKey = feed.id.uuidString + "-cached-entry"
+        try await realm.asyncWrite { realm.add(feed); realm.add(cached) }
+        if feed.rssUrl != rssURL {
+            // Inbound sync changes the synchronized URL while retaining this device's local fields.
+            try await realm.asyncWrite { feed.rssUrl = rssURL }
+        }
+        let hasMatchingFetchURL = storedFetchProvenance == .matching
+        if !hasMatchingFetchURL {
+            XCTAssertFalse(feed.hasRecentlyRefreshedEntries)
+            XCTAssertTrue(feed.shouldRefreshAutomaticallyOnFeedAppear)
+        }
+        var requests = [URLRequest]()
+        FeedURLProtocol.requestHandler = { request in
+            requests.append(request)
+            return request.httpMethod == "HEAD"
+                ? (headStatus, headHeaders, Data()) : (getStatus, getHeaders, data)
+        }
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        do {
+            try await feed.fetch(realmConfiguration: configuration)
+            XCTAssertFalse(expectsFailure, "Refresh unexpectedly succeeded")
+        } catch FeedError.downloadFailed {
+            XCTAssertTrue(expectsFailure, "Refresh unexpectedly rejected HEAD/GET")
+        }
+        await realm.asyncRefresh()
+        XCTAssertEqual(requests.map(\.httpMethod), expectsGET ? ["HEAD", "GET"] : ["HEAD"])
+        for request in requests {
+            XCTAssertEqual(request.value(forHTTPHeaderField: "If-None-Match"), hasMatchingFetchURL ? storedETag : nil)
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "If-Modified-Since"),
+                hasMatchingFetchURL ? "Wed, 01 Jan 2020 00:00:00 GMT" : nil
+            )
+        }
+        XCTAssertEqual(feed.lastFetchedETag, expectedETag)
+        XCTAssertEqual(feed.lastFetchedModifiedAt, expectedModifiedAt)
+        if !expectsFailure, expectsGET, getStatus == 200 {
+            XCTAssertEqual(realm.objects(FeedEntry.self).where { !$0.isDeleted }.filter { $0.url == entryURL }.count, 1)
+        }
+        if expectsFailure {
+            XCTAssertEqual(feed.lastFetchedRSSURL, storedRSSURL)
+            XCTAssertEqual(feed.lastRefreshedEntriesAt, storedRefreshedAt)
+            if !hasMatchingFetchURL { XCTAssertTrue(feed.shouldRefreshAutomaticallyOnFeedAppear) }
+        } else {
+            XCTAssertEqual(feed.lastFetchedRSSURL, rssURL)
+            XCTAssertNotNil(feed.lastRefreshedEntriesAt)
+            XCTAssertFalse(feed.shouldRefreshAutomaticallyOnFeedAppear)
+        }
+    }
+
+
+    private enum InterruptedRefresh: Equatable {
+        case superseded, cancelled, readerStoreFailure
+    }
+
+    private enum RefreshFixtureFormat {
+        case rss, atom
+
+        func data(entryURL: URL, title: String) -> Data {
+            switch self {
+            case .rss:
+                return Data("""
+                    <rss version="2.0"><channel><title>Test</title><link>https://example.com/</link>
+                    <description>Test</description><item><guid>entry</guid><title>\(title)</title>
+                    <link>\(entryURL.absoluteString)</link><description>\(title) body</description>
+                    </item></channel></rss>
+                    """.utf8)
+            case .atom:
+                return Data("""
+                    <feed xmlns="http://www.w3.org/2005/Atom" xmlns:manabi="https://manabi.io/feed">
+                    <title>Test</title><id>urn:test:feed</id><updated>2022-01-01T00:00:00Z</updated>
+                    <manabi:collection scheme="https://example.com/series" id="series" title="Collection \(title)"/>
+                    <entry><id>urn:test:entry</id><title>\(title)</title>
+                    <updated>2022-01-01T00:00:00Z</updated><link href="\(entryURL.absoluteString)"/>
+                    <category scheme="https://example.com/series" term="series"/>
+                    <content type="html">\(title) body</content></entry></feed>
+                    """.utf8)
+            }
+        }
+    }
+
+    private enum RefreshFixtureError: Error {
+        case registrationTimedOut, refreshUnexpectedlySucceeded
+    }
+
+    @MainActor
+    private final class ReaderContentGate {
+        let registered = XCTestExpectation(description: "Reader-content continuation registered")
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var entered = false
+        private var released = false
+
+        func pauseFirstLookup() async {
+            guard !entered, !released else { return }
+            entered = true
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+                registered.fulfill()
+            }
+        }
+
+        func release() {
+            released = true
+            let continuation = continuation
+            self.continuation = nil
+            continuation?.resume()
+        }
+    }
+
+    private final class RefreshHTTPScenario: @unchecked Sendable {
+        struct Request {
+            let method: String?
+            let etag: String?
+            let modifiedSince: String?
+        }
+
+        let originalRequestStarted = XCTestExpectation(description: "Restored representation requested")
+        private let lock = NSLock()
+        private let originalData: Data
+        private let changedData: Data
+        private var servesOriginal = false
+        private var recordedOriginalRequest = false
+        private var requestHistory = [Request]()
+
+        init(originalData: Data, changedData: Data) {
+            self.originalData = originalData
+            self.changedData = changedData
+        }
+
+        var requests: [Request] {
+            lock.lock()
+            defer { lock.unlock() }
+            return requestHistory
+        }
+
+        func restoreOriginalRepresentation() {
+            lock.lock()
+            defer { lock.unlock() }
+            servesOriginal = true
+        }
+
+        func respond(to request: URLRequest) -> (statusCode: Int, headers: [String: String], data: Data) {
+            lock.lock()
+            let original = servesOriginal
+            let shouldSignal = original && !recordedOriginalRequest
+            if original { recordedOriginalRequest = true }
+            requestHistory.append(Request(
+                method: request.httpMethod,
+                etag: request.value(forHTTPHeaderField: "If-None-Match"),
+                modifiedSince: request.value(forHTTPHeaderField: "If-Modified-Since")
+            ))
+            lock.unlock()
+            if shouldSignal { originalRequestStarted.fulfill() }
+            let etag = original ? "\"A\"" : "\"B\""
+            let headers = [
+                "ETag": etag,
+                "Last-Modified": original
+                    ? "Wed, 01 Jan 2020 00:00:00 GMT" : "Sat, 01 Jan 2022 00:00:00 GMT",
+                "Content-Type": "application/xml",
+            ]
+            return request.value(forHTTPHeaderField: "If-None-Match") == etag
+                ? (304, headers, Data()) : (200, headers, original ? originalData : changedData)
+        }
+    }
+
+    @MainActor
+    func testSupersededRSSCommitCannotRevalidateOldBodyFromFrozenCaller() async throws {
+        try await assertInterruptedRefresh(.superseded, format: .rss)
+    }
+
+    @MainActor
+    func testSupersededAtomCommitCannotRevalidateOldBodyFromFrozenCaller() async throws {
+        try await assertInterruptedRefresh(.superseded, format: .atom)
+    }
+
+    @MainActor
+    func testCancelledRefreshRetiresValidatorsAfterEntryCommit() async throws {
+        try await assertInterruptedRefresh(.cancelled, format: .rss)
+    }
+
+    @MainActor
+    func testReaderStoreFailureReplaysUnchangedRSSBodyIntoStaleMirrors() async throws {
+        try await assertInterruptedRefresh(.readerStoreFailure, format: .rss)
+    }
+
+    @MainActor
+    func testReaderStoreFailureReplaysUnchangedAtomBodyIntoStaleMirrors() async throws {
+        try await assertInterruptedRefresh(.readerStoreFailure, format: .atom)
+    }
+
+    @MainActor
+    private func assertInterruptedRefresh(
+        _ interruption: InterruptedRefresh, format: RefreshFixtureFormat
+    ) async throws {
+        let rssURL = URL(string: "https://example.com/\(UUID().uuidString)/feed.xml")!
+        let entryURL = rssURL.deletingLastPathComponent().appendingPathComponent("entry")
+        let configuration = makeRealmConfiguration()
+        let previousLibrary = LibraryDataManager.realmConfiguration
+        let previousBookmarks = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousEntries = ReaderContentLoader.feedEntryRealmConfiguration
+        let previousSession = makeFeedSessionOverrideForTesting
+        let previousHandler = FeedURLProtocol.requestHandler
+        defer {
+            LibraryDataManager.realmConfiguration = previousLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmarks
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousEntries
+            makeFeedSessionOverrideForTesting = previousSession
+            FeedURLProtocol.requestHandler = previousHandler
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = rssURL
+        feed.lastFetchedRSSURL = rssURL
+        feed.lastFetchedETag = "\"A\""
+        feed.lastFetchedModifiedAt = Date(timeIntervalSince1970: 1577836800)
+        feed.lastRefreshedEntriesAt = Date()
+        let cached = FeedEntry()
+        cached.feedID = feed.id
+        cached.url = entryURL
+        cached.title = "A"
+        cached.html = "A body"
+        cached.updateCompoundKey()
+        let bookmark = Bookmark()
+        bookmark.url = entryURL
+        bookmark.title = "A"
+        bookmark.html = "A body"
+        bookmark.updateCompoundKey()
+        let history = HistoryRecord()
+        history.url = entryURL
+        history.title = "A"
+        history.html = "A body"
+        history.lastVisitedAt = Date()
+        history.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(feed)
+            realm.add(cached)
+            realm.add(bookmark)
+            realm.add(history)
+        }
+        // Keep a same-actor snapshot to exercise a caller that captured A before the partial write.
+        let staleFeed = feed.freeze()
+        let scenario = RefreshHTTPScenario(
+            originalData: format.data(entryURL: entryURL, title: "A"),
+            changedData: format.data(entryURL: entryURL, title: "B")
+        )
+        FeedURLProtocol.requestHandler = { scenario.respond(to: $0) }
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        let gate = ReaderContentGate()
+        await { @RealmBackgroundActor in
+            ReaderContentLoader.loadAllDiscoveryGateForTesting = {
+                await gate.pauseFirstLookup()
+            }
+        }()
+        if interruption == .readerStoreFailure {
+            // The production loader opens a missing read-only mirror store after committing entries.
+            var missingStore = configuration
+            missingStore.fileURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("MissingFeedMirror-\(UUID().uuidString).realm")
+            missingStore.readOnly = true
+            ReaderContentLoader.bookmarkRealmConfiguration = missingStore
+        }
+        let first = Task { @MainActor in try await feed.fetch(realmConfiguration: configuration) }
+        var replacement: Task<Void, Error>?
+        do {
+            guard await XCTWaiter.fulfillment(of: [gate.registered], timeout: 2) == .completed else {
+                throw RefreshFixtureError.registrationTimedOut
+            }
+            await realm.asyncRefresh()
+            XCTAssertEqual(cached.title, "B", "The real entry transaction must have committed before suspension")
+            XCTAssertNil(feed.lastFetchedETag)
+            XCTAssertNil(feed.lastFetchedModifiedAt)
+            XCTAssertNil(feed.lastRefreshedEntriesAt)
+            XCTAssertNil(feed.lastFetchedRSSURL)
+            if case .atom = format {
+                XCTAssertEqual(realm.objects(FeedEntryCollection.self).first?.title, "Collection B")
+            }
+
+            // A failed mirror write must recover even when the server still serves B.
+            if interruption != .readerStoreFailure {
+                scenario.restoreOriginalRepresentation()
+            }
+            let committedEntryModifiedAt = cached.modifiedAt
+            let committedEntryCreatedAt = cached.createdAt
+            XCTAssertEqual(bookmark.title, "A")
+            XCTAssertEqual(history.title, "A")
+            if interruption == .superseded {
+                replacement = Task { @MainActor in
+                    try await staleFeed.fetch(realmConfiguration: configuration)
+                }
+                // Wait for R2's actual request before releasing R1; loadAll may coalesce their work.
+                guard await XCTWaiter.fulfillment(
+                    of: [scenario.originalRequestStarted], timeout: 2
+                ) == .completed else {
+                    throw RefreshFixtureError.registrationTimedOut
+                }
+            } else if interruption == .cancelled {
+                first.cancel()
+            }
+            gate.release()
+            switch await first.result {
+            case .success:
+                throw RefreshFixtureError.refreshUnexpectedlySucceeded
+            case .failure(let error):
+                if interruption == .readerStoreFailure {
+                    XCTAssertFalse(error is CancellationError, "Expected the real Realm-open failure")
+                } else {
+                    XCTAssertTrue(error is CancellationError, "Unexpected refresh error: \(error)")
+                }
+            }
+            if let replacement {
+                try await replacement.value
+            } else {
+                await realm.asyncRefresh()
+                XCTAssertNil(feed.lastFetchedRSSURL)
+                XCTAssertNil(feed.lastRefreshedEntriesAt)
+                if interruption == .readerStoreFailure {
+                    XCTAssertEqual(cached.title, "B")
+                    XCTAssertEqual(bookmark.title, "A", "The failed attempt must leave a real stale bookmark")
+                    XCTAssertEqual(history.title, "A", "The failed attempt must leave real stale history")
+                }
+                ReaderContentLoader.bookmarkRealmConfiguration = configuration
+                await { @RealmBackgroundActor in
+                    ReaderContentLoader.loadAllDiscoveryGateForTesting = nil
+                }()
+                try await feed.fetch(realmConfiguration: configuration)
+            }
+            await realm.asyncRefresh()
+            let recoveredTitle = interruption == .readerStoreFailure ? "B" : "A"
+            XCTAssertEqual(cached.title, recoveredTitle)
+            XCTAssertEqual(cached.html, "\(recoveredTitle) body")
+            XCTAssertEqual(bookmark.title, recoveredTitle)
+            XCTAssertEqual(bookmark.html, "\(recoveredTitle) body")
+            XCTAssertEqual(history.title, recoveredTitle)
+            XCTAssertEqual(history.html, "\(recoveredTitle) body")
+            if interruption == .readerStoreFailure {
+                XCTAssertEqual(cached.modifiedAt, committedEntryModifiedAt, "Mirror replay must not rewrite unchanged entries")
+                XCTAssertEqual(cached.createdAt, committedEntryCreatedAt)
+            }
+            XCTAssertEqual(feed.lastFetchedETag, "\"\(recoveredTitle)\"")
+            XCTAssertEqual(feed.lastFetchedModifiedAt, Date(timeIntervalSince1970:
+                interruption == .readerStoreFailure ? 1640995200 : 1577836800))
+            XCTAssertNotNil(feed.lastRefreshedEntriesAt)
+            XCTAssertEqual(feed.lastFetchedRSSURL, rssURL)
+            if case .atom = format {
+                XCTAssertEqual(realm.objects(FeedEntryCollection.self).first?.title, "Collection \(recoveredTitle)")
+            }
+            let recoveryRequests = Array(scenario.requests.dropFirst(2))
+            XCTAssertEqual(
+                recoveryRequests.map(\.method),
+                interruption == .superseded ? ["HEAD", "HEAD", "GET"] : ["HEAD", "GET"]
+            )
+            let unconditionalRequests = interruption == .superseded
+                ? Array(recoveryRequests.dropFirst()) : recoveryRequests
+            for request in unconditionalRequests {
+                XCTAssertNil(request.etag)
+                XCTAssertNil(request.modifiedSince)
+            }
+            if interruption == .superseded {
+                XCTAssertEqual(recoveryRequests.first?.etag, "\"A\"")
+            }
+            // A fully settled representation still benefits from conditional refresh.
+            let requestCount = scenario.requests.count
+            try await feed.fetch(realmConfiguration: configuration)
+            XCTAssertEqual(Array(scenario.requests.dropFirst(requestCount)).map(\.method), ["HEAD"])
+        } catch {
+            first.cancel()
+            replacement?.cancel()
+            gate.release()
+            _ = await first.result
+            _ = await replacement?.result
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            throw error
+        }
+        await ReaderContentLoader.resetTransientCachesForTesting()
+    }
+
+    @MainActor
+    func testLastModifiedOnlyBaselineStillAcceptsUnchangedHEAD() async throws {
+        try await assertHTTPRefresh(
+            headStatus: 200, headHeaders: ["Last-Modified": "Wed, 01 Jan 2020 00:00:00 GMT"],
+            expectedETag: nil, expectedModifiedAt: Date(timeIntervalSince1970: 1577836800),
+            expectsGET: false, storedETag: nil
+        )
     }
 
     func testCanonicalReadabilityHTMLEscapesTextAndAttributes() throws {

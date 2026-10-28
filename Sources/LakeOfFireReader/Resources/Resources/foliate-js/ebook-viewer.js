@@ -99,6 +99,19 @@ const manabiBlankNavigationMoveThreshold = 12;
 const manabiSyntheticTouchMouseDistanceThreshold = 24;
 const lastPositionRestoreCoordinator = new LatestRestoreTransactionCoordinator();
 
+// These messages are posted by the viewer window, including taps forwarded
+// from a content iframe. Keep that physical posting Document's immutable clock;
+// a retired callback must never borrow a replacement WindowProxy's identity.
+const touchPostingDocument = window.document
+const touchPostingDocumentStartedAtMs = readerDocumentStartedAtMs(window)
+const postViewerTouchStart = payload => {
+    if (window.document !== touchPostingDocument) return
+    window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+        ...payload,
+        documentStartedAtMs: touchPostingDocumentStartedAtMs,
+    })
+}
+
 const resetRestoreTransactionGlobals = ({ clearHandled = false } = {}) => {
     globalThis.__manabiRequestedRestoreFraction = null;
     globalThis.__manabiRestoreInProgress = false;
@@ -1627,7 +1640,7 @@ const recordPageTurnNavigationIntent = (direction, _source, _details = {}) => {
 
 const requestLookupCloseForPageMotion = (reason, _details = {}) => {
     try {
-        window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+        postViewerTouchStart({
             touchedEntryWithElementId: null,
             wasAlreadySelected: false,
             lookupCloseReason: reason,
@@ -9637,7 +9650,7 @@ class Reader {
                     }
                     : null;
             }
-            window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+            postViewerTouchStart({
                 touchedEntryWithElementId: null,
                 wasAlreadySelected: false,
                 touchstartAtMs,
@@ -11439,7 +11452,7 @@ class Reader {
                     } else {
                         globalThis.__manabiPendingContentDocumentBlankNavigationEcho = null;
                     }
-                    window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+                    postViewerTouchStart({
                         touchedEntryWithElementId: null,
                         wasAlreadySelected: false,
                         touchstartAtMs,

@@ -1815,6 +1815,7 @@ public class LibraryDataManager: NSObject {
         }
         if feed.rssUrl != feedURL {
             feed.rssUrl = feedURL
+            feed.retireFetchMetadata()
             didChange = true
         }
         if let newIconURL = newIconURL, feed.iconUrl != newIconURL {
