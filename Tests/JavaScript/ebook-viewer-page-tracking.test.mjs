@@ -17,6 +17,9 @@ const source = readFileSync(process.env.MANABI_EBOOK_VIEWER_SOURCE || new URL(
 const classStart = source.indexOf('class Reader {')
 const classEnd = source.indexOf('\n}\n', classStart)
 const readerClass = source.slice(classStart, classEnd)
+// The constructor now uses the shipping document-owned callback producer.
+const touchstartPoster = source.slice(source.indexOf('const createReaderTouchstartPoster ='),
+    source.indexOf('const requestLookupCloseForPageMotion ='))
 
 function fixture({ realCoordinator = false, onControl } = {}) {
     const packets = [], requests = [], controls = [], attributes = new Map(), timers = new Map(), moves = []
@@ -111,7 +114,7 @@ function fixture({ realCoordinator = false, onControl } = {}) {
         ebookNativeMarkReadState: { postMessage: packet => packets.push(packet) },
         nativeLookupHitTargetsUpdated: { postMessage() {} },
     } }
-    const Reader = vm.runInContext(`${readerClass}
+    const Reader = vm.runInContext(`${touchstartPoster}\n${readerClass}
         testRender(reason) { this.#renderPageTrackingButtons(reason) }
         testInvalidate() { this.#invalidateVisiblePageSegmentSnapshot('renderer.relocate') }
         testMarkCluster() { return this.#markPageClusterAsRead('visible-screen') }
