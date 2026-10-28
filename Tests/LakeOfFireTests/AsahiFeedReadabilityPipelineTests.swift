@@ -126,6 +126,25 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         override func stopLoading() {}
     }
 
+    private final class FeedNetworkHold {
+        let started = XCTestExpectation(description: "Feed request reached URLProtocol")
+        private let lock = NSLock()
+        private var didPause = false
+        private let semaphore = DispatchSemaphore(value: 0)
+
+        func pause() {
+            lock.lock()
+            let shouldPause = !didPause
+            didPause = true
+            lock.unlock()
+            guard shouldPause else { return }
+            started.fulfill()
+            _ = semaphore.wait(timeout: .now() + 5)
+        }
+
+        func release() { semaphore.signal() }
+    }
+
     private func makeRealmConfiguration() -> Realm.Configuration {
         let realmURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -151,6 +170,361 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             }
         }
         return configuration
+    }
+
+    private func physicalFeedRowKey<T: ObjectKeyIdentifiable>(_ object: T) -> UInt64 { object.id }
+
+    @MainActor
+    private func seedReplacementFeed(
+        configuration: Realm.Configuration, feedID: UUID, rssURL: URL,
+        orphanURL: URL, incomingURL: URL, expectedRowKey: UInt64
+    ) async throws -> Data {
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let replacementFeed = Feed()
+        replacementFeed.id = feedID
+        replacementFeed.rssUrl = rssURL
+        replacementFeed.deleteOrphans = true
+        replacementFeed.lastFetchedETag = "\"old\""
+        replacementFeed.lastRefreshedEntriesAt = Date(timeIntervalSince1970: 1_600_000_000)
+        let replacementEntry = FeedEntry()
+        replacementEntry.feedID = feedID
+        replacementEntry.url = orphanURL
+        replacementEntry.title = "replacement sentinel"
+        replacementEntry.updateCompoundKey()
+        let mirror = HistoryRecord()
+        mirror.compoundKey = UUID().uuidString
+        mirror.url = incomingURL
+        mirror.title = "replacement mirror sentinel"
+        try realm.write {
+            realm.add(replacementFeed)
+            realm.add(replacementEntry)
+            realm.add(mirror)
+            replacementEntry.refreshChangeMetadata(explicitlyModified: true)
+        }
+        XCTAssertEqual(physicalFeedRowKey(replacementFeed), expectedRowKey,
+                       "The replacement must reuse the same physical row key in its separate file")
+        XCTAssertEqual(replacementFeed.lastFetchedETag, "\"old\"")
+        XCTAssertEqual(replacementFeed.lastRefreshedEntriesAt, Date(timeIntervalSince1970: 1_600_000_000))
+        XCTAssertEqual(replacementEntry.title, "replacement sentinel")
+        XCTAssertFalse(replacementEntry.isDeleted)
+        XCTAssertNotNil(pendingMutation(for: replacementEntry, in: realm))
+        XCTAssertEqual(mirror.title, "replacement mirror sentinel")
+        let bytes = try Data(contentsOf: XCTUnwrap(configuration.fileURL))
+        realm.invalidate()
+        return bytes
+    }
+
+    @MainActor
+    func testCapturedFeedStorageRejectsSamePathReplacementForBodyAnd304() async throws {
+        try await assertCapturedFeedStorageRejectsSamePathReplacement(notModified: false)
+        try await assertCapturedFeedStorageRejectsSamePathReplacement(notModified: true)
+    }
+
+    @MainActor
+    private func assertCapturedFeedStorageRejectsSamePathReplacement(notModified: Bool) async throws {
+        let configuration = makeRealmConfiguration()
+        let replacementConfiguration = makeRealmConfiguration()
+        addTeardownBlock { await ReaderContentLoader.resetTransientCachesForTesting() }
+        let previousLibrary = LibraryDataManager.realmConfiguration
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let previousSession = makeFeedSessionOverrideForTesting
+        let previousHandler = FeedURLProtocol.requestHandler
+        defer {
+            LibraryDataManager.realmConfiguration = previousLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousEntry
+            makeFeedSessionOverrideForTesting = previousSession
+            FeedURLProtocol.requestHandler = previousHandler
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = URL(string: "https://example.com/\(UUID().uuidString)/feed.xml")!
+        feed.deleteOrphans = true
+        feed.lastFetchedETag = "\"old\""
+        feed.lastRefreshedEntriesAt = Date(timeIntervalSince1970: 1_600_000_000)
+        let orphanURL = feed.rssUrl.deletingLastPathComponent().appendingPathComponent("orphan")
+        let incomingURL = feed.rssUrl.deletingLastPathComponent().appendingPathComponent("entry")
+        let sourceEntry = FeedEntry()
+        sourceEntry.feedID = feed.id
+        sourceEntry.url = orphanURL
+        sourceEntry.title = "source"
+        sourceEntry.updateCompoundKey()
+        try realm.write { realm.add(feed); realm.add(sourceEntry) }
+        let feedID = feed.id
+        let frozenFeed = feed.freeze()
+        let originalAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: configuration)
+
+        let replacementBytes = try await seedReplacementFeed(
+            configuration: replacementConfiguration, feedID: feedID, rssURL: feed.rssUrl,
+            orphanURL: orphanURL, incomingURL: incomingURL,
+            expectedRowKey: physicalFeedRowKey(feed)
+        )
+
+        let gate = FeedNetworkHold()
+        let rssBody = Data("<rss version='2.0'><channel><title>Feed</title><item><guid>\(incomingURL.absoluteString)</guid><link>\(incomingURL.absoluteString)</link><title>incoming</title><description>body</description></item></channel></rss>".utf8)
+        FeedURLProtocol.requestHandler = { request in
+            if request.httpMethod == (notModified ? "HEAD" : "GET") { gate.pause() }
+            return (request.httpMethod == "HEAD" && notModified ? 304 : 200,
+                    ["ETag": "\"new\"", "Content-Type": "application/rss+xml"], rssBody)
+        }
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        let fetch = Task { @MainActor in try await frozenFeed.fetch(realmConfiguration: configuration) }
+        do {
+            guard await XCTWaiter.fulfillment(of: [gate.started], timeout: 2) == .completed else {
+                throw RefreshFixtureError.registrationTimedOut
+            }
+            let originalURL = try XCTUnwrap(configuration.fileURL)
+            let replacementURL = try XCTUnwrap(replacementConfiguration.fileURL)
+            try FileManager.default.removeItem(at: originalURL)
+            try FileManager.default.moveItem(at: replacementURL, to: originalURL)
+            XCTAssertFalse(originalAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: configuration)
+            }), "The fixture must replace the captured file resource identity")
+            XCTAssertFalse(frozenFeed.isInvalidated,
+                           "The original frozen handle must remain readable after file exchange")
+            gate.release()
+            switch await fetch.result {
+            case .success: throw RefreshFixtureError.refreshUnexpectedlySucceeded
+            case .failure(let error):
+                if let storageError = error as? RealmBackgroundActorError,
+                   case .realmFileChangedDuringOpen = storageError {
+                } else {
+                    XCTFail("Expected captured file-identity rejection, got \(error)")
+                }
+            }
+            XCTAssertEqual(try Data(contentsOf: originalURL), replacementBytes,
+                           "The replacement file, including validators, entries, mirrors and journal, stays byte-identical")
+            let priorRequests = FeedURLProtocol.requestHandler
+            FeedURLProtocol.requestHandler = { _ in
+                XCTFail("An editor-supplied retired admission must reject before HTTP dispatch")
+                return (500, [:], Data())
+            }
+            do {
+                try await frozenFeed.fetch(realmConfiguration: configuration, storageAdmission: originalAdmission)
+                XCTFail("The editor's earlier admission must reject the replacement file")
+            } catch let error as RealmBackgroundActorError {
+                if case .realmFileChangedDuringOpen = error { }
+                else { XCTFail("Expected captured file-identity rejection, got \(error)") }
+            } catch {
+                XCTFail("Expected captured file-identity rejection, got \(error)")
+            }
+            FeedURLProtocol.requestHandler = priorRequests
+        } catch {
+            gate.release()
+            fetch.cancel()
+            _ = await fetch.result
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            throw error
+        }
+        await ReaderContentLoader.resetTransientCachesForTesting()
+    }
+
+    @MainActor
+    func testFrozenFetchRejectsSameUUIDRowRecreationAndCurrentSuccessorRefreshes() async throws {
+        let configuration = makeRealmConfiguration()
+        addTeardownBlock { await ReaderContentLoader.resetTransientCachesForTesting() }
+        let previousLibrary = LibraryDataManager.realmConfiguration
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let previousSession = makeFeedSessionOverrideForTesting
+        let previousHandler = FeedURLProtocol.requestHandler
+        defer {
+            LibraryDataManager.realmConfiguration = previousLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousEntry
+            makeFeedSessionOverrideForTesting = previousSession
+            FeedURLProtocol.requestHandler = previousHandler
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = URL(string: "https://example.com/\(UUID().uuidString)/feed.xml")!
+        try realm.write { realm.add(feed) }
+        let feedID = feed.id
+        let rssURL = feed.rssUrl
+        let frozen = feed.freeze()
+
+        let unmanaged = Feed()
+        unmanaged.id = feedID
+        unmanaged.rssUrl = rssURL
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        FeedURLProtocol.requestHandler = { _ in
+            XCTFail("An unmanaged feed has no physical row authority to dispatch a request")
+            return (500, [:], Data())
+        }
+        do {
+            try await unmanaged.fetch(realmConfiguration: configuration)
+            XCTFail("Unmanaged fetch must fail closed")
+        } catch is CancellationError { }
+
+        let gate = FeedNetworkHold()
+        let entryURL = rssURL.deletingLastPathComponent().appendingPathComponent("entry")
+        let rssBody = Data("<rss version='2.0'><channel><title>Feed</title><item><guid>\(entryURL.absoluteString)</guid><link>\(entryURL.absoluteString)</link><title>current successor</title><description>body</description></item></channel></rss>".utf8)
+        FeedURLProtocol.requestHandler = { request in
+            if request.httpMethod == "GET" { gate.pause() }
+            return (200, ["ETag": "\"current\"", "Content-Type": "application/rss+xml"], rssBody)
+        }
+        let staleFetch = Task { @MainActor in try await frozen.fetch(realmConfiguration: configuration) }
+        var successor: Feed?
+        do {
+            guard await XCTWaiter.fulfillment(of: [gate.started], timeout: 2) == .completed else {
+                throw RefreshFixtureError.registrationTimedOut
+            }
+            let replacement = Feed()
+            replacement.id = feedID
+            replacement.rssUrl = rssURL
+            try realm.write {
+                realm.delete(feed)
+                realm.add(replacement)
+            }
+            successor = replacement
+            XCTAssertNotEqual(physicalFeedRowKey(frozen), physicalFeedRowKey(replacement))
+            XCTAssertFalse(frozen.isInvalidated, "The frozen original remains readable after live row recreation")
+            gate.release()
+            switch await staleFetch.result {
+            case .success: throw RefreshFixtureError.refreshUnexpectedlySucceeded
+            case .failure(let error):
+                XCTAssertTrue(error is CancellationError,
+                              "Expected stale physical-row cancellation, got \(error)")
+            }
+            await realm.asyncRefresh()
+            XCTAssertNil(replacement.lastFetchedETag)
+            XCTAssertNil(replacement.lastRefreshedEntriesAt)
+            XCTAssertTrue(realm.objects(FeedEntry.self).where { $0.feedID == feedID }.isEmpty)
+        } catch {
+            gate.release()
+            staleFetch.cancel()
+            _ = await staleFetch.result
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            throw error
+        }
+        let current = try XCTUnwrap(successor)
+        try await current.fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(current.lastFetchedETag, "\"current\"")
+        XCTAssertNotNil(current.lastRefreshedEntriesAt)
+        XCTAssertEqual(realm.objects(FeedEntry.self).where { $0.feedID == feedID }.first?.title,
+                       "current successor")
+        await ReaderContentLoader.resetTransientCachesForTesting()
+    }
+
+    @MainActor
+    func testAutomaticSchemaManagedFeedRetains304RefreshAdmission() async throws {
+        var configuration = makeRealmConfiguration()
+        configuration.objectTypes = nil
+        let automaticConfiguration = configuration
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: automaticConfiguration)
+            await ReaderContentLoader.resetTransientCachesForTesting()
+        }
+        let previousSession = makeFeedSessionOverrideForTesting
+        let previousHandler = FeedURLProtocol.requestHandler
+        defer {
+            makeFeedSessionOverrideForTesting = previousSession
+            FeedURLProtocol.requestHandler = previousHandler
+        }
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        FeedURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.httpMethod, "HEAD")
+            return (304, ["ETag": "\"new\""], Data())
+        }
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = URL(string: "https://example.com/\(UUID().uuidString)/automatic.rss")!
+        feed.lastFetchedETag = "\"old\""
+        let priorStamp = Date(timeIntervalSince1970: 1_600_000_000)
+        feed.lastRefreshedEntriesAt = priorStamp
+        let entry = FeedEntry()
+        entry.feedID = feed.id
+        entry.url = feed.rssUrl.deletingLastPathComponent().appendingPathComponent("existing")
+        entry.title = "existing"
+        entry.updateCompoundKey()
+        try realm.write { realm.add(feed); realm.add(entry) }
+        XCTAssertNil(configuration.objectTypes, "The caller must exercise automatic schema discovery")
+        XCTAssertNotNil(realm.configuration.objectTypes,
+                        "Realm's returned configuration materializes its discovered object types")
+        try await feed.freeze().fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(feed.lastFetchedETag, "\"new\"")
+        let refreshedAt = try XCTUnwrap(feed.lastRefreshedEntriesAt)
+        XCTAssertGreaterThan(refreshedAt, priorStamp)
+        XCTAssertEqual(entry.title, "existing")
+    }
+
+    @MainActor
+    func testFetchRejectsDifferentStorageAndExplicitSchemaBeforeHTTP() async throws {
+        let configuration = makeRealmConfiguration()
+        let previousSession = makeFeedSessionOverrideForTesting
+        let previousHandler = FeedURLProtocol.requestHandler
+        defer {
+            makeFeedSessionOverrideForTesting = previousSession
+            FeedURLProtocol.requestHandler = previousHandler
+        }
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        FeedURLProtocol.requestHandler = { _ in
+            XCTFail("Mismatched source authority must reject before HTTP dispatch")
+            return (500, [:], Data())
+        }
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = URL(string: "https://example.com/\(UUID().uuidString)/feed.xml")!
+        try realm.write { realm.add(feed) }
+        let frozen = feed.freeze()
+        let originalURL = try XCTUnwrap(configuration.fileURL)
+        let originalBytes = try Data(contentsOf: originalURL)
+        var differentStorage = configuration
+        differentStorage.fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("other-feed-\(UUID().uuidString).realm")
+        var differentExplicitSchema = configuration
+        differentExplicitSchema.objectTypes = [Feed.self, FeedEntry.self]
+        var differentSchemaVersion = configuration
+        differentSchemaVersion.schemaVersion &+= 1
+        for mismatch in [differentStorage, differentExplicitSchema, differentSchemaVersion] {
+            do {
+                try await frozen.fetch(realmConfiguration: mismatch)
+                XCTFail("A different file or explicit schema must not adopt the source row")
+            } catch let error as RealmBackgroundActorError {
+                if case .realmFileChangedDuringOpen = error { }
+                else { XCTFail("Expected source admission refusal, got \(error)") }
+            } catch {
+                XCTFail("Expected source admission refusal, got \(error)")
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: originalURL), originalBytes,
+                       "Pre-HTTP refusal must not migrate or mutate the source Realm")
+        let rejectedURL = try XCTUnwrap(differentStorage.fileURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rejectedURL.path),
+                       "A rejected cross-store request must not create its destination file")
     }
 
     private func fixtureURL(_ fileName: String) throws -> URL {
