@@ -306,11 +306,15 @@ final class ReaderWebViewHandler {
         // asynchronous work that still belongs to the previous document.
         readerContent.withdrawSelectionIntent()
         navigationTaskManager.cancelNavigationWork()
+        // HTML preparation has its own task. Retire it with the physical
+        // document, except for the final processed-HTML commit it just issued.
+        let isExpectedReaderCommit = reason == .navigationCommitted
+            && readerModeViewModel.expectsSyntheticReaderLoaderCommit(for: state.pageURL)
+        if !isExpectedReaderCommit {
+            readerContent.isRenderingReaderHTML = false
+            readerModeViewModel.cancelReaderModeLoad()
+        }
         if reason == .webContentProcessTerminated {
-            if readerContent.pageURL.matchesReaderURL(state.pageURL) {
-                readerContent.isRenderingReaderHTML = false
-            }
-            readerModeViewModel.onNavigationFailed(newState: state)
             onNavigationFailed?(state)
         }
         onDocumentContextInvalidated?(state, reason)
