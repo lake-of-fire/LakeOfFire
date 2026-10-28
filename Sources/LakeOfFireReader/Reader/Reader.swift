@@ -144,8 +144,6 @@ private extension View {
 
 typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiTargetFrames: Bool) async throws -> Void
 
-private var ebookChromeInsetRevision: Int = 0
-private var lastSyncedEbookChromeInsets: (pageURL: URL, top: CGFloat, toolbarBottom: CGFloat, bottom: CGFloat)?
 
 @MainActor
 func readerPaginationTrackingSettingsKey(
@@ -478,38 +476,21 @@ private func ebookToolbarBottomOffset(
 }
 
 @MainActor
+@discardableResult
 func syncEbookViewerChromeInsets(
-    pageURL: URL,
-    obscuredTopInset: CGFloat,
-    toolbarBottomOffset: CGFloat,
-    obscuredBottomInset: CGFloat,
-    hasAsyncCaller: Bool,
-    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
-) async {
-    guard pageURL.isEBookURL else { return }
-    guard hasAsyncCaller else { return }
-    ebookChromeInsetRevision += 1
-    let revision = ebookChromeInsetRevision
-    let obscuredTopInset = max(0, obscuredTopInset)
-    let toolbarBottomOffset = max(0, toolbarBottomOffset)
-    let obscuredBottomInset = max(0, obscuredBottomInset)
-    if let lastSyncedEbookChromeInsets,
-       lastSyncedEbookChromeInsets.pageURL == pageURL,
-       lastSyncedEbookChromeInsets.top == obscuredTopInset,
-       lastSyncedEbookChromeInsets.toolbarBottom == toolbarBottomOffset,
-       lastSyncedEbookChromeInsets.bottom == obscuredBottomInset {
-        return
-    }
-    lastSyncedEbookChromeInsets = (
-        pageURL: pageURL,
-        top: obscuredTopInset,
-        toolbarBottom: toolbarBottomOffset,
-        bottom: obscuredBottomInset
-    )
+    key: ReaderEBookChromeInsetSynchronization.Key,
+    synchronization: ReaderEBookChromeInsetSynchronization,
+    isCurrent: @escaping ReaderEBookChromeInsetSynchronization.Check,
+    evaluateJavaScript: @MainActor (_ script: String, _ continueWhile: @escaping ReaderEBookChromeInsetSynchronization.Check) async throws -> Void
+) async -> Bool {
+    guard key.pageURL.isEBookURL else { return false }
+    let obscuredTopInset = key.top
+    let toolbarBottomOffset = key.toolbarBottom
+    let obscuredBottomInset = key.bottom
     let obscuredTopInsetCSS = "\(obscuredTopInset)px"
     let toolbarBottomOffsetCSS = "\(toolbarBottomOffset)px"
     let obscuredBottomInsetCSS = "\(obscuredBottomInset)px"
-    do {
+    return await synchronization.deliver(key: key, isCurrent: isCurrent) { revision, current in
         try await evaluateJavaScript(
             """
             (function() {
@@ -554,9 +535,8 @@ func syncEbookViewerChromeInsets(
             //# sourceURL=lake-reader-chrome-insets-sync.js
 
             """,
-            true
+            current
         )
-    } catch {
     }
 }
 
@@ -1126,6 +1106,7 @@ public struct Reader: View {
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     
+    @StateObject private var ebookChromeInsetSynchronization = ReaderEBookChromeInsetSynchronization()
     @State private var obscuredInsets: EdgeInsets? = nil
     @State private var obscuredGeometrySize: CGSize? = nil
     
@@ -1242,16 +1223,24 @@ public struct Reader: View {
             obscuredBottomInset: toolbarReferenceBottomInset,
             additionalBottomSafeAreaInset: additionalBottomInset
         )
-        let chromeInsetsTaskID = [
-            pageURL.absoluteString,
-            "\(effectiveTopInset)",
-            "\(additionalLeadingInset)",
-            "\(effectiveBottomInset)",
-            "\(effectiveToolbarBottomOffset)",
-            "\(scriptCaller.hasAsyncCaller)",
-            "\(readerViewModel.state.hasReaderRenderReady)",
-            "\(readerViewModel.ebookChromeInsetsResyncID)",
-        ].joined(separator: "|")
+        let insetNativePageURL = readerContent.pageURL
+        let insetBinding = scriptCaller.currentJavaScriptBindingToken
+        let insetRenderedURL = readerViewModel.state.pageURL
+        let insetCachedContentURL = readerContent.cachedContentURL
+        let chromeInsetKey = insetBinding.map {
+            ReaderEBookChromeInsetSynchronization.Key(
+                pageURL: pageURL, renderedURL: insetRenderedURL,
+                cachedContentURL: insetCachedContentURL, binding: $0,
+                top: max(0, effectiveTopInset), toolbarBottom: max(0, effectiveToolbarBottomOffset),
+                bottom: max(0, effectiveBottomInset), resyncID: readerViewModel.ebookChromeInsetsResyncID)
+        }
+        let chromeInsetsTaskID = ReaderEBookChromeInsetsTaskID(
+            key: chromeInsetKey, nativePageURL: insetNativePageURL,
+            additionalLeadingInset: additionalLeadingInset,
+            hasAsyncCaller: scriptCaller.hasAsyncCaller,
+            renderReady: readerViewModel.state.hasReaderRenderReady,
+            provisionallyNavigating: readerViewModel.state.isProvisionallyNavigating
+                || readerContent.isReaderProvisionallyNavigating)
         //            VStack(spacing: 0) {
         ReaderWebView(
             persistentWebViewID: persistentWebViewID,
@@ -1372,22 +1361,32 @@ public struct Reader: View {
         ))
         .modifier(PageMetadataModifier())
         .modifier(ReaderMediaPlayerViewModifier())
-        .task(id: chromeInsetsTaskID) {
-            guard pageURL.isEBookURL else { return }
+        .task(id: chromeInsetsTaskID) { @MainActor in
             guard !Task.isCancelled else { return }
+            guard let key = chromeInsetsTaskID.key, key.pageURL.isEBookURL,
+                  chromeInsetsTaskID.hasAsyncCaller, !chromeInsetsTaskID.provisionallyNavigating else {
+                ebookChromeInsetSynchronization.retire()
+                return
+            }
+            let caller = scriptCaller
+            let content = readerContent
+            let viewModel = readerViewModel
             await syncEbookViewerChromeInsets(
-                pageURL: pageURL,
-                obscuredTopInset: effectiveTopInset,
-                toolbarBottomOffset: effectiveToolbarBottomOffset,
-                obscuredBottomInset: effectiveBottomInset,
-                hasAsyncCaller: scriptCaller.hasAsyncCaller
-            ) { js, duplicateInMultiTargetFrames in
-                _ = try await scriptCaller.evaluateJavaScript(
-                    js,
-                    duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
-                )
+                key: key, synchronization: ebookChromeInsetSynchronization,
+                isCurrent: {
+                    caller.currentJavaScriptBindingToken == key.binding
+                        && content.pageURL == chromeInsetsTaskID.nativePageURL
+                        && content.cachedContentURL == key.cachedContentURL
+                        && viewModel.state.pageURL == key.renderedURL
+                        && !content.isReaderProvisionallyNavigating
+                        && !viewModel.state.isProvisionallyNavigating
+                }
+            ) { js, current in
+                _ = try await caller.evaluateJavaScriptInMultiTargetFrames(
+                    js, propagatesFrameErrors: true, continueWhile: current)
             }
         }
+        .onDisappear { ebookChromeInsetSynchronization.retire() }
         .onReceive(readerContent.contentTitleSubject.receive(on: RunLoop.main)) { _ in
             Task { @MainActor in
                 guard scriptCaller.hasAsyncCaller else { return }
