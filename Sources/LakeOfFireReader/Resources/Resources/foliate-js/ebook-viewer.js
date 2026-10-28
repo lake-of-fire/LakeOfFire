@@ -22,15 +22,14 @@ import {
     captureVisibleMarkReadNavigation,
 } from './native-mark-read-request.js'
 import {
-    compactEbookSegmentMetadataPayloadIsCurrent,
-    compactEbookSegmentSchemaVersionsAreCompatible,
-    compactEbookSegmentSidecarVersion,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
-    expandCompactEbookSegmentResolution,
-    expandCompactEbookSegmentIDToken,
     stableEbookSegmentIdentityVersion,
 } from './ebook-segment-identity.js'
+import {
+    createEbookSegmentMetadataBootstrap,
+    emptySegmentMetadataBootstrap,
+} from './ebook-segment-metadata.js'
 import {
     ebookDocumentFrameIdentity,
     nativeLookupFramePublicationTransition,
@@ -117,446 +116,9 @@ const manabiEventScreenPoint = event => {
     };
 };
 
-const manabiSegmentSidecarParserVersion = compactEbookSegmentSidecarVersion;
-const manabiSegmentSidecarNativeVersion = Number.isSafeInteger(
-    globalThis.manabi_compactSegmentSidecarSchemaVersion
-)
-    ? globalThis.manabi_compactSegmentSidecarSchemaVersion
-    : null;
-const manabiSegmentSidecarSchemaIsCompatible = compactEbookSegmentSchemaVersionsAreCompatible(
-    manabiSegmentSidecarNativeVersion
-);
-const manabiCanParseCompactSegmentSidecar = (payload) => (
-    manabiSegmentSidecarSchemaIsCompatible
-    && compactEbookSegmentMetadataPayloadIsCurrent(payload)
-);
-globalThis.manabi_segmentSidecarSchemaDiagnostics = Object.freeze({
-    parserVersion: manabiSegmentSidecarParserVersion,
-    nativeVersion: manabiSegmentSidecarNativeVersion,
-    nativeSchemaIsCompatible: manabiSegmentSidecarSchemaIsCompatible,
-    acceptsPayload: manabiCanParseCompactSegmentSidecar,
-});
-
-const manabiSidecarTableValue = (table, index, fallback = null) => (
-    Number.isInteger(index) && Array.isArray(table) && index >= 0 && index < table.length
-        ? table[index]
-        : fallback
-);
-
-const manabiSidecarTableArray = (tables, shortKey) => (
-    Array.isArray(tables?.[shortKey])
-        ? tables[shortKey]
-        : []
-);
-
-const manabiExpandSegmentIDToken = expandCompactEbookSegmentIDToken;
-
-const manabiExpandCompactSegmentMetadata = (segment, tables) => {
-    const segmentHash = manabiSidecarTableValue(tables.h, segment?.[1], null);
-    const sentenceID = manabiSidecarTableValue(tables.sid, segment?.[9], null);
-    const paragraphID = manabiSidecarTableValue(tables.pid, segment?.[10], null);
-    const jmdictEntryIDs = manabiSidecarTableValue(tables.j, segment?.[2], []);
-    const jmnedictEntryIDs = manabiSidecarTableValue(tables.n, segment?.[3], []);
-    const resolution = expandCompactEbookSegmentResolution(
-        manabiSidecarTableValue(tables.res, segment?.[11], null),
-        jmdictEntryIDs,
-        jmnedictEntryIDs
-    );
-    return {
-        i: manabiExpandSegmentIDToken(segment?.[0]),
-        h: segmentHash,
-        sid: stableSegmentID(sentenceID, segmentHash),
-        sentenceID,
-        paragraphID,
-        pid: paragraphID,
-        j: jmdictEntryIDs,
-        n: jmnedictEntryIDs,
-        s: manabiSidecarTableValue(tables.s, segment?.[4], null),
-        ns: manabiSidecarTableValue(tables.ns, segment?.[5], null),
-        p: manabiSidecarTableValue(tables.p, segment?.[6], null),
-        l: segment?.[7],
-        x: manabiSidecarTableValue(tables.x, segment?.[8], null),
-        scopeText: manabiSidecarTableValue(tables.x, segment?.[12], null),
-        paragraphScopeText: manabiSidecarTableValue(tables.x, segment?.[13], null),
-        selectedLexicon: resolution?.selectedLexicon ?? null,
-        selectedEntryID: resolution?.selectedEntryID ?? null,
-        canonicalSearchString: resolution?.canonicalSearchString ?? null,
-        requiresCommittedDictionarySelection: true,
-    };
-};
-
-const manabiCompactSegmentMetadataTables = (payload) => ({
-    h: manabiSidecarTableArray(payload.t, 'h'),
-    j: manabiSidecarTableArray(payload.t, 'j'),
-    n: manabiSidecarTableArray(payload.t, 'n'),
-    s: manabiSidecarTableArray(payload.t, 's'),
-    ns: manabiSidecarTableArray(payload.t, 'ns'),
-    p: manabiSidecarTableArray(payload.t, 'p'),
-    x: manabiSidecarTableArray(payload.t, 'x'),
-    sid: manabiSidecarTableArray(payload.t, 'sid'),
-    pid: manabiSidecarTableArray(payload.t, 'pid'),
-    res: manabiSidecarTableArray(payload.t, 'res'),
-});
-
-class ManabiLazySegmentMetadataMap extends Map {
-    constructor(payload) {
-        super();
-        this.compactSegments = [];
-        this.tables = null;
-        this.indexedSegmentCount = 0;
-        this.materializedSegmentCount = 0;
-        this.stableAliasesIndexed = false;
-        if (!manabiCanParseCompactSegmentSidecar(payload)) {
-            return;
-        }
-        this.compactSegments = payload.s;
-        this.tables = manabiCompactSegmentMetadataTables(payload);
-        for (let tupleIndex = 0; tupleIndex < payload.s.length; tupleIndex += 1) {
-            const compactSegment = payload.s[tupleIndex];
-            const elementID = manabiExpandSegmentIDToken(compactSegment?.[0]);
-            if (!elementID) continue;
-            const reference = tupleIndex + 1;
-            super.set(elementID, reference);
-            this.indexedSegmentCount += 1;
-        }
-    }
-
-    ensureStableAliasesIndexed() {
-        if (this.stableAliasesIndexed || !this.tables) return;
-        this.stableAliasesIndexed = true;
-        for (let tupleIndex = 0; tupleIndex < this.compactSegments.length; tupleIndex += 1) {
-            const compactSegment = this.compactSegments[tupleIndex];
-            const segmentHash = manabiSidecarTableValue(this.tables.h, compactSegment?.[1], null);
-            const sentenceID = manabiSidecarTableValue(this.tables.sid, compactSegment?.[9], null);
-            const stableID = stableSegmentID(sentenceID, segmentHash);
-            if (stableID) super.set(stableID, tupleIndex + 1);
-        }
-    }
-
-    get(identifier) {
-        let value = super.get(identifier);
-        if (value === undefined) {
-            this.ensureStableAliasesIndexed();
-            value = super.get(identifier);
-        }
-        if (!Number.isInteger(value)) return value;
-        const compactSegment = this.compactSegments[value - 1];
-        if (!compactSegment || !this.tables) return undefined;
-        const metadata = manabiExpandCompactSegmentMetadata(compactSegment, this.tables);
-        for (const alias of manabiSegmentMetadataAliases(metadata)) {
-            super.set(alias, metadata);
-        }
-        this.materializedSegmentCount += 1;
-        return metadata;
-    }
-
-    has(identifier) {
-        return this.get(identifier) !== undefined;
-    }
-}
-
-class ManabiLazySegmentScopeMap extends Map {
-    constructor(compactSegments, scopeTable, scopeTupleIndex) {
-        super();
-        this.compactSegments = compactSegments;
-        this.scopeTable = scopeTable;
-        this.scopeTupleIndex = scopeTupleIndex;
-        this.isIndexed = false;
-    }
-
-    ensureIndexed() {
-        if (this.isIndexed) return;
-        // Sentence and paragraph pickers are user-driven. Build their deterministic sidecar
-        // indexes on first use instead of allocating arrays for the whole section before paint.
-        this.isIndexed = true;
-        for (const compactSegment of this.compactSegments) {
-            const scopeID = manabiSidecarTableValue(
-                this.scopeTable,
-                compactSegment?.[this.scopeTupleIndex],
-                null
-            );
-            const elementID = manabiExpandSegmentIDToken(compactSegment?.[0]);
-            if (typeof scopeID !== 'string' || scopeID.length === 0 || !elementID) continue;
-            const existingSegmentIDs = super.get(scopeID);
-            if (existingSegmentIDs) {
-                existingSegmentIDs.push(elementID);
-            } else {
-                super.set(scopeID, [elementID]);
-            }
-        }
-    }
-
-    get(identifier) {
-        this.ensureIndexed();
-        return super.get(identifier);
-    }
-}
-
-const manabiSegmentMetadataAliases = (segment) => {
-    const aliases = [];
-    const add = (identifier) => {
-        if (typeof identifier !== 'string' || identifier.length === 0) return;
-        if (!aliases.includes(identifier)) aliases.push(identifier);
-    };
-    add(segment?.i);
-    add(segment?.sid);
-    return aliases;
-};
-
-const manabiSegmentMetadataSidecarSnapshot = (doc) => {
-    if (!doc) return { sidecars: [], sidecarTexts: [], sidecarPayloads: [], sidecarSignature: 'none' };
-    const canonicalSidecar = doc.getElementById?.('mnb-segment-metadata') ?? null;
-    // Processed EPUB sections have one canonical Swift-emitted sidecar. Keep this
-    // bootstrap O(1); the general reader script owns dynamic multi-sidecar content.
-    const sidecars = canonicalSidecar ? [canonicalSidecar] : [];
-    const externalEntry = canonicalSidecar ? null : (doc.manabiExternalSegmentSidecar ?? null);
-    const cachedSnapshot = doc.__manabiFoliateSegmentMetadataSidecarSnapshot;
-    if (cachedSnapshot?.sidecars?.length === sidecars.length
-        && sidecars.every((sidecar, index) => cachedSnapshot.sidecars[index] === sidecar)
-        && cachedSnapshot.externalEntry === externalEntry) {
-        return cachedSnapshot;
-    }
-    const sidecarTexts = sidecars.length > 0
-        ? sidecars.map(sidecar => sidecar.textContent || '')
-        : (externalEntry?.payload ? [''] : []);
-    // The Swift-produced sidecar node is immutable for the lifetime of its EPUB document, and
-    // cache reuse above is already guarded by node identity. Use an identity generation instead
-    // of hashing its large JSON text on the first visible load.
-    if (canonicalSidecar) {
-        doc.__manabiFoliateSegmentMetadataSidecarGeneration =
-            (doc.__manabiFoliateSegmentMetadataSidecarGeneration || 0) + 1;
-    }
-    const sidecarSignature = externalEntry?.signature
-        ? `external:${externalEntry.signature}`
-        : (canonicalSidecar
-            ? `canonical:${doc.__manabiFoliateSegmentMetadataSidecarGeneration}`
-            : 'none');
-    const snapshot = {
-        sidecars,
-        sidecarTexts,
-        sidecarPayloads: externalEntry?.payload ? [externalEntry.payload] : [],
-        sidecarSignature,
-        externalEntry,
-    };
-    doc.__manabiFoliateSegmentMetadataSidecarSnapshot = snapshot;
-    return snapshot;
-};
-
-const manabiSidecarNumberArray = (value) => Array.isArray(value)
-    ? value.filter(item => typeof item === 'number' && Number.isFinite(item))
-    : [];
-
-const manabiMaxExampleSentenceCodePointCount = 7000;
-const manabiHighSurrogateMinimum = 0xD800;
-const manabiHighSurrogateMaximum = 0xDBFF;
-const manabiLowSurrogateMinimum = 0xDC00;
-const manabiLowSurrogateMaximum = 0xDFFF;
-const manabiAmpersandCodeUnit = 0x26;
-const manabiApostropheCodeUnit = 0x27;
-const manabiQuotationMarkCodeUnit = 0x22;
-const manabiLessThanCodeUnit = 0x3C;
-const manabiGreaterThanCodeUnit = 0x3E;
-
-const manabiEscapedExampleSentenceHTML = (text) => {
-    const escapedParts = [];
-    let chunkStart = 0;
-    let index = 0;
-    let codePointCount = 0;
-    while (index < text.length && codePointCount < manabiMaxExampleSentenceCodePointCount) {
-        const codeUnit = text.charCodeAt(index);
-        let replacement = null;
-        switch (codeUnit) {
-        case manabiAmpersandCodeUnit:
-            replacement = '&amp;';
-            break;
-        case manabiLessThanCodeUnit:
-            replacement = '&lt;';
-            break;
-        case manabiGreaterThanCodeUnit:
-            replacement = '&gt;';
-            break;
-        case manabiQuotationMarkCodeUnit:
-            replacement = '&quot;';
-            break;
-        case manabiApostropheCodeUnit:
-            replacement = '&#39;';
-            break;
-        default:
-            break;
-        }
-        if (replacement !== null) {
-            if (chunkStart < index) {
-                escapedParts.push(text.slice(chunkStart, index));
-            }
-            escapedParts.push(replacement);
-            chunkStart = index + 1;
-        }
-        let codeUnitLength = 1;
-        if (
-            codeUnit >= manabiHighSurrogateMinimum
-            && codeUnit <= manabiHighSurrogateMaximum
-            && index + 1 < text.length
-        ) {
-            const nextCodeUnit = text.charCodeAt(index + 1);
-            if (nextCodeUnit >= manabiLowSurrogateMinimum && nextCodeUnit <= manabiLowSurrogateMaximum) {
-                codeUnitLength = 2;
-            }
-        }
-        index += codeUnitLength;
-        codePointCount += 1;
-    }
-    if (escapedParts.length === 0) {
-        return index === text.length ? text : text.slice(0, index);
-    }
-    if (chunkStart < index) {
-        escapedParts.push(text.slice(chunkStart, index));
-    }
-    return escapedParts.join('');
-};
-
-// The current compact schema derives examples from sidecar tuples on demand. This avoids
-// serializing the same sentence facts twice and keeps sentence HTML assembly off the initial
-// render path.
-const manabiSentenceArchiveEntryFromSidecarSegments = (segments) => {
-    let text = '';
-    const sentenceJMDictIDs = [];
-    const sentenceJMDictIDSet = new Set();
-    const vocabularyCandidateGroups = [];
-    const archiveSegments = [];
-    for (const segment of segments) {
-        text += segment.x || segment.s || segment.ns || '';
-        const jmdictEntryIDs = manabiSidecarNumberArray(segment.j);
-        const jmnedictEntryIDs = manabiSidecarNumberArray(segment.n);
-        const primaryEntryID = jmdictEntryIDs[0];
-        if (Number.isFinite(primaryEntryID) && !sentenceJMDictIDSet.has(primaryEntryID)) {
-            sentenceJMDictIDSet.add(primaryEntryID);
-            sentenceJMDictIDs.push(primaryEntryID);
-        }
-        if (jmdictEntryIDs.length > 0 || jmnedictEntryIDs.length > 0) {
-            vocabularyCandidateGroups.push({
-                jmdictEntryIds: jmdictEntryIDs,
-                // Preserve both typed alternative sets. Primary selection is a
-                // native policy; the sidecar must not erase dictionary identity.
-                jmnedictEntryIds: jmnedictEntryIDs,
-            });
-        }
-        const segmentIdentifier = segment.sid || '';
-        if (segmentIdentifier) {
-            archiveSegments.push({
-                jmdictEntryIds: jmdictEntryIDs,
-                jmnedictEntryIds: jmnedictEntryIDs,
-                searchString: segment.s || segment.ns || '',
-                segmentIdentifier,
-            });
-        }
-    }
-
-    const sentenceHTML = manabiEscapedExampleSentenceHTML(text);
-    for (const segment of archiveSegments) {
-        segment.exampleSentence = sentenceHTML;
-        segment.exampleSentenceJMDictIDs = sentenceJMDictIDs;
-    }
-    return {
-        sentenceHTML,
-        sentenceJMDictIDs,
-        vocabularyCandidateGroups,
-        segments: archiveSegments,
-    };
-};
-
-const directSegmentMetadataBootstrap = (doc) => {
-    if (!doc) return emptySegmentMetadataBootstrap();
-    const { sidecars, sidecarTexts, sidecarPayloads = [], sidecarSignature } = manabiSegmentMetadataSidecarSnapshot(doc);
-    const cachedByID = doc.__manabiFoliateSegmentMetadataByID;
-    if (
-        doc.__manabiFoliateSegmentMetadataParserVersion === manabiSegmentSidecarParserVersion
-        && doc.__manabiFoliateSegmentMetadataSignature === sidecarSignature
-        && cachedByID instanceof Map
-    ) {
-        return {
-            byID: cachedByID,
-            idsByEntryID: doc.__manabiFoliateSegmentIDsByEntryID || new Map(),
-            hasEntryIDs: doc.__manabiFoliateSegmentMetadataHasEntryIDs === true,
-            segmentIDsBySentenceID: doc.__manabiFoliateSegmentIDsBySentenceID || new Map(),
-            segmentIDsByParagraphID: doc.__manabiFoliateSegmentIDsByParagraphID || new Map(),
-            segments: doc.__manabiFoliateSegmentMetadataSegments || [],
-            aggregates: null,
-            sentenceArchive: doc.__manabiFoliateSidecarSentenceArchive || new Map(),
-        };
-    }
-    const idsByEntryID = new Map();
-    const segments = [];
-    const sentenceArchive = new Map();
-    let payload = sidecarPayloads[0] ?? null;
-    if (!payload && sidecarTexts[0]) {
-        try {
-            payload = JSON.parse(sidecarTexts[0]);
-        } catch (_error) {}
-    }
-    const byID = new ManabiLazySegmentMetadataMap(payload);
-    const segmentIDsBySentenceID = new ManabiLazySegmentScopeMap(
-        byID.compactSegments,
-        byID.tables?.sid ?? [],
-        9
-    );
-    const segmentIDsByParagraphID = new ManabiLazySegmentScopeMap(
-        byID.compactSegments,
-        byID.tables?.pid ?? [],
-        10
-    );
-    const tableHasEntryIDs = (table) => table?.some?.(entryIDs => entryIDs?.some?.(Number.isFinite) === true) === true;
-    const hasEntryIDs = tableHasEntryIDs(byID.tables?.j) || tableHasEntryIDs(byID.tables?.n);
-    // Keep the existing Map contract while moving sentence string assembly to the lookup that
-    // requests it. The segment index above makes each materialization sentence-local.
-    const cachedSentenceArchiveEntry = sentenceArchive.get.bind(sentenceArchive);
-    sentenceArchive.get = (sentenceID) => {
-        const cachedEntry = cachedSentenceArchiveEntry(sentenceID);
-        if (cachedEntry) return cachedEntry;
-        const sentenceSegmentIDs = segmentIDsBySentenceID.get(sentenceID);
-        if (!Array.isArray(sentenceSegmentIDs) || sentenceSegmentIDs.length === 0) return undefined;
-        const sentenceSegments = sentenceSegmentIDs
-            .map(segmentID => byID.get(segmentID) ?? null)
-            .filter(Boolean);
-        if (sentenceSegments.length === 0) return undefined;
-        const entry = manabiSentenceArchiveEntryFromSidecarSegments(sentenceSegments);
-        sentenceArchive.set(sentenceID, entry);
-        return entry;
-    };
-    doc.__manabiFoliateSegmentMetadataParserVersion = manabiSegmentSidecarParserVersion;
-    doc.__manabiFoliateSegmentMetadataSignature = sidecarSignature;
-    doc.__manabiFoliateSegmentMetadataByID = byID;
-    doc.__manabiFoliateSegmentIDsByEntryID = idsByEntryID;
-    doc.__manabiFoliateSegmentMetadataHasEntryIDs = hasEntryIDs;
-    doc.__manabiFoliateSegmentIDsBySentenceID = segmentIDsBySentenceID;
-    doc.__manabiFoliateSegmentIDsByParagraphID = segmentIDsByParagraphID;
-    doc.__manabiFoliateSegmentMetadataSegments = segments;
-    doc.__manabiFoliateSidecarSentenceArchive = sentenceArchive;
-    // manabi_reader.js owns the general reader cache, but processed EPUB documents are
-    // immutable and use this compact bootstrap first. Publish the same lazy structures under
-    // that cache contract so a later lookup cannot eagerly expand the entire sidecar again.
-    doc.manabiSegmentMetadataParserVersion = manabiSegmentSidecarParserVersion;
-    doc.manabiSegmentMetadataByID = byID;
-    doc.manabiSegmentIDsByEntryID = idsByEntryID;
-    doc.manabiSegmentIDsBySentenceID = segmentIDsBySentenceID;
-    doc.manabiSegmentIDsByParagraphID = segmentIDsByParagraphID;
-    doc.manabiSegmentMetadataSegments = segments;
-    doc.manabiSegmentMetadataAggregates = null;
-    doc.manabiSidecarSentenceArchive = sentenceArchive;
-    doc.manabiSegmentMetadataSidecars = sidecars;
-    doc.manabiSegmentMetadataSidecarTexts = sidecarTexts;
-    doc.manabiSegmentMetadataSidecarSignature = sidecarSignature;
-    doc.manabiSegmentMetadataCacheGeneration = doc.manabiSegmentMetadataGeneration || 0;
-    return {
-        byID,
-        idsByEntryID,
-        hasEntryIDs,
-        segmentIDsBySentenceID,
-        segmentIDsByParagraphID,
-        segments,
-        aggregates: null,
-        sentenceArchive,
-    };
-};
+const segmentMetadataBootstrapRuntime = createEbookSegmentMetadataBootstrap()
+const directSegmentMetadataBootstrap = segmentMetadataBootstrapRuntime.bootstrap
+globalThis.manabi_segmentSidecarSchemaDiagnostics = segmentMetadataBootstrapRuntime.schemaDiagnostics
 
 const MANABI_TEMP_DISABLE_EBOOK_NATIVE_LOOKUP_HIT_TARGETS = false;
 globalThis.__manabiEbookNativeLookupHitTargetsDisabled = MANABI_TEMP_DISABLE_EBOOK_NATIVE_LOOKUP_HIT_TARGETS;
@@ -1625,9 +1187,45 @@ const recordPageTurnNavigationIntent = (direction, _source, _details = {}) => {
     }
 };
 
-const requestLookupCloseForPageMotion = (reason, _details = {}) => {
+const createReaderTouchstartPoster = (view, observeReader, ownerIsCurrent) => {
+    const postingDocument = view.document;
+    // Page getters may reenter. Finish observations before terminal private
+    // ownership checks, including Reader identity after child observations.
+    const mayPost = ({ observe = () => true, isCurrent = () => true } = {}) => {
+        const observed = view.document === postingDocument
+            && observeReader() && observe() && observeReader()
+            && view.document === postingDocument;
+        return observed && ownerIsCurrent() && isCurrent();
+    };
+    const post = (payload, sourceAdmission, commit = () => {}) => {
+        try {
+            if (!mayPost(sourceAdmission)) return false;
+            // A missing origin may acquire Core's canonical stamp later, but
+            // this callback must never sample a replacement Document's clock.
+            const documentStartedAtMs = readerDocumentStartedAtMs(view);
+            const handler = view.webkit?.messageHandlers?.touchstartCallbackHandler;
+            const postMessage = handler?.postMessage;
+            const packet = { ...payload, documentStartedAtMs };
+            // Native bridge getters and payload accessors may synchronously
+            // retire this owner. Admit only after all those callouts finish.
+            if (typeof postMessage !== 'function' || !mayPost(sourceAdmission)) return false;
+            if (commit() === false) return false;
+            if (!mayPost(sourceAdmission)) return false;
+            // A throwing bridge does not roll back committed local admission.
+            // A true return means the call did not throw, not a native receipt.
+            Reflect.apply(postMessage, handler, [packet]);
+            return true;
+        } catch (_error) {
+            return false;
+        }
+    };
+    post.isCurrent = mayPost;
+    return post;
+};
+
+const requestLookupCloseForPageMotion = (reason, _details = {}, postTouchstartCallback) => {
     try {
-        window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+        postTouchstartCallback({
             touchedEntryWithElementId: null,
             wasAlreadySelected: false,
             lookupCloseReason: reason,
@@ -2667,22 +2265,6 @@ const visibleRangeForNavigationHUDDocument = (navHUD, doc) => {
         ? range
         : null;
 };
-
-const emptySegmentMetadataBootstrap = () => ({
-    byID: new Map(),
-    idsByEntryID: new Map(),
-    hasEntryIDs: false,
-    segments: [],
-    aggregates: null,
-    sentenceArchive: new Map(),
-});
-
-const stableSegmentID = (sentenceID, segmentHash) => (
-    typeof sentenceID === 'string' && sentenceID.length > 0
-    && typeof segmentHash === 'string' && segmentHash.length > 0
-        ? `${sentenceID}-${segmentHash}`
-        : null
-);
 
 const mapLikeOrEmpty = (value) => (
     value && typeof value.get === 'function' && typeof value.keys === 'function'
@@ -5468,6 +5050,7 @@ const navSpinnerMaximumMs = 1200;
 
 class Reader {
     #closed = false;
+    #postTouchstartCallback;
     #pageLifetime = {};
     #successfulBookReadPublication = null;
     #pendingMarkReadAdvance = null;
@@ -6312,6 +5895,9 @@ class Reader {
         }
     }
     constructor() {
+        this.#postTouchstartCallback = createReaderTouchstartPoster(
+            window, () => globalThis.reader === this, () => !this.#closed
+        );
         applyStoredChromeInsets('reader.constructor');
         this.#listen(window, 'pagehide', () => {
             this.#pageLifetime = {};
@@ -9600,50 +9186,74 @@ class Reader {
 
         let pendingMainDocumentBlankNavigationTouch = null;
         let lastPostedMainDocumentBlankTouchTap = null;
-        const shouldSuppressMainDocumentSyntheticMouseBlankTap = (event) => {
+        let mainDocumentBlankPostSequence = 0;
+        const shouldSuppressMainDocumentSyntheticMouseBlankTap = (event, lastTouchTap) => {
             if (event.type !== 'mousedown') {
-                return false;
+                return { suppress: false, consumeTouchTap: false };
             }
             if (event.sourceCapabilities?.firesTouchEvents === true) {
-                return true;
+                return { suppress: true, consumeTouchTap: false };
             }
-            const lastTouchTap = lastPostedMainDocumentBlankTouchTap;
-            lastPostedMainDocumentBlankTouchTap = null;
-            if (!lastTouchTap) {
-                return false;
-            }
-            const point = manabiEventScreenPoint(event);
+            const point = lastTouchTap ? manabiEventScreenPoint(event) : null;
+            if (!lastTouchTap) return { suppress: false, consumeTouchTap: false };
             if (!point || point.x === null || point.y === null) {
-                return true;
+                return { suppress: true, consumeTouchTap: true };
             }
             const dx = point.x - lastTouchTap.x;
             const dy = point.y - lastTouchTap.y;
-            return (dx * dx + dy * dy) <= (manabiSyntheticTouchMouseDistanceThreshold * manabiSyntheticTouchMouseDistanceThreshold);
+            return {
+                suppress: (dx * dx + dy * dy) <= (manabiSyntheticTouchMouseDistanceThreshold * manabiSyntheticTouchMouseDistanceThreshold),
+                consumeTouchTap: true,
+            };
         };
         const postNoElementNavigationTouchStart = (event, source, touchstartAtMs = Date.now()) => {
-            if (shouldSuppressMainDocumentSyntheticMouseBlankTap(event)) {
+            const receipt = {
+                sequence: mainDocumentBlankPostSequence,
+                touchTap: lastPostedMainDocumentBlankTouchTap,
+            };
+            const attemptIsCurrent = () => mainDocumentBlankPostSequence === receipt.sequence
+                && lastPostedMainDocumentBlankTouchTap === receipt.touchTap;
+            const sourceAdmission = { isCurrent: attemptIsCurrent };
+            if (!this.#postTouchstartCallback.isCurrent(sourceAdmission)) return;
+            const touchTapForMouseSuppression = receipt.touchTap;
+            const mouseSuppression = shouldSuppressMainDocumentSyntheticMouseBlankTap(event, touchTapForMouseSuppression);
+            // Capability/point getters may retire this owner. A mouse that
+            // proceeds waits for final post admission before consuming a tap.
+            if (!this.#postTouchstartCallback.isCurrent(sourceAdmission)) return;
+            if (mouseSuppression.suppress) {
+                if (mouseSuppression.consumeTouchTap
+                    && lastPostedMainDocumentBlankTouchTap === touchTapForMouseSuppression) {
+                    lastPostedMainDocumentBlankTouchTap = null;
+                }
                 return;
             }
             const ebookNavigationHidden =
                 globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
                 || document?.body?.__manabiNavigationHiddenDueToScroll === true
                 || document?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
-            if (event.type === 'touchend') {
-                const point = manabiEventScreenPoint(event);
-                lastPostedMainDocumentBlankTouchTap = point && point.x !== null && point.y !== null
-                    ? {
-                        x: point.x,
-                        y: point.y,
-                    }
-                    : null;
-            }
-            window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+            const eventType = event.type;
+            const point = eventType === 'touchend' ? manabiEventScreenPoint(event) : null;
+            const blankTouchTap = point && point.x !== null && point.y !== null
+                ? { x: point.x, y: point.y }
+                : null;
+            this.#postTouchstartCallback({
                 touchedEntryWithElementId: null,
                 wasAlreadySelected: false,
                 touchstartAtMs,
-                touchstartEventType: event.type,
+                touchstartEventType: eventType,
                 ebookNavigationHidden,
                 source,
+            }, sourceAdmission, () => {
+                if (!attemptIsCurrent()) return false;
+                receipt.sequence = ++mainDocumentBlankPostSequence;
+                if (eventType === 'touchend') {
+                    lastPostedMainDocumentBlankTouchTap = blankTouchTap;
+                    receipt.touchTap = blankTouchTap;
+                } else if (mouseSuppression.consumeTouchTap
+                    && lastPostedMainDocumentBlankTouchTap === touchTapForMouseSuppression) {
+                    lastPostedMainDocumentBlankTouchTap = null;
+                    receipt.touchTap = null;
+                }
             });
         };
         const clearPendingMainDocumentBlankNavigationTouch = () => {
@@ -11104,7 +10714,7 @@ class Reader {
         this.#invalidateVisiblePageSegmentSnapshot('renderer.goTo');
         requestLookupCloseForPageMotion('renderer.goTo', {
             willLoadNewIndex: true,
-        });
+        }, this.#postTouchstartCallback);
         this.setLoadingIndicator(true, 'renderer.goTo');
     }
     async #onDidDisplay({}) {
@@ -11342,6 +10952,7 @@ class Reader {
             let pendingBlankPointerTap = null;
             let lastBlankTouchEnd = null;
             let lastPostedBlankTouchTap = null;
+            let blankPointerPostSequence = 0;
             const touchPointForBlankPointer = event => event.changedTouches?.[0] ?? event.touches?.[0] ?? event;
             const blankPointerPoint = event => {
                 const point = touchPointForBlankPointer(event);
@@ -11354,30 +10965,37 @@ class Reader {
             const clearPendingBlankPointerTap = () => {
                 pendingBlankPointerTap = null;
             };
-            const shouldSuppressSyntheticMouseBlankTap = (event) => {
-                const lastTouchTap = lastPostedBlankTouchTap || lastBlankTouchEnd;
+            const observeBlankPointerSource = () => {
+                try { return doc.defaultView?.document === doc; }
+                catch (_error) { return false; }
+            };
+            const blankPointerSourceIsCurrent = () => !this.#closed
+                && this.#lifecycleGeneration === scope.lifecycleGeneration
+                && this.#documentScopes.get(doc) === scope;
+            const ownsBlankPointerSource = () => this.#postTouchstartCallback.isCurrent({
+                observe: observeBlankPointerSource, isCurrent: blankPointerSourceIsCurrent,
+            });
+            const shouldSuppressSyntheticMouseBlankTap = (event, lastTouchTap) => {
                 if (event.type !== 'mousedown') {
-                    return false;
+                    return { suppress: false, consumeTouchTap: false };
                 }
-                if (event.sourceCapabilities?.firesTouchEvents === true) {
-                    lastPostedBlankTouchTap = null;
-                    lastBlankTouchEnd = null;
-                    return true;
+                const firesTouchEvents = event.sourceCapabilities?.firesTouchEvents === true;
+                const point = !firesTouchEvents && lastTouchTap ? blankPointerPoint(event) : null;
+                if (firesTouchEvents) {
+                    return { suppress: true, consumeTouchTap: true };
                 }
                 if (!lastTouchTap) {
-                    return false;
+                    return { suppress: false, consumeTouchTap: false };
                 }
-                lastPostedBlankTouchTap = null;
-                lastBlankTouchEnd = null;
-                const point = blankPointerPoint(event);
                 if (!point || point.x === null || point.y === null) {
-                    return true;
+                    return { suppress: true, consumeTouchTap: true };
                 }
                 const dx = point.x - lastTouchTap.x;
                 const dy = point.y - lastTouchTap.y;
-                const shouldSuppress =
-                    (dx * dx + dy * dy) <= (manabiSyntheticTouchMouseDistanceThreshold * manabiSyntheticTouchMouseDistanceThreshold);
-                return shouldSuppress;
+                return {
+                    suppress: (dx * dx + dy * dy) <= (manabiSyntheticTouchMouseDistanceThreshold * manabiSyntheticTouchMouseDistanceThreshold),
+                    consumeTouchTap: true,
+                };
             };
             const blankPointerMovedPastTapThreshold = (event, pending) => {
                 const point = touchPointForBlankPointer(event);
@@ -11399,7 +11017,31 @@ class Reader {
                 }
                 return null;
             };
-            const postContentDocumentBlankPointerTap = (event, source, touchstartAtMs = Date.now()) => {
+            const postContentDocumentBlankPointerTap = (event, source, touchstartAtMs = Date.now(), isGestureCurrent = () => true) => {
+                const lifecycleGeneration = scope.lifecycleGeneration;
+                const receipt = {
+                    sequence: blankPointerPostSequence,
+                    touchTap: lastPostedBlankTouchTap,
+                    touchEnd: lastBlankTouchEnd,
+                    echo: globalThis.__manabiPendingContentDocumentBlankNavigationEcho,
+                };
+                const receiptIsCurrent = () => blankPointerPostSequence === receipt.sequence
+                    && lastPostedBlankTouchTap === receipt.touchTap
+                    && lastBlankTouchEnd === receipt.touchEnd;
+                const sourceIsCurrent = () => !this.#closed
+                    && this.#lifecycleGeneration === lifecycleGeneration
+                    && this.#documentScopes.get(doc) === scope && receiptIsCurrent() && isGestureCurrent();
+                const observeSource = () => {
+                    try {
+                        return doc.defaultView?.document === doc
+                            && globalThis.__manabiPendingContentDocumentBlankNavigationEcho === receipt.echo;
+                    } catch (_error) {
+                        return false;
+                    }
+                };
+                const sourceAdmission = { observe: observeSource, isCurrent: sourceIsCurrent };
+                const ownsBlankPointerSource = () => this.#postTouchstartCallback.isCurrent(sourceAdmission);
+                if (!ownsBlankPointerSource()) return;
                 const target = event.target;
                 const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
                 const excludedTarget = targetElement?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], m-m, m-s, m-t, .m-m, .m-sentence, ruby, rt');
@@ -11408,10 +11050,34 @@ class Reader {
                 if (segmentTarget) {
                     return;
                 }
-                if (shouldSuppressSyntheticMouseBlankTap(event)) {
+                const postedTouchTapForMouseSuppression = lastPostedBlankTouchTap;
+                const touchEndForMouseSuppression = lastBlankTouchEnd;
+                const mouseSuppression = shouldSuppressSyntheticMouseBlankTap(
+                    event, postedTouchTapForMouseSuppression || touchEndForMouseSuppression
+                );
+                const consumeMouseSuppression = () => {
+                    if (!mouseSuppression.consumeTouchTap) return;
+                    // A point/key getter may admit a newer current touch. Only
+                    // consume the receipts used to make this mouse's decision.
+                    if (lastPostedBlankTouchTap === postedTouchTapForMouseSuppression) {
+                        lastPostedBlankTouchTap = null;
+                        receipt.touchTap = null;
+                    }
+                    if (lastBlankTouchEnd === touchEndForMouseSuppression) {
+                        lastBlankTouchEnd = null;
+                        receipt.touchEnd = null;
+                    }
+                };
+                // Finish capability and point callouts before consuming an
+                // admitted tap. A rejected callback keeps both fallback flags.
+                if (!ownsBlankPointerSource()) return;
+                if (mouseSuppression.suppress) {
+                    consumeMouseSuppression();
                     return;
                 }
                 if (excludedTarget) {
+                    // Preserve the inherited excluded-target mouse policy.
+                    consumeMouseSuppression();
                     return;
                 }
                 const eventKey = [
@@ -11421,75 +11087,107 @@ class Reader {
                     Math.round(point?.screenX ?? point?.clientX ?? -1),
                     Math.round(point?.screenY ?? point?.clientY ?? -1),
                 ].join(':');
-                if (doc.__manabiLastBlankPointerPostKey !== eventKey) {
+                if (doc.__manabiLastBlankPointerPostKey === eventKey) return;
+                const ebookNavigationHidden =
+                    globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
+                    || doc?.body?.__manabiNavigationHiddenDueToScroll === true
+                    || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
+                const eventType = event.type;
+                const blankX = point?.screenX ?? point?.clientX ?? null;
+                const blankY = point?.screenY ?? point?.clientY ?? null;
+                const blankTouchTap = eventType === 'touchend' && blankX !== null && blankY !== null
+                    ? { x: blankX, y: blankY }
+                    : null;
+                const pendingEcho = blankTouchTap
+                    ? { ...blankTouchTap, source, touchstartAtMs }
+                    : null;
+                this.#postTouchstartCallback({
+                    touchedEntryWithElementId: null,
+                    wasAlreadySelected: false,
+                    touchstartAtMs,
+                    touchstartEventType: eventType,
+                    ebookNavigationHidden,
+                    source,
+                }, sourceAdmission, () => {
+                    if (!receiptIsCurrent()) return false;
+                    receipt.sequence = ++blankPointerPostSequence;
                     doc.__manabiLastBlankPointerPostKey = eventKey;
-                    const ebookNavigationHidden =
-                        globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
-                        || doc?.body?.__manabiNavigationHiddenDueToScroll === true
-                        || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
-                    if (event.type === 'touchend' && point) {
-                        const blankX = point.screenX ?? point.clientX ?? null;
-                        const blankY = point.screenY ?? point.clientY ?? null;
-                        lastPostedBlankTouchTap = blankX !== null && blankY !== null
-                            ? { x: blankX, y: blankY }
-                            : null;
-                        globalThis.__manabiPendingContentDocumentBlankNavigationEcho = lastPostedBlankTouchTap
-                            ? { ...lastPostedBlankTouchTap, source, touchstartAtMs }
-                            : null;
-                    } else {
-                        globalThis.__manabiPendingContentDocumentBlankNavigationEcho = null;
+                    // The key may be an accessor which retires this scope or
+                    // installs a successor echo before control returns.
+                    if (!ownsBlankPointerSource()) return false;
+                    consumeMouseSuppression();
+                    if (eventType === 'touchend' && point) {
+                        lastPostedBlankTouchTap = blankTouchTap;
+                        receipt.touchTap = blankTouchTap;
                     }
-                    window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
-                        touchedEntryWithElementId: null,
-                        wasAlreadySelected: false,
-                        touchstartAtMs,
-                        touchstartEventType: event.type,
-                        ebookNavigationHidden,
-                        source,
-                    });
-                }
+                    globalThis.__manabiPendingContentDocumentBlankNavigationEcho = pendingEcho;
+                    receipt.echo = pendingEcho;
+                });
             };
             const handleBlankPointerTouchStart = (event) => {
-                const target = event.target;
-                const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
-                const excludedTarget = targetElement?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], m-m, m-s, m-t, .m-m, .m-sentence, ruby, rt');
-                const startSegment = segmentTargetForBlankPointerEvent(event);
-                if (excludedTarget && !startSegment) {
-                    clearPendingBlankPointerTap();
-                    return;
-                }
-                const point = touchPointForBlankPointer(event);
-                pendingBlankPointerTap = point
-                    ? {
-                        startX: point.screenX ?? point.clientX,
-                        startY: point.screenY ?? point.clientY,
-                        startAtMs: Date.now(),
+                const previousPending = pendingBlankPointerTap;
+                if (!ownsBlankPointerSource() || pendingBlankPointerTap !== previousPending) return;
+                // Install this start before page-controlled getters run. A
+                // nested start replaces it and owns the resulting gesture.
+                const pending = { ready: false };
+                pendingBlankPointerTap = pending;
+                try {
+                    const target = event.target;
+                    const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
+                    const excludedTarget = targetElement?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], m-m, m-s, m-t, .m-m, .m-sentence, ruby, rt');
+                    const startSegment = segmentTargetForBlankPointerEvent(event);
+                    if (excludedTarget && !startSegment) return;
+                    const point = blankPointerPoint(event);
+                    const startAtMs = Date.now();
+                    if (!ownsBlankPointerSource() || pendingBlankPointerTap !== pending) return;
+                    if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
+                    Object.assign(pending, { startX: point.x, startY: point.y, startAtMs, ready: true });
+                } catch (_error) {
+                    // A malformed event never leaves a partially ready tap.
+                } finally {
+                    if (ownsBlankPointerSource() && pendingBlankPointerTap === pending && !pending.ready) {
+                        clearPendingBlankPointerTap();
                     }
-                    : null;
+                }
             };
             const handleBlankPointerTouchMove = (event) => {
                 const pending = pendingBlankPointerTap;
-                if (!pending) return;
-                if (blankPointerMovedPastTapThreshold(event, pending)) {
-                    clearPendingBlankPointerTap();
+                if (!ownsBlankPointerSource() || pendingBlankPointerTap !== pending) return;
+                if (!pending?.ready) return;
+                try {
+                    const moved = blankPointerMovedPastTapThreshold(event, pending);
+                    if (!ownsBlankPointerSource() || pendingBlankPointerTap !== pending) return;
+                    if (moved) clearPendingBlankPointerTap();
+                } catch (_error) {
+                    if (ownsBlankPointerSource() && pendingBlankPointerTap === pending) {
+                        clearPendingBlankPointerTap();
+                    }
                 }
             };
             const handleBlankPointerTouchEnd = (event) => {
                 const pending = pendingBlankPointerTap;
-                clearPendingBlankPointerTap();
-                if (!pending || event.type === 'touchcancel') {
-                    return;
+                if (!ownsBlankPointerSource() || pendingBlankPointerTap !== pending) return;
+                if (!pending?.ready) return;
+                try {
+                    if (event.type === 'touchcancel') return;
+                    if (blankPointerMovedPastTapThreshold(event, pending)) return;
+                    const point = blankPointerPoint(event);
+                    if (!ownsBlankPointerSource() || pendingBlankPointerTap !== pending) return;
+                    if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
+                    // Keep this object through posting so nested starts/ends
+                    // can replace it without the older producer committing.
+                    pending.ready = false;
+                    lastBlankTouchEnd = point;
+                    lastPostedBlankTouchTap = null;
+                    postContentDocumentBlankPointerTap(event, 'content-document.blank', pending.startAtMs,
+                        () => pendingBlankPointerTap === pending);
+                } catch (_error) {
+                    // Aborted events cannot publish or leave a pending tap.
+                } finally {
+                    if (ownsBlankPointerSource() && pendingBlankPointerTap === pending) {
+                        clearPendingBlankPointerTap();
+                    }
                 }
-                if (blankPointerMovedPastTapThreshold(event, pending)) {
-                    return;
-                }
-                const point = blankPointerPoint(event);
-                const endX = point?.screenX ?? point?.clientX ?? null;
-                const endY = point?.screenY ?? point?.clientY ?? null;
-                lastBlankTouchEnd = endX !== null && endY !== null
-                    ? { x: endX, y: endY }
-                    : null;
-                postContentDocumentBlankPointerTap(event, 'content-document.blank', pending.startAtMs);
             };
             const handleBlankPointerMouseDown = (event) => {
                 postContentDocumentBlankPointerTap(event, 'content-document.blank.mouse');
@@ -11882,7 +11580,7 @@ class Reader {
             fraction: safeRound(fraction),
             currentLocation: location?.current ?? null,
             totalLocation: location?.total ?? null,
-        });
+        }, this.#postTouchstartCallback);
         this.#publishCurrentContentPage(
             `relocate:${reason ?? 'unknown'}`
         );

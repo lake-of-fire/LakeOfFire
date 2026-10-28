@@ -18,11 +18,51 @@ import SwiftUtilities
 
 // SwiftUI state belongs to the originating storage and record, including when two
 // Realms contain the same UUIDs.
+// Synchronous form publication must be visible to background writers before
+// debounce or an actor hop. Only transient command order crosses this lock.
+final class LibraryEditorHumanInputAdmission: @unchecked Sendable {
+    private let lock = NSLock()
+    private var newest: [UUID: [Int: UInt64]] = [:]
+
+    func record(recordID: UUID, field: Int, sequence: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        newest[recordID, default: [:]][field] = sequence
+    }
+
+    func snapshot(recordID: UUID) -> [Int: UInt64] {
+        lock.lock()
+        defer { lock.unlock() }
+        return newest[recordID] ?? [:]
+    }
+
+    func withAdmission(recordID: UUID, field: Int, sequence: UInt64, apply: () -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard newest[recordID]?[field] == sequence else { return }
+        apply()
+    }
+
+    func withMetadataAdmission(
+        recordID: UUID, field: Int, sourceField: Int, expected: [Int: UInt64], apply: () -> Void
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        // Human input owns its target field for this participating editor /
+        // retained-command lifetime, including explicit empty and no-op input.
+        // A later metadata BEGIN must not overtake an already pending command.
+        guard newest[recordID]?[field] == nil, expected[field] == nil,
+              newest[recordID]?[sourceField] == expected[sourceField] else { return }
+        apply()
+    }
+}
+
 @RealmBackgroundActor
 final class LibraryEditorWriteOrdering {
     private struct Scope: Hashable {
         let storage: LibraryRecordPresentationIdentity
         let recordKind: String
+        let recordScope: String?
     }
 
     private final class WeakOrdering {
@@ -33,6 +73,7 @@ final class LibraryEditorWriteOrdering {
     @MainActor private static var activeOrderings: [Scope: WeakOrdering] = [:]
     @MainActor private var nextIssuedSequence: UInt64 = 0
     private var newestSequence: [UUID: [Int: UInt64]] = [:]
+    nonisolated let humanInputAdmission = LibraryEditorHumanInputAdmission()
 
     nonisolated init() { }
 
@@ -40,7 +81,9 @@ final class LibraryEditorWriteOrdering {
     // storage must share it, so an older suspended write cannot beat a new edit.
     // Weak entries keep completed fixture/storage lifetimes out of the registry.
     @MainActor
-    static func shared(configuration: Realm.Configuration, recordKind: String) -> LibraryEditorWriteOrdering {
+    static func shared(
+        configuration: Realm.Configuration, recordKind: String, recordScope: String? = nil
+    ) -> LibraryEditorWriteOrdering {
         activeOrderings = activeOrderings.filter { $0.value.value != nil }
         // Swift bridges nil as zero; Realm's Objective-C setter converts zero
         // to the unlimited UInt.max value returned by realm.configuration.
@@ -53,7 +96,7 @@ final class LibraryEditorWriteOrdering {
                 recordID: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
                 configuration: orderingConfiguration
             ),
-            recordKind: recordKind
+            recordKind: recordKind, recordScope: recordScope
         )
         if let ordering = activeOrderings[scope]?.value { return ordering }
         let ordering = LibraryEditorWriteOrdering()

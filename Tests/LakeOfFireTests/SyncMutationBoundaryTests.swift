@@ -919,6 +919,101 @@ final class SyncMutationBoundaryTests: XCTestCase {
         XCTAssertNil(pendingMutation(for: history, in: realm))
     }
 
+    @MainActor
+    func testQueuedNavigationCommitVisitsOriginalLiveHistoryRow() async throws {
+        try await assertQueuedNavigationCommitRetiresOriginal(change: "unchanged")
+    }
+
+    @MainActor
+    func testQueuedNavigationCommitDoesNotVisitRecreatedHistoryRow() async throws {
+        try await assertQueuedNavigationCommitRetiresOriginal(change: "recreate")
+    }
+
+    @MainActor
+    func testQueuedNavigationCommitDoesNotVisitRemovedHistoryRow() async throws {
+        try await assertQueuedNavigationCommitRetiresOriginal(change: "remove")
+    }
+
+    @MainActor
+    func testQueuedNavigationCommitDoesNotVisitRetargetedHistoryRow() async throws {
+        try await assertQueuedNavigationCommitRetiresOriginal(change: "retarget")
+    }
+
+    @MainActor
+    private func assertQueuedNavigationCommitRetiresOriginal(change: String) async throws {
+        let configuration = makeNavigationConfiguration()
+        let realm = try await Realm.open(configuration: configuration)
+        let source = makeHistory(url: "https://example.com/queued-history-visit")
+        try await realm.asyncWrite { realm.add(source) }
+        let sourceKey = source.compoundKey
+        let sourceCreatedAt = source.createdAt
+        let sourceURL = source.url
+        let originalVisit = source.lastVisitedAt
+        let model = ReaderViewModel(realmConfiguration: configuration, systemScripts: [])
+        let barrier = BookmarkWriterOwnerBarrier()
+        let owner = Task {
+            try await barrier.hold(configuration: configuration, beforeCommit: { owningRealm in
+                let row = try XCTUnwrap(owningRealm.object(ofType: HistoryRecord.self, forPrimaryKey: sourceKey))
+                if change == "unchanged" { return }
+                if change == "retarget" {
+                    row.url = URL(string: "https://example.com/retargeted-history")!
+                } else {
+                    owningRealm.delete(row)
+                    if change == "recreate" {
+                        let replacement = HistoryRecord()
+                        replacement.url = sourceURL
+                        replacement.createdAt = sourceCreatedAt
+                        replacement.lastVisitedAt = originalVisit
+                        replacement.updateCompoundKey()
+                        XCTAssertEqual(replacement.compoundKey, sourceKey)
+                        owningRealm.add(replacement)
+                    }
+                }
+            })
+        }
+        defer { barrier.release() }
+        await fulfillment(of: [barrier.entered], timeout: 5)
+        let submitted = expectation(description: "History visit queued behind external owner")
+        submitted.assertForOverFulfill = false
+        let visit = Task { @MainActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+                try await model.onNavigationCommitted(content: source, newState: .empty)
+            }
+        }
+        addTeardownBlock {
+            barrier.release()
+            _ = await visit.result
+            _ = await owner.result
+            await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        await fulfillment(of: [submitted], timeout: 5)
+        barrier.release()
+        try await owner.value
+        try await visit.value
+        try await realm.asyncRefresh()
+        if change == "unchanged" {
+            XCTAssertGreaterThan(source.lastVisitedAt, originalVisit)
+            let mutation = try XCTUnwrap(pendingMutation(for: source, in: realm))
+            XCTAssertEqual(mutation.changedAt, source.explicitlyModifiedAt)
+        } else if change == "remove" {
+            XCTAssertTrue(realm.objects(HistoryRecord.self).isEmpty)
+        } else {
+            let current = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: sourceKey))
+            XCTAssertEqual(current.lastVisitedAt, originalVisit)
+            XCTAssertNil(pendingMutation(for: current, in: realm))
+            if change == "recreate" {
+                XCTAssertTrue(source.isInvalidated)
+                XCTAssertEqual(current.createdAt, sourceCreatedAt,
+                               "Creation timestamp equality cannot confer physical row ownership")
+            } else {
+                XCTAssertEqual(current.url.absoluteString, "https://example.com/retargeted-history")
+            }
+        }
+        if change != "unchanged" {
+            XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+        }
+    }
+
     private func makeNavigationConfiguration() -> Realm.Configuration {
         makeConfiguration(objectTypes: [
             Bookmark.self, HistoryRecord.self, LibraryConfiguration.self, UserScript.self, FeedCategory.self,

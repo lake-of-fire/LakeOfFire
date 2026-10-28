@@ -574,6 +574,41 @@ class Resources {
     }
 }
 
+// PI.data retains XML reference spellings. Decode the href value once, before
+// URL/fragment resolution; only character and predefined references are allowed.
+const decodeXMLStylesheetHref = value => {
+    const predefined = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }
+    let valid = !value.includes('<')
+    const decoded = value.replace(/&([^&;]*);|&/g, (reference, name) => {
+        if (Object.prototype.hasOwnProperty.call(predefined, name)) return predefined[name]
+        const hexadecimal = /^#x[\da-fA-F]+$/.test(name ?? '')
+        const decimal = /^#\d+$/.test(name ?? '')
+        if (!hexadecimal && !decimal) {
+            valid = false
+            return reference
+        }
+        const codePoint = Number.parseInt(name.slice(hexadecimal ? 2 : 1), hexadecimal ? 16 : 10)
+        const isXMLCharacter = codePoint === 0x9 || codePoint === 0xA || codePoint === 0xD
+            || (codePoint >= 0x20 && codePoint <= 0xD7FF)
+            || (codePoint >= 0xE000 && codePoint <= 0xFFFD)
+            || (codePoint >= 0x10000 && codePoint <= 0x10FFFF)
+        if (!isXMLCharacter) {
+            valid = false
+            return reference
+        }
+        return String.fromCodePoint(codePoint)
+    })
+    return valid ? decoded : null
+}
+
+const escapeXMLStylesheetHref = (value, quote) => value.replace(/[&<>"']/g, character => {
+    if (character === '&') return '&amp;'
+    if (character === '<') return '&lt;'
+    if (character === '>') return '&gt;'
+    if (character === quote) return quote === '"' ? '&quot;' : '&apos;'
+    return character
+})
+
 const splitInternalResourceReference = href => {
     const queryIndex = href.indexOf('?')
     const fragmentIndex = href.indexOf('#')
@@ -884,20 +919,29 @@ export class Loader {
                 effectiveMediaType = MIME.HTML
                 doc = new DOMParser().parseFromString(replacedStr, effectiveMediaType)
             }
-            // replace hrefs in XML processing instructions
-            // this is mainly for SVGs that use xml-stylesheet
+            // Resolve stylesheet instructions in the XML prolog (not editor
+            // metadata or instructions after the document element).
             if ([MIME.XHTML, MIME.SVG].includes(effectiveMediaType)) {
-                let child = doc.firstChild
-                while (child instanceof ProcessingInstruction) {
-                    if (child.data) {
-                        const replacedData = await replaceSeries(child.data,
-                            /(?:^|\s*)(href\s*=\s*['"])([^'"]*)(['"])/i,
-                            (_, p1, p2, p3) => this.loadHref(p2, href, parents)
-                            .then(p2 => `${p1}${p2}${p3}`))
-                        child.replaceWith(doc.createProcessingInstruction(
-                            child.target, replacedData))
-                    }
-                    child = child.nextSibling
+                for (let child = doc.firstChild;
+                    child && child !== doc.documentElement;
+                    child = child.nextSibling) {
+                    if (!(child instanceof ProcessingInstruction)
+                        || child.target !== 'xml-stylesheet' || !child.data) continue
+                    // Updating data keeps the sibling chain intact. Comments and
+                    // doctypes may precede or separate stylesheet instructions.
+                    // Consume every quoted pseudoattribute so href-like text in
+                    // another name or value cannot be mistaken for a resource.
+                    child.data = await replaceSeries(child.data,
+                        /(^|[\t\n\r ]+)([^\s=]+)([\t\n\r ]*=[\t\n\r ]*)(["'])([\s\S]*?)\4/g,
+                        (match, prefix, name, assignment, quote, value) => {
+                            if (name !== 'href') return match
+                            const decodedValue = decodeXMLStylesheetHref(value)
+                            if (decodedValue == null) return match
+                            return this.loadHref(decodedValue, href, parents).then(url => {
+                                if (typeof url !== 'string' || !url || url === decodedValue) return match
+                                return `${prefix}${name}${assignment}${quote}${escapeXMLStylesheetHref(url, quote)}${quote}`
+                            })
+                        })
                 }
             }
             // replace hrefs (excluding anchors)

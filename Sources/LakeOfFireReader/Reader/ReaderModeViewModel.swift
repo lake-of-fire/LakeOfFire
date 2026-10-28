@@ -1264,57 +1264,26 @@ private func locallyRetrievableReaderHTML(
 private func propagateReaderModeDefaults(
     for url: URL,
     primaryKey: String,
+    primaryClassName: String,
     readabilityHTML: String,
     fallbackTitle: String?,
-    derivedTitle: String? = nil
+    derivedTitle: String? = nil,
+    permitsCommit: @escaping @Sendable () -> Bool
 ) async {
-    if url.isSnippetURL {
-        return
-    }
+    guard !url.isSnippetURL, permitsCommit(), !Task.isCancelled else { return }
     let storageReadabilityHTML = stripRuntimeReadabilityAssets(from: readabilityHTML)
     let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(storageReadabilityHTML) ?? fallbackTitle
     do {
-        try await propagateReaderModeDefaultsOnBackgroundActor(
+        try await ReaderContentLoader.propagateReaderModeDefaults(
             for: url,
-            primaryKey: primaryKey,
+            excludingPrimaryKey: primaryKey,
+            primaryClassName: primaryClassName,
             readabilityHTML: storageReadabilityHTML,
-            resolvedTitle: resolvedTitle
+            resolvedTitle: resolvedTitle,
+            permitsCommit: permitsCommit
         )
     } catch {
-    }
-}
-
-@RealmBackgroundActor
-private func propagateReaderModeDefaultsOnBackgroundActor(
-    for url: URL,
-    primaryKey: String,
-    readabilityHTML: String,
-    resolvedTitle: String?
-) async throws {
-    let relatedRecords = try await ReaderContentLoader.loadAll(url: url)
-
-    let writableRecords = relatedRecords.filter { $0.compoundKey != primaryKey && $0.realm != nil }
-    guard !writableRecords.isEmpty else {
-        return
-    }
-
-    for record in writableRecords {
-        guard let realm = record.realm else { continue }
-        try await realm.asyncWritePreservingOwnership {
-            record.isReaderModeByDefault = true
-            record.isReaderModeAvailable = false
-            if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
-                if !url.isReaderFileURL && (record.content?.isEmpty ?? true) {
-                    record.html = readabilityHTML
-                }
-                if let resolvedTitle,
-                   record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    record.title = resolvedTitle
-                }
-                record.rssContainsFullContent = true
-            }
-            record.refreshChangeMetadata(explicitlyModified: true)
-        }
+        // Propagation is optional; never let its failure publish a retired render.
     }
 }
 
@@ -1469,7 +1438,7 @@ public class ReaderModeViewModel: ObservableObject {
     internal var swiftReadabilityProcessor: (@MainActor (String, URL, String?, Int) async -> String?)?
 
     internal func waitForReaderModeRender(for url: URL) async {
-        let task = activeRenderTaskByURL[canonicalRenderKey(url)]
+        let task = activeRendersByURL[canonicalRenderKey(url)]?.task
         await task?.value
     }
     private var isBatchingProcessingDependencyChanges = false
@@ -1603,8 +1572,13 @@ public class ReaderModeViewModel: ObservableObject {
         let generation: UUID
     }
 
-    private var activeRenderTaskByURL: [String: Task<Void, Never>] = [:]
-    private var activeRenderGenerationByURL: [String: UUID] = [:]
+    private struct ActiveRender {
+        let task: Task<Void, Never>
+        let generation: UUID
+        let originatingContentIsCurrent: @MainActor () -> Bool
+    }
+
+    private var activeRendersByURL: [String: ActiveRender] = [:]
     private var completedRenderOwner: CompletedRenderOwner?
 
 //    private var contentRulesForReadabilityLoading = """
@@ -1663,6 +1637,8 @@ public class ReaderModeViewModel: ObservableObject {
         let completedURL = pendingReaderModeURL ?? url ?? lastRenderedURL
         if let url {
             cancelActiveRender(for: url)
+        } else {
+            cancelOtherActiveRenders(except: nil)
         }
         updatePendingReaderModeURL(nil)
         expectedSyntheticReaderLoaderURL = nil
@@ -1708,7 +1684,7 @@ public class ReaderModeViewModel: ObservableObject {
         expectedSyntheticReaderLoaderURL = nil
         readerModeLoading(false)
         let renderKey = canonicalRenderKey(canonicalURL)
-        if let activeGeneration = activeRenderGenerationByURL[renderKey] {
+        if let activeGeneration = activeRendersByURL[renderKey]?.generation {
             completedRenderOwner = CompletedRenderOwner(
                 key: renderKey,
                 generation: activeGeneration
@@ -2290,7 +2266,7 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     private func renderGenerationDescription(for key: String) -> String {
-        if let activeGeneration = activeRenderGenerationByURL[key] {
+        if let activeGeneration = activeRendersByURL[key]?.generation {
             return activeGeneration.uuidString
         }
         if completedRenderOwner?.key == key {
@@ -2305,7 +2281,7 @@ public class ReaderModeViewModel: ObservableObject {
     ) -> Bool {
         let key = canonicalRenderKey(url)
         return readerModeReadyGenerationIsCurrent(
-            activeGeneration: activeRenderGenerationByURL[key],
+            activeGeneration: activeRendersByURL[key]?.generation,
             completedGeneration: completedRenderOwner?.key == key
                 ? completedRenderOwner?.generation
                 : nil,
@@ -2320,24 +2296,24 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func hasActiveRender(for url: URL) -> Bool {
         let key = canonicalRenderKey(url)
-        guard let task = activeRenderTaskByURL[key] else {
+        guard let render = activeRendersByURL[key] else {
             return false
         }
-        if task.isCancelled {
-            activeRenderTaskByURL.removeValue(forKey: key)
-            activeRenderGenerationByURL.removeValue(forKey: key)
+        guard !render.task.isCancelled, render.originatingContentIsCurrent() else {
+            activeRendersByURL.removeValue(forKey: key)
+            render.task.cancel()
             return false
         }
         return true
     }
 
     private func ownsRender(for url: URL, generation: UUID) -> Bool {
-        activeRenderGenerationByURL[canonicalRenderKey(url)] == generation
+        activeRendersByURL[canonicalRenderKey(url)]?.generation == generation
     }
 
     private func isCurrentRender(for url: URL, generation: UUID) -> Bool {
         readerModeRenderGenerationIsCurrent(
-            activeGeneration: activeRenderGenerationByURL[canonicalRenderKey(url)],
+            activeGeneration: activeRendersByURL[canonicalRenderKey(url)]?.generation,
             expectedGeneration: generation,
             taskIsCancelled: Task.isCancelled
         )
@@ -2346,9 +2322,11 @@ public class ReaderModeViewModel: ObservableObject {
     private func cancelReaderModeLoad(
         for url: URL,
         ifOwnedBy generation: UUID,
-        readerContent: ReaderContent
+        readerContent: ReaderContent,
+        originatingContentIsCurrent: @MainActor () -> Bool
     ) {
-        guard ownsRender(for: url, generation: generation) else { return }
+        guard originatingContentIsCurrent(),
+              ownsRender(for: url, generation: generation) else { return }
         ReaderSnippetFinalDocumentDiagnostics.record("render-cancel", contentURL: url, generation: generation)
         cancelReaderModeLoad(for: url, readerContent: readerContent)
     }
@@ -2375,34 +2353,27 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func finishRenderTask(for url: URL, generation: UUID) {
         let key = canonicalRenderKey(url)
-        guard let activeGeneration = activeRenderGenerationByURL[key], activeGeneration == generation else {
+        guard let render = activeRendersByURL[key], render.generation == generation else {
             return
         }
-        completedRenderOwner = CompletedRenderOwner(
-            key: key,
-            generation: generation
-        )
-        activeRenderTaskByURL.removeValue(forKey: key)
-        activeRenderGenerationByURL.removeValue(forKey: key)
+        if !render.task.isCancelled, render.originatingContentIsCurrent() {
+            completedRenderOwner = CompletedRenderOwner(key: key, generation: generation)
+        }
+        activeRendersByURL.removeValue(forKey: key)
     }
 
     private func cancelActiveRender(for url: URL) {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let key = canonicalRenderKey(canonicalURL)
-        guard let task = activeRenderTaskByURL[key] else {
-            return
-        }
-        task.cancel()
-        activeRenderTaskByURL.removeValue(forKey: key)
-        activeRenderGenerationByURL.removeValue(forKey: key)
+        let render = activeRendersByURL.removeValue(forKey: key)
+        render?.task.cancel()
     }
 
-    private func cancelOtherActiveRenders(except keyToKeep: String) {
-        let staleKeys = activeRenderTaskByURL.keys.filter { $0 != keyToKeep }
+    private func cancelOtherActiveRenders(except keyToKeep: String?) {
+        let staleKeys = activeRendersByURL.keys.filter { $0 != keyToKeep }
         for staleKey in staleKeys {
-            activeRenderTaskByURL[staleKey]?.cancel()
-            activeRenderTaskByURL.removeValue(forKey: staleKey)
-            activeRenderGenerationByURL.removeValue(forKey: staleKey)
+            let render = activeRendersByURL.removeValue(forKey: staleKey)
+            render?.task.cancel()
         }
     }
 
@@ -2410,26 +2381,33 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     private func startRenderTaskIfNeeded(
         for url: URL,
+        originatingContentIsCurrent: @escaping @MainActor () -> Bool,
         operation: @escaping @ReaderViewModelActor (_ generation: UUID) async -> Void
     ) -> Bool {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let key = canonicalRenderKey(canonicalURL)
         cancelOtherActiveRenders(except: key)
 
-        if let existingTask = activeRenderTaskByURL[key], !existingTask.isCancelled {
+        // Reuse work only for its still-current owner. A replacement selection
+        // at the same URL needs its own render instead of inheriting or waiting
+        // for an obsolete task that will correctly discard its output.
+        if hasActiveRender(for: canonicalURL) {
             return false
         }
 
         let generation = UUID()
         ReaderSnippetFinalDocumentDiagnostics.record("render-start", contentURL: canonicalURL, generation: generation)
-        activeRenderGenerationByURL[key] = generation
         completedRenderOwner = nil
         let task = Task { @ReaderViewModelActor [weak self] in
             guard let self else { return }
             await operation(generation)
             await self.finishRenderTask(for: canonicalURL, generation: generation)
         }
-        activeRenderTaskByURL[key] = task
+        activeRendersByURL[key] = ActiveRender(
+            task: task,
+            generation: generation,
+            originatingContentIsCurrent: originatingContentIsCurrent
+        )
         return true
     }
 
@@ -2572,34 +2550,35 @@ public class ReaderModeViewModel: ObservableObject {
         let cachedReadabilityContent = readabilityContent
         let cachedContainerSelector = readabilityContainerSelector
         let cachedContainerFrameInfo = readabilityContainerFrameInfo
+        let renderBinding = scriptCaller.currentJavaScriptBindingToken
+        let requiresOriginalFrameBinding = cachedContainerFrameInfo?.isMainFrame == false
         let initialContent = readerContent.content
         let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
+        let originatingContentIsCurrent = { @MainActor in
+            selectionIsCurrent()
+                && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
+                && (initialContent.map { self.readerModeContentIsCurrent($0, readerContent: readerContent) } ?? true)
+                && initialContent?.isInvalidated != true
+                && (!requiresOriginalFrameBinding
+                    || scriptCaller.currentJavaScriptBindingToken == renderBinding)
+        }
+        let publicationDateLoader = readerPublicationDateLoader
         beginReaderModeLoad(for: contentURL)
-        let didStart = startRenderTaskIfNeeded(for: contentURL) { [weak self] generation in
+        startRenderTaskIfNeeded(
+            for: contentURL,
+            originatingContentIsCurrent: originatingContentIsCurrent
+        ) { [weak self] generation in
             guard let self else { return }
             guard await self.isCurrentRender(for: contentURL, generation: generation) else {
                 return
             }
-            let currentPageURL = await MainActor.run { readerContent.pageURL }
-            guard urlsMatchWithoutHashForHotfix(contentURL, currentPageURL) else {
-                await self.cancelReaderModeLoad(
-                    for: contentURL,
-                    ifOwnedBy: generation,
-                    readerContent: readerContent
-                )
-                return
-            }
+            guard await originatingContentIsCurrent() else { return }
             let routeDecision = await self.resolveReaderModeRouteDecision(readerContent: readerContent)
             ReaderSnippetFinalDocumentDiagnostics.record("route.\(routeDecision.route.rawValue)", contentURL: contentURL, generation: generation)
             guard await self.isCurrentRender(for: contentURL, generation: generation) else {
                 return
             }
-            guard await MainActor.run(body: {
-                selectionIsCurrent()
-                    && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
-                    && (initialContent.map { self.readerModeContentIsCurrent($0, readerContent: readerContent) } ?? true)
-                    && initialContent?.isInvalidated != true
-            }) else { return }
+            guard await originatingContentIsCurrent() else { return }
             switch routeDecision.route {
             case .localHTML:
                 await self.showReaderViewUsingSwiftProcessing(
@@ -2608,27 +2587,38 @@ public class ReaderModeViewModel: ObservableObject {
                     navigator: navigator,
                     renderURL: contentURL,
                     renderGeneration: generation,
+                    renderBinding: renderBinding,
                     prefetchedContent: routeDecision.prefetchedContent,
-                    prefetchedLocalHTML: routeDecision.prefetchedLocalHTML
+                    prefetchedLocalHTML: routeDecision.prefetchedLocalHTML,
+                    selectionIsCurrent: selectionIsCurrent,
+                    originatingContentIsCurrent: originatingContentIsCurrent
                 )
             case .capturedReadability:
                 guard let cachedReadabilityContent else {
                     await self.cancelReaderModeLoad(
                         for: contentURL,
                         ifOwnedBy: generation,
-                        readerContent: readerContent
+                        readerContent: readerContent,
+                        originatingContentIsCurrent: originatingContentIsCurrent
                     )
                     return
                 }
                 do {
                     let contentSnapshot = try await self.readerContentRenderSnapshot(readerContent: readerContent)
-                    guard await self.isCurrentRender(for: contentURL, generation: generation) else {
+                    guard await self.isCurrentRender(for: contentURL, generation: generation),
+                          await originatingContentIsCurrent() else {
                         return
                     }
-                    let publicationDateFallback = cachedReadabilityContent.contains("id=\"reader-publication-date\"")
-                        ? nil
-                        : await readerContentPublicationDateFallback(for: contentURL)
-                    guard await self.isCurrentRender(for: contentURL, generation: generation) else {
+                    let publicationDateFallback: String?
+                    if cachedReadabilityContent.contains("id=\"reader-publication-date\"") {
+                        publicationDateFallback = nil
+                    } else if let publicationDateLoader {
+                        publicationDateFallback = await publicationDateLoader(contentURL)
+                    } else {
+                        publicationDateFallback = await readerContentPublicationDateFallback(for: contentURL)
+                    }
+                    guard await self.isCurrentRender(for: contentURL, generation: generation),
+                          await originatingContentIsCurrent() else {
                         return
                     }
                     let resolvedReadabilityContent = rebuildCanonicalSnippetReadabilityHTML(
@@ -2643,7 +2633,8 @@ public class ReaderModeViewModel: ObservableObject {
                         await self.cancelReaderModeLoad(
                             for: contentURL,
                             ifOwnedBy: generation,
-                            readerContent: readerContent
+                            readerContent: readerContent,
+                            originatingContentIsCurrent: originatingContentIsCurrent
                         )
                         return
                     }
@@ -2655,27 +2646,33 @@ public class ReaderModeViewModel: ObservableObject {
                         scriptCaller: scriptCaller,
                         navigator: navigator,
                         renderURL: contentURL,
-                        renderGeneration: generation
+                        renderGeneration: generation,
+                        renderBinding: renderBinding,
+                        selectionIsCurrent: selectionIsCurrent,
+                        originatingContentIsCurrent: originatingContentIsCurrent
                     )
                 } catch is CancellationError {
                     await self.cancelReaderModeLoad(
                         for: contentURL,
                         ifOwnedBy: generation,
-                        readerContent: readerContent
+                        readerContent: readerContent,
+                        originatingContentIsCurrent: originatingContentIsCurrent
                     )
                 } catch {
                     print(error)
                     await self.cancelReaderModeLoad(
                         for: contentURL,
                         ifOwnedBy: generation,
-                        readerContent: readerContent
+                        readerContent: readerContent,
+                        originatingContentIsCurrent: originatingContentIsCurrent
                     )
                 }
             case .unavailable:
                 await self.cancelReaderModeLoad(
                     for: contentURL,
                     ifOwnedBy: generation,
-                    readerContent: readerContent
+                    readerContent: readerContent,
+                    originatingContentIsCurrent: originatingContentIsCurrent
                 )
             }
         }
@@ -2706,22 +2703,26 @@ public class ReaderModeViewModel: ObservableObject {
         navigator: WebViewNavigator,
         renderURL: URL,
         renderGeneration: UUID,
+        renderBinding: WebViewScriptCaller.JavaScriptBindingToken?,
         prefetchedContent: (any ReaderContentProtocol)? = nil,
-        prefetchedLocalHTML: String? = nil
+        prefetchedLocalHTML: String? = nil,
+        selectionIsCurrent: @escaping @Sendable () -> Bool,
+        originatingContentIsCurrent: @escaping @MainActor () -> Bool
     ) async {
         let contentURL = renderURL
-        guard isCurrentRender(for: contentURL, generation: renderGeneration) else {
+        guard originatingContentIsCurrent(),
+              isCurrentRender(for: contentURL, generation: renderGeneration) else {
             return
         }
         guard urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL) else {
             cancelReaderModeLoad(
                 for: contentURL,
                 ifOwnedBy: renderGeneration,
-                readerContent: readerContent
+                readerContent: readerContent,
+                originatingContentIsCurrent: originatingContentIsCurrent
             )
             return
         }
-        let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
         var resolvedContentIsCurrent: (() -> Bool)?
         do {
             let content: any ReaderContentProtocol
@@ -2732,7 +2733,8 @@ public class ReaderModeViewModel: ObservableObject {
                     cancelReaderModeLoad(
                         for: contentURL,
                         ifOwnedBy: renderGeneration,
-                        readerContent: readerContent
+                        readerContent: readerContent,
+                        originatingContentIsCurrent: originatingContentIsCurrent
                     )
                     return
                 }
@@ -2746,6 +2748,7 @@ public class ReaderModeViewModel: ObservableObject {
             let meaningfulContentMinChars = max(content.meaningfulContentMinLength, 1)
             let ownsContent = {
                 self.isCurrentRender(for: contentURL, generation: renderGeneration)
+                    && originatingContentIsCurrent()
                     && selectionIsCurrent()
                     && !content.isInvalidated
                     && self.readerModeContentIsCurrent(content, readerContent: readerContent)
@@ -2767,7 +2770,8 @@ public class ReaderModeViewModel: ObservableObject {
                     cancelReaderModeLoad(
                         for: contentURL,
                         ifOwnedBy: renderGeneration,
-                        readerContent: readerContent
+                        readerContent: readerContent,
+                        originatingContentIsCurrent: originatingContentIsCurrent
                     )
                     return
                 }
@@ -2827,7 +2831,10 @@ public class ReaderModeViewModel: ObservableObject {
                     scriptCaller: scriptCaller,
                     navigator: navigator,
                     renderURL: contentURL,
-                    renderGeneration: renderGeneration
+                    renderGeneration: renderGeneration,
+                    renderBinding: renderBinding,
+                    selectionIsCurrent: selectionIsCurrent,
+                    originatingContentIsCurrent: originatingContentIsCurrent
                 )
                 return
             }
@@ -2855,7 +2862,8 @@ public class ReaderModeViewModel: ObservableObject {
             cancelReaderModeLoad(
                 for: contentURL,
                 ifOwnedBy: renderGeneration,
-                readerContent: readerContent
+                readerContent: readerContent,
+                originatingContentIsCurrent: originatingContentIsCurrent
             )
         }
     }
@@ -2870,38 +2878,45 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller,
         navigator: WebViewNavigator,
         renderURL: URL,
-        renderGeneration: UUID
+        renderGeneration: UUID,
+        renderBinding: WebViewScriptCaller.JavaScriptBindingToken?,
+        selectionIsCurrent: @escaping @Sendable () -> Bool,
+        originatingContentIsCurrent: @escaping @MainActor () -> Bool
     ) async throws {
         let requestedURL = renderURL
         let frameReplacementHook = readerModeWillReplaceFrameContent
-        let frameReplacementBinding = scriptCaller.currentJavaScriptBindingToken
+        let frameReplacementBinding = renderBinding
         ReaderSnippetFinalDocumentDiagnostics.record("readability-start", contentURL: requestedURL, generation: renderGeneration)
-        guard isCurrentRender(for: requestedURL, generation: renderGeneration) else {
+        guard originatingContentIsCurrent(),
+              isCurrentRender(for: requestedURL, generation: renderGeneration) else {
             return
         }
         guard urlsMatchWithoutHashForHotfix(requestedURL, readerContent.pageURL) else {
             cancelReaderModeLoad(
                 for: requestedURL,
                 ifOwnedBy: renderGeneration,
-                readerContent: readerContent
+                readerContent: readerContent,
+                originatingContentIsCurrent: originatingContentIsCurrent
             )
             return
         }
-        let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
+        // Keep the selection captured when this render began; a same-URL
+        // replacement cannot grant an older HTML payload fresh authority.
         let resolvedContent: (any ReaderContentProtocol)?
         do {
             resolvedContent = try await readerContent.getContent()
         } catch {
-            guard selectionIsCurrent() else { return }
+            guard originatingContentIsCurrent(), selectionIsCurrent() else { return }
             throw error
         }
-        guard selectionIsCurrent() else { return }
+        guard originatingContentIsCurrent(), selectionIsCurrent() else { return }
         guard let content = resolvedContent else {
             print("No content set to show in reader mode")
             cancelReaderModeLoad(
                 for: requestedURL,
                 ifOwnedBy: renderGeneration,
-                readerContent: readerContent
+                readerContent: readerContent,
+                originatingContentIsCurrent: originatingContentIsCurrent
             )
             return
         }
@@ -2915,6 +2930,7 @@ public class ReaderModeViewModel: ObservableObject {
         // a fresh wrapper for the same Realm row retains its authority.
         let ownsContent = { @MainActor in
             self.isCurrentRender(for: requestedURL, generation: renderGeneration)
+                && originatingContentIsCurrent()
                 && selectionIsCurrent()
                 && self.readerModeContentIsCurrent(content, readerContent: readerContent)
                 && content.url == url
@@ -2962,6 +2978,9 @@ public class ReaderModeViewModel: ObservableObject {
         }
         if needsAsyncWrite {
             try await content.asyncWrite { _, content in
+                // Realm can begin this transaction after the page was replaced.
+                // The captured lifetime is safe to query off the main actor.
+                guard selectionIsCurrent() else { return }
                 content.isReaderModeByDefault = true
                 content.isReaderModeAvailable = false
                 content.isReaderModeOfferHidden = false
@@ -3002,6 +3021,7 @@ public class ReaderModeViewModel: ObservableObject {
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
         let tracksReadingProgress = content.tracksReadingProgress
         let primaryRecordCompoundKey = content.compoundKey
+        let primaryRecordClassName = content.objectSchema.className
         
         try await { @ReaderViewModelActor [weak self] in
             guard let self,
@@ -3051,7 +3071,8 @@ public class ReaderModeViewModel: ObservableObject {
                 await self.cancelReaderModeLoad(
                     for: requestedURL,
                     ifOwnedBy: renderGeneration,
-                    readerContent: readerContent
+                    readerContent: readerContent,
+                    originatingContentIsCurrent: originatingContentIsCurrent
                 )
                 return
             }
@@ -3085,9 +3106,11 @@ public class ReaderModeViewModel: ObservableObject {
             await propagateReaderModeDefaults(
                 for: url,
                 primaryKey: primaryRecordCompoundKey,
+                primaryClassName: primaryRecordClassName,
                 readabilityHTML: readabilityContent,
                 fallbackTitle: titleForDisplay,
-                derivedTitle: derivedTitle
+                derivedTitle: derivedTitle,
+                permitsCommit: selectionIsCurrent
             )
             guard await ownsContent() else {
                 return
@@ -3257,7 +3280,8 @@ public class ReaderModeViewModel: ObservableObject {
                     cancelReaderModeLoad(
                         for: requestedURL,
                         ifOwnedBy: renderGeneration,
-                        readerContent: readerContent
+                        readerContent: readerContent,
+                        originatingContentIsCurrent: originatingContentIsCurrent
                     )
                     return
                 }
@@ -3274,7 +3298,8 @@ public class ReaderModeViewModel: ObservableObject {
                               scriptCaller.currentJavaScriptBindingToken == frameReplacementBinding,
                               let frameURL = frameInfo.request.url else {
                             cancelReaderModeLoad(for: requestedURL,
-                                ifOwnedBy: renderGeneration, readerContent: readerContent)
+                                ifOwnedBy: renderGeneration, readerContent: readerContent,
+                                originatingContentIsCurrent: originatingContentIsCurrent)
                             return
                         }
                         let replacement = await frameReplacementHook(
@@ -3284,17 +3309,20 @@ public class ReaderModeViewModel: ObservableObject {
                         // The handoff can suspend into WebKit or withdraw this
                         // render. Its original job, content and binding still
                         // own the subsequent in-place DOM effect.
-                        guard isCurrentRender(for: requestedURL, generation: renderGeneration),
+                        guard ownsContent(),
+                              isCurrentRender(for: requestedURL, generation: renderGeneration),
                               url.matchesReaderURL(readerContent.pageURL),
                               scriptCaller.currentJavaScriptBindingToken == frameReplacementBinding
                         else {
                             cancelReaderModeLoad(for: requestedURL,
-                                ifOwnedBy: renderGeneration, readerContent: readerContent)
+                                ifOwnedBy: renderGeneration, readerContent: readerContent,
+                                originatingContentIsCurrent: originatingContentIsCurrent)
                             return
                         }
                         guard let replacement else {
                             cancelReaderModeLoad(for: requestedURL,
-                                ifOwnedBy: renderGeneration, readerContent: readerContent)
+                                ifOwnedBy: renderGeneration, readerContent: readerContent,
+                                originatingContentIsCurrent: originatingContentIsCurrent)
                             return
                         }
                         requiredReplacementBinding = frameReplacementBinding
@@ -3325,13 +3353,14 @@ public class ReaderModeViewModel: ObservableObject {
                         let replaced = try await preparedReplacement(
                             replacementScript + "\nreturn true;", replacementArguments
                         )
-                        guard replaced,
+                        guard replaced, ownsContent(),
                               isCurrentRender(for: requestedURL, generation: renderGeneration),
                               url.matchesReaderURL(readerContent.pageURL),
                               scriptCaller.currentJavaScriptBindingToken == requiredReplacementBinding
                         else {
                             cancelReaderModeLoad(for: requestedURL,
-                                ifOwnedBy: renderGeneration, readerContent: readerContent)
+                                ifOwnedBy: renderGeneration, readerContent: readerContent,
+                                originatingContentIsCurrent: originatingContentIsCurrent)
                             return
                         }
                         // Native phase and DOM replacement commit together.
@@ -3342,11 +3371,16 @@ public class ReaderModeViewModel: ObservableObject {
                             arguments: ["readerModeScript": Readability.shared.scripts],
                             in: frameInfo, requiring: requiredReplacementBinding)
                     } else {
+                        guard let frameReplacementBinding,
+                              scriptCaller.currentJavaScriptBindingToken == frameReplacementBinding else {
+                            throw CancellationError()
+                        }
                         _ = try await scriptCaller.evaluateJavaScript(
                             replacementScript + "\n" + readerModeInitializationScript,
-                            arguments: replacementArguments, in: frameInfo)
+                            arguments: replacementArguments, in: frameInfo,
+                            requiring: frameReplacementBinding)
                     }
-                    guard isCurrentRender(
+                    guard ownsContent(), isCurrentRender(
                         for: requestedURL,
                         generation: renderGeneration
                     ) else {

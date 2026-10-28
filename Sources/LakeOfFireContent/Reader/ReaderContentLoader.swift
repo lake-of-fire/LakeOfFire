@@ -234,7 +234,8 @@ public struct ReaderContentLoader {
     }
     
     public static func getContentURL(fromLoaderURL pageURL: URL) -> URL? {
-        pageURL.isReaderURLLoaderURL ? pageURL.readerContentURL : nil
+        if pageURL.isTranscriptPageURL { return pageURL.transcriptBackingContentURL }
+        return pageURL.isReaderURLLoaderURL ? pageURL.readerContentURL : nil
     }
 
     // The fragment on a loader document belongs to same-page navigation.
@@ -375,7 +376,7 @@ public struct ReaderContentLoader {
         storage: DiscoveryStorage
     ) async throws -> ReaderContentLoader.ContentReference? {
         try Task.checkCancellation()
-        guard !(url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/")) else {
+        guard !url.isInternalReaderLoadingURL else {
             return nil
         }
         guard url.absoluteString != "about:blank" else {
@@ -463,6 +464,12 @@ public struct ReaderContentLoader {
         source: String = "ReaderContentLoader.getContent"
     ) async throws -> (any ReaderContentProtocol)? {
         let backingURL = backingContentURL(fromLoaderURL: pageURL)
+        if pageURL.isTranscriptURL {
+            try Task.checkCancellation()
+            let content = await TranscriptPageRegistry.shared.makeReaderContent(for: pageURL)
+            try Task.checkCancellation()
+            return content
+        }
         guard !pageURL.isReaderURLLoaderURL || backingURL != nil else { return nil }
         let resolvedURL = backingURL ?? pageURL
         let storage = DiscoveryStorage()
@@ -508,6 +515,59 @@ public struct ReaderContentLoader {
         return try await task.value
     }
 
+    /// Propagate prepared Reader HTML only while its originating selection remains
+    /// live. Discovery and queued Realm writes can each suspend; the lifetime
+    /// fence must be checked by the final, storage-admitted transaction.
+    @RealmBackgroundActor
+    public static func propagateReaderModeDefaults(
+        for url: URL,
+        excludingPrimaryKey primaryKey: String,
+        primaryClassName: String,
+        readabilityHTML: String,
+        resolvedTitle: String?,
+        permitsCommit: @escaping @Sendable () -> Bool
+    ) async throws {
+        guard permitsCommit() else { return }
+        try Task.checkCancellation()
+        try await updateContent(url: url) { record in
+            guard permitsCommit(), !Task.isCancelled,
+                  !(record.compoundKey == primaryKey
+                    && record.objectSchema.className == primaryClassName) else {
+                return false
+            }
+
+            var changed = false
+            if !record.isReaderModeByDefault {
+                record.isReaderModeByDefault = true
+                changed = true
+            }
+            if record.isReaderModeAvailable {
+                record.isReaderModeAvailable = false
+                changed = true
+            }
+            if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                if !url.isReaderFileURL,
+                   (record.content?.isEmpty ?? true),
+                   record.html != readabilityHTML {
+                    record.html = readabilityHTML
+                    changed = true
+                }
+                if let resolvedTitle,
+                   record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   record.title != resolvedTitle {
+                    record.title = resolvedTitle
+                    changed = true
+                }
+                if !record.rssContainsFullContent {
+                    record.rssContainsFullContent = true
+                    changed = true
+                }
+            }
+            // updateContent journals just once, and only for an actual change.
+            return changed
+        }
+    }
+
     /// Update all reader-content objects that share the given URL. The updater returns true if it mutated the object.
     @RealmBackgroundActor
     public static func updateContent(
@@ -549,7 +609,13 @@ public struct ReaderContentLoader {
         countsAsHistoryVisit: Bool = false,
         source: String = "ReaderContentLoader.load"
     ) async throws -> (any ReaderContentProtocol)? {
-        try await load(
+        if url.isTranscriptURL {
+            try Task.checkCancellation()
+            let content = await TranscriptPageRegistry.shared.makeReaderContent(for: url)
+            try Task.checkCancellation()
+            return content
+        }
+        return try await load(
             url: url,
             persist: persist,
             countsAsHistoryVisit: countsAsHistoryVisit,
@@ -569,7 +635,7 @@ public struct ReaderContentLoader {
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
             
-            if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
+            if url.isInternalReaderLoadingURL {
                 // Don't persist about:load
                 // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
                 return nil
@@ -1827,7 +1893,7 @@ public extension ReaderContentLoader {
 
         case let .url(url, fromClipboard):
             guard url.absoluteString != "about:blank",
-                  !(url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/")) else {
+                  !url.isInternalReaderLoadingURL else {
                 return nil
             }
             let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: storage.bookmarks)

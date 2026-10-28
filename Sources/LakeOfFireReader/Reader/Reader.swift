@@ -144,8 +144,6 @@ private extension View {
 
 typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiTargetFrames: Bool) async throws -> Void
 
-private var ebookChromeInsetRevision: Int = 0
-private var lastSyncedEbookChromeInsets: (pageURL: URL, top: CGFloat, toolbarBottom: CGFloat, bottom: CGFloat)?
 
 @MainActor
 func readerPaginationTrackingSettingsKey(
@@ -478,38 +476,21 @@ private func ebookToolbarBottomOffset(
 }
 
 @MainActor
+@discardableResult
 func syncEbookViewerChromeInsets(
-    pageURL: URL,
-    obscuredTopInset: CGFloat,
-    toolbarBottomOffset: CGFloat,
-    obscuredBottomInset: CGFloat,
-    hasAsyncCaller: Bool,
-    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
-) async {
-    guard pageURL.isEBookURL else { return }
-    guard hasAsyncCaller else { return }
-    ebookChromeInsetRevision += 1
-    let revision = ebookChromeInsetRevision
-    let obscuredTopInset = max(0, obscuredTopInset)
-    let toolbarBottomOffset = max(0, toolbarBottomOffset)
-    let obscuredBottomInset = max(0, obscuredBottomInset)
-    if let lastSyncedEbookChromeInsets,
-       lastSyncedEbookChromeInsets.pageURL == pageURL,
-       lastSyncedEbookChromeInsets.top == obscuredTopInset,
-       lastSyncedEbookChromeInsets.toolbarBottom == toolbarBottomOffset,
-       lastSyncedEbookChromeInsets.bottom == obscuredBottomInset {
-        return
-    }
-    lastSyncedEbookChromeInsets = (
-        pageURL: pageURL,
-        top: obscuredTopInset,
-        toolbarBottom: toolbarBottomOffset,
-        bottom: obscuredBottomInset
-    )
+    key: ReaderEBookChromeInsetSynchronization.Key,
+    synchronization: ReaderEBookChromeInsetSynchronization,
+    isCurrent: @escaping ReaderEBookChromeInsetSynchronization.Check,
+    evaluateJavaScript: @MainActor (_ script: String, _ continueWhile: @escaping ReaderEBookChromeInsetSynchronization.Check) async throws -> Void
+) async -> Bool {
+    guard key.pageURL.isEBookURL else { return false }
+    let obscuredTopInset = key.top
+    let toolbarBottomOffset = key.toolbarBottom
+    let obscuredBottomInset = key.bottom
     let obscuredTopInsetCSS = "\(obscuredTopInset)px"
     let toolbarBottomOffsetCSS = "\(toolbarBottomOffset)px"
     let obscuredBottomInsetCSS = "\(obscuredBottomInset)px"
-    do {
+    return await synchronization.deliver(key: key, isCurrent: isCurrent) { revision, current in
         try await evaluateJavaScript(
             """
             (function() {
@@ -554,9 +535,8 @@ func syncEbookViewerChromeInsets(
             //# sourceURL=lake-reader-chrome-insets-sync.js
 
             """,
-            true
+            current
         )
-    } catch {
     }
 }
 
@@ -1002,6 +982,13 @@ enum ReaderContentSelectionOpenAction: Equatable {
     }
 }
 
+/// Distinguishes a refusal from a request accepted by the navigator (including
+/// queueing before native attachment), even if later synchronously superseded.
+public enum ReaderContentLoadResult: Equatable, Sendable {
+    case suppressed
+    case issued(WebViewNavigator.NavigationDispatchReceipt)
+}
+
 public extension WebViewNavigator {
     @MainActor
     func openReaderContentSelection(
@@ -1010,6 +997,10 @@ public extension WebViewNavigator {
         readerModeViewModel: ReaderModeViewModel?,
         source: String = "WebViewNavigator.openReaderContentSelection"
     ) async throws {
+        try Task.checkCancellation()
+        // Choosing an already-mounted item is still a newer user intent and
+        // must retire any earlier resolver that has not dispatched yet.
+        beginNavigationIntent()
         switch ReaderContentSelectionOpenAction.resolve(
             contentURL: content.url,
             currentPageURL: currentPageURL
@@ -1036,9 +1027,37 @@ public extension WebViewNavigator {
         shouldLoad: @MainActor () -> Bool = { true },
         willDispatchLoad: @MainActor () -> Void = {}
     ) async throws {
-        try await loadResolvedContent(
+        _ = try await loadResolvedContent(
             content: content, readerModeViewModel: readerModeViewModel, shouldLoad: shouldLoad,
             willDispatchLoad: willDispatchLoad,
+            resolveURL: {
+                try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager)
+            }
+        )
+    }
+
+    /// The callback runs synchronously after navigator request acceptance, with no
+    /// intervening await. A caller revealing another surface must first verify
+    /// the receipt is still current and its own account/source admission holds.
+    /// This overload's shouldLoad is a pure permission predicate and may run
+    /// again after synchronous publications. The legacy overload retains its
+    /// single accepted-hint callback, which may dismiss its own presentation.
+    @MainActor
+    func load(
+        content: any ReaderContentProtocol,
+        readerFileManager: ReaderFileManager = ReaderFileManager.shared,
+        readerModeViewModel: ReaderModeViewModel?,
+        shouldLoad: @MainActor () -> Bool = { true },
+        willDispatchLoad: @MainActor () -> Void = {},
+        forceReload: Bool = false,
+        didDispatchLoad: @MainActor (NavigationDispatchReceipt) -> Void
+    ) async throws -> ReaderContentLoadResult {
+        try await loadResolvedContent(
+            content: content, readerModeViewModel: readerModeViewModel,
+            shouldLoad: shouldLoad, willDispatchLoad: willDispatchLoad,
+            forceReload: forceReload,
+            revalidateAdmissionBeforeDispatch: true,
+            didDispatchLoad: didDispatchLoad,
             resolveURL: {
                 try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager)
             }
@@ -1053,20 +1072,37 @@ public extension WebViewNavigator {
         readerModeViewModel: ReaderModeViewModel?,
         shouldLoad: @MainActor () -> Bool,
         willDispatchLoad: @MainActor () -> Void = {},
+        forceReload: Bool = false,
+        revalidateAdmissionBeforeDispatch: Bool = false,
+        didDispatchLoad: @MainActor (NavigationDispatchReceipt) -> Void = { _ in },
         resolveURL: @MainActor () async throws -> URL?
-    ) async throws {
+    ) async throws -> ReaderContentLoadResult {
+        try Task.checkCancellation()
+        // Reserve before resolving, so a newer unresolved same-URL selection
+        // supersedes this intent without relying on changes to a URL tuple.
+        let intent = beginNavigationIntent()
         let beginSnapshot = debugLoadSnapshot
-        if let url = try await resolveURL() {
+        let resolvedURL: URL?
+        do {
+            resolvedURL = try await resolveURL()
+        } catch {
+            // A typed caller must not present a retired resolver's failure as
+            // a retry error for the newer navigation. Legacy errors propagate.
+            if revalidateAdmissionBeforeDispatch && !isCurrent(intent) { return .suppressed }
+            throw error
+        }
+        if let url = resolvedURL {
+            try Task.checkCancellation()
             // Callers refreshing an existing document can lose ownership while
             // native content is being resolved. Check before any UI mutation.
-            guard shouldLoad() else { return }
+            guard isCurrent(intent), shouldLoad(), isCurrent(intent) else { return .suppressed }
             let loadSnapshot = debugLoadSnapshot
             if loadSnapshot.lastRequestURL == url.absoluteString
                 || loadSnapshot.lastDataLoadBaseURL == url.absoluteString
                 || loadSnapshot.lastHTMLBaseURL == url.absoluteString
                 || loadSnapshot.currentWebViewURL == url.absoluteString {
-                if loadSnapshot.isLoading {
-                    return
+                if loadSnapshot.isLoading && !forceReload {
+                    return .suppressed
                 }
             }
             let navigatorMovedSinceBegin =
@@ -1080,16 +1116,37 @@ public extension WebViewNavigator {
                 || loadSnapshot.lastDataLoadBaseURL == url.absoluteString
                 || loadSnapshot.lastHTMLBaseURL == url.absoluteString
             if navigatorMovedSinceBegin && !targetStillCurrent {
-                return
+                return .suppressed
             }
             // No presentation effect may precede the stale-navigation check.
             if let readerModeViewModel,
                url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
                 readerModeViewModel.readerModeLoading(content.isReaderModeByDefault || url.isReaderURLLoaderURL)
             }
+            // Legacy shouldLoad callbacks can issue an accepted navigation hint
+            // that deliberately removes their own source presentation. Invoke
+            // that effectful callback exactly once. The typed API opts into a
+            // pure permission check again at each synchronous publication seam.
+            guard isCurrent(intent) else { return .suppressed }
+            if revalidateAdmissionBeforeDispatch {
+                try Task.checkCancellation()
+                guard shouldLoad(), isCurrent(intent) else { return .suppressed }
+            }
             willDispatchLoad()
-            load(URLRequest(url: url))
+            guard isCurrent(intent) else { return .suppressed }
+            if revalidateAdmissionBeforeDispatch {
+                try Task.checkCancellation()
+                guard shouldLoad(), isCurrent(intent) else { return .suppressed }
+            }
+            switch dispatch(URLRequest(url: url), for: intent) {
+            case .refused:
+                return .suppressed
+            case .issued(let receipt):
+                didDispatchLoad(receipt)
+                return .issued(receipt)
+            }
         } else {
+            return .suppressed
         }
     }
 }
@@ -1126,6 +1183,9 @@ public struct Reader: View {
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     
+    @StateObject private var ebookChromeInsetSynchronization = ReaderEBookChromeInsetSynchronization()
+    @StateObject private var titleSynchronization = ReaderTitleSynchronization()
+    @State private var titleProjectionEventRevision: UInt64 = 0
     @State private var obscuredInsets: EdgeInsets? = nil
     @State private var obscuredGeometrySize: CGSize? = nil
     
@@ -1242,16 +1302,32 @@ public struct Reader: View {
             obscuredBottomInset: toolbarReferenceBottomInset,
             additionalBottomSafeAreaInset: additionalBottomInset
         )
-        let chromeInsetsTaskID = [
-            pageURL.absoluteString,
-            "\(effectiveTopInset)",
-            "\(additionalLeadingInset)",
-            "\(effectiveBottomInset)",
-            "\(effectiveToolbarBottomOffset)",
-            "\(scriptCaller.hasAsyncCaller)",
-            "\(readerViewModel.state.hasReaderRenderReady)",
-            "\(readerViewModel.ebookChromeInsetsResyncID)",
-        ].joined(separator: "|")
+        let titleSnapshot = readerContent.captureTitleSnapshot()
+        let titleTaskID = ReaderTitleSynchronizationTaskID(
+            source: titleSnapshot?.identity, binding: scriptCaller.currentJavaScriptBindingToken,
+            nativePageURL: readerContent.pageURL, renderedURL: readerViewModel.state.pageURL,
+            renderReady: readerViewModel.state.hasReaderRenderReady,
+            provisionallyNavigating: readerContent.isReaderProvisionallyNavigating
+                || readerViewModel.state.isProvisionallyNavigating,
+            eventRevision: titleProjectionEventRevision)
+        let insetNativePageURL = readerContent.pageURL
+        let insetBinding = scriptCaller.currentJavaScriptBindingToken
+        let insetRenderedURL = readerViewModel.state.pageURL
+        let insetCachedContentURL = readerContent.cachedContentURL
+        let chromeInsetKey = insetBinding.map {
+            ReaderEBookChromeInsetSynchronization.Key(
+                pageURL: pageURL, renderedURL: insetRenderedURL,
+                cachedContentURL: insetCachedContentURL, binding: $0,
+                top: max(0, effectiveTopInset), toolbarBottom: max(0, effectiveToolbarBottomOffset),
+                bottom: max(0, effectiveBottomInset), resyncID: readerViewModel.ebookChromeInsetsResyncID)
+        }
+        let chromeInsetsTaskID = ReaderEBookChromeInsetsTaskID(
+            key: chromeInsetKey, nativePageURL: insetNativePageURL,
+            additionalLeadingInset: additionalLeadingInset,
+            hasAsyncCaller: scriptCaller.hasAsyncCaller,
+            renderReady: readerViewModel.state.hasReaderRenderReady,
+            provisionallyNavigating: readerViewModel.state.isProvisionallyNavigating
+                || readerContent.isReaderProvisionallyNavigating)
         //            VStack(spacing: 0) {
         ReaderWebView(
             persistentWebViewID: persistentWebViewID,
@@ -1372,58 +1448,64 @@ public struct Reader: View {
         ))
         .modifier(PageMetadataModifier())
         .modifier(ReaderMediaPlayerViewModifier())
-        .task(id: chromeInsetsTaskID) {
-            guard pageURL.isEBookURL else { return }
+        .task(id: chromeInsetsTaskID) { @MainActor in
             guard !Task.isCancelled else { return }
+            guard let key = chromeInsetsTaskID.key, key.pageURL.isEBookURL,
+                  chromeInsetsTaskID.hasAsyncCaller, !chromeInsetsTaskID.provisionallyNavigating else {
+                ebookChromeInsetSynchronization.retire()
+                return
+            }
+            let caller = scriptCaller
+            let content = readerContent
+            let viewModel = readerViewModel
             await syncEbookViewerChromeInsets(
-                pageURL: pageURL,
-                obscuredTopInset: effectiveTopInset,
-                toolbarBottomOffset: effectiveToolbarBottomOffset,
-                obscuredBottomInset: effectiveBottomInset,
-                hasAsyncCaller: scriptCaller.hasAsyncCaller
-            ) { js, duplicateInMultiTargetFrames in
-                _ = try await scriptCaller.evaluateJavaScript(
-                    js,
-                    duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
-                )
-            }
-        }
-        .onReceive(readerContent.contentTitleSubject.receive(on: RunLoop.main)) { _ in
-            Task { @MainActor in
-                guard scriptCaller.hasAsyncCaller else { return }
-                let rawTitle = readerContent.contentTitle
-                let needsClipboardIndicator = readerContent.content?.needsClipboardIndicator ?? false
-                let displayTitle = ReaderContentLoader.resolvedDisplayTitle(
-                    rawTitle,
-                    needsClipboardIndicator: needsClipboardIndicator
-                )
-                let hideRedundantSnippetTitle =
-                    readerContent.content?.url.isSnippetURL == true &&
-                    readerContent.snippetTitleIsGeneratedFromPrefix
-                do {
-                    try await scriptCaller.evaluateJavaScript(
-                        """
-                        (function() {
-                          const el = document.getElementById('reader-title');
-                          const body = document.body;
-                          if (el && el.textContent !== title) {
-                            el.textContent = title;
-                          }
-                          if (body) {
-                            body.classList.toggle(bodyClassName, !!hideReaderTitle);
-                          }
-                        })();
-                        """,
-                        arguments: [
-                            "title": displayTitle,
-                            "bodyClassName": ReaderContentLoader.snippetReaderTitleSuppressionBodyClass,
-                            "hideReaderTitle": hideRedundantSnippetTitle,
-                        ],
-                        duplicateInMultiTargetFrames: true
-                    )
-                } catch {
+                key: key, synchronization: ebookChromeInsetSynchronization,
+                isCurrent: {
+                    caller.currentJavaScriptBindingToken == key.binding
+                        && content.pageURL == chromeInsetsTaskID.nativePageURL
+                        && content.cachedContentURL == key.cachedContentURL
+                        && viewModel.state.pageURL == key.renderedURL
+                        && !content.isReaderProvisionallyNavigating
+                        && !viewModel.state.isProvisionallyNavigating
                 }
+            ) { js, current in
+                _ = try await caller.evaluateJavaScriptInMultiTargetFrames(
+                    js, propagatesFrameErrors: true, continueWhile: current)
             }
         }
+        .onDisappear { ebookChromeInsetSynchronization.retire() }
+        .onReceive(readerContent.titleSnapshotSubject) { _ in
+            // The typed producer invalidates the value projection. Capture the
+            // current source in body before scheduling, rather than reading a
+            // mutable title from inside an unretained delayed task.
+            titleProjectionEventRevision &+= 1
+        }
+        .task(id: titleTaskID) { @MainActor in
+            guard !Task.isCancelled else { return }
+            guard let snapshot = titleSnapshot, let binding = titleTaskID.binding,
+                  titleTaskID.renderedURL.matchesReaderURL(snapshot.contentURL),
+                  !titleTaskID.provisionallyNavigating else {
+                titleSynchronization.retire()
+                return
+            }
+            let caller = scriptCaller
+            let content = readerContent
+            let viewModel = readerViewModel
+            await titleSynchronization.deliver(snapshot: snapshot, binding: binding,
+                renderReady: titleTaskID.renderReady,
+                isCurrent: {
+                    caller.currentJavaScriptBindingToken == binding
+                        && content.pageURL == titleTaskID.nativePageURL
+                        && viewModel.state.pageURL == titleTaskID.renderedURL
+                        && !content.isReaderProvisionallyNavigating
+                        && !viewModel.state.isProvisionallyNavigating
+                }
+            ) { script, arguments, current in
+                _ = try await caller.evaluateJavaScriptInMultiTargetFrames(
+                    script, arguments: arguments, propagatesFrameErrors: true, continueWhile: current)
+            }
+        }
+        .onDisappear { titleSynchronization.retire() }
+
     }
 }

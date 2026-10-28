@@ -861,3 +861,96 @@ test('three concurrent CSS roots break transitive cycles and release every blob'
         globalThis.__manabiBlobResourceMap = originalBlobMap
     }
 })
+
+test('shared child survives one parent publication failure, retry, and either release order', async t => {
+    for (const releaseRetriedFirst of [false, true]) {
+        await t.test(releaseRetriedFirst ? 'release retried parent first' : 'release surviving parent first', async () => {
+            const originalCreateObjectURL = URL.createObjectURL
+            const originalRevokeObjectURL = URL.revokeObjectURL
+            const originalWindow = globalThis.window
+            const originalBlobMap = globalThis.__manabiBlobResourceMap
+            globalThis.window = { innerWidth: 800, innerHeight: 600 }
+            globalThis.__manabiBlobResourceMap = new Map()
+            const created = []
+            const revoked = []
+            let failNextParent = true
+            URL.createObjectURL = blob => {
+                if (blob.type === 'text/css' && failNextParent) {
+                    failNextParent = false
+                    throw new Error('parent publication failed')
+                }
+                const url = originalCreateObjectURL.call(URL, blob)
+                created.push(url)
+                return url
+            }
+            URL.revokeObjectURL = url => {
+                revoked.push(url)
+                originalRevokeObjectURL.call(URL, url)
+            }
+            const parents = ['styles/one.css', 'styles/two.css'].map(href => ({ href, mediaType: 'text/css' }))
+            const child = { href: 'images/shared.png', mediaType: 'image/png' }
+            let resolveChild
+            let childReads = 0
+            const loader = new Loader({
+                resources: { manifest: [...parents, child] },
+                loadText: async () => 'body { background: url("../images/shared.png#first"); mask: url("../images/shared.png#second") }',
+                loadBlob: href => {
+                    assert.equal(href, child.href)
+                    childReads += 1
+                    return new Promise(resolve => { resolveChild = resolve })
+                },
+            })
+            try {
+                const pendingParents = Promise.allSettled(parents.map(item => loader.loadItem(item)))
+                // Both parent replacements enter the same suspended raw child load.
+                await new Promise(resolve => setImmediate(resolve))
+                assert.equal(childReads, 1)
+                resolveChild(new Uint8Array([1, 2, 3]))
+                const outcomes = await pendingParents
+                const failedIndex = outcomes.findIndex(outcome => outcome.status === 'rejected')
+                const survivingIndex = outcomes.findIndex(outcome => outcome.status === 'fulfilled')
+                assert.notEqual(failedIndex, -1)
+                assert.notEqual(survivingIndex, -1)
+                assert.match(outcomes[failedIndex].reason.message, /parent publication failed/)
+                const survivingURL = outcomes[survivingIndex].value
+                const childURL = created[0]
+                assert.equal(globalThis.__manabiBlobResourceMap.get(childURL).href, child.href)
+                assert.deepEqual(revoked, [])
+                const survivingCSS = await (await fetch(survivingURL)).text()
+                assert.ok(survivingCSS.includes(`${childURL}#first`))
+                assert.ok(survivingCSS.includes(`${childURL}#second`))
+                assert.deepEqual([...new Uint8Array(await (await fetch(childURL)).arrayBuffer())], [1, 2, 3])
+
+                const retriedURL = await loader.loadItem(parents[failedIndex])
+                assert.notEqual(retriedURL, survivingURL)
+                assert.equal(childReads, 1)
+                const retriedCSS = await (await fetch(retriedURL)).text()
+                assert.ok(retriedCSS.includes(`${childURL}#first`))
+                assert.ok(retriedCSS.includes(`${childURL}#second`))
+                const firstIndex = releaseRetriedFirst ? failedIndex : survivingIndex
+                const lastIndex = releaseRetriedFirst ? survivingIndex : failedIndex
+                const firstURL = releaseRetriedFirst ? retriedURL : survivingURL
+                const lastURL = releaseRetriedFirst ? survivingURL : retriedURL
+                loader.unloadItem(parents[firstIndex])
+                assert.deepEqual(revoked, [firstURL])
+                await assert.rejects(fetch(firstURL))
+                assert.equal((await fetch(lastURL)).status, 200)
+                assert.equal((await fetch(childURL)).status, 200)
+                loader.unloadItem(parents[lastIndex])
+                assert.deepEqual(revoked, [firstURL, lastURL, childURL])
+                assert.equal(globalThis.__manabiBlobResourceMap.size, 0)
+                await assert.rejects(fetch(lastURL))
+                await assert.rejects(fetch(childURL))
+                loader.destroy()
+                loader.destroy()
+                assert.deepEqual(revoked, [firstURL, lastURL, childURL])
+            } finally {
+                loader.destroy()
+                URL.createObjectURL = originalCreateObjectURL
+                URL.revokeObjectURL = originalRevokeObjectURL
+                globalThis.window = originalWindow
+                globalThis.__manabiBlobResourceMap = originalBlobMap
+            }
+        })
+    }
+})

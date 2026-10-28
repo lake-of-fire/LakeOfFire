@@ -73,6 +73,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @Published public private(set) var hasPreparedAITTS = false
     @Published public private(set) var ttsQueueGeneration: Int = 0
     @Published public private(set) var ttsPlaybackCompletionGeneration: Int = 0
+    /// Queue identity paired with the latest completion event. A later queue
+    /// must not inherit an earlier event delivered by a deferred UI observer.
+    @Published public private(set) var ttsPlaybackCompletedQueueGeneration: Int?
     @Published public private(set) var readAloudPreparationState: ReaderReadAloudPreparationState = .idle
     @Published public private(set) var playbackFailure: ReaderPlaybackFailure?
     @Published public private(set) var ttsPreparedEbookSectionIndex: Int?
@@ -89,11 +92,11 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private var ttsUtteranceObjectIdentifierToIndex = [ObjectIdentifier: Int]()
     private var ttsCurrentUtteranceIndex: Int = 0
     private var ttsCurrentCharacterRange: NSRange?
-    private var readAloudAudioSessionLease: ManabiSpokenAudioSessionLease?
+    private let readAloudAudioSessionLeaseFactory: @MainActor () throws -> any ReaderReadAloudAudioSessionLease
+    private var readAloudAudioSessionLease: (any ReaderReadAloudAudioSessionLease)?
     private var ttsVoiceLanguage = "ja-JP"
     private var cachedReadAloudVoiceConfiguration: ReaderReadAloudVoiceConfiguration?
     private var cachedReadAloudVoice: AVSpeechSynthesisVoice?
-    private var ignoresCancellationCallbacksForQueueSwap = false
     private var readAloudPreparationID: UUID?
     private var nextAITTSUtteranceIndexToEnqueue = 0
     private let aittsQueueWindowSize = 8
@@ -107,10 +110,14 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     init(
         readAloudController: ReaderReadAloudController,
+        readAloudAudioSessionLeaseFactory: @escaping @MainActor () throws -> any ReaderReadAloudAudioSessionLease = {
+            try ManabiSpokenAudioSession.acquire(.readAloud)
+        },
         readAloudVoiceResolver: @escaping (String, String) -> AVSpeechSynthesisVoice? =
             resolveReaderReadAloudVoice
     ) {
         self.readAloudController = readAloudController
+        self.readAloudAudioSessionLeaseFactory = readAloudAudioSessionLeaseFactory
         self.readAloudVoiceResolver = readAloudVoiceResolver
         super.init()
         readAloudController.delegate = self
@@ -313,17 +320,13 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
                 isMediaPlayerPresented = false
             }
         } else if newState.pageURL.isNativeReaderView {
-            Task { @MainActor [weak self] in
-                try Task.checkCancellation()
-                guard let self = self else { return }
-                if self.isMediaPlayerPresented {
-                    self.isMediaPlayerPresented = false
-                }
-                if voiceAudioURLs != audioURLs {
-                    audioURLs = voiceAudioURLs
-                }
-                self.stopAITTSPlayback(clearQueue: true)
+            if isMediaPlayerPresented {
+                isMediaPlayerPresented = false
             }
+            if voiceAudioURLs != audioURLs {
+                audioURLs = voiceAudioURLs
+            }
+            stopAITTSPlayback(clearQueue: true)
         }
     }
 
@@ -558,12 +561,22 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             mediaDebugPrint("# READALOUD ai.play.skip", "reason=emptyQueue")
             return
         }
+        // An explicit replay supersedes a pending next-section preparation.
+        // A prepared result also retires its own request at this playback
+        // handoff; cancellation after that handoff cannot undo the new queue.
+        cancelReadAloudPreparation()
         if readAloudController.isPaused {
-            activateReadAloudAudioSession()
+            guard activateReadAloudAudioSession() else {
+                isPlaying = false
+                return
+            }
             guard readAloudController.continueSpeaking() else {
                 deactivateReadAloudAudioSession()
                 mediaDebugPrint("# READALOUD ai.play.resumeFailed")
                 return
+            }
+            if shouldEnqueueSpeechSynthesizerUtterances {
+                fillAITTSQueueWindow()
             }
             isPlaying = true
             registerPlaybackStart(contentKey: currentContentKey)
@@ -608,7 +621,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func seekAITTS(toProgressValue value: Double, shouldPlay: Bool) {
-        guard !ttsUtterances.isEmpty else { return }
+        guard value.isFinite, !ttsUtterances.isEmpty else { return }
         let upperBound = max(ttsProgressUpperBound, 1)
         let clamped = min(max(value, 0), upperBound)
         let endScrubEpsilon = 0.001
@@ -641,6 +654,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private func seekAITTS(toUtteranceIndex index: Int, shouldPlay: Bool) {
         guard !ttsUtterances.isEmpty else { return }
         let boundedIndex = min(max(index, 0), ttsUtterances.count - 1)
+        retireReadAloudContinuationForSeek()
         ttsCurrentUtteranceIndex = boundedIndex
         ttsCurrentCharacterRange = nil
         updateAITTSProgress()
@@ -660,6 +674,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private func seekAITTSToEnd() {
         guard !ttsUtterances.isEmpty else { return }
         let lastIndex = ttsUtterances.count - 1
+        retireReadAloudContinuationForSeek()
         ttsCurrentUtteranceIndex = lastIndex
         let utterance = ttsUtterances[lastIndex]
         ttsCurrentCharacterRange = NSRange(location: utterance.text.utf16.count, length: 0)
@@ -670,16 +685,27 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         clearPersistedReadAloudPosition()
     }
 
+    private func retireReadAloudContinuationForSeek() {
+        // Withdraw both a dispatched continuation and a deferred completion.
+        cancelReadAloudPreparation()
+        ttsPlaybackCompletedQueueGeneration = nil
+    }
+
     @MainActor
     private func beginSpeakingFromCurrentUtterance() {
         guard !ttsUtterances.isEmpty else { return }
+        // Replaying or rewinding a configured queue starts another speech
+        // cycle. It must still publish a distinct completion event.
+        didPublishCompletionForCurrentQueue = false
+        ttsPlaybackCompletedQueueGeneration = nil
         let startIndex = min(max(ttsCurrentUtteranceIndex, 0), ttsUtterances.count - 1)
         ttsCurrentUtteranceIndex = startIndex
         ttsCurrentCharacterRange = nil
-        ttsUtteranceObjectIdentifierToIndex.removeAll(keepingCapacity: true)
-
         stopAITTSSynthesizerForQueueSwap()
-        activateReadAloudAudioSession()
+        guard activateReadAloudAudioSession() else {
+            isPlaying = false
+            return
+        }
 
         guard shouldEnqueueSpeechSynthesizerUtterances else {
             isPlaying = true
@@ -720,8 +746,6 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         stopAITTSSynthesizerForQueueSwap()
         deactivateReadAloudAudioSession()
         isPlaying = false
-        ttsUtteranceObjectIdentifierToIndex.removeAll(keepingCapacity: false)
-        nextAITTSUtteranceIndexToEnqueue = 0
 
         if clearQueue {
             ttsUtterances.removeAll()
@@ -827,11 +851,15 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     private func stopAITTSSynthesizerForQueueSwap() {
-        ignoresCancellationCallbacksForQueueSwap = readAloudController.stopSpeaking(at: .immediate)
+        // Retire obsolete callbacks before native stop can deliver them synchronously.
+        ttsUtteranceObjectIdentifierToIndex.removeAll(keepingCapacity: true)
+        nextAITTSUtteranceIndexToEnqueue = 0
+        _ = readAloudController.stopSpeaking(at: .immediate)
     }
 
     @MainActor
     private func fillAITTSQueueWindow(voice: AVSpeechSynthesisVoice? = nil) {
+        guard readAloudAudioSessionLease != nil else { return }
         let voice = voice ?? configuredReadAloudVoice()
         while ttsUtteranceObjectIdentifierToIndex.count < aittsQueueWindowSize,
               nextAITTSUtteranceIndexToEnqueue < ttsUtterances.count {
@@ -882,27 +910,25 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         ))
     }
 
-    private func activateReadAloudAudioSession() {
-#if os(iOS)
-        guard readAloudAudioSessionLease == nil else { return }
+    private func activateReadAloudAudioSession() -> Bool {
+        guard readAloudAudioSessionLease == nil else { return true }
         do {
-            readAloudAudioSessionLease = try ManabiSpokenAudioSession.acquire(.readAloud)
+            readAloudAudioSessionLease = try readAloudAudioSessionLeaseFactory()
+            return true
         } catch {
             mediaDebugPrint("# READALOUD audioSession.activate.failed", error.localizedDescription)
+            return false
         }
-#endif
     }
 
     private func deactivateReadAloudAudioSession() {
-#if os(iOS)
+        guard let lease = readAloudAudioSessionLease else { return }
+        readAloudAudioSessionLease = nil
         do {
-            let lease = readAloudAudioSessionLease
-            readAloudAudioSessionLease = nil
-            try lease?.release()
+            try lease.release()
         } catch {
             mediaDebugPrint("# READALOUD audioSession.deactivate.failed", error.localizedDescription)
         }
-#endif
     }
 
 #if os(iOS)
@@ -960,7 +986,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 @MainActor
 extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegate {
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        guard let index = ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(utterance)] else { return }
+        guard let index = ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(utterance)],
+              readAloudAudioSessionLease != nil else { return }
         ttsCurrentUtteranceIndex = index
         ttsCurrentCharacterRange = nil
         if !isPlaying {
@@ -981,7 +1008,8 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
         willSpeakRangeOfSpeechString characterRange: NSRange,
         utterance: AVSpeechUtterance
     ) {
-        guard let index = ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(utterance)] else { return }
+        guard let index = ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(utterance)],
+              readAloudAudioSessionLease != nil else { return }
         ttsCurrentUtteranceIndex = index
         ttsCurrentCharacterRange = characterRange
         if !isPlaying {
@@ -998,7 +1026,8 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
     }
 
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance) {
-        guard ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(utterance)] != nil else { return }
+        guard ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(utterance)] != nil,
+              readAloudAudioSessionLease != nil else { return }
         isPlaying = true
         registerPlaybackStart(contentKey: currentContentKey)
         mediaDebugPrint("# READALOUD ai.delegate.didContinue")
@@ -1018,6 +1047,7 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
             if !didPublishCompletionForCurrentQueue {
                 clearPersistedReadAloudPosition()
                 didPublishCompletionForCurrentQueue = true
+                ttsPlaybackCompletedQueueGeneration = ttsQueueGeneration
                 ttsPlaybackCompletionGeneration &+= 1
             }
         } else {
@@ -1039,11 +1069,6 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
             return
         }
         ttsUtteranceObjectIdentifierToIndex.removeValue(forKey: key)
-        if ignoresCancellationCallbacksForQueueSwap {
-            ignoresCancellationCallbacksForQueueSwap = false
-            mediaDebugPrint("# READALOUD ai.delegate.didCancel", "reason=queueSwap")
-            return
-        }
         if !synthesizer.isSpeaking && !synthesizer.isPaused {
             isPlaying = false
         }
@@ -1054,3 +1079,4 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
         )
     }
 }
+

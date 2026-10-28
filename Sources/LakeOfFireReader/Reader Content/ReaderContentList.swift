@@ -314,11 +314,43 @@ struct ReaderContentListAppearance: Sendable {
     }
 }
 
+/// Custom synchronous handlers capture selection intent before any scheduled
+/// work. Existing handlers keep their deferred MainActor execution path.
+@MainActor
+enum ReaderContentSelectionDispatch {
+    @discardableResult
+    static func dispatch<Content>(
+        selectedContent: Content,
+        selectedKey: String,
+        capturedGeneration: UUID,
+        selection: Binding<String?>,
+        currentGeneration: @escaping @MainActor () -> UUID,
+        onSelectionSynchronously: (@MainActor (Content) -> Void)?,
+        deferred: @escaping @MainActor () async -> Void
+    ) -> Task<Void, Never>? {
+        if let onSelectionSynchronously {
+            guard currentGeneration() == capturedGeneration,
+                  selection.wrappedValue == selectedKey else { return nil }
+            onSelectionSynchronously(selectedContent)
+            if currentGeneration() == capturedGeneration,
+               selection.wrappedValue == selectedKey {
+                selection.wrappedValue = nil
+            }
+            return nil
+        }
+        return Task { @MainActor in
+            guard currentGeneration() == capturedGeneration else { return }
+            await deferred()
+        }
+    }
+}
+
 private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: ViewModifier {
     @ObservedObject var viewModel: ReaderContentListViewModel<C>
     @Binding var entrySelection: String?
     let enabled: Bool
     let onSelection: ((C) -> Void)?
+    let onSelectionSynchronously: (@MainActor (C) -> Void)?
     @State private var selectionLoadGeneration = UUID()
 
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
@@ -328,7 +360,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
     @AppStorage("errorMessage") private var errorMessage = ""
 
     func body(content: Content) -> some View {
-        let shouldSyncToReader = enabled && onSelection == nil
+        let shouldSyncToReader = enabled && onSelection == nil && onSelectionSynchronously == nil
 
         return content
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
@@ -343,7 +375,14 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                 let currentPageURL = readerContent.pageURL
                 selectionLoadGeneration = loadGeneration
 
-                Task { @MainActor in
+                ReaderContentSelectionDispatch.dispatch(
+                    selectedContent: selectedContent,
+                    selectedKey: itemSelection,
+                    capturedGeneration: loadGeneration,
+                    selection: $entrySelection,
+                    currentGeneration: { selectionLoadGeneration },
+                    onSelectionSynchronously: onSelectionSynchronously
+                ) {
                     guard selectionLoadGeneration == loadGeneration else {
                         return
                     }
@@ -467,14 +506,16 @@ private extension View {
         viewModel: ReaderContentListViewModel<C>,
         entrySelection: Binding<String?>,
         enabled: Bool,
-        onSelection: ((C) -> Void)? = nil
+        onSelection: ((C) -> Void)? = nil,
+        onSelectionSynchronously: (@MainActor (C) -> Void)? = nil
     ) -> some View {
         modifier(
             ReaderContentSelectionSyncModifier(
                 viewModel: viewModel,
                 entrySelection: entrySelection,
                 enabled: enabled,
-                onSelection: onSelection
+                onSelection: onSelection,
+                onSelectionSynchronously: onSelectionSynchronously
             )
         )
     }
@@ -1057,6 +1098,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @ViewBuilder let emptyStateView: () -> EmptyState
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
+    // Opt-in handlers replace deferred selection and automatic Reader opening.
+    // They run in the first SwiftUI selection callback, before a Task is created.
+    let onContentSelectedSynchronously: (@MainActor (C) -> Void)?
     let onContentAppear: ((C) -> Void)?
     let scrollTargetID: String?
 
@@ -1190,6 +1234,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             onRequestDelete: onRequestDeleteSingle,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
+            onContentSelectedSynchronously: onContentSelectedSynchronously,
             onContentAppear: onContentAppear
         )
     }
@@ -1474,7 +1519,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             viewModel: viewModel,
             entrySelection: $entrySelection,
             enabled: true,
-            onSelection: onContentSelected
+            onSelection: onContentSelected,
+            onSelectionSynchronously: onContentSelectedSynchronously
         )
     }
 
@@ -1771,6 +1817,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentSelectedSynchronously: (@MainActor (C) -> Void)? = nil,
         onContentAppear: ((C) -> Void)? = nil,
         scrollTargetID: String? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
@@ -1801,6 +1848,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         self.customGrouping = customGrouping
         self.customMenuOptions = customMenuOptions
         self.onContentSelected = onContentSelected
+        self.onContentSelectedSynchronously = onContentSelectedSynchronously
         self.onContentAppear = onContentAppear
         self.scrollTargetID = scrollTargetID
         self.postSortTransform = postSortTransform
@@ -1894,6 +1942,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentSelectedSynchronously: (@MainActor (C) -> Void)? = nil,
         onContentAppear: ((C) -> Void)? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) {
@@ -1920,6 +1969,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
+            onContentSelectedSynchronously: onContentSelectedSynchronously,
             onContentAppear: onContentAppear,
             postSortTransform: postSortTransform,
             supplementarySections: { EmptyView() },
@@ -1954,6 +2004,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentSelectedSynchronously: (@MainActor (C) -> Void)? = nil,
         scrollTargetID: String? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
@@ -1983,6 +2034,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
+            onContentSelectedSynchronously: onContentSelectedSynchronously,
             onContentAppear: nil,
             scrollTargetID: scrollTargetID,
             postSortTransform: postSortTransform,
@@ -2015,6 +2067,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentSelectedSynchronously: (@MainActor (C) -> Void)? = nil,
         onContentAppear: ((C) -> Void)? = nil,
         scrollTargetID: String? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
@@ -2045,6 +2098,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
+            onContentSelectedSynchronously: onContentSelectedSynchronously,
             onContentAppear: onContentAppear,
             scrollTargetID: scrollTargetID,
             postSortTransform: postSortTransform,
@@ -2064,6 +2118,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
+    let onContentSelectedSynchronously: (@MainActor (C) -> Void)?
     let onContentAppear: ((C) -> Void)?
 
     public var body: some View {
@@ -2085,7 +2140,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             viewModel: viewModel,
             entrySelection: $entrySelection,
             enabled: true,
-            onSelection: onContentSelected
+            onSelection: onContentSelected,
+            onSelectionSynchronously: onContentSelectedSynchronously
         )
         .onAppear {
         }
@@ -2107,6 +2163,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentSelectedSynchronously: (@MainActor (C) -> Void)? = nil,
         onContentAppear: ((C) -> Void)? = nil
     ) {
         self.viewModel = viewModel
@@ -2125,6 +2182,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
         self.onContentSelected = onContentSelected
+        self.onContentSelectedSynchronously = onContentSelectedSynchronously
         self.onContentAppear = onContentAppear
     }
 }
