@@ -770,8 +770,13 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
     }
 
     @MainActor
-    func testReaderStoreFailureRetiresValidatorsAfterEntryCommit() async throws {
+    func testReaderStoreFailureReplaysUnchangedRSSBodyIntoStaleMirrors() async throws {
         try await assertInterruptedRefresh(.readerStoreFailure, format: .rss)
+    }
+
+    @MainActor
+    func testReaderStoreFailureReplaysUnchangedAtomBodyIntoStaleMirrors() async throws {
+        try await assertInterruptedRefresh(.readerStoreFailure, format: .atom)
     }
 
     @MainActor
@@ -813,7 +818,23 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         cached.title = "A"
         cached.html = "A body"
         cached.updateCompoundKey()
-        try await realm.asyncWrite { realm.add(feed); realm.add(cached) }
+        let bookmark = Bookmark()
+        bookmark.url = entryURL
+        bookmark.title = "A"
+        bookmark.html = "A body"
+        bookmark.updateCompoundKey()
+        let history = HistoryRecord()
+        history.url = entryURL
+        history.title = "A"
+        history.html = "A body"
+        history.lastVisitedAt = Date()
+        history.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(feed)
+            realm.add(cached)
+            realm.add(bookmark)
+            realm.add(history)
+        }
         // Keep a same-actor snapshot to exercise a caller that captured A before the partial write.
         let staleFeed = feed.freeze()
         let scenario = RefreshHTTPScenario(
@@ -857,7 +878,14 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
                 XCTAssertEqual(realm.objects(FeedEntryCollection.self).first?.title, "Collection B")
             }
 
-            scenario.restoreOriginalRepresentation()
+            // A failed mirror write must recover even when the server still serves B.
+            if interruption != .readerStoreFailure {
+                scenario.restoreOriginalRepresentation()
+            }
+            let committedEntryModifiedAt = cached.modifiedAt
+            let committedEntryCreatedAt = cached.createdAt
+            XCTAssertEqual(bookmark.title, "A")
+            XCTAssertEqual(history.title, "A")
             if interruption == .superseded {
                 replacement = Task { @MainActor in
                     try await staleFeed.fetch(realmConfiguration: configuration)
@@ -888,6 +916,11 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
                 await realm.asyncRefresh()
                 XCTAssertNil(feed.lastFetchedRSSURL)
                 XCTAssertNil(feed.lastRefreshedEntriesAt)
+                if interruption == .readerStoreFailure {
+                    XCTAssertEqual(cached.title, "B")
+                    XCTAssertEqual(bookmark.title, "A", "The failed attempt must leave a real stale bookmark")
+                    XCTAssertEqual(history.title, "A", "The failed attempt must leave real stale history")
+                }
                 ReaderContentLoader.bookmarkRealmConfiguration = configuration
                 await { @RealmBackgroundActor in
                     ReaderContentLoader.loadAllDiscoveryGateForTesting = nil
@@ -895,14 +928,24 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
                 try await feed.fetch(realmConfiguration: configuration)
             }
             await realm.asyncRefresh()
-            XCTAssertEqual(cached.title, "A")
-            XCTAssertEqual(cached.html, "A body")
-            XCTAssertEqual(feed.lastFetchedETag, "\"A\"")
-            XCTAssertEqual(feed.lastFetchedModifiedAt, Date(timeIntervalSince1970: 1577836800))
+            let recoveredTitle = interruption == .readerStoreFailure ? "B" : "A"
+            XCTAssertEqual(cached.title, recoveredTitle)
+            XCTAssertEqual(cached.html, "\(recoveredTitle) body")
+            XCTAssertEqual(bookmark.title, recoveredTitle)
+            XCTAssertEqual(bookmark.html, "\(recoveredTitle) body")
+            XCTAssertEqual(history.title, recoveredTitle)
+            XCTAssertEqual(history.html, "\(recoveredTitle) body")
+            if interruption == .readerStoreFailure {
+                XCTAssertEqual(cached.modifiedAt, committedEntryModifiedAt, "Mirror replay must not rewrite unchanged entries")
+                XCTAssertEqual(cached.createdAt, committedEntryCreatedAt)
+            }
+            XCTAssertEqual(feed.lastFetchedETag, "\"\(recoveredTitle)\"")
+            XCTAssertEqual(feed.lastFetchedModifiedAt, Date(timeIntervalSince1970:
+                interruption == .readerStoreFailure ? 1640995200 : 1577836800))
             XCTAssertNotNil(feed.lastRefreshedEntriesAt)
             XCTAssertEqual(feed.lastFetchedRSSURL, rssURL)
             if case .atom = format {
-                XCTAssertEqual(realm.objects(FeedEntryCollection.self).first?.title, "Collection A")
+                XCTAssertEqual(realm.objects(FeedEntryCollection.self).first?.title, "Collection \(recoveredTitle)")
             }
             let recoveryRequests = Array(scenario.requests.dropFirst(2))
             XCTAssertEqual(

@@ -1649,9 +1649,12 @@ public extension Feed {
                 return feedEntry
             }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
-            let payloads = entriesToPersist.map { FeedEntryPayload(entry: $0, containsFullContent: containsFullContent) }
-            var didCommit = false
-            if deleteOrphans || !entriesToPersist.isEmpty {
+            // A prior attempt may have committed these entries but failed to mirror them.
+            // Replay the fetched body through the idempotent mirror writer, independently
+            // of the entry diff; only changed entries are written to the feed Realm.
+            let payloads = feedEntries.map { FeedEntryPayload(entry: $0, containsFullContent: containsFullContent) }
+            let didCommit: Bool
+            do {
                 await realm.asyncRefresh()
                 didCommit = try await realm.asyncWritePreservingOwnership {
                     guard realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.rssUrl == expectedRSSURL else {
@@ -1677,7 +1680,10 @@ public extension Feed {
                 }
             }
             for payload in didCommit ? payloads : [] {
-                try await syncRelatedReaderContent(with: payload)
+                try await syncRelatedReaderContent(
+                    with: payload, sourceRealm: realm, expectedRSSURL: expectedRSSURL,
+                    refreshLease: refreshLease
+                )
             }
         }()
     }
@@ -1845,9 +1851,12 @@ public extension Feed {
                 return feedEntry
             }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
-            let payloads = entriesToPersist.map { FeedEntryPayload(entry: $0, containsFullContent: containsFullContent) }
-            var didCommit = false
-            if !entriesToPersist.isEmpty || !collectionObjects.isEmpty || deleteOrphans {
+            // A prior attempt may have committed these entries but failed to mirror them.
+            // Replay the fetched body through the idempotent mirror writer, independently
+            // of the entry diff; only changed entries are written to the feed Realm.
+            let payloads = feedEntries.map { FeedEntryPayload(entry: $0, containsFullContent: containsFullContent) }
+            let didCommit: Bool
+            do {
                 await realm.asyncRefresh()
                 didCommit = try await realm.asyncWritePreservingOwnership {
                     guard realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.rssUrl == expectedRSSURL else {
@@ -1885,7 +1894,10 @@ public extension Feed {
                 }
             }
             for payload in didCommit ? payloads : [] {
-                try await syncRelatedReaderContent(with: payload)
+                try await syncRelatedReaderContent(
+                    with: payload, sourceRealm: realm, expectedRSSURL: expectedRSSURL,
+                    refreshLease: refreshLease
+                )
             }
         }()
     }
@@ -2317,12 +2329,27 @@ func applyPayload(_ payload: FeedEntryPayload, to content: any ReaderContentProt
 }
 
 @RealmBackgroundActor
-fileprivate func syncRelatedReaderContent(with payload: FeedEntryPayload) async throws {
+fileprivate func syncRelatedReaderContent(
+    with payload: FeedEntryPayload,
+    sourceRealm: Realm,
+    expectedRSSURL: URL,
+    refreshLease: FeedRefreshLease
+) async throws {
+    func checkOwnership() throws {
+        try Task.checkCancellation()
+        guard FeedRefreshRegistry.shared.isCurrent(refreshLease),
+              sourceRealm.object(ofType: Feed.self, forPrimaryKey: refreshLease.feedID)?.rssUrl == expectedRSSURL
+        else { throw CancellationError() }
+    }
+    await sourceRealm.asyncRefresh()
+    try checkOwnership()
     let mirrors = try await ReaderContentLoader.loadAll(url: payload.url, skipFeedEntries: true)
     let timestamp = Date()
     for case let object as (Object & ReaderContentProtocol) in mirrors {
         guard let realm = object.realm else { continue }
+        await sourceRealm.asyncRefresh()
         try await realm.asyncWritePreservingOwnership {
+            try checkOwnership()
             if applyPayload(payload, to: object) {
                 object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
             }
