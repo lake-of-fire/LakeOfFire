@@ -641,7 +641,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
 
 
     private enum InterruptedRefresh: Equatable {
-        case superseded, cancelled
+        case superseded, cancelled, readerStoreFailure
     }
 
     private enum RefreshFixtureFormat {
@@ -770,6 +770,11 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
     }
 
     @MainActor
+    func testReaderStoreFailureRetiresValidatorsAfterEntryCommit() async throws {
+        try await assertInterruptedRefresh(.readerStoreFailure, format: .rss)
+    }
+
+    @MainActor
     private func assertInterruptedRefresh(
         _ interruption: InterruptedRefresh, format: RefreshFixtureFormat
     ) async throws {
@@ -828,6 +833,14 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
                 await gate.pauseFirstLookup()
             }
         }()
+        if interruption == .readerStoreFailure {
+            // The production loader opens a missing read-only mirror store after committing entries.
+            var missingStore = configuration
+            missingStore.fileURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("MissingFeedMirror-\(UUID().uuidString).realm")
+            missingStore.readOnly = true
+            ReaderContentLoader.bookmarkRealmConfiguration = missingStore
+        }
         let first = Task { @MainActor in try await feed.fetch(realmConfiguration: configuration) }
         var replacement: Task<Void, Error>?
         do {
@@ -863,7 +876,11 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             case .success:
                 throw RefreshFixtureError.refreshUnexpectedlySucceeded
             case .failure(let error):
-                XCTAssertTrue(error is CancellationError, "Unexpected refresh error: \(error)")
+                if interruption == .readerStoreFailure {
+                    XCTAssertFalse(error is CancellationError, "Expected the real Realm-open failure")
+                } else {
+                    XCTAssertTrue(error is CancellationError, "Unexpected refresh error: \(error)")
+                }
             }
             if let replacement {
                 try await replacement.value
@@ -871,6 +888,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
                 await realm.asyncRefresh()
                 XCTAssertNil(feed.lastFetchedRSSURL)
                 XCTAssertNil(feed.lastRefreshedEntriesAt)
+                ReaderContentLoader.bookmarkRealmConfiguration = configuration
                 await { @RealmBackgroundActor in
                     ReaderContentLoader.loadAllDiscoveryGateForTesting = nil
                 }()
