@@ -305,6 +305,7 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         let feed = try installFeed(in: realm)
         let originalURL = feed.rssUrl
         try realm.write {
+            feed.lastFetchedRSSURL = feed.rssUrl
             feed.lastFetchedETag = "\"old-resource\""
             feed.lastFetchedModifiedAt = Date(timeIntervalSince1970: 100)
             feed.lastRefreshedEntriesAt = Date(timeIntervalSince1970: 200)
@@ -345,6 +346,7 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         realm.refresh()
         XCTAssertEqual(model.feedURL, pastedURL)
         XCTAssertEqual(feed.rssUrl, originalURL)
+        XCTAssertEqual(feed.lastFetchedRSSURL, originalURL)
         XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
 
         await newerGate.release()
@@ -352,6 +354,7 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         realm.refresh()
         XCTAssertEqual(feed.rssUrl.absoluteString, pastedURL)
         XCTAssertEqual(model.feedURL, pastedURL)
+        XCTAssertNil(feed.lastFetchedRSSURL)
         XCTAssertNil(feed.lastFetchedETag)
         XCTAssertNil(feed.lastFetchedModifiedAt)
         XCTAssertNil(feed.lastRefreshedEntriesAt)
@@ -474,6 +477,7 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         let modifiedAt = Date(timeIntervalSince1970: 100)
         let refreshedAt = Date(timeIntervalSince1970: 200)
         try realm.write {
+            feed.lastFetchedRSSURL = feed.rssUrl
             feed.lastFetchedETag = "\"original-resource\""
             feed.lastFetchedModifiedAt = modifiedAt
             feed.lastRefreshedEntriesAt = refreshedAt
@@ -484,6 +488,7 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         model.feedURL = feed.rssUrl.absoluteString
         try await model.finishEditing().value
         realm.refresh()
+        XCTAssertEqual(feed.lastFetchedRSSURL, feed.rssUrl)
         XCTAssertEqual(feed.lastFetchedETag, "\"original-resource\"")
         XCTAssertEqual(feed.lastFetchedModifiedAt, modifiedAt)
         XCTAssertEqual(feed.lastRefreshedEntriesAt, refreshedAt)
@@ -493,6 +498,7 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         try await model.finishEditing().value
         realm.refresh()
         XCTAssertEqual(feed.rssUrl.absoluteString, "https://changed.example/feed.xml")
+        XCTAssertNil(feed.lastFetchedRSSURL)
         XCTAssertNil(feed.lastFetchedETag)
         XCTAssertNil(feed.lastFetchedModifiedAt)
         XCTAssertNil(feed.lastRefreshedEntriesAt)

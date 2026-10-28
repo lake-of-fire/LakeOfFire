@@ -306,9 +306,7 @@ private struct LibraryFeedFieldCommand: Sendable {
                 let previousRSSURL = feed.rssUrl
                 guard apply(feed) else { return }
                 if feed.rssUrl != previousRSSURL {
-                    feed.lastFetchedETag = nil
-                    feed.lastFetchedModifiedAt = nil
-                    feed.lastRefreshedEntriesAt = nil
+                    feed.retireFetchMetadata()
                 }
                 feed.refreshChangeMetadata(explicitlyModified: true)
             }

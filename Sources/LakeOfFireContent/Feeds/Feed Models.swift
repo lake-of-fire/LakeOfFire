@@ -276,6 +276,8 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var lastViewedAt: Date?
     @Persisted public var lastSeenFeedEntriesAt: Date?
     @Persisted public var lastRefreshedEntriesAt: Date?
+    /// URL of this device's settled refresh; legacy metadata has no provenance.
+    @Persisted public var lastFetchedRSSURL: URL?
     @Persisted public var lastFetchedETag: String?
     @Persisted public var lastFetchedModifiedAt: Date?
     @Persisted public var showsUnseenBadge = true
@@ -407,6 +409,7 @@ extension Feed: SyncSkippablePropertiesModel {
             "lastViewedAt",
             "lastSeenFeedEntriesAt",
             "lastRefreshedEntriesAt",
+            "lastFetchedRSSURL",
             "lastFetchedETag",
             "lastFetchedModifiedAt",
         ]
@@ -1525,6 +1528,14 @@ final class FeedRefreshRegistry: @unchecked Sendable {
 }
 
 public extension Feed {
+    /// Call in the transaction that changes the URL or partially commits feed content.
+    func retireFetchMetadata() {
+        lastFetchedRSSURL = nil
+        lastFetchedETag = nil
+        lastFetchedModifiedAt = nil
+        lastRefreshedEntriesAt = nil
+    }
+
     @MainActor
     @discardableResult
     private func persistFetchMetadata(
@@ -1545,13 +1556,15 @@ public extension Feed {
                     throw CancellationError()
                 }
                 if let expectedValidators {
-                    guard expectedValidators.etag?.isEmpty == false || expectedValidators.lastModifiedAt != nil,
+                    guard feed.lastFetchedRSSURL == owner.expectedRSSURL,
+                          expectedValidators.etag?.isEmpty == false || expectedValidators.lastModifiedAt != nil,
                           feed.lastFetchedETag == expectedValidators.etag,
                           feed.lastFetchedModifiedAt == expectedValidators.lastModifiedAt,
                           !realm.objects(FeedEntry.self).where({ $0.feedID == feedID && !$0.isDeleted }).isEmpty else {
                         return false
                     }
                 }
+                feed.lastFetchedRSSURL = owner.expectedRSSURL
                 feed.lastRefreshedEntriesAt = Date()
                 feed.lastFetchedETag = replacesValidators ? metadata.etag : metadata.etag ?? feed.lastFetchedETag
                 feed.lastFetchedModifiedAt = replacesValidators ? metadata.lastModifiedAt : metadata.lastModifiedAt ?? feed.lastFetchedModifiedAt
@@ -1576,9 +1589,6 @@ public extension Feed {
             )
             await realm.asyncRefresh()
             try checkFeedRefreshIsCurrent(in: realm, owner: owner)
-            // A missing completion stamp also covers an earlier body commit whose
-            // related-content projection failed. Identical-body retries must retry it.
-            let needsRelatedContentRecovery = realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.lastRefreshedEntriesAt == nil
             let existingEntries = Array(
                 realm.objects(FeedEntry.self)
                     .where { $0.feedID == feedID }
@@ -1655,17 +1665,16 @@ public extension Feed {
                 return feedEntry
             }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
-            let payloads = (needsRelatedContentRecovery ? feedEntries : entriesToPersist).map { FeedEntryPayload(entry: $0, containsFullContent: containsFullContent) }
-            var didCommit = needsRelatedContentRecovery
-            if deleteOrphans || !entriesToPersist.isEmpty {
+            // A prior attempt may have committed this body but failed to mirror it.
+            // Replay through the idempotent writer even when the entry diff is empty.
+            let payloads = feedEntries.map { FeedEntryPayload(entry: $0, containsFullContent: containsFullContent) }
+            do {
                 await realm.asyncRefresh()
-                didCommit = try await realm.asyncWritePreservingOwnership {
+                try await realm.asyncWritePreservingOwnership {
                     try checkFeedRefreshIsCurrent(in: realm, owner: owner)
                     let orphans = realm.objects(FeedEntry.self)
                         .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
-                    if !entriesToPersist.isEmpty || (deleteOrphans && !orphans.isEmpty) {
-                        try retireFeedFetchValidators(in: realm, feedID: feedID)
-                    }
+                    try retireFeedFetchValidators(in: realm, feedID: feedID)
                     if deleteOrphans {
                         for orphan in orphans {
                             orphan.isDeleted = true
@@ -1678,10 +1687,9 @@ public extension Feed {
                         }
                     }
                     realm.add(entriesToPersist, update: .modified)
-                    return true
                 }
             }
-            for payload in didCommit ? payloads : [] {
+            for payload in payloads {
                 try checkFeedRefreshIsCurrent(in: realm, owner: owner)
                 try await syncRelatedReaderContent(with: payload, sourceRealm: realm, owner: owner)
                 await realm.asyncRefresh()
@@ -1707,9 +1715,6 @@ public extension Feed {
             )
             await realm.asyncRefresh()
             try checkFeedRefreshIsCurrent(in: realm, owner: owner)
-            // A missing completion stamp also covers an earlier body commit whose
-            // related-content projection failed. Identical-body retries must retry it.
-            let needsRelatedContentRecovery = realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.lastRefreshedEntriesAt == nil
             let collectionObjects = collections.map { parsedCollection -> FeedEntryCollection in
                 let collection = FeedEntryCollection()
                 collection.feedID = feedID
@@ -1858,19 +1863,14 @@ public extension Feed {
                 return feedEntry
             }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
-            let payloads = (needsRelatedContentRecovery ? feedEntries : entriesToPersist).map { FeedEntryPayload(entry: $0, containsFullContent: containsFullContent) }
-            var didCommit = needsRelatedContentRecovery
-            if !entriesToPersist.isEmpty || !collectionObjects.isEmpty || deleteOrphans {
+            // A prior attempt may have committed this body but failed to mirror it.
+            // Replay through the idempotent writer even when the entry diff is empty.
+            let payloads = feedEntries.map { FeedEntryPayload(entry: $0, containsFullContent: containsFullContent) }
+            do {
                 await realm.asyncRefresh()
-                didCommit = try await realm.asyncWritePreservingOwnership {
+                try await realm.asyncWritePreservingOwnership {
                     try checkFeedRefreshIsCurrent(in: realm, owner: owner)
-                    let hasCollectionOrphans = deleteOrphans && !realm.objects(FeedEntryCollection.self)
-                        .where({ !$0.isDeleted && $0.compoundKey.in(existingCollectionKeys) && !$0.compoundKey.in(incomingCollectionKeys) }).isEmpty
-                    let hasEntryOrphans = deleteOrphans && !realm.objects(FeedEntry.self)
-                        .where({ !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }).isEmpty
-                    if !entriesToPersist.isEmpty || !collectionObjects.isEmpty || hasCollectionOrphans || hasEntryOrphans {
-                        try retireFeedFetchValidators(in: realm, feedID: feedID)
-                    }
+                    try retireFeedFetchValidators(in: realm, feedID: feedID)
                     for collection in collectionObjects {
                         if let existing = realm.object(ofType: FeedEntryCollection.self, forPrimaryKey: collection.compoundKey) {
                             collection.createdAt = existing.createdAt
@@ -1897,10 +1897,9 @@ public extension Feed {
                         }
                     }
                     realm.add(entriesToPersist, update: .modified)
-                    return true
                 }
             }
-            for payload in didCommit ? payloads : [] {
+            for payload in payloads {
                 try checkFeedRefreshIsCurrent(in: realm, owner: owner)
                 try await syncRelatedReaderContent(with: payload, sourceRealm: realm, owner: owner)
                 await realm.asyncRefresh()
@@ -1958,13 +1957,18 @@ public extension Feed {
                 "stage=feed.fetch.begin feedID=\(diagnosticFeedID.uuidString) title=\(diagnosticTitle) rssURL=\(requestedRSSURL.absoluteString) lastViewedAt=\(lastViewedAt?.description ?? "nil") lastRefreshedEntriesAt=\(lastRefreshedEntriesAt?.description ?? "nil") lastFetchedModifiedAt=\(lastFetchedModifiedAt?.description ?? "nil") lastFetchedETag=\(lastFetchedETag ?? "nil")"
             )
         }
-        let requestedValidators = FeedFetchMetadata(etag: lastFetchedETag, lastModifiedAt: lastFetchedModifiedAt)
+        let hasMatchingFetchURL = lastFetchedRSSURL == requestedRSSURL
+        let requestedValidators = FeedFetchMetadata(
+            etag: hasMatchingFetchURL ? lastFetchedETag : nil,
+            lastModifiedAt: hasMatchingFetchURL ? lastFetchedModifiedAt : nil
+        )
         var fetchResult: FeedFetchResult
         do {
             fetchResult = try await getRssData(
                 rssUrl: requestedRSSURL,
                 lastFetchedETag: requestedValidators.etag,
-                lastFetchedModifiedAt: requestedValidators.lastModifiedAt
+                lastFetchedModifiedAt: requestedValidators.lastModifiedAt,
+                allowNotModified: hasMatchingFetchURL
             )
         } catch {
             if shouldLogNiponica {
@@ -2011,17 +2015,24 @@ public extension Feed {
             let parser = FeedKit.FeedParser(data: rssData)
             let parsedFeed: FeedKit.Feed
             do {
-                parsedFeed = try await withCheckedThrowingContinuation { continuation in
-                    // FeedKit invokes this callback on its parsing queue. Only the
-                    // parsed value crosses back; the original request owns all writes.
-                    parser.parseAsync { result in
-                        switch result {
-                        case .success(let feed): continuation.resume(returning: feed)
-                        case .failure(let error): continuation.resume(throwing: error)
+                parsedFeed = try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { continuation in
+                        // FeedKit invokes this callback on its parsing queue. Only the
+                        // parsed value crosses back; the original request owns all writes.
+                        parser.parseAsync { result in
+                            switch result {
+                            case .success(let feed): continuation.resume(returning: feed)
+                            case .failure(let error): continuation.resume(throwing: error)
+                            }
                         }
                     }
+                } onCancel: {
+                    // Retire callback authority immediately; only the original task
+                    // may resume from parsing and enter the admitted write path.
+                    FeedRefreshRegistry.shared.end(refreshLease)
                 }
             } catch {
+                try Task.checkCancellation()
                 if shouldLogNiponica {
                     logNiponica("stage=feed.fetch.parserError feedID=\(diagnosticFeedID.uuidString) title=\(diagnosticTitle) rssURL=\(requestedRSSURL.absoluteString) feedType=unknown reason=parseFailure error=\(String(describing: error))")
                 }
@@ -2090,9 +2101,7 @@ fileprivate func checkFeedRefreshIsCurrent(
 @RealmBackgroundActor
 fileprivate func retireFeedFetchValidators(in realm: Realm, feedID: UUID) throws {
     guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { throw CancellationError() }
-    feed.lastFetchedETag = nil
-    feed.lastFetchedModifiedAt = nil
-    feed.lastRefreshedEntriesAt = nil
+    feed.retireFetchMetadata()
 }
 
 @RealmBackgroundActor
