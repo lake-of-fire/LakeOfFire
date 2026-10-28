@@ -858,14 +858,14 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
             let feed = try installFeed(in: realm)
             let category = try XCTUnwrap(feed.getCategory())
             let navigationValue = feed.freeze()
-            let ready = expectation(description: "Original physical owner observers installed")
+            let ready = expectation(description: "\(change): original physical owner observers installed")
             let model = LibraryFeedFormSectionsViewModel(
                 feed: navigationValue, observesRealm: true, observesFormInput: false,
                 didInstallOwnershipObservers: { ready.fulfill() }
             )
             addTeardownBlock { await model.stopObserving() }
             await fulfillment(of: [ready], timeout: 5)
-            let retired = expectation(description: "Original editor retired after owner change")
+            let retired = expectation(description: "\(change): original editor retired after owner change")
             let subscription = model.$ownershipRetired.dropFirst().filter { $0 }.prefix(1).sink { _ in retired.fulfill() }
             defer { subscription.cancel() }
             let replacement = Feed()
@@ -890,21 +890,41 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
             }
             // Construct the successor before old notification delivery completes.
             let currentFeed = change == "feed" ? replacement : feed
-            let successor = LibraryFeedFormSectionsViewModel(feed: currentFeed.freeze(), observesRealm: false)
+            let successorNavigation = currentFeed.freeze()
+            let successorIdentity = try XCTUnwrap(
+                LibraryFeedPresentationIdentity(feed: successorNavigation), "\(change): successor snapshot has no owner"
+            )
+            let successor = LibraryFeedFormSectionsViewModel(feed: successorNavigation, observesRealm: false)
+            // Read the constructed model before yielding; do not refresh or thaw
+            // extra objects here, which could change the observation ordering.
+            let initialState = "\(change): successor at construction; frozen=\(successor.feed.isFrozen), invalidated=\(successor.feed.isInvalidated), expected=\(successorIdentity), actual=\(String(describing: LibraryFeedPresentationIdentity(feed: successor.feed)))"
+            XCTAssertFalse(successor.ownershipRetired, initialState)
+            XCTAssertFalse(successor.feed.isFrozen, initialState)
+            XCTAssertFalse(successor.feed.isInvalidated, initialState)
+            XCTAssertEqual(successor.presentationIdentity, successorIdentity, initialState)
+            XCTAssertEqual(LibraryFeedPresentationIdentity(feed: successor.feed), successorIdentity, initialState)
+            if !successor.feed.isInvalidated {
+                XCTAssertFalse(successor.feed.isDeleted, initialState)
+                XCTAssertTrue(successor.feed.isSameObject(as: currentFeed), initialState)
+                let currentCategory = try XCTUnwrap(currentFeed.getCategory(), "\(change): current category missing")
+                let presentedCategory = try XCTUnwrap(successor.feed.getCategory(), initialState)
+                XCTAssertFalse(presentedCategory.isDeleted, initialState)
+                XCTAssertTrue(presentedCategory.isSameObject(as: currentCategory), initialState)
+            }
             await fulfillment(of: [retired], timeout: 5)
-            XCTAssertTrue(model.ownershipRetired)
-            XCTAssertFalse(successor.ownershipRetired)
-            XCTAssertNotEqual(model.presentationIdentity, successor.presentationIdentity)
-            XCTAssertEqual(LibraryFeedPresentationIdentity(feed: navigationValue), model.presentationIdentity)
+            XCTAssertTrue(model.ownershipRetired, "\(change): original owner must retire")
+            XCTAssertFalse(successor.ownershipRetired, "\(change): successor retired after original observer delivery; \(initialState)")
+            XCTAssertNotEqual(model.presentationIdentity, successor.presentationIdentity, "\(change): replacement must change physical identity")
+            XCTAssertEqual(LibraryFeedPresentationIdentity(feed: navigationValue), model.presentationIdentity, "\(change): original frozen navigation must retain its owner")
             try await model.writeFeedAsync(field: .title) { feed in feed.title = "Obsolete"; return true }.value
             realm.refresh()
-            XCTAssertEqual(currentFeed.title, change == "feed" ? "Replacement" : "Original")
-            XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+            XCTAssertEqual(currentFeed.title, change == "feed" ? "Replacement" : "Original", "\(change): retired editor changed the successor")
+            XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty, "\(change): retired editor journaled a mutation")
             try await successor.writeFeedAsync(field: .title) { feed in feed.title = "Successor edit"; return true }.value
             realm.refresh()
-            XCTAssertEqual(currentFeed.title, "Successor edit")
-            XCTAssertFalse(successor.ownershipRetired)
-            XCTAssertFalse(realm.objects(BigSyncPendingMutation.self).isEmpty)
+            XCTAssertEqual(currentFeed.title, "Successor edit", "\(change): successor write did not commit")
+            XCTAssertFalse(successor.ownershipRetired, "\(change): successor retired after its own write")
+            XCTAssertFalse(realm.objects(BigSyncPendingMutation.self).isEmpty, "\(change): successor edit did not journal")
         }
     }
 
