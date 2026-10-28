@@ -10965,6 +10965,16 @@ class Reader {
             const clearPendingBlankPointerTap = () => {
                 pendingBlankPointerTap = null;
             };
+            const observeBlankPointerSource = () => {
+                try { return doc.defaultView?.document === doc; }
+                catch (_error) { return false; }
+            };
+            const blankPointerSourceIsCurrent = () => !this.#closed
+                && this.#lifecycleGeneration === scope.lifecycleGeneration
+                && this.#documentScopes.get(doc) === scope;
+            const ownsBlankPointerSource = () => this.#postTouchstartCallback.isCurrent({
+                observe: observeBlankPointerSource, isCurrent: blankPointerSourceIsCurrent,
+            });
             const shouldSuppressSyntheticMouseBlankTap = (event, lastTouchTap) => {
                 if (event.type !== 'mousedown') {
                     return { suppress: false, consumeTouchTap: false };
@@ -11007,7 +11017,7 @@ class Reader {
                 }
                 return null;
             };
-            const postContentDocumentBlankPointerTap = (event, source, touchstartAtMs = Date.now()) => {
+            const postContentDocumentBlankPointerTap = (event, source, touchstartAtMs = Date.now(), isGestureCurrent = () => true) => {
                 const lifecycleGeneration = scope.lifecycleGeneration;
                 const receipt = {
                     sequence: blankPointerPostSequence,
@@ -11020,7 +11030,7 @@ class Reader {
                     && lastBlankTouchEnd === receipt.touchEnd;
                 const sourceIsCurrent = () => !this.#closed
                     && this.#lifecycleGeneration === lifecycleGeneration
-                    && this.#documentScopes.get(doc) === scope && receiptIsCurrent();
+                    && this.#documentScopes.get(doc) === scope && receiptIsCurrent() && isGestureCurrent();
                 const observeSource = () => {
                     try {
                         return doc.defaultView?.document === doc
@@ -11115,46 +11125,69 @@ class Reader {
                 });
             };
             const handleBlankPointerTouchStart = (event) => {
-                const target = event.target;
-                const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
-                const excludedTarget = targetElement?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], m-m, m-s, m-t, .m-m, .m-sentence, ruby, rt');
-                const startSegment = segmentTargetForBlankPointerEvent(event);
-                if (excludedTarget && !startSegment) {
-                    clearPendingBlankPointerTap();
-                    return;
-                }
-                const point = touchPointForBlankPointer(event);
-                pendingBlankPointerTap = point
-                    ? {
-                        startX: point.screenX ?? point.clientX,
-                        startY: point.screenY ?? point.clientY,
-                        startAtMs: Date.now(),
+                const previousPending = pendingBlankPointerTap;
+                if (!ownsBlankPointerSource() || pendingBlankPointerTap !== previousPending) return;
+                // Install this start before page-controlled getters run. A
+                // nested start replaces it and owns the resulting gesture.
+                const pending = { ready: false };
+                pendingBlankPointerTap = pending;
+                try {
+                    const target = event.target;
+                    const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
+                    const excludedTarget = targetElement?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], m-m, m-s, m-t, .m-m, .m-sentence, ruby, rt');
+                    const startSegment = segmentTargetForBlankPointerEvent(event);
+                    if (excludedTarget && !startSegment) return;
+                    const point = blankPointerPoint(event);
+                    const startAtMs = Date.now();
+                    if (!ownsBlankPointerSource() || pendingBlankPointerTap !== pending) return;
+                    if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
+                    Object.assign(pending, { startX: point.x, startY: point.y, startAtMs, ready: true });
+                } catch (_error) {
+                    // A malformed event never leaves a partially ready tap.
+                } finally {
+                    if (ownsBlankPointerSource() && pendingBlankPointerTap === pending && !pending.ready) {
+                        clearPendingBlankPointerTap();
                     }
-                    : null;
+                }
             };
             const handleBlankPointerTouchMove = (event) => {
                 const pending = pendingBlankPointerTap;
-                if (!pending) return;
-                if (blankPointerMovedPastTapThreshold(event, pending)) {
-                    clearPendingBlankPointerTap();
+                if (!ownsBlankPointerSource() || pendingBlankPointerTap !== pending) return;
+                if (!pending?.ready) return;
+                try {
+                    const moved = blankPointerMovedPastTapThreshold(event, pending);
+                    if (!ownsBlankPointerSource() || pendingBlankPointerTap !== pending) return;
+                    if (moved) clearPendingBlankPointerTap();
+                } catch (_error) {
+                    if (ownsBlankPointerSource() && pendingBlankPointerTap === pending) {
+                        clearPendingBlankPointerTap();
+                    }
                 }
             };
             const handleBlankPointerTouchEnd = (event) => {
                 const pending = pendingBlankPointerTap;
-                clearPendingBlankPointerTap();
-                if (!pending || event.type === 'touchcancel') {
-                    return;
+                if (!ownsBlankPointerSource() || pendingBlankPointerTap !== pending) return;
+                if (!pending?.ready) return;
+                try {
+                    if (event.type === 'touchcancel') return;
+                    if (blankPointerMovedPastTapThreshold(event, pending)) return;
+                    const point = blankPointerPoint(event);
+                    if (!ownsBlankPointerSource() || pendingBlankPointerTap !== pending) return;
+                    if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
+                    // Keep this object through posting so nested starts/ends
+                    // can replace it without the older producer committing.
+                    pending.ready = false;
+                    lastBlankTouchEnd = point;
+                    lastPostedBlankTouchTap = null;
+                    postContentDocumentBlankPointerTap(event, 'content-document.blank', pending.startAtMs,
+                        () => pendingBlankPointerTap === pending);
+                } catch (_error) {
+                    // Aborted events cannot publish or leave a pending tap.
+                } finally {
+                    if (ownsBlankPointerSource() && pendingBlankPointerTap === pending) {
+                        clearPendingBlankPointerTap();
+                    }
                 }
-                if (blankPointerMovedPastTapThreshold(event, pending)) {
-                    return;
-                }
-                const point = blankPointerPoint(event);
-                const endX = point?.screenX ?? point?.clientX ?? null;
-                const endY = point?.screenY ?? point?.clientY ?? null;
-                lastBlankTouchEnd = endX !== null && endY !== null
-                    ? { x: endX, y: endY }
-                    : null;
-                postContentDocumentBlankPointerTap(event, 'content-document.blank', pending.startAtMs);
             };
             const handleBlankPointerMouseDown = (event) => {
                 postContentDocumentBlankPointerTap(event, 'content-document.blank.mouse');
