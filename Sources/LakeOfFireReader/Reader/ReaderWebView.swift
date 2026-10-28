@@ -549,6 +549,7 @@ fileprivate struct ReaderWebViewInternal: View {
     let callbackRelay: ReaderWebViewCallbackRelay
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
+    @State private var transcriptURLSchemeHandler = TranscriptURLSchemeHandler()
 #if os(iOS)
     @StateObject private var webViewPrewarmer = WebViewPrewarmer(
         warmUpCount: 1,
@@ -628,6 +629,7 @@ fileprivate struct ReaderWebViewInternal: View {
             bounces: bounces,
             schemeHandlers: [
                 (internalURLSchemeHandler, "internal"),
+                (transcriptURLSchemeHandler, TranscriptReaderProtocol.urlScheme),
                 (readerFileURLSchemeHandler, "reader-file"),
                 (ebookURLSchemeHandler, "ebook"),
             ] + schemeHandlers,

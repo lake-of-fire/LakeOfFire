@@ -95,6 +95,9 @@ public class ReaderContent: ObservableObject {
     
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
     private var loadingResolvedContentURL: URL?
+    // A transcript's stable content URL identifies saved content, while each
+    // registered page URL identifies the payload for this selection.
+    private var selectedTranscriptPageURL: URL?
     // The last admitted selection outlives its loading task: a completed task
     // may still have readers queued to receive its result.
     private var selectionID: UUID?
@@ -102,6 +105,7 @@ public class ReaderContent: ObservableObject {
     private var selectionHandoff: ReaderContentSelectionHandoff?
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
+    private var preloadedTranscriptPageURL: URL?
     private var preloadedContent: (any ReaderContentProtocol)?
 
     public init() {
@@ -289,22 +293,26 @@ public class ReaderContent: ObservableObject {
             return
         }
         preloadedResolvedContentURL = resolvedTargetURL
+        preloadedTranscriptPageURL = targetURL.isTranscriptPageURL ? targetURL : nil
         preloadedContent = content
     }
 
-    private func consumePreloadedContentIfMatching(resolvedContentURL: URL) -> (any ReaderContentProtocol)? {
+    private func consumePreloadedContentIfMatching(resolvedContentURL: URL, sourceURL: URL) -> (any ReaderContentProtocol)? {
         if preloadedContent?.isInvalidated == true {
             preloadedResolvedContentURL = nil
+            preloadedTranscriptPageURL = nil
             preloadedContent = nil
             return nil
         }
         guard let preloadedResolvedContentURL,
               let preloadedContent,
+              !sourceURL.isTranscriptPageURL || preloadedTranscriptPageURL == sourceURL,
               preloadedContent.url.matchesReaderURL(resolvedContentURL),
               preloadedResolvedContentURL.matchesReaderURL(resolvedContentURL) else {
             return nil
         }
         self.preloadedResolvedContentURL = nil
+        preloadedTranscriptPageURL = nil
         self.preloadedContent = nil
         return preloadedContent
     }
@@ -335,6 +343,7 @@ public class ReaderContent: ObservableObject {
         try Task.checkCancellation()
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
         let displayURL = resolvedContentURL
+        let transcriptPayloadChanged = url.isTranscriptPageURL && selectedTranscriptPageURL != url
         if let intent {
             guard let handoff, handoff.permitsCapture,
                   resolvedContentURL.matchesReaderURL(intent.destinationURL) else { throw CancellationError() }
@@ -357,6 +366,7 @@ public class ReaderContent: ObservableObject {
 
         if let loadingTask,
            let loadingResolvedContentURL,
+           !transcriptPayloadChanged,
            selectionLifetime.permitsCommit(),
            matchesResolvedContentURL(loadingResolvedContentURL, resolvedContentURL: resolvedContentURL) {
             let loadID = selectionID
@@ -397,6 +407,7 @@ public class ReaderContent: ObservableObject {
         // Reopening the already displayed content is not a new selection.
         // Keep completed readers valid, but still retire any unrelated task.
         if handoff?.isPending != true, loadingTask == nil, selectionLifetime.permitsCommit(),
+           !transcriptPayloadChanged,
            let existingContent = content, !existingContent.isInvalidated,
            matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL),
            matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
@@ -428,6 +439,7 @@ public class ReaderContent: ObservableObject {
         selectionLifetime.withdraw()
         selectionLifetime = nextLifetime
         selectionID = loadID
+        selectedTranscriptPageURL = url.isTranscriptPageURL ? url : nil
         loadingTask = nil
         loadingResolvedContentURL = nil
         defer {
@@ -447,7 +459,8 @@ public class ReaderContent: ObservableObject {
             }
             try validatePublication()
 
-            if let existingContent = content, !existingContent.isInvalidated,
+            if !transcriptPayloadChanged,
+               let existingContent = content, !existingContent.isInvalidated,
                matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL) {
                 let pageAlreadyMatchesDisplay = matchesResolvedContentURL(
                     pageURL, resolvedContentURL: displayURL
@@ -466,7 +479,7 @@ public class ReaderContent: ObservableObject {
                 return
             }
 
-            if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL) {
+            if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL, sourceURL: url) {
                 currentSectionIndex = nil
                 try validatePublication()
                 content = preloadedContent

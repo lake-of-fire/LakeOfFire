@@ -1,0 +1,42 @@
+name: Reader transcript tests
+
+on:
+  pull_request:
+    paths:
+      - Sources/LakeOfFireReader/Resources/Transcript/**
+      - Sources/LakeOfFireReader/Reader/ReaderTranscript*Bridge.swift
+      - Tests/JavaScript/reader-transcript-*.test.cjs
+      - .github/workflows/transcript-tests.yml
+  push:
+    branches:
+      - v4
+    paths:
+      - Sources/LakeOfFireReader/Resources/Transcript/**
+      - Sources/LakeOfFireReader/Reader/ReaderTranscript*Bridge.swift
+      - Tests/JavaScript/reader-transcript-*.test.cjs
+      - .github/workflows/transcript-tests.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reader-transcripts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  javascript:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Saved-caption capture and owned Blob transfer behavior
+        run: |
+          for suite in Tests/JavaScript/reader-transcript-*.test.cjs; do
+            node "$suite"
+          done
