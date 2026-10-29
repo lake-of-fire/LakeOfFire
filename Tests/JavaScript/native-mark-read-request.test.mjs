@@ -217,3 +217,103 @@ test('invalid inputs and exhausted request IDs fail without posting', async () =
     })).errorCode, 'requestIDUnavailable')
     assert.equal(oversizedRequestID.posted.length, 0)
 })
+
+
+// Adapted from hotfix b2fcec0a's transport-error regressions. Diagnostics are
+// page-realm values and must never prevent the existing coordinator settling.
+const transportDiagnosticHarness = (t, makeError, nativeReply = undefined) => {
+    const timers = new Map()
+    let posts = 0
+    const coordinator = createNativeMarkReadRequestCoordinator({
+        makeRequestID: () => 'diagnostic-request',
+        postMessage: message => {
+            ++posts
+            if (nativeReply !== undefined) coordinator.settle({
+                requestID: message.requestID, sectionId: message.sectionId,
+                success: nativeReply, errorCode: 'nativeRejected',
+            })
+            throw makeError(coordinator)
+        },
+        scheduleTimeout: callback => { timers.set(1, callback); return 1 },
+        cancelTimeout: id => timers.delete(id),
+    })
+    t.after(() => coordinator.cancelAll())
+    return { coordinator, timers, get posts() { return posts } }
+}
+
+const unreadableTransportErrors = [
+    ['throwing message getter', () => Object.defineProperty({}, 'message', {
+        get() { throw new Error('unreadable message') },
+    })],
+    ['throwing string conversion', () => ({ toString() { throw new Error('unreadable string') } })],
+    ['null prototype', () => Object.create(null)],
+]
+for (const [name, makeError] of unreadableTransportErrors) {
+    test(`${name} cannot interrupt transport failure settlement`, async t => {
+        const h = transportDiagnosticHarness(t, makeError)
+        const result = await h.coordinator.request({ sectionID: 'section-a', message: {} })
+        assert.equal(result.success, false)
+        assert.equal(result.errorCode, 'nativePostFailed')
+        assert.equal(result.stale, false)
+        assert.equal(h.coordinator.pendingCount, 0)
+        assert.equal(h.timers.size, 0)
+        assert.equal(h.posts, 1)
+    })
+}
+for (const error of [new Error('bridge unavailable'), 'bridge unavailable', null]) {
+    test(`transport diagnostics preserve ${error === null ? 'null fallback' : typeof error} errors`, async t => {
+        const h = transportDiagnosticHarness(t, () => error)
+        const result = await h.coordinator.request({ sectionID: 'section-a', message: {} })
+        assert.equal(result.errorCode, error === null ? 'nativePostFailed' : 'bridge unavailable')
+        assert.equal(h.coordinator.pendingCount, 0)
+        assert.equal(h.timers.size, 0)
+    })
+}
+for (const success of [true, false]) {
+    test(`synchronous native ${success} survives an unreadable wrapper error`, async t => {
+        const h = transportDiagnosticHarness(t, unreadableTransportErrors[0][1], success)
+        const result = await h.coordinator.request({ sectionID: 'section-a', message: {} })
+        assert.equal(result.success, success)
+        assert.equal(result.errorCode, success ? null : 'nativeRejected')
+        assert.equal(h.coordinator.pendingCount, 0)
+        assert.equal(h.timers.size, 0)
+    })
+}
+test('diagnostic reentry cannot replace an already settled cancellation', async t => {
+    const h = transportDiagnosticHarness(t, coordinator => Object.defineProperty({}, 'message', {
+        get() { coordinator.cancelAll('readerReplaced'); throw new Error('after cancellation') },
+    }))
+    const result = await h.coordinator.request({ sectionID: 'section-a', message: {} })
+    assert.equal(result.success, false)
+    assert.equal(result.stale, true)
+    assert.equal(result.errorCode, 'readerReplaced')
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.timers.size, 0)
+})
+
+test('an unreadable retry error retires the successor timer without another post', async t => {
+    const timers = new Map()
+    let timerID = 0
+    let posts = 0
+    const coordinator = createNativeMarkReadRequestCoordinator({
+        makeRequestID: () => 'retry-diagnostic',
+        postMessage: () => {
+            if (++posts === 2) throw unreadableTransportErrors[0][1]()
+        },
+        scheduleTimeout: callback => { timers.set(++timerID, callback); return timerID },
+        cancelTimeout: id => timers.delete(id),
+    })
+    t.after(() => coordinator.cancelAll())
+    const completion = coordinator.request({ sectionID: 'section-a', message: {} })
+    const firstTimer = timers.get(1)
+    timers.delete(1) // A real scheduler removes a timer before invoking it.
+    assert.doesNotThrow(() => firstTimer())
+    const result = await completion
+    assert.equal(result.success, false)
+    assert.equal(result.errorCode, 'nativePostFailed')
+    assert.equal(posts, 2)
+    assert.equal(coordinator.pendingCount, 0)
+    assert.equal(timers.size, 0)
+    firstTimer() // A late invocation cannot revive the retired request.
+    assert.equal(posts, 2)
+})
