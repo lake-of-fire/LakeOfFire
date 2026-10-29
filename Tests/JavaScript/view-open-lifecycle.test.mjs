@@ -10,6 +10,10 @@ globalThis.HTMLElement = class extends EventTarget {
     }
 }
 globalThis.customElements = { define() {} }
+globalThis.NodeFilter = {
+    SHOW_ELEMENT: 1, SHOW_TEXT: 4, SHOW_CDATA_SECTION: 8,
+    FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3,
+}
 globalThis.document = { createElement() { throw new Error('Unconfigured renderer') } }
 const { View } = await import('../../Sources/LakeOfFireReader/Resources/foliate-js/view.js')
 const deferred = () => {
@@ -201,3 +205,86 @@ for (const cacheWarmer of [false, true]) {
         view.close()
     })
 }
+
+
+test('registered setup cleanup is owned by close and can be manually released once', async t => {
+    const view = new View(), calls = []
+    factory(t)
+    await view.open(book(), false)
+    const release = view.registerCleanup(() => calls.push('released'))
+    release()
+    release()
+    view.registerCleanup(() => calls.push('closed'))
+    view.close()
+    view.close()
+    assert.deepEqual(calls, ['released', 'closed'])
+})
+test('replacement drains old setup cleanup while preserving successor registration', async t => {
+    const view = new View(), calls = []
+    factory(t)
+    await view.open(book(), false)
+    view.registerCleanup(() => calls.push('old'))
+    await view.open(book(), true)
+    assert.deepEqual(calls, ['old'])
+    view.registerCleanup(() => calls.push('new'))
+    view.close()
+    assert.deepEqual(calls, ['old', 'new'])
+})
+test('late registration on a closed View releases resources immediately', () => {
+    const view = new View()
+    let calls = 0
+    const release = view.registerCleanup(() => ++calls)
+    release()
+    assert.equal(calls, 1)
+})
+
+
+for (const reuse of [false, true]) {
+    test(`retired caller cannot dispose a successor (${reuse ? 'same' : 'new'} book)`, async t => {
+        const gate = deferred(), view = new View(), first = book(), next = reuse ? first : book()
+        let opens = 0
+        const created = factory(t, () => {}, () => ++opens === 1 ? gate.promise : undefined)
+        const original = view.beginOpen(first, false)
+        while (!created.length || !created[0].openArgs) await new Promise(resolve => setImmediate(resolve))
+        const successor = view.beginOpen(next, true)
+        assert.equal(await successor.completion, true)
+        gate.resolve()
+        assert.equal(await original.completion, false)
+        assert.equal(original.isCurrent(), false)
+        assert.equal(original.retire(), false)
+        assert.equal(view.book, next)
+        assert.equal(view.renderer, created[1])
+        assert.equal(next.destroyed, 0)
+        assert.equal(successor.retire(), true)
+        assert.equal(successor.retire(), true)
+        assert.equal(next.destroyed, 1)
+        assert.equal(created[0].destroyed, 1)
+        assert.equal(created[1].destroyed, 1)
+    })
+}
+test('cleanup reentry cannot transfer the original opening handle to its successor', async t => {
+    const view = new View(), first = book(), discarded = book(), successorBook = book()
+    factory(t)
+    await view.open(first, false)
+    let successor
+    view.registerCleanup(() => { successor = view.beginOpen(successorBook, true) })
+    const original = view.beginOpen(discarded, false)
+    assert.equal(await original.completion, false)
+    assert.equal(await successor.completion, true)
+    assert.equal(original.retire(), false)
+    assert.equal(view.book, successorBook)
+    assert.equal(discarded.destroyed, 1)
+    assert.equal(successorBook.destroyed, 0)
+    view.close()
+})
+
+
+test('primitive invalid book input cannot make retirement throw during module loading', async t => {
+    factory(t)
+    const view = new View(), attempt = view.beginOpen(7, false)
+    assert.doesNotThrow(() => view.close())
+    assert.equal(await attempt.completion, false)
+    assert.doesNotThrow(() => attempt.retire())
+    assert.equal(view.book, null)
+    assert.equal(view.renderer, null)
+})

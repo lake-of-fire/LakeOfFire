@@ -57,6 +57,8 @@ export class View extends HTMLElement {
     #documentBindings = new Map()
     #openGeneration = 0
     #disposedRenderers = new WeakSet()
+    #disposedBooks = new WeakSet()
+    #externalCleanups = new Set()
     isFixedLayout = false
     lastLocation
     history = new ViewHistory()
@@ -75,7 +77,9 @@ export class View extends HTMLElement {
     }
     #disposeBook(book) {
         // A teardown callback may have opened this same book in a successor.
-        if (!book || this.book === book) return
+        if (!book || (typeof book !== 'object' && typeof book !== 'function')
+            || this.book === book || this.#disposedBooks.has(book)) return
+        this.#disposedBooks.add(book)
         try { book.destroy?.() } catch (_) {}
     }
     #withdrawRendererState() {
@@ -83,6 +87,8 @@ export class View extends HTMLElement {
         const book = this.book
         const bindings = this.#rendererBindings
         const documents = [...this.#documentBindings.values()]
+        const cleanups = [...this.#externalCleanups]
+        this.#externalCleanups.clear()
         this.renderer = null
         this.book = null
         this.#rendererBindings = null
@@ -98,16 +104,50 @@ export class View extends HTMLElement {
         // Remove only the captured bindings, even if cleanup reenters open.
         bindings?.clear()
         for (const documentBindings of documents) documentBindings.clear()
+        for (const cleanup of cleanups) {
+            try { cleanup() } catch (_) {}
+        }
         return { renderer, book }
     }
+    registerCleanup(cleanup) {
+        if (typeof cleanup !== 'function') return () => {}
+        let active = true
+        const release = () => {
+            if (!active) return
+            active = false
+            this.#externalCleanups.delete(release)
+            cleanup()
+        }
+        if (this.renderer && this.book) this.#externalCleanups.add(release)
+        else release()
+        return release
+    }
     async open(book, isCacheWarmer) {
+        return await this.beginOpen(book, isCacheWarmer).completion
+    }
+    beginOpen(book, isCacheWarmer) {
         const openGeneration = ++this.#openGeneration
+        const completion = this.#openBook(book, isCacheWarmer, openGeneration)
+        return {
+            completion,
+            isCurrent: () => this.#openGeneration === openGeneration && this.book === book,
+            retire: () => {
+                if (this.#openGeneration === openGeneration) this.close()
+                this.#disposeBook(book)
+                // A closed/failed opening may leave an empty host to remove.
+                // A live successor owns that host, even when it reused the book.
+                return !this.book && !this.renderer
+            },
+        }
+    }
+    async #openBook(book, isCacheWarmer, openGeneration) {
         const previous = this.#withdrawRendererState()
         const isCurrent = () => this.#openGeneration === openGeneration && this.book === book
         // Withdrawal may invoke browser collaborators which start another open.
         if (this.#openGeneration !== openGeneration) {
             this.#disposeRenderer(previous.renderer)
             this.#disposeBook(previous.book)
+            this.#disposeBook(book)
             return false
         }
         this.book = book
