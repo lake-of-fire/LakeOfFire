@@ -19,6 +19,13 @@ const boundedRequestString = (value, maximumLength) => (
     nonEmptyExactString(value) && value.length <= maximumLength
 )
 
+// Transport errors can be page-realm objects whose getters or conversions
+// throw. Diagnostics must not interrupt the existing request settlement.
+const nativeMarkReadTransportError = (error, fallback) => {
+    try { return String(error?.message || error || fallback) }
+    catch (_) { return fallback }
+}
+
 /**
  * Owns the request/reply lifetime for a native mark-read transaction.
  * Visible read state may be published only after the returned promise succeeds.
@@ -108,7 +115,7 @@ export const createNativeMarkReadRequestCoordinator = ({
             finish(requestID, {
                 success: false,
                 stale: !ownerIsCurrent(pending.owner),
-                errorCode: String(error?.message || error || 'nativePostFailed'),
+                errorCode: nativeMarkReadTransportError(error, 'nativePostFailed'),
             })
             return false
         }

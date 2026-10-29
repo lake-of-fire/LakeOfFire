@@ -3443,88 +3443,114 @@ const getView = async (source, isCacheWarmer, { isCurrent = () => true } = {}) =
         book.destroy?.()
         throw readerOpenSupersededError()
     }
-    view.dataset.isCache = isCacheWarmer;
-    view.style.display = isCacheWarmer ? 'none' : 'block';
-    view.style.width = isCacheWarmer ? '0px' : '100%';
-    view.style.height = isCacheWarmer ? '0px' : '100%';
-    view.style.overflow = 'hidden';
-    view.style.contain = 'strict';
-    view.style.pointerEvents = isCacheWarmer ? 'none' : 'auto';
-    const readerStage = document.getElementById('reader-stage');
-    (isCacheWarmer ? document.body : (readerStage || document.body)).append(view);
-    postReaderVisibilityProbe('getView:appended', view, {
-        isCacheWarmer: !!isCacheWarmer,
-        parentID: view.parentElement?.id ?? null,
-        parentTag: view.parentElement?.tagName ?? null,
-    });
-    forwardShadowErrors(view.shadowRoot);
-    if (isCacheWarmer) {
-        view.style.display = 'none'
-        view.style.contain = 'strict'
-        view.style.position = 'absolute'
-        view.style.left = '-9001px'
-        view.style.width = 0
-        view.style.height = 0
-        view.style.pointerEvents = 'none'
-    }
+    let opening = null
     try {
-        await view.open(book, isCacheWarmer)
-        if (!isCurrent()) throw readerOpenSupersededError()
-    } catch (error) {
-        view.close?.()
-        view.remove?.()
-        throw error
-    }
-    if (!isCacheWarmer) {
-        await view.renderer?.setWritingDirectionOverride?.(
-            globalThis.manabiEbookViewerWritingDirection ?? 'original',
-        )
-    }
-    postReaderVisibilityProbe('getView:opened', view, {
-        isCacheWarmer: !!isCacheWarmer,
-        bookDir: book?.dir || null,
-        sectionCount: Array.isArray(book?.sections) ? book.sections.length : null,
-    });
-
-    // Hide scrollbars on the scrolling container inside foliate-paginator's shadow DOM
-    const paginator = resolveFoliatePaginator(view);
-    if (paginator?.shadowRoot) {
-        const style = document.createElement('style');
-        style.textContent = `
-        #container {
-            scrollbar-width: none !important;         /* Firefox */
-            -ms-overflow-style: none !important;      /* IE/Edge */
-        }
-        #container::-webkit-scrollbar {
-            display: none !important;                 /* WebKit (macOS/iOS) */
-            width: 0 !important;
-            height: 0 !important;
-        }
-    `;
-        paginator.shadowRoot.appendChild(style);
-        postReaderVisibilityProbe('getView:paginator-ready', view, {
+        view.dataset.isCache = isCacheWarmer;
+        view.style.display = isCacheWarmer ? 'none' : 'block';
+        view.style.width = isCacheWarmer ? '0px' : '100%';
+        view.style.height = isCacheWarmer ? '0px' : '100%';
+        view.style.overflow = 'hidden';
+        view.style.contain = 'strict';
+        view.style.pointerEvents = isCacheWarmer ? 'none' : 'auto';
+        const readerStage = document.getElementById('reader-stage');
+        (isCacheWarmer ? document.body : (readerStage || document.body)).append(view);
+        postReaderVisibilityProbe('getView:appended', view, {
             isCacheWarmer: !!isCacheWarmer,
+            parentID: view.parentElement?.id ?? null,
+            parentTag: view.parentElement?.tagName ?? null,
+        });
+        forwardShadowErrors(view.shadowRoot);
+        if (isCacheWarmer) {
+            view.style.display = 'none'
+            view.style.contain = 'strict'
+            view.style.position = 'absolute'
+            view.style.left = '-9001px'
+            view.style.width = 0
+            view.style.height = 0
+            view.style.pointerEvents = 'none'
+        }
+        opening = view.beginOpen(book, isCacheWarmer)
+        const opened = await opening.completion
+        const renderer = view.renderer
+        const canPublish = () => opening.isCurrent() && isCurrent()
+            && view.book === book && renderer && view.renderer === renderer
+        if (opened !== true || !canPublish()) throw readerOpenSupersededError()
+        if (!isCacheWarmer) {
+            await renderer.setWritingDirectionOverride?.(
+                globalThis.manabiEbookViewerWritingDirection ?? 'original',
+            )
+        }
+        if (!canPublish()) throw readerOpenSupersededError()
+        postReaderVisibilityProbe('getView:opened', view, {
+            isCacheWarmer: !!isCacheWarmer,
+            bookDir: book?.dir || null,
+            sectionCount: Array.isArray(book?.sections) ? book.sections.length : null,
         });
 
-        const sideNavWidth = 32;
-        document.documentElement.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
-        // Also set --side-nav-width on the inner view, so it propagates into the iframe's shadow DOM.
-        const syncSideNavWidth = () => {
-            const width = getComputedStyle(document.body)
-            .getPropertyValue('--side-nav-width').trim();
-            if (view) {
-                view.style.setProperty('--side-nav-width', width);
-                // Also update the renderer's CSS variable, if setSideNavWidth exists
-                if (view.renderer && typeof view.renderer.setSideNavWidth === "function") {
-                    view.renderer.setSideNavWidth(width);
-                }
+        // Hide scrollbars on the scrolling container inside foliate-paginator's shadow DOM
+        const paginator = resolveFoliatePaginator(view);
+        if (paginator?.shadowRoot) {
+            const style = document.createElement('style');
+            style.textContent = `
+            #container {
+                scrollbar-width: none !important;         /* Firefox */
+                -ms-overflow-style: none !important;      /* IE/Edge */
             }
-        };
-        window.addEventListener('resize', syncSideNavWidth);
-        syncSideNavWidth();
-    }
+            #container::-webkit-scrollbar {
+                display: none !important;                 /* WebKit (macOS/iOS) */
+                width: 0 !important;
+                height: 0 !important;
+            }
+        `;
+            paginator.shadowRoot.appendChild(style);
+            postReaderVisibilityProbe('getView:paginator-ready', view, {
+                isCacheWarmer: !!isCacheWarmer,
+            });
 
-    return view
+            const sideNavWidth = 32;
+            document.documentElement.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
+            // Also set --side-nav-width on the inner view, so it propagates into the iframe's shadow DOM.
+            const syncSideNavWidth = () => {
+                if (!canPublish()) return
+                const width = getComputedStyle(document.body)
+                .getPropertyValue('--side-nav-width').trim();
+                if (view) {
+                    view.style.setProperty('--side-nav-width', width);
+                    // Also update the renderer's CSS variable, if setSideNavWidth exists
+                    if (view.renderer && typeof view.renderer.setSideNavWidth === "function") {
+                        view.renderer.setSideNavWidth(width);
+                    }
+                }
+            };
+            window.addEventListener('resize', syncSideNavWidth);
+            view.registerCleanup(() => window.removeEventListener('resize', syncSideNavWidth));
+            syncSideNavWidth();
+        }
+        if (!canPublish()) throw readerOpenSupersededError()
+        return {
+            view,
+            isCurrent: canPublish,
+            retire: () => {
+                try {
+                    if (opening.retire()) view.remove?.()
+                } catch (_) {}
+            },
+        }
+    } catch (error) {
+        let removeHost = false
+        try {
+            if (opening) removeHost = opening.retire()
+            else {
+                book.destroy?.()
+                view.close?.()
+                removeHost = true
+            }
+        } catch (_) {}
+        if (removeHost) {
+            try { view.remove?.() } catch (_) {}
+        }
+        throw error
+    }
 }
 
 const getCSSForBookContent = ({
@@ -3948,6 +3974,7 @@ const navSpinnerMaximumMs = 1200;
 
 class Reader {
     #closed = false
+    #openedView = null
     #ownedEventBindings = new OwnedEventBindings()
     #documentEventBindings = new OwnedEventBindingScopes()
     #navButtonOperations = new Set()
@@ -4036,10 +4063,10 @@ class Reader {
         this.#sidebarCoverURL.clear()
         $('#side-bar-cover')?.removeAttribute?.('src')
 
-        const view = this.view
+        const openedView = this.#openedView
+        this.#openedView = null
         this.view = null
-        view?.close?.()
-        view?.remove?.()
+        openedView?.retire()
         return true
     }
 
@@ -6062,15 +6089,28 @@ class Reader {
             this.initialPaginatorSettleHandle = null;
         }
         this.hasSettledInitialPaginatorLayout = false;
-        const view = await getView(file, false, {
+        const openedView = await getView(file, false, {
             isCurrent: () => !this.#closed && this.#deferredOpenWork.isCurrent(openGeneration),
         })
-        if (this.#closed) {
-            view?.close?.()
-            view?.remove?.()
+        if (this.#closed || !this.#deferredOpenWork.isCurrent(openGeneration)
+            || !openedView.isCurrent()) {
+            openedView.retire()
             throw new Error('reader-open-superseded')
         }
-        this.view = view
+        const previousView = this.#openedView
+        this.#openedView = openedView
+        this.view = openedView.view
+        previousView?.retire()
+        // Retiring the preceding View may synchronously close or reopen Reader.
+        if (this.#closed || !this.#deferredOpenWork.isCurrent(openGeneration)
+            || !openedView.isCurrent()) {
+            if (this.#openedView === openedView) {
+                this.#openedView = null
+                this.view = null
+            }
+            openedView.retire()
+            throw new Error('reader-open-superseded')
+        }
         postReaderVisibilityProbe('reader.open:view-assigned', this.view, null);
         // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
         if (typeof window.initialLayoutMode !== 'undefined') {
@@ -8144,12 +8184,7 @@ class CacheWarmer {
     #openIntent = new CacheWarmerOpenIntent()
     #openPromiseSlot = new OwnedPromiseSlot()
     #precedingSections = new CacheWarmerPrecedingSections()
-    #viewOwner = new OwnedAsyncResource(view => {
-        try {
-            view?.close?.()
-        } catch (_error) {}
-        view?.remove?.()
-    })
+    #viewOwner = new OwnedAsyncResource(openedView => openedView.retire())
 
     constructor({ loadResources = null } = {}) {
         this.loadResources = loadResources
@@ -8412,10 +8447,19 @@ class CacheWarmer {
         globalThis.__manabiCacheWarmerFinished = false;
         globalThis.__manabiCacheWarmerHighestSectionIndex = null;
         try {
-            const view = await getView(file, true, { isCurrent: isCurrentOwner })
-            if (!this.#viewOwner.publish(openToken, view)) return false
-            if (!isCurrentOpen()) return false
-            this.view = view
+            const openedView = await getView(file, true, { isCurrent: isCurrentOwner })
+            if (!openedView.isCurrent()) {
+                openedView.retire()
+                return false
+            }
+            if (!this.#viewOwner.publish(openToken, openedView)) return false
+            const abandonOpening = () => {
+                openedView.retire()
+                if (isCurrentOwner() && this.view === openedView.view) this.view = null
+                return false
+            }
+            if (!isCurrentOpen() || !openedView.isCurrent()) return abandonOpening()
+            this.view = openedView.view
             this.#eventBindings.listen(this.view, 'load', this.#onLoad.bind(this))
 
             const {
@@ -8423,7 +8467,7 @@ class CacheWarmer {
             } = this.view
             this.view.renderer.setAttribute('flow', 'paginated')
             await this.#openFirstUnsettledSection()
-            if (!isCurrentOpen()) return false
+            if (!isCurrentOpen() || !openedView.isCurrent()) return abandonOpening()
             globalThis.__manabiCacheWarmerOpenInFlight = false;
             globalThis.__manabiCacheWarmerReady = true;
             return true
