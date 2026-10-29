@@ -56,6 +56,7 @@ export class View extends HTMLElement {
     #rendererBindings = null
     #documentBindings = new Map()
     #openGeneration = 0
+    #disposedRenderers = new WeakSet()
     isFixedLayout = false
     lastLocation
     history = new ViewHistory()
@@ -66,72 +67,26 @@ export class View extends HTMLElement {
             await this.renderer.goTo(resolved)
         })
     }
-    async open(book, isCacheWarmer) {
-        this.#openGeneration += 1
-        this.book = book
-        this.language = languageInfo(book.metadata?.language)
-        this.#isCacheWarmer = isCacheWarmer
-
-        if (book.splitTOCHref && book.getTOCFragment) {
-            const ids = book.sections.map(s => s.id)
-            this.#sectionProgress = new SectionProgress(book.sections, 1500, 1600)
-            const splitHref = book.splitTOCHref.bind(book)
-            const getFragment = book.getTOCFragment.bind(book)
-            this.#tocProgress = new TOCProgress({
-                toc: book.toc ?? [], ids, splitHref, getFragment })
-            this.#pageProgress = new TOCProgress({
-                toc: book.pageList ?? [], ids, splitHref, getFragment })
-        }
-
-        this.isFixedLayout = this.book.rendition?.layout === 'pre-paginated'
-        if (this.isFixedLayout) {
-            await import('./fixed-layout.js')
-            this.renderer = document.createElement('foliate-fxl')
-        } else {
-            await import('./paginator.js')
-            this.renderer = document.createElement('foliate-paginator')
-        }
-        this.renderer.setAttribute('exportparts', 'head,foot') //,filter')
-        this.#rendererBindings?.clear()
-        this.#rendererBindings = new OwnedEventBindings()
-        this.#rendererBindings.listen(this.renderer, 'load', e => this.#onLoad(e.detail))
-        this.#rendererBindings.listen(this.renderer, 'relocate', e => this.#onRelocate(e.detail))
-        if (!this.#isCacheWarmer) {
-            this.#rendererBindings.listen(this.renderer, 'create-overlayer', e =>
-                e.detail.attach(this.#createOverlayer(e.detail)))
-            //            this.renderer.addEventListener('setViewTransition', e => {
-            //                // Workaround for WebKit bug: https://lists.webkit.org/pipermail/webkit-unassigned/2025-April/1218207.html
-            //                this.style.setProperty('display', 'block');
-            //                this.style.setProperty('width', '100%');
-            //                this.style.setProperty('height', '100%');
-            //
-            //                this.style.viewTransitionName = e.detail.viewTransitionName;
-            //                this.style.setProperty('--slide-from', e.detail.slideFrom);
-            //                this.style.setProperty('--slide-to', e.detail.slideTo);
-            ////                document.documentElement.style.viewTransitionName = e.detail.viewTransitionName;
-            ////                document.documentElement.style.setProperty('--slide-from', e.detail.slideFrom);
-            ////                document.documentElement.style.setProperty('--slide-to', e.detail.slideTo);
-            //            });
-        }
-
-        this.renderer.open(book, isCacheWarmer)
-        this.#root.append(this.renderer)
+    #disposeRenderer(renderer) {
+        if (!renderer || this.#disposedRenderers.has(renderer)) return
+        this.#disposedRenderers.add(renderer)
+        try { renderer.destroy?.() } catch (_) {}
+        try { renderer.remove?.() } catch (_) {}
     }
-    close() {
-        this.#openGeneration += 1
+    #disposeBook(book) {
+        // A teardown callback may have opened this same book in a successor.
+        if (!book || this.book === book) return
+        try { book.destroy?.() } catch (_) {}
+    }
+    #withdrawRendererState() {
         const renderer = this.renderer
         const book = this.book
+        const bindings = this.#rendererBindings
+        const documents = [...this.#documentBindings.values()]
         this.renderer = null
         this.book = null
-        this.#rendererBindings?.clear()
         this.#rendererBindings = null
-        for (const bindings of this.#documentBindings.values()) bindings.clear()
         this.#documentBindings.clear()
-        renderer?.destroy()
-        renderer?.remove()
-        try {
-            book?.destroy?.()
-        } catch (_error) {}
         this.language = null
         this.isFixedLayout = false
         this.#sectionProgress = null
@@ -140,6 +95,78 @@ export class View extends HTMLElement {
         this.#searchResults = new Map()
         this.lastLocation = null
         this.history.clear()
+        // Remove only the captured bindings, even if cleanup reenters open.
+        bindings?.clear()
+        for (const documentBindings of documents) documentBindings.clear()
+        return { renderer, book }
+    }
+    async open(book, isCacheWarmer) {
+        const openGeneration = ++this.#openGeneration
+        const previous = this.#withdrawRendererState()
+        const isCurrent = () => this.#openGeneration === openGeneration && this.book === book
+        // Withdrawal may invoke browser collaborators which start another open.
+        if (this.#openGeneration !== openGeneration) {
+            this.#disposeRenderer(previous.renderer)
+            this.#disposeBook(previous.book)
+            return false
+        }
+        this.book = book
+        this.#isCacheWarmer = isCacheWarmer
+        this.#disposeRenderer(previous.renderer)
+        if (previous.book !== book) this.#disposeBook(previous.book)
+        if (!isCurrent()) return false
+        let renderer = null
+        try {
+            this.language = languageInfo(book.metadata?.language)
+            if (book.splitTOCHref && book.getTOCFragment) {
+                const ids = book.sections.map(s => s.id)
+                this.#sectionProgress = new SectionProgress(book.sections, 1500, 1600)
+                const splitHref = book.splitTOCHref.bind(book)
+                const getFragment = book.getTOCFragment.bind(book)
+                this.#tocProgress = new TOCProgress({
+                    toc: book.toc ?? [], ids, splitHref, getFragment })
+                this.#pageProgress = new TOCProgress({
+                    toc: book.pageList ?? [], ids, splitHref, getFragment })
+            }
+            const isFixedLayout = book.rendition?.layout === 'pre-paginated'
+            this.isFixedLayout = isFixedLayout
+            if (isFixedLayout) await import('./fixed-layout.js')
+            else await import('./paginator.js')
+            if (!isCurrent()) return false
+            renderer = document.createElement(isFixedLayout ? 'foliate-fxl' : 'foliate-paginator')
+            if (!isCurrent()) {
+                this.#disposeRenderer(renderer)
+                return false
+            }
+            this.renderer = renderer
+            renderer.setAttribute('exportparts', 'head,foot')
+            const bindings = new OwnedEventBindings()
+            this.#rendererBindings = bindings
+            const listen = (name, callback) => bindings.listen(renderer, name, event => {
+                if (isCurrent() && this.renderer === renderer) callback(event)
+            })
+            listen('load', event => this.#onLoad(event.detail))
+            listen('relocate', event => this.#onRelocate(event.detail))
+            if (!isCacheWarmer) listen('create-overlayer', event =>
+                event.detail.attach(this.#createOverlayer(event.detail)))
+            await renderer.open(book, isCacheWarmer)
+            if (!isCurrent() || this.renderer !== renderer) {
+                this.#disposeRenderer(renderer)
+                return false
+            }
+            this.#root.append(renderer)
+            return isCurrent() && this.renderer === renderer
+        } catch (error) {
+            if (isCurrent()) this.close()
+            else this.#disposeRenderer(renderer)
+            throw error
+        }
+    }
+    close() {
+        this.#openGeneration += 1
+        const { renderer, book } = this.#withdrawRendererState()
+        this.#disposeRenderer(renderer)
+        this.#disposeBook(book)
     }
     async goToTextStart() {
         return await this.goTo(this.book.landmarks
