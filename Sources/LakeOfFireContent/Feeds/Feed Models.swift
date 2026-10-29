@@ -6,6 +6,46 @@ import BigSyncKit
 import FeedKit
 import RealmSwiftGaps
 
+/// Parse already valid URLs first. Re-encoding their percent signs can change
+/// publisher identity and prevent enclosure/Media RSS geometry from matching.
+func readerFeedURL(_ raw: String) -> URL? {
+    if let url = URL(string: raw) { return url }
+    let allowed = CharacterSet.urlFragmentAllowed.union(CharacterSet(charactersIn: "%"))
+    return raw.addingPercentEncoding(withAllowedCharacters: allowed).flatMap(URL.init(string:))
+}
+
+/// Typed media images are a fallback when the feed supplies no image enclosure.
+func feedImageURL(media: MediaNamespace?) -> URL? {
+    let candidates = (media?.mediaContents ?? []) + (media?.mediaGroup?.mediaContents ?? [])
+    return candidates.lazy.compactMap { candidate -> URL? in
+        guard let attributes = candidate.attributes,
+              attributes.medium == "image" || attributes.type?.hasPrefix("image/") == true,
+              let raw = attributes.url, let url = URL(string: raw), url.isHTTP else { return nil }
+        return url
+    }.first
+}
+
+/// Never attach a thumbnail's dimensions to a different enclosure variant.
+func feedImageGeometry(imageURL: URL?, media: MediaNamespace?) -> ReaderImageGeometry? {
+    guard let imageURL, let media else { return nil }
+    let candidates = (media.mediaContents ?? []) + (media.mediaGroup?.mediaContents ?? [])
+    for candidate in candidates {
+        guard let attributes = candidate.attributes,
+              attributes.url.flatMap(URL.init(string:)) == imageURL,
+              let geometry = ReaderImageGeometry(url: imageURL, width: attributes.width,
+                                                 height: attributes.height) else { continue }
+        return geometry
+    }
+    for thumbnail in media.mediaThumbnails ?? [] {
+        guard let attributes = thumbnail.attributes,
+              attributes.url.flatMap(URL.init(string:)) == imageURL,
+              let geometry = ReaderImageGeometry(url: imageURL, width: attributes.width.flatMap(Int.init),
+                                                 height: attributes.height.flatMap(Int.init)) else { continue }
+        return geometry
+    }
+    return nil
+}
+
 public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable, ChangeMetadataRecordable {
     public var needsSyncToAppServer: Bool {
         return false
@@ -1041,7 +1081,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         let feed = getFeed()
         
         // Feed options.
-        applyFeedBody(content, containsFullContent: feed?.rssContainsFullContent ?? false, to: bookmark)
+        applyFeedBody(from: self, containsFullContent: feed?.rssContainsFullContent ?? false, to: bookmark)
         bookmark.meaningfulContentMinLength = feed?.meaningfulContentMinLength ?? bookmark.meaningfulContentMinLength
         bookmark.injectEntryImageIntoHeader = feed?.injectEntryImageIntoHeader ?? bookmark.injectEntryImageIntoHeader
         //        bookmark.rawEntryThumbnailContentMode = feed?.contentmode
@@ -1344,7 +1384,7 @@ fileprivate func isFeedUnchanged(
 }
 
 fileprivate func isSuccessfulFeedRefreshStatus(_ statusCode: Int) -> Bool {
-    (200..<400).contains(statusCode)
+    statusCode != 206 && (200..<400).contains(statusCode)
 }
 
 fileprivate func getRssData(
@@ -1442,6 +1482,10 @@ fileprivate func getRssData(
             }
             return .notModified(metadata: getMetadata)
         }
+        throw FeedError.downloadFailed
+    case 206:
+        // No Range was requested. A parseable partial feed is not an
+        // authoritative membership snapshot and must not delete cached rows.
         throw FeedError.downloadFailed
     case 200..<300:
         return .fetched(data, metadata: getMetadata)
@@ -1559,8 +1603,8 @@ public extension Feed {
             
             var incomingIDs = [String]()
             let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
-                guard let link = item.link?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed),
-                      let url = URL(string: link)
+                guard let link = item.link,
+                      let url = readerFeedURL(link)
                 else { return nil }
                 var imageUrl: URL? = nil
                 if let enclosureAttribs = item.enclosure?.attributes, enclosureAttribs.type?.hasPrefix("image/") ?? false {
@@ -1576,7 +1620,10 @@ public extension Feed {
                 {
                     imageUrl = URL(string: rawImageURL)
                 }
-                let content = item.content?.contentEncoded ?? item.description
+                imageUrl = imageUrl ?? feedImageURL(media: item.media)
+                let rawContent = item.content?.contentEncoded ?? item.description
+                let content = feedImageGeometry(imageURL: imageUrl, media: item.media)?
+                    .addingToFeedHTML(rawContent, sourceURL: url) ?? rawContent
                 let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 let audioSubtitlesURL: URL? = rawSubtitleHref
@@ -1706,15 +1753,17 @@ public extension Feed {
                 var url: URL?
                 var imageUrl: URL?
                 item.links?.forEach { (link: AtomFeedEntryLink) in
-                    guard let linkHref = link.attributes?.href?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
+                    guard let linkHref = link.attributes?.href,
+                          let linkURL = readerFeedURL(linkHref)
                     else { return }
                     
                     if (link.attributes?.rel ?? "alternate") == "alternate" {
-                        url = URL(string: linkHref)
+                        url = linkURL
                     } else if let rel = link.attributes?.rel, let type = link.attributes?.type, rel == "enclosure" && type.hasPrefix("image/") {
-                        imageUrl = URL(string: linkHref)
+                        imageUrl = linkURL
                     }
                 }
+                imageUrl = imageUrl ?? feedImageURL(media: item.media)
                 guard let url = url else { return nil }
                 
                 var voiceFrameUrl: URL? = nil
@@ -1801,7 +1850,9 @@ public extension Feed {
                 feedEntry.feedEntryCollectionScheme = collection?.scheme
                 feedEntry.feedEntryCollectionTerm = collection?.term
                 feedEntry.feedEntryCollectionTitle = collection?.title
-                feedEntry.html = item.content?.value
+                let rawContent = item.content?.value
+                feedEntry.html = feedImageGeometry(imageURL: imageUrl, media: item.media)?
+                    .addingToFeedHTML(rawContent, sourceURL: url) ?? rawContent
                 feedEntry.voiceFrameUrl = voiceFrameUrl
                 feedEntry.voiceAudioURL = voiceAudioURLs.first
                 feedEntry.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
@@ -2139,6 +2190,7 @@ struct FeedEntryPayload {
     let feedEntryCollectionTerm: String?
     let feedEntryCollectionTitle: String?
     let content: Data?
+    let imageGeometry: ReaderImageGeometry?
     let containsFullContent: Bool
     let voiceFrameUrl: URL?
     let voiceAudioURL: URL?
@@ -2162,6 +2214,8 @@ struct FeedEntryPayload {
         feedEntryCollectionTerm = entry.feedEntryCollectionTerm
         feedEntryCollectionTitle = entry.feedEntryCollectionTitle
         content = entry.content
+        imageGeometry = containsFullContent ? nil : ReaderImageGeometry.metadata(
+            inHTML: entry.html, matchingURL: entry.imageUrl, sourceURL: entry.url)
         voiceFrameUrl = entry.voiceFrameUrl
         voiceAudioURLs = entry.resolvedVoiceAudioURLs
         voiceAudioURL = voiceAudioURLs.first
@@ -2178,12 +2232,32 @@ struct FeedEntryPayload {
 /// Callers own the Realm transaction and its final change-metadata refresh.
 @discardableResult
 func applyFeedBody(
-    _ body: Data?,
+    from source: any ReaderContentProtocol,
     containsFullContent: Bool,
     to content: any ReaderContentProtocol
 ) -> Bool {
-    guard let body, !body.isEmpty,
-          containsFullContent || !content.rssContainsFullContent else { return false }
+    let geometry = !containsFullContent && content.rssContainsFullContent
+        ? ReaderImageGeometry.metadata(inHTML: source.html,
+            matchingURL: source.imageUrl, sourceURL: source.url) : nil
+    return applyFeedBody(source.content, containsFullContent: containsFullContent,
+        to: content, imageGeometry: geometry)
+}
+
+@discardableResult
+func applyFeedBody(
+    _ body: Data?,
+    containsFullContent: Bool,
+    to content: any ReaderContentProtocol,
+    imageGeometry: ReaderImageGeometry? = nil
+) -> Bool {
+    guard let body, !body.isEmpty else { return false }
+    if !containsFullContent && content.rssContainsFullContent {
+        guard let imageGeometry, let capturedHTML = content.html else { return false }
+        let enriched = imageGeometry.mergingIntoDocumentHead(capturedHTML, sourceURL: content.url)
+        guard enriched != capturedHTML else { return false }
+        content.html = enriched
+        return true
+    }
     var didChange = false
     if content.content != body {
         content.content = body
@@ -2239,7 +2313,8 @@ func applyPayload(_ payload: FeedEntryPayload, to content: any ReaderContentProt
         content.feedEntryCollectionTitle = payload.feedEntryCollectionTitle
         didChange = true
     }
-    if applyFeedBody(payload.content, containsFullContent: payload.containsFullContent, to: content) {
+    if applyFeedBody(payload.content, containsFullContent: payload.containsFullContent,
+                     to: content, imageGeometry: payload.imageGeometry) {
         didChange = true
     }
     if content.voiceFrameUrl != payload.voiceFrameUrl {

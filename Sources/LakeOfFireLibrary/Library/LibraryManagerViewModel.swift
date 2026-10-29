@@ -266,6 +266,10 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             realm.objects(UserScript.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
+                // This observer only invalidates views after edits. The first
+                // collection delivery has no changed state to publish and
+                // otherwise invalidates the reader's environment on launch.
+                .dropFirst()
                 .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.2), scheduler: RunLoop.main)
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in

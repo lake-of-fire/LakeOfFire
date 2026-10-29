@@ -99,7 +99,11 @@ private struct ReaderLoadingOverlay: View {
             latestStatusMessage = statusMessage
             syncStatusDisplay()
         }
-        .onChange(of: isVisible) { _ in
+        .onChange(of: isVisible) { visible in
+            // Record actual presentation, which can lag the loading intent.
+            // This distinguishes a brief opaque overlay from a WebKit redraw.
+            ReaderLoadTrace.event("loading.overlayVisibility",
+                "visible=\(visible) loading=\(latestIsLoading) immediate=\(showsImmediately)")
             syncStatusDisplay()
         }
         .onAppear {

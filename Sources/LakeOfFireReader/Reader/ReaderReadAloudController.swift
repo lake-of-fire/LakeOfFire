@@ -18,33 +18,55 @@ extension AVSpeechSynthesizer: ReaderSpeechSynthesizing {}
 /// independently from `AVSpeechSynthesizer` timing and installed voices.
 @MainActor
 final class ReaderReadAloudController {
-    private let synthesizer: any ReaderSpeechSynthesizing
+    private let synthesizerFactory: () -> any ReaderSpeechSynthesizing
+    // Idle playback bookkeeping must not initialize the system speech runtime.
+    // Once created (or explicitly injected), keep the same synthesizer.
+    private var synthesizer: (any ReaderSpeechSynthesizing)?
+    private weak var pendingDelegate: (any AVSpeechSynthesizerDelegate)?
 
-    init(synthesizer: any ReaderSpeechSynthesizing = AVSpeechSynthesizer()) {
+    init(synthesizerFactory: @escaping () -> any ReaderSpeechSynthesizing = { AVSpeechSynthesizer() }) {
+        self.synthesizerFactory = synthesizerFactory
+    }
+
+    init(synthesizer: any ReaderSpeechSynthesizing) {
+        self.synthesizerFactory = { synthesizer }
         self.synthesizer = synthesizer
     }
 
     var delegate: (any AVSpeechSynthesizerDelegate)? {
-        get { synthesizer.delegate }
-        set { synthesizer.delegate = newValue }
+        get {
+            if let synthesizer { return synthesizer.delegate }
+            return pendingDelegate
+        }
+        set {
+            pendingDelegate = newValue
+            synthesizer?.delegate = newValue
+        }
     }
 
-    var isSpeaking: Bool { synthesizer.isSpeaking }
-    var isPaused: Bool { synthesizer.isPaused }
+    var isSpeaking: Bool { synthesizer?.isSpeaking ?? false }
+    var isPaused: Bool { synthesizer?.isPaused ?? false }
 
     func speak(_ utterance: AVSpeechUtterance) {
-        synthesizer.speak(utterance)
+        if let synthesizer {
+            synthesizer.speak(utterance)
+        } else {
+            let synthesizer = synthesizerFactory()
+            synthesizer.delegate = pendingDelegate
+            self.synthesizer = synthesizer
+            synthesizer.speak(utterance)
+        }
     }
 
     func stopSpeaking(at boundary: AVSpeechBoundary) -> Bool {
-        synthesizer.stopSpeaking(at: boundary)
+        synthesizer?.stopSpeaking(at: boundary) ?? false
     }
 
     func pauseSpeaking(at boundary: AVSpeechBoundary) -> Bool {
-        synthesizer.pauseSpeaking(at: boundary)
+        synthesizer?.pauseSpeaking(at: boundary) ?? false
     }
 
     func continueSpeaking() -> Bool {
-        synthesizer.continueSpeaking()
+        synthesizer?.continueSpeaking() ?? false
     }
 }

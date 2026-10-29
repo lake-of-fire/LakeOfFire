@@ -104,7 +104,12 @@ internal final class NavigationTaskManager: Identifiable {
         let finishedTask = Task { @MainActor [weak self] in
             guard let self else { throw CancellationError() }
             do {
-                try await committedTask.value
+                do {
+                    let trace = ReaderLoadTrace.begin("webview.finish.awaitCommit")
+                    defer { trace?.end() }
+                    try await committedTask.value
+                }
+                ReaderLoadTrace.event("webview.finish.commitJoined")
                 try Task.checkCancellation()
                 try self.validateDocumentGeneration(generation)
                 try await operation()

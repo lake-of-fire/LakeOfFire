@@ -518,9 +518,7 @@ fileprivate actor EBookLoadingActor {
     /// Returns an `HTTPURLResponse` and data for a bundled viewer HTML file at the given path.
     func loadViewerFile(
         at viewerHtmlPath: String,
-        originalURL: URL,
-        sharedFontCSSBase64 _: String?,
-        sharedFontCSSBase64Provider _: (() async -> String?)?
+        originalURL: URL
     ) async throws -> (HTTPURLResponse, Data) {
         let shouldEnablePageTurnInteractionDiagnostic: Bool = {
 #if DEBUG
@@ -656,7 +654,6 @@ public typealias EbookTextProcessor = @Sendable (URL, String, String, String?, B
 public typealias EbookProcessedTextCacheReader = @Sendable (URL, String, String) async throws -> EbookProcessedSectionPayload?
 public typealias EbookProcessedTextCacheWriter = @Sendable (URL, String, String, EbookProcessedSectionPayload) async -> Void
 public typealias EbookSectionPresentationProvider = @Sendable () async -> EbookSectionPresentation
-public typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
 
 struct EbookProcessedSectionCacheProbeResult: Sendable {
     let payload: EbookProcessedSectionPayload?
@@ -755,8 +752,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) var processHTMLDocument: EbookHTMLDocumentProcessor?
     nonisolated(unsafe) var processHTMLBytes: EbookHTMLBytesProcessor?
     nonisolated(unsafe) var processHTML: EbookHTMLProcessor?
-    nonisolated(unsafe) public var sharedFontCSSBase64: String?
-    nonisolated(unsafe) var sharedFontCSSBase64Provider: SharedFontCSSBase64Provider?
     nonisolated(unsafe) public var sharedReaderFontAsset: SharedReaderFontAsset?
 
     private let packageSessionBinding = ReaderEBookServingSessionBinding()
@@ -875,8 +870,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let processHTMLDocument = self.processHTMLDocument
         let processHTMLBytes = self.processHTMLBytes
         let processHTML = self.processHTML
-        let sharedFontCSSBase64 = self.sharedFontCSSBase64
-        let sharedFontCSSBase64Provider = self.sharedFontCSSBase64Provider
 
         
         let workTask = Task.detached(priority: ebookURLSchemeTaskPriority(for: url)) { @EbookURLSchemeActor [weak self] in
@@ -1219,9 +1212,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         do {
                             let (response, data) = try await EBookLoadingActor().loadViewerFile(
                                 at: viewerHtmlPath,
-                                originalURL: url,
-                                sharedFontCSSBase64: sharedFontCSSBase64,
-                                sharedFontCSSBase64Provider: sharedFontCSSBase64Provider
+                                originalURL: url
                             )
                             try Task.checkCancellation()
                             await { @MainActor in

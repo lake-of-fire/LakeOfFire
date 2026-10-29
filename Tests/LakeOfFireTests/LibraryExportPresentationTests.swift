@@ -4,6 +4,7 @@ import AppKit
 import UIKit
 #endif
 import BigSyncKit
+import Combine
 import OPML
 import RealmSwift
 import RealmSwiftGaps
@@ -15,6 +16,54 @@ import XCTest
 @available(iOS 16.0, macOS 15.0, *)
 @MainActor
 final class LibraryExportPresentationTests: XCTestCase {
+    func testInitialScriptObservationDoesNotInvalidateReaderButEditsStillPublish() async throws {
+        let previous = LibraryDataManager.realmConfiguration
+        let configuration = makeLibraryRealmConfiguration()
+        LibraryDataManager.realmConfiguration = configuration
+        defer { LibraryDataManager.realmConfiguration = previous }
+        let scriptID = try await Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            let script = UserScript()
+            let library = LibraryConfiguration()
+            library.userScriptIDs.append(script.id)
+            try await realm.asyncWrite {
+                realm.add([script, library])
+                script.refreshChangeMetadata(explicitlyModified: true)
+                library.refreshChangeMetadata(explicitlyModified: true)
+            }
+            return script.id
+        }.value
+
+        let manager = LibraryManagerViewModel()
+        var publications = 0
+        let initialPublication = expectation(description: "No initial library UI invalidation")
+        initialPublication.isInverted = true
+        var expectsInitialSilence = true
+        let observation = manager.objectWillChange.sink {
+            publications += 1
+            if expectsInitialSilence { initialPublication.fulfill() }
+        }
+        defer { observation.cancel() }
+        // The configuration observer settles after the earlier script
+        // observer, without presenting the library or changing any UI state.
+        let initialized = await waitUntil { manager.libraryConfiguration != nil }
+        XCTAssertTrue(initialized)
+        await fulfillment(of: [initialPublication], timeout: 0.5)
+        expectsInitialSilence = false
+        XCTAssertEqual(publications, 0)
+
+        try await Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            let script = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: scriptID))
+            try await realm.asyncWrite {
+                script.title = "Edited after observation"
+                script.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }.value
+        let editPublished = await waitUntil { publications > 0 }
+        XCTAssertTrue(editPublished)
+    }
+
 #if os(macOS)
     func testFailedFileWriteExposesRetryAndOnlySharesPreparedOPML() async throws {
         let previous = LibraryDataManager.realmConfiguration

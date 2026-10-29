@@ -95,6 +95,7 @@ fileprivate struct ReaderFileManagerModifier: ViewModifier {
 }
 
 fileprivate struct ReaderNavigatorModifier: ViewModifier {
+    @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerViewModel: ReaderViewModel
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
@@ -103,22 +104,35 @@ fileprivate struct ReaderNavigatorModifier: ViewModifier {
         content
             .task { @MainActor in
                 readerViewModel.navigator = navigator
-                readerModeViewModel.navigator = navigator
+                readerModeViewModel.bindDirectContentLoading(
+                    readerContent: readerContent,
+                    scriptCaller: readerViewModel.scriptCaller,
+                    navigator: navigator
+                )
             }
     }
 }
 
+@MainActor
+func initializeReaderFontSizeIfNeeded(
+    defaults: UserDefaults = .standard,
+    defaultFontSize: CGFloat
+) {
+    // Launch arguments and registered defaults can be strings; fractional
+    // reader sizes are valid too. Type conversion is not an absence check.
+    guard defaults.object(forKey: "readerFontSize") == nil else { return }
+    defaults.set(Int(round(defaultFontSize)), forKey: "readerFontSize")
+}
+
 fileprivate struct ReaderFontSizeModifier: ViewModifier {
-    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
+    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = readerDefaultFontSizeBase()
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     
     func body(content: Content) -> some View {
         content
             .task { @MainActor in
                 readerModeViewModel.defaultFontSize = defaultFontSize
-                if UserDefaults.standard.object(forKey: "readerFontSize") as? Int == nil {
-                    UserDefaults.standard.set(Int(round(defaultFontSize)), forKey: "readerFontSize")
-                }
+                initializeReaderFontSizeIfNeeded(defaultFontSize: defaultFontSize)
             }
     }
 }

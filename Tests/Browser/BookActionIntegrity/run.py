@@ -46,7 +46,7 @@ def main() -> int:
               'cases': [], 'page_errors': [], 'harness_errors': []}
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=executable, headless=True,
-                                   args=['--no-sandbox', '--disable-dev-shm-usage'])
+                                   args=['--disable-features=MacAppCodeSignClone', '--no-sandbox', '--disable-dev-shm-usage'])
         report['browser'] = browser.version
         names = None
         try:

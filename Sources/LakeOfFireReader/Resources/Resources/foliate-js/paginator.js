@@ -18,6 +18,19 @@ import {
     scrolledPageTurnDecision as manabiScrolledPageTurnDecision,
     shouldSuppressPostPageTurnDuplicate as manabiShouldSuppressPostPageTurnDuplicate,
 } from './paginator-decisions.js'
+// #if DEBUG
+import { LayeredPageTurnController, slideGeometry } from './layered-page-turn.js'
+import {
+    createPageTurnPreviewSurface,
+    paintPageTurnPreview,
+    parsePageTurnPreviewDocument,
+    preparePageTurnPreviewDocument,
+    pageTurnPreviewStylesheetKey,
+    supportsPageTurnPreviewDocument,
+    pageTurnPreviewThemeAttributes,
+    synchronizePageTurnPreviewTheme,
+} from './page-turn-preview.js'
+// #endif
 import { installBookContentStyles } from './book-content-style.js'
 import { rendererNavigationNotOwned } from './renderer-navigation.js'
 import {
@@ -36,6 +49,15 @@ export {
 
 const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
 const MANABI_ENABLE_PAGINATOR_DIAGNOSTICS = false;
+// #if DEBUG
+// A 122k-element processed chapter costs nearly a second to copy/layout even
+// without serialization. Bound optional paint work; the normal paginator still
+// performs one physical turn for larger chapters. 12k-element fixtures prepare
+// in roughly 100ms; keep this conservative until physical-device qualification.
+const MANABI_MAX_SLIDE_PREVIEW_ELEMENTS = 20_000;
+// Optional visual preparation must not hold a page turn behind a stalled asset.
+const MANABI_SLIDE_PREVIEW_READY_TIMEOUT_MS = 500;
+// #endif
 const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
 const MANABI_NEIGHBOR_PREFETCH_AFTER_SECTION_DISPLAY_DELAY_MS = 1500;
 const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
@@ -341,100 +363,117 @@ const {
  * @param {Document} sourceDoc - The source document to clone.
  * @returns {Promise<{cs: CSSStyleDeclaration, doc: Document}>} - Computed style and iframe document.
  */
-async function getBodylessComputedStyle(sourceDoc) {
+async function getBodylessComputedStyle(sourceDoc, signal = null) {
     const startedAt = manabiPerfNow();
-    // 1. Clone a minimal document
-    const cloneDoc = document.implementation.createHTMLDocument();
+    const resourceURLs = [];
+    let iframe;
+    let rejectLoad;
+    const cancellationError = () => signal?.reason ?? new DOMException('Preview cancelled', 'AbortError');
+    const onAbort = () => rejectLoad?.(cancellationError());
+    const requireCurrent = () => { if (signal?.aborted) throw cancellationError(); };
+    try {
+        requireCurrent();
+        // 1. Clone a minimal document
+        const cloneDoc = document.implementation.createHTMLDocument();
 
-    // 2. Deep-clone the <head>, stripping unwanted styles/scripts
-    const clonedHead = sourceDoc.head.cloneNode(true);
-    ['mnb-font-data', 'mnb-custom-fonts'].forEach(id => {
-        const el = clonedHead.querySelector(`#${id}`);
-        if (el) el.remove();
-    });
-    // Refresh blob-based CSS
-    const stylesheetLinks = Array.from(clonedHead.querySelectorAll('link[rel="stylesheet"][href^="blob:"]'));
-    for (const link of stylesheetLinks) {
-        const cssFetchStartedAt = manabiPerfNow();
-        const originalHref = link.href;
-        const originalInfo = manabiBlobResourceInfo(originalHref);
-        try {
-            const css = await fetch(link.href).then(r => r.text());
-            const blobUrl = URL.createObjectURL(new Blob([css], {
-                type: 'text/css'
-            }));
+        // 2. Deep-clone the <head>, stripping unwanted styles/scripts
+        const clonedHead = sourceDoc.head.cloneNode(true);
+        ['mnb-font-data', 'mnb-custom-fonts'].forEach(id => {
+            const el = clonedHead.querySelector(`#${id}`);
+            if (el) el.remove();
+        });
+        // Refresh blob-based CSS
+        const stylesheetLinks = Array.from(clonedHead.querySelectorAll('link[rel="stylesheet"][href^="blob:"]'));
+        for (const link of stylesheetLinks) {
+            const cssFetchStartedAt = manabiPerfNow();
+            const originalHref = link.href;
+            const originalInfo = manabiBlobResourceInfo(originalHref);
             try {
-                globalThis.__manabiBlobResourceMap?.set?.(blobUrl, {
+                const css = await fetch(link.href, { signal }).then(r => r.text());
+                const blobUrl = URL.createObjectURL(new Blob([css], {
+                    type: 'text/css'
+                }));
+                resourceURLs.push(blobUrl);
+                try {
+                    globalThis.__manabiBlobResourceMap?.set?.(blobUrl, {
+                        href: originalInfo?.href ?? originalHref,
+                        type: 'text/css',
+                        parent: originalInfo?.parent ?? null,
+                        bytes: css.length,
+                        source: 'bodyless-computed-style',
+                    });
+                } catch (_error) {}
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.cssFetch', cssFetchStartedAt, {
                     href: originalInfo?.href ?? originalHref,
-                    type: 'text/css',
-                    parent: originalInfo?.parent ?? null,
                     bytes: css.length,
-                    source: 'bodyless-computed-style',
-                });
-            } catch (_error) {}
-            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.cssFetch', cssFetchStartedAt, {
-                href: originalInfo?.href ?? originalHref,
-                bytes: css.length,
-            }, 25);
-            link.href = blobUrl;
-        } catch {
-            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.cssFetch.error', cssFetchStartedAt, {
-                href: originalInfo?.href ?? originalHref,
-            }, 25);
-            link.remove();
+                }, 25);
+                link.href = blobUrl;
+            } catch {
+                requireCurrent();
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.cssFetch.error', cssFetchStartedAt, {
+                    href: originalInfo?.href ?? originalHref,
+                }, 25);
+                link.remove();
+            }
         }
+        clonedHead.querySelectorAll('script').forEach(el => el.remove());
+        cloneDoc.head.replaceWith(clonedHead);
+
+        // 3. Shallow-clone the <body> (to preserve dir, but empty)
+        const bodyClone = sourceDoc.body.cloneNode(false);
+        cloneDoc.body.replaceWith(bodyClone);
+        // Copy all attributes from the source <html> (e.g. xmlns, xml:lang, class, lang)
+        for (const { name, value } of sourceDoc.documentElement.attributes) {
+            cloneDoc.documentElement.setAttribute(name, value);
+        }
+        // Override or add the 'dir' attribute explicitly
+        cloneDoc.documentElement.setAttribute(
+            'dir',
+            sourceDoc.documentElement.getAttribute('dir') || ''
+        );
+
+        // 4. Serialize the cloneDoc to HTML and create a Blob URL
+        const html = '<!doctype html>' + cloneDoc.documentElement.outerHTML;
+        const blob = new Blob([html], {
+            type: 'text/html'
+        });
+        const blobUrl = URL.createObjectURL(blob);
+        resourceURLs.push(blobUrl);
+
+        // 5. Create a hidden iframe, append, and wait for load
+        requireCurrent();
+        iframe = document.createElement('iframe');
+        iframe.style.cssText = 'position:fixed;visibility:hidden;width:0;height:0;border:0;contain:strict;';
+        document.documentElement.appendChild(iframe);
+        const iframeLoadStartedAt = manabiPerfNow();
+        await new Promise((resolve, reject) => {
+            rejectLoad = reject;
+            iframe.onload = resolve;
+            signal?.addEventListener('abort', onAbort, { once: true });
+            if (signal?.aborted) onAbort();
+            else iframe.src = blobUrl;
+        });
+        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.iframeLoad', iframeLoadStartedAt, {
+            stylesheetCount: stylesheetLinks.length,
+        }, 25);
+
+        // wait a frame for CSS to apply before measuring
+        await new Promise(r => requestAnimationFrame(r));
+        requireCurrent();
+
+        // 6. Get computed style and doc
+        const bodylessDoc = iframe.contentDocument;
+        const bodylessStyle = iframe.contentWindow.getComputedStyle(bodylessDoc.body);
+
+        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.total', startedAt, {
+            stylesheetCount: stylesheetLinks.length,
+        }, 25);
+        return { bodylessStyle, bodylessDoc };
+    } finally {
+        signal?.removeEventListener('abort', onAbort);
+        if (iframe) { iframe.onload = null; iframe.remove(); }
+        for (const url of resourceURLs) URL.revokeObjectURL(url);
     }
-    clonedHead.querySelectorAll('script').forEach(el => el.remove());
-    cloneDoc.head.replaceWith(clonedHead);
-
-    // 3. Shallow-clone the <body> (to preserve dir, but empty)
-    const bodyClone = sourceDoc.body.cloneNode(false);
-    cloneDoc.body.replaceWith(bodyClone);
-    // Copy all attributes from the source <html> (e.g. xmlns, xml:lang, class, lang)
-    for (const { name, value } of sourceDoc.documentElement.attributes) {
-        cloneDoc.documentElement.setAttribute(name, value);
-    }
-    // Override or add the 'dir' attribute explicitly
-    cloneDoc.documentElement.setAttribute(
-        'dir',
-        sourceDoc.documentElement.getAttribute('dir') || ''
-    );
-
-    // 4. Serialize the cloneDoc to HTML and create a Blob URL
-    const html = '<!doctype html>' + cloneDoc.documentElement.outerHTML;
-    const blob = new Blob([html], {
-        type: 'text/html'
-    });
-    const blobUrl = URL.createObjectURL(blob);
-
-    // 5. Create a hidden iframe, append, and wait for load
-    const iframe = document.createElement('iframe');
-    iframe.style.cssText = 'position:fixed;visibility:hidden;width:0;height:0;border:0;contain:strict;';
-    document.documentElement.appendChild(iframe);
-    const iframeLoadStartedAt = manabiPerfNow();
-    await new Promise(resolve => {
-        iframe.onload = resolve;
-        iframe.src = blobUrl;
-    });
-    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.iframeLoad', iframeLoadStartedAt, {
-        stylesheetCount: stylesheetLinks.length,
-    }, 25);
-
-    // wait a frame for CSS to apply before measuring
-    await new Promise(r => requestAnimationFrame(r));
-
-    // 6. Get computed style and doc
-    const bodylessDoc = iframe.contentDocument;
-    const bodylessStyle = iframe.contentWindow.getComputedStyle(bodylessDoc.body);
-
-    // 7. Cleanup
-    URL.revokeObjectURL(blobUrl);
-    iframe.remove();
-
-    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.total', startedAt, {
-        stylesheetCount: stylesheetLinks.length,
-    }, 25);
-    return { bodylessStyle, bodylessDoc };
 }
 
 /**
@@ -641,15 +680,25 @@ class View {
     #expandGeneration = 0
     layout = {}
     #isCacheWarmer
+// #if DEBUG
+    #isPreview = false
+// #endif
     #loadCleanup = null
     constructor({
         container,
         onBeforeExpand,
         onExpand,
-        isCacheWarmer
+        isCacheWarmer,
+// #if DEBUG
+        isPreview = false,
+// #endif
     }) {
         this.container = container
         this.#isCacheWarmer = isCacheWarmer
+// #if DEBUG
+        this.#isPreview = isPreview
+        if (isPreview) this.#iframe.setAttribute('sandbox', 'allow-same-origin')
+// #endif
         this.#debouncedExpand = this.expand.bind(this)
         this.onBeforeExpand = onBeforeExpand
         this.onExpand = onExpand
@@ -689,9 +738,40 @@ class View {
     get expandedMetrics() {
         return this.#lastExpandedMetrics
     }
+// #if DEBUG
+    async loadPreview(source, baseURL, afterLoad, beforeRender) {
+        if (!this.#isPreview) throw new Error('paintOnlyViewRequired')
+        this.prepareForReuse()
+        const cancellation = new AbortController()
+        this.#loadCleanup = () => cancellation.abort()
+        const generation = this.#expandGeneration
+        const current = () => generation === this.#expandGeneration && this.#iframe.isConnected
+        const doc = this.document
+        const documentReady = await preparePageTurnPreviewDocument(doc, source, baseURL, current, afterLoad, cancellation.signal)
+        if (!documentReady || !current()) return false
+        manabiApplyPreferredWritingDirectionToDocument(doc)
+        let direction = getDirectionFromDocument(doc)
+        if (!direction) direction = await getDirection(await getBodylessComputedStyle(doc, cancellation.signal))
+        if (!current()) return false
+        this.#vertical = direction.vertical
+        this.#verticalRTL = direction.verticalRTL
+        this.#rtl = direction.rtl
+        this.#directionReadyResolve?.()
+        this.#contentRange.selectNodeContents(doc.body)
+        const layout = await beforeRender?.({ view: this, document: doc, ...direction })
+        if (!current()) return false
+        await this.render(layout)
+        return current()
+    }
+// #endif
     async load(src, afterLoad, beforeRender) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
         this.prepareForReuse()
+// #if DEBUG
+        const loadGeneration = this.#expandGeneration
+        const previewIsCurrent = () => !this.#isPreview
+            || (loadGeneration === this.#expandGeneration && this.#iframe.isConnected)
+// #endif
         const loadStartedAt = manabiPerfNow();
         const logReaderLoad = manabiShouldLogPaginatorReaderLoad(this.#isCacheWarmer);
         const basePayload = {
@@ -746,6 +826,9 @@ class View {
                         if (logReaderLoad) {
                             MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.iframeLoad', eventPayload);
                         }
+// #if DEBUG
+                        if (!previewIsCurrent()) return resolve(false)
+// #endif
                         const doc = this.document
                         MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.view.nativeProcessing', {
                             ...basePayload,
@@ -806,6 +889,9 @@ class View {
                             });
                         }
 
+// #if DEBUG
+                        if (!previewIsCurrent()) return resolve(false)
+// #endif
                         let direction = await manabiRunPaginatorBoundary(
                             'paginator.view.direction.document',
                             {
@@ -855,6 +941,12 @@ class View {
                                 bodyClass: doc?.body?.className ?? null,
                             });
                         }
+// #if DEBUG
+                        if (!previewIsCurrent()) return resolve(false)
+// #endif
+// #if DEBUG
+                        if (!this.#isPreview)
+// #endif
                         manabiRememberObservedWritingDirection(doc, {
                             ...direction,
                             source: directionSource,
@@ -922,6 +1014,9 @@ class View {
                             }, 0);
                         }
 
+// #if DEBUG
+                        if (!previewIsCurrent()) return resolve(false)
+// #endif
                         this.#contentRange.selectNodeContents(doc.body)
 
                         const layout = await manabiRunPaginatorBoundary(
@@ -951,6 +1046,9 @@ class View {
                                 rtl: this.#rtl,
                             });
                         }
+// #if DEBUG
+                        if (!previewIsCurrent()) return resolve(false)
+// #endif
                         await manabiRunPaginatorBoundary(
                             'paginator.view.render',
                             {
@@ -986,6 +1084,9 @@ class View {
                             });
                         }
 
+// #if DEBUG
+                        if (!previewIsCurrent()) return resolve(false)
+// #endif
                         this.#resizeObserver.observe(doc.body)
                         if (doc.fonts?.ready && doc.fonts.status !== 'loaded') {
                             doc.fonts.ready.then(() => {
@@ -1731,6 +1832,9 @@ export class Paginator extends HTMLElement {
             return
         }
 
+// #if DEBUG
+        this.#cancelSlideInteraction()
+// #endif
         this.#lastResizerRect = newSize
         this.#cachedSizes = null
         this.#cachedVerticalPaginatedSizes = null
@@ -1748,6 +1852,12 @@ export class Paginator extends HTMLElement {
         this.#debouncedRender();
         //        })
     })
+// #if DEBUG
+    #slideController = null
+    #slidePreview = null
+    #slideCache = null
+    #slideSequence = 0
+// #endif
     #top
     #transitioning = false;
     //    #background
@@ -1945,6 +2055,44 @@ export class Paginator extends HTMLElement {
                     }
                 }
             }
+/* #if DEBUG */
+            /* Only native iOS 27+ supplies measured corners. Other platforms stay square. */
+            :host([page-turn="slide"]) {
+                border-radius: var(--reader-page-radius, 0px);
+                overflow: visible;
+                touch-action: pan-y pinch-zoom;
+            }
+            :host([page-turn="slide"]) #top {
+                border-radius: inherit;
+                overflow: visible;
+                clip-path: inset(calc(-1 * var(--reader-page-bleed-top, 0px)) 0 calc(-1 * var(--reader-page-bleed-bottom, 0px)) 0 round var(--reader-page-radius, 0px));
+                isolation: isolate;
+            }
+            .mnb-slide-paper { display: none; }
+            :host([page-turn="slide"]) .mnb-slide-paper {
+                display: block;
+                /* The native reader palette stays live through drag, settle,
+                   cancellation and reuse; do not snapshot a chapter's color. */
+                background: var(--theme-background-color, Canvas);
+                z-index: -1;
+            }
+            .mnb-slide-paper, .mnb-slide-shade {
+                position: absolute;
+                inset: calc(-1 * var(--reader-page-bleed-top, 0px)) 0 calc(-1 * var(--reader-page-bleed-bottom, 0px));
+                pointer-events: none;
+                border-radius: inherit;
+            }
+            :host([page-turn="slide"]) #top:not(.mnb-slide-sheet) > .mnb-slide-paper {
+                /* The expanded paper is also the live margin hit surface.
+                   Preview copies stay inert and shades never intercept input. */
+                pointer-events: auto;
+            }
+            #top.mnb-slide-sheet { position: absolute; inset: 0; pointer-events: none; }
+            .mnb-slide-shade {
+                background: black;
+                z-index: 5;
+            }
+/* #endif */
             #top.reader-loading {
                 pointer-events: none;
             }
@@ -2001,6 +2149,9 @@ export class Paginator extends HTMLElement {
             }
         </style>
         <div id="top">
+<!-- #if DEBUG -->
+            <div class="mnb-slide-paper" aria-hidden="true"></div>
+<!-- #endif -->
             <!-- <div id="background" part="filter"></div> -->
             <div id="header"></div>
             <div id="container"></div>
@@ -2121,6 +2272,10 @@ export class Paginator extends HTMLElement {
 
     // NOTE: In this foliate-js fork, currently paginator can only open a book once
     open(book, isCacheWarmer = false) {
+// #if DEBUG
+        this.setPageTurnStyle('instant')
+        this.cancelPageTurn()
+// #endif
         const previousLifecycleGeneration = this.#lifecycleGeneration
         this.#cancelLifecycleNavigation(
             previousLifecycleGeneration,
@@ -2485,6 +2640,9 @@ export class Paginator extends HTMLElement {
         }
     }
     async #onBeforeExpand() {
+// #if DEBUG
+        this.#cancelSlideInteraction()
+// #endif
         this.#view.cachedViewSize = null;
         this.#viewSizePromise = null;
         this.#view.cachedSizes = null;
@@ -3599,6 +3757,9 @@ export class Paginator extends HTMLElement {
         return result
     }
     async render() {
+// #if DEBUG
+        this.#cancelSlideInteraction()
+// #endif
         if (!this.#view) {
             return
         }
@@ -4079,6 +4240,9 @@ export class Paginator extends HTMLElement {
         })
     }
     #onTouchStart(e) {
+// #if DEBUG
+        if (this.#slideController) return
+// #endif
         const touch = e.changedTouches[0];
         // Determine if touch began in host container or inside the iframe’s document
         const target = touch.target;
@@ -4125,6 +4289,9 @@ export class Paginator extends HTMLElement {
         this.#isAdjustingSelectionHandle = false;
     }
     async #onTouchMove(e) {
+// #if DEBUG
+        if (this.#slideController) return
+// #endif
         // If touchStart was ignored or missing, do nothing
         if (!this.#touchState) return;
         if (this.#isAdjustingSelectionHandle) return;
@@ -4155,6 +4322,9 @@ export class Paginator extends HTMLElement {
         }
     }
     #onTouchEnd(e) {
+// #if DEBUG
+        if (this.#slideController) return
+// #endif
         const touch = e.changedTouches?.[0] ?? null;
         const touchState = this.#touchState;
         this.#touchState = null;
@@ -4223,6 +4393,9 @@ export class Paginator extends HTMLElement {
                 f => f
     }
     async #onWheel(e) {
+// #if DEBUG
+        if (this.#slideController) return
+// #endif
         const lifecycleGeneration = this.#lifecycleGeneration
         if (!this.#isLifecycleCurrent(lifecycleGeneration)) return
         if (this.scrolled) return;
@@ -5862,6 +6035,9 @@ export class Paginator extends HTMLElement {
         return this.#locked || this.#directNavigationOwner !== null
     }
     async goTo(target, options = {}) {
+// #if DEBUG
+        this.#cancelSlideInteraction()
+// #endif
         if (this.#destroyed || this.#locked) {
             return rendererNavigationNotOwned('rendererNavigationInFlight')
         }
@@ -6165,6 +6341,9 @@ export class Paginator extends HTMLElement {
         })
     }
     async #turnPage(dir, distance, options = {}) {
+// #if DEBUG
+        if (!options.slidePreviewCommit) this.#cancelSlideInteraction()
+// #endif
         // An endcap is a shell location. Back returns to the same last page;
         // forward on it is inert. Neither is evidence of physical movement.
         if (!this.#destroyed && !this.navigationInFlight && this.bookEndcap?.visible) {
@@ -6503,11 +6682,323 @@ export class Paginator extends HTMLElement {
         }
         return movementResult
     }
+// #if DEBUG
+    get supportedPageTurnStyles() {
+        return this.#isCacheWarmer || this.scrolled ? ['instant'] : ['instant', 'slide']
+    }
+    setPageTurnStyle(style) {
+        const enabled = style === 'slide' && !this.#isCacheWarmer && !this.scrolled && !this.#destroyed
+        if (enabled !== !!this.#slideController) {
+            this.#slideController?.destroy()
+            this.#slideController = null
+            this.cancelPageTurn()
+            if (enabled) this.#slideController = new LayeredPageTurnController(this)
+        }
+        // Publish the effective mode even when no controller transition was
+        // needed. Viewer paper bleed follows this attribute, not preference.
+        this.setAttribute('page-turn', enabled ? 'slide' : 'instant')
+    }
+    get pageTurnDirection() {
+        return this.#vertical || this.bookDir === 'rtl' || this.#rtl ? 'rtl' : 'ltr'
+    }
+    #cancelSlideInteraction() {
+        if (this.#slideController?.committing) return
+        this.#slideController?.cancel()
+        this.cancelPageTurn()
+    }
+    #disposeSlideSurface(preview) {
+        if (!preview) return
+        let cleanupError = null
+        for (const dispose of [
+            () => preview.observer?.disconnect(),
+            () => preview.view?.destroy(),
+            () => preview.sheet?.remove(),
+            () => preview.shade?.remove(),
+            () => preview.release?.(),
+        ]) {
+            try { dispose() } catch (error) { cleanupError ??= error }
+        }
+        if (cleanupError) this.dispatchEvent(new CustomEvent('pageturnerror', { detail: cleanupError }))
+    }
+    cancelPageTurn(keepSurface = false) {
+        const sequence = ++this.#slideSequence
+        const preview = this.#slidePreview
+        this.#slidePreview = null
+        if (!keepSurface) {
+            this.#disposeSlideSurface(this.#slideCache)
+            this.#slideCache = null
+        }
+        if (!preview) return sequence
+        for (const property of ['transform', 'z-index', 'will-change']) this.#top.style.removeProperty(property)
+        if (preview.liveVisibility !== undefined) this.#top.style.visibility = preview.liveVisibility
+        this.removeAttribute('data-turn-progress')
+        preview.abort.abort()
+        preview.resolveCancelled?.()
+        preview.shade?.remove()
+        if (keepSurface && preview.ready && !preview.surfaceState.dirty && !this.#destroyed) {
+            this.#disposeSlideSurface(this.#slideCache)
+            this.#slideCache = preview
+            preview.sheet.style.visibility = 'hidden'
+            preview.sheet.style.removeProperty('transform')
+            preview.surfaceState.reposition = null
+        } else this.#disposeSlideSurface(preview)
+        this.dispatchEvent(new Event('pageturnpreviewend'))
+        return sequence
+    }
+    get pageTurnPreviewActive() { return this.#slidePreview !== null }
+    #slidePreviewLayout(view, activeLayout) {
+        // Match #beforeRender's media and typography decisions without changing
+        // the live paginator's direction, marginals, anchor or metric caches.
+        const singleMedia = MANABI_ENABLE_SINGLE_MEDIA_PAGE_NORMALIZATION
+            && this.#isSingleMediaElementWithoutText(view)
+        view.document.body.classList.toggle('reader-is-single-media-element-without-text', singleMedia)
+        if (singleMedia) return { ...activeLayout, divisor: 1, columnWidth: CSS_DEFAULTS.maxInlineSizePx }
+        const { width, height, gap } = activeLayout
+        const size = this.#vertical ? height : width
+        const portrait = height > width
+        const maxColumns = portrait
+            ? (this.#vertical ? CSS_DEFAULTS.maxColumnCount : CSS_DEFAULTS.maxColumnCountPortrait)
+            : (this.#vertical ? CSS_DEFAULTS.maxColumnCountPortrait : CSS_DEFAULTS.maxColumnCount)
+        const forceSpread = maxColumns > 1 && (this.#vertical || width > height)
+        const candidate = Math.max(1, forceSpread ? maxColumns
+            : Math.min(maxColumns, Math.ceil(size / CSS_DEFAULTS.maxInlineSizePx)))
+        const advance = this.#typographyMetrics(view).inlineCharacterAdvance
+        const divisor = candidate > 1 && (size / candidate - gap) / advance < MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN
+            ? 1 : candidate
+        return { ...activeLayout, divisor, columnWidth: size / divisor - gap }
+    }
+    async #loadSlidePreviewSection(preview, section, waitForPreview, current, requireCurrent) {
+        const src = await waitForPreview(Promise.resolve(section.load()).then(src => {
+            // Own the acquired reference before yielding through Promise.race:
+            // cancellation can run before the awaiting preparation resumes.
+            let released = false
+            const release = () => { if (!released) { released = true; section.unload?.() } }
+            if (!current()) { release(); return null }
+            preview.release = release
+            return src
+        }))
+        requireCurrent()
+        const response = await waitForPreview(fetch(src, { signal: preview.abort.signal }))
+        requireCurrent()
+        if (!response.ok) throw new Error(`pageTurnPreviewHTTP:${response.status}`)
+        const text = await waitForPreview(response.text())
+        requireCurrent()
+        return {
+            sourceDoc: parsePageTurnPreviewDocument(text, response.headers.get('content-type')),
+            baseURL: src,
+        }
+    }
+    async preparePageTurn(direction) {
+        if (direction !== -1 && direction !== 1) return null
+        this.cancelPageTurn(true)
+        if (this.#destroyed || this.navigationInFlight || this.scrolled || this.#isLoading
+            || this.bookEndcap?.visible || !this.#view?.document?.body) return null
+        const sequence = this.#slideSequence
+        const activeView = this.#view
+        const activeIndex = this.#index
+        const sections = this.sections
+        const preview = { abort: new AbortController() }
+        const cancelled = new Promise(resolve => { preview.resolveCancelled = resolve })
+        let readyTimer
+        const deadline = new Promise((_, reject) => {
+            readyTimer = setTimeout(() => reject(new Error('pageTurnPreviewNotReady')),
+                MANABI_SLIDE_PREVIEW_READY_TIMEOUT_MS)
+        })
+        const waitForPreview = operation => Promise.race([cancelled, deadline, operation])
+        this.#slidePreview = preview
+        this.dispatchEvent(new Event('pageturnpreviewstart'))
+        const locationIsCurrent = () => !this.#destroyed && this.#view === activeView && this.#index === activeIndex
+        const current = () => this.#slideSequence === sequence && this.#slidePreview === preview && locationIsCurrent()
+        const requireCurrent = () => { if (!current()) throw new Error('pageTurnPreviewCancelled') }
+        const cleanup = (keepSurface = true) => { if (this.#slidePreview === preview) this.cancelPageTurn(keepSurface) }
+        const commitTurn = options => this.#turnPage(direction, undefined, {
+            ...options, navigationSource: options?.navigationSource ?? 'paginator.slide',
+            slidePreviewCommit: true,
+        })
+        const fallback = (isCurrent = current, cleanUp = cleanup) => ({
+            instant: true,
+            update: () => isCurrent(),
+            cancel: () => cleanUp(),
+            commit: async options => {
+                if (!isCurrent()) return false
+                try {
+                    return await commitTurn(options)
+                } finally { cleanUp(false) }
+            },
+        })
+        try {
+            const metrics = await waitForPreview(this.pageMetrics())
+            requireCurrent()
+            if (!Number.isFinite(metrics?.size) || metrics.size <= 0
+                || !Number.isFinite(metrics.page) || !Number.isFinite(metrics.pages)) {
+                cleanup()
+                return null
+            }
+            let index = activeIndex
+            let page = metrics.page + direction
+            if (page < 1 || page > metrics.pages - 2) {
+                index = this.#adjacentIndex(direction)
+                page = direction > 0 ? 1 : -1
+            }
+            this.#dispatchForegroundPageTurnActivity(direction > 0 ? 'forward' : 'backward', {
+                input: 'slide', source: 'paginator.slide',
+            })
+            // Terminal edges (including the endcap) retain the existing no-move
+            // result. A mixed-writing-mode seam uses the same single-turn path.
+            if (index == null) return fallback()
+            // Check before cache reuse too: adopted sheets and canvas pixels
+            // can change without notifying the source mutation observer.
+            if (!supportsPageTurnPreviewDocument(activeView.document)) return fallback()
+            // Reuse only a fully prepared surface for this exact document,
+            // section and layout. Source mutations make the visual cache stale.
+            const layoutKey = JSON.stringify(activeView.layout)
+            const stylesheetKey = pageTurnPreviewStylesheetKey(activeView.document)
+            const cached = this.#slideCache
+            this.#slideCache = null
+            const reuse = cached?.activeDocument === activeView.document
+                && cached.index === index && cached.layoutKey === layoutKey
+                && cached.stylesheetKey === stylesheetKey
+                && !cached.surfaceState.dirty && !cached.observer?.takeRecords().length
+            if (reuse) {
+                Object.assign(preview, cached, { abort: preview.abort, resolveCancelled: preview.resolveCancelled })
+                preview.liveVisibility = undefined
+            } else this.#disposeSlideSurface(cached)
+            let compatible = true
+            if (!reuse) {
+                const { sourceDoc, baseURL } = index === activeIndex
+                    ? { sourceDoc: activeView.document, baseURL: activeView.document.baseURI }
+                    : await this.#loadSlidePreviewSection(preview, sections[index], waitForPreview, current, requireCurrent)
+                requireCurrent()
+                if (!supportsPageTurnPreviewDocument(sourceDoc)) return fallback()
+                if (sourceDoc.getElementsByTagName('*').length > MANABI_MAX_SLIDE_PREVIEW_ELEMENTS) {
+                    return fallback()
+                }
+                const surface = createPageTurnPreviewSurface(this.#top, this.#container, this.#header, this.#footer)
+                Object.assign(preview, surface, { index, layoutKey, stylesheetKey, activeDocument: activeView.document })
+                const { sheet, container, shade } = surface
+                this.#root.append(sheet)
+                const surfaceState = preview.surfaceState = { dirty: false, reposition: null }
+                // Observe before copying; native visual hydration can mutate
+                // the source while preview styles, fonts or layout are pending.
+                preview.observer = new MutationObserver(() => {
+                    surfaceState.dirty = true
+                    // Native theme updates target viewer/live documents. Keep
+                    // this owned paint-only copy in sync, even while a commit
+                    // is loading its replacement document behind the sheet.
+                    const active = this.#slidePreview
+                    // Cached surfaces survive across transaction objects.
+                    if (active?.surfaceState === surfaceState) {
+                        synchronizePageTurnPreviewTheme(document, active.view?.document)
+                    }
+                })
+                preview.observer.observe(activeView.document.documentElement, {
+                    subtree: true, childList: true, attributes: true, characterData: true,
+                })
+                preview.observer.observe(document.body, {
+                    attributes: true, attributeFilter: pageTurnPreviewThemeAttributes,
+                })
+                const view = new View({ container, isCacheWarmer: false, isPreview: true,
+                    onBeforeExpand: async () => {}, onExpand: async () => surfaceState.reposition?.() })
+                preview.view = view
+                container.append(view.element)
+                await waitForPreview(view.loadPreview(sourceDoc, baseURL, async doc => {
+                    requireCurrent()
+                    await this.#installStyleElementsForDocument(doc)
+                    requireCurrent()
+                    this.#applyStylesToDocument(doc)
+                    // Apply the publication's language and current reader paint
+                    // settings without admitting a live document or sidecars.
+                    this.dispatchEvent(new CustomEvent('pageturnpreviewload', { detail: { doc, index } }))
+                    requireCurrent()
+                    // Preparation hooks may hold an earlier presentation
+                    // snapshot. The viewer owns the current native palette.
+                    synchronizePageTurnPreviewTheme(document, doc)
+                }, directionInfo => {
+                    requireCurrent()
+                    compatible = directionInfo.vertical === this.#vertical && directionInfo.rtl === this.#rtl
+                    return this.#slidePreviewLayout(view, activeView.layout)
+                }))
+                if (!current()) return null
+                if (!compatible) { view.destroy(); sheet.remove(); shade.remove(); return fallback() }
+                await waitForPreview(Promise.all([
+                    view.document.fonts?.ready,
+                    ...Array.from(view.document.images, image => image.decode?.().catch(() => {})),
+                ]))
+                requireCurrent()
+                await waitForPreview(view.expand())
+                requireCurrent()
+                preview.ready = true
+            }
+            const { sheet, container, header, footer, shade, view } = preview
+            this.#top.append(shade)
+            // Marginal labels can change while the chapter remains the same.
+            header.replaceChildren(...Array.from(this.#header.childNodes, node => node.cloneNode(true)))
+            footer.replaceChildren(...Array.from(this.#footer.childNodes, node => node.cloneNode(true)))
+            const expanded = view.expandedMetrics
+            const pages = Math.round(view.element.getBoundingClientRect()[expanded.side] / expanded.size)
+            if (page === -1) page = Math.max(1, pages - 2)
+            preview.surfaceState.reposition = () => {
+                if (!current()) return
+                container[expanded.scrollProp] = expanded.size * (metrics.rtl ? -page : page)
+            }
+            preview.surfaceState.reposition()
+            header.style.visibility = page > 1 ? 'visible' : 'hidden'
+            const width = this.getBoundingClientRect().width
+            const update = progress => {
+                if (!current()) return false
+                const pose = slideGeometry(progress, direction, this.pageTurnDirection, width)
+                paintPageTurnPreview(this.#top, preview, pose, direction)
+                this.dataset.turnProgress = String(direction * pose.progress)
+                return true
+            }
+            update(0)
+            return { update, cancel: () => cleanup(), commit: async options => {
+                if (!current()) return false
+                // The incoming preview covers the live sheet while its native
+                // transaction measures untransformed geometry and commits.
+                update(1)
+                preview.liveVisibility = this.#top.style.visibility
+                this.#top.style.visibility = 'hidden'
+                this.#top.style.removeProperty('transform')
+                sheet.style.zIndex = '3'
+                try {
+                    return await commitTurn(options)
+                } finally {
+                    cleanup(locationIsCurrent())
+                }
+            } }
+        } catch (error) {
+            if (!current()) return null
+            const fallbackSequence = this.cancelPageTurn()
+            this.dispatchEvent(new CustomEvent('pageturnerror', { detail: error }))
+            // A preview is optional paint. Failure must not disable page turns;
+            // the normal renderer still owns navigation and its error result.
+            return fallback(
+                () => this.#slideSequence === fallbackSequence && locationIsCurrent(),
+                () => { if (this.#slideSequence === fallbackSequence) this.cancelPageTurn() },
+            )
+        } finally {
+            clearTimeout(readyTimer)
+        }
+    }
+// #endif
     async prev(distance, options = {}) {
-        return await this.#turnPage(-1, distance, options)
+// #if DEBUG
+        return this.#slideController && !this.scrolled && distance == null && !this.bookEndcap?.visible
+            ? this.#slideController.turn(-1, options)
+            : this.#turnPage(-1, distance, options)
+// #else
+        return this.#turnPage(-1, distance, options)
+// #endif
     }
     async next(distance, options = {}) {
-        return await this.#turnPage(1, distance, options)
+// #if DEBUG
+        return this.#slideController && !this.scrolled && distance == null && !this.bookEndcap?.visible
+            ? this.#slideController.turn(1, options)
+            : this.#turnPage(1, distance, options)
+// #else
+        return this.#turnPage(1, distance, options)
+// #endif
     }
     async prevSection() {
         return await this.goTo({
@@ -6565,6 +7056,9 @@ export class Paginator extends HTMLElement {
     }
     setStyles(styles) {
         if (styles == null) return
+// #if DEBUG
+        if (styles !== this.#styles) this.#cancelSlideInteraction()
+// #endif
         this.#styles = styles
         this.#installStyleElementsForDocument(this.#view?.document)
         this.#applyStylesToDocument(this.#view?.document, styles)
@@ -6577,6 +7071,9 @@ export class Paginator extends HTMLElement {
         //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
     }
     setBookContentStyles(stylesPromise) {
+// #if DEBUG
+        this.#cancelSlideInteraction()
+// #endif
         this.#bookContentStylesPromise = Promise.resolve(stylesPromise)
         this.#applyBookContentStylesToDocument(
             this.#view?.document,
@@ -6587,6 +7084,10 @@ export class Paginator extends HTMLElement {
         this.#view?.document?.defaultView?.focus?.()
     }
     destroy() {
+// #if DEBUG
+        this.setPageTurnStyle('instant')
+        this.cancelPageTurn()
+// #endif
         if (this.#destroyed) return
         const lifecycleGeneration = this.#lifecycleGeneration
         this.#destroyed = true

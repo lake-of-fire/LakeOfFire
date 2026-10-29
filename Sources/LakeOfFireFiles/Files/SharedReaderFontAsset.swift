@@ -57,7 +57,7 @@ public struct SharedReaderFontServedResponse {
 
 public enum SharedReaderFontInjectionMode: String, Equatable, Sendable {
     case localScheme
-    case blob
+    case unsupported
 }
 
 public enum SharedReaderFontScheme: String, Sendable {
@@ -131,7 +131,7 @@ public func sharedReaderFontUsesLocalScheme(for pageURL: URL) -> Bool {
 }
 
 public func sharedReaderFontInjectionMode(for pageURL: URL) -> SharedReaderFontInjectionMode {
-    sharedReaderFontUsesLocalScheme(for: pageURL) ? .localScheme : .blob
+    sharedReaderFontUsesLocalScheme(for: pageURL) ? .localScheme : .unsupported
 }
 
 public func sharedReaderFontStylesheetURL(for pageURL: URL, familyName: String) -> URL? {
@@ -149,7 +149,7 @@ public func sharedReaderFontStylesheetURLTemplate(for pageURL: URL) -> String? {
     sharedReaderFontStylesheetURL(for: pageURL, familyName: "__MANABI_FONT_FAMILY__")?.absoluteString
 }
 
-private func sharedReaderFontFontURL(
+public func sharedReaderFontFontURL(
     for pageURL: URL,
     asset: SharedReaderFontAsset
 ) -> URL? {
@@ -205,11 +205,56 @@ private func sharedReaderFontHTTPResponse(
     )
 }
 
+/// The same small declarations are used by generated HTML and the compatibility
+/// stylesheet route. Font bytes remain a separate, locally served resource.
+public func sharedReaderFontCSS(for pageURL: URL, asset: SharedReaderFontAsset) -> String? {
+    guard let fontURL = sharedReaderFontFontURL(for: pageURL, asset: asset) else { return nil }
+    let fontFaces = asset.supportedFamilyNames.map { supportedFamilyName in
+        """
+        @font-face {
+          font-family: '\(supportedFamilyName)';
+          font-weight: 500;
+          font-style: normal;
+          src: url("\(fontURL.absoluteString)") format("\(asset.format)");
+          font-display: swap;
+        }
+        """
+    }.joined(separator: "\n")
+    return """
+    \(fontFaces)
+    :root {
+      --mnb-content-font: '\(asset.horizontalFamilyName)';
+      --mnb-content-vertical-font: '\(asset.verticalFamilyName)';
+    }
+    /* The byline and reader controls retain their own UI font styling. */
+    html,
+    body,
+    body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt):not(#reader-title):not(#reader-title *):not(#reader-byline-container):not(#reader-byline-container *):not(#reader-header-actions):not(#reader-header-actions *):not(#mnb-tracking-footer):not(#mnb-tracking-footer *):not(button):not(button *) {
+      font-family: var(--mnb-content-font, '\(asset.horizontalFamilyName)') !important;
+    }
+    body.reader-vertical-writing,
+    body.reader-vertical-writing *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt):not(#reader-title):not(#reader-title *):not(#reader-byline-container):not(#reader-byline-container *):not(#reader-header-actions):not(#reader-header-actions *):not(#mnb-tracking-footer):not(#mnb-tracking-footer *):not(button):not(button *) {
+      font-family: var(--mnb-content-vertical-font, '\(asset.verticalFamilyName)') !important;
+    }
+    rt {
+      font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', system-ui, sans-serif !important;
+    }
+    """
+}
+
 public func sharedReaderFontResponse(
     for requestURL: URL,
     asset: SharedReaderFontAsset?
 ) -> SharedReaderFontServedResponse? {
     guard let route = sharedReaderFontRoute(for: requestURL, asset: asset) else { return nil }
+    let kind: String
+    switch route {
+    case .stylesheet: kind = "stylesheet"
+    case .font: kind = "font"
+    }
+    let trace = ReaderLoadTrace.begin("readerMode.fontResource")
+    var outcome = "status=404 reason=assetMissing"
+    defer { trace?.end("kind=\(kind) \(outcome)") }
     guard let asset else {
         let response = sharedReaderFontHTTPResponse(
             url: requestURL,
@@ -223,9 +268,9 @@ public func sharedReaderFontResponse(
     switch route {
     case .stylesheet(let familyName):
         let supportsFamily = asset.supportsFamily(familyName)
-        let fontURL = sharedReaderFontFontURL(for: requestURL, asset: asset)
         guard supportsFamily,
-              let fontURL else {
+              let css = sharedReaderFontCSS(for: requestURL, asset: asset) else {
+            outcome = "status=404 reason=unsupportedFamily"
             let response = sharedReaderFontHTTPResponse(
                 url: requestURL,
                 statusCode: 404,
@@ -235,37 +280,8 @@ public func sharedReaderFontResponse(
             return SharedReaderFontServedResponse(response: response, data: Data())
         }
 
-        let fontFaces = asset.supportedFamilyNames.map { supportedFamilyName in
-            """
-            @font-face {
-              font-family: '\(supportedFamilyName)';
-              font-weight: 500;
-              font-style: normal;
-              src: url("\(fontURL.absoluteString)") format("\(asset.format)");
-              font-display: swap;
-            }
-            """
-        }.joined(separator: "\n")
-        let css = """
-        \(fontFaces)
-        :root {
-          --mnb-content-font: '\(asset.horizontalFamilyName)';
-          --mnb-content-vertical-font: '\(asset.verticalFamilyName)';
-        }
-        html,
-        body,
-        body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt) {
-          font-family: var(--mnb-content-font, '\(asset.horizontalFamilyName)') !important;
-        }
-        body.reader-vertical-writing,
-        body.reader-vertical-writing *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt) {
-          font-family: var(--mnb-content-vertical-font, '\(asset.verticalFamilyName)') !important;
-        }
-        rt {
-          font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', system-ui, sans-serif !important;
-        }
-        """
         let data = Data(css.utf8)
+        outcome = "status=200 bytes=\(data.count)"
         let response = sharedReaderFontHTTPResponse(
             url: requestURL,
             statusCode: 200,
@@ -276,6 +292,7 @@ public func sharedReaderFontResponse(
 
     case .font:
         guard let data = try? Data(contentsOf: asset.localFileURL) else {
+            outcome = "status=404 reason=fileUnavailable"
             let response = sharedReaderFontHTTPResponse(
                 url: requestURL,
                 statusCode: 404,
@@ -290,6 +307,7 @@ public func sharedReaderFontResponse(
             contentType: asset.mimeType,
             extraHeaders: ["Access-Control-Allow-Origin": "*"]
         )
+        outcome = "status=200 bytes=\(data.count)"
         return SharedReaderFontServedResponse(response: response, data: data)
     }
 }

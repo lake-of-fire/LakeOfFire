@@ -74,6 +74,39 @@ public struct Publication: Hashable {
         self.images = images
     }
 
+    /// Raw downloads are offered only by generic or open-access acquisition
+    /// links. Commerce relations require a separate acquisition workflow.
+    public func downloadURL(relativeTo baseURL: URL?) -> URL? {
+        downloadAcquisition(relativeTo: baseURL)?.url
+    }
+
+    /// Keep the format paired with the selected resource, including locators
+    /// such as `/download/42` whose path has no format information.
+    public func downloadAcquisition(relativeTo baseURL: URL?) -> (url: URL, mediaType: String?)? {
+        let blocked = ["buy", "borrow", "subscribe", "sample"].map {
+            LinkRelation("http://opds-spec.org/acquisition/" + $0)
+        }
+        var fallback: (url: URL, mediaType: String?)?
+        for link in links where link.rels.contains(.opdsAcquisition)
+            || link.rels.contains(LinkRelation("http://opds-spec.org/acquisition/open-access")) {
+            guard !link.rels.contains(where: { blocked.contains($0) }),
+                  !link.href.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let url = link.url(relativeTo: baseURL),
+                  ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+                  url.host != nil else { continue }
+            // A catalog link cannot be downloaded as a publication.
+            let mediaType = link.type?.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased()
+            guard mediaType != "application/atom+xml",
+                  mediaType != "application/opds+json",
+                  mediaType != "text/html" else { continue }
+            if mediaType == "application/epub+zip" {
+                return (url, mediaType)
+            }
+            if fallback == nil { fallback = (url, mediaType) }
+        }
+        return fallback
+    }
+
     init(json: [String: Any], normalizeHREF: (String) -> String = { $0 }) throws {
         guard let metadataDict = json["metadata"] as? [String: Any] else {
             throw OPDS2ParserError.invalidPublication
@@ -268,12 +301,24 @@ public struct Link: Hashable {
         guard let href = json["href"] as? String else {
             throw OPDS2ParserError.invalidLink
         }
+        let rels = LinkRelation.array(from: json["rel"])
         self.init(
-            href: normalizeHREF(href),
+            href: Self.normalizedHREF(href, rels: rels, using: normalizeHREF) ?? href,
             type: json["type"] as? String,
             title: json["title"] as? String,
-            rels: LinkRelation.array(from: json["rel"])
+            rels: rels
         )
+    }
+
+    static func normalizedHREF(_ href: String, rels: [LinkRelation], using normalize: (String) -> String?) -> String? {
+        // Retain invalid acquisition identity until download selection rejects
+        // it. Resolving an empty URI would turn it into the catalog document.
+        // Empty self/navigation references still use normal URI resolution.
+        if rels.contains(where: \.isOPDSAcquisition),
+           href.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ""
+        }
+        return normalize(href)
     }
 
     public func url(relativeTo baseURL: URL?) -> URL? {

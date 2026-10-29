@@ -16,6 +16,30 @@ import Perception
 import UIKit
 #endif
 
+internal let readerContentTitleUpdateJavaScript = """
+(function() {
+  const el = document.getElementById('reader-title');
+  const body = document.body;
+  // Article metadata may be shortened or stale. Native article headings own
+  // their ruby, lookup IDs and sidecar identity, even before observer adoption.
+  const hasNativeReaderTitle = body?.classList.contains('readability-mode') === true
+    && el != null
+    && el.dataset.mnbTitleGeneratedByObserver !== 'true'
+    && el.querySelector('m-c, [data-mnb-display-token="1"]') !== null;
+  if (el && (!hasNativeReaderTitle || isSnippet)) {
+    // Snippets can be renamed. Ignore ruby only for the equality check so a
+    // redundant refresh preserves the live markup and its lookup identities.
+    const plainTitle = el.cloneNode(true);
+    plainTitle.querySelectorAll('rt, rp').forEach(node => node.remove());
+    if (plainTitle.textContent !== title) {
+      el.textContent = title;
+    }
+  }
+  if (body) {
+    body.classList.toggle(bodyClassName, !!hideReaderTitle);
+  }
+})();
+"""
 
 #if os(iOS)
 private func currentWindowTopSafeAreaInset() -> CGFloat {
@@ -146,6 +170,47 @@ typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiT
 
 private var ebookChromeInsetRevision: Int = 0
 private var lastSyncedEbookChromeInsets: (pageURL: URL, top: CGFloat, toolbarBottom: CGFloat, bottom: CGFloat)?
+
+#if DEBUG
+/// CSS uses physical clockwise corners, independent of the book's writing direction.
+struct EBookPageCornerRadii: Equatable, Sendable {
+    let cssValue: String
+
+    init(topLeading: CGFloat, bottomLeading: CGFloat, bottomTrailing: CGFloat,
+         topTrailing: CGFloat, layoutDirection: LayoutDirection) {
+        let corners = layoutDirection == .rightToLeft
+            ? [topTrailing, topLeading, bottomLeading, bottomTrailing]
+            : [topLeading, topTrailing, bottomTrailing, bottomLeading]
+        cssValue = corners.map { "\($0.isFinite ? max(0, $0) : 0)px" }.joined(separator: " ")
+    }
+
+    init?(geometry: GeometryProxy, layoutDirection: LayoutDirection) {
+#if os(iOS)
+        if #available(iOS 27, *), let radii = geometry.concentricCornerRadii {
+            self.init(topLeading: radii.topLeading, bottomLeading: radii.bottomLeading,
+                      bottomTrailing: radii.bottomTrailing, topTrailing: radii.topTrailing,
+                      layoutDirection: layoutDirection)
+            return
+        }
+#endif
+        return nil
+    }
+}
+
+@MainActor
+func syncEbookViewerPageCornerRadii(
+    _ radii: EBookPageCornerRadii?,
+    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
+) async throws {
+    // A missing container shape restores the renderer's square corners. Zero radii
+    // are valid (for example, square window corners) and must remain explicit.
+    let update = radii.map {
+        "document.documentElement.style.setProperty('--reader-page-radius', '\($0.cssValue)');"
+    } ?? "document.documentElement.style.removeProperty('--reader-page-radius');"
+    try await evaluateJavaScript(update, true)
+}
+
+#endif
 
 @MainActor
 func readerPaginationTrackingSettingsKey(
@@ -561,7 +626,7 @@ func syncEbookViewerChromeInsets(
 }
 
 fileprivate struct ThemeModifier: ViewModifier {
-    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
+    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = readerDefaultFontSizeBase()
     let readerFontSize: Double?
     let lightModeTheme: LightModeTheme
     let darkModeTheme: DarkModeTheme
@@ -730,29 +795,34 @@ fileprivate struct PageMetadataModifier: ViewModifier {
     @EnvironmentObject var readerViewModel: ReaderViewModel
     
     func body(content: Content) -> some View {
-        content
-            .onChange(of: readerViewModel.state.pageImageURL) { pageImageURL in
-                guard !readerContent.isReaderProvisionallyNavigating else { return }
-                guard let imageURL = pageImageURL,
-                      let contentItem = readerContent.content,
-                      contentItem.realm != nil else { return }
-                let contentURL = contentItem.url
-                guard contentURL == readerViewModel.state.pageURL else { return }
-                Task { @RealmBackgroundActor in
-                    let contents = try await ReaderContentLoader.loadAll(url: contentURL)
-                    for content in contents where content.imageUrl == nil {
-                        try await content.realm?.asyncWritePreservingOwnership {
-                            content.imageUrl = imageURL
-                            content.refreshChangeMetadata(explicitlyModified: true)
+        WithPerceptionTracking {
+            content
+                .onChange(of: readerViewModel.state.pageImageURL) { pageImageURL in
+                    guard !readerContent.isReaderProvisionallyNavigating else { return }
+                    guard let imageURL = pageImageURL,
+                          let contentItem = readerContent.content,
+                          contentItem.realm != nil else { return }
+                    let contentURL = contentItem.url
+                    let pageURL = readerViewModel.state.pageURL
+                    guard contentURL.matchesReaderURL(pageURL),
+                          !pageURL.isReaderDocumentURL || imageURL.isHTTP else { return }
+                    Task { @RealmBackgroundActor in
+                        let contents = try await ReaderContentLoader.loadAll(url: contentURL)
+                        for content in contents where content.imageUrl == nil {
+                            try await content.realm?.asyncWritePreservingOwnership {
+                                guard content.imageUrl == nil else { return }
+                                content.imageUrl = imageURL
+                                content.refreshChangeMetadata(explicitlyModified: true)
+                            }
                         }
                     }
                 }
-            }
-            .onChange(of: readerViewModel.state.pageTitle) { pageTitle in
-                Task { @MainActor in
-                    try await readerViewModel.pageMetadataUpdated(title: pageTitle)
+                .onChange(of: readerViewModel.state.pageTitle) { pageTitle in
+                    Task { @MainActor in
+                        try await readerViewModel.pageMetadataUpdated(title: pageTitle)
+                    }
                 }
-            }
+        }
     }
 }
 
@@ -1033,10 +1103,13 @@ public extension WebViewNavigator {
         content: any ReaderContentProtocol,
         readerFileManager: ReaderFileManager = ReaderFileManager.shared,
         readerModeViewModel: ReaderModeViewModel?,
+        forceReload: Bool = false,
+        preservingNavigationIntent: Bool = false,
         shouldLoad: @MainActor () -> Bool = { true }
     ) async throws {
         try await loadResolvedContent(
             content: content, readerModeViewModel: readerModeViewModel, shouldLoad: shouldLoad,
+            forceReload: forceReload, preservingNavigationIntent: preservingNavigationIntent,
             resolveURL: {
                 try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager)
             }
@@ -1050,19 +1123,34 @@ public extension WebViewNavigator {
         content: any ReaderContentProtocol,
         readerModeViewModel: ReaderModeViewModel?,
         shouldLoad: @MainActor () -> Bool,
+        forceReload: Bool = false,
+        preservingNavigationIntent: Bool = false,
         resolveURL: @MainActor () async throws -> URL?
     ) async throws {
+        guard !Task.isCancelled, shouldLoad() else { return }
+        // Automatic process recovery reconstructs the selected document; it
+        // must not claim a new selection or retire its own suspended retry.
+        if !preservingNavigationIntent { _ = readerModeViewModel?.beginContentNavigation() }
+        let navigationIsCurrent = readerModeViewModel?.captureContentNavigationIntent() ?? { true }
         let beginSnapshot = debugLoadSnapshot
-        if let url = try await resolveURL() {
+        let contentURL = content.url
+        let isReaderModeByDefault = content.isReaderModeByDefault
+        do {
+            guard let url = try await resolveURL() else { return }
             // Callers refreshing an existing document can lose ownership while
             // native content is being resolved. Check before any UI mutation.
-            guard shouldLoad() else { return }
+            guard !Task.isCancelled, shouldLoad(),
+                  navigationIsCurrent(),
+                  !content.isInvalidated, content.url == contentURL else {
+                if forceReload { ReaderLoadTrace.event("reader.reloadSkipped", "reason=retired") }
+                return
+            }
             let loadSnapshot = debugLoadSnapshot
             if loadSnapshot.lastRequestURL == url.absoluteString
                 || loadSnapshot.lastDataLoadBaseURL == url.absoluteString
                 || loadSnapshot.lastHTMLBaseURL == url.absoluteString
                 || loadSnapshot.currentWebViewURL == url.absoluteString {
-                if loadSnapshot.isLoading {
+                if loadSnapshot.isLoading && !forceReload {
                     return
                 }
             }
@@ -1077,15 +1165,44 @@ public extension WebViewNavigator {
                 || loadSnapshot.lastDataLoadBaseURL == url.absoluteString
                 || loadSnapshot.lastHTMLBaseURL == url.absoluteString
             if navigatorMovedSinceBegin && !targetStillCurrent {
+                if forceReload { ReaderLoadTrace.event("reader.reloadSkipped", "reason=navigatorMoved") }
                 return
+            }
+            if url.isReaderURLLoaderURL, let readerModeViewModel {
+                switch try await readerModeViewModel.loadStoredReaderContentIfPossible(
+                    content: content, navigator: self, forceReload: forceReload,
+                    shouldLoad: { shouldLoad() && navigationIsCurrent() }
+                ) {
+                case .accepted, .superseded: return
+                case .inapplicable: break
+                }
+            }
+            guard !Task.isCancelled, shouldLoad(),
+                  navigationIsCurrent() else { return }
+            // Resolution can suspend or lose ownership. Retire the previous
+            // render only when its replacement can be dispatched atomically.
+            // A forced reload must bypass the duplicate-loading check above;
+            // otherwise a cancelled render leaves its empty loader mounted.
+            if forceReload {
+                readerModeViewModel?.clearReadabilityCache(for: contentURL)
+                ReaderLoadTrace.event("reader.reloadDispatched", "loader=\(url.isReaderURLLoaderURL)")
             }
             // No presentation effect may precede the stale-navigation check.
             if let readerModeViewModel,
                url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
-                readerModeViewModel.readerModeLoading(content.isReaderModeByDefault || url.isReaderURLLoaderURL)
+                readerModeViewModel.readerModeLoading(isReaderModeByDefault || url.isReaderURLLoaderURL)
             }
             load(URLRequest(url: url))
-        } else {
+        } catch {
+            // Failed resolution/preparation can outlive its navigation too.
+            // In particular, URL snapshots cannot distinguish a newer request
+            // for the same article from this request's fallback Reload.
+            guard !Task.isCancelled, shouldLoad(), navigationIsCurrent(),
+                  !content.isInvalidated, content.url == contentURL else {
+                if forceReload { ReaderLoadTrace.event("reader.reloadSkipped", "reason=retiredFailure") }
+                return
+            }
+            throw error
         }
     }
 }
@@ -1118,12 +1235,18 @@ public struct Reader: View {
     @EnvironmentObject private var scriptCaller: WebViewScriptCaller
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.readerReservedTopChromeInset) private var reservedTopChromeInset
+#if DEBUG
+    @Environment(\.layoutDirection) private var layoutDirection
+#endif
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     
     @State private var obscuredInsets: EdgeInsets? = nil
     @State private var obscuredGeometrySize: CGSize? = nil
+#if DEBUG
+    @State private var ebookPageCornerRadii: EBookPageCornerRadii?
+#endif
     
     public init(
         persistentWebViewID: String? = nil,
@@ -1277,6 +1400,26 @@ public struct Reader: View {
             backgroundColor: statusBarFadeBackgroundColor
         )
 #endif
+#if DEBUG
+        .background {
+            GeometryReader { geometry in
+                WithPerceptionTracking {
+                    let cornerRadii = EBookPageCornerRadii(geometry: geometry, layoutDirection: layoutDirection)
+                    Color.clear
+                        .allowsHitTesting(false)
+                        .onAppear { ebookPageCornerRadii = cornerRadii }
+                        .onChange(of: cornerRadii) { ebookPageCornerRadii = $0 }
+#if DEBUG
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityIdentifier("ReaderWebView.Surface")
+                        .accessibilityValue(cornerRadii?.cssValue ?? "0px")
+#endif
+                }
+            }
+        }
+#endif
+        // Measure the paper inside this expansion. A background placed after
+        // ignoresSafeArea sees the host's inset bounds rather than the surface.
         .readerWebViewSafeAreaExpansionForCurrentDevice()
         .background {
             GeometryReader { geometry in
@@ -1287,15 +1430,6 @@ public struct Reader: View {
                     let currentObscuredInsets = obscuredInsets
                     let currentHideNavigationDueToScroll = hideNavigationDueToScroll
                     Color.clear
-#if DEBUG
-                        // WKWebView's macOS accessibility frame reports its
-                        // unobscured document viewport even when SwiftUI has
-                        // expanded the rendered surface beneath native chrome.
-                        // Expose the post-expansion geometry so UI tests can
-                        // verify the surface separately from document insets.
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityIdentifier("ReaderWebView.Surface")
-#endif
                         .onAppear {
                             var sampledInsets = EdgeInsets(
                                 top: max(0, geometrySafeAreaInsets.top),
@@ -1384,6 +1518,21 @@ public struct Reader: View {
                 )
             }
         }
+#if DEBUG
+        .task(id: chromeInsetsTaskID + "|corners:" + (ebookPageCornerRadii?.cssValue ?? "fallback")) {
+#if os(iOS)
+            guard #available(iOS 27, *), pageURL.isEBookURL,
+                  !Task.isCancelled,
+                  let binding = scriptCaller.currentJavaScriptBindingToken else { return }
+            try? await syncEbookViewerPageCornerRadii(ebookPageCornerRadii) { js, duplicate in
+                guard !Task.isCancelled else { throw CancellationError() }
+                _ = try await scriptCaller.evaluateJavaScript(
+                    js, duplicateInMultiTargetFrames: duplicate, requiring: binding
+                )
+            }
+#endif
+        }
+#endif
         .onReceive(readerContent.contentTitleSubject.receive(on: RunLoop.main)) { _ in
             Task { @MainActor in
                 guard scriptCaller.hasAsyncCaller else { return }
@@ -1398,20 +1547,10 @@ public struct Reader: View {
                     readerContent.snippetTitleIsGeneratedFromPrefix
                 do {
                     try await scriptCaller.evaluateJavaScript(
-                        """
-                        (function() {
-                          const el = document.getElementById('reader-title');
-                          const body = document.body;
-                          if (el && el.textContent !== title) {
-                            el.textContent = title;
-                          }
-                          if (body) {
-                            body.classList.toggle(bodyClassName, !!hideReaderTitle);
-                          }
-                        })();
-                        """,
+                        readerContentTitleUpdateJavaScript,
                         arguments: [
                             "title": displayTitle,
+                            "isSnippet": readerContent.content?.url.isSnippetURL == true,
                             "bodyClassName": ReaderContentLoader.snippetReaderTitleSuppressionBodyClass,
                             "hideReaderTitle": hideRedundantSnippetTitle,
                         ],

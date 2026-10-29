@@ -53,16 +53,33 @@ private func resolveReaderReadAloudVoice(
 
 @MainActor
 public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
-    @Published public var isMediaPlayerPresented = false
+    /// Retires suspended reading-position requests when newer playback intent wins.
+    public private(set) var playbackInteractionRevision: UInt64 = 0
+
+    @Published public var isMediaPlayerPresented = false {
+        didSet {
+            if isMediaPlayerPresented != oldValue { playbackInteractionRevision &+= 1 }
+        }
+    }
     @Published public var audioURLs = [URL]()
-    @Published public var isPlaying = false
+    @Published public var isPlaying = false {
+        didSet {
+            if isPlaying != oldValue { playbackInteractionRevision &+= 1 }
+        }
+    }
+    /// Ephemeral reader-session affordance; changing articles must not reset it.
+    @Published public private(set) var hasStartedPlaybackThisSession = false
     @Published public private(set) var hasStartedPlaybackForCurrentContent = false
     @Published public var isTemporarilySuspendedForLoading = false
     @Published public private(set) var isRecordedAudioSuspendedForLookup = false
     @Published public private(set) var shouldResumeRecordedAudioAfterLookupDismissal = false
     @Published public private(set) var isAITTSSuspendedForLookup = false
     @Published public private(set) var shouldResumeAITTSAfterLookupDismissal = false
-    @Published public var playbackSource: ReaderPlaybackSource = .recordedAudio
+    @Published public var playbackSource: ReaderPlaybackSource = .recordedAudio {
+        didSet {
+            if playbackSource != oldValue { playbackInteractionRevision &+= 1 }
+        }
+    }
     @Published public var autoplayRequestToken: UUID?
     @Published private var ttsProgressPresentation = ReaderTTSProgressPresentation()
     public var ttsProgressValue: Double { ttsProgressPresentation.value }
@@ -110,6 +127,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         readAloudVoiceResolver: @escaping (String, String) -> AVSpeechSynthesisVoice? =
             resolveReaderReadAloudVoice
     ) {
+        let trace = ReaderLoadTrace.begin("reader.mediaModelConstruction")
+        defer { trace?.end() }
         self.readAloudController = readAloudController
         self.readAloudVoiceResolver = readAloudVoiceResolver
         super.init()
@@ -293,6 +312,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
         let incomingContentKey = content.compoundKey
         if currentContentKey != incomingContentKey {
+            playbackInteractionRevision &+= 1
             currentContentKey = incomingContentKey
             resetPlaybackStateForIncomingContent()
         }
@@ -313,17 +333,15 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
                 isMediaPlayerPresented = false
             }
         } else if newState.pageURL.isNativeReaderView {
-            Task { @MainActor [weak self] in
-                try Task.checkCancellation()
-                guard let self = self else { return }
-                if self.isMediaPlayerPresented {
-                    self.isMediaPlayerPresented = false
-                }
-                if voiceAudioURLs != audioURLs {
-                    audioURLs = voiceAudioURLs
-                }
-                self.stopAITTSPlayback(clearQueue: true)
+            // Complete this commit's cleanup before a later navigation or Play
+            // can install a new presentation on the same MainActor.
+            if isMediaPlayerPresented {
+                isMediaPlayerPresented = false
             }
+            if voiceAudioURLs != audioURLs {
+                audioURLs = voiceAudioURLs
+            }
+            stopAITTSPlayback(clearQueue: true)
         }
     }
 
@@ -550,6 +568,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func playAITTS() {
+        shouldResumeAITTSAfterAudioInterruption = false
         guard hasPreparedAITTS else {
             mediaDebugPrint("# READALOUD ai.play.skip", "reason=queueNotPrepared")
             return
@@ -587,6 +606,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func pauseAITTS() {
+        // An explicit pause revokes automatic resume even if the synthesizer
+        // is already paused by an interruption and this call is otherwise a no-op.
+        shouldResumeAITTSAfterAudioInterruption = false
         guard readAloudController.isSpeaking else {
             mediaDebugPrint("# READALOUD ai.pause.skip", "reason=notSpeaking")
             return
@@ -628,6 +650,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func registerPlaybackStart(contentKey: String?) {
+        hasStartedPlaybackThisSession = true
         guard let key = contentKey else { return }
         if currentContentKey != key {
             currentContentKey = key
@@ -640,6 +663,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     private func seekAITTS(toUtteranceIndex index: Int, shouldPlay: Bool) {
         guard !ttsUtterances.isEmpty else { return }
+        playbackInteractionRevision &+= 1
         let boundedIndex = min(max(index, 0), ttsUtterances.count - 1)
         ttsCurrentUtteranceIndex = boundedIndex
         ttsCurrentCharacterRange = nil
@@ -659,6 +683,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     private func seekAITTSToEnd() {
         guard !ttsUtterances.isEmpty else { return }
+        playbackInteractionRevision &+= 1
         let lastIndex = ttsUtterances.count - 1
         ttsCurrentUtteranceIndex = lastIndex
         let utterance = ttsUtterances[lastIndex]
@@ -827,6 +852,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     private func stopAITTSSynthesizerForQueueSwap() {
+        shouldResumeAITTSAfterAudioInterruption = false
         ignoresCancellationCallbacksForQueueSwap = readAloudController.stopSpeaking(at: .immediate)
     }
 
@@ -905,6 +931,23 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 #endif
     }
 
+    // Shared orchestration keeps the notification boundary thin and permits
+    // deterministic coverage through the injected speech controller on macOS.
+    func beginReadAloudAudioInterruption() {
+        guard playbackSource == .aiTextToSpeech else { return }
+        let shouldResume = isPlaying
+        pauseAITTS()
+        isPlaying = false
+        shouldResumeAITTSAfterAudioInterruption = shouldResume
+    }
+
+    func endReadAloudAudioInterruption(permitsResume: Bool) {
+        let shouldResume = permitsResume && shouldResumeAITTSAfterAudioInterruption
+            && playbackSource == .aiTextToSpeech && isMediaPlayerPresented
+        shouldResumeAITTSAfterAudioInterruption = false
+        if shouldResume { playAITTS() }
+    }
+
 #if os(iOS)
     @objc nonisolated private func handleAudioSessionInterruption(_ notification: Notification) {
         let typeRawValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
@@ -916,16 +959,10 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             else { return }
             switch type {
             case .began:
-                self.shouldResumeAITTSAfterAudioInterruption = self.isPlaying
-                self.pauseAITTS()
-                self.isPlaying = false
+                self.beginReadAloudAudioInterruption()
             case .ended:
-                let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRawValue).contains(.shouldResume)
-                    && self.shouldResumeAITTSAfterAudioInterruption
-                self.shouldResumeAITTSAfterAudioInterruption = false
-                if shouldResume {
-                    self.playAITTS()
-                }
+                self.endReadAloudAudioInterruption(permitsResume:
+                    AVAudioSession.InterruptionOptions(rawValue: optionsRawValue).contains(.shouldResume))
             @unknown default:
                 self.shouldResumeAITTSAfterAudioInterruption = false
             }

@@ -39,9 +39,9 @@ struct ReaderWebViewObscuredInsetResolver {
         let sampledLeading = additionalInsets.leading > 0
             ? 0
             : (obscuredInsets?.leading ?? 0)
-        let resolvedBottom = usesEBookChromeInsets
-            ? max(sampledBottom, additionalInsets.bottom)
-            : sampledBottom + additionalInsets.bottom
+        // The explicit sheet clearance already includes the physical bottom
+        // safe area. Sampling it again must not add a second home-indicator gap.
+        let resolvedBottom = max(sampledBottom, additionalInsets.bottom)
         let resolvedLeading = preservesLeadingSafeAreaInset
             ? max(0, sampledLeading + additionalInsets.leading)
             : 0
@@ -111,22 +111,30 @@ final class ReaderWebViewHandler {
         self.scriptCaller = scriptCaller
         self.navigator = navigator
     }
+
+    private func shouldIgnoreIntermediateBlankCallback(
+        state: WebViewState,
+        callback: String
+    ) -> Bool {
+        guard state.pageURL.absoluteString == "about:blank",
+              navigator.hasPendingInternalReaderRequest else { return false }
+        ReaderLoadTrace.event("webview.intermediateBlankSkipped", "callback=\(callback)")
+        return true
+    }
     
     func handleNavigationCommitted(state: WebViewState) async throws {
+        let trace = ReaderLoadTrace.begin("webview.commit")
+        defer { trace?.end(Task.isCancelled ? "cancelled" : "returned") }
 //        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
 
         try Task.checkCancellation()
-        if !readerModeViewModel.expectsSyntheticReaderLoaderCommit(
-            for: state.pageURL
-        ) {
-            // A different committed document no longer owns an older render
-            // overlay. The expected processed-HTML commit keeps it until its
-            // render-ready message arrives.
-            readerContent.isRenderingReaderHTML = false
-        }
         do {
             try Task.checkCancellation()
-            try await readerContent.load(url: state.pageURL)
+            do {
+                let contentTrace = ReaderLoadTrace.begin("webview.commit.content")
+                defer { contentTrace?.end() }
+                try await readerContent.load(url: state.pageURL)
+            }
             try Task.checkCancellation()
             guard let content = readerContent.content else {
                 readerModeViewModel.cancelReaderModeLoad(
@@ -135,18 +143,37 @@ final class ReaderWebViewHandler {
                 )
                 return
             }
-            try await readerViewModel.onNavigationCommitted(
-                content: content,
-                newState: state
-            )
-            try Task.checkCancellation()
-            try await readerModeViewModel.onNavigationCommitted(
-                readerContent: readerContent,
-                newState: state,
-                scriptCaller: scriptCaller,
-                navigator: navigator
-            )
-            try Task.checkCancellation()
+            // ReaderContent can suppress an obsolete startup blank load.
+            // Validate selection before publishing any commit side effects.
+            guard content.url.matchesReaderURL(state.pageURL) else {
+                throw CancellationError()
+            }
+            if !readerModeViewModel.expectsSyntheticReaderLoaderCommit(
+                for: state.pageURL
+            ) {
+                // Only the admitted document can release the preceding overlay.
+                readerContent.isRenderingReaderHTML = false
+            }
+            do {
+                let viewModelTrace = ReaderLoadTrace.begin("webview.commit.viewModel")
+                defer { viewModelTrace?.end() }
+                try await readerViewModel.onNavigationCommitted(
+                    content: content,
+                    newState: state
+                )
+                try Task.checkCancellation()
+            }
+            do {
+                let readerModeTrace = ReaderLoadTrace.begin("webview.commit.readerMode")
+                defer { readerModeTrace?.end() }
+                try await readerModeViewModel.onNavigationCommitted(
+                    readerContent: readerContent,
+                    newState: state,
+                    scriptCaller: scriptCaller,
+                    navigator: navigator
+                )
+                try Task.checkCancellation()
+            }
             guard let content = readerContent.content,
                   content.url.matchesReaderURL(state.pageURL) else {
                 throw CancellationError()
@@ -174,6 +201,8 @@ final class ReaderWebViewHandler {
     }
 
     func handleNavigationFinished(state: WebViewState) async {
+        let trace = ReaderLoadTrace.begin("webview.finish")
+        defer { trace?.end() }
         guard !Task.isCancelled else { return }
         await readerModeViewModel.onNavigationFinished(
             newState: state,
@@ -198,6 +227,10 @@ final class ReaderWebViewHandler {
     }
 
     func onNavigationCommitted(state: WebViewState) {
+        // Decide at event admission: the queued target may already have been
+        // accepted by the time an asynchronous commit task gets to run.
+        guard !shouldIgnoreIntermediateBlankCallback(state: state, callback: "commit") else { return }
+        ReaderLoadTrace.event("webview.didCommit", "loader=\(state.pageURL.isReaderURLLoaderURL)")
         navigationTaskManager.startOnNavigationCommitted {
             try await self.handleNavigationCommitted(state: state)
             try Task.checkCancellation()
@@ -213,6 +246,8 @@ final class ReaderWebViewHandler {
     }
 
     func onNavigationFinished(state: WebViewState) {
+        guard !shouldIgnoreIntermediateBlankCallback(state: state, callback: "finish") else { return }
+        ReaderLoadTrace.event("webview.didFinish", "loader=\(state.pageURL.isReaderURLLoaderURL)")
         navigationTaskManager.startOnNavigationFinished { @MainActor [weak self] in
             guard let self else { return }
             await self.handleNavigationFinished(state: state)
@@ -225,6 +260,8 @@ final class ReaderWebViewHandler {
         state: WebViewState,
         disposition: WebViewNavigationFailureDisposition
     ) {
+        ReaderLoadTrace.event("webview.navigationFailed",
+                              "disposition=\(disposition.rawValue) loader=\(state.pageURL.isReaderURLLoaderURL) ready=\(state.hasReaderRenderReady) errorCode=\(state.error.map { ($0 as NSError).code } ?? 0)")
         let preservesCommittedDocument = disposition == .preservedCommittedDocument
         navigationTaskManager.startOnNavigationFailed(
             preservingCommittedDocument: preservesCommittedDocument
@@ -243,6 +280,8 @@ final class ReaderWebViewHandler {
         state: WebViewState,
         reason: WebViewDocumentContextInvalidationReason
     ) {
+        ReaderLoadTrace.event("webview.documentContextInvalidated",
+                              "reason=\(reason.rawValue) loader=\(state.pageURL.isReaderURLLoaderURL) ready=\(state.hasReaderRenderReady)")
         // A committed replacement, process loss, or host detach invalidates all
         // asynchronous work that still belongs to the previous document.
         navigationTaskManager.cancelNavigationWork()
@@ -257,6 +296,7 @@ final class ReaderWebViewHandler {
     }
 
     func onURLChanged(state: WebViewState) {
+        guard !shouldIgnoreIntermediateBlankCallback(state: state, callback: "urlChanged") else { return }
         navigationTaskManager.startOnURLChanged { @MainActor in
             try await self.handleURLChanged(state: state)
             do {
@@ -309,7 +349,7 @@ public struct ReaderWebView: View {
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
     // SwiftUI can rebuild this value-type view while a navigation callback is
     // suspended. Keep one task owner across those rebuilds so a newer callback,
-    // failure, process termination, or disappearance can cancel older work.
+    // failure, process termination, or document detach can cancel older work.
     @State private var navigationTaskManager = NavigationTaskManager()
     @StateObject private var callbackRelay = ReaderWebViewCallbackRelay()
     
@@ -349,8 +389,6 @@ public struct ReaderWebView: View {
             readerModeViewModel.processHTMLDocument != nil ? "htmlDocument=1" : "htmlDocument=0",
             readerModeViewModel.processHTMLBytes != nil ? "htmlBytes=1" : "htmlBytes=0",
             readerModeViewModel.processHTML != nil ? "html=1" : "html=0",
-            readerModeViewModel.sharedFontCSSBase64 == nil ? "fontCSS=0" : "fontCSS=1",
-            readerModeViewModel.sharedFontCSSBase64Provider == nil ? "fontCSSProvider=0" : "fontCSSProvider=1",
             readerModeViewModel.sharedReaderFontAsset == nil ? "fontAsset=0" : "fontAsset=1",
         ]
         .joined(separator: " ")
@@ -448,8 +486,6 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.processHTMLDocument = readerModeViewModel.processHTMLDocument
             ebookURLSchemeHandler.processHTMLBytes = readerModeViewModel.processHTMLBytes
             ebookURLSchemeHandler.processHTML = readerModeViewModel.processHTML
-            ebookURLSchemeHandler.sharedFontCSSBase64 = readerModeViewModel.sharedFontCSSBase64
-            ebookURLSchemeHandler.sharedFontCSSBase64Provider = readerModeViewModel.sharedFontCSSBase64Provider
             ebookURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
             readerFileURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
         }
@@ -457,13 +493,20 @@ public struct ReaderWebView: View {
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
             ebookURLSchemeHandler.readerFileManager = readerFileManager
         }
-        .onDisappear {
-            navigationTaskManager.cancelNavigationWork()
-        }
+        // Visibility changes do not invalidate the mounted document. Its commit
+        // may still be preparing reader HTML when a scene or overlay disappears.
+        // Actual detach, replacement and process loss cancel through the document
+        // context invalidation callback above.
     }
 }
 
 fileprivate struct ReaderWebViewInternal: View {
+    @MainActor
+    private static func recordConstructionTiming(_ timing: WebViewConstructionTiming) {
+        ReaderLoadTrace.event("webview.construction",
+            "step=\(timing.step.rawValue) elapsed_ms=\(String(format: "%.3f", timing.elapsedMilliseconds))")
+    }
+
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
     var usesEBookChromeInsets = false
@@ -489,13 +532,6 @@ fileprivate struct ReaderWebViewInternal: View {
     let callbackRelay: ReaderWebViewCallbackRelay
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
-#if os(iOS)
-    @StateObject private var webViewPrewarmer = WebViewPrewarmer(
-        warmUpCount: 1,
-        keepAliveCount: 0,
-        defaultResetURL: URL(string: "about:blank")
-    )
-#endif
     
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @Environment(\.colorScheme) private var colorScheme
@@ -535,13 +571,9 @@ fileprivate struct ReaderWebViewInternal: View {
     }
     
     public var body: some View {
-#if os(iOS)
-        let webViewPrewarmer: WebViewPrewarmer? = self.webViewPrewarmer
-#else
-        // A local macOS pool cannot warm before NSView construction. Loading its
-        // spare views here launches WebKit services synchronously during layout.
-        let webViewPrewarmer: WebViewPrewarmer? = nil
-#endif
+        // This long-lived reader owns its mounted WebView. A pool first created
+        // here cannot prewarm it before mount; it instead starts blank-page
+        // navigation and creates a spare during the first layout.
         let resolvedObscuredInsets = totalObscuredInsets(
             additionalInsets: EdgeInsets(
                 top: max(0, additionalTopSafeAreaInset ?? 0),
@@ -550,6 +582,8 @@ fileprivate struct ReaderWebViewInternal: View {
                 trailing: 0
             )
         )
+        let constructionTiming: (@MainActor (WebViewConstructionTiming) -> Void)? =
+            ReaderLoadTrace.isRecording("webview.construction") ? Self.recordConstructionTiming : nil
         WebView(
             config: WebViewConfig(
                 dataDetectorsEnabled: false,
@@ -557,6 +591,9 @@ fileprivate struct ReaderWebViewInternal: View {
                 usesSampledPageTopColorForUnderPageBackground: true,
                 usesConfiguredBackgroundForReaderDocuments: true,
                 adjustsScrollViewContentInsetsForSafeArea: false,
+                reservesWindowTopSafeAreaInObscuredInsets: true,
+                reservesDocumentTopInset: !state.pageURL.isEBookURL,
+                reservesDocumentBottomInset: !usesEBookChromeInsets && !state.pageURL.isEBookURL,
                 hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
                 nativeLookupHitTestingEnabled: state.pageURL.isEBookURL,
                 userScripts: userScripts),
@@ -592,13 +629,26 @@ fileprivate struct ReaderWebViewInternal: View {
             onURLChanged: { state in
                 callbackRelay.handler?.onURLChanged(state: state)
             },
+            onNavigationAction: { action in
+                if ReaderLoadTrace.isRecording("webview.readerNavigationPolicy"),
+                   action.targetFrame?.isMainFrame == true,
+                   let url = action.request.url, url.isReaderDocumentURL {
+                    let generation = ReaderDocumentResourceRegistry.shared.document(at: url)?.generation
+                    ReaderLoadTrace.$operationID.withValue(generation) {
+                        ReaderLoadTrace.event("webview.readerNavigationPolicy")
+                    }
+                }
+                // Observation only: keep the WebView's normal navigation and
+                // provider-frame security policy authoritative.
+                return nil
+            },
             onScrollBottomStateChanged: onScrollBottomStateChanged,
             buildMenu: { builder in
                 buildMenu?(builder)
             },
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
-            webViewPrewarmer: webViewPrewarmer
+            onConstructionTiming: constructionTiming
         )
         .onAppear {
         }

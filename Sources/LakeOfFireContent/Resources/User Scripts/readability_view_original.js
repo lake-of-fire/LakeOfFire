@@ -1,5 +1,7 @@
 (function () {
-    const wiredNodes = new WeakMap();
+    const wiredNodes = document.manabiViewOriginalLinksWired instanceof WeakSet
+        ? document.manabiViewOriginalLinksWired : new WeakSet();
+    document.manabiViewOriginalLinksWired = wiredNodes;
 
     function wireViewOriginal() {
         let nodes = document.body.getElementsByClassName('reader-view-original');
@@ -7,7 +9,7 @@
             if (!['A', 'BUTTON'].includes(node.tagName.toUpperCase()) || wiredNodes.has(node)) {
                 continue;
             }
-            wiredNodes.set(node, true); // Mark the node as wired
+            wiredNodes.add(node);
             node.addEventListener('click', (e) => {
                 e.preventDefault();
                 window.webkit.messageHandlers.showOriginal.postMessage({});
@@ -21,9 +23,9 @@
             .observe(document, { childList: true, subtree: true, attributes: false });
     }
 
-    if (document.readyState === 'complete') {
-        init();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
     } else {
-        document.addEventListener('DOMContentLoaded', init);
+        init();
     }
 })();

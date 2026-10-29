@@ -5,9 +5,69 @@ import SwiftReadability
 import SwiftSoup
 import XCTest
 @testable import LakeOfFireContent
+@testable import enum LakeOfFireOPDS.OPDS1Parser
 @testable import LakeOfFireReader
 
 final class AsahiFeedReadabilityPipelineTests: XCTestCase {
+    @MainActor
+    func testRefreshPreservesSignedArticleAndImageURLsThroughRSSAndAtomImport() async throws {
+        let configuration = makeRealmConfiguration()
+        let originalLibrary = LibraryDataManager.realmConfiguration
+        let originalBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalSession = makeFeedSessionOverrideForTesting
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmark
+            ReaderContentLoader.historyRealmConfiguration = originalHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = originalEntry
+            makeFeedSessionOverrideForTesting = originalSession
+            FeedURLProtocol.requestHandler = nil
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        makeFeedSessionOverrideForTesting = {
+            let config = URLSessionConfiguration.ephemeral
+            config.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: config)
+        }
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let image = "https://images.example/photo.jpg?sig=a%2Fb&literal=%252F"
+        let escapedImage = image.replacingOccurrences(of: "&", with: "&amp;")
+        for kind in ["rss", "atom"] {
+            let article = "https://publisher.example/\(kind)/a%2Fb?sig=x%2Fy&literal=%252F"
+            let escapedArticle = article.replacingOccurrences(of: "&", with: "&amp;")
+            let media = "<media:content url=\"\(escapedImage)\" medium=\"image\" type=\"image/jpeg\" width=\"640\" height=\"480\"/>"
+            let xml = kind == "rss" ? """
+            <rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>Feed</title>
+            <item><title>記事</title><link>\(escapedArticle)</link><description>Preview</description>
+            <enclosure url="\(escapedImage)" type="image/jpeg" length="100"/>\(media)</item></channel></rss>
+            """ : """
+            <feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+            <id>https://publisher.example/feed</id><title>Feed</title><updated>2026-10-27T00:00:00Z</updated>
+            <entry><id>\(escapedArticle)</id><title>記事</title><updated>2026-10-27T00:00:00Z</updated>
+            <link rel="alternate" href="\(escapedArticle)"/><link rel="enclosure" href="\(escapedImage)" type="image/jpeg"/>
+            <content type="html">Preview</content>\(media)</entry></feed>
+            """
+            let feed = Feed(); feed.rssUrl = URL(string: "https://publisher.example/\(kind).xml")!
+            try realm.write { realm.add(feed) }
+            FeedURLProtocol.requestHandler = { _ in (200, ["Content-Type": "application/xml"], Data(xml.utf8)) }
+            try await feed.freeze().fetch(realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let entry = try XCTUnwrap(realm.objects(FeedEntry.self).where { $0.feedID == feed.id }.first)
+            XCTAssertEqual(entry.url.absoluteString, article)
+            XCTAssertEqual(entry.imageUrl?.absoluteString, image)
+            let geometry = try XCTUnwrap(ReaderImageGeometry.metadata(inHTML: entry.html,
+                matchingURL: URL(string: image), sourceURL: entry.url))
+            XCTAssertEqual(geometry.width, 640)
+            XCTAssertEqual(geometry.height, 480)
+            XCTAssertFalse(feed.rssContainsFullContent)
+        }
+    }
+
     @MainActor
     func testRefreshFallsBackFromUnsupportedHEADAndHonorsChangedETag() async throws {
         let configuration = makeRealmConfiguration()
@@ -64,6 +124,70 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             XCTAssertEqual(realm.objects(FeedEntry.self).first?.title, "No validators")
             XCTAssertNotEqual(feed.lastFetchedETag, "error-page-tag")
         }
+    }
+
+    @MainActor
+    func testUnsolicitedPartialFeedCannotReplaceOrDeleteCachedEntries() async throws {
+        let configuration = makeRealmConfiguration()
+        let originalLibrary = LibraryDataManager.realmConfiguration
+        let originalBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalSession = makeFeedSessionOverrideForTesting
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmark
+            ReaderContentLoader.historyRealmConfiguration = originalHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = originalEntry
+            makeFeedSessionOverrideForTesting = originalSession
+            FeedURLProtocol.requestHandler = nil
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = URL(string: "https://example.com/partial.rss")!
+        feed.deleteOrphans = true
+        try realm.write { realm.add(feed) }
+        makeFeedSessionOverrideForTesting = {
+            let config = URLSessionConfiguration.ephemeral
+            config.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: config)
+        }
+        let full = Data("<rss version='2.0'><channel><title>Feed</title><item><guid>one</guid><link>https://example.com/one</link><title>One</title></item><item><guid>two</guid><link>https://example.com/two</link><title>Two</title></item></channel></rss>".utf8)
+        FeedURLProtocol.requestHandler = { _ in
+            (200, ["Content-Type": "application/rss+xml", "ETag": "full"], full)
+        }
+        try await feed.freeze().fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(realm.objects(FeedEntry.self).filter { !$0.isDeleted }.count, 2)
+        let partial = Data("<rss version='2.0'><channel><title>Feed</title><item><guid>one</guid><link>https://example.com/one</link><title>Changed</title></item></channel></rss>".utf8)
+        FeedURLProtocol.requestHandler = { request in
+            XCTAssertNil(request.value(forHTTPHeaderField: "Range"))
+            return (request.httpMethod == "HEAD" ? 200 : 206,
+                    ["Content-Type": "application/rss+xml", "ETag": "partial"], partial)
+        }
+        do {
+            try await feed.freeze().fetch(realmConfiguration: configuration)
+            XCTFail("A partial response cannot authorize feed replacement")
+        } catch { }
+        await realm.asyncRefresh()
+        XCTAssertEqual(Set(realm.objects(FeedEntry.self).filter { !$0.isDeleted }.map(\.title)), ["One", "Two"])
+        XCTAssertEqual(feed.lastFetchedETag, "full")
+    }
+
+    func testParsedOpenAccessPublicationMapsToActionableLibraryDownload() throws {
+        let url = URL(string: "https://example.com/opds/feed.atom")!
+        let data = Data("<feed xmlns='http://www.w3.org/2005/Atom'><title>Catalog</title><entry><title>Open book</title><link rel='http://opds-spec.org/acquisition/open-access' href='book.epub' type='application/epub+zip'/></entry></feed>".utf8)
+        let response = URLResponse(url: url, mimeType: "application/atom+xml", expectedContentLength: data.count, textEncodingName: "utf-8")
+        let parsed = try OPDS1Parser.parse(xmlData: data, url: url, response: response)
+        let source = try XCTUnwrap(parsed.feed?.publications.first)
+        let row = LakeOfFireReader.Publication(opdsPublication: source, catalogURL: url)
+        XCTAssertEqual(row.title, "Open book")
+        XCTAssertEqual(row.downloadURL?.absoluteString, "https://example.com/opds/book.epub")
     }
 
     private final class FeedURLProtocol: URLProtocol {

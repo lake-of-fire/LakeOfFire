@@ -12,6 +12,8 @@ import Pow
 import SwiftUIWebView
 import ExpandableText
 
+// Dormant UI retained for local development; excluded from shipping builds.
+#if DEBUG
 struct BookThumbnail: View {
     let imageURL: URL
     var limitWidth: Bool = true
@@ -36,7 +38,10 @@ struct BookThumbnail: View {
         }
     }
 }
+#endif
 
+// Dormant UI retained for local development; excluded from shipping builds.
+#if DEBUG
 struct HorizontalBooks: View {
     let publications: [Publication]
     let isDownloadable: Bool
@@ -51,7 +56,8 @@ struct HorizontalBooks: View {
                         title: publication.title,
                         author: publication.author,
                         publicationDate: publication.publicationDate,
-                        downloadURL: isDownloadable ? publication.downloadURL : nil
+                        downloadURL: isDownloadable ? publication.downloadURL : nil,
+                        downloadMediaType: publication.downloadMediaType
                     ) { wasAlreadyDownloaded in
                         onSelected?(publication, wasAlreadyDownloaded)
                     }
@@ -74,6 +80,7 @@ struct HorizontalBooks: View {
         }
     }
 }
+#endif
 
 struct BookListRow: View {
     let publication: Publication
@@ -102,19 +109,20 @@ struct BookListRow: View {
         .listRowInsets(.init())
         .listRowBackground(Color.clear)
         .listRowSeparatorIfAvailable(.hidden)
-        .task { @MainActor in
+        .task(id: BookDownloadIdentity(url: publication.downloadURL, name: publication.title, mediaType: publication.downloadMediaType)) { @MainActor in
             await refreshDownloadable()
         }
     }
 
     private func refreshDownloadable() async {
+        guard !Task.isCancelled else { return }
         guard let downloadURL = publication.downloadURL else {
             downloadable = nil
             return
         }
-        if downloadable?.url != downloadURL || downloadable?.name != publication.title {
-            downloadable = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: publication.title)
-        }
+        let resolved = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: publication.title, mediaType: publication.downloadMediaType)
+        guard !Task.isCancelled else { return }
+        downloadable = resolved
     }
 }
 

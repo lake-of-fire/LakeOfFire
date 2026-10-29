@@ -20,8 +20,22 @@ public class ReaderViewModel: NSObject, ObservableObject {
     private static var inFlightContentTasks: [String: Task<(any ReaderContentProtocol)?, Error>] = [:]
 
     public var navigator: WebViewNavigator?
-    @Published public var state: WebViewState = .empty
+    @Published public var state: WebViewState = .empty {
+        didSet {
+#if DEBUG
+            if oldValue.pageURL != state.pageURL { ebookPageTurnStyles = [] }
+            if oldValue.hasReaderRenderReady != state.hasReaderRenderReady
+                || oldValue.pageURL != state.pageURL {
+                ReaderLoadTrace.event("readerModel.stateAssigned",
+                                      "model=\(ObjectIdentifier(self)) oldReady=\(oldValue.hasReaderRenderReady) ready=\(state.hasReaderRenderReady) pageURL=\(state.pageURL.absoluteString)")
+            }
+#endif
+        }
+    }
     @Published public private(set) var ebookViewerLoadedProbeSummary: String?
+#if DEBUG
+    @Published public private(set) var ebookPageTurnStyles: [String] = []
+#endif
     @Published public private(set) var ebookChromeInsetsResyncID: UInt64 = 0
     @Published public private(set) var ebookNativeOverlayPercentLabel: String = ""
     @Published public private(set) var ebookNativeOverlayNavigationHidden: Bool = false
@@ -66,7 +80,16 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @MainActor
     public func setEbookViewerLoadedProbeSummary(_ summary: String?) {
         ebookViewerLoadedProbeSummary = summary
+#if DEBUG
+        if summary == nil { ebookPageTurnStyles = [] }
+#endif
     }
+
+#if DEBUG
+    public func setEbookPageTurnStyles(_ styles: [String]) {
+        ebookPageTurnStyles = ["instant", "slide"].filter { styles.contains($0) }
+    }
+#endif
 
     @MainActor
     public func triggerEbookChromeInsetsResync() {
@@ -171,48 +194,42 @@ public class ReaderViewModel: NSObject, ObservableObject {
         realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration,
         systemScripts: [WebViewUserScript]
     ) {
+        let trace = ReaderLoadTrace.begin("reader.viewModelConstruction")
+        defer { trace?.end() }
         super.init()
-        webViewSystemScripts = systemScripts
+        webViewSystemScripts = systemScripts + LibraryConfiguration.bundledSystemScripts
         
         Task { @RealmBackgroundActor [weak self, realmConfiguration] in
             guard let self = self else { return }
             let libraryRealm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
 
-            libraryRealm.objects(LibraryConfiguration.self)
+            let configurationChanges = libraryRealm.objects(LibraryConfiguration.self)
                 .collectionPublisher
                 .subscribe(on: readerViewModelQueue)
+                .map { @Sendable _ in }
+            let scriptChanges = libraryRealm.objects(UserScript.self)
+                .collectionPublisher
+                .subscribe(on: readerViewModelQueue)
+                .map { @Sendable _ in }
+            // Domains are UUID references, not Realm links. A domain-only edit
+            // or independently synced arrival must invalidate the projection.
+            let domainChanges = libraryRealm.objects(UserScriptAllowedDomain.self)
+                .collectionPublisher
+                .subscribe(on: readerViewModelQueue)
+                .map { @Sendable _ in }
+
+            // All subscriptions emit an initial value. Start one current-state
+            // refresh after all are observing, then coalesce each source's
+            // invalidations through the same path. Dropping one initial event
+            // could miss an edit made while that subscription is installed.
+            configurationChanges.combineLatest(scriptChanges, domainChanges)
                 .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.3), scheduler: readerViewModelQueue)
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
-                        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: realmConfiguration)
-                        let ref = ThreadSafeReference(to: libraryConfiguration)
-                        try await { @MainActor [weak self] in
-                            let realm = try await Realm.open(configuration: realmConfiguration)
-                            guard let libraryConfiguration = realm.resolve(ref) else { return }
-                            let webViewSystemScripts = systemScripts + libraryConfiguration.systemScripts
-                            let webViewUserScripts = libraryConfiguration.getActiveWebViewUserScripts()
-                            guard let self else { return }
-                            if self.webViewSystemScripts != webViewSystemScripts {
-                                self.webViewSystemScripts = webViewSystemScripts
-                            }
-                            if self.webViewUserScripts != webViewUserScripts {
-                                self.webViewUserScripts = webViewUserScripts
-                            }
-                        }()
-                    }
-                })
-                .store(in: &cancellables)
-
-            libraryRealm.objects(UserScript.self)
-                .collectionPublisher
-                .subscribe(on: readerViewModelQueue)
-                .map { @Sendable _ in }
-                .debounceLeadingTrailing(for: .seconds(1), scheduler: readerViewModelQueue)
-                .receive(on: readerViewModelQueue)
-                .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        try await self?.updateScripts(realmConfiguration: realmConfiguration)
+                        try await self?.updateScripts(
+                            realmConfiguration: realmConfiguration
+                        )
                     }
                 })
                 .store(in: &self.cancellables)
@@ -220,13 +237,20 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @RealmBackgroundActor
-    private func updateScripts(realmConfiguration: Realm.Configuration) async throws {
+    private func updateScripts(
+        realmConfiguration: Realm.Configuration
+    ) async throws {
+        let trace = ReaderLoadTrace.begin("reader.scriptSnapshot")
+        defer { trace?.end() }
+        try Task.checkCancellation()
         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: realmConfiguration)
         let ref = ThreadSafeReference(to: libraryConfiguration)
         try await { @MainActor [weak self] in
             let realm = try await Realm.open(configuration: realmConfiguration)
-            guard let scripts = realm.resolve(ref)?.getActiveWebViewUserScripts() else { return }
-            guard let self = self else { return }
+            try Task.checkCancellation()
+            guard let self, let libraryConfiguration = realm.resolve(ref),
+                  !libraryConfiguration.isDeleted else { return }
+            let scripts = libraryConfiguration.getActiveWebViewUserScripts()
             if self.webViewUserScripts != scripts {
                 self.webViewUserScripts = scripts
             }

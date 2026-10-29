@@ -27,6 +27,17 @@ enum OPDSParserError: LocalizedError {
 }
 
 public enum OPDSParser {
+    /// URLSession's async request propagates cancellation to the transport.
+    public static func parseURL(url: URL, session: URLSession = .shared) async throws -> ParseData {
+        try Task.checkCancellation()
+        let (data, response) = try await session.data(from: url)
+        try Task.checkCancellation()
+        let document = try validateDocument(data: data, response: response, error: nil)
+        let parsed = try parseDocument(data: document.0, url: url, response: document.1)
+        try Task.checkCancellation()
+        return parsed
+    }
+
     /// Parse an OPDS feed or publication.
     /// Feed can be v1 (XML) or v2 (JSON).
     /// - parameter url: The feed URL
@@ -43,17 +54,22 @@ public enum OPDSParser {
                 return
             }
 
-            // We try to parse as an OPDS v1 feed,
-            // then, if it fails, we try as an OPDS v2 feed.
-            if let parseData = try? OPDS1Parser.parse(xmlData: data, url: url, response: response) {
-                completion(parseData, nil)
-            } else if let parseData = try? OPDS2Parser.parse(jsonData: data, url: url, response: response) {
-                completion(parseData, nil)
-            } else {
-                // Not a valid OPDS ressource
-                completion(nil, OPDSParserError.documentNotValid)
+            do {
+                completion(try parseDocument(data: data, url: url, response: response), nil)
+            } catch {
+                completion(nil, error)
             }
         }
+    }
+
+    private static func parseDocument(data: Data, url: URL, response: URLResponse) throws -> ParseData {
+        if let parsed = try? OPDS1Parser.parse(xmlData: data, url: url, response: response) {
+            return parsed
+        }
+        if let parsed = try? OPDS2Parser.parse(jsonData: data, url: url, response: response) {
+            return parsed
+        }
+        throw OPDSParserError.documentNotValid
     }
 
     static func loadDocument(url: URL, session: URLSession = .shared, completion: @escaping (Data?, URLResponse?, Error?) -> Void) {
@@ -75,7 +91,11 @@ public enum OPDSParser {
             }
             // No catalog request sends a Range header. A syntactically complete
             // fragment must not be admitted as the complete catalog.
-            guard response.statusCode != 206 else { throw OPDSParserError.partialDocument }
+            guard response.statusCode != 206,
+                  response.value(forHTTPHeaderField: "Content-Range") == nil,
+                  response.mimeType?.lowercased() != "multipart/byteranges" else {
+                throw OPDSParserError.partialDocument
+            }
         }
         guard let data, let response else { throw OPDSParserError.documentNotFound }
         return (data, response)

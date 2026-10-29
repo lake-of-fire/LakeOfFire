@@ -8,32 +8,6 @@ import LakeOfFireCore
 import RealmSwift
 import LakeImage
 
-private struct FeedCellNewBadge: View {
-    var body: some View {
-        Text("NEW")
-            .font(.caption2)
-            .fontWeight(.semibold)
-            .textCase(.uppercase)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .modifier {
-                if #available(iOS 16, macOS 14, *) {
-                    $0.baselineOffset(-0.5)
-                } else { $0 }
-            }
-            .background(
-                Capsule().fill(
-                    Color(
-                        red: 0x1d / 255.0,
-                        green: 0x46 / 255.0,
-                        blue: 0x75 / 255.0
-                    )
-                )
-            )
-    }
-}
-
 public struct FeedCell: View {
     @ObservedRealmObject var feed: Feed
     var includesDescription = true
@@ -79,7 +53,7 @@ public struct FeedCell: View {
                         if showsStatusRow {
                             HStack(spacing: 8) {
                                 if showsUnreadIndicator {
-                                    FeedCellNewBadge()
+                                    ReaderNewBadge()
                                 }
                                 if showsAudioIndicator {
                                     Image(systemName: "headphones")

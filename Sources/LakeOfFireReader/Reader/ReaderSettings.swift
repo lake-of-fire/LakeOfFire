@@ -9,6 +9,30 @@ import SwiftUIDownloads
 import SwiftUtilities
 import RealmSwiftGaps
 import SwiftUIWebView
+#if canImport(UIKit)
+import UIKit
+#endif
+
+/// The input to ScaledMetric must be an unscaled reference size. UIKit's
+/// ordinary preferredFont already includes the current Dynamic Type category.
+public func readerDefaultFontSizeBase() -> CGFloat {
+#if canImport(UIKit)
+    return UIFont.preferredFont(
+        forTextStyle: .body,
+        compatibleWith: UITraitCollection(preferredContentSizeCategory: .large)
+    ).pointSize + 4
+#else
+    return Font.pointSize(for: .body) + 4
+#endif
+}
+
+/// Read the same numeric preference from persisted values, launch arguments,
+/// and registered defaults. Argument-domain numbers can be stored as strings.
+public func readerStoredFontSize(in defaults: UserDefaults = .standard) -> Double? {
+    guard defaults.object(forKey: "readerFontSize") != nil else { return nil }
+    let size = defaults.double(forKey: "readerFontSize")
+    return size.isFinite && size > 0 ? size : nil
+}
 
 public enum LightModeTheme: String, CaseIterable, Identifiable {
     case white
@@ -71,8 +95,10 @@ public func readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: Double?) -> S
     "--mnb-reader-max-width-override: \(readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize));"
 }
 
+// Dormant UI retained for local development; excluded from shipping builds.
+#if DEBUG
 struct ReaderSettingsForm: View {
-    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
+    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = readerDefaultFontSizeBase()
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
@@ -106,7 +132,6 @@ public struct DataSettingsForm: View {
     @State private var isPresentingUnsavedRSSFeedEntryDeletionAlert: Bool = false
     @State private var isPresentingUnsavedReadingHistoryDeletionAlert: Bool = false
     
-    @AppStorage("developerToolsEnabled") private var developerToolsEnabled = false
     
     public var body: some View {
         Form {
@@ -176,12 +201,6 @@ public struct DataSettingsForm: View {
                     Text("This will delete RSS feed entries that have not been saved. This data is persisted on your device and in your personal iCloud account and is not shared online without any explicit share action.")
                 }
                 
-                /*
-                if #available(iOS 16, macOS 13, *) {
-                    Divider()
-                    Toggle("Developer Tools", isOn: $developerToolsEnabled)
-                }
-                 */
             }
         }
         .groupedFormStyleIfAvailable()
@@ -290,3 +309,4 @@ struct LegacyReaderSettingsPopoverModifier: ViewModifier {
             }
     }
 }
+#endif

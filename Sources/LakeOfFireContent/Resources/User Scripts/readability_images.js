@@ -36,6 +36,7 @@
         var contentWidth = contentElement.offsetWidth;
         
         Array.from(document.getElementsByTagName('img')).forEach(img => {
+            if (img.dataset.mnbImageLayout === 'fixed') return;
             // Reset cached dimensions so we recalc from natural size
             delete img._originalWidth;
             delete img._originalHeight;
@@ -44,6 +45,7 @@
         var maxWidthStyle = "min(850px, 100%) !important";
         
         var setImageMargins = function (img) {
+            if (img.dataset.mnbImageLayout === 'fixed') return;
             if (!img._originalWidth) {
                 img._originalWidth = img.naturalWidth || img.offsetWidth;
             }
@@ -93,6 +95,7 @@
          */
         for (var i = candidateImages.length - 1; i >= 0; i--) {
             var img = candidateImages[i];
+            if (img.dataset.mnbImageLayout === 'fixed') continue;
             if (img.width > 0) {
                 setImageMargins(img);
             } else {

@@ -32,7 +32,7 @@ public class ReaderContent: ObservableObject {
     // The last admitted selection outlives its loading task: a completed task
     // may still have readers queued to receive its result.
     private var selectionID: UUID?
-    private var suppressedTransientAboutBlankTargetURL: URL?
+    private var transientAboutBlankSuppression: (targetURL: URL, operationID: UUID?)?
     private var preloadedResolvedContentURL: URL?
     private var preloadedContent: (any ReaderContentProtocol)?
 
@@ -97,9 +97,25 @@ public class ReaderContent: ObservableObject {
 
     @MainActor
     public func suppressTransientAboutBlank(untilNextNonBlankLoad targetURL: URL) {
+        suppressTransientAboutBlank(untilNextNonBlankLoad: targetURL, operationID: nil)
+    }
+
+    @MainActor
+    public func suppressTransientAboutBlank(
+        untilNextNonBlankLoad targetURL: URL,
+        operationID: UUID?
+    ) {
         let resolvedTargetURL = ReaderContentLoader.getContentURL(fromLoaderURL: targetURL) ?? targetURL
         guard resolvedTargetURL.absoluteString != "about:blank" else { return }
-        suppressedTransientAboutBlankTargetURL = resolvedTargetURL
+        transientAboutBlankSuppression = (resolvedTargetURL, operationID)
+    }
+
+    /// Reuses the restore's operation identity so a retired same-URL restore
+    /// cannot release a successor's suppression during cancellation cleanup.
+    @MainActor
+    public func releaseTransientAboutBlankSuppression(ifOwnedBy operationID: UUID) {
+        guard transientAboutBlankSuppression?.operationID == operationID else { return }
+        transientAboutBlankSuppression = nil
     }
 
     @MainActor
@@ -140,14 +156,26 @@ public class ReaderContent: ObservableObject {
     @MainActor
     func load(
         url: URL,
+        usePreloadedContent: Bool = true,
+        preservesTransientAboutBlankSuppression: Bool = false,
         resolveContent: @escaping @MainActor (URL) async throws -> (any ReaderContentProtocol)?
     ) async throws {
         try Task.checkCancellation()
-        let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        let sourceURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        let resolvedContentURL: URL
+        if url.isReaderDocumentURL, let content, !content.isInvalidated,
+           urlsMatchWithoutHash(content.url, sourceURL),
+           pageURL.matchesReaderURL(content.url) {
+            // Following a local anchor keeps the selected publisher record;
+            // only the WebView's actual document URL acquires the new hash.
+            resolvedContentURL = content.url
+        } else {
+            resolvedContentURL = sourceURL
+        }
         let displayURL = resolvedContentURL
 
         if resolvedContentURL.absoluteString == "about:blank",
-           let suppressedTargetURL = suppressedTransientAboutBlankTargetURL,
+           let suppressedTargetURL = transientAboutBlankSuppression?.targetURL,
            suppressedTargetURL.absoluteString != "about:blank" {
             return
         }
@@ -157,8 +185,9 @@ public class ReaderContent: ObservableObject {
             return
         }
 
-        if resolvedContentURL.absoluteString != "about:blank" {
-            suppressedTransientAboutBlankTargetURL = nil
+        if resolvedContentURL.absoluteString != "about:blank",
+           !preservesTransientAboutBlankSuppression {
+            transientAboutBlankSuppression = nil
         }
 
         if let loadingTask,
@@ -201,7 +230,8 @@ public class ReaderContent: ObservableObject {
             return
         }
 
-        if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL) {
+        if usePreloadedContent,
+           let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL) {
             currentSectionIndex = nil
             content = preloadedContent
             pageURL = displayURL
@@ -243,6 +273,43 @@ public class ReaderContent: ObservableObject {
     @MainActor
     public func prepareForDisplay(url: URL) async throws {
         try await load(url: url)
+    }
+
+    /// Uses the existing selection task to fence a direct stored-content open.
+    /// History writes retain their ordinary storage/account admission boundary.
+    @MainActor
+    public func prepareForDisplay(
+        content selectedContent: any ReaderContentProtocol,
+        recordHistoryVisit: Bool
+    ) async throws {
+        try Task.checkCancellation()
+        guard !selectedContent.isInvalidated, !selectedContent.isDeleted else { throw CancellationError() }
+        let sourceURL = selectedContent.url
+        if let content, content.url.matchesReaderURL(sourceURL), pageURL.matchesReaderURL(sourceURL) {
+            if recordHistoryVisit {
+                try await ReaderContentLoader.recordHistoryVisit(for: selectedContent, source: "ReaderContent.directOpen")
+            }
+            try Task.checkCancellation()
+            guard !selectedContent.isInvalidated, !selectedContent.isDeleted,
+                  selectedContent.url == sourceURL else { throw CancellationError() }
+            return
+        }
+        // Selecting the stored model precedes WebKit's actual document load.
+        // Keep the restore owner's protection through that preparation so an
+        // initial blank callback cannot replace the article with Home.
+        try await load(
+            url: sourceURL,
+            usePreloadedContent: !recordHistoryVisit,
+            preservesTransientAboutBlankSuppression: true
+        ) { _ in
+            if recordHistoryVisit {
+                try await ReaderContentLoader.recordHistoryVisit(for: selectedContent, source: "ReaderContent.directOpen")
+            }
+            try Task.checkCancellation()
+            guard !selectedContent.isInvalidated, !selectedContent.isDeleted,
+                  selectedContent.url == sourceURL else { throw CancellationError() }
+            return selectedContent
+        }
     }
     
     @MainActor

@@ -943,34 +943,6 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertNil(published.endpointURL)
     }
 
-    func testInlineSharedReaderFontCSSInjectsBothDirectionalFamilies() throws {
-        let doc = try SwiftSoup.parse("<html><head></head><body class=\"readability-mode\"><p>本文</p></body></html>")
-        let css = """
-        @font-face {
-          font-family: 'YuKyokasho';
-          src: url("data:font/woff2;base64,AAAA") format("woff2");
-        }
-        """
-
-        try upsertInlineSharedReaderFontCSS(css, in: doc)
-
-        let style = try XCTUnwrap(doc.getElementById("mnb-custom-fonts-inline"))
-        let script = try XCTUnwrap(doc.getElementById("mnb-custom-fonts-inline-bootstrap"))
-        let styleText = try style.html()
-        let scriptText = try script.html()
-
-        XCTAssertTrue(styleText.contains("font-family: 'YuKyokasho';"))
-        XCTAssertTrue(styleText.contains("font-family: 'YuKyokasho Yoko';"))
-        XCTAssertTrue(scriptText.contains("manabiReaderFontCSSText"))
-        XCTAssertTrue(scriptText.contains("manabiReaderFontInjectionMode"))
-        XCTAssertTrue(scriptText.contains("manabiHorizontalFontFamilyName"))
-        XCTAssertTrue(scriptText.contains("manabiVerticalFontFamilyName"))
-        XCTAssertEqual(try doc.getElementsByTag("html").first()?.attr("data-mnb-horizontal-font-family"), "YuKyokasho")
-        XCTAssertEqual(try doc.getElementsByTag("html").first()?.attr("data-mnb-vertical-font-family"), "YuKyokasho Yoko")
-        XCTAssertTrue((try doc.getElementsByTag("html").first()?.attr("style") ?? "").contains("--mnb-content-font: 'YuKyokasho';"))
-        XCTAssertTrue((try doc.body()?.attr("style") ?? "").contains("--mnb-content-vertical-font: 'YuKyokasho Yoko';"))
-    }
-
     func testResponseMetadataByteInjectionDecoratesUppercaseDocumentWithoutReserializingContent() {
         let html = "<!doctype html><HTML><HEAD><title>T</title></HEAD><BODY class=\"book\"><p>本文</p></BODY></HTML>"
         let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(

@@ -8,13 +8,15 @@ import RealmSwiftGaps
 
 @MainActor
 private final class FakeReaderSpeechSynthesizer: ReaderSpeechSynthesizing {
-    var delegate: (any AVSpeechSynthesizerDelegate)?
+    weak var delegate: (any AVSpeechSynthesizerDelegate)?
+    private(set) weak var delegateAtLastSpeak: (any AVSpeechSynthesizerDelegate)?
     var isSpeaking = false
     var isPaused = false
     private(set) var spokenTexts = [String]()
     private(set) var spokenUtterances = [AVSpeechUtterance]()
 
     func speak(_ utterance: AVSpeechUtterance) {
+        delegateAtLastSpeak = delegate
         spokenTexts.append(utterance.speechString)
         spokenUtterances.append(utterance)
         isSpeaking = true
@@ -43,7 +45,119 @@ private final class FakeReaderSpeechSynthesizer: ReaderSpeechSynthesizing {
     }
 }
 
+private final class ReaderSpeechDelegateProbe: NSObject, AVSpeechSynthesizerDelegate {}
+
 final class ReaderMediaMetadataTests: XCTestCase {
+    @MainActor
+    func testSpeechControllerIdleOperationsAndDelegateChangesDoNotCreateSynthesizer() {
+        var factoryCount = 0
+        let controller = ReaderReadAloudController(synthesizerFactory: {
+            factoryCount += 1
+            return FakeReaderSpeechSynthesizer()
+        })
+        let firstDelegate = ReaderSpeechDelegateProbe()
+        let replacementDelegate = ReaderSpeechDelegateProbe()
+
+        XCTAssertNil(controller.delegate)
+        controller.delegate = firstDelegate
+        XCTAssertTrue(controller.delegate === firstDelegate)
+        controller.delegate = replacementDelegate
+        XCTAssertTrue(controller.delegate === replacementDelegate)
+        controller.delegate = nil
+        XCTAssertNil(controller.delegate)
+        XCTAssertFalse(controller.isSpeaking)
+        XCTAssertFalse(controller.isPaused)
+        XCTAssertFalse(controller.stopSpeaking(at: .immediate))
+        XCTAssertFalse(controller.pauseSpeaking(at: .immediate))
+        XCTAssertFalse(controller.continueSpeaking())
+        XCTAssertEqual(factoryCount, 0)
+    }
+
+    @MainActor
+    func testSpeechControllerFirstSpeakCreatesOnceWithCurrentDelegateAndReusesSynthesizer() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        var factoryCount = 0
+        let controller = ReaderReadAloudController(synthesizerFactory: {
+            factoryCount += 1
+            return synthesizer
+        })
+        let firstDelegate = ReaderSpeechDelegateProbe()
+        let replacementDelegate = ReaderSpeechDelegateProbe()
+        controller.delegate = firstDelegate
+        controller.delegate = replacementDelegate
+        controller.speak(AVSpeechUtterance(string: "One."))
+
+        XCTAssertEqual(factoryCount, 1)
+        XCTAssertTrue(synthesizer.delegateAtLastSpeak === replacementDelegate)
+        XCTAssertTrue(controller.isSpeaking)
+        XCTAssertTrue(controller.pauseSpeaking(at: .immediate))
+        XCTAssertTrue(controller.isPaused)
+        XCTAssertTrue(controller.continueSpeaking())
+        controller.delegate = firstDelegate
+        XCTAssertTrue(synthesizer.delegate === firstDelegate)
+        controller.speak(AVSpeechUtterance(string: "Two."))
+        XCTAssertTrue(synthesizer.delegateAtLastSpeak === firstDelegate)
+        controller.delegate = nil
+        controller.speak(AVSpeechUtterance(string: "Three."))
+        XCTAssertNil(synthesizer.delegateAtLastSpeak)
+        XCTAssertTrue(controller.stopSpeaking(at: .immediate))
+        controller.speak(AVSpeechUtterance(string: "Four."))
+        XCTAssertEqual(synthesizer.spokenTexts, ["One.", "Two.", "Three.", "Four."])
+        XCTAssertEqual(factoryCount, 1)
+    }
+
+    @MainActor
+    func testSpeechControllerDoesNotRetainDelegateBeforeOrAfterCreation() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        var factoryCount = 0
+        let controller = ReaderReadAloudController(synthesizerFactory: {
+            factoryCount += 1
+            return synthesizer
+        })
+        var delegate: ReaderSpeechDelegateProbe? = ReaderSpeechDelegateProbe()
+        weak var releasedDelegate = delegate
+        controller.delegate = delegate
+        delegate = nil
+        XCTAssertNil(releasedDelegate)
+        XCTAssertNil(controller.delegate)
+        XCTAssertEqual(factoryCount, 0)
+
+        controller.speak(AVSpeechUtterance(string: "One."))
+        XCTAssertNil(synthesizer.delegateAtLastSpeak)
+        delegate = ReaderSpeechDelegateProbe()
+        releasedDelegate = delegate
+        controller.delegate = delegate
+        delegate = nil
+        XCTAssertNil(releasedDelegate)
+        XCTAssertNil(controller.delegate)
+        XCTAssertNil(synthesizer.delegate)
+        XCTAssertEqual(factoryCount, 1)
+    }
+
+    @MainActor
+    func testSpeechControllerExplicitInjectionUsesExistingSynthesizerAndDelegate() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let originalDelegate = ReaderSpeechDelegateProbe()
+        let replacementDelegate = ReaderSpeechDelegateProbe()
+        synthesizer.delegate = originalDelegate
+        synthesizer.isSpeaking = true
+        let controller = ReaderReadAloudController(synthesizer: synthesizer)
+
+        XCTAssertTrue(controller.delegate === originalDelegate)
+        XCTAssertTrue(controller.isSpeaking)
+        XCTAssertTrue(controller.pauseSpeaking(at: .immediate))
+        XCTAssertTrue(controller.isPaused)
+        XCTAssertTrue(controller.continueSpeaking())
+        controller.delegate = replacementDelegate
+        XCTAssertTrue(synthesizer.delegate === replacementDelegate)
+        controller.speak(AVSpeechUtterance(string: "One."))
+        XCTAssertTrue(synthesizer.delegateAtLastSpeak === replacementDelegate)
+        XCTAssertEqual(synthesizer.spokenTexts, ["One."])
+        XCTAssertTrue(controller.stopSpeaking(at: .immediate))
+        synthesizer.delegate = originalDelegate
+        XCTAssertTrue(controller.delegate === originalDelegate)
+    }
+
     func testAudioAvailabilitySnapshotKeepsRecordedAndReadAloudIndependent() {
         let ebookURL = URL(string: "ebook://book/section.epub")!
         let ebook = ReaderAudioAvailabilitySnapshot(
@@ -168,6 +282,62 @@ final class ReaderMediaMetadataTests: XCTestCase {
         viewModel.seekAITTS(toSentenceIdentifier: "s7", shouldPlay: false)
         viewModel.playAITTS()
         XCTAssertEqual(resolutionCount, 2)
+    }
+
+    @MainActor
+    func testReadAloudInterruptionResumesOnlyWhenSystemPermitsIt() {
+        for permitsResume in [false, true] {
+            let synthesizer = FakeReaderSpeechSynthesizer()
+            let viewModel = ReaderMediaPlayerViewModel(
+                readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+                readAloudVoiceResolver: { _, _ in nil }
+            )
+            defer { viewModel.stopAITTSIfNeeded() }
+            XCTAssertTrue(viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                preferredLanguage: "en-US", autoplay: true
+            ))
+            viewModel.beginReadAloudAudioInterruption()
+            XCTAssertFalse(viewModel.isPlaying)
+            XCTAssertTrue(synthesizer.isPaused)
+            viewModel.endReadAloudAudioInterruption(permitsResume: permitsResume)
+            XCTAssertEqual(viewModel.isPlaying, permitsResume)
+            XCTAssertEqual(synthesizer.isSpeaking, permitsResume)
+        }
+    }
+
+    @MainActor
+    func testNewReadAloudIntentRevokesInterruptedPlaybackResume() {
+        for action in ["pause", "stop", "seek", "dismiss", "replacement", "background"] {
+            let synthesizer = FakeReaderSpeechSynthesizer()
+            let viewModel = ReaderMediaPlayerViewModel(
+                readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+                readAloudVoiceResolver: { _, _ in nil }
+            )
+            defer { viewModel.stopAITTSIfNeeded() }
+            XCTAssertTrue(viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                preferredLanguage: "en-US", autoplay: true
+            ))
+            viewModel.beginReadAloudAudioInterruption()
+            switch action {
+            case "pause": viewModel.pauseAITTS()
+            case "stop": viewModel.stopAITTSIfNeeded()
+            case "seek": viewModel.seekAITTS(toSentenceIdentifier: "s1", shouldPlay: false)
+            case "dismiss": viewModel.isMediaPlayerPresented = false
+            case "replacement":
+                XCTAssertTrue(viewModel.presentAITTS(
+                    utterances: [ReaderTTSUtterance(sentenceIdentifier: "s2", text: "Two.")],
+                    preferredLanguage: "en-US", autoplay: false
+                ))
+            default: viewModel.pauseReadAloudForBackgroundIfNeeded()
+            }
+            let speechCount = synthesizer.spokenTexts.count
+            viewModel.endReadAloudAudioInterruption(permitsResume: true)
+            XCTAssertFalse(viewModel.isPlaying, action)
+            XCTAssertFalse(synthesizer.isSpeaking, action)
+            XCTAssertEqual(synthesizer.spokenTexts.count, speechCount, action)
+        }
     }
 
     private func makeRealmConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {

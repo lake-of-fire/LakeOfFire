@@ -56,7 +56,7 @@ final class SharedReaderFontTests: XCTestCase {
         XCTAssertFalse(sharedReaderFontUsesLocalScheme(for: URL(string: "https://example.com/article")!))
     }
 
-    func testSharedReaderFontInjectionModeUsesLocalSchemesAndBlobFallbackElsewhere() {
+    func testSharedReaderFontInjectionModeRejectsPublisherOrigins() {
         XCTAssertEqual(
             sharedReaderFontInjectionMode(for: URL(string: "ebook:///book.epub")!),
             .localScheme
@@ -71,7 +71,7 @@ final class SharedReaderFontTests: XCTestCase {
         )
         XCTAssertEqual(
             sharedReaderFontInjectionMode(for: URL(string: "https://example.com/article")!),
-            .blob
+            .unsupported
         )
     }
 

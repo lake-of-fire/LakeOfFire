@@ -176,6 +176,39 @@ final class ReaderFileLibraryBoundaryTests: XCTestCase {
         }
     }
 
+    func testExistingUnsupportedDownloadDoesNotReportSuccessfulImport() async throws {
+        try await withFixture { f in
+            let downloadable = try await self.download("https://example.com/book.unsupported", manager: f.manager)
+            try self.write("unsupported payload", to: downloadable.localDestination)
+
+            let result = try await f.manager.ensureImported(downloadable: downloadable)
+
+            XCTAssertNil(result, "A storage URL alone does not establish an indexed library item")
+            XCTAssertTrue(f.manager.files?.isEmpty ?? true)
+            XCTAssertEqual(try Data(contentsOf: downloadable.localDestination), Data("unsupported payload".utf8))
+        }
+    }
+
+    func testDownloadRemovedAfterExistenceCheckDoesNotReportSuccessfulImport() async throws {
+        try await withFixture { f in
+            let downloadable = try await self.download("https://example.com/removed.txt", manager: f.manager)
+            try self.write("downloaded payload", to: downloadable.localDestination)
+            let originalURL = try await f.manager.ensureImported(downloadable: downloadable)
+            XCTAssertNotNil(originalURL)
+
+            // Hold the existence result while a provider moves the payload.
+            let existed = await downloadable.existsLocally()
+            XCTAssertTrue(existed)
+            try FileManager.default.moveItem(at: downloadable.localDestination,
+                to: f.root.appendingPathComponent("removed.txt"))
+            let result = try await f.manager.ensureImported(downloadable: downloadable,
+                existsLocally: { _ in existed })
+
+            XCTAssertNil(result, "A completed refresh must establish current library membership")
+            XCTAssertFalse(f.manager.files?.contains(where: { $0.url == originalURL }) ?? false)
+        }
+    }
+
     func testDownloadAdmissionRejectsEncodedSeparatorsBeforeCreatingAResourceSlot() async throws {
         try await withFixture { f in
             for component in ["a%2Fb.epub", "a%2fb.epub", "a%5Cb.epub", "a%00b.epub", "%2e%2e"] {
@@ -535,6 +568,32 @@ extension ReaderFileLibraryBoundaryTests {
                            "Neither discovered metadata nor old orphan tombstones may commit")
             XCTAssertFalse(orphan.isDeleted)
             XCTAssertEqual(f.manager.files?.map(\.compoundKey), [replacement.compoundKey])
+        }
+    }
+
+    func testBackgroundDrainWaitsForNativeScanCleanupAndReplaysInventoryOnActivation() async throws {
+        let enumeration = LibraryBoundaryEnumeration()
+        let manager = ReaderFileManager(payloadStateProvider: { _ in .current },
+            directoryContentsProvider: { try await enumeration.read($0) })
+        try await withFixture(manager: manager) { f in
+            try self.write("pending inventory", to: f.library.appendingPathComponent("pending.txt"))
+            let before = self.refreshStorageSnapshot(f.realm)
+            let refresh = Task { @MainActor in try await f.manager.refreshAllFilesMetadata(force: true) }
+            await enumeration.entered.wait()
+            let drain = f.manager.appSuspendedDidChange(isSuspended: true)
+            XCTAssertEqual(drain, f.manager.appSuspendedDidChange(isSuspended: true))
+            var drained = false
+            let observer = Task { @MainActor in await drain.value; drained = true }
+            await Task.yield()
+            XCTAssertFalse(drained, "Cancellation must not release the native operation's owner")
+            await enumeration.release.open()
+            await observer.value
+            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before,
+                           "A cancelled scan cannot publish an inventory or tombstones")
+            await f.manager.appSuspendedDidChange(isSuspended: false).value
+            try await refresh.value
+            XCTAssertTrue(f.manager.files?.contains { $0.url.lastPathComponent == "pending.txt" } == true,
+                          "The cancelled inventory is replayed from durable files")
         }
     }
 

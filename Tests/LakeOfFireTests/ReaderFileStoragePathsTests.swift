@@ -27,6 +27,33 @@ final class ReaderFileStoragePathsTests: XCTestCase {
         XCTAssertEqual(try ReaderFileStoragePaths.downloadFilename(for: url), "吾輩は猫である.epub")
     }
 
+    func testOnlyRecognizedEPUBMediaTypeSuppliesMissingFilenameExtension() throws {
+        let url = URL(string: "https://example.com/download/42?signature=a%2Fb")!
+        XCTAssertEqual(try ReaderFileStoragePaths.downloadFilename(for: url), "42")
+        XCTAssertEqual(try ReaderFileStoragePaths.downloadFilename(for: url, mediaType: "APPLICATION/EPUB+ZIP; charset=binary"), "42.epub")
+        for type in ["application/pdf", "application/x-custom", "application/epub+zip-other", "", "application/atom+xml"] {
+            XCTAssertEqual(try ReaderFileStoragePaths.downloadFilename(for: url, mediaType: type), "42", type)
+        }
+        let named = URL(string: "https://example.com/download/book.EPUB")!
+        XCTAssertEqual(try ReaderFileStoragePaths.downloadFilename(for: named, mediaType: "application/epub+zip"), "book.EPUB")
+    }
+
+    func testEPUBMediaTypeOverridesLocatorExtension() throws {
+        let url = URL(string: "https://example.com/download.php?id=42")!
+        XCTAssertEqual(try ReaderFileStoragePaths.downloadFilename(for: url, mediaType: "application/epub+zip"), "download.php.epub")
+        XCTAssertEqual(try ReaderFileStoragePaths.downloadFilename(for: url), "download.php")
+        XCTAssertEqual(ReaderFileStoragePaths.downloadIdentity(for: url), url.absoluteString)
+    }
+
+    func testEPUBFilenameHintStillRejectsUnsafeAndOversizedNames() throws {
+        for name in ["a%2Fb", "a%5Cb", "a%00b", "%2e%2e", String(repeating: "a", count: 251)] {
+            let url = URL(string: "https://example.com/download/" + name)!
+            XCTAssertThrowsError(try ReaderFileStoragePaths.downloadFilename(for: url, mediaType: "application/epub+zip"), name)
+        }
+        let longest = URL(string: "https://example.com/download/" + String(repeating: "a", count: 250))!
+        XCTAssertEqual(try ReaderFileStoragePaths.downloadFilename(for: longest, mediaType: "application/epub+zip").utf8.count, 255)
+    }
+
     func testDownloadFilenameRejectsPathInjectionAndOversizedComponents() throws {
         for raw in ["https://example.com/a%2Fb.epub", "https://example.com/a%5Cb.epub", "https://example.com/a%00b.epub", "https://example.com/" + String(repeating: "a", count: 256) + ".epub"] {
             let url = try XCTUnwrap(URL(string: raw))

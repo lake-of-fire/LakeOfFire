@@ -11,23 +11,34 @@ import ImageIO
 import Combine
 import CoreText
 
-struct ReaderNewBadge: View {
+public struct ReaderNewBadge: View {
     @Environment(\.controlSize) private var controlSize
-    @ScaledMetric(relativeTo: .caption2) private var compactFontSize: CGFloat = 10
+    @ScaledMetric(relativeTo: .caption2) private var compactFontSize: CGFloat = 9
+    @ScaledMetric(relativeTo: .caption2) private var regularFontSize: CGFloat = 10
+    @ScaledMetric(relativeTo: .caption2) private var compactMinimumWidth: CGFloat = 35
+    @ScaledMetric(relativeTo: .caption2) private var regularMinimumWidth: CGFloat = 39
+    @ScaledMetric(relativeTo: .caption2) private var compactMinimumHeight: CGFloat = 15
+    @ScaledMetric(relativeTo: .caption2) private var regularMinimumHeight: CGFloat = 19
+
+    public init() {}
 
     public var body: some View {
         Text("NEW")
-            .font(isCompactControlSize ? .system(size: compactFontSize, weight: .semibold) : .caption2)
-            .fontWeight(.semibold)
+            .font(.system(size: isCompactControlSize ? compactFontSize : regularFontSize, weight: .semibold))
             .textCase(.uppercase)
             .foregroundStyle(.white)
-            .padding(.horizontal, isCompactControlSize ? 5 : 6)
+            .padding(.horizontal, isCompactControlSize ? 6 : 7)
             .padding(.vertical, isCompactControlSize ? 2 : 3)
             .modifier {
                 if #available(iOS 16, macOS 14, *) {
                     $0.baselineOffset(-0.5)
                 } else { $0 }
             }
+            // Keep the capsule roomy as the lettering gets smaller, like Apple Books.
+            .frame(
+                minWidth: isCompactControlSize ? compactMinimumWidth : regularMinimumWidth,
+                minHeight: isCompactControlSize ? compactMinimumHeight : regularMinimumHeight
+            )
             .background(
                 Capsule().fill(
                     Color(
@@ -518,9 +529,6 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
     @Environment(\.readerContentCellAnnotationStatusUpdates) private var readerContentCellAnnotationStatusUpdates
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
     @Environment(\.controlSize) private var controlSize
-#if DEBUG
-    @Environment(\.readerContentVideoMakerOpenAction) private var readerContentVideoMakerOpenAction
-#endif
 
     @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
     @ScaledMetric(relativeTo: .caption2) private var scaledSmallNewBadgeHeight: CGFloat = 15
@@ -788,19 +796,6 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         item.hasAudio
     }
 
-#if DEBUG
-    @ViewBuilder
-    private var videoMakerMenuItem: some View {
-        if let readerContentVideoMakerOpenAction, item.hasTranscriptTracerVideoSource {
-            Button {
-                readerContentVideoMakerOpenAction([item])
-            } label: {
-                Label("Make Video", systemImage: "film")
-            }
-        }
-    }
-#endif
-
     @ViewBuilder
     private var sourceOrAuthorRow: some View {
         if appearance.isEbookStyle, let author = bookAuthorText {
@@ -974,9 +969,6 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
 
                 AnyView(self.item.bookmarkButtonView(iconOnly: false))
 
-#if DEBUG
-                videoMakerMenuItem
-#endif
 
                 if let customMenuOptions {
                     customMenuOptions(self.item)
@@ -1011,9 +1003,6 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
 
                 AnyView(self.item.bookmarkButtonView(iconOnly: false))
 
-#if DEBUG
-                videoMakerMenuItem
-#endif
 
                 if let customMenuOptions {
                     customMenuOptions(self.item)
@@ -1047,9 +1036,6 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
 
                 AnyView(self.item.bookmarkButtonView(iconOnly: false))
 
-#if DEBUG
-                videoMakerMenuItem
-#endif
 
                 if let customMenuOptions {
                     customMenuOptions(self.item)

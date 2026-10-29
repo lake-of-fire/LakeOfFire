@@ -14,6 +14,8 @@ fileprivate enum ReaderContentHorizontalListLayout {
     static let groupBoxContentInsets = EdgeInsets(top: 11, leading: 11, bottom: 11, trailing: 11)
 }
 
+// Dormant UI retained for local development; excluded from shipping builds.
+#if DEBUG
 fileprivate struct ReaderContentCellButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -21,6 +23,7 @@ fileprivate struct ReaderContentCellButtonStyle: ButtonStyle {
             .conditionalEffect(.pushDown, condition: configuration.isPressed)
     }
 }
+#endif
 
 fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol>: View {
     var content: C

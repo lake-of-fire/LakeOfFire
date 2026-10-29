@@ -24,6 +24,82 @@ final class OPDSDocumentBoundaryTests: XCTestCase {
         "<entry \(attributes)><title>吾輩は猫である</title><id>urn:book:1</id>\(content)<link rel=\"\(acquisition)\" href=\"book.epub\" type=\"application/epub+zip\"/></entry>"
     }
 
+    func testOpenAccessParsedPublicationProvidesActualDownloadURL() throws {
+        let xml = "<entry xmlns='\(atom)'><title>Open</title><link rel='\(acquisition)/open-access' href='open.epub' type='application/epub+zip'/></entry>"
+        let publication = try XCTUnwrap(parse(xml).publication)
+        XCTAssertEqual(publication.downloadURL(relativeTo: base)?.absoluteString, "https://catalog.example/opds/open.epub")
+    }
+
+    func testDownloadSelectionSkipsCommerceAndUnusableLinks() {
+        let commerce: [Link] = ["buy", "borrow", "subscribe"].map {
+            Link(href: "https://example.com/\($0)", rels: [LinkRelation(acquisition + "/" + $0)])
+        }
+        XCTAssertNil(Publication(metadata: Metadata(title: "Paid"), links: commerce).downloadURL(relativeTo: base))
+        let mixedCommerce = Link(href: "https://example.com/buy", rels: [.opdsAcquisition, LinkRelation(acquisition + "/buy")])
+        XCTAssertNil(Publication(metadata: Metadata(title: "Mixed"), links: [mixedCommerce]).downloadURL(relativeTo: base))
+        let generic = Link(href: "book.epub", rels: [.opdsAcquisition])
+        let unusable = [Link(href: "", rels: [.opdsAcquisition]),
+                        Link(href: "javascript:alert(1)", rels: [.opdsAcquisition]),
+                        Link(href: "catalog.atom", type: "application/atom+xml", rels: [.opdsAcquisition])]
+        XCTAssertNil(Publication(metadata: Metadata(title: "None"), links: unusable).downloadURL(relativeTo: base))
+        XCTAssertEqual(Publication(metadata: Metadata(title: "Book"), links: commerce + unusable + [generic]).downloadURL(relativeTo: base)?.absoluteString,
+                       "https://catalog.example/opds/book.epub")
+    }
+
+    func testDownloadSelectionPreservesMediaTypeAndPrefersEPUB() throws {
+        let publication = Publication(metadata: Metadata(title: "Formats"), links: [
+            Link(href: "book.pdf", type: "application/pdf", rel: .opdsAcquisition),
+            Link(href: "/download/42", type: "APPLICATION/EPUB+ZIP; charset=binary", rel: .opdsAcquisitionOpenAccess),
+        ])
+        let acquisition = try XCTUnwrap(publication.downloadAcquisition(relativeTo: base))
+        XCTAssertEqual(acquisition.url.absoluteString, "https://catalog.example/download/42")
+        XCTAssertEqual(acquisition.mediaType, "application/epub+zip")
+        XCTAssertEqual(publication.downloadURL(relativeTo: base), acquisition.url)
+    }
+
+    func testParsedBlankAcquisitionsCannotBecomeCatalogDownloads() throws {
+        let response = URLResponse(url: base, mimeType: nil,
+            expectedContentLength: -1, textEncodingName: nil)
+        for href in ["", "   "] {
+            for relation in [acquisition, acquisition + "/open-access"] {
+                for hasFallback in [false, true] {
+                    let fallbackXML = hasFallback
+                        ? "<link href='actual.epub' rel='\(acquisition)' type='application/epub+zip'/>" : ""
+                    let xml = "<entry xmlns='\(atom)'><title>Book</title><link href='\(href)' rel='\(relation)' type='application/epub+zip'/>\(fallbackXML)</entry>"
+                    var links = [["href": href, "rel": relation, "type": "application/epub+zip"]]
+                    if hasFallback {
+                        links.append(["href": "actual.epub", "rel": acquisition, "type": "application/epub+zip"])
+                    }
+                    let json = try JSONSerialization.data(withJSONObject: [
+                        "metadata": ["title": "Book"], "links": links,
+                    ])
+                    let publications = [
+                        try XCTUnwrap(parse(xml).publication),
+                        try XCTUnwrap(OPDS2Parser.parse(jsonData: json, url: base, response: response).publication),
+                    ]
+                    for publication in publications {
+                        XCTAssertEqual(publication.downloadURL(relativeTo: base)?.absoluteString,
+                            hasFallback ? "https://catalog.example/opds/actual.epub" : nil)
+                    }
+                }
+            }
+        }
+    }
+
+    func testParsedEmptySelfLinksStillResolveToDocument() throws {
+        let xml = "<entry xmlns='\(atom)'><title>Book</title><link href='' rel='self'/></entry>"
+        let json = Data(#"{"metadata":{"title":"Book"},"links":[{"href":"","rel":"self"}]}"#.utf8)
+        let response = URLResponse(url: base, mimeType: nil,
+            expectedContentLength: -1, textEncodingName: nil)
+        let publications = [
+            try XCTUnwrap(parse(xml).publication),
+            try XCTUnwrap(OPDS2Parser.parse(jsonData: json, url: base, response: response).publication),
+        ]
+        for publication in publications {
+            XCTAssertEqual(publication.links.first(withRel: .self)?.url(relativeTo: nil), base)
+        }
+    }
+
     func testRootRelativeLinkKeepsAuthorityRoot() {
         XCTAssertEqual(Link(href: "/books/one.epub").url(relativeTo: base)?.absoluteString,
                        "https://catalog.example/books/one.epub")

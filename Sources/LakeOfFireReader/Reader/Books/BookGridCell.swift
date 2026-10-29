@@ -9,6 +9,8 @@ import SwiftUIDownloads
 import LakeImage
 import Pow
 
+// Dormant UI retained for local development; excluded from shipping builds.
+#if DEBUG
 fileprivate struct BookGridCellContent: View {
     let imageURL: URL?
     let title: String
@@ -131,24 +133,35 @@ fileprivate struct BookButtonStyle: ButtonStyle {
                 condition: configuration.isPressed)
     }
 }
+#endif
 
+struct BookDownloadIdentity: Hashable {
+    let url: URL?
+    let name: String
+    let mediaType: String?
+}
+
+// Dormant UI retained for local development; excluded from shipping builds.
+#if DEBUG
 struct BookGridCell: View {
     let imageURL: URL?
     let title: String
     let author: String?
     let publicationDate: Date?
     let downloadURL: URL?
+    let downloadMediaType: String?
     var onSelected: ((Bool) -> Void)? = nil
     
     @State private var downloadable: Downloadable?
     //    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
     
-    init(imageURL: URL?, title: String, author: String?, publicationDate: Date?, downloadURL: URL?, onSelected: ((Bool) -> Void)? = nil) {
+    init(imageURL: URL?, title: String, author: String?, publicationDate: Date?, downloadURL: URL?, downloadMediaType: String? = nil, onSelected: ((Bool) -> Void)? = nil) {
         self.imageURL = imageURL
         self.title = title
         self.author = author
         self.publicationDate = publicationDate
         self.downloadURL = downloadURL
+        self.downloadMediaType = downloadMediaType
         self.onSelected = onSelected
     }
     
@@ -160,16 +173,20 @@ struct BookGridCell: View {
                 BookGridCellContent(imageURL: imageURL, title: title, author: author, publicationDate: publicationDate, onSelected: onSelected)
             }
         }
-        .task { @MainActor in
+        .task(id: BookDownloadIdentity(url: downloadURL, name: title, mediaType: downloadMediaType)) { @MainActor in
             await refreshDownloadable()
         }
     }
     
     private func refreshDownloadable() async {
-        if let downloadURL = downloadURL {
-            if downloadable?.url != downloadURL || downloadable?.name != title {
-                downloadable = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: title)
-            }
+        guard !Task.isCancelled else { return }
+        guard let downloadURL else {
+            downloadable = nil
+            return
         }
+        let resolved = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: title, mediaType: downloadMediaType)
+        guard !Task.isCancelled else { return }
+        downloadable = resolved
     }
 }
+#endif

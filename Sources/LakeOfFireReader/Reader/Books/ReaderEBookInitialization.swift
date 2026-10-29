@@ -1,4 +1,5 @@
 import Foundation
+import LakeOfFireCore
 
 /// One initialization receipt owns the entire register/acknowledge/prepare/
 /// restore/load sequence. The token is native input, not a URL or JS payload.
@@ -24,15 +25,40 @@ enum ReaderEBookInitialization {
             try Task.checkCancellation()
             guard currentBinding() == binding else { throw CancellationError() }
         }
-        try validate()
-        try registerFrame(binding)
-        try validate()
-        try await acknowledge(binding)
-        try validate()
-        let prepared = try await prepare(binding)
-        try validate()
-        let position = try await restore(binding)
-        try validate()
-        try await publish(binding, prepared, position)
+        try await ReaderLoadTrace.$operationID.withValue(ReaderLoadTrace.operationID ?? UUID()) {
+            let trace = ReaderLoadTrace.begin("ebook.initialization")
+            var step = "validation"
+            var outcome = "failed"
+            var failureDetail = ""
+            defer { trace?.end("step=\(step) outcome=\(outcome)\(failureDetail)") }
+            func beginStep(_ name: String) {
+                step = name
+                ReaderLoadTrace.event("ebook.initializationStep", "step=\(name)")
+            }
+            do {
+                try validate()
+                beginStep("register")
+                try registerFrame(binding)
+                try validate()
+                beginStep("acknowledge")
+                try await acknowledge(binding)
+                try validate()
+                beginStep("prepare")
+                let prepared = try await prepare(binding)
+                try validate()
+                beginStep("restore")
+                let position = try await restore(binding)
+                try validate()
+                beginStep("publish")
+                try await publish(binding, prepared, position)
+                outcome = "ready"
+            } catch {
+                outcome = error is CancellationError ? "cancelled" : "failed"
+                // Type and numeric code identify the failure without recording
+                // descriptions which can contain paths, URLs or article data.
+                failureDetail = " error_type=\(String(reflecting: type(of: error)).prefix(160)) error_code=\((error as NSError).code)"
+                throw error
+            }
+        }
     }
 }

@@ -47,7 +47,12 @@ public class UserScript: Object, UnownedSyncableObject, ObjectKeyIdentifiable, C
     @Persisted public var isDeleted = false
     
     public func getWebViewUserScript() -> WebViewUserScript? {
-        guard let allowedDomains = getAllowedDomains() else { return nil }
+        // OPML is content configuration, never a source of executable code.
+        // This also blocks previously imported and subsequently synced records.
+        guard opmlURL == nil, let allowedDomains = getAllowedDomains() else { return nil }
+        // An intentionally empty list means every site. Missing or tombstoned
+        // UUID references must never silently broaden a restricted script.
+        guard allowedDomainIDs.isEmpty || !allowedDomains.isEmpty else { return nil }
         return WebViewUserScript(
             source: script,
             injectionTime: injectAtStart ? .atDocumentStart : .atDocumentEnd,

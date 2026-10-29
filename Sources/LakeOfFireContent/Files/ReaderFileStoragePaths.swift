@@ -14,7 +14,7 @@ enum ReaderFileStoragePaths {
         return String(absolute[..<fragment])
     }
 
-    static func downloadFilename(for url: URL) throws -> String {
+    static func downloadFilename(for url: URL, mediaType: String? = nil) throws -> String {
         // Split the encoded path first instead of relying on lastPathComponent's
         // platform-specific handling of escaped separators during validation.
         // Decode only this component, once, so literal "%2F" (encoded "%252F")
@@ -30,7 +30,14 @@ enum ReaderFileStoragePaths {
               name.utf8.count <= 255 else {
             throw CocoaError(.fileWriteInvalidFileName)
         }
-        return name
+        let type = mediaType?.split(separator: ";").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // Acquisition endpoints may have locator extensions such as .php.
+        // The declared format supplies the installed extension; import validates bytes.
+        let filename = type == "application/epub+zip" && (name as NSString).pathExtension.lowercased() != "epub"
+            ? name + ".epub" : name
+        guard filename.utf8.count <= 255 else { throw CocoaError(.fileWriteInvalidFileName) }
+        return filename
     }
 
     static func isDownloadArtifact(_ fileURL: URL) -> Bool {

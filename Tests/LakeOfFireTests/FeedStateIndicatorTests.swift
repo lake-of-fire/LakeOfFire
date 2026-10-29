@@ -164,6 +164,32 @@ final class FeedStateIndicatorTests: XCTestCase {
     }
 
     @MainActor
+    func testBookmarkStatusCacheUsesBookmarkIdentityForFreshSnippets() throws {
+        let cache = BookmarkStatusCache()
+        let snippet = HistoryRecord()
+        snippet.compoundKey = UUID().uuidString
+        snippet.url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: snippet.compoundKey))
+        snippet.html = "<p>猫は庭で遊んでいます。</p>"
+        let bookmarkKey = try XCTUnwrap(Bookmark.makePrimaryKey(url: snippet.url, html: snippet.html))
+        XCTAssertNotEqual(bookmarkKey, snippet.compoundKey)
+
+        // Bookmark persistence keys snippets by their HTML, while a fresh
+        // history row retains a unique identity for independent reading state.
+        cache.setIsBookmarked(true, forCompoundKey: bookmarkKey)
+        XCTAssertTrue(cache.isBookmarked(snippet))
+        cache.setIsBookmarked(false, for: snippet)
+        XCTAssertFalse(cache.isBookmarked(snippet))
+        cache.setIsBookmarked(true, for: snippet)
+        XCTAssertTrue(cache.isBookmarked(snippet))
+
+        let secondSnippet = HistoryRecord()
+        secondSnippet.compoundKey = UUID().uuidString
+        secondSnippet.url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: secondSnippet.compoundKey))
+        secondSnippet.html = snippet.html
+        XCTAssertTrue(cache.isBookmarked(secondSnippet))
+    }
+
+    @MainActor
     func testBookmarkStatusCachePublishesOnlyRealStateTransitions() {
         let cache = BookmarkStatusCache()
         let entry = FeedEntry()
@@ -687,11 +713,14 @@ final class FeedStateIndicatorTests: XCTestCase {
     func testConcurrentHistoryVisitsConvergeOnOneCanonicalRecord() async throws {
         let configuration = makeConfiguration()
         let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
         let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
         ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
         ReaderContentLoader.historyRealmConfiguration = configuration
         defer {
             ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
             ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
         }
 

@@ -46,28 +46,8 @@ struct BookLibrarySheetsModifier: ViewModifier {
                 Color.clear
                     .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile, allowedContentTypes: ReaderFileManager.shared.readerContentMimeTypes) { result in
                         Task { @MainActor in
-                            switch result {
-                            case .success(let url):
-                                do {
-                                    guard let _ = try await ReaderFileManager.shared.importFile(fileURL: url, fromDownloadURL: nil) else {
-                                        if let message = ReaderFileImportPresentation.missingResult(for: url) {
-                                            errorMessage = message
-                                        }
-                                        print("Couldn't import \(url.absoluteString)")
-                                        return
-                                    }
-                                } catch {
-                                    if let message = ReaderFileImportPresentation.failure(error, importing: url) {
-                                        errorMessage = message
-                                    }
-                                    print("Couldn't import \(url.absoluteString): \(error)")
-                                    return
-                                }
-                            case .failure(let error):
-                                if let message = ReaderFileImportPresentation.failure(error) {
-                                    errorMessage = message
-                                }
-                                print(error)
+                            if let message = await ReaderFileImportPresentation.handlePickerResult(result) {
+                                errorMessage = message
                             }
                         }
                     }
@@ -483,7 +463,7 @@ public class BookLibraryViewModel: ObservableObject {
         for publication in publications {
             guard
                 let downloadURL = publication.downloadURL,
-                let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title)
+                let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title, mediaType: publication.downloadMediaType)
             else {
                 continue
             }
@@ -499,49 +479,67 @@ public class BookLibraryViewModel: ObservableObject {
         }
     }
 
-    static func fetchPublications(from url: URL) async -> ([Publication], String?) {
-        await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: url) { parseData, error in
-                Task { @MainActor in
-                    if let error {
-                        continuation.resume(returning: ([], "Failed to fetch data: \(error.localizedDescription)"))
-                        return
-                    }
-
-                    if let publications = parseData?.feed?.publications, !publications.isEmpty {
-                        let mapped = publications.map { publication -> Publication in
-                            let coverLink = publication.images.first(withRel: .cover) ?? publication.images.first(withRel: .opdsImage) ?? publication.images.first(withRel: .opdsImageThumbnail)
-                            let acquisitionLink = publication.links.first(withRel: .opdsAcquisition)
-                            let summary = publication.metadata.description ?? publication.metadata.subtitle
-                            return Publication(
-                                title: publication.metadata.title,
-                                author: publication.metadata.authors.map(\.name).joined(separator: ", "),
-                                publicationDate: publication.metadata.published,
-                                coverURL: coverLink?.url(relativeTo: url.domainURL),
-                                downloadURL: acquisitionLink?.url(relativeTo: url.domainURL),
-                                summary: summary
-                            )
-                        }
-                        continuation.resume(returning: (mapped, nil))
-                        return
-                    }
-
-                    if let navigationLinks = parseData?.feed?.navigation,
-                       let allBooksLink = navigationLinks.first(where: { $0.title?.hasPrefix("All Books") == true }) {
-                        guard let allBooksURL = allBooksLink.url(relativeTo: url.domainURL) ?? URL(string: allBooksLink.href) else {
-                            continuation.resume(returning: ([], "Invalid 'All Books' URL"))
-                            return
-                        }
-                        Task {
-                            continuation.resume(returning: await Self.fetchPublications(from: allBooksURL))
-                        }
-                        return
-                    }
-
-                    continuation.resume(returning: ([], "No publications or navigable links found"))
+    static func fetchPublications(
+        from url: URL,
+        parse: (URL) async throws -> ParseData = { try await OPDSParser.parseURL(url: $0) }
+    ) async -> ([Publication], String?) {
+        var nextURL = url
+        var visited = Set<URL>()
+        do {
+            while true {
+                try Task.checkCancellation()
+                let identity = catalogTraversalIdentity(nextURL)
+                guard visited.insert(identity).inserted else {
+                    return ([], "The catalog's 'All Books' links contain a cycle.")
                 }
+                let parsed = try await parse(nextURL)
+                try Task.checkCancellation()
+                let responseIdentity = catalogTraversalIdentity(parsed.responseURL)
+                if responseIdentity != identity && !visited.insert(responseIdentity).inserted {
+                    return ([], "The catalog's 'All Books' links contain a cycle.")
+                }
+                let publications = parsed.publication.map { [$0] }
+                    ?? ((parsed.feed?.publications ?? []) + (parsed.feed?.groups.flatMap(\.publications) ?? []))
+                var seenDownloads = Set<URL>()
+                var seenPublications = Set<LakeOfFireOPDS.Publication>()
+                let uniquePublications = publications.filter { publication in
+                    if let url = publication.downloadURL(relativeTo: parsed.responseURL) {
+                        return seenDownloads.insert(url).inserted
+                    }
+                    return seenPublications.insert(publication).inserted
+                }
+                if !uniquePublications.isEmpty {
+                    return (uniquePublications.map {
+                        Publication(opdsPublication: $0, catalogURL: parsed.responseURL)
+                    }, nil)
+                }
+                let navigation = (parsed.feed?.navigation ?? []) + (parsed.feed?.groups.flatMap(\.navigation) ?? [])
+                guard let link = navigation.first(where: {
+                    $0.title?.hasPrefix("All Books") == true
+                }) else {
+                    return ([], "No publications or navigable links found")
+                }
+                guard let destination = link.url(relativeTo: parsed.responseURL) else {
+                    return ([], "Invalid 'All Books' URL")
+                }
+                nextURL = destination
             }
+        } catch is CancellationError {
+            return ([], nil)
+        } catch {
+            guard !Task.isCancelled else { return ([], nil) }
+            return ([], "Failed to fetch data: \(error.localizedDescription)")
         }
+    }
+
+    private static func catalogTraversalIdentity(_ url: URL) -> URL {
+        guard var components = URLComponents(url: url.absoluteURL.standardized, resolvingAgainstBaseURL: true) else {
+            return url
+        }
+        components.fragment = nil
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        return components.url ?? url
     }
 
     @MainActor
@@ -563,7 +561,8 @@ public class BookLibraryViewModel: ObservableObject {
                 }
                 downloadable = try? await readerFileManager.downloadable(
                     url: downloadURL,
-                    name: publication.title
+                    name: publication.title,
+                    mediaType: publication.downloadMediaType
                 )
                 return downloadable != nil
             },
@@ -687,7 +686,8 @@ public class BookLibraryViewModel: ObservableObject {
                 }
                 downloadable = try? await readerFileManager.downloadable(
                     url: downloadURL,
-                    name: publication.title
+                    name: publication.title,
+                    mediaType: publication.downloadMediaType
                 )
                 return downloadable != nil
             },
@@ -735,6 +735,34 @@ public struct Publication: Identifiable, Hashable {
     public var publicationDate: Date?
     public var coverURL: URL?
     public var downloadURL: URL?
+    public var downloadMediaType: String?
     public var summary: String?
     public var hasContentAudio = false
+
+    public init(title: String, author: String? = nil, publicationDate: Date? = nil,
+                coverURL: URL? = nil, downloadURL: URL? = nil, summary: String? = nil,
+                hasContentAudio: Bool = false, downloadMediaType: String? = nil) {
+        self.title = title
+        self.author = author
+        self.publicationDate = publicationDate
+        self.coverURL = coverURL
+        self.downloadURL = downloadURL
+        self.downloadMediaType = downloadMediaType
+        self.summary = summary
+        self.hasContentAudio = hasContentAudio
+    }
+
+    public init(opdsPublication publication: LakeOfFireOPDS.Publication, catalogURL: URL) {
+        let cover = publication.images.first(withRel: .cover)
+            ?? publication.images.first(withRel: .opdsImage)
+            ?? publication.images.first(withRel: .opdsImageThumbnail)
+        title = publication.metadata.title
+        author = publication.metadata.authors.map(\.name).joined(separator: ", ")
+        publicationDate = publication.metadata.published
+        coverURL = cover?.url(relativeTo: catalogURL)
+        let acquisition = publication.downloadAcquisition(relativeTo: catalogURL)
+        downloadURL = acquisition?.url
+        downloadMediaType = acquisition?.mediaType
+        summary = publication.metadata.description ?? publication.metadata.subtitle
+    }
 }

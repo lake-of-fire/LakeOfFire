@@ -5,8 +5,15 @@ export const copyCustomReaderFontStyleToDocument = (
     fontFamilies = globalThis,
 ) => {
     if (!doc || !sourceFontStyle) return false
+    // A document that has shown fallback must not acquire a late forwarded face.
+    const outcome = doc.documentElement?.dataset?.mnbFontOutcome
+    if (outcome && outcome !== 'loaded') return false
 
     let targetFontStyle = doc.getElementById('mnb-custom-fonts-inline')
+    // The destination's attempt owns this node and its load/error listeners,
+    // including after settling. Only its installer may change or retry it.
+    // Forwarding can still seed a missing node before initial installation.
+    if (targetFontStyle && doc.defaultView?.manabiReaderFontLoad?.promise) return false
     const sourceTag = sourceFontStyle.tagName?.toLowerCase()
     const desiredTag = sourceTag === 'link' ? 'link' : 'style'
     if (targetFontStyle && targetFontStyle.tagName?.toLowerCase() !== desiredTag) {
@@ -20,6 +27,11 @@ export const copyCustomReaderFontStyleToDocument = (
     }
 
     let changed = false
+    const disabled = sourceFontStyle.disabled === true
+    if ((targetFontStyle.disabled === true) !== disabled) {
+        targetFontStyle.disabled = disabled
+        changed = true
+    }
     const writingDirection = doc.body?.dataset?.mnbWritingDirection
         || doc.body?.dataset?.mnbFoliateWritingDirection
         || null

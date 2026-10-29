@@ -191,11 +191,8 @@ public struct FeedView: View {
     var initialScrollEntryID: String?
     @State private var showsReaderContentNewBadges = true
     @State private var hasAppliedInitialScrollEntryID = false
+    @State private var hasAppliedInitialSelection = false
     @Environment(\.contentSelection) private var contentSelection
-#if os(iOS)
-    @Environment(\.editMode) private var editMode
-#endif
-
     private var entries: [FeedEntry] {
         viewModel.entries ?? []
     }
@@ -203,41 +200,6 @@ public struct FeedView: View {
     private var showsMarkAllAsSeenAction: Bool {
         feed.showsUnseenBadge && !entries.isEmpty
     }
-
-    private var allowsVideoMakerSelection: Bool {
-#if DEBUG
-        true
-#else
-        false
-#endif
-    }
-
-#if DEBUG
-    private var showsSelectionInOverflowMenu: Bool {
-#if os(iOS)
-        if #available(iOS 26, *) {
-            return true
-        }
-        return false
-#else
-        return false
-#endif
-    }
-
-    private var showsSelectionToolbarButton: Bool {
-#if os(iOS)
-        !showsSelectionInOverflowMenu
-#else
-        false
-#endif
-    }
-#endif
-
-#if DEBUG && os(iOS)
-    private func setSelectionModeActive(_ isActive: Bool) {
-        editMode?.wrappedValue = isActive ? .active : .inactive
-    }
-#endif
 
     private func consumeInitialScrollEntryIDIfNeeded(_ content: FeedEntry) {
         if content.compoundKey == initialScrollEntryID {
@@ -271,7 +233,7 @@ public struct FeedView: View {
                     useDefaultRowInsets: true,
                     showsNewBadges: showsReaderContentNewBadges,
                     separateRowsIntoSections: true,
-                    allowEditing: allowsVideoMakerSelection,
+                    allowEditing: false,
                     onContentAppear: { content in
                         consumeInitialScrollEntryIDIfNeeded(content)
                     },
@@ -322,10 +284,11 @@ public struct FeedView: View {
 
     @MainActor
     private func applyInitialScrollEntryIDIfNeeded() {
-        guard let initialScrollEntryID,
+        guard !hasAppliedInitialSelection, let initialScrollEntryID,
               entries.contains(where: { $0.compoundKey == initialScrollEntryID }) else {
             return
         }
+        hasAppliedInitialSelection = true
         if contentSelection.wrappedValue != initialScrollEntryID {
             contentSelection.wrappedValue = initialScrollEntryID
         }
@@ -351,20 +314,6 @@ public struct FeedView: View {
         }
         .toolbar {
             ToolbarItem(placement: toolbarTrailingPlacement) {
-#if DEBUG
-#if os(iOS)
-                if showsToolbar,
-                   !isHorizontal,
-                   !(currentEntries?.isEmpty ?? true),
-                   showsSelectionToolbarButton {
-                    EditButton()
-                }
-#endif
-#else
-                EmptyView()
-#endif
-            }
-            ToolbarItem(placement: toolbarTrailingPlacement) {
                 if showsToolbar {
                     Menu {
                         if allowsFollowing {
@@ -378,19 +327,6 @@ public struct FeedView: View {
                                 }
                             }
                         }
-#if DEBUG
-                        if !isHorizontal && !(currentEntries?.isEmpty ?? true) {
-#if os(iOS)
-                            if showsSelectionInOverflowMenu {
-                                Button {
-                                    setSelectionModeActive(editMode?.wrappedValue == .inactive)
-                                } label: {
-                                    Label(editMode?.wrappedValue == .inactive ? "Select" : "Done", systemImage: "checklist")
-                                }
-                            }
-#endif
-                        }
-#endif
                         if showsMarkAllAsSeenAction {
                             Button("Mark All as Seen") {
                                 Task { @MainActor in

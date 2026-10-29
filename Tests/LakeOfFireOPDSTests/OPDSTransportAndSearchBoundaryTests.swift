@@ -104,6 +104,23 @@ final class OPDSTransportAndSearchBoundaryTests: XCTestCase {
         }
     }
 
+    func testSuccessfulStatusCannotAdmitARangeEnvelope() {
+        for headers in [
+            ["Content-Range": "bytes 0-99/1000"],
+            ["Content-Type": "multipart/byteranges; boundary=fragment"],
+        ] {
+            let response = HTTPURLResponse(url: base, statusCode: 200,
+                httpVersion: nil, headerFields: headers)!
+            XCTAssertThrowsError(try OPDSParser.validateDocument(
+                data: Data("<feed><title>Partial</title></feed>".utf8),
+                response: response, error: nil)) { error in
+                guard case OPDSParserError.partialDocument = error else {
+                    return XCTFail("Unexpected error: \(error)")
+                }
+            }
+        }
+    }
+
     func testTransportErrorWinsEvenIfTheCallbackAlsoHasDataAndResponse() {
         let response = HTTPURLResponse(url: base, statusCode: 200, httpVersion: nil, headerFields: nil)!
         XCTAssertThrowsError(try OPDSParser.validateDocument(data: Data([1]), response: response, error: URLError(.cancelled))) {
@@ -164,14 +181,77 @@ final class OPDSTransportAndSearchBoundaryTests: XCTestCase {
             return XCTFail("Missing HTTP failure")
         }
     }
+
+    func testAsyncParserUsesFinalResponseURLForRelativeLinks() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BoundaryURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let parsed = try await OPDSParser.parseURL(
+            url: URL(string: "https://opds-boundary.example/redirected")!, session: session)
+        XCTAssertEqual(parsed.responseURL.absoluteString, "https://cdn.example/catalog/index.json")
+        XCTAssertEqual(parsed.feed?.publications.first?.downloadURL(relativeTo: nil)?.absoluteString,
+            "https://cdn.example/catalog/book.epub")
+    }
+
+    func testAsyncParserRejectsHTTPFailure() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BoundaryURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        do {
+            _ = try await OPDSParser.parseURL(url: URL(string: "https://opds-boundary.example/fail-2")!, session: session)
+            XCTFail("Expected HTTP failure")
+        } catch OPDSParserError.httpStatus(503) {
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testAsyncParserCancellationStopsUnderlyingRequest() async {
+        let url = URL(string: "https://opds-boundary.example/wait/\(UUID())")!
+        let started = expectation(forNotification: BoundaryURLProtocol.started, object: nil) {
+            $0.userInfo?["url"] as? URL == url
+        }
+        let stopped = expectation(forNotification: BoundaryURLProtocol.stopped, object: nil) {
+            $0.userInfo?["url"] as? URL == url
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BoundaryURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let task = Task { try await OPDSParser.parseURL(url: url, session: session) }
+        await fulfillment(of: [started], timeout: 3)
+        task.cancel()
+        switch await task.result {
+        case .success: XCTFail("Cancelled transport returned a catalog")
+        case .failure(let error):
+            XCTAssertTrue(error is CancellationError || (error as? URLError)?.code == .cancelled)
+        }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
 }
 
 private final class BoundaryURLProtocol: URLProtocol {
+    static let started = Notification.Name("OPDSBoundaryTransportStarted")
+    static let stopped = Notification.Name("OPDSBoundaryTransportStopped")
     override class func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "opds-boundary.example"
     }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        if request.url?.path.hasPrefix("/wait/") == true {
+            NotificationCenter.default.post(name: Self.started, object: nil, userInfo: ["url": request.url!])
+            return
+        }
+        if request.url?.lastPathComponent == "redirected" {
+            let response = HTTPURLResponse(url: URL(string: "https://cdn.example/catalog/index.json")!, statusCode: 200,
+                httpVersion: nil, headerFields: ["Content-Type": "application/opds+json"])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(#"{"metadata":{"title":"Catalog"},"publications":[{"metadata":{"title":"Book"},"links":[{"href":"book.epub","type":"application/epub+zip","rel":"http://opds-spec.org/acquisition"}]}]}"#.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         let data: Data
         switch request.url?.lastPathComponent {
         case "fail-2": data = Data(#"{"metadata":{"title":"Error body"},"publications":[]}"#.utf8)
@@ -183,5 +263,7 @@ private final class BoundaryURLProtocol: URLProtocol {
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
     }
-    override func stopLoading() {}
+    override func stopLoading() {
+        NotificationCenter.default.post(name: Self.stopped, object: nil, userInfo: ["url": request.url!])
+    }
 }

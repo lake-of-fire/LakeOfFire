@@ -99,7 +99,7 @@ public enum ReaderDateFormatter {
     }
 
     public static func shortDurationString(from duration: TimeInterval) -> String? {
-        guard duration > 0 else { return nil }
+        guard duration.isFinite, duration > 0 else { return nil }
 
         let minute: TimeInterval = 60
         let hour: TimeInterval = 3600
@@ -112,7 +112,9 @@ public enum ReaderDateFormatter {
             let roundedHours = max(1, Int(round(duration / hour)))
             return "\(roundedHours)h"
         } else {
-            let roundedDays = max(1, Int(round(duration / day)))
+            let days = max(1, round(duration / day))
+            guard days < Double(Int.max) else { return nil }
+            let roundedDays = Int(days)
             return "\(roundedDays)d"
         }
     }

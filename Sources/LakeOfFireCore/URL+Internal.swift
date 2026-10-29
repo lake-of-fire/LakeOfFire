@@ -5,10 +5,10 @@ public extension URL {
         return absoluteString.hasPrefix("internal://local/snippet?key=")
     }
 
-    var readerLoaderContentURL: URL? {
+    var readerContentSourceURL: URL? {
         guard scheme?.lowercased() == "internal",
               host?.lowercased() == "local",
-              path == "/load/reader" else {
+              (path == "/load/reader" || path == "/reader") else {
             return nil
         }
 
@@ -19,11 +19,11 @@ public extension URL {
         if let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
            let readerURLString = components.queryItems?.first(where: { $0.name == "reader-url" })?.value {
             if let readerURL = absoluteURL(from: readerURLString) {
-                return readerURL
+                return applyingReaderDocumentFragment(to: readerURL)
             }
             if let decodedReaderURL = readerURLString.removingPercentEncoding,
                let readerURL = absoluteURL(from: decodedReaderURL) {
-                return readerURL
+                return applyingReaderDocumentFragment(to: readerURL)
             }
         }
 
@@ -33,15 +33,30 @@ public extension URL {
         let rawReaderURL = String(absoluteString[range.upperBound...])
         if let decodedReaderURL = rawReaderURL.removingPercentEncoding,
            let readerURL = absoluteURL(from: decodedReaderURL) {
-            return readerURL
+            return applyingReaderDocumentFragment(to: readerURL)
         }
-        return absoluteURL(from: rawReaderURL)
+        return absoluteURL(from: rawReaderURL).map { applyingReaderDocumentFragment(to: $0) }
+    }
+
+    /// The generated document has its own origin; semantic identity remains the source.
+    var isReaderDocumentURL: Bool {
+        scheme?.lowercased() == "internal" && host?.lowercased() == "local"
+            && path == "/reader" && readerContentSourceURL != nil
+    }
+
+    private func applyingReaderDocumentFragment(to sourceURL: URL) -> URL {
+        guard let fragment = URLComponents(url: self, resolvingAgainstBaseURL: false)?.percentEncodedFragment,
+              var components = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false) else {
+            return sourceURL
+        }
+        components.percentEncodedFragment = fragment
+        return components.url ?? sourceURL
     }
 
     var snippetKey: String? {
         let absolute = absoluteString
-        if absolute.hasPrefix("internal://local/load/reader") {
-            return readerLoaderContentURL?.snippetKey
+        if readerContentSourceURL != nil {
+            return readerContentSourceURL?.snippetKey
         }
 
         let eligiblePrefix = absolute.hasPrefix("internal://local/snippet")

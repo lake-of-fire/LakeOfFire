@@ -32,6 +32,11 @@ public struct ReaderContentLoader {
     // Task-scoped input lets behavior tests exercise the public pasteboard route.
     @TaskLocal static var pasteboardStringsForTesting: (html: String?, text: String?)? = nil
 
+    // Control the asynchronous HTML boundary while retaining the public loader
+    // and its URL/reader-mode decision in behavior tests.
+    @TaskLocal static var localHTMLAvailabilityForTesting:
+        (@MainActor (any ReaderContentProtocol) async throws -> Bool)? = nil
+
     // Synchronous task-local observation verifies capture and actual task
     // joining without adding a scheduling point to production admission.
     enum GetContentEvent: Sendable { case capturedStorage, joinedTask }
@@ -40,22 +45,22 @@ public struct ReaderContentLoader {
     /// Immutable Realm routing for one reader discovery operation. Capture this
     /// before an actor hop: account replacement may otherwise make one query
     /// read one store and a later write land in another.
-    private struct DiscoveryStorageIdentity: Hashable, Sendable {
+    fileprivate struct DiscoveryStorageIdentity: Hashable, Sendable {
         let bookmark: String
         let history: String
         let feed: String
     }
 
-    private struct DiscoveryStorage: @unchecked Sendable {
+    public struct DiscoveryStorage: @unchecked Sendable {
         let bookmarkConfiguration: Realm.Configuration
         let historyConfiguration: Realm.Configuration
         let feedConfiguration: Realm.Configuration
         let bookmarkAdmission: RealmStorageAdmission
         let historyAdmission: RealmStorageAdmission
         let feedAdmission: RealmStorageAdmission
-        let identity: DiscoveryStorageIdentity
+        fileprivate let identity: DiscoveryStorageIdentity
 
-        init(
+        public init(
             bookmarkConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
             historyConfiguration: Realm.Configuration = ReaderContentLoader.historyRealmConfiguration,
             feedConfiguration: Realm.Configuration = ReaderContentLoader.feedEntryRealmConfiguration
@@ -77,7 +82,7 @@ public struct ReaderContentLoader {
             identity = DiscoveryStorageIdentity(bookmark: bookmark.scopeIdentity,
                 history: history.scopeIdentity, feed: feed.scopeIdentity)
         }
-        func validate(includeFeed: Bool = true) throws {
+        public func validate(includeFeed: Bool = true) throws {
             let actor = RealmBackgroundActor.shared
             for (configuration, admission) in [(historyConfiguration, historyAdmission),
                 (bookmarkConfiguration, bookmarkAdmission)] + (includeFeed ? [(feedConfiguration, feedAdmission)] : []) {
@@ -155,6 +160,8 @@ public struct ReaderContentLoader {
         
         @MainActor
         public func resolveOnMainActor() async throws -> (any ReaderContentProtocol)? {
+            let trace = ReaderLoadTrace.begin("content.resolveMainActor")
+            defer { trace?.end() }
             try await RealmBackgroundActor.shared.prepareStorage(for: realmConfiguration, storageAdmission: storageAdmission)
             try validateStorage()
             let realm = try await Realm.open(configuration: realmConfiguration)
@@ -220,6 +227,9 @@ public struct ReaderContentLoader {
         for content: any ReaderContentProtocol,
         readerFileManager: ReaderFileManager
     ) async throws -> Bool {
+        if let localHTMLAvailabilityForTesting {
+            return try await localHTMLAvailabilityForTesting(content)
+        }
         let html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
         return html?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
@@ -239,8 +249,9 @@ public struct ReaderContentLoader {
         }
     }
     
+    /// Resolves both the loading shell and final reader document to publisher identity.
     public static func getContentURL(fromLoaderURL pageURL: URL) -> URL? {
-        pageURL.readerLoaderContentURL
+        pageURL.readerContentSourceURL
     }
 
     @RealmBackgroundActor
@@ -277,7 +288,7 @@ public struct ReaderContentLoader {
     }
 
     @RealmBackgroundActor
-    private static func loadAll(
+    public static func loadAll(
         url: URL,
         skipContentFiles: Bool,
         skipFeedEntries: Bool,
@@ -406,9 +417,13 @@ public struct ReaderContentLoader {
         url: URL,
         storage: DiscoveryStorage
     ) async throws -> (any ReaderContentProtocol)? {
+        let trace = ReaderLoadTrace.begin("content.lookupStored")
+        defer { trace?.end() }
         let resolvedURL = getContentURL(fromLoaderURL: url) ?? url
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
-            try await storedContentReference(for: resolvedURL, storage: storage)
+            let discoveryTrace = ReaderLoadTrace.begin("content.discoverStored")
+            defer { discoveryTrace?.end() }
+            return try await storedContentReference(for: resolvedURL, storage: storage)
         }()
         try Task.checkCancellation()
         let result = try await contentRef?.resolveOnMainActor()
@@ -452,6 +467,37 @@ public struct ReaderContentLoader {
             storage: storage
         )
     }
+
+    /// A restored capture can be newer than its already-cached feed entry, so
+    /// an unchanged refresh will not mirror the entry again. This read returns
+    /// semantic metadata only; the renderer's existing write owns adoption.
+    @MainActor
+    public static func cachedFeedImageGeometry(
+        sourceURL: URL,
+        imageURL: URL,
+        storage suppliedStorage: DiscoveryStorage? = nil
+    ) async throws -> ReaderImageGeometry? {
+        guard sourceURL.isHTTP, imageURL.isHTTP else { return nil }
+        let storage = suppliedStorage ?? DiscoveryStorage()
+        return try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: storage.feedConfiguration, storageAdmission: storage.feedAdmission)
+            await realm.asyncRefresh()
+            try Task.checkCancellation()
+            try storage.validate()
+            let identity = sourceURL.scheme == "https"
+                ? NSPredicate(format: "url == %@ OR url == %@", sourceURL.absoluteString,
+                    sourceURL.settingScheme("http").absoluteString)
+                : NSPredicate(format: "url == %@", sourceURL.absoluteString)
+            let entry = realm.objects(FeedEntry.self).filter(identity)
+                .filter(NSPredicate(format: "isDeleted == false AND imageUrl == %@", imageURL.absoluteString))
+                .sorted(byKeyPath: "createdAt", ascending: false).first
+            guard let entry else { return nil }
+            return ReaderImageGeometry.metadata(inHTML: entry.html,
+                matchingURL: imageURL, sourceURL: entry.url)
+        }()
+    }
+
 
     @MainActor
     public static func getContent(
@@ -831,7 +877,10 @@ public struct ReaderContentLoader {
         readerFileManager: ReaderFileManager
     ) async throws -> URL? {
         let storage = DiscoveryStorage()
+        // The HTML/file boundary may refresh the Realm, delete this record, or
+        // replace its URL. All routing decisions belong to the admitted content.
         let contentURL = content.url
+        let isReaderModeByDefault = content.isReaderModeByDefault
         let canonicalReaderBackingURL = readerFileManager.canonicalReaderBackingURL(for: contentURL)
         let contentHasLocallyRetrievableHTML = try await hasLocallyRetrievableHTML(
             for: content,
@@ -842,26 +891,28 @@ public struct ReaderContentLoader {
             if contentHasLocallyRetrievableHTML, let loaderURL = readerLoaderURL(for: contentURL) {
                 return loaderURL
             }
-            return content.url
+            return contentURL
         }
 
         if ["http", "https"].contains(contentURL.scheme?.lowercased()) {
-            if content.isReaderModeByDefault,
+            if isReaderModeByDefault,
                contentHasLocallyRetrievableHTML,
                let loaderURL = readerLoaderURL(for: contentURL) {
                 return loaderURL
             }
 
             if let matchingContent = try await lookupStoredContent(url: contentURL, storage: storage),
-               matchingContent.isReaderModeByDefault,
-               (try? await hasLocallyRetrievableHTML(
+               matchingContent.isReaderModeByDefault {
+                let matchingContentURL = matchingContent.url
+                if (try? await hasLocallyRetrievableHTML(
                     for: matchingContent,
                     readerFileManager: readerFileManager
-               )) == true,
-               let matchingURL = readerLoaderURL(for: matchingContent.url) {
-                return matchingURL
+                )) == true,
+                   let matchingURL = readerLoaderURL(for: matchingContentURL) {
+                    return matchingURL
+                }
             }
-            return content.url
+            return contentURL
         }
 
         if let canonicalReaderBackingURL,
@@ -877,7 +928,7 @@ public struct ReaderContentLoader {
             return loaderURL
         }
         
-        return content.url
+        return contentURL
     }
 
     static func docIsPlainText(doc: SwiftSoup.Document) -> Bool {
@@ -939,6 +990,18 @@ public struct ReaderContentLoader {
         return URL(string: "internal://local/load/reader?reader-url=\(encodedURL)")
     }
     
+    /// Final Reader Mode HTML uses local resources without borrowing the publisher's origin.
+    public static func readerDocumentURL(for contentURL: URL) -> URL? {
+        // The document fragment is mutable browser state. Duplicating it in
+        // reader-url would resurrect the original anchor after hash removal.
+        guard var components = readerLoaderURL(for: contentURL.removingFragmentIfNeeded()).flatMap({
+            URLComponents(url: $0, resolvingAgainstBaseURL: false)
+        }) else { return nil }
+        components.path = "/reader"
+        components.percentEncodedFragment = URLComponents(url: contentURL, resolvingAgainstBaseURL: false)?.percentEncodedFragment
+        return components.url
+    }
+
     @MainActor
     public static func load(
         text: String,
@@ -1906,8 +1969,9 @@ private extension ReaderContentLoader {
         }
         record.sourceIconURL = source.sourceIconURL
         record.isFromClipboard = source.isFromClipboard
-        record.rssContainsFullContent = source.rssContainsFullContent
-        if source.rssContainsFullContent { record.content = source.content }
+        // Preserve captured bodies when importing a summary-only source. Its
+        // HTML can still carry semantic metadata needed by later extraction.
+        applyFeedBody(from: source, containsFullContent: source.rssContainsFullContent, to: record)
         record.voiceFrameUrl = source.voiceFrameUrl
         let audio = source.resolvedVoiceAudioURLs
         record.voiceAudioURL = audio.first

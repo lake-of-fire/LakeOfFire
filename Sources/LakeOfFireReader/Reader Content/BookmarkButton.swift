@@ -81,18 +81,34 @@ public final class BookmarkStatusCache: ObservableObject {
         }
     }
 
+    private func bookmarkKey(for readerContent: any ReaderContentProtocol) -> String? {
+        let url = readerContent.url
+        // URL-backed content does not need HTML decompression for a status read.
+        let usesHTML = url.absoluteString.hasPrefix("about:")
+            || url.absoluteString.hasPrefix("internal://local")
+        return Bookmark.makePrimaryKey(url: url, html: usesHTML ? readerContent.html : nil)
+    }
+
     public func isBookmarked(_ readerContent: any ReaderContentProtocol) -> Bool {
-        bookmarkedCompoundKeys.contains(readerContent.compoundKey)
+        guard !readerContent.isInvalidated,
+              let key = bookmarkKey(for: readerContent) else { return false }
+        return bookmarkedCompoundKeys.contains(key)
     }
 
     public func setIsBookmarked(_ isBookmarked: Bool, for readerContent: any ReaderContentProtocol) {
-        guard bookmarkedCompoundKeys.contains(readerContent.compoundKey) != isBookmarked else {
+        guard !readerContent.isInvalidated,
+              let key = bookmarkKey(for: readerContent) else { return }
+        setIsBookmarked(isBookmarked, forCompoundKey: key)
+    }
+
+    public func setIsBookmarked(_ isBookmarked: Bool, forCompoundKey compoundKey: String) {
+        guard bookmarkedCompoundKeys.contains(compoundKey) != isBookmarked else {
             return
         }
         if isBookmarked {
-            bookmarkedCompoundKeys.insert(readerContent.compoundKey)
+            bookmarkedCompoundKeys.insert(compoundKey)
         } else {
-            bookmarkedCompoundKeys.remove(readerContent.compoundKey)
+            bookmarkedCompoundKeys.remove(compoundKey)
         }
     }
 }
@@ -115,8 +131,10 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
     public var body: some View {
         Button {
             Task { @MainActor in
+                guard !readerContent.isInvalidated, !readerContent.isDeleted else { return }
+                guard let bookmarkKey = Bookmark.makePrimaryKey(url: readerContent.url, html: readerContent.html) else { return }
                 let isBookmarked = try await readerContent.toggleBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
-                bookmarkStatusCache.setIsBookmarked(isBookmarked, for: readerContent)
+                bookmarkStatusCache.setIsBookmarked(isBookmarked, forCompoundKey: bookmarkKey)
             }
         } label: {
             BookmarkMenuLabel(isBookmarked: showBookmarkExists)

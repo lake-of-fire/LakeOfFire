@@ -322,6 +322,11 @@ public extension URL {
         }
         let lhsContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: self) ?? self
         let rhsContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        // An owned document's hash is an article-local scroll destination,
+        // not another stored content record. Keep ordinary URL identity exact.
+        if isReaderDocumentURL || url.isReaderDocumentURL {
+            return urlsMatchWithoutHash(lhsContentURL, rhsContentURL)
+        }
         return lhsContentURL == rhsContentURL
     }
 }
@@ -385,26 +390,38 @@ public extension ReaderContentProtocol {
     // TODO: Refactor to put on background thread
     @MainActor
     public func htmlToDisplay(readerFileManager: ReaderFileManager) async throws -> String? {
-        // rssContainsFullContent name is out of date; it just means this object contains the full content (RSS or otherwise)
+        guard !isInvalidated else { throw CancellationError() }
+        let configuration = realm?.configuration ?? ReaderContentLoader.historyRealmConfiguration
+        return try await htmlToDisplay(
+            readFile: { try await readerFileManager.read(fileURL: $0) },
+            metadata: { fileURL in
+                try await ReaderFileManager.get(fileURL: fileURL, realmConfiguration: configuration)?.mimeType
+            }
+        )
+    }
+
+    @MainActor
+    internal func htmlToDisplay(
+        readFile: @MainActor (URL) async throws -> Data?,
+        metadata: @MainActor (URL) async throws -> String?
+    ) async throws -> String? {
+        guard !isInvalidated else { throw CancellationError() }
+        // File I/O can outlive a managed record or its account. Capture the
+        // original URL before suspension and never reread this object afterward.
         if rssContainsFullContent || isFromClipboard {
             try Task.checkCancellation()
             return html
-        } else if url.isReaderFileURL {
-            guard let data = try? await readerFileManager.read(fileURL: url) else { return nil }
-            try Task.checkCancellation()
-            let text = String(decoding: data, as: UTF8.self)
-            if let resolvedContentFile = try? await ReaderFileManager.get(fileURL: url) {
-                return ReaderContentLoader.normalizeIngestedText(
-                    text,
-                    mimeType: resolvedContentFile.mimeType,
-                    pathExtension: url.pathExtension,
-                    source: .file
-                ).html
-            } else {
-                return ReaderContentLoader.normalizeIngestedText(text, pathExtension: url.pathExtension, source: .file).html
-            }
         }
-        return nil
+        let fileURL = url
+        guard fileURL.isReaderFileURL else { return nil }
+        guard let data = try? await readFile(fileURL) else { return nil }
+        try Task.checkCancellation()
+        let mimeType = try? await metadata(fileURL)
+        try Task.checkCancellation()
+        return ReaderContentLoader.normalizeIngestedText(
+            String(decoding: data, as: UTF8.self), mimeType: mimeType,
+            pathExtension: fileURL.pathExtension, source: .file
+        ).html
     }
     
     /// Deprecated, use `content` or `html`.
@@ -485,17 +502,29 @@ public extension ReaderContentProtocol {
 
 public extension ReaderContentProtocol {
     /// Returns whether the result is having a bookmark or not.
+    @MainActor
     func toggleBookmark(realmConfiguration: Realm.Configuration) async throws -> Bool {
+        guard !isInvalidated, !isDeleted else { throw CancellationError() }
+        let addOriginalBookmark = prepareBookmarkAddition(realmConfiguration: realmConfiguration)
         if try await removeBookmark(realmConfiguration: realmConfiguration) {
             return false
         }
-        try await addBookmark(realmConfiguration: realmConfiguration)
+        try await addOriginalBookmark()
         return true
     }
     
     @MainActor
     func addBookmark(realmConfiguration: Realm.Configuration) async throws {
-        let historyRealmConfiguration = ReaderContentLoader.historyRealmConfiguration
+        guard !isInvalidated, !isDeleted else { throw CancellationError() }
+        try await prepareBookmarkAddition(realmConfiguration: realmConfiguration)()
+    }
+
+    @MainActor
+    private func prepareBookmarkAddition(
+        realmConfiguration: Realm.Configuration
+    ) -> @MainActor () async throws -> Void {
+        let historyRealmConfiguration = BookmarkToggleObservation.historyConfigurationForTesting
+            ?? ReaderContentLoader.historyRealmConfiguration
         let compoundKey = compoundKey
         let url = url
         let title = title
@@ -523,69 +552,72 @@ public extension ReaderContentProtocol {
         let resolvedRedditTranslationsURL = redditTranslationsUrl
         let resolvedRedditTranslationsTitle = redditTranslationsTitle
         let autoOpenMediaPlayer = autoOpenMediaPlayer
-        try await { @RealmBackgroundActor in
-            let bookmark = try await Bookmark.add(
-                url: url,
-                title: title,
-                imageUrl: imageURL,
-                sourceIconURL: sourceIconURL,
-                html: html,
-                content: content,
-                publicationDate: publicationDate,
-                readerContentKind: readerContentKind,
-                feedEntryCollectionKey: feedEntryCollectionKey,
-                feedEntryCollectionScheme: feedEntryCollectionScheme,
-                feedEntryCollectionTerm: feedEntryCollectionTerm,
-                feedEntryCollectionTitle: feedEntryCollectionTitle,
-                isFromClipboard: isFromClipboard,
-                isTitlePrefixOfContent: isTitlePrefixOfContent,
-                rssContainsFullContent: rssContainsFullContent,
-                isReaderModeByDefault: isReaderModeByDefault,
-                isReaderModeAvailable: isReaderModeAvailable,
-                isReaderModeOfferHidden: isReaderModeOfferHidden,
-                autoOpenMediaPlayer: autoOpenMediaPlayer,
-                realmConfiguration: realmConfiguration
-            )
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            let bookmarkKey = bookmark.compoundKey
-            try await realm.asyncWritePreservingOwnership {
-                if let managedBookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: bookmarkKey) {
-                    if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
-                        content.configureBookmark(managedBookmark)
-                    } else {
-                        managedBookmark.voiceFrameUrl = voiceFrameURL
-                        managedBookmark.voiceAudioURL = resolvedVoiceAudioURL
-                        managedBookmark.voiceAudioURLs.removeAll()
-                        managedBookmark.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
-                        managedBookmark.audioSubtitlesURL = resolvedAudioSubtitlesURL
-                        managedBookmark.audioSubtitlesRoleRawValue = resolvedAudioSubtitlesRoleRawValue ?? (resolvedAudioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
-                        managedBookmark.redditTranslationsUrl = resolvedRedditTranslationsURL
-                        managedBookmark.redditTranslationsTitle = resolvedRedditTranslationsTitle
-                        managedBookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
+        return {
+            try await { @RealmBackgroundActor in
+                let bookmark = try await Bookmark.add(
+                    url: url,
+                    title: title,
+                    imageUrl: imageURL,
+                    sourceIconURL: sourceIconURL,
+                    html: html,
+                    content: content,
+                    publicationDate: publicationDate,
+                    readerContentKind: readerContentKind,
+                    feedEntryCollectionKey: feedEntryCollectionKey,
+                    feedEntryCollectionScheme: feedEntryCollectionScheme,
+                    feedEntryCollectionTerm: feedEntryCollectionTerm,
+                    feedEntryCollectionTitle: feedEntryCollectionTitle,
+                    isFromClipboard: isFromClipboard,
+                    isTitlePrefixOfContent: isTitlePrefixOfContent,
+                    rssContainsFullContent: rssContainsFullContent,
+                    isReaderModeByDefault: isReaderModeByDefault,
+                    isReaderModeAvailable: isReaderModeAvailable,
+                    isReaderModeOfferHidden: isReaderModeOfferHidden,
+                    autoOpenMediaPlayer: autoOpenMediaPlayer,
+                    realmConfiguration: realmConfiguration
+                )
+                let bookmarkKey = bookmark.compoundKey
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+                try await realm.asyncWritePreservingOwnership {
+                    if let managedBookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: bookmarkKey) {
+                        if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey),
+                           !content.isDeleted, content.url == url {
+                            content.configureBookmark(managedBookmark)
+                        } else {
+                            managedBookmark.voiceFrameUrl = voiceFrameURL
+                            managedBookmark.voiceAudioURL = resolvedVoiceAudioURL
+                            managedBookmark.voiceAudioURLs.removeAll()
+                            managedBookmark.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
+                            managedBookmark.audioSubtitlesURL = resolvedAudioSubtitlesURL
+                            managedBookmark.audioSubtitlesRoleRawValue = resolvedAudioSubtitlesRoleRawValue ?? (resolvedAudioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+                            managedBookmark.redditTranslationsUrl = resolvedRedditTranslationsURL
+                            managedBookmark.redditTranslationsTitle = resolvedRedditTranslationsTitle
+                            managedBookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
+                        }
+                        managedBookmark.refreshChangeMetadata(explicitlyModified: true)
                     }
-                    managedBookmark.refreshChangeMetadata(explicitlyModified: true)
                 }
-            }
-            
-            let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
-            if let historyRecord = HistoryRecord.openedRecords(matching: url, in: historyRealm)
-                .sorted(by: [
-                    SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
-                    SortDescriptor(keyPath: "compoundKey", ascending: true),
-                ])
-                .first {
-                let historyKey = historyRecord.compoundKey
-                try await historyRealm.asyncWritePreservingOwnership {
-                    guard let current = historyRealm.object(
-                        ofType: HistoryRecord.self, forPrimaryKey: historyKey
-                    ), !current.isDeleted, current.isDemoted != false else { return }
-                    current.isDemoted = false
-                    current.refreshChangeMetadata(explicitlyModified: true)
+
+                let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
+                if let historyRecord = HistoryRecord.openedRecords(matching: url, in: historyRealm)
+                    .sorted(by: [
+                        SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
+                        SortDescriptor(keyPath: "compoundKey", ascending: true),
+                    ])
+                    .first {
+                    let historyKey = historyRecord.compoundKey
+                    try await historyRealm.asyncWritePreservingOwnership {
+                        guard let current = historyRealm.object(
+                            ofType: HistoryRecord.self, forPrimaryKey: historyKey
+                        ), !current.isDeleted, current.isDemoted != false else { return }
+                        current.isDemoted = false
+                        current.refreshChangeMetadata(explicitlyModified: true)
+                    }
                 }
-            }
-        }()
+            }()
+        }
     }
-    
+
     /// Returns whether a matching bookmark was found and deleted.
     @MainActor
     func removeBookmark(realmConfiguration: Realm.Configuration) async throws -> Bool {
@@ -593,6 +625,7 @@ public extension ReaderContentProtocol {
         let html = html
         return try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+            await BookmarkToggleObservation.beforeRemoval?()
             return try await realm.asyncWritePreservingOwnership {
                 guard let bookmark = realm.object(
                     ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)
@@ -795,7 +828,6 @@ private struct ReaderHistorySourceSnapshot {
         record.imageUrl = imageUrl
         record.sourceIconURL = sourceIconURL
         record.isFromClipboard = isFromClipboard
-        record.rssContainsFullContent = rssContainsFullContent
         record.voiceFrameUrl = voiceFrameUrl
         record.audioSubtitlesURL = audioSubtitlesURL
         record.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue
@@ -811,7 +843,15 @@ private struct ReaderHistorySourceSnapshot {
         record.isReaderModeAvailable = isReaderModeAvailable
         record.isReaderModeOfferHidden = isReaderModeOfferHidden
         record.displayPublicationDate = displayPublicationDate
-        if rssContainsFullContent { record.content = content }
+        if rssContainsFullContent {
+            applyFeedBody(content, containsFullContent: true, to: record)
+        } else if record.rssContainsFullContent {
+            // This detached snapshot already owns its HTML; do not reopen a
+            // managed source while the destination transaction is in flight.
+            let geometry = ReaderImageGeometry.metadata(inHTML: html,
+                matchingURL: imageUrl, sourceURL: url)
+            applyFeedBody(content, containsFullContent: false, to: record, imageGeometry: geometry)
+        }
         record.voiceAudioURL = audioURLs.first
         record.voiceAudioURLs.removeAll()
         record.voiceAudioURLs.append(objectsIn: audioURLs)
@@ -846,4 +886,10 @@ public func makeReaderContentCompoundKey(url: URL?, html: String?) -> String? {
         key.append((String(format: "%02X", stableHash(html))))
     }
     return key
+}
+
+// Test-only scheduling control at the actual bookmark removal boundary.
+enum BookmarkToggleObservation {
+    @TaskLocal static var historyConfigurationForTesting: Realm.Configuration? = nil
+    @TaskLocal static var beforeRemoval: (@RealmBackgroundActor () async -> Void)? = nil
 }

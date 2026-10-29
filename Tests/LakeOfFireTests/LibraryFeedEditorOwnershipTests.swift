@@ -1,6 +1,9 @@
 import BigSyncKit
+import Combine
 import RealmSwift
 import RealmSwiftGaps
+import SwiftUIWebView
+import WebKit
 import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireLibrary
@@ -614,6 +617,198 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
             replacement.refresh()
             XCTAssertTrue(replacement.objects(BigSyncPendingMutation.self).isEmpty)
         }
+    }
+
+    func testReaderScriptRefreshPreservesOrderAndTracksExecutableMetadata() async throws {
+        let config = configuration()
+        let realm = try await Realm(configuration: config)
+        let library = LibraryConfiguration()
+        let domain = UserScriptAllowedDomain()
+        domain.domain = "example.com"
+        let replacementDomain = UserScriptAllowedDomain()
+        replacementDomain.domain = "other.example.com"
+        let first = UserScript()
+        first.script = "window.firstReaderScript = true;"
+        first.allowedDomainIDs.append(domain.id)
+        let second = UserScript()
+        second.script = "window.secondReaderScript = true;"
+        library.userScriptIDs.append(objectsIn: [first.id, second.id])
+        try realm.write {
+            realm.add(library)
+            realm.add(first)
+            realm.add(second)
+            realm.add(domain)
+            realm.add(replacementDomain)
+            library.refreshChangeMetadata(explicitlyModified: true)
+            first.refreshChangeMetadata(explicitlyModified: true)
+            second.refreshChangeMetadata(explicitlyModified: true)
+            domain.refreshChangeMetadata(explicitlyModified: true)
+            replacementDomain.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let appScript = WebViewUserScript(
+            source: "window.appReaderScript = true;", injectionTime: .atDocumentStart,
+            forMainFrameOnly: true, in: .page
+        )
+        let reader = ReaderViewModel(realmConfiguration: config, systemScripts: [appScript])
+        XCTAssertTrue(reader.allScripts.contains(appScript))
+        XCTAssertEqual(
+            reader.webViewSystemScripts,
+            [appScript] + LibraryConfiguration.bundledSystemScripts,
+            "Bundled document-start scripts must exist before asynchronous Realm delivery"
+        )
+        var initialSystemPublications = 0
+        let initialSystemObservation = reader.$webViewSystemScripts.dropFirst().sink { _ in
+            initialSystemPublications += 1
+        }
+        defer { initialSystemObservation.cancel() }
+        let initiallyLoaded = await waitUntil {
+            Array(reader.allScripts.suffix(2)).map(\.source) == [first.script, second.script]
+        }
+        XCTAssertTrue(initiallyLoaded)
+        XCTAssertEqual(initialSystemPublications, 0, "Realm hydration must not reinstall bundled scripts")
+        let appIndex = try XCTUnwrap(reader.allScripts.firstIndex(of: appScript))
+        let bundledIndex = try XCTUnwrap(reader.allScripts.firstIndex(of: LibraryConfiguration.bundledSystemScripts[0]))
+        let userIndex = try XCTUnwrap(reader.allScripts.firstIndex { $0.source == first.script })
+        XCTAssertLessThan(appIndex, bundledIndex)
+        XCTAssertLessThan(bundledIndex, userIndex)
+
+        var userPublications = 0
+        var systemPublications = 0
+        let userObservation = reader.$webViewUserScripts.dropFirst().sink { _ in userPublications += 1 }
+        let systemObservation = reader.$webViewSystemScripts.dropFirst().sink { _ in systemPublications += 1 }
+        defer { userObservation.cancel(); systemObservation.cancel() }
+        try realm.write {
+            first.title = "Non-executable metadata"
+            first.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let updatedSource = "window.updatedReaderScript = true;"
+        try realm.write {
+            first.script = updatedSource
+            first.injectAtStart = false
+            first.mainFrameOnly = false
+            first.allowedDomainIDs.removeAll()
+            first.allowedDomainIDs.append(replacementDomain.id)
+            first.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let updated = await waitUntil {
+            reader.allScripts.contains {
+                $0.source == updatedSource && $0.injectionTime == .atDocumentEnd
+                    && !$0.isForMainFrameOnly && $0.allowedDomains == [replacementDomain.domain]
+            }
+        }
+        XCTAssertTrue(updated)
+        XCTAssertEqual(userPublications, 1, "Identical snapshots must not republish the script list")
+        XCTAssertEqual(systemPublications, 0, "User-script changes must not republish bundled scripts")
+
+        realm.refresh()
+        try realm.write {
+            library.userScriptIDs.removeAll()
+            library.userScriptIDs.append(objectsIn: [second.id, first.id])
+            library.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let reordered = await waitUntil {
+            Array(reader.allScripts.suffix(2)).map(\.source) == [second.script, updatedSource]
+        }
+        XCTAssertTrue(reordered)
+        try realm.write {
+            second.isArchived = true
+            second.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let archived = await waitUntil {
+            !reader.allScripts.contains { $0.source == second.script }
+                && reader.allScripts.contains { $0.source == updatedSource }
+        }
+        XCTAssertTrue(archived)
+        try realm.write {
+            first.isDeleted = true
+            first.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let deleted = await waitUntil { reader.webViewUserScripts?.isEmpty == true }
+        XCTAssertTrue(deleted)
+        XCTAssertTrue(reader.allScripts.contains(appScript))
+    }
+
+    func testReaderScriptRefreshTracksIndependentDomainChanges() async throws {
+        let config = configuration()
+        let realm = try await Realm(configuration: config)
+        let library = LibraryConfiguration()
+        let script = UserScript()
+        script.script = "window.domainOnlyRefresh = true;"
+        let domain = UserScriptAllowedDomain()
+        domain.domain = "initial.example.com"
+        let arrivingDomain = UserScriptAllowedDomain()
+        arrivingDomain.domain = "arriving.example.com"
+        script.allowedDomainIDs.append(objectsIn: [domain.id, arrivingDomain.id])
+        library.userScriptIDs.append(script.id)
+        try realm.write {
+            realm.add(library)
+            realm.add(script)
+            realm.add(domain)
+            library.refreshChangeMetadata(explicitlyModified: true)
+            script.refreshChangeMetadata(explicitlyModified: true)
+            domain.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let reader = ReaderViewModel(realmConfiguration: config, systemScripts: [])
+        let loaded = await waitUntil {
+            reader.webViewUserScripts?.first?.allowedDomains == ["initial.example.com"]
+        }
+        XCTAssertTrue(loaded)
+        try realm.write {
+            domain.domain = "renamed.example.com"
+            domain.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let renamed = await waitUntil {
+            reader.webViewUserScripts?.first?.allowedDomains == ["renamed.example.com"]
+        }
+        XCTAssertTrue(renamed, "Editing only the domain must refresh filtering")
+        try realm.write {
+            realm.add(arrivingDomain)
+            arrivingDomain.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let arrived = await waitUntil {
+            reader.webViewUserScripts?.first?.allowedDomains == ["renamed.example.com", "arriving.example.com"]
+        }
+        XCTAssertTrue(arrived, "A separately arriving domain must resolve without editing its script")
+        try realm.write {
+            domain.isDeleted = true
+            domain.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let deleted = await waitUntil {
+            reader.webViewUserScripts?.first?.allowedDomains == ["arriving.example.com"]
+        }
+        XCTAssertTrue(deleted)
+        try realm.write {
+            domain.isDeleted = false
+            domain.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let restored = await waitUntil {
+            reader.webViewUserScripts?.first?.allowedDomains == ["renamed.example.com", "arriving.example.com"]
+        }
+        XCTAssertTrue(restored)
+
+        try realm.write {
+            domain.isDeleted = true
+            arrivingDomain.isDeleted = true
+            domain.refreshChangeMetadata(explicitlyModified: true)
+            arrivingDomain.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let withheld = await waitUntil { reader.webViewUserScripts?.isEmpty == true }
+        XCTAssertTrue(withheld, "Losing all configured domain rows must not make a script global")
+        try realm.write {
+            script.allowedDomainIDs.removeAll()
+            script.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let explicitlyGlobal = await waitUntil {
+            reader.webViewUserScripts?.count == 1
+                && reader.webViewUserScripts?.first?.allowedDomains.isEmpty == true
+        }
+        XCTAssertTrue(explicitlyGlobal, "An explicitly empty domain list still means all sites")
+        try realm.write {
+            script.allowedDomainIDs.append(UUID())
+            script.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let missing = await waitUntil { reader.webViewUserScripts?.isEmpty == true }
+        XCTAssertTrue(missing, "An unresolved domain reference must not make a script global")
     }
 
     func testViewMetadataDelayRejectsInvalidationCancellationAndSupersessionBeforeIO() async throws {

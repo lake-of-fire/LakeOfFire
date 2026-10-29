@@ -1582,7 +1582,19 @@
                     width: 100%;
                     height: 100%;
                 }
+/* #if DEBUG */
+                /* Slide only the paper through chrome/safe areas; the inset
+                   text viewport keeps the same pagination and lookup geometry. */
+                #reader-stage:has(> foliate-view[data-slide-pages]) {
+                    overflow: visible;
+                }
+                #reader-stage > foliate-view[data-slide-pages] {
+                    overflow: visible !important;
+                    --reader-page-bleed-top: calc(var(--mnb-reader-stage-top-inset, 0px) + var(--mnb-ebook-top-gutter-height, 28px));
+                    --reader-page-bleed-bottom: var(--mnb-reader-stage-bottom-inset, 0px);
+                }
                 
+/* #endif */
                 /* View Transitions */
                 /*
                  @keyframes fade-in { from { opacity: 0; } }

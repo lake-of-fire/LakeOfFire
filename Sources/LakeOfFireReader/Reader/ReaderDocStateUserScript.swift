@@ -51,6 +51,14 @@ struct ReaderDocStateUserScript {
             const readerStage = document.getElementById("reader-stage");
             const foliateView = readerStage?.querySelector?.("foliate-view") ?? document.querySelector("foliate-view");
             const hasReaderContent = !!readerContent || !!foliateView;
+            const capturesVisibility = reason === 'pageshow' || reason === 'visible'
+                || String(reason).startsWith('article-');
+            const bodyStyle = capturesVisibility && body ? getComputedStyle(body) : null;
+            let positionRecall = null;
+            if (capturesVisibility) {
+                try { positionRecall = window.manabi_positionRecallDiagnostics?.() ?? null; }
+                catch (_error) {}
+            }
             const hasRenderReadyMarker = html?.dataset?.mnbReaderRenderReady === '1'
                 || body?.dataset?.mnbReaderRenderReady === '1';
             return {
@@ -61,7 +69,22 @@ struct ReaderDocStateUserScript {
                 hasReaderContent,
                 hasReaderRenderReady: hasRenderReadyMarker
                     && hasReaderContent
-                    && (html?.dataset?.mnbFontPending ?? null) !== '1',
+                    && (html?.dataset?.mnbFontPending ?? null) !== '1'
+                    && html?.dataset?.mnbArticlePresentation !== 'pending',
+                readerArticlePresentation: html?.dataset?.mnbArticlePresentation ?? null,
+                readerVisibility: bodyStyle ? {
+                    visibility: bodyStyle.visibility,
+                    display: bodyStyle.display,
+                    opacity: Number.parseFloat(bodyStyle.opacity || '1'),
+                    fontPending: html?.dataset?.mnbFontPending === '1',
+                    articlePending: html?.dataset?.mnbArticlePresentation === 'pending',
+                    layoutComplete: html?.dataset?.mnbLayoutComplete !== 'false',
+                    trackingInitialized: document.manabi_trackedWordsInitialized === true,
+                    positionRecalled: document.manabi_hasRecalledReadingPosition === true,
+                } : null,
+                readerFontOutcome: html?.dataset?.mnbFontOutcome ?? null,
+                readerFontTimings: window.manabiReaderFontLoad?.timings ?? null,
+                readerPositionRecall: positionRecall,
                 readerRenderGeneration:
                     html?.dataset?.mnbReaderRenderGeneration
                     ?? body?.dataset?.mnbReaderRenderGeneration
@@ -71,7 +94,6 @@ struct ReaderDocStateUserScript {
             };
         }
         function stopPolling() {
-            if (stateMachine.stopped) { return; }
             stateMachine.stopped = true;
             try { observer?.disconnect?.(); } catch (_error) {}
             if (rafHandle.value) { cancelAnimationFrame(rafHandle.value); }
@@ -87,8 +109,28 @@ struct ReaderDocStateUserScript {
             return false;
         }
         window.__manabiPostReaderDocStateEvent = function(reason) {
-            return postState(reason || "event");
+            return isEbookDocument
+                ? postState(reason || "event")
+                : reportResumedState(reason || "event");
         };
+        // A restored document does not rerun document-end scripts. Its first
+        // ready message may also have arrived while the native host was being
+        // detached. Replay the same generation's readiness when it is shown
+        // again; native ownership checks still reject obsolete documents.
+        function reportResumedState(reason) {
+            if (postState(reason)) { return true; }
+            const root = document.documentElement;
+            if (stateMachine.stopped && root?.dataset?.mnbFontPending === '1') {
+                // Native font injection can begin again while the page is
+                // hidden. Keep only its root flag observable until completion;
+                // do not restart polling or observe the document subtree.
+                observer?.observe(root, {
+                    attributes: true,
+                    attributeFilter: ["data-mnb-font-pending"]
+                });
+            }
+            return false;
+        }
         if (isEbookDocument) {
             // Renderer events can report readiness while a native-injected font
             // is still pending. Font completion clears only this root flag and
@@ -103,6 +145,10 @@ struct ReaderDocStateUserScript {
             }
             return;
         }
+        window.addEventListener("pageshow", () => { reportResumedState("pageshow"); });
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") { reportResumedState("visible"); }
+        });
         function scheduleNextTick() {
             if (stateMachine.stopped || stateMachine.attempts >= 80) { return; }
             stateMachine.attempts += 1;
@@ -120,7 +166,8 @@ struct ReaderDocStateUserScript {
                 attributeFilter: [
                     "data-mnb-reader-render-ready",
                     "data-mnb-reader-render-generation",
-                    "data-mnb-font-pending"
+                    "data-mnb-font-pending",
+                    "data-mnb-article-presentation"
                 ]
             });
         }

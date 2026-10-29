@@ -313,6 +313,12 @@ export class View extends HTMLElement {
             this.renderer = renderer
             renderer.setAttribute('exportparts', 'head,foot') //,filter')
             this.#listenToRenderer(renderer, 'load', e => this.#onLoad(e.detail))
+// #if DEBUG
+            this.#listenToRenderer(renderer, 'pageturnpreviewload', e => {
+                this.#applyDocumentLanguage(e.detail.doc)
+                this.#emit('pageturnpreviewload', e.detail)
+            })
+// #endif
             this.#listenToRenderer(renderer, 'document-committed', e =>
                 this.#emit('document-committed', e.detail))
             this.#listenToRenderer(renderer, 'document-unload', e => {
@@ -437,11 +443,14 @@ export class View extends HTMLElement {
             this.history.replaceState(cfi)
             this.#emit('relocate', this.lastLocation)
             }
-    #onLoad({ doc, location, index }) {
+    #applyDocumentLanguage(doc) {
         // set language and dir if not already set
         doc.documentElement.lang ||= this.language.canonical ?? ''
         if (!this.language.isCJK)
             doc.documentElement.dir ||= this.language.direction ?? ''
+    }
+    #onLoad({ doc, location, index }) {
+        this.#applyDocumentLanguage(doc)
 
         this.#handleLinks(doc, index)
         this.#emit('load', { doc, location, index })

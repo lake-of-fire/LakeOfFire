@@ -16,6 +16,93 @@ private actor ReaderSnippetRecoveryTestRecorder {
 }
 
 final class ReaderSnippetPipelineDiagnosticsTests: XCTestCase {
+    @MainActor
+    func testSupersededReadabilityPreparationRetriesBeforeSubmitting() async throws {
+        var attempts = 0
+        var submissions = 0
+        try await retrySupersededReadabilityPreparation {
+            attempts += 1
+            if attempts < 3 { throw ReaderPreparedReadabilityDocumentError.superseded }
+            submissions += 1
+        }
+        XCTAssertEqual(attempts, 3)
+        XCTAssertEqual(submissions, 1)
+    }
+
+    @MainActor
+    func testRepeatedReadabilitySupersessionTerminatesWithoutSubmission() async {
+        var attempts = 0
+        do {
+            try await retrySupersededReadabilityPreparation {
+                attempts += 1
+                throw ReaderPreparedReadabilityDocumentError.superseded
+            }
+            XCTFail("Repeated dictionary changes must terminate preparation")
+        } catch ReaderPreparedReadabilityDocumentError.superseded {
+            XCTAssertEqual(attempts, 3)
+        } catch { XCTFail("Unexpected error: \(error)") }
+    }
+
+    @MainActor
+    func testReadabilityPreparationDoesNotRetryUnrelatedErrors() async {
+        var attempts = 0
+        do {
+            try await retrySupersededReadabilityPreparation {
+                attempts += 1
+                throw URLError(.cannotDecodeContentData)
+            }
+            XCTFail("A content error must propagate")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .cannotDecodeContentData)
+            XCTAssertEqual(attempts, 1)
+        }
+    }
+
+    @MainActor
+    func testCancelledReadabilityPreparationDoesNotRetry() async {
+        var attempts = 0
+        let task = Task { @MainActor in
+            try await retrySupersededReadabilityPreparation {
+                attempts += 1
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw ReaderPreparedReadabilityDocumentError.superseded
+            }
+        }
+        do { try await task.value; XCTFail("Cancelled owner must not prepare another document") }
+        catch is CancellationError { XCTAssertEqual(attempts, 1) }
+        catch { XCTFail("Unexpected error: \(error)") }
+    }
+
+    func testUnchangedSnippetTitlePreservesPreparedRubyAndLookupIdentity() throws {
+        let document = try SwiftSoup.parse("""
+        <html><body><h1 id="reader-title"><m-c><m-s><m-m id="native-title-word"><ruby class="mnb-gen"><m-t>学校</m-t><rt>がっこう</rt><rp>(</rp></ruby></m-m>へ行く</m-s></m-c></h1>
+        <script id="mnb-segment-metadata">{"version":1}</script></body></html>
+        """)
+        let before = try document.outerHtml()
+
+        XCTAssertFalse(try updateSnippetReaderTitleIfNeeded(in: document, title: "学校へ行く"))
+        XCTAssertEqual(try document.outerHtml(), before)
+        XCTAssertEqual(try document.getElementById("native-title-word")?.select("rt").text(), "がっこう")
+    }
+
+    func testRenamedSnippetTitleUpdatesItsVisibleHeading() throws {
+        let document = try SwiftSoup.parse("""
+        <h1 id="reader-title"><m-c><m-m id="previous-title">古い題名</m-m></m-c></h1>
+        """)
+
+        XCTAssertTrue(try updateSnippetReaderTitleIfNeeded(in: document, title: "新しい題名"))
+        XCTAssertEqual(try document.getElementById("reader-title")?.text(), "新しい題名")
+        XCTAssertNil(try document.getElementById("previous-title"))
+        XCTAssertFalse(try updateSnippetReaderTitleIfNeeded(in: document, title: "新しい題名"))
+    }
+
+    func testMissingSnippetTitleDoesNotCreateAnotherHeading() throws {
+        let document = try SwiftSoup.parse("<p>本文</p>")
+        let before = try document.outerHtml()
+        XCTAssertFalse(try updateSnippetReaderTitleIfNeeded(in: document, title: "題名"))
+        XCTAssertEqual(try document.outerHtml(), before)
+    }
+
     func testPersistedSnippetAuthorityFailureReprocessesCleanSourceThroughInjectedProcessor() async throws {
         let source = """
         <html>

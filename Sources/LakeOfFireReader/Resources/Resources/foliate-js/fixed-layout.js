@@ -153,6 +153,9 @@ export class FixedLayout extends HTMLElement {
     get navigationInFlight() {
         return this.#navigationTransaction !== null
     }
+// #if DEBUG
+    get supportedPageTurnStyles() { return ['instant'] }
+// #endif
     #finishNavigation(transaction) {
         transaction?.cancellationListeners?.clear?.()
         if (this.#navigationTransaction === transaction) {

@@ -27,6 +27,9 @@ public struct ParseData {
     /// The URLResponse got after fetching the ressource
     var response: URLResponse
 
+    /// Relative catalog links use the final response location after redirects.
+    public var responseURL: URL { response.url ?? url }
+
     /// The OPDS version
     var version: Version
 

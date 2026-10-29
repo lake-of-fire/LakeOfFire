@@ -9,25 +9,8 @@ import RealmSwiftGaps
 import SwiftUtilities
 import LakeKit
 
-#if DEBUG
-public typealias ReaderContentVideoMakerOpenAction = @MainActor (_ contents: [any ReaderContentProtocol]) -> Void
-
-private struct ReaderContentVideoMakerOpenActionKey: EnvironmentKey {
-    static let defaultValue: ReaderContentVideoMakerOpenAction? = nil
-}
-
-public extension EnvironmentValues {
-    var readerContentVideoMakerOpenAction: ReaderContentVideoMakerOpenAction? {
-        get { self[ReaderContentVideoMakerOpenActionKey.self] }
-        set { self[ReaderContentVideoMakerOpenActionKey.self] = newValue }
-    }
-}
-#endif
-
-
-
 public func readerContentListSeparatedRowScrollAnchorID(_ contentID: String) -> String {
-    "reader-content-list-section-\(contentID)"
+    contentID
 }
 
 public struct ReaderContentGroupingSection<C: ReaderContentProtocol>: Identifiable {
@@ -36,13 +19,51 @@ public struct ReaderContentGroupingSection<C: ReaderContentProtocol>: Identifiab
     public let items: [C]
     public let itemIDs: [String]
     public let initiallyExpanded: Bool
+    let identifiedItems: [ReaderContentIdentifiedItem<C>]
 
     public init(id: String, title: String, items: [C], itemIDs: [String]? = nil, initiallyExpanded: Bool = true) {
         self.id = id
         self.title = title
         self.items = items
-        self.itemIDs = itemIDs ?? items.map(\.compoundKey)
+        let ids = itemIDs ?? items.map(\.compoundKey)
+        self.itemIDs = ids
+        self.identifiedItems = readerContentIdentifiedItems(contents: items, ids: ids)
         self.initiallyExpanded = initiallyExpanded
+    }
+}
+
+struct ReaderContentSeparatedRow<C: ReaderContentProtocol>: Identifiable {
+    struct ID: Hashable {
+        let groupID: String
+        let contentID: String
+    }
+
+    let id: ID
+    let item: ReaderContentIdentifiedItem<C>
+    let headerTitle: String?
+    let isLastInGroup: Bool
+}
+
+struct ReaderContentGroupingPresentation<C: ReaderContentProtocol> {
+    let sections: [ReaderContentGroupingSection<C>]
+    let separatedRows: [ReaderContentSeparatedRow<C>]
+
+    init(sections: [ReaderContentGroupingSection<C>] = [], includesSeparatedRows: Bool = true) {
+        self.sections = sections
+        guard includesSeparatedRows else {
+            separatedRows = []
+            return
+        }
+        separatedRows = sections.flatMap { section in
+            section.identifiedItems.map { item in
+                ReaderContentSeparatedRow(
+                    id: .init(groupID: section.id, contentID: item.id),
+                    item: item,
+                    headerTitle: item.offset == 0 ? section.title : nil,
+                    isLastInGroup: item.offset == section.items.count - 1
+                )
+            }
+        }
     }
 }
 
@@ -211,41 +232,31 @@ public extension View {
     }
 }
 
-private extension View {
-    @ViewBuilder
-    func readerContentListRowStyle(
-        showSeparators: Bool = false,
-        useDefaultRowInsets: Bool = false,
-        zeroHorizontalRowInsets: Bool = false
-    ) -> some View {
-        if #available(iOS 26, macOS 26, *) {
-            if zeroHorizontalRowInsets {
-                self
-                    .listRowInsets(.horizontal, 0)
-                    .listRowSeparator(showSeparators ? .visible : .hidden)
-            } else if useDefaultRowInsets {
-                self
-                    .listRowSeparator(showSeparators ? .visible : .hidden)
-            } else {
-                self
-                    .listRowInsets(.init())
-                    .listRowSeparator(showSeparators ? .visible : .hidden)
-            }
-        } else if #available(iOS 15, macOS 12, *) {
-            if useDefaultRowInsets {
-                self.listRowSeparator(showSeparators ? .visible : .hidden)
-            } else {
-                self
-                    .listRowInsets(.init())
-                    .listRowSeparator(showSeparators ? .visible : .hidden)
-            }
-        } else {
-            if useDefaultRowInsets {
-                self
-            } else {
-                self.listRowInsets(.init())
-            }
-        }
+// Select the OS-specific modifier outside ForEach and pass styling choices as
+// values, keeping the row structure constant while SwiftUI collects IDs.
+private struct ReaderContentLegacyRowStyle: ViewModifier {
+    var showSeparators = false
+    let useDefaultRowInsets: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .listRowInsets(useDefaultRowInsets ? nil : EdgeInsets())
+            .listRowSeparator(showSeparators ? .visible : .hidden)
+    }
+}
+
+@available(iOS 26, macOS 26, *)
+private struct ReaderContentModernRowStyle: ViewModifier {
+    var showSeparators = false
+    let useDefaultRowInsets: Bool
+    let zeroHorizontalRowInsets: Bool
+
+    func body(content: Content) -> some View {
+        let zeroAllInsets = !useDefaultRowInsets && !zeroHorizontalRowInsets
+        return content
+            .listRowInsets(.horizontal, zeroHorizontalRowInsets || zeroAllInsets ? 0 : nil)
+            .listRowInsets(.vertical, zeroAllInsets ? 0 : nil)
+            .listRowSeparator(showSeparators ? .visible : .hidden)
     }
 }
 
@@ -253,15 +264,10 @@ private struct ReaderContentRowSeparatorModifier: ViewModifier {
     let isFirst: Bool
     let isLast: Bool
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(iOS 15, macOS 12, *) {
-            content
-                .listRowSeparator(isFirst ? .hidden : .automatic, edges: .top)
-                .listRowSeparator(isLast ? .hidden : .automatic, edges: .bottom)
-        } else {
-            content
-        }
+        content
+            .listRowSeparator(isFirst ? .hidden : .automatic, edges: .top)
+            .listRowSeparator(isLast ? .hidden : .automatic, edges: .bottom)
     }
 }
 
@@ -270,9 +276,6 @@ private extension View {
     func readerContentListLayoutAdjustments() -> some View {
         if #available(iOS 17, macOS 14, *) {
             self
-#if os(iOS)
-                .listSectionSpacing(0)
-#endif
                 .contentMargins(.top, 0, for: .scrollContent)
         } else {
             self
@@ -460,6 +463,8 @@ private extension View {
     }
 }
 
+// Dormant row-toggle styling retained for local development.
+#if DEBUG
 struct ListItemToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         Button {
@@ -472,7 +477,9 @@ struct ListItemToggleStyle: ToggleStyle {
     }
 }
 
-public enum ReaderContentSortOrder {
+#endif
+
+public enum ReaderContentSortOrder: Hashable {
     case providedOrder
     case publicationDate
     case createdAt
@@ -486,6 +493,14 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     private struct FilteredContentSnapshot {
         let contents: [C]
         let ids: [String]
+        let items: [ReaderContentIdentifiedItem<C>]
+        let revision = UUID()
+
+        init(contents: [C], ids: [String]) {
+            self.contents = contents
+            self.ids = ids
+            self.items = readerContentIdentifiedItems(contents: contents, ids: ids)
+        }
     }
 
     public init() {
@@ -506,6 +521,8 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     @Published private var filteredContentSnapshot: FilteredContentSnapshot
     public var filteredContents: [C] { filteredContentSnapshot.contents }
     public var filteredContentIDs: [String] { filteredContentSnapshot.ids }
+    var identifiedItems: [ReaderContentIdentifiedItem<C>] { filteredContentSnapshot.items }
+    var contentRevision: UUID { filteredContentSnapshot.revision }
     public var realmConfiguration: Realm.Configuration?
     var refreshSelectionTask: Task<Void, Error>?
     @Published public var loadContentsTask: Task<Void, Error>?
@@ -570,24 +587,10 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     @MainActor
     private func applyFilteredContents(_ contents: [C], ids: [String]) {
         assert(ids.count == contents.count, "Reader content IDs and values must remain aligned")
-        let updateState = {
-            // SwiftUI can render synchronously from `objectWillChange`.
-            // Publish IDs and managed values as one snapshot so no render can
-            // pair the next identity array with the previous value array.
-            self.filteredContentSnapshot = FilteredContentSnapshot(
-                contents: contents,
-                ids: ids
-            )
-            self.hasLoadedBefore = true
-        }
-
-        if hasLoadedBefore {
-            withAnimation(.default) {
-                updateState()
-            }
-        } else {
-            updateState()
-        }
+        // Publish identities, values and prepared rows atomically. Bulk refreshes
+        // do not implicitly animate every insertion/reordering in a large list.
+        filteredContentSnapshot = FilteredContentSnapshot(contents: contents, ids: ids)
+        hasLoadedBefore = true
     }
 
     @MainActor
@@ -631,15 +634,6 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             return
         }
 
-        if !hasLoadedBefore,
-           filteredContents.isEmpty,
-           !contents.isEmpty,
-           contentFilter == nil,
-           postSortTransform == nil {
-            let initialContents = Self.initialDisplayContents(from: contents, sortOrder: sortOrder)
-            applyFilteredContents(initialContents, ids: initialContents.map(\.compoundKey))
-        }
-
         let realmConfig = contents.first?.realm?.configuration
         realmConfiguration = realmConfig
         let task = Task { @ReaderContentListActor in
@@ -647,6 +641,8 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
 
             if let realmConfig {
                 let realm = try await ReaderContentListActor.shared.cachedRealm(for: realmConfig)
+                await realm.asyncRefresh()
+                try Task.checkCancellation()
                 let resolvedContents = contentIDs.compactMap { realm.object(ofType: C.self, forPrimaryKey: $0) }
                 for (idx, content) in resolvedContents.enumerated() {
                     try Task.checkCancellation()
@@ -852,7 +848,6 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         VStack(spacing: 0) {
             if #available(iOS 16.0, *) {
                 rowContent(item: content)
-                    .tag(content.compoundKey)
                     .contentShape(Rectangle())
                     .onTapGesture {
                         selectContent()
@@ -881,7 +876,6 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 .frame(maxWidth: .infinity)
             }
         }
-        .id(content.compoundKey)
 #if os(iOS)
         .deleteDisabled((content as? any DeletableReaderContent) == nil || isDeleteBlockedByStatus)
         .swipeActions {
@@ -936,13 +930,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             )
         )
 #endif
-        .modifier {
-            if appearance.useCardBackground || appearance.wrapsContentInGroupBox {
-                $0.listRowBackground(Color.clear)
-            } else {
-                $0
-            }
-        }
+        .listRowBackground(appearance.useCardBackground || appearance.wrapsContentInGroupBox ? Color.clear : nil)
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
             onContentAppear?(content)
@@ -954,10 +942,11 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     }
 }
 
-fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
+fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol, RowStyle: ViewModifier>: View {
     @Binding var entrySelection: String?
     let includeSource: Bool
     let appearance: ReaderContentListAppearance
+    let rowStyle: RowStyle
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
@@ -965,10 +954,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
 
     var body: some View {
         let contents = viewModel.filteredContents
-        let items = readerContentIdentifiedItems(
-            contents: contents,
-            ids: viewModel.filteredContentIDs
-        )
+        let items = viewModel.identifiedItems
         Group {
             ForEach(items) { item in
                 let content = item.content
@@ -985,6 +971,8 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
                     customMenuOptions: customMenuOptions,
                     onContentAppear: onContentAppear
                 )
+                .tag(content.compoundKey)
+                .modifier(rowStyle)
             }
         }
         .frame(minHeight: 10)
@@ -994,6 +982,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
         entrySelection: Binding<String?>,
         includeSource: Bool,
         appearance: ReaderContentListAppearance,
+        rowStyle: RowStyle,
         viewModel: ReaderContentListViewModel<C>,
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
@@ -1002,6 +991,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
         _entrySelection = entrySelection
         self.includeSource = includeSource
         self.appearance = appearance
+        self.rowStyle = rowStyle
         self.viewModel = viewModel
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
@@ -1009,8 +999,21 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     }
 }
 
+private struct ReaderContentListLoadID<C: ReaderContentProtocol>: Equatable {
+    let contents: [C]
+    let sourceRevision: UUID?
+    let sortOrder: ReaderContentSortOrder
+}
+
+private struct ReaderContentListScrollRequest: Hashable {
+    let targetID: String
+    let contentRevision: UUID
+    let separated: Bool
+}
+
 public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections: View, Header: View, EmptyState: View>: View {
     let contents: [C]
+    let sourceRevision: UUID?
     var contentFilter: ((Int, C) async throws -> Bool)? = nil
     var sortOrder = ReaderContentSortOrder.publicationDate
     let postSortTransform: (@ReaderContentListActor ([C]) -> [C])?
@@ -1041,13 +1044,11 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     let scrollTargetID: String?
 
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
-#if DEBUG
-    @Environment(\.readerContentVideoMakerOpenAction) private var readerContentVideoMakerOpenAction
-#endif
 
     @StateObject private var viewModel = ReaderContentListViewModel<C>()
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
-    @State private var groupedSections: [ReaderContentGroupingSection<C>] = []
+    @State private var grouping = ReaderContentGroupingPresentation<C>()
+    private var groupedSections: [ReaderContentGroupingSection<C>] { grouping.sections }
     @State private var sectionExpanded: [String: Bool] = [:]
 
 #if os(iOS)
@@ -1056,8 +1057,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @State private var internalMultiSelection = Set<String>()
     @State private var deleteEligibilityByContentKey: [String: ReaderFileDeleteEligibility] = [:]
     @State private var deleteEligibilityRefreshTask: Task<Void, Never>?
-    @State private var pendingScrollTargetID: String?
-    @State private var lastScrolledTargetID: String?
+    @State private var restoredScrollTargetID: String?
+    @State private var groupedContentRevision: UUID?
 
     private var showEmptyState: Bool {
         !viewModel.showLoadingIndicator && viewModel.filteredContents.isEmpty
@@ -1101,28 +1102,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         externalMultiSelection ?? $internalMultiSelection
     }
 
-#if DEBUG
-    private var selectedVideoMakerContents: [C] {
-        viewModel.filteredContents.filter {
-            multiSelection.contains($0.compoundKey) && $0.hasTranscriptTracerVideoSource
-        }
-    }
-
-    private var showsVideoMakerToolbarMenu: Bool {
-        guard readerContentVideoMakerOpenAction != nil else { return false }
-        guard !selectedVideoMakerContents.isEmpty else { return false }
-#if os(iOS)
-        return allowEditing && editMode?.wrappedValue != .inactive
-#else
-        return true
-#endif
-    }
-
-    private var makeSelectedVideoTitle: String {
-        selectedVideoMakerContents.count == 1 ? "Make Video" : "Make Videos"
-    }
-#endif
-
     private var showsHeaderSection: Bool {
         !rendersHeaderViewInSectionHeader && Header.self != EmptyView.self
     }
@@ -1155,21 +1134,22 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 #endif
     }
 
-    @ViewBuilder
-    private var listItems: some View {
-        ReaderContentListItems(
-            viewModel: viewModel,
+    private func listItems<RowStyle: ViewModifier>(rowStyle: RowStyle) -> some View {
+        ReaderContentInnerListItems(
             entrySelection: $entrySelection,
-            contentSortAscending: contentSortAscending,
             includeSource: includeSource,
-            alwaysShowThumbnails: alwaysShowThumbnails,
-            useCardBackground: useCardBackground,
-            clearRowBackground: clearRowBackground,
-            useDefaultRowInsets: useDefaultRowInsets,
-            showsNewBadges: showsNewBadges,
+            appearance: ReaderContentListAppearance(
+                alwaysShowThumbnails: alwaysShowThumbnails,
+                showSeparators: false,
+                useCardBackground: useCardBackground,
+                clearRowBackground: clearRowBackground,
+                useDefaultRowInsets: useDefaultRowInsets,
+                showsNewBadges: showsNewBadges
+            ),
+            rowStyle: rowStyle,
+            viewModel: viewModel,
             onRequestDelete: onRequestDeleteSingle,
             customMenuOptions: customMenuOptions,
-            onContentSelected: onContentSelected,
             onContentAppear: onContentAppear
         )
     }
@@ -1181,40 +1161,42 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         }
     }
 
-    @ViewBuilder
-    private var separateRowSections: some View {
-        let items = readerContentIdentifiedItems(
-            contents: viewModel.filteredContents,
-            ids: viewModel.filteredContentIDs
+    private func separatedRowContent<RowStyle: ViewModifier>(
+        item: ReaderContentIdentifiedItem<C>,
+        isFirst: Bool = true,
+        isLast: Bool = true,
+        rowStyle: RowStyle
+    ) -> some View {
+        ReaderContentInnerListItem(
+            content: item.content,
+            entrySelection: $entrySelection,
+            includeSource: includeSource,
+            appearance: ReaderContentListAppearance(
+                alwaysShowThumbnails: alwaysShowThumbnails,
+                showSeparators: false,
+                useCardBackground: useCardBackground,
+                clearRowBackground: clearRowBackground,
+                useDefaultRowInsets: useDefaultRowInsets,
+                showsNewBadges: showsNewBadges,
+                wrapsContentInGroupBox: separatedRowsUseGroupBox
+            ),
+            isFirst: isFirst,
+            isLast: isLast,
+            onRequestDelete: onRequestDeleteSingle,
+            customMenuOptions: customMenuOptions,
+            onContentAppear: onContentAppear
         )
+        .tag(item.content.compoundKey)
+        .modifier(rowStyle)
+    }
+
+    @ViewBuilder
+    private func separateRowSections<RowStyle: ViewModifier>(rowStyle: RowStyle) -> some View {
+        let items = viewModel.identifiedItems
 #if os(macOS)
         Section {
             ForEach(items) { item in
-                let content = item.content
-                ReaderContentInnerListItem(
-                    content: content,
-                    entrySelection: $entrySelection,
-                    includeSource: includeSource,
-                    appearance: ReaderContentListAppearance(
-                        alwaysShowThumbnails: alwaysShowThumbnails,
-                        showSeparators: false,
-                        useCardBackground: useCardBackground,
-                        clearRowBackground: clearRowBackground,
-                        useDefaultRowInsets: useDefaultRowInsets,
-                        showsNewBadges: showsNewBadges,
-                        wrapsContentInGroupBox: separatedRowsUseGroupBox
-                    ),
-                    isFirst: true,
-                    isLast: true,
-                    onRequestDelete: onRequestDeleteSingle,
-                    customMenuOptions: customMenuOptions,
-                    onContentAppear: onContentAppear
-                )
-                .readerContentListRowStyle(
-                    useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground),
-                    zeroHorizontalRowInsets: clearRowBackground
-                )
-                .id(readerContentListSeparatedRowScrollAnchorID(content.compoundKey))
+                separatedRowContent(item: item, rowStyle: rowStyle)
             }
         } header: {
             if !showEmptyState || rendersHeaderViewInSectionHeader {
@@ -1224,41 +1206,15 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         .headerProminence(.increased)
 #else
         ForEach(items) { item in
-            let content = item.content
-            sectionWithSpacing(
-                Section {
-                    ReaderContentInnerListItem(
-                        content: content,
-                        entrySelection: $entrySelection,
-                        includeSource: includeSource,
-                        appearance: ReaderContentListAppearance(
-                            alwaysShowThumbnails: alwaysShowThumbnails,
-                            showSeparators: false,
-                            useCardBackground: useCardBackground,
-                            clearRowBackground: clearRowBackground,
-                            useDefaultRowInsets: useDefaultRowInsets,
-                            showsNewBadges: showsNewBadges,
-                            wrapsContentInGroupBox: separatedRowsUseGroupBox
-                        ),
-                        isFirst: true,
-                        isLast: true,
-                        onRequestDelete: onRequestDeleteSingle,
-                        customMenuOptions: customMenuOptions,
-                        onContentAppear: onContentAppear
-                    )
-                    .readerContentListRowStyle(
-                        useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground),
-                        zeroHorizontalRowInsets: clearRowBackground
-                    )
-                } header: {
-                    if item.offset == viewModel.filteredContents.startIndex,
-                       !showEmptyState || rendersHeaderViewInSectionHeader {
-                        contentSectionHeader
-                    }
+            Section {
+                separatedRowContent(item: item, rowStyle: rowStyle)
+            } header: {
+                if item.offset == 0, !showEmptyState || rendersHeaderViewInSectionHeader {
+                    contentSectionHeader
                 }
-                .headerProminence(.increased)
-            )
-            .id(readerContentListSeparatedRowScrollAnchorID(content.compoundKey))
+            }
+            .headerProminence(.increased)
+            .id(readerContentListSeparatedRowScrollAnchorID(item.id))
         }
 #endif
     }
@@ -1289,54 +1245,55 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         }
     }
 
-    @MainActor
-    private func scheduleScrollToTarget(with proxy: ScrollViewProxy, reason: String) {
-        guard let targetID = normalizedScrollTargetID else { return }
-        guard viewModel.filteredContentIDs.contains(targetID) else {
-            return
-        }
-        guard pendingScrollTargetID != targetID else {
-            return
-        }
-        let anchorID = readerContentListSeparatedRowScrollAnchorID(targetID)
-        pendingScrollTargetID = targetID
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            guard pendingScrollTargetID == targetID else {
-                return
-            }
-            pendingScrollTargetID = nil
-            withAnimation(.easeInOut(duration: 0.25)) {
-                proxy.scrollTo(anchorID, anchor: .center)
-            }
+    private var scrollRequest: ReaderContentListScrollRequest? {
+        guard let targetID = normalizedScrollTargetID,
+              !viewModel.isLoading,
+              viewModel.filteredContentIDs.contains(targetID),
+              customGrouping == nil || groupedContentRevision == viewModel.contentRevision else { return nil }
+        return ReaderContentListScrollRequest(targetID: targetID,
+            contentRevision: viewModel.contentRevision, separated: separateRowsIntoSections)
+    }
+
+    @ViewBuilder
+    private var listContainer: some View {
+        if #available(iOS 26, macOS 26, *) {
+            styledListContainer(rowStyle: ReaderContentModernRowStyle(
+                useDefaultRowInsets: usesNativeRowInsets,
+                zeroHorizontalRowInsets: clearRowBackground
+            ))
+        } else {
+            styledListContainer(rowStyle: ReaderContentLegacyRowStyle(
+                useDefaultRowInsets: usesNativeRowInsets
+            ))
         }
     }
 
-    private var listContainer: some View {
+    private func styledListContainer<RowStyle: ViewModifier>(rowStyle: RowStyle) -> some View {
         ZStack {
 #if os(iOS)
             if allowEditing && editMode?.wrappedValue != .inactive {
                 List(selection: multiSelectionBinding) {
-                    listContent
+                    listContent(rowStyle: rowStyle)
                 }
             } else {
                 List(selection: $entrySelection) {
-                    listContent
+                    listContent(rowStyle: rowStyle)
                 }
             }
 #else
 #if DEBUG
             if allowEditing {
                 List(selection: multiSelectionBinding) {
-                    listContent
+                    listContent(rowStyle: rowStyle)
                 }
             } else {
                 List(selection: $entrySelection) {
-                    listContent
+                    listContent(rowStyle: rowStyle)
                 }
             }
 #else
             List(selection: $entrySelection) {
-                listContent
+                listContent(rowStyle: rowStyle)
             }
 #endif
 #endif
@@ -1349,7 +1306,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @ViewBuilder
     private var listContainerWithSpacing: some View {
         if #available(iOS 17, *) {
-            let sectionSpacing = effectiveListSectionSpacing.map(ListSectionSpacing.custom) ?? .default
+            let sectionSpacing = ListSectionSpacing.custom(effectiveListSectionSpacing ?? 0)
             if let listRowSpacing = effectiveListRowSpacing {
                 listContainer
                     .listRowSpacing(listRowSpacing)
@@ -1369,25 +1326,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 #endif
 
     @ViewBuilder
-    private func sectionWithSpacing<Content: View>(_ section: Content) -> some View {
-#if os(iOS)
-        if #available(iOS 17, *), let effectiveListSectionSpacing {
-            section.listSectionSpacing(.custom(effectiveListSectionSpacing))
-        } else {
-            section
-        }
-#else
-        section
-#endif
-    }
-
-    @ViewBuilder
     private func listBody(scrollProxy: ScrollViewProxy) -> some View {
         listContainerWithSpacing
-            .onAppear {
-            }
-            .onDisappear {
-            }
             .toolbar {
 #if os(iOS)
                 ToolbarItem(placement: .topBarLeading) {
@@ -1396,11 +1336,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 #elseif os(macOS)
                 ToolbarItem(placement: .destructiveAction) {
                     deletionToolbarButtonView
-                }
-#endif
-#if DEBUG
-                ToolbarItem(placement: videoMakerToolbarPlacement) {
-                    videoMakerToolbarMenu
                 }
 #endif
             }
@@ -1414,32 +1349,31 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     entrySelection = nil
                 }
             }
-            .task { @MainActor in
+            .task(id: ReaderContentListLoadID(contents: contents,
+                sourceRevision: sourceRevision, sortOrder: sortOrder)) { @MainActor in
                 try? await viewModel.load(
                     contents: contents,
                     contentFilter: contentFilter,
                     sortOrder: sortOrder,
                     postSortTransform: postSortTransform
                 )
-                refreshGrouping()
-                scheduleScrollToTarget(with: scrollProxy, reason: "taskEnd")
             }
-            .onChange(of: contents) { contents in
-                Task { @MainActor in
-                    try? await viewModel.load(
-                        contents: contents,
-                        contentFilter: contentFilter,
-                        sortOrder: sortOrder,
-                        postSortTransform: postSortTransform
-                    )
-                    refreshGrouping()
-                    scheduleScrollToTarget(with: scrollProxy, reason: "contentsChanged")
-                }
-            }
-            .onChange(of: viewModel.filteredContents) { _ in
+            .onChange(of: viewModel.contentRevision) { _ in
                 refreshGrouping()
                 refreshDeleteEligibilityCache()
-                scheduleScrollToTarget(with: scrollProxy, reason: "filteredContentsChanged")
+            }
+            .onChange(of: normalizedScrollTargetID) { _ in
+                restoredScrollTargetID = nil
+            }
+            .task(id: scrollRequest) { @MainActor in
+                guard let request = scrollRequest,
+                      restoredScrollTargetID != request.targetID else { return }
+                // Run after the prepared rows and groups enter the hierarchy.
+                // SwiftUI cancels this task when the target or snapshot changes.
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                scrollProxy.scrollTo(readerContentListSeparatedRowScrollAnchorID(request.targetID), anchor: .center)
+                restoredScrollTargetID = request.targetID
             }
             .onChange(of: multiSelection) { _ in
                 refreshDeleteEligibilityCache()
@@ -1498,34 +1432,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         }
     }
 
-#if DEBUG
-    private var videoMakerToolbarPlacement: ToolbarItemPlacement {
-#if os(macOS)
-        .automatic
-#else
-        .topBarTrailing
-#endif
-    }
-
-    @ViewBuilder
-    private var videoMakerToolbarMenu: some View {
-        if showsVideoMakerToolbarMenu, let readerContentVideoMakerOpenAction {
-            Menu {
-                Button {
-                    readerContentVideoMakerOpenAction(
-                        selectedVideoMakerContents.map { $0 as any ReaderContentProtocol }
-                    )
-                } label: {
-                    Label(makeSelectedVideoTitle, systemImage: "film")
-                }
-            } label: {
-                Label("More Options", systemImage: "ellipsis")
-                    .labelStyle(.iconOnly)
-            }
-        }
-    }
-#endif
-
     @ViewBuilder
     private var contentSectionHeader: some View {
         if rendersHeaderViewInSectionHeader {
@@ -1543,106 +1449,61 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
 
     @ViewBuilder
-    private func groupedRowContent(
-        section: ReaderContentGroupingSection<C>,
-        index: Array<C>.Index,
-        content: C
+    private func groupedRows<RowStyle: ViewModifier>(
+        section: ReaderContentGroupingSection<C>, rowStyle: RowStyle
     ) -> some View {
-        let lastIndex = section.items.indices.last ?? section.items.startIndex
-        ReaderContentInnerListItem(
-            content: content,
-            entrySelection: $entrySelection,
-            includeSource: includeSource,
-            appearance: ReaderContentListAppearance(
-                alwaysShowThumbnails: alwaysShowThumbnails,
-                showSeparators: false,
-                useCardBackground: useCardBackground,
-                clearRowBackground: clearRowBackground,
-                useDefaultRowInsets: useDefaultRowInsets,
-                showsNewBadges: showsNewBadges,
-                wrapsContentInGroupBox: separatedRowsUseGroupBox
-            ),
-            isFirst: index == section.items.startIndex,
-            isLast: index == lastIndex,
-            onRequestDelete: onRequestDeleteSingle,
-            customMenuOptions: customMenuOptions,
-            onContentAppear: onContentAppear
-        )
-        .readerContentListRowStyle(
-            useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground),
-            zeroHorizontalRowInsets: clearRowBackground
-        )
-    }
-
-    @ViewBuilder
-    private func groupedRows(section: ReaderContentGroupingSection<C>) -> some View {
-        let items = readerContentIdentifiedItems(contents: section.items, ids: section.itemIDs)
-        if separateRowsIntoSections {
-#if os(macOS)
-            Section {
-                ForEach(items) { item in
-                    groupedRowContent(
-                        section: section,
-                        index: item.offset,
-                        content: item.content
-                    )
-                    .id(readerContentListSeparatedRowScrollAnchorID(item.id))
-                }
-            } header: {
-                Text(section.title)
-                    .foregroundStyle(.secondary)
-            }
-            .headerProminence(.increased)
-#else
-            ForEach(items) { item in
-                let content = item.content
-                sectionWithSpacing(
-                    Section {
-                        groupedRowContent(section: section, index: item.offset, content: content)
-                    } header: {
-                        if item.offset == section.items.startIndex {
-                            Text(section.title)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .headerProminence(.increased)
-                )
-                .id(readerContentListSeparatedRowScrollAnchorID(item.id))
-            }
-#endif
-        } else {
-            let lastIndex = section.items.indices.last ?? section.items.startIndex
-            ForEach(items) { item in
-                let content = item.content
-                ReaderContentInnerListItem(
-                    content: content,
-                    entrySelection: $entrySelection,
-                    includeSource: includeSource,
-                    appearance: ReaderContentListAppearance(
-                        alwaysShowThumbnails: alwaysShowThumbnails,
-                        showSeparators: false,
-                        useCardBackground: useCardBackground,
-                        clearRowBackground: clearRowBackground,
-                        useDefaultRowInsets: useDefaultRowInsets,
-                        showsNewBadges: showsNewBadges,
-                        wrapsContentInGroupBox: false
-                    ),
-                    isFirst: item.offset == section.items.startIndex,
-                    isLast: item.offset == lastIndex,
-                    onRequestDelete: onRequestDeleteSingle,
-                    customMenuOptions: customMenuOptions,
-                    onContentAppear: onContentAppear
-                )
-            }
-            .readerContentListRowStyle(
-                useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground),
-                zeroHorizontalRowInsets: clearRowBackground
+        let items = section.identifiedItems
+        ForEach(items) { item in
+            separatedRowContent(
+                item: item,
+                isFirst: item.offset == 0,
+                isLast: item.offset == items.count - 1,
+                rowStyle: rowStyle
             )
         }
     }
 
     @ViewBuilder
-    private var listContent: some View {
+    private func groupedSeparatedSections<RowStyle: ViewModifier>(rowStyle: RowStyle) -> some View {
+#if os(macOS)
+        ForEach(groupedSections) { section in
+            Section {
+                let items = section.identifiedItems
+                ForEach(items) { item in
+                    separatedRowContent(
+                        item: item,
+                        isFirst: item.offset == 0,
+                        isLast: item.offset == items.count - 1,
+                        rowStyle: rowStyle
+                    )
+                }
+            } header: {
+                Text(section.title).foregroundStyle(.secondary)
+            }
+            .headerProminence(.increased)
+        }
+#else
+        ForEach(grouping.separatedRows) { row in
+            Section {
+                separatedRowContent(
+                    item: row.item,
+                    isFirst: row.item.offset == 0,
+                    isLast: row.isLastInGroup,
+                    rowStyle: rowStyle
+                )
+            } header: {
+                if let title = row.headerTitle {
+                    Text(title).foregroundStyle(.secondary)
+                }
+            }
+            .headerProminence(.increased)
+            .id(readerContentListSeparatedRowScrollAnchorID(row.item.id))
+        }
+#endif
+    }
+
+    @ViewBuilder
+    private func listContent<RowStyle: ViewModifier>(rowStyle: RowStyle) -> some View {
         if showsHeaderSection {
             Section {
                 headerView()
@@ -1654,81 +1515,64 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         supplementarySections()
 
         if customGrouping == nil, !showEmptyState, separateRowsIntoSections {
-            separateRowSections
+            separateRowSections(rowStyle: rowStyle)
         } else if customGrouping == nil {
-            sectionWithSpacing(
+            Section {
+                if showEmptyState {
+                    if #available(iOS 16, *) {
+                        emptyStateView()
+                            .padding(.top, 8)
+                            .frame(maxHeight: .infinity, alignment: .top)
+                            .listRowInsets(.init())
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .stackListStyle(.grouped)
+                    }
+                } else {
+                    listItems(rowStyle: rowStyle)
+                }
+            } header: {
+                if !showEmptyState || rendersHeaderViewInSectionHeader {
+                    contentSectionHeader
+                }
+            }
+            .headerProminence(.increased)
+        } else if showEmptyState {
+            if #available(iOS 16, *) {
                 Section {
-                    if showEmptyState {
-                        if #available(iOS 16, *) {
-                            emptyStateView()
-                                .padding(.top, 8)
-                                .frame(maxHeight: .infinity, alignment: .top)
-                                .readerContentListRowStyle()
-                                .listRowBackground(Color.clear)
-                                .stackListStyle(.grouped)
-                        }
-                    } else {
-                        listItems
-                            .readerContentListRowStyle(
-                                useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground),
-                                zeroHorizontalRowInsets: clearRowBackground
-                            )
-                    }
+                    emptyStateView()
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .listRowInsets(.init(top: 20, leading: 0, bottom: 0, trailing: 0))
+                        .listRowBackground(Color.clear)
+                        .stackListStyle(.grouped)
+                }
+            }
+        } else if separateRowsIntoSections {
+            groupedSeparatedSections(rowStyle: rowStyle)
+        } else if #available(iOS 17, macOS 14, *) {
+            ForEach(groupedSections) { section in
+                Section(isExpanded: binding(for: section.id)) {
+                    groupedRows(section: section, rowStyle: rowStyle)
                 } header: {
-                    if !showEmptyState || rendersHeaderViewInSectionHeader {
-                        contentSectionHeader
-                    }
+                    Text(section.title).foregroundStyle(.secondary)
                 }
                 .headerProminence(.increased)
-            )
+            }
         } else {
-            if showEmptyState {
-                if #available(iOS 16, *) {
-                    sectionWithSpacing(
-                        Section {
-                            emptyStateView()
-                                .frame(maxHeight: .infinity, alignment: .top)
-                                .listRowInsets(.init(top: 20, leading: 0, bottom: 0, trailing: 0))
-                                .listRowBackground(Color.clear)
-                                .stackListStyle(.grouped)
-                        }
-                    )
+            ForEach(groupedSections) { section in
+                Section {
+                    groupedRows(section: section, rowStyle: rowStyle)
+                } header: {
+                    Text(section.title).bold().foregroundStyle(.secondary)
                 }
-            } else if separateRowsIntoSections {
-                ForEach(groupedSections) { section in
-                    groupedRows(section: section)
-                }
-            } else {
-                ForEach(groupedSections) { section in
-                    if #available(iOS 17, macOS 14, *) {
-                        sectionWithSpacing(
-                            Section(isExpanded: binding(for: section.id)) {
-                                groupedRows(section: section)
-                            } header: {
-                                Text(section.title)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .headerProminence(.increased)
-                        )
-                    } else {
-                        sectionWithSpacing(
-                            Section {
-                                groupedRows(section: section)
-                            } header: {
-                                Text(section.title)
-                                    .bold()
-                                    .foregroundStyle(.secondary)
-                            }
-                            .headerProminence(.increased)
-                        )
-                    }
-                }
+                .headerProminence(.increased)
             }
         }
     }
 
     public init(
         contents: [C],
+        sourceRevision: UUID? = nil,
         contentFilter: ((Int, C) async throws -> Bool)? = nil,
         sortOrder: ReaderContentSortOrder,
         includeSource: Bool,
@@ -1759,6 +1603,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
         self.contents = contents
+        self.sourceRevision = sourceRevision
         self.contentFilter = contentFilter
         self.sortOrder = sortOrder
         self.includeSource = includeSource
@@ -1787,13 +1632,16 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         self.supplementarySections = supplementarySections
         self.headerView = headerView
         self.emptyStateView = emptyStateView
-        _viewModel = StateObject(wrappedValue: ReaderContentListViewModel(initialContents: contents, sortOrder: sortOrder))
+        // The loader owns the first snapshot too: filters and transforms must
+        // finish before any input rows become visible.
+        _viewModel = StateObject(wrappedValue: ReaderContentListViewModel<C>())
     }
 }
 
 public extension ReaderContentList where SupplementarySections == EmptyView, Header == EmptyView, EmptyState == EmptyView {
     init(
         contents: [C],
+        sourceRevision: UUID? = nil,
         entrySelection: Binding<String?>,
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
@@ -1814,6 +1662,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
     ) {
         self.init(
             contents: contents,
+            sourceRevision: sourceRevision,
             contentFilter: contentFilter.map { contentFilter in
                 { _, content in
                     try await contentFilter(content)
@@ -1853,6 +1702,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
 
     init(
         contents: [C],
+        sourceRevision: UUID? = nil,
         contentFilter: ((Int, C) async throws -> Bool)? = nil,
         sortOrder: ReaderContentSortOrder,
         includeSource: Bool = false,
@@ -1879,6 +1729,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
     ) {
         self.init(
             contents: contents,
+            sourceRevision: sourceRevision,
             contentFilter: contentFilter,
             sortOrder: sortOrder,
             includeSource: includeSource,
@@ -1912,6 +1763,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
 public extension ReaderContentList where SupplementarySections == EmptyView {
     init(
         contents: [C],
+        sourceRevision: UUID? = nil,
         contentFilter: ((Int, C) async throws -> Bool)? = nil,
         sortOrder: ReaderContentSortOrder,
         includeSource: Bool,
@@ -1941,6 +1793,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
     ) {
         self.init(
             contents: contents,
+            sourceRevision: sourceRevision,
             contentFilter: contentFilter,
             sortOrder: sortOrder,
             includeSource: includeSource,
@@ -1973,6 +1826,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
 
     init(
         contents: [C],
+        sourceRevision: UUID? = nil,
         contentFilter: ((Int, C) async throws -> Bool)? = nil,
         sortOrder: ReaderContentSortOrder,
         includeSource: Bool,
@@ -2003,6 +1857,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
     ) {
         self.init(
             contents: contents,
+            sourceRevision: sourceRevision,
             contentFilter: contentFilter,
             sortOrder: sortOrder,
             includeSource: includeSource,
@@ -2046,20 +1901,32 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     let onContentSelected: ((C) -> Void)?
     let onContentAppear: ((C) -> Void)?
 
+    @ViewBuilder
     public var body: some View {
+        if #available(iOS 26, macOS 26, *) {
+            styledItems(rowStyle: ReaderContentModernRowStyle(
+                showSeparators: appearance.showSeparators,
+                useDefaultRowInsets: appearance.usesNativeRowInsets,
+                zeroHorizontalRowInsets: appearance.clearRowBackground
+            ))
+        } else {
+            styledItems(rowStyle: ReaderContentLegacyRowStyle(
+                showSeparators: appearance.showSeparators,
+                useDefaultRowInsets: appearance.usesNativeRowInsets
+            ))
+        }
+    }
+
+    private func styledItems<RowStyle: ViewModifier>(rowStyle: RowStyle) -> some View {
         ReaderContentInnerListItems(
             entrySelection: $entrySelection,
             includeSource: includeSource,
             appearance: appearance,
+            rowStyle: rowStyle,
             viewModel: viewModel,
             onRequestDelete: onRequestDelete,
             customMenuOptions: customMenuOptions,
             onContentAppear: onContentAppear
-        )
-        .readerContentListRowStyle(
-            showSeparators: appearance.showSeparators,
-            useDefaultRowInsets: appearance.usesNativeRowInsets,
-            zeroHorizontalRowInsets: appearance.clearRowBackground
         )
         .readerContentSelectionSync(
             viewModel: viewModel,
@@ -2067,10 +1934,6 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             enabled: true,
             onSelection: onContentSelected
         )
-        .onAppear {
-        }
-        .onDisappear {
-        }
     }
 
     public init(
@@ -2112,6 +1975,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
 public extension ReaderContentProtocol {
     static func readerContentListView<SupplementarySections: View, Header: View, EmptyState: View>(
         contents: [Self],
+        sourceRevision: UUID? = nil,
         contentFilter: ((Int, Self) async throws -> Bool)? = nil,
         sortOrder: ReaderContentSortOrder,
         entrySelection: Binding<String?>,
@@ -2135,6 +1999,7 @@ public extension ReaderContentProtocol {
     ) -> some View {
         ReaderContentList(
             contents: contents,
+            sourceRevision: sourceRevision,
             contentFilter: contentFilter,
             sortOrder: sortOrder,
             includeSource: includeSource,
@@ -2162,6 +2027,7 @@ public extension ReaderContentProtocol {
 
     static func readerContentListView<Header: View, EmptyState: View>(
         contents: [Self],
+        sourceRevision: UUID? = nil,
         contentFilter: ((Int, Self) async throws -> Bool)? = nil,
         sortOrder: ReaderContentSortOrder,
         entrySelection: Binding<String?>,
@@ -2184,6 +2050,7 @@ public extension ReaderContentProtocol {
     ) -> some View {
         readerContentListView(
             contents: contents,
+            sourceRevision: sourceRevision,
             contentFilter: contentFilter,
             sortOrder: sortOrder,
             entrySelection: entrySelection,
@@ -2209,6 +2076,7 @@ public extension ReaderContentProtocol {
 
     static func readerContentListView(
         contents: [Self],
+        sourceRevision: UUID? = nil,
         entrySelection: Binding<String?>,
         sortOrder: ReaderContentSortOrder,
         contentFilter: ((Self) async throws -> Bool)? = nil,
@@ -2219,6 +2087,7 @@ public extension ReaderContentProtocol {
     ) -> some View {
         ReaderContentList(
             contents: contents,
+            sourceRevision: sourceRevision,
             entrySelection: entrySelection,
             sortOrder: sortOrder,
             contentFilter: contentFilter,
@@ -2243,8 +2112,9 @@ private extension ReaderContentList {
     }
 
     func refreshGrouping() {
+        groupedContentRevision = viewModel.contentRevision
         guard let customGrouping else {
-            groupedSections = []
+            grouping = ReaderContentGroupingPresentation()
             sectionExpanded = [:]
             return
         }
@@ -2256,6 +2126,12 @@ private extension ReaderContentList {
         let validKeys = Set(newGroups.map(\.id))
         nextExpanded = nextExpanded.filter { validKeys.contains($0.key) }
         sectionExpanded = nextExpanded
-        groupedSections = newGroups
+#if os(iOS)
+        // Keep both layouts available when a parent changes presentation mode
+        // without reloading the content, including across an in-flight load.
+        grouping = ReaderContentGroupingPresentation(sections: newGroups)
+#else
+        grouping = ReaderContentGroupingPresentation(sections: newGroups, includesSeparatedRows: false)
+#endif
     }
 }

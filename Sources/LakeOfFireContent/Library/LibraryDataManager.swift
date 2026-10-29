@@ -119,17 +119,16 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
-    public lazy var systemScripts: [WebViewUserScript] = {
-        return [
-            Readability.shared.userScript,
-            ReadabilityImagesUserScript.shared.userScript,
-//            ReaderConsoleLogsUserScript.shared.userScript,
-//            ManabiReaderUserScript().userScript,
-//            YoutubeAdBlockUserScript.userScript,
-//            YoutubeAdSkipUserScript.userScript,
-//            YoutubeCaptionsUserScript.userScript,
-        ]
-    }()
+    /// Bundled resources have no dependency on a managed library or its Realm.
+    /// Materialize WebKit values on MainActor before the first navigation.
+    @MainActor
+    public static let bundledSystemScripts: [WebViewUserScript] = [
+        Readability.shared.userScript,
+        ReadabilityImagesUserScript.shared.userScript,
+    ]
+
+    @MainActor
+    public var systemScripts: [WebViewUserScript] { Self.bundledSystemScripts }
     
     public var needsSyncToAppServer: Bool {
         return false
@@ -1185,6 +1184,12 @@ public class LibraryDataManager: NSObject {
         var importedDirectories = importedDirectories
         var importedFeeds = importedFeeds
         var importedScripts = importedScripts
+        // Ignore script outlines and their containers before version/Realm work.
+        // Scripts shipped by the app are bundled outside the library system.
+        if opmlEntry.attributeStringValue("script") != nil
+            || opmlEntry.attributeBoolValue("isUserScriptList") == true {
+            return (importedCategories, importedDirectories, importedFeeds, importedScripts)
+        }
         var uuid: UUID?
         if let rawUUID = opmlEntry.attributeStringValue("uuid") {
             uuid = UUID(uuidString: rawUUID)
@@ -1232,37 +1237,6 @@ public class LibraryDataManager: NSObject {
                         feed.refreshChangeMetadata(explicitlyModified: true)
                     }
                     importedFeeds.append(feed)
-                }
-            }
-        } else if !(opmlEntry.attributeStringValue("script")?.isEmpty ?? true) {
-            if let uuid = uuid, let script = realm.objects(UserScript.self).filter({ $0.id == uuid }).first {
-                if script.opmlURL == download?.url || script.isDeleted {
-                    if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, script: script) {
-                        try Task.checkCancellation()
-//                        await realm.asyncRefresh()
-                        try await realm.asyncWritePreservingOwnership {
-                            try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
-                            try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
-                        }
-                    }
-                    importedScripts.append(script)
-                }
-            } else {
-                let script = UserScript()
-                if let uuid = uuid, script.realm == nil {
-                    script.id = uuid
-                    if let downloadURL = download?.url {
-                        script.opmlURL = downloadURL
-                    }
-                    try Task.checkCancellation()
-//                    await realm.asyncRefresh()
-                    try await realm.asyncWritePreservingOwnership {
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
-                        realm.add(script, update: .modified)
-                        script.refreshChangeMetadata(explicitlyModified: true)
-                        try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
-                    }
-                    importedScripts.append(script)
                 }
             }
         } else if !(opmlEntry.children?.isEmpty ?? true) {

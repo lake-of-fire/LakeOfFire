@@ -2,9 +2,63 @@ import BigSyncKit
 import RealmSwift
 import RealmSwiftGaps
 import XCTest
+import OPML
 @testable import LakeOfFireContent
 
 final class LibraryRegressionTests: XCTestCase {
+    @RealmBackgroundActor
+    func testPreviouslyImportedOPMLScriptsCannotExecuteButLocalScriptsCan() async throws {
+        let configuration = makeScriptConfiguration()
+        let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+        let library = LibraryConfiguration()
+        let imported = UserScript()
+        imported.script = "window.remoteScriptExecuted = true"
+        imported.opmlURL = URL(string: "https://example.com/defaults.opml")!
+        let local = UserScript()
+        local.script = "window.localScriptExecuted = true"
+        try realm.write {
+            realm.add(library)
+            realm.add([imported, local])
+            library.userScriptIDs.append(objectsIn: [imported.id, local.id])
+        }
+
+        XCTAssertNil(imported.getWebViewUserScript())
+        XCTAssertNotNil(local.getWebViewUserScript())
+        XCTAssertEqual(library.getActiveWebViewUserScripts()?.map(\.source), [local.script])
+        // Blocking execution does not destroy existing user/synced data.
+        XCTAssertFalse(imported.isDeleted)
+    }
+
+    @RealmBackgroundActor
+    func testOPMLScriptOutlinesAndScriptContainersAreIgnored() async throws {
+        let configuration = makeScriptConfiguration()
+        let originalConfiguration = LibraryDataManager.realmConfiguration
+        defer { LibraryDataManager.realmConfiguration = originalConfiguration }
+        LibraryDataManager.realmConfiguration = configuration
+        let manager = LibraryDataManager()
+        defer { manager.realmCancellables.forEach { $0.cancel() } }
+        let xml = """
+        <opml version="2.0"><head/><body>
+          <outline text="Remote script" uuid="\(UUID().uuidString)" script="window.remote=true"/>
+          <outline text="Script list" isUserScriptList="true">
+            <outline text="Nested script" uuid="\(UUID().uuidString)" script="window.nested=true"/>
+          </outline>
+        </body></opml>
+        """
+        let opml = try OPML(Data(xml.utf8))
+        for entry in opml.entries {
+            let (categories, directories, feeds, scripts) = try await manager.importOPMLEntry(
+                entry, opml: opml, download: nil, realmConfiguration: configuration
+            )
+            XCTAssertTrue(categories.isEmpty)
+            XCTAssertTrue(directories.isEmpty)
+            XCTAssertTrue(feeds.isEmpty)
+            XCTAssertTrue(scripts.isEmpty)
+        }
+        let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+        XCTAssertEqual(realm.objects(UserScript.self).count, 0)
+    }
+
     func test_scriptPublisherKeepsObservedRealmAfterConfigurationReplacement() async throws {
         try await verifyScriptPublisherKeepsObservedRealmAfterConfigurationReplacement()
     }

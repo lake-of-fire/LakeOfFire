@@ -7,7 +7,6 @@ import LakeOfFireCore
 import SwiftUIWebView
 import SwiftSoup
 import SwiftReadability
-import CryptoKit
 import RealmSwift
 import Combine
 import RealmSwiftGaps
@@ -79,117 +78,7 @@ private func readerFontCSSValues(horizontalFamily: String) -> (
     )
 }
 
-private struct ReaderModeSharedFontCSSValues: Equatable {
-    var horizontalFamily: String
-    var verticalFamily: String
-    var horizontalCSSValue: String
-    var verticalCSSValue: String
-}
-
-private struct ReaderModeSharedFontInlinePayload {
-    var combinedCSS: String
-    var bootstrapScript: String
-    var fontValues: ReaderModeSharedFontCSSValues
-}
-
-private struct ReaderModeSharedFontBlobPayload {
-    var base64CSS: String
-    var identity: String
-
-    init(base64CSS: String, identity: String) {
-        self.base64CSS = base64CSS
-        self.identity = identity
-    }
-}
-
-private enum ReaderModeSharedFontPayloadIdentity {
-    private static let hexDigits = Array("0123456789abcdef".utf8)
-
-    static func shortSHA256Hex(for payload: String) -> String {
-        let digest = SHA256.hash(data: Data(payload.utf8))
-        var hex = [UInt8]()
-        hex.reserveCapacity(16)
-        for byte in digest.prefix(8) {
-            hex.append(hexDigits[Int(byte >> 4)])
-            hex.append(hexDigits[Int(byte & 0x0F)])
-        }
-        return String(decoding: hex, as: UTF8.self)
-    }
-}
-
-private final class ReaderModeSharedFontInlinePayloadCache {
-    private let lock = NSLock()
-    private var cachedCSS: String?
-    private var cachedFontValues: ReaderModeSharedFontCSSValues?
-    private var cachedPayload: ReaderModeSharedFontInlinePayload?
-
-    func payload(css: String, fontValues: ReaderModeSharedFontCSSValues) -> ReaderModeSharedFontInlinePayload {
-        lock.lock()
-        if cachedCSS == css, cachedFontValues == fontValues, let cachedPayload {
-            lock.unlock()
-            return cachedPayload
-        }
-        lock.unlock()
-
-        let combinedCSS = readerModeSharedFontCSSWithVerticalAlias(css)
-        let bootstrapScript = """
-        {
-        const style = document.getElementById('mnb-custom-fonts-inline');
-        globalThis.manabiReaderFontCSSText = style?.textContent || '';
-        globalThis.manabiReaderFontInjectionMode = 'inline';
-        globalThis.manabiHorizontalFontFamilyName = \(readerModeJSONStringLiteral(fontValues.horizontalFamily));
-        globalThis.manabiVerticalFontFamilyName = \(readerModeJSONStringLiteral(fontValues.verticalFamily));
-        }
-        """
-        let payload = ReaderModeSharedFontInlinePayload(
-            combinedCSS: combinedCSS,
-            bootstrapScript: bootstrapScript,
-            fontValues: fontValues
-        )
-
-        lock.lock()
-        cachedCSS = css
-        cachedFontValues = fontValues
-        cachedPayload = payload
-        lock.unlock()
-        return payload
-    }
-}
-
-private final class ReaderModeSharedFontBlobPayloadCache {
-    private let lock = NSLock()
-    private var cachedBase64CSS: String?
-    private var cachedPayload: ReaderModeSharedFontBlobPayload?
-
-    func payload(base64CSS: String?) -> ReaderModeSharedFontBlobPayload? {
-        guard let base64CSS, !base64CSS.isEmpty else { return nil }
-        lock.lock()
-        if cachedBase64CSS == base64CSS, let cachedPayload {
-            lock.unlock()
-            return cachedPayload
-        }
-        lock.unlock()
-
-        let payload = ReaderModeSharedFontBlobPayload(
-            base64CSS: base64CSS,
-            identity: ReaderModeSharedFontPayloadIdentity.shortSHA256Hex(for: base64CSS)
-        )
-
-        lock.lock()
-        cachedBase64CSS = base64CSS
-        cachedPayload = payload
-        lock.unlock()
-        return payload
-    }
-}
-
 private let readerModeReadabilityCSS = Readability.shared.css
-private let readerModeSharedFontInlinePayloadCache = ReaderModeSharedFontInlinePayloadCache()
-private let readerModeSharedFontBlobPayloadCache = ReaderModeSharedFontBlobPayloadCache()
-private let readerModeSharedFontFamilyRegex = try! NSRegularExpression(
-    pattern: #"font-family:\s*['"]YuKyokasho['"]\s*;"#,
-    options: []
-)
 
 private enum ReaderModeJSONStringByte {
     static let backspace = UInt8(ascii: "\u{08}")
@@ -295,27 +184,405 @@ private func appendReaderModeJSONUnicodeEscape(_ byte: UInt8, to output: inout [
     output.append(ReaderModeJSONStringByte.hexDigits[Int(byte & 0xF)])
 }
 
-private func readerModeSharedFontCSSWithVerticalAlias(_ css: String) -> String {
-    let fullRange = NSRange(css.startIndex..<css.endIndex, in: css)
-    let yokoCSS = readerModeSharedFontFamilyRegex.stringByReplacingMatches(
-        in: css,
-        options: [],
-        range: fullRange,
-        withTemplate: "font-family: 'YuKyokasho Yoko';"
-    )
-    return yokoCSS == css ? css : css + "\n" + yokoCSS
+// Generated reader HTML already contains the small local font declarations.
+// Reader documents opened with a system font can install the local stylesheet
+// on first selection. Native callbacks join the same bounded promise.
+internal let sharedReaderFontInjectionJavaScript = #"""
+return (function installSharedReaderFont(allowRetry = false) {
+    const root = document.documentElement;
+    if (!root || window.location.href.startsWith('internal://local/load/reader')) return 'skipped';
+    if (!stylesheetURLTemplate) return 'skipped';
+    const mode = 'local-scheme';
+    const previous = globalThis.manabiReaderFontLoad;
+    // Native callbacks can arrive after settings selected another family.
+    // Joining a prior attempt must not overwrite that newer selection.
+    if (root.dataset.mnbHorizontalFontFamily
+        && root.dataset.mnbHorizontalFontFamily !== horizontalFontFamily) return previous?.promise || 'skipped';
+    const vertical = (!document.body && root.dataset.mnbInitialWritingDirection === 'vertical')
+        || document.body?.dataset.mnbWritingDirection === 'vertical'
+        || (document.body?.dataset.mnbWritingDirection !== 'horizontal'
+            && document.body?.classList.contains('reader-vertical-writing'));
+    const family = vertical ? verticalFontFamily : horizontalFontFamily;
+    const key = [mode, fontHash, family].join(':');
+    if (!allowRetry && previous?.key === key) return previous.promise;
+    // Once visible fallback has been admitted, keep typography stable until
+    // navigation. A commit/finish replay must not start a second font attempt.
+    const settledOutcome = root.dataset.mnbFontOutcome;
+    if (!allowRetry && settledOutcome && settledOutcome !== 'loaded') return previous?.promise || settledOutcome;
+    previous?.expire?.();
+    if (allowRetry) {
+        delete root.dataset.mnbFontOutcome;
+        const oldStyle = document.getElementById('mnb-custom-fonts-inline');
+        if (oldStyle?.tagName === 'LINK') oldStyle.remove();
+        else if (oldStyle?.tagName === 'STYLE' && oldStyle.disabled) {
+            // A failed CSSFontFace cannot be restarted by enabling its sheet.
+            // Recreate the declarations only for an explicit user retry.
+            const replacement = oldStyle.cloneNode(true);
+            replacement.disabled = false;
+            oldStyle.replaceWith(replacement);
+        }
+    }
+    root.dataset.mnbHorizontalFontFamily = horizontalFontFamily;
+    root.dataset.mnbVerticalFontFamily = verticalFontFamily;
+    globalThis.manabiHorizontalFontFamilyName = horizontalFontFamily;
+    globalThis.manabiVerticalFontFamilyName = verticalFontFamily;
+    // Once an attempt exists it owns the deadline. The initial HTML escape
+    // must not expire a later user-requested attempt in this same document.
+    clearTimeout(globalThis.manabiReaderFontGateFallbackTimer);
+    globalThis.manabiReaderFontGateFallbackTimer = null;
+
+    const ensureStyle = (desiredFamily = family) => {
+        const outcome = root.dataset.mnbFontOutcome;
+        if (outcome && outcome !== 'loaded') return null;
+        let style = document.getElementById('mnb-custom-fonts-inline');
+        if (stylesheetURLTemplate && style?.tagName === 'STYLE'
+            && style.dataset.mnbFontSource === 'local-scheme'
+            && style.dataset.mnbFontHash === fontHash) {
+            style.disabled = false;
+            style.dataset.mnbInjectedFontFamily = desiredFamily;
+            root.dataset.mnbInjectedFontFamily = desiredFamily;
+            root.dataset.mnbFontInjected = '1';
+            return style;
+        }
+        if (style?.dataset.mnbFontHash === fontHash
+            && style.dataset.mnbInjectedFontFamily === desiredFamily && !style.disabled) return style;
+        const href = stylesheetURLTemplate.replace('__MANABI_FONT_FAMILY__', encodeURIComponent(desiredFamily));
+        if (!style) {
+            style = document.createElement('link');
+            style.id = 'mnb-custom-fonts-inline';
+            style.rel = 'stylesheet';
+        }
+        // A newly navigated document can independently retry a disabled face
+        // forwarded from another document; settled attempts above stay closed.
+        style.disabled = false;
+        style.dataset.mnbFontHash = fontHash;
+        style.dataset.mnbInjectedFontFamily = desiredFamily;
+        style.dataset.mnbFontSource = mode;
+        if (style.href !== href) style.href = href;
+        root.dataset.mnbInjectedFontFamily = desiredFamily;
+        root.dataset.mnbFontInjected = '1';
+        if (!style.isConnected) (document.head || root).appendChild(style);
+        return style;
+    };
+    globalThis.manabiReaderFontInjectionMode = mode;
+    globalThis.manabiReaderFontCSSHash = fontHash;
+    globalThis.manabiEnsureReaderFontStyle = ensureStyle;
+    // Only an explicit font-setting change may reopen a settled attempt.
+    globalThis.manabiRestartReaderFontLoad = () => installSharedReaderFont(true);
+    // The font gate is an initial-presentation gate. A later settings change
+    // or differently keyed native replay must never conceal an already revealed
+    // document while its new font request waits (including across suspension).
+    if (root.dataset.mnbFontReady !== '1') {
+        root.dataset.mnbFontPending = '1';
+        root.dataset.mnbFontReady = '0';
+    }
+    const now = () => performance.now();
+    const startedAt = now();
+    const state = { key, promise: null, expire: null, cancel: null, timings: {} };
+    let timedOut = false;
+    let timer;
+    // Publish cancellation before deferring work: a same-turn settings change
+    // or retry must be able to retire this attempt before it installs a style.
+    const deadline = new Promise(resolve => {
+        state.expire = () => {
+            timedOut = true;
+            // Bound layout without discarding a face already loaded.
+            if (state.timings.fontLoadMs != null) {
+                state.timings.layoutDeadlineReached = 1;
+                resolve('loaded');
+            } else {
+                resolve('timeout');
+            }
+        };
+        state.cancel = () => { timedOut = true; resolve('unavailable'); };
+        timer = setTimeout(state.expire, 4000);
+    });
+    // Defer work one microtask so duplicate commit/finish calls can join it.
+    state.promise = Promise.resolve().then(async () => {
+        let removeListeners = () => {};
+        let removeDOMListener = () => {};
+        let installedStyle;
+        let outcome;
+        try {
+            const load = async () => {
+                if (timedOut || globalThis.manabiReaderFontLoad !== state) return 'unavailable';
+                const style = ensureStyle();
+                installedStyle = style;
+                if (!style) return 'unavailable';
+                // Forwarded data markers cannot prove readiness in this
+                // document. A parsed sheet must also match the current href:
+                // replacing href can temporarily retain the preceding sheet.
+                if (style.tagName === 'LINK' && style.sheet?.href !== style.href) {
+                    await new Promise((resolve, reject) => {
+                        const loaded = () => resolve();
+                        const failed = () => reject(new Error('stylesheet'));
+                        style.addEventListener('load', loaded, { once: true });
+                        style.addEventListener('error', failed, { once: true });
+                        removeListeners = () => {
+                            style.removeEventListener('load', loaded);
+                            style.removeEventListener('error', failed);
+                        };
+                    });
+                }
+                if (timedOut) return 'timeout';
+                // A stylesheet's absence used to make fonts.load resolve with
+                // zero faces. Never treat that as proof Kyokasho is available.
+                const faces = await document.fonts.load("500 1em '" + family + "'", '日本語');
+                if (timedOut) return 'timeout';
+                if (faces.length === 0) return 'unavailable';
+                state.timings.fontLoadMs = now() - startedAt;
+                // Ordinary generated articles reveal after font-dependent
+                // layout settles. EPUB retains its renderer's own layout gate.
+                if (root.dataset.mnbFontLayoutGate === '1') {
+                    if (document.readyState === 'loading') {
+                        await new Promise(resolve => {
+                            const ready = () => resolve();
+                            document.addEventListener('DOMContentLoaded', ready, { once: true });
+                            removeDOMListener = () => document.removeEventListener('DOMContentLoaded', ready);
+                        });
+                    }
+                    if (timedOut) return 'timeout';
+                    // WebKit's ready promise is gated on the load event, so
+                    // awaiting it during initial loading also waits on images.
+                    // The selected face is already loaded: settle its layout
+                    // directly while those unrelated resources remain pending.
+                    if (document.readyState === 'complete') await document.fonts.ready;
+                    if (timedOut) return 'timeout';
+                    const content = document.getElementById('reader-content') || document.body;
+                    content?.getBoundingClientRect();
+                }
+                state.timings.layoutMs = now() - startedAt - state.timings.fontLoadMs;
+                return 'loaded';
+            };
+            outcome = await Promise.race([deadline, load()]);
+        } catch (_) {
+            outcome = 'failed';
+        } finally {
+            clearTimeout(timer);
+            removeListeners();
+            removeDOMListener();
+            if (state.timings.fontLoadMs != null && state.timings.layoutMs == null) {
+                state.timings.layoutMs = now() - startedAt - state.timings.fontLoadMs;
+            }
+            state.expire = null;
+            state.cancel = null;
+        }
+        if (globalThis.manabiReaderFontLoad === state) {
+            // Disable before revealing fallback. Removing the node lets
+            // settings/direction synchronization recreate it and swap fonts.
+            if (outcome !== 'loaded') {
+                if (installedStyle) installedStyle.disabled = true;
+                // Forwarding can replace a pending node. Disable the current
+                // node too, so it cannot introduce a face after fallback.
+                const currentStyle = document.getElementById('mnb-custom-fonts-inline');
+                if (currentStyle) currentStyle.disabled = true;
+            }
+            root.dataset.mnbFontOutcome = outcome;
+            root.dataset.mnbFontReady = '1';
+            state.timings.revealMs = now() - startedAt;
+            delete root.dataset.mnbFontPending;
+            try { globalThis.manabiForwardReaderFontToEbookDocuments?.('font-ready'); } catch (_) {}
+            try { window.parent?.manabiForwardReaderFontToEbookDocuments?.('font-ready-child'); } catch (_) {}
+            window.__manabiPostReaderDocStateEvent?.('font-' + outcome);
+        }
+        return outcome;
+    });
+    globalThis.manabiReaderFontLoad = state;
+    return state.promise;
+})();
+"""#
+
+/// Starts the existing readiness promise while WebKit parses the final document.
+/// Commit/finish callbacks join this same attempt rather than transferring font data.
+internal func upsertLocalSharedReaderFontBootstrap(
+    in doc: SwiftSoup.Document,
+    pageURL: URL,
+    horizontalFontFamily: String,
+    fontAsset: SharedReaderFontAsset? = nil,
+    preloadsFont: Bool = false
+) throws {
+    guard let template = sharedReaderFontStylesheetURLTemplate(for: pageURL) else { return }
+    let values = readerFontCSSValues(horizontalFamily: horizontalFontFamily)
+    let body = doc.body()
+    let direction = try body?.attr("data-mnb-writing-direction")
+    let hasVerticalClass = (try body?.hasClass("reader-vertical-writing")) ?? false
+    let bodyIsEbook = (try body?.attr("data-is-ebook")) == "true"
+    let vertical = direction == "vertical" || (direction != "horizontal" && hasVerticalClass)
+    try doc.getElementsByTag("html").first()?.attr("data-mnb-initial-writing-direction", vertical ? "vertical" : "horizontal")
+    // A fresh generated document must not reuse serialized styles from an
+    // earlier attempt, including a disabled timeout link or Base64 payload.
+    try doc.select("#mnb-local-font-bootstrap, #mnb-local-font-preload, #mnb-custom-fonts-inline, #mnb-custom-fonts-inline-bootstrap").remove()
+    if pageURL.isEBookURL || bodyIsEbook {
+        try doc.getElementsByTag("html").first()?.removeAttr("data-mnb-font-layout-gate")
+    } else if pageURL.isReaderDocumentURL {
+        try doc.getElementsByTag("html").first()?.attr("data-mnb-font-layout-gate", "1")
+    }
+    if let fontAsset, fontAsset.supportsFamily(horizontalFontFamily),
+       let css = sharedReaderFontCSS(for: pageURL, asset: fontAsset) {
+        let style = try doc.createElement("style")
+        try style.attr("id", "mnb-custom-fonts-inline")
+        try style.attr("data-mnb-font-source", "local-scheme")
+        try style.attr("data-mnb-font-hash", "local")
+        try style.appendChild(DataNode(Array(css.utf8), doc.getBaseUriUTF8()))
+        try (doc.head() ?? doc).appendChild(style)
+        // Opt-in experiment only: do not enable without proving request reuse
+        // and a meaningful latency improvement in iOS WebKit.
+        if preloadsFont, let fontURL = sharedReaderFontFontURL(for: pageURL, asset: fontAsset) {
+            let preload = try doc.createElement("link")
+            try preload.attr("id", "mnb-local-font-preload")
+            try preload.attr("rel", "preload")
+            try preload.attr("as", "font")
+            try preload.attr("type", fontAsset.mimeType)
+            try preload.attr("crossorigin", "anonymous")
+            try preload.attr("href", fontURL.absoluteString)
+            try (doc.head() ?? doc).appendChild(preload)
+        }
+    }
+    let script = try doc.createElement("script")
+    try script.attr("id", "mnb-local-font-bootstrap")
+    let javascript = """
+    (() => {
+        const stylesheetURLTemplate = \(readerModeJSONStringLiteral(template));
+        const fontHash = 'local';
+        const horizontalFontFamily = \(readerModeJSONStringLiteral(values.horizontalFamily));
+        const verticalFontFamily = \(readerModeJSONStringLiteral(values.verticalFamily));
+        \(sharedReaderFontInjectionJavaScript)
+    })();
+    """
+    try script.appendChild(DataNode(Array(javascript.utf8), doc.getBaseUriUTF8()))
+    try (doc.head() ?? doc).appendChild(script)
 }
 
-internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) throws {
+/// Readability always owns its renderer origin. Provider referrers and resource
+/// context are supplied by the typed transports, never by changing this URL.
+internal func readerModeDocumentURL(for sourceURL: URL, in doc: SwiftSoup.Document) throws -> URL {
+    if sourceURL.isHTTP || sourceURL.isSnippetURL {
+        return ReaderContentLoader.readerDocumentURL(for: sourceURL) ?? sourceURL
+    }
+    return sourceURL
+}
+
+public enum ReaderStoredContentLoadOutcome: Sendable, Equatable {
+    case inapplicable
+    case accepted
+    case superseded
+}
+
+enum ReaderPreparedReadabilityDocumentError: Error {
+    case superseded
+}
+
+@MainActor
+internal func retrySupersededReadabilityPreparation(
+    operation: @MainActor () async throws -> Void
+) async throws {
+    for attempt in 1...3 {
+        try Task.checkCancellation()
+        do {
+            try await operation()
+            return
+        } catch ReaderPreparedReadabilityDocumentError.superseded {
+            ReaderLoadTrace.event("readerMode.preparationSuperseded", "attempt=\(attempt)")
+            guard attempt < 3 else { throw ReaderPreparedReadabilityDocumentError.superseded }
+        }
+    }
+}
+
+/// Installs a presentation-only gate in fresh Readability HTML. It is never
+/// cached as progress or used by EPUB. Layout remains measurable while hidden.
+internal func prepareReaderInitialArticlePresentation(in document: SwiftSoup.Document) throws {
+    guard let root = try document.select("html").first() else { return }
+    try root.attr("data-mnb-article-presentation", "pending")
+    try document.getElementById("mnb-initial-article-presentation-style")?.remove()
+    let style = try document.createElement("style")
+    try style.attr("id", "mnb-initial-article-presentation-style")
+    try style.text("html[data-mnb-article-presentation='pending'] body.readability-mode{visibility:hidden!important;opacity:0!important}")
+    try (document.head() ?? document).appendChild(style)
+    try document.getElementById("mnb-initial-article-presentation")?.remove()
+    let script = try document.createElement("script")
+    try script.attr("id", "mnb-initial-article-presentation")
+    let source = #"""
+    (() => {
+        const root = document.documentElement;
+        let deadline;
+        const finish = outcome => {
+            if (root.dataset.mnbArticlePresentation !== 'pending') return false;
+            clearTimeout(deadline);
+            if (outcome !== 'ready') {
+                // Visible fallback and browser history now own the viewport.
+                // A late native progress sample may hydrate, but must not jump it.
+                document.manabi_hasRecalledReadingPosition = true;
+                try { window.manabi_cancelPositionRecallPresentation?.(); } catch (_) {}
+            }
+            root.dataset.mnbArticlePresentation = outcome;
+            if (outcome === 'timeout') {
+                window.webkit?.messageHandlers?.manabiReaderPresentationSettled?.postMessage?.({
+                    windowURL: window.location.href,
+                    documentStartedAtMs: performance.timeOrigin,
+                    outcome,
+                });
+            }
+            window.dispatchEvent(new Event('manabiarticlepresentationchange'));
+            window.__manabiPostReaderDocStateEvent?.('article-' + outcome);
+            return true;
+        };
+        window.manabi_finishInitialArticlePresentation = finish;
+        // A missing native callback must not permanently conceal readable text.
+        deadline = setTimeout(() => finish('timeout'), 8000);
+        // BFCache preserves styles and DOM state. Never store a concealed page
+        // whose native initialization owner was retired by navigation away.
+        window.addEventListener('pagehide', () => finish('interrupted'), { once: true });
+    })();
+    """#
+    try script.appendChild(DataNode(Array(source.utf8), document.getBaseUriUTF8()))
+    try (document.head() ?? document).appendChild(script)
+}
+
+internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document, waitsForArticleLayout: Bool = false) throws {
     let gateCSS = """
     html[data-mnb-font-pending="1"] body.readability-mode {
         visibility: hidden !important;
+        opacity: 0 !important;
     }
     """
 
     let htmlElement = try doc.getElementsByTag("html").first()
     try htmlElement?.attr("data-mnb-font-pending", "1")
     try htmlElement?.attr("data-mnb-font-ready", "0")
+    try htmlElement?.removeAttr("data-mnb-font-outcome")
+    try htmlElement?.removeAttr("data-mnb-font-layout-gate")
+    if waitsForArticleLayout {
+        try htmlElement?.attr("data-mnb-font-layout-gate", "1")
+    }
+    try doc.select("#mnb-custom-fonts-inline, #mnb-custom-fonts-inline-bootstrap, #mnb-local-font-bootstrap, #mnb-local-font-preload").remove()
+
+    try doc.getElementById("mnb-custom-font-gate-fallback")?.remove()
+    let script = try doc.createElement("script")
+    try script.attr("id", "mnb-custom-font-gate-fallback")
+    let fallbackJavaScript = """
+    clearTimeout(globalThis.manabiReaderFontGateFallbackTimer);
+    globalThis.manabiReaderFontGateFallbackTimer = setTimeout(() => {
+        const root = document.documentElement;
+        if (root?.dataset.mnbFontPending !== '1') return;
+        // The visibility escape and injector settle the same attempt.
+        // Without this, an early escape can race a later font load.
+        const attempt = globalThis.manabiReaderFontLoad;
+        if (typeof attempt?.expire === 'function') {
+            attempt.expire();
+            return;
+        }
+        const style = document.getElementById('mnb-custom-fonts-inline');
+        if (style) style.disabled = true;
+        root.dataset.mnbFontOutcome = 'timeout';
+        root.dataset.mnbFontReady = '1';
+        delete root.dataset.mnbFontPending;
+        window.__manabiPostReaderDocStateEvent?.('font-timeout');
+    }, 4500);
+    """
+    // Script is raw text. Fragment parsing a detached script produces
+    // ordinary text nodes, whose arrow operators serialize as entities.
+    try script.appendChild(DataNode(Array(fallbackJavaScript.utf8), doc.getBaseUriUTF8()))
+    try (doc.head() ?? doc).appendChild(script)
 
     if let existingStyle = try doc.getElementById("mnb-custom-font-gate") {
         try existingStyle.text(gateCSS)
@@ -342,117 +609,6 @@ internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) thr
     try doc.appendChild(styleElement)
 }
 
-internal func upsertInlineSharedReaderFontCSS(
-    _ css: String,
-    in doc: SwiftSoup.Document,
-    horizontalFontFamily: String = "YuKyokasho"
-) throws {
-    guard !css.isEmpty else { return }
-    let rawFontValues = readerFontCSSValues(horizontalFamily: horizontalFontFamily)
-    let payload = readerModeSharedFontInlinePayloadCache.payload(
-        css: css,
-        fontValues: ReaderModeSharedFontCSSValues(
-            horizontalFamily: rawFontValues.horizontalFamily,
-            verticalFamily: rawFontValues.verticalFamily,
-            horizontalCSSValue: rawFontValues.horizontalCSSValue,
-            verticalCSSValue: rawFontValues.verticalCSSValue
-        )
-    )
-    let fontValues = payload.fontValues
-
-    let head: Element
-    if let existingHead = doc.head() {
-        head = existingHead
-    } else if let html = try doc.getElementsByTag("html").first() {
-        try html.prepend("<head></head>")
-        if let insertedHead = doc.head() {
-            head = insertedHead
-        } else {
-            head = try doc.appendElement("head")
-        }
-    } else {
-        head = try doc.appendElement("head")
-    }
-
-    let styleElement: Element
-    if let existingStyle = try doc.getElementById("mnb-custom-fonts-inline") {
-        styleElement = existingStyle
-    } else {
-        styleElement = try doc.createElement("style")
-        try styleElement.attr("id", "mnb-custom-fonts-inline")
-        try head.appendChild(styleElement)
-    }
-    try styleElement.attr("data-mnb-font-source", "inline")
-    try styleElement.text(payload.combinedCSS)
-
-    let scriptElement: Element
-    if let existingScript = try doc.getElementById("mnb-custom-fonts-inline-bootstrap") {
-        scriptElement = existingScript
-    } else {
-        scriptElement = try doc.createElement("script")
-        try scriptElement.attr("id", "mnb-custom-fonts-inline-bootstrap")
-        try head.appendChild(scriptElement)
-    }
-    try scriptElement.text(payload.bootstrapScript)
-
-    if let htmlElement = try doc.getElementsByTag("html").first() {
-        try htmlElement.attr("data-mnb-horizontal-font-family", fontValues.horizontalFamily)
-        try htmlElement.attr("data-mnb-vertical-font-family", fontValues.verticalFamily)
-        try htmlElement.attr("data-mnb-injected-font-family", fontValues.horizontalFamily)
-        try htmlElement.attr("data-mnb-font-injected", "1")
-        let existingStyle = (try? htmlElement.attr("style")) ?? ""
-        try htmlElement.attr("style", readerModeStyleDeclaration(
-            existingStyle,
-            additions: [
-                "--mnb-content-font": fontValues.horizontalCSSValue,
-                "--mnb-content-vertical-font": fontValues.verticalCSSValue,
-            ]
-        ))
-    }
-    if let bodyElement = doc.body() {
-        let existingStyle = (try? bodyElement.attr("style")) ?? ""
-        try bodyElement.attr("style", readerModeStyleDeclaration(
-            existingStyle,
-            additions: [
-                "--mnb-content-font": fontValues.horizontalCSSValue,
-                "--mnb-content-vertical-font": fontValues.verticalCSSValue,
-            ]
-        ))
-    }
-}
-
-private func readerModeStyleDeclaration(
-    _ style: String,
-    additions: [String: String]
-) -> String {
-    var declarations: [(String, String)] = []
-    let existingDeclarations = style
-        .split(separator: ";")
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }
-    let additionKeys = Set(additions.keys.map { $0.lowercased() })
-    for declaration in existingDeclarations {
-        guard let separator = declaration.firstIndex(of: ":") else {
-            declarations.append((declaration, ""))
-            continue
-        }
-        let name = declaration[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
-        if additionKeys.contains(name.lowercased()) {
-            continue
-        }
-        let value = declaration[declaration.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
-        declarations.append((name, value))
-    }
-    for (name, value) in additions.sorted(by: { $0.key < $1.key }) {
-        declarations.append((name, value))
-    }
-    return declarations
-        .map { name, value in
-            value.isEmpty ? "\(name);" : "\(name): \(value);"
-        }
-        .joined(separator: " ")
-}
-
 private let readabilityViewportMetaContent = "width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0"
 private let readabilityBylinePrefixRegex = try! NSRegularExpression(pattern: "^(by|par)\\s+", options: [.caseInsensitive])
 private let readerContentPublicationDateFallbackFormatter: DateFormatter = {
@@ -471,7 +627,7 @@ private let readabilityClassesToPreserve: [String] = [
     "wp-smiley",
 ]
 
-private enum SwiftReadabilityProcessingOutcome {
+enum SwiftReadabilityProcessingOutcome {
     case success(SwiftReadabilityProcessingResult)
     case unavailable
     case failed
@@ -495,7 +651,7 @@ private extension Optional where Wrapped == String {
     }
 }
 
-private struct SwiftReadabilityProcessingResult {
+struct SwiftReadabilityProcessingResult {
     let outputHTML: String
 }
 
@@ -637,6 +793,8 @@ private func formattedReaderContentPublicationDate(_ snapshot: ReaderContentPubl
 }
 
 internal func readerContentPublicationDateFallback(for url: URL) async -> String? {
+    let trace = ReaderLoadTrace.begin("readerMode.publicationDateFallback")
+    defer { trace?.end() }
     let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
     let snapshot = try? await { @RealmBackgroundActor () -> ReaderContentPublicationDateSnapshot? in
         let matches = try await ReaderContentLoader.loadAll(url: resolvedURL)
@@ -686,19 +844,29 @@ internal func buildCanonicalReadabilityHTML(
     publishedTime: String?,
     content: String,
     contentURL: URL,
-    hideReaderTitle: Bool = false
+    hideReaderTitle: Bool = false,
+    referrerPolicy: String? = nil,
+    resourceBaseURL: URL? = nil,
+    headerImageGeometry: ReaderImageGeometry? = nil
 ) -> String {
+    let resourceBase = resourceBaseURL.map { "<base href=\"\(escapeReadabilityHTMLAttribute($0.absoluteString))\">" } ?? ""
+    let referrerMeta = normalizedReaderReferrerPolicy(referrerPolicy).map { "<meta name=\"referrer\" content=\"\($0)\">" } ?? ""
     let resolvedTitle = escapeReadabilityText(title)
     let resolvedByline = escapeReadabilityText(normalizeReadabilityBylineText(byline))
-    let readerFontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double
+    let readerFontSize = readerStoredFontSize()
     let viewOriginal = isInternalReaderURL(contentURL) ? nil : "<a class=\"reader-view-original\" href=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\">View Original</a>"
+    let publishedTime = publishedTime?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let hasPublicationDate = !(publishedTime?.isEmpty ?? true)
+    let authorDivider = hasPublicationDate || viewOriginal != nil
+        ? "<span class=\"reader-byline-divider\" aria-hidden=\"true\">\u{00a0}·</span>" : ""
     let bylineLine = resolvedByline.isEmpty
         ? ""
-        : "<div id=\"reader-byline-line\" class=\"byline-line\"><span class=\"byline-label\">By</span> <span id=\"reader-byline\" class=\"byline\">\(resolvedByline)</span></div>"
-    let publicationDateItem = publishedTime.map { publishedTime in
+        : "<div id=\"reader-byline-line\" class=\"byline-line\"><span class=\"byline-label\">By</span> <span id=\"reader-byline\" class=\"byline\" data-mnb-explicit-divider=\"true\">\(resolvedByline)</span>\(authorDivider)</div>"
+    let publicationDateItem = publishedTime.flatMap { publishedTime -> String? in
+        guard hasPublicationDate else { return nil }
         let text = escapeReadabilityText(publishedTime)
         let accessibilityLabel = escapeReadabilityHTMLAttribute(
-            "Reader metadata date: \(publishedTime)"
+            "Date: \(publishedTime)"
         )
         return "<span id=\"reader-publication-date\" aria-label=\"\(accessibilityLabel)\">\(text)</span>"
     }
@@ -710,7 +878,7 @@ internal func buildCanonicalReadabilityHTML(
     let metaLine = metaItems.isEmpty
         ? ""
         : """
-        <div id="reader-meta-line" class="byline-meta-line">\(metaItems.joined(separator: "<span class=\"reader-meta-divider\">·</span>"))</div>
+        <div id="reader-meta-line" class="byline-meta-line">\(metaItems.joined(separator: "<span class=\"reader-meta-divider\" aria-hidden=\"true\">·</span>"))</div>
         """
     let actionLine = """
         <div id="reader-header-actions"></div>
@@ -723,6 +891,19 @@ internal func buildCanonicalReadabilityHTML(
         display: none !important;
     }
     """
+    // Owned documents recreate their trusted shell at final preparation.
+    // Keep canonical content small through storage, parsing and analysis.
+    // File-backed routes still require their existing inline presentation.
+    let usesOwnedDocument = contentURL.isHTTP || contentURL.isSnippetURL
+    let inlineStyles = usesOwnedDocument ? "" : """
+    <style type="text/css" id="swiftuiwebview-readability-styles">\(readerModeReadabilityCSS)
+    \(titleSuppressionCSS)</style>
+    """
+    let inlineScript = usesOwnedDocument ? "" : """
+    <script>
+        \(Readability.shared.scripts)
+    </script>
+    """
     let bodyClass = hideReaderTitle
         ? "readability-mode \(suppressionBodyClass)"
         : "readability-mode"
@@ -731,9 +912,10 @@ internal func buildCanonicalReadabilityHTML(
     <html>
         <head>
             <meta charset="utf-8">
+            \((try? headerImageGeometry?.metadataHTML()) ?? "")
+            \(referrerMeta)\(resourceBase)
             <meta name="viewport" content="\(readabilityViewportMetaContent)">
-            <style type="text/css" id="swiftuiwebview-readability-styles">\(readerModeReadabilityCSS)
-            \(titleSuppressionCSS)</style>
+            \(inlineStyles)
             <title>\(resolvedTitle)</title>
         </head>
         <body class="\(bodyClass)" style="\(escapeReadabilityHTMLAttribute(bodyStyle))" \(availabilityAttributes)>
@@ -748,9 +930,7 @@ internal func buildCanonicalReadabilityHTML(
             <div id="reader-content">
                 \(content)
             </div>
-            <script>
-                \(Readability.shared.scripts)
-            </script>
+            \(inlineScript)
         </body>
     </html>
     """
@@ -799,6 +979,8 @@ internal func recoverPersistedSnippetSourceHTMLForProcessing(_ html: String) -> 
     document.outputSettings().charset(.utf8)
 
     let generatedSidecarSelectors = [
+        "#mnb-initial-article-presentation",
+        "#mnb-initial-article-presentation-style",
         "script#mnb-segment-metadata",
         "script#mnb-segment-metadata-aggregate",
         "meta[name=mnb-segment-sidecar]",
@@ -833,6 +1015,7 @@ internal func recoverPersistedSnippetSourceHTMLForProcessing(_ html: String) -> 
         "data-mnb-native-processor-schema",
         "data-mnb-has-reader-segments",
         "data-mnb-seg-meta-token",
+        "data-mnb-article-presentation",
         "data-mnb-reader-render-ready",
         "data-mnb-reader-render-generation",
         "data-mnb-reader-mode-available",
@@ -934,8 +1117,14 @@ private enum ReaderSnippetFinalDocumentDiagnostics {
     }
 }
 
-private func stripRuntimeReadabilityAssets(from html: String) -> String {
-    guard hasCanonicalReadabilityMarkup(in: html),
+/// Removes regenerable reader assets before canonical HTML is stored. Final
+/// presentation sanitization and resource registration have their own boundary.
+internal func stripRuntimeReadabilityAssets(from html: String) -> String {
+    // Legacy caches and retained content with scripts/styles still use parsed
+    // cleanup. Already-clean canonical content needs no parse or serialization.
+    guard html.range(of: "<script", options: .caseInsensitive) != nil
+            || html.range(of: "<style", options: .caseInsensitive) != nil,
+          hasCanonicalReadabilityMarkup(in: html),
           let doc = try? SwiftSoup.parse(html) else {
         return html
     }
@@ -943,6 +1132,7 @@ private func stripRuntimeReadabilityAssets(from html: String) -> String {
     try? doc.select("script").remove()
     try? doc.select([
         "style#swiftuiwebview-readability-styles",
+        "style#mnb-reader-canvas",
         "style#mnb-mark-read-buttons-visibility-style",
         "style#mnb-readability-styles",
     ].joined(separator: ",")).remove()
@@ -1008,6 +1198,27 @@ internal func titleFromReadabilityHTML(_ html: String) -> String? {
     return normalisedTitle(candidate)
 }
 
+private func readerHeadingTextWithoutRuby(_ heading: SwiftSoup.Element?) -> String? {
+    guard let copy = heading?.copy() as? SwiftSoup.Element else { return nil }
+    // Annotations belong to the rendered heading, not its saved plain title.
+    try? copy.select("rt, rp").remove()
+    return try? copy.text()
+}
+
+/// Keep prepared lookup identities and ruby when a snippet's saved title is
+/// unchanged. Replacing its children here would make JavaScript process the
+/// same title again after native preparation and sidecar publication.
+@discardableResult
+internal func updateSnippetReaderTitleIfNeeded(
+    in document: SwiftSoup.Document,
+    title: String
+) throws -> Bool {
+    guard let heading = try document.getElementById("reader-title"),
+          readerHeadingTextWithoutRuby(heading) != title else { return false }
+    try heading.text(title)
+    return true
+}
+
 internal func titleFromReadabilityDocument(_ doc: SwiftSoup.Document) -> String? {
     func normalisedTitle(_ raw: String?) -> String? {
         let trimmed = (raw ?? "")
@@ -1015,12 +1226,12 @@ internal func titleFromReadabilityDocument(_ doc: SwiftSoup.Document) -> String?
         return trimmed.isEmpty ? nil : trimmed.truncate(36)
     }
 
-    if let readerTitleText = try? doc.getElementById("reader-title")?.text(),
+    if let readerTitleText = readerHeadingTextWithoutRuby(try? doc.getElementById("reader-title")),
        let title = normalisedTitle(readerTitleText) {
         return title
     }
 
-    if let headingText = try? doc.getElementsByTag("h1").first()?.text(),
+    if let headingText = readerHeadingTextWithoutRuby(try? doc.getElementsByTag("h1").first()),
        let title = normalisedTitle(headingText) {
         return title
     }
@@ -1143,54 +1354,97 @@ func buildSnippetCanonicalReadabilityHTML(
     )
 }
 
-private func rebuildCanonicalSnippetReadabilityHTML(
+/// Captured-body authority is separate from the presence of source HTML bytes.
+func shouldStorePreparedReaderHTML(for content: any ReaderContentProtocol) -> Bool {
+    let url = content.url
+    // FeedEntry's body policy is inherited from Feed. Capturing one article
+    // must neither replace its source entry nor change the entire feed policy.
+    guard !(content is FeedEntry), !url.isEBookURL, !url.isFileURL,
+          !url.isNativeReaderView, !url.isReaderFileURL else { return false }
+    // Summaries and metadata-only HTML have bytes but are not captured bodies.
+    return !content.rssContainsFullContent || (content.content?.isEmpty ?? true)
+}
+
+/// Enrich only our canonical head; interpreting the article body still has one
+/// parser owner. Replacing metadata also retires a previous image's dimensions.
+func canonicalHTMLPreservingImageGeometry(_ html: String, geometry: ReaderImageGeometry?,
+                                          sourceURL: URL) -> String {
+    guard let geometry, hasCanonicalReadabilityMarkup(in: html) else { return html }
+    return geometry.mergingIntoDocumentHead(html, sourceURL: sourceURL)
+}
+
+/// Immutable interpretation of one canonical document. The mutable parser tree
+/// stays on the caller's actor and never crosses an asynchronous boundary.
+struct ReaderCanonicalReadabilityContent: Sendable {
+    let title: String?
+    let fallbackTitle: String?
+    let byline: String?
+    let publicationDate: String?
+    let contentHTML: String
+    let referrerPolicy: String?
+    let resourceBaseURL: URL?
+    let headerImageGeometry: ReaderImageGeometry?
+}
+
+func extractCanonicalReadabilityContent(
+    html: String,
+    sourceURL: URL
+) -> ReaderCanonicalReadabilityContent? {
+    let trace = ReaderLoadTrace.begin("readerMode.canonicalInterpretation")
+    defer { trace?.end() }
+    guard let document = try? SwiftSoup.parse(html, sourceURL.absoluteString) else { return nil }
+    document.outputSettings().prettyPrint(pretty: false)
+    guard let rawContent = try? document.getElementById("reader-content")?.html(),
+          let content = trimmedNonEmptyReadabilityText(rawContent) else { return nil }
+    let declaredBase = try? document.select("base[href]").first()?.attr("href")
+    return ReaderCanonicalReadabilityContent(
+        title: try? document.getElementById("reader-title")?.text(trimAndNormaliseWhitespace: false),
+        fallbackTitle: titleFromReadabilityDocument(document)
+            ?? trimmedNonEmptyReadabilityText(readerHeadingTextWithoutRuby(document.body()))?.truncate(36),
+        byline: try? document.getElementById("reader-byline")?.text(trimAndNormaliseWhitespace: false),
+        publicationDate: try? document.getElementById("reader-publication-date")?.text(trimAndNormaliseWhitespace: false),
+        contentHTML: content,
+        referrerPolicy: try? readerDocumentReferrerPolicy(in: document),
+        resourceBaseURL: declaredBase.flatMap { URL(string: $0, relativeTo: sourceURL)?.absoluteURL },
+        headerImageGeometry: ReaderImageGeometry.metadata(in: document, sourceURL: sourceURL)
+    )
+}
+
+func rebuildCanonicalSnippetReadabilityHTML(
     html: String,
     contentURL: URL,
-    fallbackTitle: String?,
+    fallbackTitle: String? = nil,
     publishedTime: String? = nil,
     preferredTitle: String? = nil,
     hideReaderTitleOverride: Bool? = nil
 ) -> String? {
-    guard let document = try? SwiftSoup.parse(html) else {
-        return nil
-    }
-    let extractedTitle = (try? document.getElementById("reader-title")?.text(trimAndNormaliseWhitespace: false))
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-    let extractedByline = (try? document.getElementById("reader-byline")?.text(trimAndNormaliseWhitespace: false))
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-    let extractedPublicationDate = (try? document.getElementById("reader-publication-date")?.text(trimAndNormaliseWhitespace: false))
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-    let extractedContent = (try? document.getElementById("reader-content")?.html())
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-    guard let extractedContent, !extractedContent.isEmpty else {
-        return nil
-    }
-
+    guard let extracted = extractCanonicalReadabilityContent(html: html, sourceURL: contentURL) else { return nil }
     let resolvedTitle = trimmedNonEmptyReadabilityText(preferredTitle)
-        ?? trimmedNonEmptyReadabilityText(extractedTitle)
+        ?? trimmedNonEmptyReadabilityText(extracted.title)
         ?? trimmedNonEmptyReadabilityText(fallbackTitle)
+        ?? extracted.fallbackTitle
         ?? ""
     let sanitizedTitle = sanitizeReadabilityFragment(resolvedTitle)
-    let sanitizedByline = sanitizeReadabilityFragment(extractedByline ?? "")
+    let sanitizedByline = sanitizeReadabilityFragment(extracted.byline ?? "")
     let resolvedPublishedTime = trimmedNonEmptyReadabilityText(publishedTime)
-        ?? trimmedNonEmptyReadabilityText(extractedPublicationDate)
-    let sanitizedContent = sanitizeReadabilityFragment(extractedContent)
+        ?? trimmedNonEmptyReadabilityText(extracted.publicationDate)
+    let sanitizedContent = sanitizeReadabilityFragment(extracted.contentHTML)
     let shouldHideReaderTitle = hideReaderTitleOverride
         ?? ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
             resolvedTitle,
-            sourceHTML: extractedContent
+            sourceHTML: extracted.contentHTML
         )
-    guard !sanitizedContent.isEmpty else {
-        return nil
-    }
-
+    guard !sanitizedContent.isEmpty else { return nil }
     return buildCanonicalReadabilityHTML(
         title: sanitizedTitle,
         byline: sanitizedByline,
         publishedTime: resolvedPublishedTime,
         content: sanitizedContent,
         contentURL: contentURL.canonicalReaderContentURLForHotfix(),
-        hideReaderTitle: shouldHideReaderTitle
+        hideReaderTitle: shouldHideReaderTitle,
+        referrerPolicy: extracted.referrerPolicy,
+        resourceBaseURL: extracted.resourceBaseURL,
+        headerImageGeometry: extracted.headerImageGeometry
     )
 }
 
@@ -1211,50 +1465,78 @@ private func locallyRetrievableReaderHTML(
     return result
 }
 
-private func propagateReaderModeDefaults(
+/// Related-record defaults are durable bookkeeping, not a prerequisite for
+/// presenting the prepared article. Capture storage before queueing the write;
+/// a later account/store replacement must not redirect it into another Realm.
+func propagateReaderModeDefaults(
     for url: URL,
     primaryKey: String,
     readabilityHTML: String,
     fallbackTitle: String?,
-    derivedTitle: String? = nil
+    derivedTitle: String? = nil,
+    storage: ReaderContentLoader.DiscoveryStorage = .init()
 ) async {
     if url.isSnippetURL {
         return
     }
     let storageReadabilityHTML = stripRuntimeReadabilityAssets(from: readabilityHTML)
     let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(storageReadabilityHTML) ?? fallbackTitle
+    let trace = ReaderLoadTrace.begin("readerMode.defaultsPropagation")
+    var outcome = "failed"
+    defer { trace?.end(outcome) }
     do {
-        try await propagateReaderModeDefaultsOnBackgroundActor(
+        let changed = try await propagateReaderModeDefaultsOnBackgroundActor(
             for: url,
             primaryKey: primaryKey,
             readabilityHTML: storageReadabilityHTML,
-            resolvedTitle: resolvedTitle
+            resolvedTitle: resolvedTitle,
+            storage: storage
         )
+        outcome = "changed=\(changed)"
+    } catch is CancellationError {
+        outcome = "cancelled"
     } catch {
+        // This is an optional cache/default update. The original content
+        // remains available, and a later open can try again.
     }
 }
 
 @RealmBackgroundActor
-private func propagateReaderModeDefaultsOnBackgroundActor(
+func propagateReaderModeDefaultsOnBackgroundActor(
     for url: URL,
     primaryKey: String,
     readabilityHTML: String,
-    resolvedTitle: String?
-) async throws {
-    let relatedRecords = try await ReaderContentLoader.loadAll(url: url)
+    resolvedTitle: String?,
+    storage: ReaderContentLoader.DiscoveryStorage
+) async throws -> Int {
+    let relatedRecords = try await ReaderContentLoader.loadAll(
+        url: url, skipContentFiles: false, skipFeedEntries: true, storage: storage
+    )
 
     let writableRecords = relatedRecords.filter { $0.compoundKey != primaryKey && $0.realm != nil }
-    guard !writableRecords.isEmpty else {
-        return
-    }
-
+    let suppliesWebContent = !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView
+    let timestamp = Date()
+    var changed = 0
     for record in writableRecords {
-        guard let realm = record.realm else { continue }
-        try await realm.asyncWritePreservingOwnership {
+        func needsUpdate() -> Bool {
+            guard !record.isInvalidated, !record.isDeleted else { return false }
+            return !record.isReaderModeByDefault || record.isReaderModeAvailable
+                || (suppliesWebContent && (
+                    !record.rssContainsFullContent
+                        || (!url.isReaderFileURL && (record.content?.isEmpty ?? true))
+                        || (resolvedTitle != nil && record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            && record.title != resolvedTitle)
+                ))
+        }
+        guard needsUpdate(), let realm = record.realm else { continue }
+        let didChange = try await realm.asyncWritePreservingOwnership {
+            try Task.checkCancellation()
+            try storage.validate()
+            guard needsUpdate() else { return false }
             record.isReaderModeByDefault = true
             record.isReaderModeAvailable = false
-            if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
-                if !url.isReaderFileURL && (record.content?.isEmpty ?? true) {
+            if suppliesWebContent {
+                if shouldStorePreparedReaderHTML(for: record) {
                     record.html = readabilityHTML
                 }
                 if let resolvedTitle,
@@ -1263,9 +1545,12 @@ private func propagateReaderModeDefaultsOnBackgroundActor(
                 }
                 record.rssContainsFullContent = true
             }
-            record.refreshChangeMetadata(explicitlyModified: true)
+            record.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+            return true
         }
+        if didChange { changed += 1 }
     }
+    return changed
 }
 
 @MainActor
@@ -1276,12 +1561,15 @@ public final class ReaderModeLoadingState {
         public var lastRenderedURL: URL?
         public var expectedSyntheticReaderLoaderURL: URL?
         public var pendingReaderModeURL: URL?
+        public var originalHTMLFallbackURL: URL?
+        public var failedReaderModeURL: URL? = nil
 
         public static let empty = Snapshot(
             isReaderModeLoading: false,
             lastRenderedURL: nil,
             expectedSyntheticReaderLoaderURL: nil,
-            pendingReaderModeURL: nil
+            pendingReaderModeURL: nil,
+            originalHTMLFallbackURL: nil
         )
 
         public var hasRenderedReadabilityContent: Bool {
@@ -1298,18 +1586,33 @@ public final class ReaderModeLoadingState {
     public var expectedSyntheticReaderLoaderURL: URL? { snapshot.expectedSyntheticReaderLoaderURL }
     public var pendingReaderModeURL: URL? { snapshot.pendingReaderModeURL }
     public var hasRenderedReadabilityContent: Bool { snapshot.hasRenderedReadabilityContent }
+    public var originalHTMLFallbackURL: URL? { snapshot.originalHTMLFallbackURL }
+    public var failedReaderModeURL: URL? { snapshot.failedReaderModeURL }
+
+    public func hasFailedReaderModeLoad(for url: URL) -> Bool {
+        snapshot.failedReaderModeURL?.matchesReaderURL(url) == true
+    }
+
+    public func isShowingOriginalHTMLFallback(for url: URL) -> Bool {
+        guard !url.isReaderURLLoaderURL else { return false }
+        return snapshot.originalHTMLFallbackURL?.matchesReaderURL(url) == true
+    }
 
     fileprivate func set(
         isReaderModeLoading: Bool,
         lastRenderedURL: URL?,
         expectedSyntheticReaderLoaderURL: URL?,
-        pendingReaderModeURL: URL?
+        pendingReaderModeURL: URL?,
+        originalHTMLFallbackURL: URL?,
+        failedReaderModeURL: URL?
     ) {
         snapshot = Snapshot(
             isReaderModeLoading: isReaderModeLoading,
             lastRenderedURL: lastRenderedURL,
             expectedSyntheticReaderLoaderURL: expectedSyntheticReaderLoaderURL,
-            pendingReaderModeURL: pendingReaderModeURL
+            pendingReaderModeURL: pendingReaderModeURL,
+            originalHTMLFallbackURL: originalHTMLFallbackURL,
+            failedReaderModeURL: failedReaderModeURL
         )
     }
 }
@@ -1374,7 +1677,7 @@ public class ReaderModeViewModel: ObservableObject {
     public var ebookSectionPresentationProvider: EbookSectionPresentationProvider? = nil {
         willSet { processingDependencyWillChange() }
     }
-    public var nativeEbookSectionPrewarmer: ((URL, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil {
+    public var nativeEbookSectionPrewarmer: ((ReaderEBookServingLease, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil {
         willSet { processingDependencyWillChange() }
     }
     public var processReadabilityContent: ((String, URL, URL?, Bool, Bool, String?, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil {
@@ -1384,6 +1687,12 @@ public class ReaderModeViewModel: ObservableObject {
     /// canonical markup. A failed admission causes the caller to regenerate
     /// semantic content through its current readability processor.
     public var republishReaderModeRuntimeAuthority: ((SwiftSoup.Document, URL, URL?) async -> Bool)? = nil {
+        willSet { processingDependencyWillChange() }
+    }
+    /// Validates the provenance already emitted by the native processor at
+    /// final submission. A dictionary publication can supersede preparation
+    /// after processing returns but before its document reaches WebKit.
+    public var isPreparedReadabilityContentCurrent: (@MainActor (Data) -> Bool)? = nil {
         willSet { processingDependencyWillChange() }
     }
     public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil {
@@ -1396,11 +1705,123 @@ public class ReaderModeViewModel: ObservableObject {
         willSet { processingDependencyWillChange() }
     }
     public var navigator: WebViewNavigator?
+    private var resourcePresentation: ReaderDocumentPresentation?
+
+    func recordEmbedState(generation: UUID, registration: String, stage: String) {
+        guard resourcePresentation?.generation == generation,
+              let entry = ReaderDocumentResourceRegistry.shared.entry(for: registration), entry.generation == generation else {
+            ReaderLoadTrace.$operationID.withValue(resourcePresentation?.generation) {
+                ReaderLoadTrace.event("reader.embedStateRejected", "reason=retired")
+            }
+            return
+        }
+        guard ["dispatched", "unavailable", "initialized", "navigation-complete", "navigation-error", "retry", "resolver-fetch-failed", "resolver-response-failed", "resolver-data-invalid", "media-initialized", "media-playing", "media-paused", "media-ended", "media-error", "media-advanced"].contains(stage) else { return }
+        ReaderLoadTrace.$operationID.withValue(generation) {
+            ReaderLoadTrace.event("reader.embedState", "component=\(entry.diagnosticID) state=\(stage)")
+        }
+    }
+    @MainActor private weak var directLoadContent: ReaderContent?
+    @MainActor private weak var directLoadScriptCaller: WebViewScriptCaller?
+    @MainActor private weak var directLoadNavigator: WebViewNavigator?
+    @MainActor private var contentNavigationID: UUID?
+
+    @MainActor
+    func beginContentNavigation() -> UUID {
+        let id = UUID()
+        contentNavigationID = id
+        return id
+    }
+
+    @MainActor
+    func contentNavigationIsCurrent(_ id: UUID) -> Bool {
+        contentNavigationID == id
+    }
+
+    /// Native URL resolution begins before the navigator receives a request.
+    /// Deferred recovery must yield to that intent even for the same URL.
+    @MainActor
+    public func captureContentNavigationIntent() -> @MainActor @Sendable () -> Bool {
+        let id = contentNavigationID
+        return { [weak self] in
+            guard let self else { return false }
+            return self.contentNavigationID == id
+        }
+    }
+
+    @MainActor
+    public func bindDirectContentLoading(
+        readerContent: ReaderContent,
+        scriptCaller: WebViewScriptCaller,
+        navigator: WebViewNavigator
+    ) {
+        self.navigator = navigator
+        directLoadContent = readerContent
+        directLoadScriptCaller = scriptCaller
+        directLoadNavigator = navigator
+    }
+
+    /// Only an inapplicable request may select another route. An admitted
+    /// request retired during preparation must never dispatch an old loader.
+    @MainActor
+    public func loadStoredReaderContentIfPossible(
+        content: any ReaderContentProtocol,
+        navigator: WebViewNavigator,
+        forceReload: Bool = false,
+        recordHistoryVisit: Bool = true,
+        shouldLoad: @MainActor () -> Bool = { true }
+    ) async throws -> ReaderStoredContentLoadOutcome {
+        guard !Task.isCancelled, shouldLoad(),
+              !content.isInvalidated, !content.isDeleted else { return .superseded }
+        guard self.navigator === navigator, directLoadNavigator === navigator,
+              let readerContent = directLoadContent,
+              let scriptCaller = directLoadScriptCaller,
+              canDirectlyRenderStoredContent(content) else { return .inapplicable }
+        let sourceURL = content.url
+        let binding = scriptCaller.currentJavaScriptBindingToken
+        let before = navigator.debugLoadSnapshot
+        do {
+            try await readerContent.prepareForDisplay(content: content, recordHistoryVisit: recordHistoryVisit)
+        } catch is CancellationError {
+            return .superseded
+        }
+        let after = navigator.debugLoadSnapshot
+        guard !Task.isCancelled, shouldLoad(), self.navigator === navigator, directLoadNavigator === navigator,
+              directLoadContent === readerContent, directLoadScriptCaller === scriptCaller,
+              scriptCaller.currentJavaScriptBindingToken == binding,
+              readerContent.pageURL.matchesReaderURL(sourceURL),
+              let prepared = readerContent.content, !prepared.isInvalidated, !prepared.isDeleted,
+              prepared.url.matchesReaderURL(sourceURL), canDirectlyRenderStoredContent(prepared),
+              before.currentWebViewURL == after.currentWebViewURL,
+              before.lastRequestURL == after.lastRequestURL,
+              before.lastDataLoadBaseURL == after.lastDataLoadBaseURL,
+              before.lastHTMLBaseURL == after.lastHTMLBaseURL else {
+            ReaderLoadTrace.event("reader.directLoadSkipped", "reason=retired")
+            return .superseded
+        }
+        if forceReload { clearReadabilityCache(for: sourceURL) }
+        readerContent.isRenderingReaderHTML = true
+        let admitted = beginSyntheticLoadForCurrentContentIfPossible(readerContent: readerContent, scriptCaller: scriptCaller)
+        if admitted {
+            ReaderLoadTrace.event(forceReload ? "reader.reloadDispatched" : "reader.openDispatched", "loader=false mode=storedDirect")
+        } else {
+            readerContent.isRenderingReaderHTML = false
+        }
+        // This request already prepared the selected content. A cancellation
+        // at synchronous render admission retires it rather than choosing a
+        // second route against that prepared selection.
+        return admitted ? .accepted : .superseded
+    }
+
+    @MainActor
+    private func canDirectlyRenderStoredContent(_ content: any ReaderContentProtocol) -> Bool {
+        if content.url.isSnippetURL { return true }
+        guard content.url.isHTTP, content.isReaderModeByDefault, content.rssContainsFullContent,
+              let html = content.html, !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return !looksLikeStaleCachedCanonicalReadabilityHTML(html, url: content.url)
+    }
     public var defaultFontSize: Double?
     /// In-memory presentation state supplied by the app's settings owner.
     public var readerFontFamilyName = "YuKyokasho"
-    @Published public var sharedFontCSSBase64: String?
-    @Published public var sharedFontCSSBase64Provider: (() async -> String?)?
     @Published public var sharedReaderFontAsset: SharedReaderFontAsset?
     public var readerModeLoadCompletionHandler: ((URL) -> Void)?
     
@@ -1418,20 +1839,43 @@ public class ReaderModeViewModel: ObservableObject {
     @Published public private(set) var pendingReaderModeURL: URL? {
         didSet { updateLoadingStateSnapshot() }
     }
+    @Published public private(set) var originalHTMLFallbackURL: URL? {
+        didSet { updateLoadingStateSnapshot() }
+    }
+    @Published public private(set) var failedReaderModeURL: URL? {
+        didSet { updateLoadingStateSnapshot() }
+    }
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil
     @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil
     @Published var readabilityFrames = Set<WKFrameInfo>()
 
+    private func resetReadabilitySource() {
+        readabilityContent = nil
+        readabilityContainerSelector = nil
+        readabilityContainerFrameInfo = nil
+    }
+
     public var hasRenderedReadabilityContent: Bool { lastRenderedURL != nil }
 
     private func updateLoadingStateSnapshot() {
+#if DEBUG
+        let previousSnapshot = loadingState.snapshot
+#endif
         loadingState.set(
             isReaderModeLoading: isReaderModeLoading,
             lastRenderedURL: lastRenderedURL,
             expectedSyntheticReaderLoaderURL: expectedSyntheticReaderLoaderURL,
-            pendingReaderModeURL: pendingReaderModeURL
+            pendingReaderModeURL: pendingReaderModeURL,
+            originalHTMLFallbackURL: originalHTMLFallbackURL,
+            failedReaderModeURL: failedReaderModeURL
         )
+#if DEBUG
+        if previousSnapshot != loadingState.snapshot {
+            ReaderLoadTrace.event("readerMode.loadingStateAssigned",
+                                  "model=\(ObjectIdentifier(self)) loadingState=\(ObjectIdentifier(loadingState)) loading=\(isReaderModeLoading) pending=\(pendingReaderModeURL != nil) expected=\(expectedSyntheticReaderLoaderURL != nil)")
+        }
+#endif
     }
 
     public func shouldIgnoreHideNavigationDueToScrollForNativeWebChrome(
@@ -1495,11 +1939,13 @@ public class ReaderModeViewModel: ObservableObject {
 
     @MainActor
     public func beginReaderModeLoad(for url: URL, suppressSpinner: Bool = false) {
+        failedReaderModeURL = nil
+        originalHTMLFallbackURL = nil
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
         if !pendingMatches {
             if let expectedSyntheticReaderLoaderURL,
-               !urlsMatchWithoutHashForHotfix(expectedSyntheticReaderLoaderURL, canonicalURL) {
+               !expectedSyntheticReaderLoaderURL.matchesReaderURL(canonicalURL) {
                 self.expectedSyntheticReaderLoaderURL = nil
             }
             updatePendingReaderModeURL(canonicalURL)
@@ -1518,7 +1964,9 @@ public class ReaderModeViewModel: ObservableObject {
         if let url, let pendingReaderModeURL, !pendingKeysMatch(pendingReaderModeURL, url) {
             return
         }
+        ReaderLoadTrace.event("readerMode.loadCancelled", "loading=\(isReaderModeLoading) pending=\(pendingReaderModeURL != nil)")
         let completedURL = pendingReaderModeURL ?? url ?? lastRenderedURL
+        originalHTMLFallbackURL = nil
         if let url {
             cancelActiveRender(for: url)
         }
@@ -1552,7 +2000,7 @@ public class ReaderModeViewModel: ObservableObject {
         let matchesPending = pendingKeysMatch(pendingReaderModeURL, canonicalURL)
         let matchesLastRendered = pendingKeysMatch(lastRenderedURL, canonicalURL)
         let matchesExpected = expectedSyntheticReaderLoaderURL.map {
-            urlsMatchWithoutHashForHotfix($0, canonicalURL)
+            $0.matchesReaderURL(canonicalURL)
         } ?? false
         guard matchesPending || matchesLastRendered || matchesExpected else {
             return
@@ -1562,6 +2010,13 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
         }
+        completeRenderedReaderModeLoad(for: canonicalURL)
+    }
+
+    private func completeRenderedReaderModeLoad(for canonicalURL: URL) {
+        guard !hasCompletedReaderModeLoad(for: canonicalURL) else { return }
+        ReaderLoadTrace.event("readerMode.loadCompleted")
+        originalHTMLFallbackURL = nil
         updatePendingReaderModeURL(nil)
         expectedSyntheticReaderLoaderURL = nil
         readerModeLoading(false)
@@ -1587,12 +2042,12 @@ public class ReaderModeViewModel: ObservableObject {
         let matchesLastRendered = pendingKeysMatch(lastRenderedURL, canonicalURL)
         let matchesPending = pendingKeysMatch(pendingReaderModeURL, canonicalURL)
         let isHandling = isReaderModeHandlingURL(canonicalURL)
-        let shouldClear = matchesLastRendered || matchesPending || isHandling || readabilityContent != nil
+        let matchesFailed = failedReaderModeURL?.matchesReaderURL(canonicalURL) == true
+        let shouldClear = matchesLastRendered || matchesPending || isHandling || matchesFailed || readabilityContent != nil
         guard shouldClear else { return }
         cancelActiveRender(for: canonicalURL)
-        readabilityContent = nil
-        readabilityContainerSelector = nil
-        readabilityContainerFrameInfo = nil
+        if matchesFailed { failedReaderModeURL = nil }
+        resetReadabilitySource()
         expectedSyntheticReaderLoaderURL = nil
         if matchesLastRendered {
             lastRenderedURL = nil
@@ -1615,27 +2070,38 @@ public class ReaderModeViewModel: ObservableObject {
     ) -> Bool {
         let canonicalURL = pageURL.canonicalReaderContentURLForHotfix()
         guard hasReaderContent, !pageURL.isReaderURLLoaderURL else { return false }
+        if let pendingReaderModeURL, !pendingKeysMatch(pendingReaderModeURL, canonicalURL) {
+            return false
+        }
 
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
         let expectedMatches = expectedSyntheticReaderLoaderURL.map { urlsMatchWithoutHashForHotfix($0, pageURL) } ?? false
         let completedMatches = urlMatchesLastRendered(canonicalURL)
-        guard pendingMatches || expectedMatches || completedMatches,
-              isCurrentOrCompletedRenderReady(
+        // A current UUID proves this exact generated document's owner even
+        // if semantic navigation finish already cleared its transient flags.
+        // Legacy documents without a UUID still need a pending/rendered URL.
+        guard isCurrentOrCompletedRenderReady(
                 for: canonicalURL,
                 reportedGeneration: renderGeneration
-              ) else {
+              ), pendingMatches || expectedMatches || completedMatches || renderGeneration != nil else {
             return false
         }
 
+        let isReplay = hasCompletedReaderModeLoad(for: canonicalURL)
+        ReaderLoadTrace.$operationID.withValue(renderGeneration) {
+            ReaderLoadTrace.event("readerMode.renderReadyAccepted", "replay=\(isReplay)")
+        }
+        // Replays restore host state after attach/pageshow. They do not own a
+        // second navigation completion or native processing's loading state.
+        guard !isReplay else { return true }
         (committedNavigator ?? navigator)?.forceClearLoadingIndicators(
             reason: "readerMode.syntheticLoad.renderReady",
             pageURL: canonicalURL
         )
 
-        if expectedMatches {
-            expectedSyntheticReaderLoaderURL = nil
-        }
-        markReaderModeLoadComplete(for: canonicalURL)
+        // The document's validated ready marker is stronger than the raw
+        // readability buffer, which commit preparation deliberately clears.
+        completeRenderedReaderModeLoad(for: canonicalURL)
         return true
     }
 
@@ -1682,25 +2148,11 @@ public class ReaderModeViewModel: ObservableObject {
         return false
     }
 
-    func resolveSharedReaderFontCSSBase64() async -> String? {
-        if let sharedFontCSSBase64, !sharedFontCSSBase64.isEmpty {
-            return sharedFontCSSBase64
-        }
-        if let sharedFontCSSBase64Provider {
-            let base64 = await sharedFontCSSBase64Provider()
-            guard let base64, !base64.isEmpty else {
-                return nil
-            }
-            return base64
-        }
-        return nil
-    }
-
-    private func shouldUseDeferredSharedReaderFontGate(for pageURL: URL) async -> Bool {
-        if sharedReaderFontUsesLocalScheme(for: pageURL) {
-            return true
-        }
-        return false
+    nonisolated private static func shouldUseDeferredSharedReaderFontGate(
+        for pageURL: URL, fontFamilyName: String
+    ) -> Bool {
+        guard #available(iOS 16.4, macOS 14, *), fontFamilyName == "YuKyokasho" else { return false }
+        return sharedReaderFontUsesLocalScheme(for: pageURL)
     }
 
     private func evaluateReaderDocumentJavaScript(
@@ -1741,11 +2193,17 @@ public class ReaderModeViewModel: ObservableObject {
         return scriptCaller.currentJavaScriptBindingToken == bindingToken
     }
 
-    func injectSharedFontIfNeeded(
+    public func injectSharedFontIfNeeded(
         scriptCaller: WebViewScriptCaller,
         pageURL: URL,
         requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil
     ) async {
+        // Publisher documents keep their own typography. Only our resource-
+        // serving origins participate in the reader font lifecycle.
+        guard !pageURL.isReaderURLLoaderURL,
+              let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) else { return }
+        let trace = ReaderLoadTrace.begin("readerMode.fontInjection")
+        defer { trace?.end() }
         let bindingToken = bindingToken ?? scriptCaller.currentJavaScriptBindingToken
         guard pageURL.absoluteString != "about:blank" else {
             return
@@ -1753,145 +2211,18 @@ public class ReaderModeViewModel: ObservableObject {
         guard #available(iOS 16.4, macOS 14, *) else {
             return
         }
-        let fontValues = readerFontCSSValues(horizontalFamily: readerFontFamilyName)
-        if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
-            let js = """
-            (function() {
-                const postLog = (_message) => {};
-                const setFontPendingState = (pending) => {
-                    const root = document.documentElement;
-                    if (!root) return;
-                    if (pending) {
-                        root.dataset.mnbFontPending = '1';
-                        root.dataset.mnbFontReady = '0';
-                    } else {
-                        delete root.dataset.mnbFontPending;
-                        root.dataset.mnbFontReady = '1';
-                    }
-                    postLog('pending=' + (pending ? '1' : '0')
-                        + ' mode=local-scheme'
-                        + ' href=' + window.location.href
-                        + ' fontsStatus=' + (document.fonts?.status || 'nil'));
-                };
-                const resolveInitialStylesheetURL = (desiredFamily) => {
-                    const family = desiredFamily || 'YuKyokasho';
-                    return stylesheetURLTemplate.replace('__MANABI_FONT_FAMILY__', encodeURIComponent(family));
-                };
-                const ensureReaderFontStyle = (desiredFamily) => {
-                    const root = document.documentElement;
-                    if (!root) return null;
-                    const family = desiredFamily
-                        || root?.dataset?.mnbHorizontalFontFamily
-                        || globalThis.manabiHorizontalFontFamilyName
-                        || 'YuKyokasho';
-                    const stylesheetURL = resolveInitialStylesheetURL(family);
-                    let style = document.getElementById('mnb-custom-fonts-inline');
-                    if (!style) {
-                        style = document.createElement('link');
-                        style.id = 'mnb-custom-fonts-inline';
-                        style.rel = 'stylesheet';
-                        (document.head || document.documentElement).appendChild(style);
-                    }
-                    style.href = stylesheetURL;
-                    style.dataset.mnbInjectedFontFamily = family;
-                    style.dataset.mnbFontSource = 'local-scheme';
-                    root.dataset.mnbInjectedFontFamily = family;
-                    root.dataset.mnbFontInjected = '1';
-                    style.onload = () => postLog('stylesheetLoaded mode=local-scheme family=' + family + ' href=' + window.location.href);
-                    style.onerror = () => {
-                        postLog('stylesheetError mode=local-scheme family=' + family + ' href=' + window.location.href);
-                        setFontPendingState(false);
-                    };
-                    postLog('stylesheetPrepared mode=local-scheme family=' + family + ' href=' + window.location.href);
-                    return style;
-                };
-                globalThis.manabiReaderFontInjectionMode = 'local-scheme';
-                globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
-                let gateTimeout = null;
-                const scheduleGateTimeout = () => {
-                    if (gateTimeout) {
-                        clearTimeout(gateTimeout);
-                    }
-                    gateTimeout = setTimeout(() => {
-                        postLog('timeoutClear mode=local-scheme href=' + window.location.href);
-                        setFontPendingState(false);
-                    }, 4000);
-                };
-                const waitForFontReady = async (desiredFamily) => {
-                    const fontSet = document.fonts;
-                    if (!fontSet) return;
-                    if (desiredFamily && typeof fontSet.load === 'function') {
-                        try {
-                            await fontSet.load("1em '" + desiredFamily + "'");
-                        } catch (_) {}
-                    }
-                    if (typeof fontSet.ready === 'object' && fontSet.ready && typeof fontSet.ready.then === 'function') {
-                        try {
-                            await fontSet.ready;
-                        } catch (_) {}
-                    }
-                };
-                return (async () => {
-                    const root = document.documentElement;
-                    const horizontalFamily =
-                        typeof horizontalFontFamily !== 'undefined'
-                        ? horizontalFontFamily
-                        : arguments?.horizontalFontFamily;
-                    const verticalFamily =
-                        typeof verticalFontFamily !== 'undefined'
-                        ? verticalFontFamily
-                        : arguments?.verticalFontFamily;
-                    if (horizontalFamily) {
-                        globalThis.manabiHorizontalFontFamilyName = horizontalFamily;
-                        root.dataset.mnbHorizontalFontFamily = horizontalFamily;
-                    }
-                    if (verticalFamily) {
-                        globalThis.manabiVerticalFontFamilyName = verticalFamily;
-                        root.dataset.mnbVerticalFontFamily = verticalFamily;
-                    }
-                    const writingDirection =
-                        document.body?.dataset?.mnbWritingDirection
-                        || root.dataset.mnbWritingDirection
-                        || null;
-                    const desiredFamily =
-                        writingDirection === 'vertical'
-                        ? (root.dataset.mnbVerticalFontFamily || verticalFamily)
-                        : (root.dataset.mnbHorizontalFontFamily
-                        || globalThis.manabiHorizontalFontFamilyName
-                        || 'YuKyokasho');
-                    setFontPendingState(true);
-                    scheduleGateTimeout();
-                    ensureReaderFontStyle(desiredFamily);
-                    try { globalThis.manabiForwardReaderFontToEbookDocuments?.('readerMode-local-scheme-inject'); } catch (_) {}
-                    try { window.parent?.manabiForwardReaderFontToEbookDocuments?.('readerMode-local-scheme-inject-child'); } catch (_) {}
-                    if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
-                        window.manabiApplyDirectionalInjectedFont();
-                    }
-                    const resolvedFamily =
-                        document.documentElement?.dataset?.mnbInjectedFontFamily
-                        || desiredFamily
-                        || null;
-                    await waitForFontReady(resolvedFamily);
-                    if (gateTimeout) {
-                        clearTimeout(gateTimeout);
-                        gateTimeout = null;
-                    }
-                    postLog('fontsReady mode=local-scheme family=' + (resolvedFamily || 'nil') + ' href=' + window.location.href);
-                    setFontPendingState(false);
-                })().catch((e) => {
-                    if (gateTimeout) {
-                        clearTimeout(gateTimeout);
-                        gateTimeout = null;
-                    }
-                    postLog('error mode=local-scheme href=' + window.location.href + ' error=' + String(e));
-                    setFontPendingState(false);
-                });
-            })();
-            """
-            _ = try? await evaluateReaderDocumentJavaScript(
-                js,
+        // A downloaded Kyokasho face must not be relabeled as a selected
+        // system font. Those families are already available to WebKit.
+        guard sharedReaderFontAsset?.supportsFamily(readerFontFamilyName)
+                ?? (readerFontFamilyName == "YuKyokasho") else { return }
+        let fontFamilyName = readerFontFamilyName
+        let fontValues = readerFontCSSValues(horizontalFamily: fontFamilyName)
+        do {
+            let result = try await evaluateReaderDocumentJavaScript(
+                sharedReaderFontInjectionJavaScript,
                 arguments: [
                     "stylesheetURLTemplate": stylesheetURLTemplate,
+                    "fontHash": "local",
                     "horizontalFontFamily": fontValues.horizontalFamily,
                     "verticalFontFamily": fontValues.verticalFamily,
                 ],
@@ -1899,199 +2230,12 @@ public class ReaderModeViewModel: ObservableObject {
                 scriptCaller: scriptCaller,
                 requiring: bindingToken
             )
-            return
+            if let status = result as? String {
+                ReaderLoadTrace.event("readerMode.fontReadiness", "status=\(status) mode=local-scheme")
+            }
+        } catch {
+            ReaderLoadTrace.event("readerMode.fontReadiness", "status=\(error is CancellationError ? "cancelled" : "failed")")
         }
-
-        guard !pageURL.isReaderURLLoaderURL else {
-            return
-        }
-        guard let blobPayload = readerModeSharedFontBlobPayloadCache.payload(
-            base64CSS: await resolveSharedReaderFontCSSBase64()
-        ) else {
-            return
-        }
-        let fontHash = blobPayload.identity
-        let js = """
-            (function() {
-                const postLog = (_message) => {};
-                const isLoaderShellDocument = () => {
-                    const href = window.location.href || '';
-                    return href.startsWith('internal://local/load/reader');
-                };
-                const setFontPendingState = (pending) => {
-                    const root = document.documentElement;
-                    if (!root) return;
-                if (pending) {
-                    root.dataset.mnbFontPending = '1';
-                    root.dataset.mnbFontReady = '0';
-                } else {
-                    delete root.dataset.mnbFontPending;
-                    root.dataset.mnbFontReady = '1';
-                }
-                postLog('pending=' + (pending ? '1' : '0')
-                    + ' mode=blob'
-                    + ' href=' + window.location.href
-                    + ' fontsStatus=' + (document.fonts?.status || 'nil'));
-            };
-            const replaceFontBlob = (css, fontHash, desiredFamily) => {
-                if (!css) return null;
-                const resolvedCSS = desiredFamily
-                    ? css.replace(/font-family:\\s*['"][^'"]+['"]\\s*;/g, "font-family: '" + desiredFamily + "';")
-                    : css;
-                const blob = new Blob([resolvedCSS], { type: 'text/css' });
-                const nextBlobURL = URL.createObjectURL(blob);
-                const previousBlobURL = globalThis.manabiReaderFontCSSBlobURL || null;
-                globalThis.manabiReaderFontCSSBlobURL = nextBlobURL;
-                globalThis.manabiReaderFontCSSHash = fontHash;
-                globalThis.manabiReaderFontInjectionMode = 'blob';
-                if (previousBlobURL && previousBlobURL !== nextBlobURL) {
-                    try { URL.revokeObjectURL(previousBlobURL); } catch (_) {}
-                }
-                return nextBlobURL;
-                };
-                const ensureReaderFontStyle = (desiredFamily) => {
-                    if (isLoaderShellDocument()) {
-                        postLog('skipLoaderShell mode=blob href=' + window.location.href);
-                        return null;
-                    }
-                    const root = document.documentElement;
-                    if (!root) return null;
-                let style = document.getElementById('mnb-custom-fonts-inline');
-                if (style) return style;
-                const css = globalThis.manabiReaderFontCSSText || '';
-                if (!css) return null;
-                const blobURL = replaceFontBlob(css, fontHash, desiredFamily);
-                if (!blobURL) return null;
-                style = document.createElement('link');
-                style.id = 'mnb-custom-fonts-inline';
-                style.rel = 'stylesheet';
-                style.href = blobURL;
-                style.dataset.mnbFontHash = fontHash;
-                if (desiredFamily) {
-                    style.dataset.mnbInjectedFontFamily = desiredFamily;
-                }
-                style.onload = () => postLog('stylesheetLoaded mode=blob family=' + (desiredFamily || 'nil') + ' href=' + window.location.href);
-                style.onerror = () => {
-                    postLog('stylesheetError mode=blob family=' + (desiredFamily || 'nil') + ' href=' + window.location.href);
-                    setFontPendingState(false);
-                };
-                (document.head || document.documentElement).appendChild(style);
-                postLog('stylesheetPrepared mode=blob family=' + (desiredFamily || 'nil') + ' href=' + window.location.href);
-                return style;
-                };
-                if (isLoaderShellDocument()) {
-                    postLog('skipLoaderShell mode=blob href=' + window.location.href);
-                    return;
-                }
-                globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
-                let gateTimeout = null;
-            const scheduleGateTimeout = () => {
-                if (gateTimeout) {
-                    clearTimeout(gateTimeout);
-                }
-                gateTimeout = setTimeout(() => {
-                    postLog('timeoutClear mode=blob href=' + window.location.href);
-                    setFontPendingState(false);
-                }, 4000);
-            };
-            const waitForFontReady = async (desiredFamily) => {
-                const fontSet = document.fonts;
-                if (!fontSet) return;
-                if (desiredFamily && typeof fontSet.load === 'function') {
-                    try {
-                        await fontSet.load("1em '" + desiredFamily + "'");
-                    } catch (_) {}
-                }
-                if (typeof fontSet.ready === 'object' && fontSet.ready && typeof fontSet.ready.then === 'function') {
-                    try {
-                        await fontSet.ready;
-                    } catch (_) {}
-                }
-            };
-            return (async () => {
-                const root = document.documentElement;
-                const horizontalFamily =
-                    typeof horizontalFontFamily !== 'undefined'
-                    ? horizontalFontFamily
-                    : arguments?.horizontalFontFamily;
-                const verticalFamily =
-                    typeof verticalFontFamily !== 'undefined'
-                    ? verticalFontFamily
-                    : arguments?.verticalFontFamily;
-                if (horizontalFamily) {
-                    globalThis.manabiHorizontalFontFamilyName = horizontalFamily;
-                    root.dataset.mnbHorizontalFontFamily = horizontalFamily;
-                }
-                if (verticalFamily) {
-                    globalThis.manabiVerticalFontFamilyName = verticalFamily;
-                    root.dataset.mnbVerticalFontFamily = verticalFamily;
-                }
-                const writingDirection =
-                    document.body?.dataset?.mnbWritingDirection
-                    || root.dataset.mnbWritingDirection
-                    || null;
-                const desiredFamily =
-                    writingDirection === 'vertical'
-                    ? (root.dataset.mnbVerticalFontFamily || verticalFamily)
-                    : (root.dataset.mnbHorizontalFontFamily
-                    || globalThis.manabiHorizontalFontFamilyName
-                    || null);
-                setFontPendingState(true);
-                scheduleGateTimeout();
-                let style = ensureReaderFontStyle(desiredFamily);
-                if (!style) {
-                    const css = atob(fontCSSBase64);
-                    globalThis.manabiReaderFontCSSText = css;
-                    const blobURL = replaceFontBlob(css, fontHash, desiredFamily);
-                    style = document.createElement('link');
-                    style.id = 'mnb-custom-fonts-inline';
-                    style.rel = 'stylesheet';
-                    style.href = blobURL;
-                    style.dataset.mnbFontHash = fontHash;
-                    if (desiredFamily) {
-                        style.dataset.mnbInjectedFontFamily = desiredFamily;
-                    }
-                    (document.head || document.documentElement).appendChild(style);
-                    root.dataset.mnbFontInjected = '1';
-                }
-                if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
-                    window.manabiApplyDirectionalInjectedFont();
-                }
-                try { globalThis.manabiForwardReaderFontToEbookDocuments?.('readerMode-blob-inject'); } catch (_) {}
-                try { window.parent?.manabiForwardReaderFontToEbookDocuments?.('readerMode-blob-inject-child'); } catch (_) {}
-                const resolvedFamily =
-                    document.documentElement?.dataset?.mnbInjectedFontFamily
-                    || desiredFamily
-                    || null;
-                await waitForFontReady(resolvedFamily);
-                if (gateTimeout) {
-                    clearTimeout(gateTimeout);
-                    gateTimeout = null;
-                }
-                postLog('fontsReady mode=blob family=' + (resolvedFamily || 'nil') + ' href=' + window.location.href);
-                setFontPendingState(false);
-            })().catch((e) => {
-                if (gateTimeout) {
-                    clearTimeout(gateTimeout);
-                    gateTimeout = null;
-                }
-                postLog('error mode=blob href=' + window.location.href + ' error=' + String(e));
-                setFontPendingState(false);
-            });
-        })();
-        """
-        _ = try? await evaluateReaderDocumentJavaScript(
-            js,
-            arguments: [
-                "fontCSSBase64": blobPayload.base64CSS,
-                "fontHash": fontHash,
-                "horizontalFontFamily": fontValues.horizontalFamily,
-                "verticalFontFamily": fontValues.verticalFamily,
-            ],
-            duplicateInMultiTargetFrames: true,
-            scriptCaller: scriptCaller,
-            requiring: bindingToken
-        )
     }
     
     public func isReaderModeVisibleInMenu(content: any ReaderContentProtocol) -> Bool {
@@ -2181,6 +2325,11 @@ public class ReaderModeViewModel: ObservableObject {
         return pendingKeysMatch(lastRenderedURL, url)
     }
 
+    private func hasCompletedReaderModeLoad(for url: URL) -> Bool {
+        urlMatchesLastRendered(url) && pendingReaderModeURL == nil
+            && expectedSyntheticReaderLoaderURL == nil && !isReaderModeLoading
+    }
+
     private func hasActiveRender(for url: URL) -> Bool {
         let key = canonicalRenderKey(url)
         guard let task = activeRenderTaskByURL[key] else {
@@ -2192,6 +2341,19 @@ public class ReaderModeViewModel: ObservableObject {
             return false
         }
         return true
+    }
+
+    /// The active owner can adopt dictionary changes until it submits its
+    /// document. The final provenance check retries stale preparation; once
+    /// navigation is queued the normal publication refresh must reload it.
+    @MainActor
+    public func canAdoptDictionaryPublicationDuringPreparation(for url: URL) -> Bool {
+        (url.isHTTP || url.isSnippetURL)
+            && isPreparedReadabilityContentCurrent != nil
+            && pendingKeysMatch(pendingReaderModeURL, url)
+            && expectedSyntheticReaderLoaderURL == nil
+            && hasActiveRender(for: url)
+            && resourcePresentation?.generation != activeRenderGenerationByURL[canonicalRenderKey(url)]
     }
 
     private func ownsRender(for url: URL, generation: UUID) -> Bool {
@@ -2213,6 +2375,25 @@ public class ReaderModeViewModel: ObservableObject {
     ) {
         guard ownsRender(for: url, generation: generation) else { return }
         cancelReaderModeLoad(for: url, readerContent: readerContent)
+    }
+
+    /// Upstream work can be interrupted without cancelling the render's caller.
+    /// Retire that render explicitly instead of leaving restoration waiting for
+    /// a ready message from a document which was never loaded. Navigation and
+    /// superseded generations must not publish an error over their replacement.
+    @MainActor
+    func failReaderModeLoad(
+        for url: URL,
+        ifOwnedBy generation: UUID,
+        readerContent: ReaderContent
+    ) {
+        guard ownsRender(for: url, generation: generation),
+              readerContent.pageURL.matchesReaderURL(url) else { return }
+        let callerWasCancelled = Task.isCancelled
+        cancelReaderModeLoad(for: url, readerContent: readerContent)
+        guard !callerWasCancelled else { return }
+        failedReaderModeURL = url.canonicalReaderContentURLForHotfix()
+        ReaderLoadTrace.event("readerMode.loadFailed", "loading=\(isReaderModeLoading) pending=\(pendingReaderModeURL != nil) rendering=\(readerContent.isRenderingReaderHTML)")
     }
 
     private func markReaderModeLoadComplete(for url: URL, ifOwnedBy generation: UUID) {
@@ -2270,7 +2451,7 @@ public class ReaderModeViewModel: ObservableObject {
 
     @discardableResult
     @MainActor
-    private func startRenderTaskIfNeeded(
+    func startRenderTaskIfNeeded(
         for url: URL,
         operation: @escaping @ReaderViewModelActor (_ generation: UUID) async -> Void
     ) -> Bool {
@@ -2285,9 +2466,18 @@ public class ReaderModeViewModel: ObservableObject {
         let generation = UUID()
         activeRenderGenerationByURL[key] = generation
         completedRenderOwner = nil
+        ReaderLoadTrace.$operationID.withValue(generation) {
+            ReaderLoadTrace.event("readerMode.renderTaskScheduled")
+        }
         let task = Task { @ReaderViewModelActor [weak self] in
             guard let self else { return }
-            await operation(generation)
+            await ReaderLoadTrace.$operationID.withValue(generation) { @ReaderViewModelActor in
+                ReaderLoadTrace.event("readerMode.renderTaskStarted", "cancelled=\(Task.isCancelled)")
+                defer {
+                    ReaderLoadTrace.event("readerMode.renderTaskReturned", "cancelled=\(Task.isCancelled)")
+                }
+                await operation(generation)
+            }
             await self.finishRenderTask(for: canonicalURL, generation: generation)
         }
         activeRenderTaskByURL[key] = task
@@ -2317,6 +2507,8 @@ public class ReaderModeViewModel: ObservableObject {
 
     @MainActor
     private func resolveReaderModeRouteDecision(readerContent: ReaderContent) async -> ReaderModeRouteDecision {
+        let trace = ReaderLoadTrace.begin("readerMode.resolveRoute")
+        defer { trace?.end() }
         let activeReaderFileManager = readerFileManager ?? .shared
         if let content = try? await readerContent.getContent(),
            content.rssContainsFullContent,
@@ -2385,6 +2577,8 @@ public class ReaderModeViewModel: ObservableObject {
     
     @MainActor
     public func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
+        ReaderLoadTrace.event("readerMode.request",
+            "navigatorBound=\(navigator != nil) canEvaluate=\(scriptCaller.canEvaluateJavaScript)")
         guard let navigator else {
             let contentURL = readerContent.pageURL
             cancelReaderModeLoad(
@@ -2407,6 +2601,10 @@ public class ReaderModeViewModel: ObservableObject {
         navigator: WebViewNavigator
     ) {
         let contentURL = readerContent.pageURL
+        // Readiness can arrive before the active task finishes unwinding.
+        // Reject duplicates before they can rearm the loading state.
+        guard !hasActiveRender(for: contentURL) else { return }
+        let requestBindingToken = scriptCaller.currentJavaScriptBindingToken
         let cachedReadabilityContent = readabilityContent
         let cachedContainerSelector = readabilityContainerSelector
         let cachedContainerFrameInfo = readabilityContainerFrameInfo
@@ -2417,7 +2615,7 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
             let currentPageURL = await MainActor.run { readerContent.pageURL }
-            guard urlsMatchWithoutHashForHotfix(contentURL, currentPageURL) else {
+            guard contentURL.matchesReaderURL(currentPageURL) else {
                 await self.cancelReaderModeLoad(
                     for: contentURL,
                     ifOwnedBy: generation,
@@ -2429,6 +2627,7 @@ public class ReaderModeViewModel: ObservableObject {
             guard await self.isCurrentRender(for: contentURL, generation: generation) else {
                 return
             }
+            ReaderLoadTrace.event("readerMode.route", routeDecision.route.rawValue)
             switch routeDecision.route {
             case .localHTML:
                 await self.showReaderViewUsingSwiftProcessing(
@@ -2442,7 +2641,7 @@ public class ReaderModeViewModel: ObservableObject {
                 )
             case .capturedReadability:
                 guard let cachedReadabilityContent else {
-                    await self.cancelReaderModeLoad(
+                    await self.failReaderModeLoad(
                         for: contentURL,
                         ifOwnedBy: generation,
                         readerContent: readerContent
@@ -2463,13 +2662,13 @@ public class ReaderModeViewModel: ObservableObject {
                     let resolvedReadabilityContent = rebuildCanonicalSnippetReadabilityHTML(
                         html: cachedReadabilityContent,
                         contentURL: contentSnapshot?.url ?? contentURL,
-                        fallbackTitle: titleFromReadabilityHTML(cachedReadabilityContent) ?? contentSnapshot?.title,
+                        fallbackTitle: contentSnapshot?.title,
                         publishedTime: publicationDateFallback,
                         preferredTitle: contentSnapshot?.title,
                         hideReaderTitleOverride: contentSnapshot?.isTitlePrefixOfContent
                     )
                     guard let resolvedReadabilityContent else {
-                        await self.cancelReaderModeLoad(
+                        await self.failReaderModeLoad(
                             for: contentURL,
                             ifOwnedBy: generation,
                             readerContent: readerContent
@@ -2487,25 +2686,57 @@ public class ReaderModeViewModel: ObservableObject {
                         renderGeneration: generation
                     )
                 } catch is CancellationError {
-                    await self.cancelReaderModeLoad(
+                    await self.failReaderModeLoad(
                         for: contentURL,
                         ifOwnedBy: generation,
                         readerContent: readerContent
                     )
                 } catch {
                     print(error)
-                    await self.cancelReaderModeLoad(
+                    await self.failReaderModeLoad(
                         for: contentURL,
                         ifOwnedBy: generation,
                         readerContent: readerContent
                     )
                 }
             case .unavailable:
-                await self.cancelReaderModeLoad(
-                    for: contentURL,
-                    ifOwnedBy: generation,
-                    readerContent: readerContent
-                )
+                // A document-end readability message can be missed during
+                // startup. An explicit Reader request still owns the live
+                // source document; feed its HTML through the ordinary Swift
+                // pipeline rather than silently cancelling the request.
+                do {
+                    guard contentURL.isHTTP,
+                          let requestBindingToken else {
+                        throw CancellationError()
+                    }
+                    let snapshot = try await self.evaluateReaderDocumentJavaScript(
+                        "return { href: location.href, html: document.documentElement.outerHTML };",
+                        scriptCaller: scriptCaller,
+                        requiring: requestBindingToken
+                    ) as? [String: Any]
+                    guard await self.isCurrentRender(for: contentURL, generation: generation),
+                          let href = snapshot?["href"] as? String,
+                          let snapshotURL = URL(string: href),
+                          urlsMatchWithoutHashForHotfix(contentURL, snapshotURL),
+                          let html = snapshot?["html"] as? String,
+                          !html.isEmpty else {
+                        throw CancellationError()
+                    }
+                    await self.showReaderViewUsingSwiftProcessing(
+                        readerContent: readerContent,
+                        scriptCaller: scriptCaller,
+                        navigator: navigator,
+                        renderURL: contentURL,
+                        renderGeneration: generation,
+                        prefetchedLocalHTML: html
+                    )
+                } catch {
+                    await self.failReaderModeLoad(
+                        for: contentURL,
+                        ifOwnedBy: generation,
+                        readerContent: readerContent
+                    )
+                }
             }
         }
     }
@@ -2514,16 +2745,26 @@ public class ReaderModeViewModel: ObservableObject {
     public func beginSyntheticLoadForCurrentContentIfPossible(
         readerContent: ReaderContent,
         scriptCaller: WebViewScriptCaller
-    ) async -> Bool {
-        guard let content = try? await readerContent.getContent() else {
+    ) -> Bool {
+        // Admission consumes the already prepared selection synchronously so
+        // cancellation cannot interleave before its render owner is reserved.
+        guard !Task.isCancelled,
+              navigator != nil,
+              let content = readerContent.content,
+              !content.isInvalidated else {
             return false
         }
-        guard content.url.isSnippetURL else {
+        guard canDirectlyRenderStoredContent(content) else {
             return false
         }
         guard readerContent.pageURL.matchesReaderURL(content.url) else {
             return false
         }
+        guard !hasActiveRender(for: content.url) else { return true }
+        // A local-content intent must not adopt readability or frame selectors
+        // cached from the previously mounted document. The loader commit used
+        // to establish this same boundary before starting the Swift renderer.
+        resetReadabilitySource()
         showReaderView(readerContent: readerContent, scriptCaller: scriptCaller)
         return true
     }
@@ -2538,11 +2779,13 @@ public class ReaderModeViewModel: ObservableObject {
         prefetchedContent: (any ReaderContentProtocol)? = nil,
         prefetchedLocalHTML: String? = nil
     ) async {
+        let trace = ReaderLoadTrace.begin("readerMode.swiftProcessing")
+        defer { trace?.end() }
         let contentURL = renderURL
         guard isCurrentRender(for: contentURL, generation: renderGeneration) else {
             return
         }
-        guard urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL) else {
+        guard contentURL.matchesReaderURL(readerContent.pageURL) else {
             cancelReaderModeLoad(
                 for: contentURL,
                 ifOwnedBy: renderGeneration,
@@ -2594,20 +2837,21 @@ public class ReaderModeViewModel: ObservableObject {
             if hasCanonicalReadabilityMarkup(in: html) {
                 resolvedReadabilityHTML = rebuildCanonicalSnippetReadabilityHTML(
                     html: html,
-                    contentURL: content.url,
-                    fallbackTitle: titleFromReadabilityHTML(html)
+                    contentURL: content.url
                 )
             } else {
                 let publicationDateFallback = await readerContentPublicationDateFallback(for: content)
                 guard isCurrentRender(for: contentURL, generation: renderGeneration) else {
                     return
                 }
+                let extractionTrace = ReaderLoadTrace.begin("readerMode.readabilityPreparation")
                 let swiftReadability = await processReadabilityHTMLInSwift(
                     html: html,
                     url: content.url,
                     snippetPublishedTime: publicationDateFallback,
                     meaningfulContentMinChars: max(content.meaningfulContentMinLength, 1)
                 )
+                extractionTrace?.end()
                 switch swiftReadability {
                 case .success(let result):
                     resolvedReadabilityHTML = result.outputHTML
@@ -2635,24 +2879,16 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
 
-            readabilityContent = nil
-            let directHTML = prepareHTMLForDirectLoad(html)
-            guard isCurrentRender(for: contentURL, generation: renderGeneration) else {
-                return
-            }
-            if let htmlData = directHTML.data(using: .utf8) {
-                navigator.load(
-                    htmlData,
-                    mimeType: "text/html",
-                    characterEncodingName: "UTF-8",
-                    baseURL: content.url
-                )
-            } else {
-                navigator.loadHTML(directHTML, baseURL: content.url)
-            }
+            loadOriginalHTMLAfterReaderModeExtractionFailed(
+                html,
+                for: contentURL,
+                generation: renderGeneration,
+                readerContent: readerContent,
+                navigator: navigator
+            )
         } catch {
-            print(error)
-            cancelReaderModeLoad(
+            recordReaderRenderFailure(error, phase: .localHTML)
+            failReaderModeLoad(
                 for: contentURL,
                 ifOwnedBy: renderGeneration,
                 readerContent: readerContent
@@ -2660,6 +2896,40 @@ public class ReaderModeViewModel: ObservableObject {
         }
     }
     
+    @MainActor
+    @discardableResult
+    func loadOriginalHTMLAfterReaderModeExtractionFailed(
+        _ html: String,
+        for url: URL,
+        generation: UUID,
+        readerContent: ReaderContent,
+        navigator: WebViewNavigator
+    ) -> Bool {
+        guard isCurrentRender(for: url, generation: generation),
+              url.matchesReaderURL(readerContent.pageURL) else {
+            return false
+        }
+        let directHTML = prepareHTMLForDirectLoad(html)
+        readabilityContent = nil
+        // Original HTML cannot publish a generated Reader document's ready
+        // marker. Retire that wait before loading the fallback; navigation
+        // finish must not leave its overlay waiting for an impossible event.
+        cancelReaderModeLoad(for: url, ifOwnedBy: generation, readerContent: readerContent)
+        isReaderMode = false
+        originalHTMLFallbackURL = url
+        if let htmlData = directHTML.data(using: .utf8) {
+            navigator.load(
+                htmlData,
+                mimeType: "text/html",
+                characterEncodingName: "UTF-8",
+                baseURL: url
+            )
+        } else {
+            navigator.loadHTML(directHTML, baseURL: url)
+        }
+        return true
+    }
+
     /// `readerContent` is used to verify current reader state before loading processed `content`
     @MainActor
     internal func showReadabilityContent(
@@ -2672,11 +2942,38 @@ public class ReaderModeViewModel: ObservableObject {
         renderURL: URL,
         renderGeneration: UUID
     ) async throws {
+        try await retrySupersededReadabilityPreparation {
+            try await self.prepareAndShowReadabilityContent(
+                readerContent: readerContent,
+                readabilityContent: readabilityContent,
+                renderToSelector: renderToSelector,
+                in: frameInfo,
+                scriptCaller: scriptCaller,
+                navigator: navigator,
+                renderURL: renderURL,
+                renderGeneration: renderGeneration
+            )
+        }
+    }
+
+    @MainActor
+    private func prepareAndShowReadabilityContent(
+        readerContent: ReaderContent,
+        readabilityContent originalReadabilityContent: String,
+        renderToSelector: String?,
+        in frameInfo: WKFrameInfo?,
+        scriptCaller: WebViewScriptCaller,
+        navigator: WebViewNavigator,
+        renderURL: URL,
+        renderGeneration: UUID
+    ) async throws {
+        let trace = ReaderLoadTrace.begin("readerMode.render")
+        defer { trace?.end() }
         let requestedURL = renderURL
         guard isCurrentRender(for: requestedURL, generation: renderGeneration) else {
             return
         }
-        guard urlsMatchWithoutHashForHotfix(requestedURL, readerContent.pageURL) else {
+        guard requestedURL.matchesReaderURL(readerContent.pageURL) else {
             cancelReaderModeLoad(
                 for: requestedURL,
                 ifOwnedBy: renderGeneration,
@@ -2684,7 +2981,13 @@ public class ReaderModeViewModel: ObservableObject {
             )
             return
         }
-        guard let content = try await readerContent.getContent() else {
+        let resolvedContent: (any ReaderContentProtocol)?
+        do {
+            let resolutionTrace = ReaderLoadTrace.begin("readerMode.renderContentResolution")
+            defer { resolutionTrace?.end() }
+            resolvedContent = try await readerContent.getContent()
+        }
+        guard let content = resolvedContent else {
             print("No content set to show in reader mode")
             cancelReaderModeLoad(
                 for: requestedURL,
@@ -2697,23 +3000,34 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         let url = content.url
-        let renderBaseURL: URL
-        if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" || url.isSnippetURL {
-            renderBaseURL = url
-        } else if url.absoluteString == "about:blank" {
-            renderBaseURL = readerContent.pageURL
-        } else {
-            renderBaseURL = url
+        // URL-only feed images carry semantic geometry in existing HTML. Keep
+        // it when publisher extraction replaces a summary with canonical HTML.
+        // This insertion targets our own template, avoiding another body parse.
+        // The content accessor may decompress stored HTML. Read it once for
+        // this synchronous decision; the write still rechecks live state.
+        let sourceHTMLAtResolution = content.html
+        var sourceImageGeometry = ReaderImageGeometry.metadata(
+            inHTML: sourceHTMLAtResolution, matchingURL: content.imageUrl, sourceURL: url)
+        if sourceImageGeometry == nil, let imageURL = content.imageUrl, url.isHTTP {
+            let geometryTrace = ReaderLoadTrace.begin("readerMode.cachedImageGeometry")
+            sourceImageGeometry = try? await ReaderContentLoader.cachedFeedImageGeometry(
+                sourceURL: url, imageURL: imageURL)
+            geometryTrace?.end(sourceImageGeometry == nil ? "unavailable" : "matched")
+            guard !Task.isCancelled, isCurrentRender(for: requestedURL, generation: renderGeneration),
+                  !content.isInvalidated, !content.isDeleted, content.url == url else { return }
         }
-        let shouldStoreReaderHTML = !url.isEBookURL
-            && !url.isFileURL
-            && !url.isNativeReaderView
-            && !url.isReaderFileURL
-            && (content.content?.isEmpty ?? true)
+        let enrichedSourceHTML = sourceHTMLAtResolution.map {
+            canonicalHTMLPreservingImageGeometry($0, geometry: sourceImageGeometry, sourceURL: url)
+        }
+        let resolvedImageGeometry = sourceImageGeometry
+        let readabilityContent = canonicalHTMLPreservingImageGeometry(
+            originalReadabilityContent, geometry: sourceImageGeometry, sourceURL: url)
+        let documentSourceURL = url.absoluteString == "about:blank" ? readerContent.pageURL : url
+        let shouldStoreReaderHTML = shouldStorePreparedReaderHTML(for: content)
         let resolvedStoredHTML = shouldStoreReaderHTML ? stripRuntimeReadabilityAssets(from: readabilityContent) : nil
         let resolvedTitleIfNeeded: String? = {
             guard content.title.isEmpty else { return nil }
-            return (resolvedStoredHTML ?? content.html)?
+            return (resolvedStoredHTML ?? sourceHTMLAtResolution)?
                 .strippingHTML()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .components(separatedBy: "\n")
@@ -2721,7 +3035,7 @@ public class ReaderModeViewModel: ObservableObject {
                 .truncate(36) ?? ""
         }()
         let titleForDisplay = content.titleForDisplay
-        let needsAsyncWrite =
+        let needsAsyncWrite = !(content is FeedEntry) && (
             content.isReaderModeByDefault == false
             || content.isReaderModeAvailable == true
             || content.isReaderModeOfferHidden == true
@@ -2731,27 +3045,50 @@ public class ReaderModeViewModel: ObservableObject {
                 && !url.isNativeReaderView
                 && content.rssContainsFullContent == false
             )
-            || (resolvedStoredHTML != nil && content.html != resolvedStoredHTML)
-            || (resolvedTitleIfNeeded != nil && content.title != resolvedTitleIfNeeded)
+            || (resolvedStoredHTML != nil && sourceHTMLAtResolution != resolvedStoredHTML)
+            || enrichedSourceHTML != sourceHTMLAtResolution
+            || (resolvedTitleIfNeeded != nil && content.title != resolvedTitleIfNeeded))
 
         guard isCurrentRender(for: requestedURL, generation: renderGeneration) else {
             return
         }
         if needsAsyncWrite {
+            let metadataTrace = ReaderLoadTrace.begin("readerMode.primaryMetadataWrite")
+            defer { metadataTrace?.end() }
             try await content.asyncWrite { _, content in
-                content.isReaderModeByDefault = true
-                content.isReaderModeAvailable = false
-                content.isReaderModeOfferHidden = false
+                // Recheck after the actor hop/write queue: another owner may
+                // already have captured the body or supplied its title.
+                var changed = false
+                if !content.isReaderModeByDefault { content.isReaderModeByDefault = true; changed = true }
+                if content.isReaderModeAvailable { content.isReaderModeAvailable = false; changed = true }
+                if content.isReaderModeOfferHidden { content.isReaderModeOfferHidden = false; changed = true }
                 if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
-                    if let resolvedStoredHTML {
+                    if let resolvedStoredHTML, shouldStorePreparedReaderHTML(for: content),
+                       content.html != resolvedStoredHTML {
                         content.html = resolvedStoredHTML
+                        changed = true
                     }
-                    if let resolvedTitleIfNeeded {
+                    if let resolvedTitleIfNeeded, content.title.isEmpty, content.title != resolvedTitleIfNeeded {
                         content.title = resolvedTitleIfNeeded
+                        changed = true
                     }
-                    content.rssContainsFullContent = true
+                    if !content.rssContainsFullContent {
+                        content.rssContainsFullContent = true
+                        changed = true
+                    }
+                    // Merge into live HTML, never a body snapshot captured
+                    // before the feed read or writer suspension. This also
+                    // handles restoration/Reload, which need not record a visit.
+                    if !content.isDeleted, content.url == url,
+                       let geometry = resolvedImageGeometry, content.imageUrl == geometry.url,
+                       let currentHTML = content.html,
+                       ReaderImageGeometry.metadata(inHTML: currentHTML,
+                        matchingURL: geometry.url, sourceURL: url) == nil {
+                        let enriched = geometry.mergingIntoDocumentHead(currentHTML, sourceURL: url)
+                        if enriched != currentHTML { content.html = enriched; changed = true }
+                    }
                 }
-                content.refreshChangeMetadata(explicitlyModified: true)
+                if changed { content.refreshChangeMetadata(explicitlyModified: true) }
             }
         }
 
@@ -2764,11 +3101,18 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
-        let imageURLToDisplay = try await content.imageURLToDisplay()
+        let imageURLToDisplay: URL?
+        do {
+            let imageTrace = ReaderLoadTrace.begin("readerMode.headerImageResolution")
+            defer { imageTrace?.end() }
+            imageURLToDisplay = try await content.imageURLToDisplay()
+        }
         guard isCurrentRender(for: requestedURL, generation: renderGeneration) else {
             return
         }
         let processReadabilityContent = processReadabilityContent
+        let fontFamilyName = readerFontFamilyName
+        let fontAsset = sharedReaderFontAsset
         let processHTMLBytes = processHTMLBytes
         let processHTML = processHTML
         let republishReaderModeRuntimeAuthority = republishReaderModeRuntimeAuthority
@@ -2778,8 +3122,10 @@ public class ReaderModeViewModel: ObservableObject {
         let snippetNeedsClipboardIndicator = content.needsClipboardIndicator
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
         let tracksReadingProgress = content.tracksReadingProgress
-        let primaryRecordCompoundKey = await MainActor.run { content.compoundKey }
+        let primaryRecordCompoundKey = content.compoundKey
         
+        let processingTrace = ReaderLoadTrace.begin("readerMode.processAndSerialize")
+        defer { processingTrace?.end() }
         try await { @ReaderViewModelActor [weak self] in
             guard let self,
                   await self.isCurrentRender(
@@ -2831,7 +3177,7 @@ public class ReaderModeViewModel: ObservableObject {
 
             guard var doc else {
                 print("Error: Unexpectedly failed to receive doc")
-                await self.cancelReaderModeLoad(
+                await self.failReaderModeLoad(
                     for: requestedURL,
                     ifOwnedBy: renderGeneration,
                     readerContent: readerContent
@@ -2867,12 +3213,17 @@ public class ReaderModeViewModel: ObservableObject {
                 }
             }
             let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
-            await propagateReaderModeDefaults(
+            // A structured child keeps bookkeeping owned by this render, but
+            // lets final document delivery proceed while the writer is busy.
+            // Early return/cancellation cancels and joins this child as well.
+            let defaultsStorage = ReaderContentLoader.DiscoveryStorage()
+            async let defaultsPropagation: Void = propagateReaderModeDefaults(
                 for: url,
                 primaryKey: primaryRecordCompoundKey,
                 readabilityHTML: readabilityContent,
                 fallbackTitle: titleForDisplay,
-                derivedTitle: derivedTitle
+                derivedTitle: derivedTitle,
+                storage: defaultsStorage
             )
             guard await self.isCurrentRender(
                 for: requestedURL,
@@ -2903,9 +3254,7 @@ public class ReaderModeViewModel: ObservableObject {
                     snippetRawTitle,
                     needsClipboardIndicator: snippetNeedsClipboardIndicator
                 )
-                if let titleElement = try? doc.getElementById("reader-title") {
-                    try? titleElement.text(cleanedSnippetTitle)
-                }
+                try? updateSnippetReaderTitleIfNeeded(in: doc, title: cleanedSnippetTitle)
                 if let body = doc.body() {
                     let existingClassNames = ((try? body.className()) ?? "")
                         .split(separator: " ")
@@ -2940,16 +3289,50 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 return styleHTML.isEmpty ? readerModeReadabilityCSS : styleHTML
             }()
-            if await shouldUseDeferredSharedReaderFontGate(for: url) {
-                try? upsertDeferredSharedReaderFontGate(in: doc)
+            let renderBaseURL = try readerModeDocumentURL(for: documentSourceURL, in: doc)
+            let presentation: ReaderDocumentPresentation?
+            if renderBaseURL.isReaderDocumentURL {
+                presentation = try prepareReaderOwnedDocument(doc, sourceURL: url, generation: renderGeneration)
+            } else { presentation = nil }
+            let fontPageURL = renderBaseURL.isReaderDocumentURL ? renderBaseURL : (frameInfo?.isMainFrame == false ? url : renderBaseURL)
+            let fontPreparation = ReaderLoadTrace.begin("readerMode.fontPreparation")
+            do {
+                if Self.shouldUseDeferredSharedReaderFontGate(for: fontPageURL, fontFamilyName: fontFamilyName) {
+                    try upsertDeferredSharedReaderFontGate(in: doc,
+                        waitsForArticleLayout: !processedIsEbook && !url.isEBookURL && (renderBaseURL.isReaderDocumentURL || frameInfo?.isMainFrame != false))
+                    if (renderBaseURL.isReaderDocumentURL || frameInfo?.isMainFrame != false), sharedReaderFontUsesLocalScheme(for: renderBaseURL) {
+                        try upsertLocalSharedReaderFontBootstrap(in: doc, pageURL: renderBaseURL,
+                                                               horizontalFontFamily: fontFamilyName,
+                                                               fontAsset: fontAsset)
+                    }
+                }
+                fontPreparation?.end("status=prepared")
+            } catch {
+                fontPreparation?.end("status=failed")
+                recordReaderRenderFailure(error, phase: .fontPreparation)
+                throw error
             }
 
+            // The app's Swift processor requests this boundary. Recreate its
+            // bundled code only after publisher/cached scripts were removed.
+            if !processedIsEbook, !url.isEBookURL,
+               try doc.select("html").first()?.attr("data-mnb-article-presentation") == "pending" {
+                try prepareReaderInitialArticlePresentation(in: doc)
+            }
             markReaderRenderReady(
                 in: doc,
-                renderGeneration: frameInfo?.isMainFrame == false ? nil : renderGeneration
+                renderGeneration: frameInfo?.isMainFrame == false && !renderBaseURL.isReaderDocumentURL ? nil : renderGeneration
             )
 
-            let serializedHTMLBytes = try doc.outerHtmlUTF8()
+            ReaderLoadTrace.event("readerMode.nativeProcessingFinished")
+            let serializedHTMLBytes: [UInt8] = try {
+                let serializationTrace = ReaderLoadTrace.begin("readerMode.serialize")
+                var outcome = "interrupted"
+                defer { serializationTrace?.end(outcome) }
+                let bytes = try doc.outerHtmlUTF8()
+                outcome = "bytes=\(bytes.count)"
+                return bytes
+            }()
 
             var transformedHTMLBytes = serializedHTMLBytes
             var transformedHTMLString: String?
@@ -2981,8 +3364,8 @@ public class ReaderModeViewModel: ObservableObject {
                 }
             }
 
-            if renderBaseURL.scheme?.lowercased() == "internal",
-               frameInfo?.isMainFrame != false {
+            if !url.isHTTP, renderBaseURL.scheme?.lowercased() == "internal",
+               renderBaseURL.isReaderDocumentURL || frameInfo?.isMainFrame != false {
                 transformedHTMLBytes = Array(externalizingCanonicalReaderSegmentSidecar(
                     in: transformedHTMLBytes,
                     scheme: .internalReader
@@ -2997,7 +3380,7 @@ public class ReaderModeViewModel: ObservableObject {
             let transformedContentForFrameInjection: String?
             let transformedBodyClassesForFrameInjection: String?
             let transformedStyleTextForFrameInjection: String?
-            if let frameInfo, !frameInfo.isMainFrame {
+            if let frameInfo, !frameInfo.isMainFrame, !renderBaseURL.isReaderDocumentURL {
                 let transformedContent = transformedHTMLString ?? String(decoding: transformedHTMLBytes, as: UTF8.self)
                 transformedContentForFrameInjection = transformedContent
                 if processHTML == nil {
@@ -3049,7 +3432,7 @@ public class ReaderModeViewModel: ObservableObject {
                     )
                     return
                 }
-                if let frameInfo = frameInfo, !frameInfo.isMainFrame {
+                if let frameInfo = frameInfo, !frameInfo.isMainFrame, !renderBaseURL.isReaderDocumentURL {
                     let transformedContent = transformedContentForFrameInjection ?? ""
                     let transformedBodyClasses = transformedBodyClassesForFrameInjection ?? "readability-mode"
                     let transformedStyleText = shouldInjectProcessedStyles
@@ -3124,29 +3507,60 @@ public class ReaderModeViewModel: ObservableObject {
                     ) else {
                         return
                     }
-                    expectSyntheticReaderLoaderCommit(for: renderBaseURL)
-                    navigator.load(
-                        transformedHTMLData,
-                        mimeType: "text/html",
-                        characterEncodingName: "UTF-8",
-                        baseURL: renderBaseURL
-                    )
+                    if renderBaseURL.isReaderDocumentURL,
+                       let isPreparedReadabilityContentCurrent,
+                       !isPreparedReadabilityContentCurrent(transformedHTMLData) {
+                        throw ReaderPreparedReadabilityDocumentError.superseded
+                    }
+                    ReaderLoadTrace.event("readerMode.loadFinalHTML", "bytes=\(transformedHTMLBytes.count) origin=\(renderBaseURL.isReaderDocumentURL ? "reader" : "source") attached=\(navigator.isReadyForDirectLoad)")
+                    // Ends when native submission returns, independently of
+                    // WebKit's later policy callback, resource request and commit.
+                    let submission = ReaderLoadTrace.begin("readerMode.navigationSubmission")
+                    defer { submission?.end() }
+                    if let presentation {
+                        let existingURL = navigator.currentDocumentURL
+                        let replacesCurrent = existingURL?.isReaderDocumentURL == true
+                            && existingURL?.matchesReaderURL(url) == true
+                        let documentURL = replacesCurrent ? existingURL! : readerPresentationDocumentURL(baseURL: renderBaseURL)
+                        try presentation.installDocument(transformedHTMLData, at: documentURL)
+                        resourcePresentation = presentation
+                        expectSyntheticReaderLoaderCommit(for: documentURL)
+                        if !replacesCurrent || !navigator.reloadCurrentDocument(at: documentURL) {
+                            navigator.load(URLRequest(url: documentURL, cachePolicy: .reloadIgnoringLocalCacheData))
+                        }
+                    } else {
+                        expectSyntheticReaderLoaderCommit(for: renderBaseURL)
+                        navigator.load(transformedHTMLData, mimeType: "text/html", characterEncodingName: "UTF-8", baseURL: renderBaseURL)
+                    }
+                    if ReaderLoadTrace.isRecording("readerMode.navigationMainQueueTurn") {
+                        let operationID = ReaderLoadTrace.operationID
+                        // Observation only: separate main-queue congestion from
+                        // waiting for WebKit, without sampling the process.
+                        DispatchQueue.main.async {
+                            ReaderLoadTrace.$operationID.withValue(operationID) {
+                                ReaderLoadTrace.event("readerMode.navigationMainQueueTurn")
+                            }
+                        }
+                    }
                 }
 //                try await { @MainActor in
 //                    readerModeLoading(false)
 //                }()
             }()
+            await defaultsPropagation
         }()
 
     }
 
     @ReaderViewModelActor
-    private func processReadabilityHTMLInSwift(
+    func processReadabilityHTMLInSwift(
         html: String,
         url: URL,
         snippetPublishedTime: String? = nil,
         meaningfulContentMinChars: Int
     ) async -> SwiftReadabilityProcessingOutcome {
+        let trace = ReaderLoadTrace.begin("readerMode.readabilityExtraction")
+        defer { trace?.end() }
         guard canHaveReadabilityContent(for: url) else {
             return .unavailable
         }
@@ -3166,11 +3580,13 @@ public class ReaderModeViewModel: ObservableObject {
             charThreshold: max(meaningfulContentMinChars, 1),
             classesToPreserve: readabilityClassesToPreserve
         )
-        let parser = SwiftReadability.Readability(
-            html: normalizedHTML,
-            url: url,
-            options: options
-        )
+        guard let sourceDocument = try? SwiftSoup.parse(normalizedHTML, url.absoluteString) else { return .failed }
+        if url.isHTTP {
+            try? normalizeReaderDocumentResourceURLs(in: sourceDocument, sourceURL: url)
+        }
+        let sourceReferrerPolicy = try? readerDocumentReferrerPolicy(in: sourceDocument)
+        let sourceImageGeometry = ReaderImageGeometry.metadata(in: sourceDocument, sourceURL: url)
+        let parser = SwiftReadability.Readability(document: sourceDocument, options: options)
         guard let result = try? parser.parse() else {
             if url.isSnippetURL,
                let snippetHTML = buildSnippetCanonicalReadabilityHTML(
@@ -3195,7 +3611,9 @@ public class ReaderModeViewModel: ObservableObject {
             byline: stripTemplateTagsForReadability(result.byline ?? ""),
             publishedTime: resolvedPublishedTime,
             content: rawContent,
-            contentURL: url
+            contentURL: url,
+            referrerPolicy: sourceReferrerPolicy,
+            headerImageGeometry: sourceImageGeometry
         )
         return .success(SwiftReadabilityProcessingResult(outputHTML: outputHTML))
     }
@@ -3207,11 +3625,10 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller,
         navigator: WebViewNavigator
     ) async throws {
-        readabilityContainerFrameInfo = nil
-        readabilityContent = nil
-        readabilityContainerSelector = nil
-//        contentRules = nil
+        let commitTrace = ReaderLoadTrace.begin("readerMode.navigationCommittedCallback")
+        defer { commitTrace?.end() }
         try Task.checkCancellation()
+        if !newState.pageURL.isReaderDocumentURL { resourcePresentation = nil }
 
         guard let content = readerContent.content else {
             print("No content to display in ReaderModeViewModel onNavigationCommitted")
@@ -3226,33 +3643,75 @@ public class ReaderModeViewModel: ObservableObject {
         let committedURL = content.url
         guard committedURL.matchesReaderURL(newState.pageURL) else {
             print("URL mismatch in ReaderModeViewModel onNavigationCommitted", committedURL, newState.pageURL)
+            // Cleanup belongs to this callback's document, not the content
+            // selected by a newer restore while the callback was suspended.
             cancelReaderModeLoad(
-                for: committedURL,
+                for: newState.pageURL,
                 readerContent: readerContent
             )
-            return
+            throw CancellationError()
         }
         try Task.checkCancellation()
+        if !newState.pageURL.isReaderDocumentURL && !newState.pageURL.isReaderURLLoaderURL {
+            failedReaderModeURL = nil
+        }
+        resetReadabilitySource()
 
         let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
-        await injectSharedFontIfNeeded(
-            scriptCaller: scriptCaller,
-            pageURL: committedURL,
-            requiring: navigationBindingToken
-        )
+        // A URL request from Back/Forward or WebKit reload needs reconstruction.
+        // Only the prepared final-document navigation carries an expected
+        // commit. Later requests reconstruct through the themed shell.
+        var restoresReaderDocument = false
+        if newState.pageURL.isReaderDocumentURL,
+           !expectsSyntheticReaderLoaderCommit(for: newState.pageURL) {
+            let documentState = try await evaluateReaderDocumentJavaScript(
+                """
+                return {shell: document.body?.dataset.mnbReaderShell === '1',
+                    generation: document.documentElement?.dataset.mnbReaderRenderGeneration || ''};
+                """,
+                scriptCaller: scriptCaller, requiring: navigationBindingToken
+            ) as? [String: Any]
+            try Task.checkCancellation()
+            guard ownsReaderDocumentBinding(navigationBindingToken, scriptCaller: scriptCaller),
+                  readerContent.content?.url.matchesReaderURL(committedURL) == true else { throw CancellationError() }
+            // Back/Forward can restore real HTML from a retired render, rather
+            // than requesting the shell. Only the native render owner can admit
+            // that document's messages and sidecars.
+            let generation = (documentState?["generation"] as? String).flatMap(UUID.init(uuidString:))
+            restoresReaderDocument = documentState?["shell"] as? Bool == true
+                || generation == nil
+                || resourcePresentation?.generation != generation
+                || !isCurrentOrCompletedRenderReady(for: committedURL, reportedGeneration: generation)
+        }
+        let requiresDocumentSetup = !newState.pageURL.isReaderURLLoaderURL
+            && !restoresReaderDocument
+            && newState.pageURL.absoluteString != "about:blank"
+        if requiresDocumentSetup {
+            await injectSharedFontIfNeeded(
+                scriptCaller: scriptCaller,
+                pageURL: newState.pageURL,
+                requiring: navigationBindingToken
+            )
+        } else if newState.pageURL.isReaderURLLoaderURL {
+            ReaderLoadTrace.event("readerMode.loaderDocumentSetupSkipped")
+        } else {
+            ReaderLoadTrace.event("readerMode.blankDocumentSetupSkipped")
+        }
         try Task.checkCancellation()
         guard ownsReaderDocumentBinding(
             navigationBindingToken,
             scriptCaller: scriptCaller
-        ) else {
+        ), readerContent.content?.url.matchesReaderURL(committedURL) == true,
+           readerContent.pageURL.matchesReaderURL(committedURL) else {
             throw CancellationError()
         }
-        if !scriptCaller.hasAsyncCaller {
-        } else {
+        if requiresDocumentSetup, scriptCaller.canEvaluateJavaScript {
             do {
+                let paginationTrace = ReaderLoadTrace.begin("readerMode.paginationSetup")
+                defer { paginationTrace?.end(Task.isCancelled ? "cancelled" : "returned") }
                 _ = try await evaluateReaderDocumentJavaScript(
                     "window.paginationTrackingBookKey = bookKey;",
-                    arguments: ["bookKey": newState.pageURL.absoluteString],
+                    arguments: ["bookKey": committedURL.absoluteString],
                     duplicateInMultiTargetFrames: true,
                     scriptCaller: scriptCaller,
                     requiring: navigationBindingToken
@@ -3266,7 +3725,8 @@ public class ReaderModeViewModel: ObservableObject {
         guard ownsReaderDocumentBinding(
             navigationBindingToken,
             scriptCaller: scriptCaller
-        ) else {
+        ), readerContent.content?.url.matchesReaderURL(committedURL) == true,
+           readerContent.pageURL.matchesReaderURL(committedURL) else {
             throw CancellationError()
         }
 
@@ -3276,6 +3736,7 @@ public class ReaderModeViewModel: ObservableObject {
 
         // FIXME: Mokuro? check plugins thing for reader mode url instead of hardcoding methods here
         let isReaderModeVerified = content.isReaderModeByDefault
+            && !loadingState.isShowingOriginalHTMLFallback(for: newState.pageURL)
         try Task.checkCancellation()
         
         if isReaderMode != isReaderModeVerified && !newState.pageURL.isEBookURL {
@@ -3286,13 +3747,25 @@ public class ReaderModeViewModel: ObservableObject {
             try Task.checkCancellation()
         }
         
-        if newState.pageURL.isReaderURLLoaderURL {
+        if newState.pageURL.isReaderURLLoaderURL || restoresReaderDocument {
+            if restoresReaderDocument {
+                ReaderLoadTrace.event("readerMode.restoreOwnedDocument")
+                clearReadabilityCache(for: committedURL)
+            }
             let duplicateLoaderRender = shouldSkipDuplicateLoaderRender(for: committedURL)
             if duplicateLoaderRender.skip {
                 return
             }
             let activeReaderFileManager = readerFileManager ?? .shared
-            let html = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
+            let contentTrace = ReaderLoadTrace.begin("readerMode.storedHTMLRead")
+            let html: String?
+            do {
+                html = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
+                contentTrace?.end(html == nil ? "missing" : "available")
+            } catch {
+                contentTrace?.end("failed")
+                throw error
+            }
             if let html {
                 try Task.checkCancellation()
                 guard ownsReaderDocumentBinding(
@@ -3352,17 +3825,48 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller
     ) async {
         let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
-        await injectSharedFontIfNeeded(
-            scriptCaller: scriptCaller,
-            pageURL: newState.pageURL,
-            requiring: navigationBindingToken
-        )
+        var isOwnedShell = false
+        if newState.pageURL.isReaderDocumentURL {
+            isOwnedShell = (try? await evaluateReaderDocumentJavaScript(
+                "return document.body?.dataset.mnbReaderShell === '1';",
+                scriptCaller: scriptCaller, requiring: navigationBindingToken
+            )) as? Bool == true
+        }
+        let requiresDocumentSetup = !newState.pageURL.isReaderURLLoaderURL
+            && !isOwnedShell && newState.pageURL.absoluteString != "about:blank"
+        // Blank and loader documents have no article state to initialize.
+        // Keep native completion below; the final document retains normal setup.
+        if requiresDocumentSetup {
+            await injectSharedFontIfNeeded(
+                scriptCaller: scriptCaller,
+                pageURL: newState.pageURL,
+                requiring: navigationBindingToken
+            )
+        }
         guard !Task.isCancelled,
               ownsReaderDocumentBinding(
                 navigationBindingToken,
                 scriptCaller: scriptCaller
               ) else {
             return
+        }
+        if requiresDocumentSetup && !newState.pageURL.isEBookURL {
+            // Initial document-end readiness can arrive before the native
+            // commit handler has established its render owner. Replay it once
+            // after commit/font work, through the same generation-checked
+            // message handler, before deciding to defer loader completion.
+            _ = try? await evaluateReaderDocumentJavaScript(
+                "return window.__manabiPostReaderDocStateEvent?.('navigation-finished');",
+                scriptCaller: scriptCaller,
+                requiring: navigationBindingToken
+            )
+            guard !Task.isCancelled,
+                  ownsReaderDocumentBinding(
+                    navigationBindingToken,
+                    scriptCaller: scriptCaller
+                  ) else {
+                return
+            }
         }
         if navigationFinishedDeferral(newState: newState) != nil {
             return
@@ -3388,7 +3892,7 @@ public class ReaderModeViewModel: ObservableObject {
         } else {
             readerModeLoading(false)
         }
-        if !newState.pageURL.isReaderURLLoaderURL {
+        if requiresDocumentSetup {
             do {
                 let result = try await evaluateReaderDocumentJavaScript(
                     "return document.body?.dataset.isNextLoadInReaderMode === 'true'",
@@ -3427,6 +3931,13 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func navigationFinishedDeferral(newState: WebViewState) -> NavigationFinishedDeferral? {
         guard let pendingReaderModeURL else { return nil }
+
+        let renderKey = canonicalRenderKey(pendingReaderModeURL)
+        if !pendingReaderModeURL.isEBookURL,
+           !newState.hasReaderRenderReady,
+           activeRenderGenerationByURL[renderKey] != nil || completedRenderOwner?.key == renderKey {
+            return .pending
+        }
 
         if newState.pageURL.isReaderURLLoaderURL {
             let pageMatchesPending = pendingKeysMatch(pendingReaderModeURL, newState.pageURL)
@@ -3613,12 +4124,25 @@ nonisolated public func processForReaderMode(
     }
     
     if !isCacheWarmer {
+        if !isEBook, let head = doc.head() {
+            let canvasStyle: SwiftSoup.Element
+            if let existing = try doc.getElementById("mnb-reader-canvas") {
+                canvasStyle = existing
+            } else {
+                canvasStyle = try doc.createElement("style")
+                try canvasStyle.attr("id", "mnb-reader-canvas")
+                try head.prependChild(canvasStyle)
+            }
+            try canvasStyle.text(readerDocumentCanvasCSS())
+        }
         if let bodyTag = doc.body() {
             markReaderSubscriptionInactiveByDefault(in: doc)
             // TODO: font size and theme set elsewhere already..?
-            let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? defaultFontSize
-            let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
-            let darkModeTheme = (UserDefaults.standard.object(forKey: "darkModeTheme") as? DarkModeTheme) ?? .black
+            let readerFontSize = readerStoredFontSize() ?? defaultFontSize
+            let lightModeTheme = UserDefaults.standard.string(forKey: "lightModeTheme")
+                .flatMap(LightModeTheme.init(rawValue:)) ?? .white
+            let darkModeTheme = UserDefaults.standard.string(forKey: "darkModeTheme")
+                .flatMap(DarkModeTheme.init(rawValue:)) ?? .black
             
             var bodyStyle = "font-size: \(readerFontSize)px;"
             if !(isEBook && readerModeDisableInjectedStylingForEbookLayoutDiagnosis) {
@@ -3644,18 +4168,50 @@ nonisolated public func processForReaderMode(
             } catch { }
         }
         
-        if let imageURL {
+        let headerGeometry = !isEBook
+            ? ReaderImageGeometry.metadata(in: doc, matchingURL: imageURL, sourceURL: url) : nil
+        if !isEBook, let imageURL = imageURL ?? headerGeometry?.url {
             let readerContentAlreadyHasMedia = hasReaderContentMedia(in: doc)
             let documentHasImages = try !(doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true)
             let shouldInjectHeaderImage = (injectEntryImageIntoHeader && !readerContentAlreadyHasMedia)
                 || !documentHasImages
             if shouldInjectHeaderImage,
-               let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"),
-               existing.isEmpty() {
-                do {
-                    try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")
-                } catch { }
+               let header = try doc.getElementById("reader-header") {
+                let source = imageURL.absoluteString
+                let alreadyPresent = try doc.getElementsByTag(UTF8Arrays.img).contains {
+                    try $0.attr("src") == source
+                }
+                if !alreadyPresent {
+                    let image = try doc.createElement("img")
+                    try image.attr("src", source)
+                    if let headerGeometry {
+                        try image.attr("width", String(headerGeometry.width))
+                        try image.attr("height", String(headerGeometry.height))
+                    }
+                    try header.prependChild(image)
+                }
             }
         }
     }
+}
+
+enum ReaderRenderFailurePhase: String { case documentPreparation, fontPreparation, localHTML }
+
+func recordReaderRenderFailure(_ error: Error, phase: ReaderRenderFailurePhase) {
+    let kind: String
+    var reason = "other"
+    if error is CancellationError { kind = "cancelled" }
+    else if let soupError = error as? SwiftSoup.Exception, case .Error(let type, let message) = soupError {
+        kind = "SwiftSoup." + String(describing: type)
+        // Exact library constants only. Never log arbitrary exception text.
+        switch message {
+        case "Object must not be null": reason = "missingNode"
+        case "String must not be empty": reason = "emptyString"
+        case "Insert position out of bounds.": reason = "insertionBounds"
+        case "Must be true": reason = "validationTrue"
+        case "Must be false": reason = "validationFalse"
+        default: break
+        }
+    } else { kind = String(reflecting: type(of: error)).prefix(128).description }
+    ReaderLoadTrace.event("readerMode.renderFailed", "phase=\(phase.rawValue) kind=\(kind) reason=\(reason) code=\((error as NSError).code)")
 }

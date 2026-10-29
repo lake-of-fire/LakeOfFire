@@ -39,6 +39,7 @@ import {
     shouldRequestConfirmedPageTurnProgress,
 } from './confirmed-page-turn-progress.js'
 import { beginNavigationIntent } from './navigation-intent.js'
+import { createReaderProgressScrubController } from './reader-progress-scrub.js'
 import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
 import { createOwnedAsyncCache } from './owned-async-cache.js'
 import {
@@ -1662,6 +1663,13 @@ const runWithNavigationIntent = async (intent, operation, { timeoutMs = null } =
         navigationIntent.release();
     }
 };
+
+const nativeProgressScrub = createReaderProgressScrubController({
+    getReader: () => globalThis.reader,
+    navigate: (reader, fraction, relocationID) => runWithNavigationIntent({
+        source: 'scrub-release', target: 'view.goToFraction', fraction,
+    }, () => reader.view.goToFraction(fraction, { relocationID })),
+});
 
 const getLoadedEbookDocuments = (explicitDoc = null) => {
     const docs = [];
@@ -6233,10 +6241,16 @@ class Reader {
             entry.percent = percent;
             entry.percentSource = percentSource;
         }
-        const resolvedSectionIndex = this.navHUD?._resolveSectionIndex?.(this.navHUD?.lastRelocateDetail ?? {}) ?? {
-            index: null,
-            source: 'nav-hud-unavailable',
-        };
+        // A scrub can commit the displayed section before the HUD receives its
+        // relocation event. Snapshot the visible renderer, then fall back to
+        // navigation metadata only while no displayed section is available.
+        const displayedSectionIndex = getPrimaryRendererContentIndex(this.view?.renderer);
+        const resolvedSectionIndex = Number.isInteger(displayedSectionIndex) && displayedSectionIndex >= 0
+            ? { index: displayedSectionIndex, source: 'renderer.displayed-section' }
+            : (this.navHUD?._resolveSectionIndex?.(this.navHUD?.lastRelocateDetail ?? {}) ?? {
+                index: null,
+                source: 'nav-hud-unavailable',
+            });
         const currentSectionIndex = typeof resolvedSectionIndex?.index === 'number'
             ? resolvedSectionIndex.index
             : null;
@@ -6375,7 +6389,8 @@ class Reader {
             this.goToLocationNumber(pageNumber, 'schedule-location-number')
                 .catch((error) => console.error(error));
         }, 120);
-        this.scheduleGoToFraction = debounce((fraction) => {
+        this.scheduleGoToFraction = debounce((fraction, scrubOwnerID = null) => {
+            if (scrubOwnerID != null && !nativeProgressScrub.owns(scrubOwnerID, this)) return;
             const clampedFraction = Math.max(0, Math.min(1, Number(fraction)));
             const currentDescriptor = this.navHUD?.getCurrentLocationDescriptor?.() ?? null;
             const targetDescriptor = this.navHUD?._descriptorFromFraction?.(clampedFraction) ?? null;
@@ -8174,6 +8189,9 @@ class Reader {
     }
     #postVisiblePageLookupTargets(doc, result, reason = 'unspecified', shouldPost = true) {
         if (!shouldPost) return null;
+// #if DEBUG
+        if (this.view?.renderer?.pageTurnPreviewActive) return null;
+// #endif
         // A delayed callback must never publish after its iframe stops being
         // the renderer's committed displayed document.
         if (getCurrentRendererDocument(this.view?.renderer, doc) !== doc) return null;
@@ -8951,10 +8969,29 @@ class Reader {
         if (typeof window.initialLayoutMode !== 'undefined') {
             this.view.renderer.setAttribute('flow', window.initialLayoutMode)
         }
+// #if DEBUG
+        // Flow determines whether Slide is supported. Admit the preference
+        // only after the renderer knows its initial layout mode.
+        applyViewerPageTurnStyle(this.view, globalThis.__manabiEbookPageTurnStyle ?? 'instant');
+        this.#listen(this.view.renderer, 'pageturnpreviewstart', () => {
+            // Native hit rectangles describe the stationary committed sheet.
+            // Retire them while it moves, then republish from the same sidecar
+            // on cancellation or the newly committed sidecar on completion.
+            this.#invalidateVisiblePageSegmentSnapshot('page-turn-swipe-intent');
+        });
+        this.#listen(this.view.renderer, 'pageturnpreviewend', () => {
+            this.refreshNativeLookupHitTargets('slide-preview-ended');
+        });
+// #endif
         this.#installVisibleRendererGoToGuard();
         this.#listen(this.view.renderer, 'goTo', this.#onGoTo.bind(this))
         this.#listen(this.view.renderer, 'didDisplay', this.#onDidDisplay.bind(this))
         this.#listen(this.view, 'load', this.#onLoad.bind(this))
+// #if DEBUG
+        this.#listen(this.view, 'pageturnpreviewload', ({ detail: { doc } }) => {
+            this.#prepareDocumentLayout(doc, 'slide-preview');
+        })
+// #endif
         this.#listen(this.view, 'document-committed', this.#onDocumentCommitted.bind(this))
         this.#listen(this.view, 'document-unload', this.#onDocumentUnload.bind(this))
         this.#listen(this.view, 'relocate', this.#onRelocate.bind(this))
@@ -10922,6 +10959,32 @@ class Reader {
         this.#applyHideNavigationDueToScrollToBookContent(this.navHUD?.hideNavigationDueToScroll === true, 'reader.didDisplay');
         this.#scheduleInitialPaginatorSettle('did-display');
     }
+    #prepareDocumentLayout(doc, reason) {
+        applyLayoutSettingsToEbookDocument(doc);
+        applyReaderPresentationStateToDocument(doc, globalThis.__manabiReaderPresentationState, reason);
+        applyNavigationHiddenStateToEbookDocument(doc, reason);
+        if (!isCacheWarmerDocument(doc)) {
+            classifySingleMediaDocumentForInitialLayout(doc, reason);
+        }
+        // Foliate fires document load before the paginator has rendered/columnized the
+        // content. Running visible-segment sampling here forces layout, finds no
+        // candidates, and cannot safely clear loading. The didDisplay path performs
+        // the real visible-content pass after render.
+        try {
+            window.manabiForwardReaderFontToEbookDocuments?.(reason, doc);
+        } catch {
+        }
+        try {
+            window.manabiApplyReaderThemeToEbookDocuments?.(reason, doc);
+        } catch (_error) {}
+        try {
+            window.manabiApplyReaderFontSizeToEbookDocuments?.(reason, doc);
+        } catch {
+        }
+        if (!isCacheWarmerDocument(doc)) {
+            normalizeManabiSegmentWhitespace(doc);
+        }
+    }
     #onLoad({
         detail: {
             doc,
@@ -10933,30 +10996,7 @@ class Reader {
         const scope = this.#beginDocumentScope({ doc, location, index })
         if (!scope) return
         applyStoredChromeInsets('reader.documentLoad');
-        applyLayoutSettingsToEbookDocument(doc);
-        applyReaderPresentationStateToDocument(doc, globalThis.__manabiReaderPresentationState, 'document-load');
-        applyNavigationHiddenStateToEbookDocument(doc, 'document-load');
-        if (!isCacheWarmerDocument(doc)) {
-            classifySingleMediaDocumentForInitialLayout(doc, 'document-load');
-        }
-        // Foliate fires document load before the paginator has rendered/columnized the
-        // content. Running visible-segment sampling here forces layout, finds no
-        // candidates, and cannot safely clear loading. The didDisplay path performs
-        // the real visible-content pass after render.
-        try {
-            window.manabiForwardReaderFontToEbookDocuments?.('document-load', doc);
-        } catch {
-        }
-        try {
-            window.manabiApplyReaderThemeToEbookDocuments?.('document-load', doc);
-        } catch (_error) {}
-        try {
-            window.manabiApplyReaderFontSizeToEbookDocuments?.('document-load', doc);
-        } catch {
-        }
-        if (!isCacheWarmerDocument(doc)) {
-            normalizeManabiSegmentWhitespace(doc);
-        }
+        this.#prepareDocumentLayout(doc, 'document-load');
         if (doc?.fonts?.ready?.then) {
             doc.fonts.ready.then(() => {
                 this.#refreshCommittedDocumentAfterFonts(scope, 'document.fonts-ready');
@@ -12008,6 +12048,21 @@ class Reader {
 //else dropTarget.style.visibility = 'visible'
 
 
+// #if DEBUG
+function applyViewerPageTurnStyle(view, style) {
+    view?.renderer?.setPageTurnStyle?.(style);
+    // Fixed layout/cache warmers can decline Slide. Only expand paper for a
+    // renderer that actually enabled it, including after a new book is opened.
+    view?.toggleAttribute('data-slide-pages', view?.renderer?.getAttribute('page-turn') === 'slide');
+}
+
+window.setEbookViewerPageTurnStyle = (style) => {
+    const normalized = style === 'slide' ? 'slide' : 'instant';
+    globalThis.__manabiEbookPageTurnStyle = normalized;
+    applyViewerPageTurnStyle(globalThis.reader?.view, normalized);
+};
+
+// #endif
 window.setEbookViewerLayout = (layoutMode) => {
     const normalizedLayoutMode = typeof layoutMode === 'string' && layoutMode.length > 0 ? layoutMode : 'paginated';
     if (globalThis.__manabiEbookViewerLayoutMode === normalizedLayoutMode) {
@@ -12475,6 +12530,9 @@ window.loadEBook = ({
                     }) ?? null;
                     window.webkit.messageHandlers.ebookViewerLoaded.postMessage({
                         topWindowURL: window.top.location.href,
+// #if DEBUG
+                        pageTurnStyles: reader.view?.renderer?.supportedPageTurnStyles ?? ['instant'],
+// #endif
                         probe,
                         initialRestoreResult,
                         initialRestoreHandled: initialRestoreResult?.restoreSatisfied ?? false,
@@ -13434,70 +13492,28 @@ window.manabiGoToReaderHref = async (href) => {
     return await globalThis.reader?.goToHref?.(href, 'window.manabiGoToReaderHref');
 }
 
-window.manabiScheduleReaderFractionGoTo = (fraction) => {
+window.manabiScheduleReaderFractionGoTo = (fraction, sheetID, ownerID) => {
     markRestorePositionSaveUserInput('bridge.scheduleReaderFractionGoTo');
-    globalThis.reader?.scheduleGoToFraction?.(fraction);
+    return nativeProgressScrub.schedule(sheetID, ownerID, fraction);
 }
 
-window.manabiCancelScheduledReaderFractionGoTo = () => {
-    globalThis.reader?.scheduleGoToFraction?.cancel?.();
-    return true;
-}
-
-window.manabiBeginReaderProgressScrub = () => {
+window.manabiBeginReaderProgressScrub = (sheetID, ownerID) => {
     markRestorePositionSaveUserInput('bridge.beginReaderProgressScrub');
-    const navHUD = globalThis.reader?.navHUD;
-    if (navHUD?.scrubSession?.active) {
-        return true;
-    }
-    const originDescriptor = navHUD?.getCurrentLocationDescriptor?.() ?? null;
-    navHUD?.beginProgressScrubSession?.(originDescriptor);
-    return true;
+    return nativeProgressScrub.begin(sheetID, ownerID);
 }
 
-window.manabiEndReaderProgressScrub = async (fraction, cancel = false) => {
+window.manabiRetireReaderProgressScrub = (ownerIDs) => {
+    return nativeProgressScrub.retire(ownerIDs);
+}
+
+window.manabiEndReaderProgressScrub = async (fraction, cancel = false, sheetID, ownerID) => {
     markRestorePositionSaveUserInput(cancel ? 'bridge.endReaderProgressScrub.cancel' : 'bridge.endReaderProgressScrub.commit');
-    const navHUD = globalThis.reader?.navHUD;
-    const view = globalThis.reader?.view;
-    globalThis.reader?.scheduleGoToFraction?.cancel?.();
-    const numericFraction = Number(fraction);
-    const clampedFraction = Number.isFinite(numericFraction)
-        ? Math.max(0, Math.min(1, numericFraction))
-        : null;
-    const finalDescriptor = clampedFraction != null
-        ? (navHUD?._descriptorFromFraction?.(clampedFraction) ?? { fraction: clampedFraction })
-        : (navHUD?.getCurrentLocationDescriptor?.() ?? null);
-    const finalizeScrubSession = () => {
-        navHUD?.endProgressScrubSession?.(finalDescriptor, {
-            cancel: !!cancel,
-            releaseFraction: clampedFraction,
-        });
-    };
-    if (!cancel && Number.isFinite(clampedFraction) && view) {
-        const explicitRelocateOwnership = navHUD?.requestExplicitRelocateHistoryMutation?.(
-            'scrub-release'
-        );
-        try {
-            const accepted = await runWithNavigationIntent({
-                source: 'scrub-release',
-                target: 'view.goToFraction',
-                fraction: clampedFraction,
-            }, () => view.goToFraction(clampedFraction, {
-                relocationID: explicitRelocateOwnership?.relocationID ?? null,
-            }));
-            if (accepted !== true) {
-                navHUD?.cancelExplicitRelocateHistoryMutation?.(explicitRelocateOwnership);
-            }
-            finalizeScrubSession();
-        } catch (error) {
-            navHUD?.cancelExplicitRelocateHistoryMutation?.(explicitRelocateOwnership);
-            finalizeScrubSession();
-            console.error(error);
-        }
-    } else {
-        finalizeScrubSession();
+    try {
+        return await nativeProgressScrub.end(sheetID, ownerID, fraction, cancel);
+    } catch (error) {
+        console.error(error);
+        return false;
     }
-    return true;
 }
 
 window.manabiTriggerReaderRelocateJump = async (direction) => {

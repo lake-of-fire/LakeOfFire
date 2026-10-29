@@ -19,6 +19,8 @@ public extension EnvironmentValues {
 }
 
 
+// Dormant UI retained for local development; excluded from shipping builds.
+#if DEBUG
 @MainActor
 private func forceCategorySelection(
     _ target: String,
@@ -148,6 +150,7 @@ public struct ContentCategoryButtons: View {
     }
 }
 
+#if DEBUG
 public struct MangaCategoryButton: View {
     @Binding var categorySelection: String?
 //    var font = Font.title3
@@ -178,6 +181,8 @@ public struct MangaCategoryButton: View {
         self.isCompact = isCompact
     }
 }
+
+#endif
 
 public struct BooksCategoryButton: View {
     @Binding var categorySelection: String?
@@ -237,6 +242,7 @@ public struct FeedCategoryButton: View {
         self.isCompact = isCompact
     }
 }
+#endif
 
 fileprivate struct CategoryCardDecoration: ViewModifier {
     var isPressed: Bool

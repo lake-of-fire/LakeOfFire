@@ -333,6 +333,14 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 let logMessage = payload["message"] as? String ?? "SwiftReadability.print"
                 _ = logMessage
             }),
+            ("readerEmbedState", { @MainActor [weak self] message in
+                guard let self, message.isMainFrame,
+                      let body = message.body as? [String: String], body.count == 3,
+                      let generation = body["generation"].flatMap(UUID.init(uuidString:)),
+                      let registration = body["registration"], UUID(uuidString: registration) != nil,
+                      let stage = body["stage"], stage.utf8.count <= 32 else { return }
+                readerModeViewModel.recordEmbedState(generation: generation, registration: registration, stage: stage)
+            }),
             ("readerDocState", { @MainActor [weak self] message in
                 guard let self else { return }
                 guard let body = message.body as? [String: Any],
@@ -342,6 +350,42 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 let hasReaderRenderReady = body["hasReaderRenderReady"] as? Bool ?? false
                 let renderGeneration = (body["readerRenderGeneration"] as? String)
                     .flatMap(UUID.init(uuidString:))
+                if message.isMainFrame,
+                   let binding = message.javaScriptBindingToken,
+                   scriptCaller.currentJavaScriptBindingToken == binding,
+                   pageURL.matchesReaderURL(readerContent.pageURL),
+                   let visibility = body["readerVisibility"] as? [String: Any],
+                   let reason = body["reason"] as? String,
+                   ["pageshow", "visible", "article-ready", "article-timeout", "article-interrupted"].contains(reason) {
+                    let visible = visibility["visibility"] as? String == "visible"
+                    let displayed = visibility["display"] as? String != "none"
+                    let opaque = (visibility["opacity"] as? Double ?? 0) > 0.01
+                    let flags = ["fontPending", "articlePending", "layoutComplete", "trackingInitialized", "positionRecalled"]
+                        .map { "\($0)=\(visibility[$0] as? Bool == true)" }.joined(separator: " ")
+                    let recall = body["readerPositionRecall"] as? [String: Any] ?? [:]
+                    let recallDetail = [("imageWaits", "recallImageWaits"), ("expiredImageWaits", "recallExpiredImageWaits")]
+                        .compactMap { pair -> String? in
+                            let (key, label) = pair
+                            guard let value = recall[key] as? Double, value.isFinite,
+                                  (0...1_000_000).contains(value), value.rounded() == value else { return nil }
+                            return "\(label)=\(Int(value))"
+                        }.joined(separator: " ")
+                    ReaderLoadTrace.$operationID.withValue(renderGeneration) {
+                        ReaderLoadTrace.event("readerMode.visibilitySnapshot",
+                            "reason=\(reason) visible=\(visible) displayed=\(displayed) opaque=\(opaque) ready=\(hasReaderRenderReady) \(flags) \(recallDetail)")
+                    }
+                }
+                if hasReaderRenderReady {
+                    ReaderLoadTrace.$operationID.withValue(renderGeneration) {
+#if DEBUG
+                        ReaderLoadTrace.event("readerMode.renderReadyReceived",
+                                              "mainFrame=\(message.isMainFrame) readerViewModel=\(ObjectIdentifier(self.readerViewModel)) readerModeViewModel=\(ObjectIdentifier(self.readerModeViewModel)) loadingState=\(ObjectIdentifier(self.readerModeViewModel.loadingState))")
+#else
+                        ReaderLoadTrace.event("readerMode.renderReadyReceived",
+                                              "mainFrame=\(message.isMainFrame)")
+#endif
+                    }
+                }
                 guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
                 let currentContentURL = readerContent.content?.url
                 let currentContentOwnsCompletedRender = currentContentURL.map { contentURL in
@@ -357,7 +401,30 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     renderGeneration: renderGeneration,
                     navigator: navigator
                 )
-                guard accepted else { return }
+                guard accepted else {
+                    ReaderLoadTrace.$operationID.withValue(renderGeneration) {
+                        ReaderLoadTrace.event("readerMode.renderReadyRejected")
+                    }
+                    return
+                }
+                if let outcome = body["readerArticlePresentation"] as? String,
+                   ["ready", "timeout", "interrupted"].contains(outcome) {
+                    ReaderLoadTrace.$operationID.withValue(renderGeneration) {
+                        ReaderLoadTrace.event("readerMode.initialArticlePresentation", "outcome=\(outcome)")
+                    }
+                }
+                if let fontOutcome = body["readerFontOutcome"] as? String,
+                   ["loaded", "failed", "timeout", "unavailable"].contains(fontOutcome) {
+                    let timings = body["readerFontTimings"] as? [String: Any] ?? [:]
+                    let timingDetail = ["fontLoadMs", "layoutMs", "revealMs", "layoutDeadlineReached"].compactMap { key -> String? in
+                        guard let value = timings[key] as? Double,
+                              value.isFinite, (0...60_000).contains(value) else { return nil }
+                        return "\(key)=\(String(format: "%.3f", value))"
+                    }.joined(separator: " ")
+                    ReaderLoadTrace.$operationID.withValue(renderGeneration) {
+                        ReaderLoadTrace.event("readerMode.fontReadiness", "status=\(fontOutcome) source=document \(timingDetail)")
+                    }
+                }
                 if !readerViewModel.state.hasReaderRenderReady {
                     var newState = readerViewModel.state
                     newState.markReaderRenderReady()
@@ -366,6 +433,12 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 if readerContent.pageURL.matchesReaderURL(pageURL) {
                     readerContent.isRenderingReaderHTML = false
                 }
+#if DEBUG
+                ReaderLoadTrace.$operationID.withValue(renderGeneration) {
+                    ReaderLoadTrace.event("readerMode.renderReadyApplied",
+                                          "readerViewModel=\(ObjectIdentifier(self.readerViewModel)) readerModeViewModel=\(ObjectIdentifier(self.readerModeViewModel)) loadingState=\(ObjectIdentifier(self.readerModeViewModel.loadingState)) ready=\(self.readerViewModel.state.hasReaderRenderReady) loading=\(self.readerModeViewModel.isReaderModeLoading) pending=\(self.readerModeViewModel.pendingReaderModeURL != nil) rendering=\(self.readerContent.isRenderingReaderHTML)")
+                }
+#endif
             }),
             ("readabilityNeedsUpdate", { @MainActor [weak self] message in
                 guard let self else { return }
@@ -939,7 +1012,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                         },
                         publish: { bindingToken, preparedOpen, initialRestore in
                             let defaults = UserDefaults.standard
-                            let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16
+                            let readerFontSize = readerStoredFontSize(in: defaults) ?? 16
                             let rawWritingDirection = defaults.string(
                                 forKey: "bookWritingDirectionSetting"
                             ) ?? "original"
@@ -992,7 +1065,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     // expected terminal outcomes. Do not launch detached retry.
                 } catch {
                     Logger.shared.logger.error(
-                        "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
+                        "Ebook viewer initialization failed: \(String(reflecting: type(of: error)).prefix(160)) code=\((error as NSError).code)"
                     )
                 }
             }),
@@ -1084,6 +1157,8 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
     
     @MainActor
     func showOriginal() async throws {
+        let documentURL = readerViewModel.state.pageURL
+        let documentBinding = scriptCaller.currentJavaScriptBindingToken
         let contentURL = readerContent.content?.url
             ?? ReaderContentLoader.getContentURL(fromLoaderURL: readerContent.pageURL)
             ?? readerContent.pageURL
@@ -1112,7 +1187,22 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
             return update.didChange
         }
         await readerContent.content?.realm?.asyncRefresh()
-        navigator.reload()
+        guard !Task.isCancelled,
+              scriptCaller.currentJavaScriptBindingToken == documentBinding,
+              readerViewModel.state.pageURL == documentURL,
+              readerContent.content?.url == contentURL else {
+            ReaderLoadTrace.event("reader.showOriginalSkipped", "reason=retired")
+            return
+        }
+        // Reloading the owned route reconstructs Reader HTML. View Original
+        // must leave that route and navigate to the publisher instead.
+        if documentURL.isReaderDocumentURL {
+            ReaderLoadTrace.event("reader.showOriginal", "origin=reader")
+            navigator.load(URLRequest(url: contentURL))
+        } else {
+            ReaderLoadTrace.event("reader.showOriginal", "origin=source")
+            navigator.reload()
+        }
     }
 
     private func setHideNavigationDueToScroll(
