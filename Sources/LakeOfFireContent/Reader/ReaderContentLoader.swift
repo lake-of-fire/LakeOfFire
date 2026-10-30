@@ -82,9 +82,16 @@ public struct ReaderContentLoader {
         }
 
         func reference(for content: any ReaderContentProtocol) -> ContentReference? {
-            let admission = content.objectSchema.objectClass == Bookmark.self ? bookmarkAdmission
-                : content is FeedEntry ? feedAdmission : historyAdmission
-            return ContentReference(content: content, storageAdmission: admission)
+            if content.objectSchema.objectClass == Bookmark.self {
+                return ContentReference(content: content, configuration: bookmarkConfiguration,
+                                        storageAdmission: bookmarkAdmission)
+            }
+            if content is FeedEntry {
+                return ContentReference(content: content, configuration: feedConfiguration,
+                                        storageAdmission: feedAdmission)
+            }
+            return ContentReference(content: content, configuration: historyConfiguration,
+                                    storageAdmission: historyAdmission)
         }
     }
 
@@ -117,6 +124,7 @@ public struct ReaderContentLoader {
     public struct ContentReference {
         public let contentType: RealmSwift.Object.Type
         public let contentKey: String
+        public let contentCreatedAt: Date
         public let realmConfiguration: Realm.Configuration
         public let storageAdmission: RealmStorageAdmission
         
@@ -125,11 +133,23 @@ public struct ReaderContentLoader {
         }
 
         public init?(content: any ReaderContentProtocol, storageAdmission: RealmStorageAdmission?) {
-            guard !content.isInvalidated, let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type, let config = content.realm?.configuration else { return nil }
+            guard !content.isInvalidated, let config = content.realm?.configuration else { return nil }
+            self.init(content: content, configuration: config,
+                      storageAdmission: storageAdmission ?? RealmBackgroundActor.shared.captureStorageAdmission(for: config))
+        }
+
+        /// Preserve the exact configuration paired with a captured admission.
+        /// Realm.configuration materializes automatic schemas after opening.
+        init?(content: any ReaderContentProtocol, configuration: Realm.Configuration,
+              storageAdmission: RealmStorageAdmission) {
+            guard !content.isInvalidated,
+                  let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type,
+                  content.realm != nil else { return nil }
             self.contentType = contentType
             contentKey = content.compoundKey
-            realmConfiguration = config
-            self.storageAdmission = storageAdmission ?? RealmBackgroundActor.shared.captureStorageAdmission(for: config)
+            contentCreatedAt = content.createdAt
+            realmConfiguration = configuration
+            self.storageAdmission = storageAdmission
         }
         
         public func validateStorage() throws {
@@ -138,13 +158,45 @@ public struct ReaderContentLoader {
             }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
         }
 
+        /// Call on the candidate's owning actor. A key is unique only within
+        /// its object type and store; the captured creation identity must match.
+        fileprivate func matches(_ content: any ReaderContentProtocol) -> Bool {
+            guard !content.isInvalidated,
+                  content.objectSchema.objectClass == contentType,
+                  content.compoundKey == contentKey,
+                  content.createdAt == contentCreatedAt,
+                  let candidateRealm = content.realm else { return false }
+            guard storageAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+            }) else { return false }
+            // A store can be opened through different schema views. Validate
+            // this reference's admission, then compare locators, not cache keys.
+            let candidateConfiguration = candidateRealm.configuration
+            if let identifier = realmConfiguration.inMemoryIdentifier {
+                return candidateConfiguration.inMemoryIdentifier == identifier
+            }
+            guard candidateConfiguration.inMemoryIdentifier == nil,
+                  let fileURL = realmConfiguration.fileURL,
+                  let candidateURL = candidateConfiguration.fileURL else { return false }
+            return fileURL.standardizedFileURL == candidateURL.standardizedFileURL
+        }
+
+        /// Resolve synchronously after the caller's final suspension. Deletion
+        /// policy stays with each operation, including explicit history revival.
+        func resolve(in realm: Realm) -> (any ReaderContentProtocol)? {
+            guard let content = realm.object(ofType: contentType,
+                forPrimaryKey: contentKey) as? any ReaderContentProtocol,
+                matches(content) else { return nil }
+            return content
+        }
+
         @RealmBackgroundActor
         public func resolveOnBackgroundActor() async throws -> (any ReaderContentProtocol)? {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration, storageAdmission: storageAdmission)
             await realm.asyncRefresh()
             try validateStorage()
             try Task.checkCancellation()
-            return realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentProtocol
+            return resolve(in: realm)
         }
         
         @MainActor
@@ -156,7 +208,7 @@ public struct ReaderContentLoader {
             await realm.asyncRefresh()
             try validateStorage()
             try Task.checkCancellation()
-            return realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentProtocol
+            return resolve(in: realm)
         }
     }
     
@@ -260,8 +312,7 @@ public struct ReaderContentLoader {
         // must not invalidate a managed candidate collected from an earlier one.
         for destination in destinations { try destination.reference.validateStorage() }
         return destinations.compactMap { destination in
-            guard let content = destination.realm.object(ofType: destination.reference.contentType,
-                forPrimaryKey: destination.reference.contentKey) as? any ReaderContentProtocol,
+            guard let content = destination.reference.resolve(in: destination.realm),
                 !content.isDeleted else { return nil }
             return content
         }
@@ -514,8 +565,7 @@ public struct ReaderContentLoader {
     @RealmBackgroundActor
     public static func propagateReaderModeDefaults(
         for url: URL,
-        excludingPrimaryKey primaryKey: String,
-        primaryClassName: String,
+        excluding primaryReference: ContentReference?,
         readabilityHTML: String,
         resolvedTitle: String?,
         permitsCommit: @escaping @Sendable () -> Bool
@@ -524,10 +574,7 @@ public struct ReaderContentLoader {
         try Task.checkCancellation()
         try await updateContent(url: url) { record in
             guard permitsCommit(), !Task.isCancelled,
-                  !(record.compoundKey == primaryKey
-                    && record.objectSchema.className == primaryClassName) else {
-                return false
-            }
+                  primaryReference?.matches(record) != true else { return false }
 
             var changed = false
             if !record.isReaderModeByDefault {
@@ -585,8 +632,7 @@ public struct ReaderContentLoader {
                 // Fence the actual commit, not only the preceding lookup.
                 guard !Task.isCancelled else { return }
                 try reference.validateStorage()
-                guard let object = realm.object(ofType: reference.contentType,
-                    forPrimaryKey: reference.contentKey) as? (Object & ReaderContentProtocol),
+                guard let object = reference.resolve(in: realm),
                     !object.isDeleted else { return }
                 if mutate(object) {
                     object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
@@ -746,8 +792,7 @@ public struct ReaderContentLoader {
             await realm.asyncRefresh()
             try Task.checkCancellation()
             try reference.validateStorage()
-            guard let content = realm.object(ofType: reference.contentType,
-                forPrimaryKey: reference.contentKey) as? any ReaderContentProtocol,
+            guard let content = reference.resolve(in: realm),
                 !content.isDeleted else { return nil }
             return reference
         }
@@ -755,8 +800,7 @@ public struct ReaderContentLoader {
         return try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             try reference.validateStorage()
-            guard let content = realm.object(ofType: reference.contentType,
-                forPrimaryKey: reference.contentKey) as? any ReaderContentProtocol else { return nil }
+            guard let content = reference.resolve(in: realm) else { return nil }
             let visit = countsAsHistoryVisit && reference.contentType == HistoryRecord.self
             // Only an explicit visit revives history. Cache/background loads and
             // reader-mode updates never revive deleted content.
@@ -1090,8 +1134,7 @@ public struct ReaderContentLoader {
             try reference.validateStorage()
             // The import itself owns revival. This delayed follow-up must not
             // undo a deletion committed after the import returned.
-            guard let content = realm.object(ofType: reference.contentType,
-                forPrimaryKey: reference.contentKey) as? any ReaderContentProtocol,
+            guard let content = reference.resolve(in: realm),
                 !content.isDeleted, content.url.isSnippetURL else { return nil }
             let url = snippetURL(key: content.compoundKey) ?? content.url
             if !content.isFromClipboard || !content.rssContainsFullContent || !content.isReaderModeByDefault || content.url != url {

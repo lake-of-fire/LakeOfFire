@@ -311,6 +311,91 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         try await assertUpdateSkipsContentRemovedByEarlierMutation(physicallyDelete: true)
     }
 
+    @RealmBackgroundActor
+    func testUpdateContentSkipsCandidateRecreatedByAnEarlierMutation() async throws {
+        let configuration = makeConfiguration()
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeed
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        addTeardownBlock {
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        let url = URL(string: "https://example.com/recreated-update-candidate/\(UUID().uuidString)")!
+        let originalCreation = Date(timeIntervalSinceReferenceDate: 80_000)
+        let replacementCreation = originalCreation.addingTimeInterval(1)
+        try await realm.asyncWrite {
+            let records: [Bookmark] = [Bookmark(), HistoryRecord()]
+            for record in records {
+                record.url = url
+                record.title = "Original"
+                record.createdAt = originalCreation
+                record.updateCompoundKey()
+                realm.add(record)
+                record.refreshChangeMetadata(explicitlyModified: true)
+                try assertPendingMutation(for: record, in: realm)
+            }
+        }
+
+        var mutationCount = 0
+        var replacementType: Bookmark.Type?
+        var replacementKey: String?
+        var replacementSeeded: JournalState?
+        try await ReaderContentLoader.updateContent(url: url) { object in
+            mutationCount += 1
+            if mutationCount == 1 {
+                let otherType: Bookmark.Type = object is HistoryRecord ? Bookmark.self : HistoryRecord.self
+                guard let other = realm.objects(otherType).first else {
+                    XCTFail("The other discovered representation must exist before replacement")
+                    return false
+                }
+                let key = other.compoundKey
+                let replacement: Bookmark = object is HistoryRecord ? Bookmark() : HistoryRecord()
+                replacement.url = url
+                replacement.title = "Replacement"
+                replacement.createdAt = replacementCreation
+                replacement.updateCompoundKey()
+                XCTAssertEqual(replacement.compoundKey, key)
+                XCTAssertNotEqual(replacement.createdAt, other.createdAt)
+                // Model acknowledged cleanup followed by a new row incarnation
+                // while updateContent still owns the earlier discovery list.
+                realm.delete(other)
+                realm.add(replacement)
+                replacement.refreshChangeMetadata(explicitlyModified: true)
+                replacementType = otherType
+                replacementKey = key
+                do {
+                    replacementSeeded = try journalState(for: replacement, in: realm)
+                } catch {
+                    XCTFail("The recreated row must have its own journal state: \(error)")
+                }
+            }
+            object.title = "Updated"
+            return true
+        }
+
+        XCTAssertEqual(mutationCount, 1, "An old discovery must not authorize the recreated row")
+        let type = try XCTUnwrap(replacementType)
+        let key = try XCTUnwrap(replacementKey)
+        let replacement = try XCTUnwrap(realm.object(ofType: type, forPrimaryKey: key))
+        XCTAssertEqual(replacement.createdAt, replacementCreation)
+        XCTAssertEqual(replacement.title, "Replacement")
+        XCTAssertEqual(try journalState(for: replacement, in: realm), try XCTUnwrap(replacementSeeded))
+        let fresh = try await ReaderContentLoader.loadAll(url: url)
+        XCTAssertEqual(fresh.count, 2)
+        XCTAssertEqual(Set(fresh.map(\.title)), Set(["Updated", "Replacement"]))
+    }
+
     @MainActor
     func testOverlappingSameURLLoadsKeepTheirCapturedStorageAfterConfigurationReplacement() async throws {
         let firstConfiguration = makeConfiguration()
@@ -480,6 +565,75 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
             try assertPendingMutation(for: record, in: realm)
             return ReaderContentLoader.ContentReference(content: record)!
         }
+    }
+
+    @RealmBackgroundActor
+    private func recreateHistory(
+        for reference: ReaderContentLoader.ContentReference
+    ) async throws -> ReaderContentLoader.ContentReference {
+        let resolved = try await reference.resolveOnBackgroundActor()
+        let original = try XCTUnwrap(resolved as? HistoryRecord)
+        let realm = try XCTUnwrap(original.realm)
+        let replacement = HistoryRecord()
+        replacement.url = original.url
+        replacement.title = "Replacement"
+        replacement.createdAt = original.createdAt.addingTimeInterval(1)
+        replacement.updateCompoundKey()
+        XCTAssertEqual(replacement.compoundKey, original.compoundKey)
+        XCTAssertNotEqual(replacement.createdAt, original.createdAt)
+        return try await realm.asyncWrite {
+            // This fixture models acknowledged cleanup and a later creation,
+            // not an application deletion path that bypasses tombstones.
+            realm.delete(original)
+            realm.add(replacement)
+            replacement.refreshChangeMetadata(explicitlyModified: true)
+            try assertPendingMutation(for: replacement, in: realm)
+            return try XCTUnwrap(ReaderContentLoader.ContentReference(content: replacement))
+        }
+    }
+
+    @RealmBackgroundActor
+    func testBackgroundReferenceResolutionRejectsRecreatedRowWithSameKey() async throws {
+        let configuration = makeConfiguration()
+        addTeardownBlock { _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let reference = try await seededHistory(in: configuration)
+        let original = try await reference.resolveOnBackgroundActor()
+        let originalCreation = try XCTUnwrap(original).createdAt
+        let replacementReference = try await recreateHistory(for: reference)
+        let resolvedReplacement = try await replacementReference.resolveOnBackgroundActor()
+        let replacement = try XCTUnwrap(resolvedReplacement as? HistoryRecord)
+        let realm = try XCTUnwrap(replacement.realm)
+        let seeded = try journalState(for: replacement, in: realm)
+
+        let obsolete = try await reference.resolveOnBackgroundActor()
+
+        XCTAssertNil(obsolete, "A captured reference must not resolve a new row incarnation")
+        XCTAssertEqual(replacementReference.contentKey, reference.contentKey)
+        XCTAssertEqual(replacement.createdAt, originalCreation.addingTimeInterval(1))
+        XCTAssertEqual(replacement.title, "Replacement")
+        XCTAssertEqual(try journalState(for: replacement, in: realm), seeded)
+    }
+
+    @MainActor
+    func testMainReferenceResolutionRejectsRecreatedRowWithSameKey() async throws {
+        let configuration = makeConfiguration()
+        addTeardownBlock { _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let reference = try await seededHistory(in: configuration)
+        let original = try await reference.resolveOnMainActor()
+        let originalCreation = try XCTUnwrap(original).createdAt
+        let replacementReference = try await recreateHistory(for: reference)
+        let resolvedReplacement = try await replacementReference.resolveOnMainActor()
+        let replacement = try XCTUnwrap(resolvedReplacement as? HistoryRecord)
+        let realm = try XCTUnwrap(replacement.realm)
+        let seeded = try journalState(for: replacement, in: realm)
+
+        let obsolete = try await reference.resolveOnMainActor()
+
+        XCTAssertNil(obsolete, "The main-actor reader must not receive a new row for an old reference")
+        XCTAssertEqual(replacementReference.contentKey, reference.contentKey)
+        XCTAssertEqual(replacement.createdAt, originalCreation.addingTimeInterval(1))
+        XCTAssertEqual(replacement.title, "Replacement")
+        XCTAssertEqual(try journalState(for: replacement, in: realm), seeded)
     }
 
     @RealmBackgroundActor
@@ -697,6 +851,96 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
             }
         })
         XCTAssertNil(realm.object(ofType: HistoryRecord.self, forPrimaryKey: reference.contentKey))
+    }
+
+    @RealmBackgroundActor
+    func testRejectedLoadCannotDemoteRecreatedHistoryThroughItsFollowup() async throws {
+        let configuration = makeConfiguration()
+        addTeardownBlock { _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let reference = try await seededHistory(in: configuration)
+        let replacementReference = try await recreateHistory(for: reference)
+        let resolvedReplacement = try await replacementReference.resolveOnBackgroundActor()
+        let replacement = try XCTUnwrap(resolvedReplacement as? HistoryRecord)
+        let realm = try XCTUnwrap(replacement.realm)
+        let seeded = try journalState(for: replacement, in: realm)
+        let lastVisitedAt = replacement.lastVisitedAt
+
+        let obsolete = try await ReaderContentLoader.finishLoadedContentAndRefreshDemotion(
+            reference,
+            countsAsHistoryVisit: true,
+            readerModeRequired: true,
+            bookmarkRealmConfiguration: configuration,
+            bookmarkStorageAdmission: reference.storageAdmission
+        )
+
+        XCTAssertNil(obsolete)
+        XCTAssertEqual(replacement.createdAt, replacementReference.contentCreatedAt)
+        XCTAssertEqual(replacement.title, "Replacement")
+        XCTAssertEqual(replacement.lastVisitedAt, lastVisitedAt)
+        XCTAssertFalse(replacement.isDeleted)
+        XCTAssertFalse(replacement.isReaderModeByDefault)
+        XCTAssertFalse(replacement.isReaderModeAvailable)
+        XCTAssertFalse(replacement.rssContainsFullContent)
+        XCTAssertFalse(replacement.isFromClipboard)
+        XCTAssertNil(replacement.html)
+        XCTAssertNil(replacement.isDemoted)
+        XCTAssertEqual(try journalState(for: replacement, in: realm), seeded,
+                       "Rejecting the load must also fence its delivered demotion follow-up")
+
+        let current = try await ReaderContentLoader.finishLoadedContentAndRefreshDemotion(
+            replacementReference,
+            countsAsHistoryVisit: false,
+            readerModeRequired: false,
+            bookmarkRealmConfiguration: configuration,
+            bookmarkStorageAdmission: replacementReference.storageAdmission
+        )
+        XCTAssertNotNil(current)
+        XCTAssertEqual(replacement.isDemoted, true)
+        XCTAssertEqual(replacement.lastVisitedAt, lastVisitedAt)
+        let demoted = try journalState(for: replacement, in: realm)
+        XCTAssertNotEqual(demoted.generation, seeded.generation)
+
+        let repeated = try await ReaderContentLoader.finishLoadedContentAndRefreshDemotion(
+            replacementReference,
+            countsAsHistoryVisit: false,
+            readerModeRequired: false,
+            bookmarkRealmConfiguration: configuration,
+            bookmarkStorageAdmission: replacementReference.storageAdmission
+        )
+        XCTAssertNotNil(repeated)
+        XCTAssertEqual(try journalState(for: replacement, in: realm), demoted)
+    }
+
+    @RealmBackgroundActor
+    func testDemotionRejectsHistoryRecreatedAfterItsCommittedPrecheck() async throws {
+        let configuration = makeConfiguration()
+        addTeardownBlock { _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let reference = try await seededHistory(in: configuration)
+        var replacementReference: ReaderContentLoader.ContentReference?
+        var replacementSeeded: JournalState?
+        try await withPausedWrite(.demotion, action: {
+            try await HistoryRecord.refreshDemotedStatus(
+                for: reference, bookmarkRealmConfiguration: configuration, skipPreviouslyDemoted: false
+            )
+        }, mutation: {
+            let recreated = try await self.recreateHistory(for: reference)
+            replacementReference = recreated
+            let resolved = try await recreated.resolveOnBackgroundActor()
+            let replacement = try XCTUnwrap(resolved as? HistoryRecord)
+            let realm = try XCTUnwrap(replacement.realm)
+            replacementSeeded = try self.journalState(for: replacement, in: realm)
+        })
+
+        let recreated = try XCTUnwrap(replacementReference)
+        let resolved = try await recreated.resolveOnBackgroundActor()
+        let replacement = try XCTUnwrap(resolved as? HistoryRecord)
+        let realm = try XCTUnwrap(replacement.realm)
+        XCTAssertEqual(recreated.contentKey, reference.contentKey)
+        XCTAssertNotEqual(recreated.contentCreatedAt, reference.contentCreatedAt)
+        XCTAssertEqual(replacement.title, "Replacement")
+        XCTAssertNil(replacement.isDemoted)
+        XCTAssertEqual(try journalState(for: replacement, in: realm), try XCTUnwrap(replacementSeeded),
+                       "Only the same row incarnation may pass final owned-write admission")
     }
 
     @RealmBackgroundActor
@@ -1528,13 +1772,16 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
 
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
         let url = URL(string: "https://example.com/reader-defaults/\(UUID().uuidString)")!
+        let createdAt = Date(timeIntervalSinceReferenceDate: 90_000)
         let primary = HistoryRecord()
         primary.url = url
         primary.title = "Primary"
+        primary.createdAt = createdAt
         primary.updateCompoundKey()
         let related = Bookmark()
         related.url = url
         related.title = ""
+        related.createdAt = createdAt
         related.isReaderModeAvailable = true
         related.updateCompoundKey()
         try await realm.asyncWrite {
@@ -1544,15 +1791,15 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
             related.refreshChangeMetadata(explicitlyModified: true)
         }
         XCTAssertEqual(primary.compoundKey, related.compoundKey,
-                       "Different Realm model classes may share the same URL key")
-        let primarySeeded = primary.explicitlyModifiedAt
+                       "The primary and its other representation intentionally share a URL key")
+        let primaryReference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: primary))
+        let primarySeeded = try journalState(for: primary, in: realm)
         let seeded = try journalState(for: related, in: realm)
         let html = "<article><p>Complete captured article.</p></article>"
 
         try await ReaderContentLoader.propagateReaderModeDefaults(
             for: url,
-            excludingPrimaryKey: primary.compoundKey,
-            primaryClassName: primary.objectSchema.className,
+            excluding: primaryReference,
             readabilityHTML: html,
             resolvedTitle: "Inferred title",
             permitsCommit: { true }
@@ -1562,20 +1809,187 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         XCTAssertEqual(related.html, html)
         XCTAssertEqual(related.title, "Inferred title")
         XCTAssertTrue(related.rssContainsFullContent)
-        XCTAssertEqual(primary.explicitlyModifiedAt, primarySeeded)
+        XCTAssertFalse(primary.isReaderModeByDefault)
+        XCTAssertNil(primary.html)
+        XCTAssertEqual(primary.title, "Primary")
+        XCTAssertEqual(try journalState(for: primary, in: realm), primarySeeded)
         let changed = try journalState(for: related, in: realm)
         XCTAssertNotEqual(changed.generation, seeded.generation)
 
         try await ReaderContentLoader.propagateReaderModeDefaults(
             for: url,
-            excludingPrimaryKey: primary.compoundKey,
-            primaryClassName: primary.objectSchema.className,
+            excluding: primaryReference,
             readabilityHTML: html,
             resolvedTitle: "Inferred title",
             permitsCommit: { true }
         )
         XCTAssertEqual(try journalState(for: related, in: realm), changed,
                        "A repeated render must not publish another BigSync mutation")
+        XCTAssertEqual(try journalState(for: primary, in: realm), primarySeeded)
+    }
+
+    @RealmBackgroundActor
+    func testAutomaticSchemaPropagationKeepsTheMaterializedPrimaryViewExcluded() async throws {
+        // Install the fixture-model journal policy before the first open, then
+        // retain automatic schema selection in the actual opening configuration.
+        var configuration = makeConfiguration()
+        configuration.objectTypes = nil
+        let capturedConfiguration = configuration
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeed
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        addTeardownBlock {
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: capturedConfiguration)
+        }
+
+        XCTAssertNil(configuration.objectTypes)
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        let materializedConfiguration = realm.configuration
+        let materializedTypes = try XCTUnwrap(materializedConfiguration.objectTypes)
+        XCTAssertTrue(materializedTypes.contains { $0.className() == BigSyncPendingMutation.className() })
+        XCTAssertTrue(materializedTypes.contains { $0.className() == Bookmark.className() })
+        XCTAssertTrue(materializedTypes.contains { $0.className() == HistoryRecord.className() })
+        XCTAssertEqual(materializedConfiguration.inMemoryIdentifier, configuration.inMemoryIdentifier)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: materializedConfiguration)
+        }
+
+        let url = URL(string: "https://example.com/automatic-reader-schema/\(UUID().uuidString)")!
+        let createdAt = Date(timeIntervalSinceReferenceDate: 90_200)
+        let seededPrimary = HistoryRecord()
+        seededPrimary.url = url
+        seededPrimary.title = "Primary"
+        seededPrimary.createdAt = createdAt
+        seededPrimary.isReaderModeAvailable = true
+        seededPrimary.updateCompoundKey()
+        let related = Bookmark()
+        related.url = url
+        related.title = ""
+        related.createdAt = createdAt
+        related.isReaderModeAvailable = true
+        related.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(seededPrimary)
+            seededPrimary.refreshChangeMetadata(explicitlyModified: true)
+            realm.add(related)
+            related.refreshChangeMetadata(explicitlyModified: true)
+        }
+        XCTAssertEqual(seededPrimary.compoundKey, related.compoundKey)
+        let materializedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: materializedConfiguration)
+        await materializedRealm.asyncRefresh()
+        let primary = try XCTUnwrap(materializedRealm.object(
+            ofType: HistoryRecord.self, forPrimaryKey: seededPrimary.compoundKey
+        ))
+        XCTAssertFalse(primary.isReaderModeByDefault)
+        XCTAssertTrue(primary.isReaderModeAvailable)
+        XCTAssertNil(primary.html)
+        let primaryReference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: primary))
+        let primarySeeded = try journalState(for: primary, in: materializedRealm)
+        let relatedSeeded = try journalState(for: related, in: realm)
+        let html = "<article><p>Content through automatic schema discovery.</p></article>"
+
+        // Exclusion captures the materialized schema view. Discovery must keep
+        // its original nil-schema admission while recognizing this same primary.
+        try await ReaderContentLoader.propagateReaderModeDefaults(
+            for: url,
+            excluding: primaryReference,
+            readabilityHTML: html,
+            resolvedTitle: "Automatic-schema title",
+            permitsCommit: { true }
+        )
+        await realm.asyncRefresh()
+        await materializedRealm.asyncRefresh()
+
+        XCTAssertTrue(related.isReaderModeByDefault)
+        XCTAssertFalse(related.isReaderModeAvailable)
+        XCTAssertEqual(related.html, html)
+        XCTAssertEqual(related.title, "Automatic-schema title")
+        XCTAssertTrue(related.rssContainsFullContent)
+        XCTAssertNotEqual(try journalState(for: related, in: realm).generation, relatedSeeded.generation)
+        XCTAssertFalse(primary.isReaderModeByDefault)
+        XCTAssertTrue(primary.isReaderModeAvailable)
+        XCTAssertNil(primary.html)
+        XCTAssertEqual(primary.title, "Primary")
+        XCTAssertEqual(try journalState(for: primary, in: materializedRealm), primarySeeded)
+    }
+
+    @RealmBackgroundActor
+    func testReaderModePropagationDoesNotExcludeSameTypeAndKeyInAnotherStore() async throws {
+        let primaryConfiguration = makeConfiguration()
+        let relatedConfiguration = makeConfiguration()
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeed
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = relatedConfiguration
+        ReaderContentLoader.historyRealmConfiguration = relatedConfiguration
+        ReaderContentLoader.feedEntryRealmConfiguration = relatedConfiguration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        addTeardownBlock {
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: primaryConfiguration)
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: relatedConfiguration)
+        }
+
+        let primaryRealm = try await RealmBackgroundActor.shared.cachedRealm(for: primaryConfiguration)
+        let relatedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: relatedConfiguration)
+        let url = URL(string: "https://example.com/reader-defaults-store-scope/\(UUID().uuidString)")!
+        let createdAt = Date(timeIntervalSinceReferenceDate: 90_100)
+        let primary = Bookmark()
+        primary.url = url
+        primary.title = "Primary"
+        primary.createdAt = createdAt
+        primary.updateCompoundKey()
+        let related = Bookmark()
+        related.url = url
+        related.title = ""
+        related.createdAt = createdAt
+        related.updateCompoundKey()
+        try await primaryRealm.asyncWrite {
+            primaryRealm.add(primary)
+            primary.refreshChangeMetadata(explicitlyModified: true)
+        }
+        try await relatedRealm.asyncWrite {
+            relatedRealm.add(related)
+            related.refreshChangeMetadata(explicitlyModified: true)
+        }
+        XCTAssertEqual(primary.compoundKey, related.compoundKey)
+        XCTAssertEqual(primary.createdAt, related.createdAt)
+        let primaryReference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: primary))
+        let primarySeeded = try journalState(for: primary, in: primaryRealm)
+        let relatedSeeded = try journalState(for: related, in: relatedRealm)
+        let html = "<p>Content for the discovered store</p>"
+
+        try await ReaderContentLoader.propagateReaderModeDefaults(
+            for: url,
+            excluding: primaryReference,
+            readabilityHTML: html,
+            resolvedTitle: "Discovered title",
+            permitsCommit: { true }
+        )
+
+        XCTAssertTrue(related.isReaderModeByDefault)
+        XCTAssertEqual(related.html, html)
+        XCTAssertEqual(related.title, "Discovered title")
+        XCTAssertNotEqual(try journalState(for: related, in: relatedRealm).generation, relatedSeeded.generation)
+        XCTAssertFalse(primary.isReaderModeByDefault)
+        XCTAssertNil(primary.html)
+        XCTAssertEqual(primary.title, "Primary")
+        XCTAssertEqual(try journalState(for: primary, in: primaryRealm), primarySeeded)
     }
 
     @MainActor
@@ -1605,7 +2019,10 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
             realm.add(related)
             related.refreshChangeMetadata(explicitlyModified: true)
         }
-        let seeded = try XCTUnwrap(pendingMutation(for: related, in: realm)).generation
+        XCTAssertEqual(primary.compoundKey, related.compoundKey)
+        let primaryReference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: primary))
+        let primarySeeded = try journalState(for: primary, in: realm)
+        let seeded = try journalState(for: related, in: realm)
 
         let reader = ReaderContent()
         try await reader.load(url: url, resolveContent: { _ in primary })
@@ -1616,14 +2033,10 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         await { @RealmBackgroundActor in
             ReaderContentLoader.loadAllDiscoveryGateForTesting = { await gate.pause() }
         }()
-        let primaryKey = primary.compoundKey
-        let primaryClassName = primary.objectSchema.className
-        XCTAssertEqual(primaryKey, related.compoundKey)
         let propagation = Task { @RealmBackgroundActor in
             try await ReaderContentLoader.propagateReaderModeDefaults(
                 for: url,
-                excludingPrimaryKey: primaryKey,
-                primaryClassName: primaryClassName,
+                excluding: primaryReference,
                 readabilityHTML: "<p>Stale reader document</p>",
                 resolvedTitle: "Stale title",
                 permitsCommit: fence
@@ -1655,7 +2068,28 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         XCTAssertEqual(related.title, "Original related title")
         XCTAssertFalse(related.isReaderModeByDefault)
         XCTAssertNil(related.html)
-        XCTAssertEqual(try XCTUnwrap(pendingMutation(for: related, in: realm)).generation, seeded)
+        XCTAssertEqual(try journalState(for: related, in: realm), seeded)
+        XCTAssertEqual(try journalState(for: primary, in: realm), primarySeeded)
+
+        // Prove this same-key peer was eligible: a fresh selection can perform
+        // the mutation that the retired selection was forbidden to publish.
+        try await reader.load(url: url, resolveContent: { _ in primary })
+        let currentFence = reader.makeSelectionCommitFence(requiring: reader.currentSelectionID)
+        XCTAssertTrue(currentFence())
+        let currentHTML = "<p>Current reader document</p>"
+        try await ReaderContentLoader.propagateReaderModeDefaults(
+            for: url,
+            excluding: primaryReference,
+            readabilityHTML: currentHTML,
+            resolvedTitle: "Current title",
+            permitsCommit: currentFence
+        )
+        await realm.asyncRefresh()
+        XCTAssertTrue(related.isReaderModeByDefault)
+        XCTAssertEqual(related.html, currentHTML)
+        XCTAssertEqual(related.title, "Original related title")
+        XCTAssertNotEqual(try journalState(for: related, in: realm).generation, seeded.generation)
+        XCTAssertEqual(try journalState(for: primary, in: realm), primarySeeded)
     }
 
     @MainActor
