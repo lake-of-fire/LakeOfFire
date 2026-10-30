@@ -97,9 +97,11 @@ private func makeReaderWebViewHandlerFixture() -> (
 @MainActor
 final class ReaderWebViewCallbackContractTests: XCTestCase {
     private func cachedHistoryRecord(url: URL) throws -> (Realm, HistoryRecord) {
-        let realm = try Realm(configuration: .init(
+        var configuration = Realm.Configuration(
             inMemoryIdentifier: UUID().uuidString, objectTypes: [HistoryRecord.self]
-        ), queue: nil)
+        )
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let realm = try Realm(configuration: configuration, queue: nil)
         let record = HistoryRecord()
         record.compoundKey = UUID().uuidString
         record.url = url
@@ -955,12 +957,92 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         var state = WebViewState.empty
         state.pageURL = url
 
+        let selectedContentIsCurrent = fixture.readerContent.makeSelectionCommitFence(
+            requiring: fixture.readerContent.currentSelectionID)
         fixture.handler.onDocumentContextInvalidated(state: state, reason: .navigationCommitted)
 
+        XCTAssertTrue(selectedContentIsCurrent(), "The prepared document keeps the content selection owning its render generation")
         XCTAssertTrue(fixture.readerContent.isRenderingReaderHTML)
         XCTAssertTrue(fixture.readerModeViewModel.isReaderModeLoading)
         XCTAssertEqual(fixture.readerModeViewModel.pendingReaderModeURL, url)
         XCTAssertEqual(fixture.readerModeViewModel.expectedSyntheticReaderLoaderURL, url)
+    }
+
+    func testOtherDocumentInvalidationsRetireSelectionEvenWithPreparedCommitPending() throws {
+        for reason in [WebViewDocumentContextInvalidationReason.webViewDetached, .webContentProcessTerminated, .navigationCommitted] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            let preparedURL = URL(string: "https://example.com/prepared")!
+            fixture.readerContent.pageURL = preparedURL
+            fixture.readerModeViewModel.beginReaderModeLoad(for: preparedURL)
+            fixture.readerModeViewModel.expectSyntheticReaderLoaderCommit(for: preparedURL)
+            let caller = fixture.handler.scriptCaller
+            let owner = UUID()
+            caller.installBinding(ownedBy: owner, asyncCaller: { _, _, _, _ in .init(nil) },
+                unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil })
+            defer { _ = caller.clearBinding(ownedBy: owner) }
+            let intent = WebViewURLTransitionIntent(destinationURL: preparedURL,
+                javaScriptBindingToken: try XCTUnwrap(caller.currentJavaScriptBindingToken))
+            let handoff = try XCTUnwrap(fixture.readerContent.receiveSelectionIntent(intent))
+            XCTAssertTrue(handoff.permitsCapture)
+            var state = WebViewState.empty
+            state.pageURL = reason == .navigationCommitted ? URL(string: "https://example.com/other")! : preparedURL
+            fixture.handler.onDocumentContextInvalidated(state: state, reason: reason)
+            XCTAssertFalse(handoff.permitsCapture, "\(reason)")
+            XCTAssertNil(fixture.readerModeViewModel.expectedSyntheticReaderLoaderURL)
+            XCTAssertNil(fixture.readerModeViewModel.pendingReaderModeURL)
+        }
+    }
+
+    func testDispatchedReaderDocumentRetainsGenerationAcrossCommitSelectionHandoff() async throws {
+        for replacement in ["same-content", "other-document", "same-url-row"] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            let mode = fixture.readerModeViewModel
+            let reader = fixture.readerContent
+            let url = URL(string: "https://example.com/prepared-reader-race")!
+            let (realm, row) = try cachedHistoryRecord(url: url)
+            defer { mode.readerDocumentDispatchedForTesting = nil; withExtendedLifetime(realm) {} }
+            reader.content = row
+            reader.pageURL = url
+            mode.navigator = fixture.handler.navigator
+            mode.readerPublicationDateLoader = { _ in nil }
+            mode.readabilityContent = "<html><body><div id='reader-content'>Prepared reader content.</div></body></html>"
+            let oldSelectionIsCurrent = reader.makeSelectionCommitFence(requiring: reader.currentSelectionID)
+            let caller = fixture.handler.scriptCaller
+            let bindingOwner = UUID()
+            caller.installBinding(ownedBy: bindingOwner, asyncCaller: { _, _, _, _ in .init(nil) },
+                unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil })
+            defer { _ = caller.clearBinding(ownedBy: bindingOwner) }
+            var generation: UUID?
+            var dispatched = false
+            mode.readerDocumentDispatchedForTesting = {
+                dispatched = true
+                generation = UUID(uuidString: mode.currentRenderGenerationDescription(for: url))
+                do {
+                    let intent = WebViewURLTransitionIntent(destinationURL: url,
+                        javaScriptBindingToken: try XCTUnwrap(caller.currentJavaScriptBindingToken))
+                    XCTAssertNotNil(reader.receiveSelectionIntent(intent))
+                    try await reader.load(url: url, consuming: intent, resolveContent: { _ in row })
+                    XCTAssertFalse(oldSelectionIsCurrent(), "The real selection handoff must retire preprocessing authority")
+                    if replacement == "same-url-row" {
+                        let replacementRow = HistoryRecord()
+                        replacementRow.url = url
+                        reader.content = replacementRow
+                    } else if replacement == "other-document" {
+                        var state = WebViewState.empty
+                        state.pageURL = URL(string: "https://example.com/other-document")!
+                        fixture.handler.onDocumentContextInvalidated(state: state, reason: .navigationCommitted)
+                    }
+                } catch { XCTFail("Could not perform the native selection handoff: \(error)") }
+            }
+            mode.showReaderView(readerContent: reader, scriptCaller: caller)
+            await mode.waitForReaderModeRender(for: url)
+            XCTAssertTrue(dispatched)
+            let admittedGeneration = try XCTUnwrap(generation)
+            XCTAssertFalse(mode.handleRenderedReaderDocumentReady(pageURL: url, hasReaderContent: true, renderGeneration: nil))
+            XCTAssertFalse(mode.handleRenderedReaderDocumentReady(pageURL: url, hasReaderContent: true, renderGeneration: UUID()))
+            XCTAssertEqual(mode.handleRenderedReaderDocumentReady(pageURL: url, hasReaderContent: true,
+                renderGeneration: admittedGeneration), replacement == "same-content", replacement)
+        }
     }
 
 }
