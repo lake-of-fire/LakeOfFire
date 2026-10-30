@@ -11,7 +11,6 @@ import FilePicker
 import UniformTypeIdentifiers
 import OPML
 import SwiftUIWebView
-import SwiftUIBackports
 import FaviconFinder
 import DebouncedOnChange
 import OpenGraph

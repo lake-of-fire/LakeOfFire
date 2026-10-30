@@ -148,6 +148,7 @@ public struct ContentCategoryButtons: View {
     }
 }
 
+#if DEBUG
 public struct MangaCategoryButton: View {
     @Binding var categorySelection: String?
 //    var font = Font.title3
@@ -179,6 +180,7 @@ public struct MangaCategoryButton: View {
     }
 }
 
+#endif
 public struct BooksCategoryButton: View {
     @Binding var categorySelection: String?
 //    var font = Font.title3

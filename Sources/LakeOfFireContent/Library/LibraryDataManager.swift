@@ -1192,6 +1192,11 @@ public class LibraryDataManager: NSObject {
         importedFeeds: OrderedSet<Feed> = OrderedSet(),
         importedScripts: OrderedSet<UserScript> = OrderedSet()
     ) async throws -> (OrderedSet<FeedCategory>, OrderedSet<FeedDirectory>, OrderedSet<Feed>, OrderedSet<UserScript>) {
+        // Library documents never deliver executable behavior.
+        if opmlEntry.attributeStringValue("script") != nil
+            || opmlEntry.attributeBoolValue("isUserScriptList") == true {
+            return (importedCategories, importedDirectories, importedFeeds, importedScripts)
+        }
         var category = category
         var directory = directory
         let categoryID = category?.id
@@ -1247,40 +1252,6 @@ public class LibraryDataManager: NSObject {
                         feed.refreshChangeMetadata(explicitlyModified: true)
                     }
                     importedFeeds.append(feed)
-                }
-            }
-        } else if opmlEntry.attributeStringValue("script") != nil {
-            // The attribute identifies a script even when its draft source is empty.
-            // Reject malformed restrictions before any script attributes or links change.
-            _ = try Self.decodedScriptDomains(from: opmlEntry)
-            if let uuid = uuid, let script = realm.objects(UserScript.self).filter({ $0.id == uuid }).first {
-                if script.opmlURL == download?.url || script.isDeleted {
-                    if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, script: script) {
-                        try Task.checkCancellation()
-//                        await realm.asyncRefresh()
-                        try await realm.asyncWritePreservingOwnership {
-                            try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
-                            try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
-                        }
-                    }
-                    importedScripts.append(script)
-                }
-            } else {
-                let script = UserScript()
-                if let uuid = uuid, script.realm == nil {
-                    script.id = uuid
-                    if let downloadURL = download?.url {
-                        script.opmlURL = downloadURL
-                    }
-                    try Task.checkCancellation()
-//                    await realm.asyncRefresh()
-                    try await realm.asyncWritePreservingOwnership {
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
-                        realm.add(script, update: .modified)
-                        script.refreshChangeMetadata(explicitlyModified: true)
-                        try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
-                    }
-                    importedScripts.append(script)
                 }
             }
         } else if uuid != nil || !(opmlEntry.children?.isEmpty ?? true) {

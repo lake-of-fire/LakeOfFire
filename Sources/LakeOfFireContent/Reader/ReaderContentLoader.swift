@@ -23,6 +23,7 @@ fileprivate extension URL {
 
 /// Loads from any source by URL.
 public struct ReaderContentLoader {
+#if DEBUG
     // Task-scoped input lets behavior tests exercise the public pasteboard route.
     @TaskLocal static var pasteboardStringsForTesting: (html: String?, text: String?)? = nil
 
@@ -30,6 +31,7 @@ public struct ReaderContentLoader {
     // joining without adding a scheduling point to production admission.
     enum GetContentEvent: Sendable { case capturedStorage, joinedTask }
     @TaskLocal static var getContentObservationForTesting: (@Sendable (GetContentEvent) -> Void)? = nil
+#endif
 
     /// Immutable Realm routing for one reader discovery operation. Capture this
     /// before an actor hop: account replacement may otherwise make one query
@@ -105,6 +107,7 @@ public struct ReaderContentLoader {
     private static var inFlightGetContentTasks: [GetContentTaskKey: Task<(any ReaderContentProtocol)?, Error>] = [:]
     @RealmBackgroundActor
     private static var inFlightLoadAllTasks: [LoadAllTaskKey: Task<[ContentReference], Error>] = [:]
+#if DEBUG
     @RealmBackgroundActor
     static var loadAllDiscoveryGateForTesting: (@Sendable () async -> Void)?
 
@@ -113,6 +116,7 @@ public struct ReaderContentLoader {
     }
     @RealmBackgroundActor
     static var contentWriteGateForTesting: (@Sendable (ContentWriteOperation) async -> Void)?
+#endif
 
     public struct ContentReference {
         public let contentType: RealmSwift.Object.Type
@@ -198,6 +202,7 @@ public struct ReaderContentLoader {
         }
     }
 
+#if DEBUG
     public static func resetTransientCachesForTesting() async {
         await MainActor.run {
             inFlightGetContentTasks.removeAll()
@@ -209,6 +214,7 @@ public struct ReaderContentLoader {
         }()
     }
 
+#endif
     @MainActor
     public static func hasLocallyRetrievableHTML(
         for content: any ReaderContentProtocol,
@@ -316,7 +322,9 @@ public struct ReaderContentLoader {
 
         let task = Task<[ContentReference], Error> { @RealmBackgroundActor in
             try Task.checkCancellation()
+#if DEBUG
             await loadAllDiscoveryGateForTesting?()
+#endif
 
             let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(
                 for: storage.historyConfiguration, storageAdmission: storage.historyAdmission
@@ -473,14 +481,22 @@ public struct ReaderContentLoader {
         guard !pageURL.isReaderURLLoaderURL || backingURL != nil else { return nil }
         let resolvedURL = backingURL ?? pageURL
         let storage = DiscoveryStorage()
+#if DEBUG
+#if DEBUG
         getContentObservationForTesting?(.capturedStorage)
+#endif
+#endif
         let taskKey = GetContentTaskKey(
             url: resolvedURL.absoluteString,
             countsAsHistoryVisit: countsAsHistoryVisit,
             storage: storage.identity
         )
         if let existingTask = inFlightGetContentTasks[taskKey] {
+#if DEBUG
+#if DEBUG
             getContentObservationForTesting?(.joinedTask)
+#endif
+#endif
             return try await existingTask.value
         }
 
@@ -764,7 +780,9 @@ public struct ReaderContentLoader {
                 !content.isDeleted else { return nil }
             return reference
         }
+#if DEBUG
         await contentWriteGateForTesting?(.loadedContent)
+#endif
         return try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             try reference.validateStorage()
@@ -1097,7 +1115,9 @@ public struct ReaderContentLoader {
     @RealmBackgroundActor
     static func markSnippetFromClipboard(_ reference: ContentReference) async throws -> ContentReference? {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
+#if DEBUG
         await contentWriteGateForTesting?(.clipboard)
+#endif
         return try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             try reference.validateStorage()
@@ -1120,7 +1140,11 @@ public struct ReaderContentLoader {
 
     @MainActor
     private static func pasteboardImportStrings() -> (html: String?, text: String?) {
+#if DEBUG
+#if DEBUG
         if let strings = pasteboardStringsForTesting { return strings }
+#endif
+#endif
 
 #if os(macOS)
         let html = NSPasteboard.general.string(forType: .html)

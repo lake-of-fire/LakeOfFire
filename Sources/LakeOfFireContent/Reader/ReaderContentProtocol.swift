@@ -764,7 +764,9 @@ public extension ReaderContentProtocol {
             sourceRealm = nil
         }
         let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration, storageAdmission: bookmarkAdmission)
+#if DEBUG
         await ReaderContentLoader.contentWriteGateForTesting?(.historyCreation)
+#endif
         let recordKey = try await realm.asyncWritePreservingOwnership { () throws -> String in
             try Task.checkCancellation()
             guard historyAdmission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration) }),
