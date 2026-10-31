@@ -1253,7 +1253,7 @@ public class LibraryDataManager: NSObject {
             // The attribute identifies a script even when its draft source is empty.
             if let uuid = uuid, let script = realm.objects(UserScript.self).filter({ $0.id == uuid }).first {
                 if script.opmlURL == download?.url || script.isDeleted {
-                    if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, script: script) {
+                    if try Self.hasChanges(opml: opml, opmlEntry: opmlEntry, script: script) {
                         try Task.checkCancellation()
 //                        await realm.asyncRefresh()
                         try await realm.asyncWritePreservingOwnership {
@@ -1376,9 +1376,18 @@ public class LibraryDataManager: NSObject {
         return (importedCategories, importedDirectories, importedFeeds, importedScripts)
     }
     
+    static func decodedScriptDomains(from entry: OPMLEntry) throws -> [String] {
+        try (entry.attributeStringValue("allowedDomains")?.split(separator: ",") ?? []).map {
+            guard let domain = $0.removingPercentEncoding else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return domain
+        }
+    }
+
     static func applyScriptDomains(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) throws {
+        let domains = try Self.decodedScriptDomains(from: opmlEntry)
         guard let realm = script.realm else { return }
-        let domains: [String] = opmlEntry.attributeStringValue("allowedDomains")?.split(separator: ",").compactMap { $0.removingPercentEncoding } ?? []
 //        script.allowedDomains.removeAll()
         func removeAllowedDomainID(_ domainID: UUID) {
             while let index = script.allowedDomainIDs.firstIndex(of: domainID) {
@@ -1425,7 +1434,9 @@ public class LibraryDataManager: NSObject {
         // TODO: Clean up orphan domain objects that appear due to some bug...
     }
     
-    static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) -> Bool {
+    static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) throws -> Bool {
+        // Validate before any early return, including otherwise unchanged imports.
+        let newAllowedDomains = try Self.decodedScriptDomains(from: opmlEntry)
         if script.title != opmlEntry.text {
             return true
         }
@@ -1433,8 +1444,9 @@ public class LibraryDataManager: NSObject {
         if script.script != newScript {
             return true
         }
-        let newAllowedDomains = opmlEntry.attributeStringValue("allowedDomains")?.split(separator: ",").compactMap { $0.removingPercentEncoding }
-        if Set(script.getAllowedDomains()?.map({ $0.domain }) ?? []) != Set(newAllowedDomains ?? []) {
+        let allowedDomains = script.getAllowedDomains() ?? []
+        if Set(allowedDomains.map(\.id)) != Set(script.allowedDomainIDs)
+            || Set(allowedDomains.map(\.domain)) != Set(newAllowedDomains) {
             return true
         }
         let newInjectAtStart = opmlEntry.attributeBoolValue("injectAtStart") ?? false
@@ -1469,6 +1481,8 @@ public class LibraryDataManager: NSObject {
     
     static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) throws {
         // Must be kept in sync with respective hasChanges
+        // New imports reach this path without hasChanges; reject before mutation.
+        _ = try Self.decodedScriptDomains(from: opmlEntry)
         var didChange = false
         
         if script.title != opmlEntry.text {

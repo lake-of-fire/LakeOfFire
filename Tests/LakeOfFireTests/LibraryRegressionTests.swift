@@ -671,6 +671,198 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
             .map { ($0.recordName, $0.generation) }), generations)
     }
 
+    @RealmBackgroundActor
+    func testUserScriptAdmissionRequiresCompleteLiveRestrictions() async throws {
+        let realm = try await Realm(configuration: makeOPMLConfiguration(), actor: RealmBackgroundActor.shared)
+        let script = UserScript()
+        script.opmlURL = URL(string: "https://example.com/scripts.opml")
+        script.script = "window.scoped = true;"
+        let domain = UserScriptAllowedDomain()
+        domain.domain = "example.com"
+        try realm.write { realm.add([script, domain]) }
+
+        await assertScriptAdmission(script, domains: [])
+        try realm.write { script.allowedDomainIDs.append(domain.id) }
+        await assertScriptAdmission(script, domains: ["example.com"])
+        // Duplicate links do not make an otherwise complete graph incomplete.
+        try realm.write { script.allowedDomainIDs.append(domain.id) }
+        await assertScriptAdmission(script, domains: ["example.com"])
+        let missingID = UUID()
+        try realm.write { script.allowedDomainIDs.append(missingID) }
+        await assertScriptAdmission(script, domains: nil)
+        try realm.write {
+            script.allowedDomainIDs.removeAll()
+            script.allowedDomainIDs.append(missingID)
+        }
+        await assertScriptAdmission(script, domains: nil)
+        try realm.write {
+            script.allowedDomainIDs.removeAll()
+            script.allowedDomainIDs.append(domain.id)
+            domain.isDeleted = true
+        }
+        await assertScriptAdmission(script, domains: nil)
+        let liveDomain = UserScriptAllowedDomain()
+        liveDomain.domain = "other.example"
+        try realm.write {
+            realm.add(liveDomain)
+            script.allowedDomainIDs.append(liveDomain.id)
+        }
+        await assertScriptAdmission(script, domains: nil)
+        try realm.write {
+            domain.isDeleted = false
+            script.isDeleted = true
+        }
+        await assertScriptAdmission(script, domains: nil)
+        try realm.write { script.allowedDomainIDs.removeAll() }
+        await assertScriptAdmission(script, domains: nil)
+    }
+
+    @RealmBackgroundActor
+    func testOPMLMalformedScriptDomainsLeaveStoredGraphAndJournalUnchanged() async throws {
+        let configuration = makeOPMLConfiguration()
+        addTeardownBlock { _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let manager = LibraryDataManager(observesChanges: false)
+        let library = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+        let realm = try XCTUnwrap(library.realm)
+        let script = UserScript()
+        script.title = "Original"
+        script.script = "original"
+        script.previewURL = URL(string: "about:blank")
+        let domain = UserScriptAllowedDomain()
+        domain.domain = "example.com"
+        script.allowedDomainIDs.append(domain.id)
+        try realm.write {
+            realm.add([script, domain])
+            library.userScriptIDs.append(script.id)
+            script.refreshChangeMetadata(explicitlyModified: true)
+            domain.refreshChangeMetadata(explicitlyModified: true)
+            library.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let generations = Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
+            .map { ($0.recordName, $0.generation) })
+        let scriptModifiedAt = script.modifiedAt
+        let domainModifiedAt = domain.modifiedAt
+        let libraryModifiedAt = library.modifiedAt
+
+        for encoded in ["%", "%GG", "%FF", "example.com,%GG", "other.example,%"] {
+            // Exercise existing (including an otherwise unchanged entry) and new imports.
+            for id in [script.id, UUID()] {
+                for title in ["Original", "Changed"] {
+                    let fileURL = try writeScriptOPML(id: id, title: title, domains: encoded)
+                    defer { try? FileManager.default.removeItem(at: fileURL) }
+                    do {
+                        try await manager.importOPML(
+                            fileURL: fileURL, realmConfiguration: configuration
+                        )
+                        XCTFail("Malformed domains must reject the import: \(encoded)")
+                    } catch {
+                        XCTAssertEqual((error as NSError).domain, NSCocoaErrorDomain)
+                        XCTAssertEqual((error as NSError).code, CocoaError.fileReadCorruptFile.rawValue)
+                    }
+                    XCTAssertEqual(script.title, "Original")
+                    XCTAssertEqual(script.script, "original")
+                    XCTAssertEqual(Array(script.allowedDomainIDs), [domain.id])
+                    XCTAssertFalse(script.isDeleted)
+                    XCTAssertFalse(domain.isDeleted)
+                    XCTAssertEqual(domain.domain, "example.com")
+                    XCTAssertEqual(script.modifiedAt, scriptModifiedAt)
+                    XCTAssertEqual(domain.modifiedAt, domainModifiedAt)
+                    XCTAssertEqual(library.modifiedAt, libraryModifiedAt)
+                    XCTAssertEqual(Array(library.userScriptIDs), [script.id])
+                    XCTAssertEqual(realm.objects(UserScript.self).count, 1)
+                    XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 1)
+                    XCTAssertEqual(Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
+                        .map { ($0.recordName, $0.generation) }), generations)
+                }
+            }
+        }
+    }
+
+    @RealmBackgroundActor
+    func testOPMLValidScriptDomainsAndGlobalRestrictionsRemainSupported() async throws {
+        let configuration = makeOPMLConfiguration()
+        addTeardownBlock { _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let manager = LibraryDataManager(observesChanges: false)
+        let library = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+        let realm = try XCTUnwrap(library.realm)
+        let id = UUID()
+        let policies: [(String?, Set<String>)] = [
+            ("example%2Ecom,other.example", ["example.com", "other.example"]),
+            ("", []), (nil, []),
+        ]
+        for (encoded, expected) in policies {
+            let fileURL = try writeScriptOPML(id: id, title: "Original", domains: encoded)
+            defer { try? FileManager.default.removeItem(at: fileURL) }
+            try await manager.importOPML(fileURL: fileURL, realmConfiguration: configuration)
+            let script = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: id))
+            await assertScriptAdmission(script, domains: expected)
+            let generations = Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
+                .map { ($0.recordName, $0.generation) })
+            try await manager.importOPML(fileURL: fileURL, realmConfiguration: configuration)
+            XCTAssertEqual(Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
+                .map { ($0.recordName, $0.generation) }), generations)
+        }
+    }
+
+    @RealmBackgroundActor
+    func testOPMLValidImportRepairsIncompleteScriptRestrictionGraph() async throws {
+        let configuration = makeOPMLConfiguration()
+        addTeardownBlock { _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        let manager = LibraryDataManager(observesChanges: false)
+        let library = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+        let realm = try XCTUnwrap(library.realm)
+        let script = UserScript()
+        let domain = UserScriptAllowedDomain()
+        domain.domain = "example.com"
+        domain.isDeleted = true
+        script.allowedDomainIDs.append(objectsIn: [domain.id, UUID()])
+        try realm.write {
+            realm.add([script, domain])
+            library.userScriptIDs.append(script.id)
+        }
+        await assertScriptAdmission(script, domains: nil)
+        let fileURL = try writeScriptOPML(id: script.id, title: "Original", domains: "example.com")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        try await manager.importOPML(fileURL: fileURL, realmConfiguration: configuration)
+        XCTAssertFalse(domain.isDeleted)
+        XCTAssertEqual(Array(script.allowedDomainIDs), [domain.id])
+        await assertScriptAdmission(script, domains: ["example.com"])
+        XCTAssertNotNil(realm.object(ofType: BigSyncPendingMutation.self,
+                                    forPrimaryKey: "UserScript.\(script.id)"))
+        XCTAssertNotNil(realm.object(ofType: BigSyncPendingMutation.self,
+                                    forPrimaryKey: "UserScriptAllowedDomain.\(domain.id)"))
+        // With all attributes and surviving domain values unchanged, a missing
+        // relationship still requires repair rather than taking the no-op path.
+        try realm.write { script.allowedDomainIDs.append(UUID()) }
+        await assertScriptAdmission(script, domains: nil)
+        try await manager.importOPML(fileURL: fileURL, realmConfiguration: configuration)
+        XCTAssertEqual(Array(script.allowedDomainIDs), [domain.id])
+        await assertScriptAdmission(script, domains: ["example.com"])
+    }
+
+    @RealmBackgroundActor
+    private func assertScriptAdmission(
+        _ script: UserScript, domains: Set<String>?, file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        let frozen = script.freeze()
+        let actual = await MainActor.run { frozen.getWebViewUserScript()?.allowedDomains }
+        XCTAssertEqual(actual, domains, file: file, line: line)
+    }
+
+    private func writeScriptOPML(id: UUID, title: String, domains: String?) throws -> URL {
+        let domainAttribute = domains.map { " allowedDomains=\"\($0)\"" } ?? ""
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <opml version="2.0"><head/><body>
+          <outline text="\(title)" uuid="\(id.uuidString)" script="original" injectAtStart="true" mainFrameOnly="true" previewURL="about:blank"\(domainAttribute)/>
+        </body></opml>
+        """
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("script-domains-\(UUID().uuidString).opml")
+        try xml.write(to: fileURL, atomically: true, encoding: .utf8)
+        return fileURL
+    }
+
     private func makeOPMLConfiguration() -> Realm.Configuration {
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         configuration.objectTypes = [

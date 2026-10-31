@@ -47,7 +47,10 @@ public class UserScript: Object, UnownedSyncableObject, ObjectKeyIdentifiable, C
     @Persisted public var isDeleted = false
     
     public func getWebViewUserScript() -> WebViewUserScript? {
-        guard let allowedDomains = getAllowedDomains() else { return nil }
+        // An incomplete restriction graph must not become an unrestricted script.
+        guard !isDeleted,
+              let allowedDomains = getAllowedDomains(),
+              Set(allowedDomains.map(\.id)) == Set(allowedDomainIDs) else { return nil }
         return WebViewUserScript(
             source: script,
             injectionTime: injectAtStart ? .atDocumentStart : .atDocumentEnd,
