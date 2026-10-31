@@ -49,7 +49,7 @@ public class UserScript: Object, UnownedSyncableObject, ObjectKeyIdentifiable, C
     public func getWebViewUserScript() -> WebViewUserScript? {
         guard opmlURL == nil, !isDeleted else { return nil }
         guard let allowedDomains = getAllowedDomains(),
-              allowedDomains.count == Set(allowedDomainIDs).count else { return nil }
+              Set(allowedDomains.map(\.id)) == Set(allowedDomainIDs) else { return nil }
         return WebViewUserScript(
             source: script,
             injectionTime: injectAtStart ? .atDocumentStart : .atDocumentEnd,
