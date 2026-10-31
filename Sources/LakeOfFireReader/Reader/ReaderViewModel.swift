@@ -56,8 +56,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published public private(set) var ebookNativeMarkReadRequestOutcome: String = "none"
     @Published public private(set) var ebookNativeMarkReadRequestErrorCode: String = ""
     public var scriptCaller = WebViewScriptCaller()
-    @Published var webViewUserScripts: [WebViewUserScript]? = nil
-    @Published var webViewSystemScripts: [WebViewUserScript]? = nil
+    // Empty is already the effective rendering value before library hydration.
+    // An empty first snapshot must not invalidate the newly constructed reader.
+    @Published var webViewUserScripts: [WebViewUserScript] = []
+    @Published var webViewSystemScripts: [WebViewUserScript] = []
     
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
@@ -65,6 +67,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
+    @RealmBackgroundActor
+    private var scriptSnapshotRevision: UInt64 = 0
+    private var appliedScriptSnapshotRevision: UInt64 = 0
 
     @MainActor
     private static let builtInReaderScripts = [
@@ -74,7 +79,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     public var allScripts: [WebViewUserScript] {
-        Self.builtInReaderScripts + (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
+        Self.builtInReaderScripts + webViewSystemScripts + webViewUserScripts
     }
 
     @MainActor
@@ -243,18 +248,35 @@ public class ReaderViewModel: NSObject, ObservableObject {
         let trace = ReaderLoadTrace.begin("reader.scriptSnapshot")
         defer { trace?.end() }
         try Task.checkCancellation()
+        ReaderLoadTrace.event("reader.scriptSnapshot", "phase=consolidationStarted")
         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: realmConfiguration)
-        let ref = ThreadSafeReference(to: libraryConfiguration)
-        try await { @MainActor [weak self] in
-            let realm = try await Realm.open(configuration: realmConfiguration)
+        ReaderLoadTrace.event("reader.scriptSnapshot", "phase=consolidationFinished")
+        try Task.checkCancellation()
+        guard !libraryConfiguration.isInvalidated, !libraryConfiguration.isDeleted else { return }
+        // Only plain values cross actors. WebKit worlds and scripts are both
+        // created on MainActor, without opening another Realm there.
+        let scripts = libraryConfiguration.getActiveUserScriptSnapshots() ?? []
+        scriptSnapshotRevision += 1
+        let revision = scriptSnapshotRevision
+        ReaderLoadTrace.event("reader.scriptSnapshot", "phase=publicationRequested count=\(scripts.count)")
+        try await { @MainActor [weak self, scripts] in
             try Task.checkCancellation()
-            guard let self, let libraryConfiguration = realm.resolve(ref),
-                  !libraryConfiguration.isDeleted else { return }
-            let scripts = libraryConfiguration.getActiveWebViewUserScripts()
-            if self.webViewUserScripts != scripts {
-                self.webViewUserScripts = scripts
-            }
+            guard let self else { return }
+            ReaderLoadTrace.event("reader.scriptSnapshot", "phase=publicationStarted")
+            self.applyUserScriptSnapshot(scripts, revision: revision)
         }()
+    }
+
+    @MainActor
+    func applyUserScriptSnapshot(_ snapshots: [UserScriptSnapshot], revision: UInt64) {
+        // Actor hops need not deliver in order. Advance even for equal values so
+        // an older, different snapshot cannot replace the latest accepted one.
+        guard revision > appliedScriptSnapshotRevision else { return }
+        appliedScriptSnapshotRevision = revision
+        let scripts = snapshots.map { $0.makeWebViewUserScript() }
+        if webViewUserScripts != scripts {
+            webViewUserScripts = scripts
+        }
     }
     
     @MainActor

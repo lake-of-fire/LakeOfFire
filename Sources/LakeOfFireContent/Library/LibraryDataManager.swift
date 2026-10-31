@@ -195,12 +195,18 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
 //        return Set(downloadables.compactMap({ $0.backgroundAssetDownload(applicationGroupIdentifier: Self.securityApplicationGroupIdentifier)}))
 //    }
     
+    @MainActor
     public func getActiveWebViewUserScripts() -> [WebViewUserScript]? {
-        guard let realm else {
+        getActiveUserScriptSnapshots()?.map { $0.makeWebViewUserScript() }
+    }
+
+    public func getActiveUserScriptSnapshots() -> [UserScriptSnapshot]? {
+        guard realm != nil else {
             print("Warning: Unexpectedly unmanaged object")
             return nil
         }
-        return Array(getUserScripts()?.filter { !$0.isArchived }.compactMap { $0.getWebViewUserScript() } ?? [])
+        return getUserScripts()?.filter { !$0.isArchived }
+            .compactMap { $0.getWebViewUserScriptSnapshot() }
     }
 //    
 //    public static func get() throws -> LibraryConfiguration? {

@@ -571,6 +571,36 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
         }
     }
 
+    func testReaderScriptSnapshotRejectsOlderDeliveryWithoutRepublishingUnchangedScripts() {
+        let reader = ReaderViewModel(realmConfiguration: configuration(), systemScripts: [])
+        let older = UserScriptSnapshot(
+            source: "window.oldScript = true;", injectionTime: .atDocumentStart,
+            isForMainFrameOnly: true, worldName: "older-world", allowedDomains: []
+        )
+        let current = UserScriptSnapshot(
+            source: "window.currentScript = true;", injectionTime: .atDocumentEnd,
+            isForMainFrameOnly: true, worldName: "current-world", allowedDomains: ["current.example.com"]
+        )
+        var publications = 0
+        let observation = reader.$webViewUserScripts.dropFirst().sink { _ in publications += 1 }
+        defer { observation.cancel() }
+        reader.applyUserScriptSnapshot([current], revision: 2)
+        reader.applyUserScriptSnapshot([older], revision: 1)
+        XCTAssertEqual(reader.webViewUserScripts.map(\.source), [current.source])
+        XCTAssertEqual(publications, 1)
+
+        reader.applyUserScriptSnapshot([current], revision: 4)
+        reader.applyUserScriptSnapshot([older], revision: 3)
+        XCTAssertEqual(reader.webViewUserScripts.map(\.source), [current.source],
+                       "An unchanged newer snapshot still fences delayed older delivery")
+        XCTAssertEqual(publications, 1, "Unchanged snapshots must not reinstall user scripts")
+        reader.applyUserScriptSnapshot([], revision: 5)
+        reader.applyUserScriptSnapshot([older], revision: 4)
+        XCTAssertTrue(reader.webViewUserScripts.isEmpty,
+                      "A delayed script must not reappear after a newer empty snapshot")
+        XCTAssertEqual(publications, 2)
+    }
+
     func testReaderPreviewScriptObservationUsesCapturedConfigurationBeforeAndAfterReplacement() async throws {
         for usesExplicitConfiguration in [true, false] {
             let originalConfiguration = configuration()
@@ -723,7 +753,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
             first.isDeleted = true
             first.refreshChangeMetadata(explicitlyModified: true)
         }
-        let deleted = await waitUntil { reader.webViewUserScripts?.isEmpty == true }
+        let deleted = await waitUntil { reader.webViewUserScripts.isEmpty }
         XCTAssertTrue(deleted)
         XCTAssertTrue(reader.allScripts.contains(appScript))
     }
@@ -750,7 +780,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
         }
         let reader = ReaderViewModel(realmConfiguration: config, systemScripts: [])
         let loaded = await waitUntil {
-            reader.webViewUserScripts?.first?.allowedDomains == ["initial.example.com"]
+            reader.webViewUserScripts.first?.allowedDomains == ["initial.example.com"]
         }
         XCTAssertTrue(loaded)
         try realm.write {
@@ -758,7 +788,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
             domain.refreshChangeMetadata(explicitlyModified: true)
         }
         let renamed = await waitUntil {
-            reader.webViewUserScripts?.first?.allowedDomains == ["renamed.example.com"]
+            reader.webViewUserScripts.first?.allowedDomains == ["renamed.example.com"]
         }
         XCTAssertTrue(renamed, "Editing only the domain must refresh filtering")
         try realm.write {
@@ -766,7 +796,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
             arrivingDomain.refreshChangeMetadata(explicitlyModified: true)
         }
         let arrived = await waitUntil {
-            reader.webViewUserScripts?.first?.allowedDomains == ["renamed.example.com", "arriving.example.com"]
+            reader.webViewUserScripts.first?.allowedDomains == ["renamed.example.com", "arriving.example.com"]
         }
         XCTAssertTrue(arrived, "A separately arriving domain must resolve without editing its script")
         try realm.write {
@@ -774,7 +804,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
             domain.refreshChangeMetadata(explicitlyModified: true)
         }
         let deleted = await waitUntil {
-            reader.webViewUserScripts?.first?.allowedDomains == ["arriving.example.com"]
+            reader.webViewUserScripts.first?.allowedDomains == ["arriving.example.com"]
         }
         XCTAssertTrue(deleted)
         try realm.write {
@@ -782,7 +812,7 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
             domain.refreshChangeMetadata(explicitlyModified: true)
         }
         let restored = await waitUntil {
-            reader.webViewUserScripts?.first?.allowedDomains == ["renamed.example.com", "arriving.example.com"]
+            reader.webViewUserScripts.first?.allowedDomains == ["renamed.example.com", "arriving.example.com"]
         }
         XCTAssertTrue(restored)
 
@@ -792,22 +822,22 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
             domain.refreshChangeMetadata(explicitlyModified: true)
             arrivingDomain.refreshChangeMetadata(explicitlyModified: true)
         }
-        let withheld = await waitUntil { reader.webViewUserScripts?.isEmpty == true }
+        let withheld = await waitUntil { reader.webViewUserScripts.isEmpty }
         XCTAssertTrue(withheld, "Losing all configured domain rows must not make a script global")
         try realm.write {
             script.allowedDomainIDs.removeAll()
             script.refreshChangeMetadata(explicitlyModified: true)
         }
         let explicitlyGlobal = await waitUntil {
-            reader.webViewUserScripts?.count == 1
-                && reader.webViewUserScripts?.first?.allowedDomains.isEmpty == true
+            reader.webViewUserScripts.count == 1
+                && reader.webViewUserScripts.first?.allowedDomains.isEmpty == true
         }
         XCTAssertTrue(explicitlyGlobal, "An explicitly empty domain list still means all sites")
         try realm.write {
             script.allowedDomainIDs.append(UUID())
             script.refreshChangeMetadata(explicitlyModified: true)
         }
-        let missing = await waitUntil { reader.webViewUserScripts?.isEmpty == true }
+        let missing = await waitUntil { reader.webViewUserScripts.isEmpty }
         XCTAssertTrue(missing, "An unresolved domain reference must not make a script global")
     }
 

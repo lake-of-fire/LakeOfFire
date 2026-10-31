@@ -5,6 +5,25 @@ import RealmSwift
 import BigSyncKit
 import SwiftUIWebView
 
+/// Plain projection of a managed script. Resolve it on the Realm's owning actor;
+/// create WebKit namespaces only when installing the value on MainActor.
+public struct UserScriptSnapshot: Sendable {
+    public let source: String
+    public let injectionTime: WKUserScriptInjectionTime
+    public let isForMainFrameOnly: Bool
+    public let worldName: String
+    public let allowedDomains: Set<String>
+
+    @MainActor
+    public func makeWebViewUserScript() -> WebViewUserScript {
+        WebViewUserScript(
+            source: source, injectionTime: injectionTime,
+            forMainFrameOnly: isForMainFrameOnly,
+            in: WKContentWorld.world(name: worldName), allowedDomains: allowedDomains
+        )
+    }
+}
+
 public class UserScriptAllowedDomain: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable {
     public var needsSyncToAppServer: Bool {
         return false
@@ -46,18 +65,23 @@ public class UserScript: Object, UnownedSyncableObject, ObjectKeyIdentifiable, C
     
     @Persisted public var isDeleted = false
     
+    @MainActor
     public func getWebViewUserScript() -> WebViewUserScript? {
+        getWebViewUserScriptSnapshot()?.makeWebViewUserScript()
+    }
+
+    public func getWebViewUserScriptSnapshot() -> UserScriptSnapshot? {
         // OPML is content configuration, never a source of executable code.
         // This also blocks previously imported and subsequently synced records.
         guard opmlURL == nil, let allowedDomains = getAllowedDomains() else { return nil }
         // An intentionally empty list means every site. Missing or tombstoned
         // UUID references must never silently broaden a restricted script.
         guard allowedDomainIDs.isEmpty || !allowedDomains.isEmpty else { return nil }
-        return WebViewUserScript(
+        return UserScriptSnapshot(
             source: script,
             injectionTime: injectAtStart ? .atDocumentStart : .atDocumentEnd,
-            forMainFrameOnly: mainFrameOnly,
-            in: WKContentWorld.world(name: id.uuidString),
+            isForMainFrameOnly: mainFrameOnly,
+            worldName: id.uuidString,
             allowedDomains: Set(allowedDomains.map({ $0.domain }))
         )
     }

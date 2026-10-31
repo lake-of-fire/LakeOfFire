@@ -22,9 +22,19 @@ final class LibraryRegressionTests: XCTestCase {
             library.userScriptIDs.append(objectsIn: [imported.id, local.id])
         }
 
-        XCTAssertNil(imported.getWebViewUserScript())
-        XCTAssertNotNil(local.getWebViewUserScript())
-        XCTAssertEqual(library.getActiveWebViewUserScripts()?.map(\.source), [local.script])
+        XCTAssertNil(imported.getWebViewUserScriptSnapshot())
+        let localSnapshot = try XCTUnwrap(local.getWebViewUserScriptSnapshot())
+        let snapshots = try XCTUnwrap(library.getActiveUserScriptSnapshots())
+        XCTAssertEqual(snapshots.map(\.source), [local.script])
+        XCTAssertEqual(localSnapshot.worldName, local.id.uuidString)
+        let projected = await MainActor.run {
+            snapshots.map { snapshot in
+                let script = snapshot.makeWebViewUserScript()
+                return (script.source, script.world?.name)
+            }
+        }
+        XCTAssertEqual(projected.map { $0.0 }, [local.script])
+        XCTAssertEqual(projected.map { $0.1 }, [localSnapshot.worldName])
         // Blocking execution does not destroy existing user/synced data.
         XCTAssertFalse(imported.isDeleted)
     }

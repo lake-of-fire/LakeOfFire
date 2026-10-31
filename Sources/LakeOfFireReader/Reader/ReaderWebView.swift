@@ -248,6 +248,15 @@ final class ReaderWebViewHandler {
     func onNavigationFinished(state: WebViewState) {
         guard !shouldIgnoreIntermediateBlankCallback(state: state, callback: "finish") else { return }
         ReaderLoadTrace.event("webview.didFinish", "loader=\(state.pageURL.isReaderURLLoaderURL)")
+#if os(iOS)
+        // Synchronous callback capture, outside SwiftUI/accessibility evaluation.
+        // The reader cover may still be mounted at this navigation-finish point.
+        if ReaderLoadTrace.isRecording("webview.navigationInteraction"),
+           let snapshot = navigator.captureNavigationInteractionSnapshot(forDocumentURL: state.pageURL) {
+            ReaderLoadTrace.event("webview.navigationInteraction",
+                "timing=didFinish edge=0.02,0.30 canGoBack=\(snapshot.canGoBack) canGoForward=\(snapshot.canGoForward) allowsBackForwardNavigationGestures=\(snapshot.allowsBackForwardNavigationGestures) isLoading=\(snapshot.isLoading) edgeHitIsInWebView=\(snapshot.edgeHitIsInWebView) edgeHitPath=[\(snapshot.edgeHitPath)] webViewPath=[\(snapshot.webViewPath)]")
+        }
+#endif
         navigationTaskManager.startOnNavigationFinished { @MainActor [weak self] in
             guard let self else { return }
             await self.handleNavigationFinished(state: state)
