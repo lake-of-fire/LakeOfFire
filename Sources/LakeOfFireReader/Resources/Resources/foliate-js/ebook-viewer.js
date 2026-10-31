@@ -534,7 +534,6 @@ const directSegmentMetadataBootstrap = (doc) => {
     doc.manabiSegmentMetadataSidecars = sidecars;
     doc.manabiSegmentMetadataSidecarTexts = sidecarTexts;
     doc.manabiSegmentMetadataSidecarSignature = sidecarSignature;
-    doc.manabiSegmentMetadataCacheGeneration = doc.manabiSegmentMetadataGeneration || 0;
     return {
         byID,
         idsByEntryID,
