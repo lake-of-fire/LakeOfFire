@@ -99,6 +99,7 @@ public enum ReaderLoadTrace {
              "reader.requiredDownloads", "reader.startupAsset", "reader.startupAssetCleanup", "reader.requiredDownloadOrder",
              "reader.initialLocalPreparation", "reader.initialLocalMigration", "reader.initialLocalLookup", "reader.initialLocalAsset", "reader.initialLocalAssetStep", "reader.initialLocalDictionaryPublication", "reader.initialLocalDictionaryPublicationWork",
              "reader.sheetTabSelection", "reader.sheetDismissal", "reader.sheetDetentSelection", "reader.sheetPresentation",
+             "reader.sentencePersistence", "reader.sentenceBatch", "reader.sentencePersistenceFailed",
              "maintenance.sentenceGraphRepair",
              "suspension.previous-transition", "suspension.launch-repair", "suspension.startup",
              "suspension.share-inbox", "suspension.app-sync", "suspension.realm-warmups",
