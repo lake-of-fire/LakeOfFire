@@ -409,8 +409,11 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 }
                 if let outcome = body["readerArticlePresentation"] as? String,
                    ["ready", "timeout", "interrupted"].contains(outcome) {
+                    let phase = body["readerArticlePresentationPhase"] as? String ?? "unknown"
+                    let diagnosticPhase = ["native", "font", "progress", "position", "tracking", "layout"].contains(phase)
+                        ? phase : "unknown"
                     ReaderLoadTrace.$operationID.withValue(renderGeneration) {
-                        ReaderLoadTrace.event("readerMode.initialArticlePresentation", "outcome=\(outcome)")
+                        ReaderLoadTrace.event("readerMode.initialArticlePresentation", "outcome=\(outcome) phase=\(diagnosticPhase)")
                     }
                 }
                 if let fontOutcome = body["readerFontOutcome"] as? String,

@@ -506,6 +506,8 @@ internal func prepareReaderInitialArticlePresentation(in document: SwiftSoup.Doc
     let source = #"""
     (() => {
         const root = document.documentElement;
+        // Diagnostic only: the existing pending marker remains the reveal gate.
+        window.manabi_initialArticlePresentationPhase = 'native';
         let deadline;
         const finish = outcome => {
             if (root.dataset.mnbArticlePresentation !== 'pending') return false;

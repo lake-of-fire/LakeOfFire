@@ -72,6 +72,7 @@ struct ReaderDocStateUserScript {
                     && (html?.dataset?.mnbFontPending ?? null) !== '1'
                     && html?.dataset?.mnbArticlePresentation !== 'pending',
                 readerArticlePresentation: html?.dataset?.mnbArticlePresentation ?? null,
+                readerArticlePresentationPhase: window.manabi_initialArticlePresentationPhase ?? null,
                 readerVisibility: bodyStyle ? {
                     visibility: bodyStyle.visibility,
                     display: bodyStyle.display,
