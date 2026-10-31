@@ -110,6 +110,59 @@ final class OPMLScriptDomainAdmissionTests: XCTestCase {
     }
 
     @MainActor
+    func testDuplicateDomainLinksRequireEveryDeclaredDomainToBeLive() async throws {
+        try await Self.withFixture { realm, _, _ in
+            let script = try Self.authorScript(in: realm, domains: ["restricted.example"])
+            let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
+            let domainID = try XCTUnwrap(script.allowedDomainIDs.first)
+            try realm.write {
+                script.allowedDomainIDs.append(domainID)
+                script.refreshChangeMetadata(explicitlyModified: true)
+            }
+            XCTAssertEqual(Array(script.allowedDomainIDs), [domainID, domainID])
+            let duplicateDomains = try await Self.webViewDomains(script.freeze())
+            XCTAssertEqual(duplicateDomains, ["restricted.example"])
+            let duplicateCount = await Self.activeWebViewScriptCount(library.freeze())
+            XCTAssertEqual(duplicateCount, 1)
+
+            let missingID = UUID()
+            try realm.write {
+                script.allowedDomainIDs.append(missingID)
+                script.refreshChangeMetadata(explicitlyModified: true)
+            }
+            let missingScript = script.freeze()
+            let missingAdmitted = await MainActor.run { missingScript.getWebViewUserScript() != nil }
+            XCTAssertFalse(missingAdmitted)
+            let missingCount = await Self.activeWebViewScriptCount(library.freeze())
+            XCTAssertEqual(missingCount, 0)
+
+            let domain = UserScriptAllowedDomain()
+            domain.id = missingID
+            domain.domain = "second.example"
+            domain.isDeleted = true
+            try realm.write {
+                realm.add(domain)
+                domain.refreshChangeMetadata(explicitlyModified: true)
+            }
+            let tombstonedScript = script.freeze()
+            let tombstonedAdmitted = await MainActor.run { tombstonedScript.getWebViewUserScript() != nil }
+            XCTAssertFalse(tombstonedAdmitted)
+            let tombstonedCount = await Self.activeWebViewScriptCount(library.freeze())
+            XCTAssertEqual(tombstonedCount, 0)
+
+            try realm.write {
+                domain.isDeleted = false
+                domain.refreshChangeMetadata(explicitlyModified: true)
+            }
+            XCTAssertEqual(Array(script.allowedDomainIDs), [domainID, domainID, missingID])
+            let recoveredDomains = try await Self.webViewDomains(script.freeze())
+            XCTAssertEqual(recoveredDomains, ["restricted.example", "second.example"])
+            let recoveredCount = await Self.activeWebViewScriptCount(library.freeze())
+            XCTAssertEqual(recoveredCount, 1)
+        }
+    }
+
+    @MainActor
     func testManagedRefreshPreservesScriptsWhileReconcilingFeedsAndCategories() async throws {
         let manager = Self.makeManager()
         try await Self.withFixture { realm, configuration, directory in
