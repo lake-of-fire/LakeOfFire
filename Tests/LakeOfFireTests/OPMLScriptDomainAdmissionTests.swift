@@ -1,138 +1,238 @@
 import BigSyncKit
 import Foundation
+import OPML
 import RealmSwift
 import RealmSwiftGaps
+import SwiftUIDownloads
 import XCTest
 @testable import LakeOfFireContent
 
 final class OPMLScriptDomainAdmissionTests: XCTestCase {
     @MainActor
-    func testMalformedDomainsPreserveExistingScriptAndRestrictions() async throws {
+    func testIgnoredScriptEntriesNeverAdmitOrModifyScripts() async throws {
         let manager = Self.makeManager()
         try await Self.withFixture { realm, configuration, directory in
-            let id = UUID()
-            let validURL = try Self.writeEntry(
-                id: id, title: "Restricted", source: "void(0);",
-                domains: "restricted.example", in: directory
-            )
-            try await manager.importOPML(fileURL: validURL, realmConfiguration: configuration)
-            let script = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: id))
+            let script = try Self.authorScript(in: realm, domains: ["restricted.example"])
             let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
             let original = Self.snapshot(script: script, in: realm)
-            let originalMembership = Array(library.userScriptIDs)
-            let originalJournal = Self.generations(in: realm)
-
-            for domains in ["%ZZ", "other.example,%ZZ"] {
-                let invalidURL = try Self.writeEntry(
-                    id: id, title: "Changed", source: "void(1);",
-                    domains: domains, in: directory
-                )
-                try await Self.assertRejected(
-                    manager: manager, fileURL: invalidURL, configuration: configuration
-                )
-                XCTAssertEqual(Self.snapshot(script: script, in: realm), original)
-                XCTAssertEqual(Array(library.userScriptIDs), originalMembership)
-                XCTAssertEqual(Self.generations(in: realm), originalJournal)
-                XCTAssertEqual(realm.objects(UserScript.self).count, 1)
-                XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 1)
-                let domains = try await Self.webViewDomains(script.freeze())
-                XCTAssertEqual(domains, ["restricted.example"])
+            let membership = Array(library.userScriptIDs)
+            let journal = Self.generations(in: realm)
+            for id in [script.id, UUID()] {
+                for domains in [nil, "", "%ZZ", "other.example,%ZZ", "retry%2Eexample"] as [String?] {
+                    let url = try Self.writeEntry(
+                        id: id, title: "Remote change", source: "void(1);",
+                        domains: domains, in: directory
+                    )
+                    try await manager.importOPML(fileURL: url, realmConfiguration: configuration)
+                    XCTAssertEqual(Self.snapshot(script: script, in: realm), original)
+                    XCTAssertEqual(Array(library.userScriptIDs), membership)
+                    XCTAssertEqual(Self.generations(in: realm), journal)
+                    XCTAssertEqual(realm.objects(UserScript.self).count, 1)
+                    XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 1)
+                }
             }
-        }
-    }
-
-    @MainActor
-    func testMalformedDomainsRejectNewScriptsAndValidRetryRemainsPossible() async throws {
-        let manager = Self.makeManager()
-        try await Self.withFixture { realm, configuration, directory in
-            let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
-            let originalJournal = Self.generations(in: realm)
-            let retryID = UUID()
-            for (id, domains) in [(retryID, "%ZZ"), (UUID(), "example.org,%ZZ")] {
-                let invalidURL = try Self.writeEntry(
-                    id: id, title: "Rejected", source: "void(1);",
-                    domains: domains, in: directory
-                )
-                try await Self.assertRejected(
-                    manager: manager, fileURL: invalidURL, configuration: configuration
-                )
-                XCTAssertNil(realm.object(ofType: UserScript.self, forPrimaryKey: id))
-                XCTAssertTrue(library.userScriptIDs.isEmpty)
-                XCTAssertEqual(realm.objects(UserScript.self).count, 0)
-                XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 0)
-                XCTAssertEqual(Self.generations(in: realm), originalJournal)
-                let activeCount = await Self.activeWebViewScriptCount(library.freeze())
-                XCTAssertEqual(activeCount, 0)
-            }
-
-            let retryURL = try Self.writeEntry(
-                id: retryID, title: "Restricted retry", source: "void(0);",
-                domains: "retry%2Eexample", in: directory
-            )
-            try await manager.importOPML(fileURL: retryURL, realmConfiguration: configuration)
-            let script = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: retryID))
             let domains = try await Self.webViewDomains(script.freeze())
-            XCTAssertEqual(script.title, "Restricted retry")
-            XCTAssertFalse(script.isArchived)
-            XCTAssertEqual(domains, ["retry.example"])
-            XCTAssertEqual(Array(library.userScriptIDs), [retryID])
-            XCTAssertEqual(realm.objects(UserScript.self).count, 1)
-            XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 1)
+            XCTAssertEqual(domains, ["restricted.example"])
         }
     }
 
     @MainActor
-    func testValidPercentEncodedDomainsRemainRestrictedAfterImport() async throws {
-        let manager = Self.makeManager()
-        try await Self.withFixture { realm, configuration, directory in
-            let id = UUID()
+    func testManualDomainValidationRejectsMalformedEncodingWithoutMutation() async throws {
+        try await Self.withFixture { realm, _, directory in
+            let script = try Self.authorScript(in: realm, domains: ["restricted.example"])
+            let original = Self.snapshot(script: script, in: realm)
+            let journal = Self.generations(in: realm)
+            for domains in ["%ZZ", "other.example,%ZZ"] {
+                let url = try Self.writeEntry(
+                    id: script.id, title: script.title, source: script.script,
+                    domains: domains, in: directory
+                )
+                let opml = try OPML(Data(contentsOf: url))
+                let entry = try XCTUnwrap(opml.entries.first)
+                XCTAssertThrowsError(try realm.write {
+                    try LibraryDataManager.applyScriptDomains(opml: opml, opmlEntry: entry, script: script)
+                }) { error in
+                    XCTAssertEqual((error as? CocoaError)?.code, .fileReadCorruptFile)
+                }
+                XCTAssertEqual(Self.snapshot(script: script, in: realm), original)
+                XCTAssertEqual(Self.generations(in: realm), journal)
+            }
             let url = try Self.writeEntry(
-                id: id, title: "Encoded restrictions", source: "void(0);",
+                id: script.id, title: script.title, source: script.script,
                 domains: "%65xample.org,sub.%65xample.net", in: directory
             )
-            try await manager.importOPML(fileURL: url, realmConfiguration: configuration)
-            let script = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: id))
+            let opml = try OPML(Data(contentsOf: url))
+            let entry = try XCTUnwrap(opml.entries.first)
+            try realm.write {
+                try LibraryDataManager.applyScriptDomains(opml: opml, opmlEntry: entry, script: script)
+            }
             let domains = try await Self.webViewDomains(script.freeze())
             XCTAssertEqual(domains, ["example.org", "sub.example.net"])
-            XCTAssertEqual(script.allowedDomainIDs.count, 2)
-            XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).count, 2)
-            XCTAssertFalse(script.isArchived)
+            XCTAssertNotEqual(Self.generations(in: realm)["UserScript.\(script.id)"],
+                              journal["UserScript.\(script.id)"])
         }
     }
 
     @MainActor
-    func testEmptyDraftScriptsPreserveAbsentEmptyAndExplicitDomainPolicy() async throws {
-        let manager = Self.makeManager()
-        let policies: [(String?, Set<String>)] = [
-            (nil, []),
-            ("", []),
-            ("draft.example", ["draft.example"]),
-        ]
-        for (domains, expectedDomains) in policies {
-            try await Self.withFixture { realm, configuration, directory in
-                let id = UUID()
-                let url = try Self.writeEntry(
-                    id: id, title: "Empty draft", source: "",
-                    domains: domains, in: directory
-                )
-                try await manager.importOPML(fileURL: url, realmConfiguration: configuration)
-                let script = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: id))
+    func testAuthoredEmptyDraftsAndUnresolvedDomainsUseRealExecutionAdmission() async throws {
+        for domains in [[], ["draft.example"]] as [[String]] {
+            try await Self.withFixture { realm, _, _ in
+                let script = try Self.authorScript(in: realm, domains: domains)
+                try realm.write {
+                    script.script = ""
+                    script.refreshChangeMetadata(explicitlyModified: true)
+                }
+                let admitted = try await Self.webViewDomains(script.freeze())
+                XCTAssertEqual(admitted, Set(domains))
                 let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
-                XCTAssertEqual(script.title, "Empty draft")
-                XCTAssertEqual(script.script, "")
-                XCTAssertFalse(script.isDeleted)
-                XCTAssertFalse(script.isArchived)
-                XCTAssertEqual(Array(library.userScriptIDs), [id])
-                XCTAssertEqual(Set(try XCTUnwrap(script.getAllowedDomains()).map(\.domain)), expectedDomains)
-                XCTAssertEqual(script.allowedDomainIDs.count, expectedDomains.count)
-                XCTAssertEqual(realm.objects(UserScriptAllowedDomain.self).where { !$0.isDeleted }.count,
-                               expectedDomains.count)
-                let domains = try await Self.webViewDomains(script.freeze())
-                XCTAssertEqual(domains, expectedDomains)
                 let activeCount = await Self.activeWebViewScriptCount(library.freeze())
                 XCTAssertEqual(activeCount, 1)
+                // Missing or tombstoned restrictions must never broaden admission.
+                let missingID = UUID()
+                try realm.write {
+                    script.allowedDomainIDs.append(missingID)
+                    script.refreshChangeMetadata(explicitlyModified: true)
+                }
+                let missingCount = await Self.activeWebViewScriptCount(library.freeze())
+                XCTAssertEqual(missingCount, 0)
+                let deletedDomain = UserScriptAllowedDomain()
+                deletedDomain.id = missingID
+                deletedDomain.domain = "deleted.example"
+                deletedDomain.isDeleted = true
+                try realm.write {
+                    realm.add(deletedDomain)
+                    deletedDomain.refreshChangeMetadata(explicitlyModified: true)
+                }
+                let deletedCount = await Self.activeWebViewScriptCount(library.freeze())
+                XCTAssertEqual(deletedCount, 0)
             }
         }
+    }
+
+    @MainActor
+    func testManagedRefreshPreservesScriptsWhileReconcilingFeedsAndCategories() async throws {
+        let manager = Self.makeManager()
+        try await Self.withFixture { realm, configuration, directory in
+            let source = URL(string: "https://example.invalid/catalog.opml")!
+            let fileURL = directory.appendingPathComponent("refresh.opml")
+            let download = Downloadable(url: source, name: "Catalog", localDestination: fileURL)
+            let script = try Self.authorScript(in: realm, domains: ["restricted.example"])
+            let deleted = UserScript()
+            deleted.isDeleted = true
+            let category = FeedCategory()
+            category.title = "Original category"
+            category.opmlURL = source
+            let feed = Feed()
+            feed.title = "Original feed"
+            feed.categoryID = category.id
+            feed.rssUrl = URL(string: "https://example.invalid/original.xml")!
+            let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
+            try realm.write {
+                script.opmlURL = source
+                script.opmlOwnerName = "Original owner"
+                script.injectAtStart = false
+                script.mainFrameOnly = false
+                script.sandboxed = true
+                script.previewURL = URL(string: "https://restricted.example/preview")
+                script.refreshChangeMetadata(explicitlyModified: true)
+                deleted.opmlURL = source
+                realm.add([deleted, category, feed])
+                deleted.refreshChangeMetadata(explicitlyModified: true)
+                category.refreshChangeMetadata(explicitlyModified: true)
+                feed.refreshChangeMetadata(explicitlyModified: true)
+                library.categoryIDs.append(category.id)
+                library.refreshChangeMetadata(explicitlyModified: true)
+            }
+            let original = Self.snapshot(script: script, in: realm)
+            let deletedOriginal = Self.snapshot(script: deleted, in: realm)
+            let membership = Array(library.userScriptIDs)
+            let journal = Self.generations(in: realm).filter {
+                $0.key.hasPrefix("UserScript.") || $0.key.hasPrefix("UserScriptAllowedDomain.")
+            }
+            XCTAssertEqual(journal.count, 3, "Both scripts and the restriction must have real pending mutations")
+            let originalFeedGeneration = try XCTUnwrap(Self.generations(in: realm)["Feed.\(feed.id)"])
+            var previousGenerations = [String: String]()
+            let hiddenCategoryID = UUID()
+            let hiddenFeedID = UUID()
+            let newScriptID = UUID()
+            let remoteScripts = """
+              <outline text="Remote change" uuid="\(script.id)" script="void(1);" allowedDomains="%ZZ"/>
+              <outline text="Scripts" isUserScriptList="true">
+                <outline text="New script" uuid="\(newScriptID)" script="void(2);"/>
+                <outline text="Hidden category" uuid="\(hiddenCategoryID)">
+                  <outline text="Hidden feed" uuid="\(hiddenFeedID)" xmlUrl="https://example.invalid/hidden.xml"/>
+                </outline>
+              </outline>
+            """
+            for (index, scripts) in [remoteScripts, "", remoteScripts].enumerated() {
+                let feedEntries = index == 0 ? "<outline text=\"Updated feed\" uuid=\"\(feed.id)\" xmlUrl=\"\(feed.rssUrl.absoluteString)\"/>" : ""
+                let xml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <opml version="2.0"><head/><body>
+                  <outline text="Updated category" uuid="\(category.id)">\(feedEntries)</outline>
+                  \(scripts)
+                </body></opml>
+                """
+                try xml.write(to: fileURL, atomically: true, encoding: .utf8)
+                try await manager.importOPML(fileURL: fileURL, fromDownload: download, realmConfiguration: configuration)
+                XCTAssertEqual(Self.snapshot(script: script, in: realm), original)
+                XCTAssertEqual(Self.snapshot(script: deleted, in: realm), deletedOriginal)
+                XCTAssertEqual(Array(library.userScriptIDs), membership)
+                XCTAssertEqual(Self.generations(in: realm).filter {
+                    $0.key.hasPrefix("UserScript.") || $0.key.hasPrefix("UserScriptAllowedDomain.")
+                }, journal)
+                XCTAssertEqual(category.title, "Updated category")
+                XCTAssertFalse(category.isDeleted)
+                XCTAssertEqual(feed.isDeleted, index != 0)
+                XCTAssertEqual(feed.title, "Updated feed")
+                XCTAssertNotEqual(Self.generations(in: realm)["Feed.\(feed.id)"], originalFeedGeneration)
+                XCTAssertEqual(feed.categoryID, category.id)
+                XCTAssertEqual(Array(library.categoryIDs), [category.id])
+                if index == 2 {
+                    XCTAssertEqual(Self.generations(in: realm), previousGenerations,
+                                   "Repeated refresh must not create any new journal generations")
+                }
+                previousGenerations = Self.generations(in: realm)
+                XCTAssertNil(realm.object(ofType: UserScript.self, forPrimaryKey: newScriptID))
+                XCTAssertNil(realm.object(ofType: FeedCategory.self, forPrimaryKey: hiddenCategoryID))
+                XCTAssertNil(realm.object(ofType: Feed.self, forPrimaryKey: hiddenFeedID))
+                let activeCount = await Self.activeWebViewScriptCount(library.freeze())
+                XCTAssertEqual(activeCount, 0, "Persisted OPML-origin scripts cannot execute")
+            }
+            let categoryGeneration = try XCTUnwrap(Self.generations(in: realm)["FeedCategory.\(category.id)"])
+            try "<opml version=\"2.0\"><head/><body/></opml>".write(to: fileURL, atomically: true, encoding: .utf8)
+            try await manager.importOPML(fileURL: fileURL, fromDownload: download, realmConfiguration: configuration)
+            XCTAssertTrue(category.isDeleted)
+            XCTAssertNotEqual(Self.generations(in: realm)["FeedCategory.\(category.id)"], categoryGeneration)
+            XCTAssertEqual(Self.snapshot(script: script, in: realm), original)
+            XCTAssertEqual(Self.snapshot(script: deleted, in: realm), deletedOriginal)
+            XCTAssertEqual(Array(library.userScriptIDs), membership)
+            XCTAssertEqual(Self.generations(in: realm).filter {
+                $0.key.hasPrefix("UserScript.") || $0.key.hasPrefix("UserScriptAllowedDomain.")
+            }, journal)
+        }
+    }
+
+    @RealmBackgroundActor
+    private static func authorScript(in realm: Realm, domains: [String]) throws -> UserScript {
+        let script = UserScript()
+        script.title = "Authored script"
+        script.script = "void(0);"
+        let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
+        try realm.write {
+            realm.add(script)
+            for name in domains {
+                let domain = UserScriptAllowedDomain()
+                domain.domain = name
+                realm.add(domain)
+                domain.refreshChangeMetadata(explicitlyModified: true)
+                script.allowedDomainIDs.append(domain.id)
+            }
+            script.refreshChangeMetadata(explicitlyModified: true)
+            library.userScriptIDs.append(script.id)
+            library.refreshChangeMetadata(explicitlyModified: true)
+        }
+        return script
     }
 
     // Keep Realm fixture reads on their owning actor and construct WebKit
@@ -167,12 +267,21 @@ final class OPMLScriptDomainAdmissionTests: XCTestCase {
             FeedDirectory.self,
             UserScript.self,
             UserScriptAllowedDomain.self,
+            BigSyncPendingMutation.self,
         ]
         configureLakeOfFireMutationTrackingForTesting(&configuration)
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        defer {
+            let trash = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+                .appendingPathComponent(".Trash", isDirectory: true)
+            try? FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+            try? FileManager.default.moveItem(
+                at: directory,
+                to: trash.appendingPathComponent("opml-script-tests-\(directory.lastPathComponent)")
+            )
+        }
 
         do {
             _ = try await LibraryConfiguration.getConsolidatedOrCreate(
@@ -188,20 +297,6 @@ final class OPMLScriptDomainAdmissionTests: XCTestCase {
         XCTAssertTrue(removed)
         let remaining = await RealmBackgroundActor.shared.existingCachedRealm(for: configuration)
         XCTAssertNil(remaining, "Release only the quiesced fixture's cached Realm.")
-    }
-
-    @RealmBackgroundActor
-    private static func assertRejected(
-        manager: LibraryDataManager,
-        fileURL: URL,
-        configuration: Realm.Configuration
-    ) async throws {
-        do {
-            try await manager.importOPML(fileURL: fileURL, realmConfiguration: configuration)
-            XCTFail("Malformed domain encoding must reject the whole script entry")
-        } catch let error as CocoaError {
-            XCTAssertEqual(error.code, .fileReadCorruptFile)
-        }
     }
 
     @RealmBackgroundActor
@@ -233,6 +328,12 @@ final class OPMLScriptDomainAdmissionTests: XCTestCase {
         let createdAt: Date
         let modifiedAt: Date
         let explicitlyModifiedAt: Date?
+        let injectAtStart: Bool
+        let mainFrameOnly: Bool
+        let sandboxed: Bool
+        let previewURL: URL?
+        let opmlURL: URL?
+        let opmlOwnerName: String?
         let allowedDomainIDs: [UUID]
         let domains: [DomainSnapshot]
     }
@@ -256,6 +357,12 @@ final class OPMLScriptDomainAdmissionTests: XCTestCase {
             createdAt: script.createdAt,
             modifiedAt: script.modifiedAt,
             explicitlyModifiedAt: script.explicitlyModifiedAt,
+            injectAtStart: script.injectAtStart,
+            mainFrameOnly: script.mainFrameOnly,
+            sandboxed: script.sandboxed,
+            previewURL: script.previewURL,
+            opmlURL: script.opmlURL,
+            opmlOwnerName: script.opmlOwnerName,
             allowedDomainIDs: Array(script.allowedDomainIDs),
             domains: realm.objects(UserScriptAllowedDomain.self).map {
                 DomainSnapshot(

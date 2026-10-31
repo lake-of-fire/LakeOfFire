@@ -940,34 +940,11 @@ public class LibraryDataManager: NSObject {
         let allImportedFeedIDs = allImportedFeeds.map { $0.id }
         let allImportedScriptIDs = allImportedScripts.map { $0.id }
         
-        // Delete orphan scripts
-        try Task.checkCancellation()
-        if let downloadURL = download?.url {
-            let importedIDs = Set(allImportedScriptIDs)
-            let candidateIDs = Array(
-                realm.objects(UserScript.self)
-                    .filter { !$0.isDeleted && $0.opmlURL == downloadURL }
-                    .map(\.id)
-            )
-            try await realm.asyncWritePreservingOwnership {
-                let timestamp = Date()
-                for scriptID in candidateIDs where !importedIDs.contains(scriptID) {
-                    guard let script = realm.object(
-                        ofType: UserScript.self,
-                        forPrimaryKey: scriptID
-                    ), !script.isDeleted,
-                       script.opmlURL == downloadURL else {
-                        continue
-                    }
-                    script.isDeleted = true
-                    script.refreshChangeMetadata(
-                        explicitlyModified: true,
-                        at: timestamp
-                    )
-                }
-            }
-        }
-        
+        // Script entries and subtrees are outside the import domain. Their
+        // absence is not deletion evidence: retain persisted scripts and their
+        // journal state. OPML-origin scripts remain excluded from execution by
+        // UserScript.getWebViewUserScript().
+
         // Delete orphan categories
         try Task.checkCancellation()
         if let downloadURL = download?.url {
