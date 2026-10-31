@@ -403,19 +403,21 @@ internal func upsertLocalSharedReaderFontBootstrap(
 ) throws {
     guard let template = sharedReaderFontStylesheetURLTemplate(for: pageURL) else { return }
     let values = readerFontCSSValues(horizontalFamily: horizontalFontFamily)
+    let html = try doc.getElementsByTag("html").first()
+    let head = doc.head() ?? doc
     let body = doc.body()
     let direction = try body?.attr("data-mnb-writing-direction")
     let hasVerticalClass = (try body?.hasClass("reader-vertical-writing")) ?? false
     let bodyIsEbook = (try body?.attr("data-is-ebook")) == "true"
     let vertical = direction == "vertical" || (direction != "horizontal" && hasVerticalClass)
-    try doc.getElementsByTag("html").first()?.attr("data-mnb-initial-writing-direction", vertical ? "vertical" : "horizontal")
+    try html?.attr("data-mnb-initial-writing-direction", vertical ? "vertical" : "horizontal")
     // A fresh generated document must not reuse serialized styles from an
     // earlier attempt, including a disabled timeout link or Base64 payload.
-    try doc.select("#mnb-local-font-bootstrap, #mnb-local-font-preload, #mnb-custom-fonts-inline, #mnb-custom-fonts-inline-bootstrap").remove()
+    try doc.select("script#mnb-local-font-bootstrap, link#mnb-local-font-preload, style#mnb-custom-fonts-inline, link#mnb-custom-fonts-inline, script#mnb-custom-fonts-inline-bootstrap, style#mnb-custom-fonts-inline-bootstrap").remove()
     if pageURL.isEBookURL || bodyIsEbook {
-        try doc.getElementsByTag("html").first()?.removeAttr("data-mnb-font-layout-gate")
+        try html?.removeAttr("data-mnb-font-layout-gate")
     } else if pageURL.isReaderDocumentURL {
-        try doc.getElementsByTag("html").first()?.attr("data-mnb-font-layout-gate", "1")
+        try html?.attr("data-mnb-font-layout-gate", "1")
     }
     if let fontAsset, fontAsset.supportsFamily(horizontalFontFamily),
        let css = sharedReaderFontCSS(for: pageURL, asset: fontAsset) {
@@ -424,7 +426,7 @@ internal func upsertLocalSharedReaderFontBootstrap(
         try style.attr("data-mnb-font-source", "local-scheme")
         try style.attr("data-mnb-font-hash", "local")
         try style.appendChild(DataNode(Array(css.utf8), doc.getBaseUriUTF8()))
-        try (doc.head() ?? doc).appendChild(style)
+        try head.appendChild(style)
         // Opt-in experiment only: do not enable without proving request reuse
         // and a meaningful latency improvement in iOS WebKit.
         if preloadsFont, let fontURL = sharedReaderFontFontURL(for: pageURL, asset: fontAsset) {
@@ -435,7 +437,7 @@ internal func upsertLocalSharedReaderFontBootstrap(
             try preload.attr("type", fontAsset.mimeType)
             try preload.attr("crossorigin", "anonymous")
             try preload.attr("href", fontURL.absoluteString)
-            try (doc.head() ?? doc).appendChild(preload)
+            try head.appendChild(preload)
         }
     }
     let script = try doc.createElement("script")
@@ -450,7 +452,7 @@ internal func upsertLocalSharedReaderFontBootstrap(
     })();
     """
     try script.appendChild(DataNode(Array(javascript.utf8), doc.getBaseUriUTF8()))
-    try (doc.head() ?? doc).appendChild(script)
+    try head.appendChild(script)
 }
 
 /// Readability always owns its renderer origin. Provider referrers and resource
@@ -492,13 +494,13 @@ internal func retrySupersededReadabilityPreparation(
 /// cached as progress or used by EPUB. Layout remains measurable while hidden.
 internal func prepareReaderInitialArticlePresentation(in document: SwiftSoup.Document) throws {
     guard let root = try document.select("html").first() else { return }
+    let head = document.head() ?? document
     try root.attr("data-mnb-article-presentation", "pending")
-    try document.getElementById("mnb-initial-article-presentation-style")?.remove()
+    try document.select("style#mnb-initial-article-presentation-style, script#mnb-initial-article-presentation").remove()
     let style = try document.createElement("style")
     try style.attr("id", "mnb-initial-article-presentation-style")
     try style.text("html[data-mnb-article-presentation='pending'] body.readability-mode{visibility:hidden!important;opacity:0!important}")
-    try (document.head() ?? document).appendChild(style)
-    try document.getElementById("mnb-initial-article-presentation")?.remove()
+    try head.appendChild(style)
     let script = try document.createElement("script")
     try script.attr("id", "mnb-initial-article-presentation")
     let source = #"""
@@ -535,7 +537,7 @@ internal func prepareReaderInitialArticlePresentation(in document: SwiftSoup.Doc
     })();
     """#
     try script.appendChild(DataNode(Array(source.utf8), document.getBaseUriUTF8()))
-    try (document.head() ?? document).appendChild(script)
+    try head.appendChild(script)
 }
 
 internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document, waitsForArticleLayout: Bool = false) throws {
@@ -547,6 +549,7 @@ internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document, wai
     """
 
     let htmlElement = try doc.getElementsByTag("html").first()
+    let head = doc.head()
     try htmlElement?.attr("data-mnb-font-pending", "1")
     try htmlElement?.attr("data-mnb-font-ready", "0")
     try htmlElement?.removeAttr("data-mnb-font-outcome")
@@ -554,9 +557,11 @@ internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document, wai
     if waitsForArticleLayout {
         try htmlElement?.attr("data-mnb-font-layout-gate", "1")
     }
-    try doc.select("#mnb-custom-fonts-inline, #mnb-custom-fonts-inline-bootstrap, #mnb-local-font-bootstrap, #mnb-local-font-preload").remove()
-
-    try doc.getElementById("mnb-custom-font-gate-fallback")?.remove()
+    let obsoleteAssets = try doc.select("style#mnb-custom-fonts-inline, link#mnb-custom-fonts-inline, script#mnb-custom-fonts-inline-bootstrap, style#mnb-custom-fonts-inline-bootstrap, script#mnb-local-font-bootstrap, link#mnb-local-font-preload, script#mnb-custom-font-gate-fallback, style#mnb-custom-font-gate").array()
+    let existingStyle = obsoleteAssets.first { $0.tagName() == "style" && $0.id() == "mnb-custom-font-gate" }
+    for element in obsoleteAssets where element !== existingStyle {
+        try element.remove()
+    }
     let script = try doc.createElement("script")
     try script.attr("id", "mnb-custom-font-gate-fallback")
     let fallbackJavaScript = """
@@ -582,9 +587,12 @@ internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document, wai
     // Script is raw text. Fragment parsing a detached script produces
     // ordinary text nodes, whose arrow operators serialize as entities.
     try script.appendChild(DataNode(Array(fallbackJavaScript.utf8), doc.getBaseUriUTF8()))
-    try (doc.head() ?? doc).appendChild(script)
+    try (head ?? doc).appendChild(script)
 
-    if let existingStyle = try doc.getElementById("mnb-custom-font-gate") {
+    if let existingStyle {
+        // Reuse the style captured before mutation; querying its ID here
+        // would rebuild indexes for the processed article. This also retains
+        // its original cascade position and attributes.
         try existingStyle.text(gateCSS)
         return
     }
@@ -593,17 +601,16 @@ internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document, wai
     try styleElement.attr("id", "mnb-custom-font-gate")
     try styleElement.text(gateCSS)
 
-    if let head = doc.head() {
+    if let head {
         try head.appendChild(styleElement)
         return
     }
 
-    if let html = try doc.getElementsByTag("html").first() {
-        try html.prepend("<head></head>")
-        if let head = doc.head() {
-            try head.appendChild(styleElement)
-            return
-        }
+    if let htmlElement {
+        let head = try doc.createElement("head")
+        try htmlElement.prependChild(head)
+        try head.appendChild(styleElement)
+        return
     }
 
     try doc.appendChild(styleElement)
