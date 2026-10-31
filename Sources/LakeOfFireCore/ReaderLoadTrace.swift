@@ -123,6 +123,7 @@ public enum ReaderLoadTrace {
              "processor.attempt", "processor.attemptCancelled", "processor.awaitActivation",
              "processor.publicationAdmissionRetry", "processor.injectionFinished",
              "bridge.readerInitializing", "bridge.readerInitialized", "bridge.trackingAccountAdmission", "bridge.settingsRefresh", "bridge.settingsSubscription", "bridge.settingsFont",
+             "bridge.subscriptionQueueWait", "bridge.subscriptionApply",
              "bridge.initializeTracking", "bridge.trackingAcknowledgement", "bridge.refreshAfterTracking", "bridge.initialArticlePresentation",
              "bridge.trackingInitializationFailed":
             return true
