@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import SwiftUI
 import LakeOfFireWeb
 import LakeOfFireFiles
@@ -11,6 +12,79 @@ import SwiftUIWebView
 import RealmSwift
 import RealmSwiftGaps
 import LakeKit
+
+/// A bounded, redacted rendering-queue detail for the existing visibility receipt.
+/// These counters are observational and must never participate in readiness.
+enum ReaderTrackingQueueDiagnostic {
+    static func detail(_ value: Any?, maxCharacters: Int = 240) -> String {
+        guard let queue = value as? [String: Any] else { return "" }
+        let budget = min(240, max(0, maxCharacters))
+        var result = ""
+        if let active = number(queue["activeBatchCount"], maximum: 1024) {
+            result = "trackingActive=\(Int(active))"
+        }
+        for (key, label) in [("processing", "trackingProcessing"), ("isEbook", "trackingEbook")] {
+            if let value = queue[key] as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() {
+                result += (result.isEmpty ? "" : " ") + "\(label)=\(value.boolValue)"
+            }
+        }
+        for (key, label) in [("queuedSelectorCount", "trackingQueued"), ("presentationWaiterCount", "trackingWaiters")] {
+            if let value = number(queue[key], maximum: 1_000_000) {
+                result += (result.isEmpty ? "" : " ") + "\(label)=\(Int(value))"
+            }
+        }
+        let labels = [
+            "trackedWords.applyBatch.start": "start",
+            "trackedWords.applyBatch.selector": "selector",
+            "trackedWords.applyBatch.progress": "progress",
+            "trackedWords.applyBatch.cancel": "cancel",
+            "trackedWords.applyBatch": "completed",
+            "trackedWords.applyBatch.queueDuringProcessing": "queue",
+            "trackedWords.visibleCandidates": "visible",
+        ]
+        // An oversized array is invalid, rather than an invitation to walk it.
+        let tail = queue["tail"] as? [Any] ?? []
+        let records: [(String, [String: Any])] = tail.count <= 4 ? tail.compactMap { value in
+            guard let record = value as? [String: Any],
+                  let event = record["event"] as? String, event.utf8.count <= 48,
+                  let label = labels[event] else { return nil }
+            return (label, record)
+        } : []
+        if !records.isEmpty {
+            let prefix = result.isEmpty ? "trackingTail=" : " trackingTail="
+            let available = budget - result.count - prefix.count - (records.count - 1)
+            // Give each record an equal budget so all four event labels survive.
+            let perRecord = max(0, available / records.count)
+            let fields = [
+                ("processedSegmentCount", "d"), ("selectedSegmentCount", "n"),
+                ("yieldCount", "y"), ("elapsedMs", "ms"),
+                ("pendingSegmentCount", "p"), ("mutatedSegmentCount", "m"),
+                ("batchSequence", "b"), ("generation", "g"), ("selectorCount", "s"),
+            ]
+            let summaries = records.map { label, record in
+                var summary = label
+                for (key, abbreviation) in fields {
+                    guard let value = number(record[key], maximum: key == "elapsedMs" ? 3_600_000 : 1_000_000,
+                                             integer: key != "elapsedMs") else { continue }
+                    let counter = ":\(abbreviation)=\(Int(value.rounded()))"
+                    if summary.count + counter.count <= perRecord { summary += counter }
+                }
+                return summary
+            }
+            let detail = prefix + summaries.joined(separator: ",")
+            if result.count + detail.count <= budget { result += detail }
+        }
+        return result.count <= budget ? result : ""
+    }
+
+    private static func number(_ value: Any?, maximum: Double, integer: Bool = true) -> Double? {
+        guard let value = value as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() else { return nil }
+        let number = value.doubleValue
+        guard number.isFinite, (0...maximum).contains(number),
+              !integer || number.rounded() == number else { return nil }
+        return number
+    }
+}
 
 private struct ReaderEBookInitialRestoreBridgeRequest {
     let requestID: String
@@ -370,9 +444,12 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                                   (0...1_000_000).contains(value), value.rounded() == value else { return nil }
                             return "\(label)=\(Int(value))"
                         }.joined(separator: " ")
+                    var detail = "reason=\(reason) visible=\(visible) displayed=\(displayed) opaque=\(opaque) ready=\(hasReaderRenderReady) \(flags) \(recallDetail)"
+                    let queueDetail = ReaderTrackingQueueDiagnostic.detail(body["readerTrackingQueue"],
+                                                                           maxCharacters: 512 - detail.count - 1)
+                    if !queueDetail.isEmpty { detail += " " + queueDetail }
                     ReaderLoadTrace.$operationID.withValue(renderGeneration) {
-                        ReaderLoadTrace.event("readerMode.visibilitySnapshot",
-                            "reason=\(reason) visible=\(visible) displayed=\(displayed) opaque=\(opaque) ready=\(hasReaderRenderReady) \(flags) \(recallDetail)")
+                        ReaderLoadTrace.event("readerMode.visibilitySnapshot", detail)
                     }
                 }
                 if hasReaderRenderReady {

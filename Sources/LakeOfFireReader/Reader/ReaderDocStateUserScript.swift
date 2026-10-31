@@ -44,6 +44,66 @@ struct ReaderDocStateUserScript {
             if (typeof value !== "number" || !Number.isFinite(value)) { return null; }
             return Math.round(value * 1000) / 1000;
         }
+        // Diagnostics only: copy bounded counters from existing queue owners.
+        // Never forward timeline labels or arbitrary payload values to native logs.
+        function trackingQueueSnapshot() {
+            const events = window.__manabiTimelineEvents;
+            const knownEvents = [
+                'trackedWords.applyBatch.start', 'trackedWords.applyBatch.selector',
+                'trackedWords.applyBatch.progress', 'trackedWords.applyBatch.cancel',
+                'trackedWords.applyBatch', 'trackedWords.applyBatch.queueDuringProcessing',
+                'trackedWords.visibleCandidates'
+            ];
+            const counters = [
+                'selectorCount', 'selectedSegmentCount', 'pendingSegmentCount',
+                'processedSegmentCount', 'mutatedSegmentCount', 'yieldCount',
+                'elapsedMs', 'batchSequence', 'generation'
+            ];
+            function boundedNumber(value, maximum, integer = true) {
+                return typeof value === 'number' && Number.isFinite(value)
+                    && value >= 0 && value <= maximum && (!integer || Number.isInteger(value))
+                    ? value : null;
+            }
+            const tail = [];
+            if (Array.isArray(events)) {
+                // The owner caps its ring at 200; also bound reads defensively.
+                for (let index = events.length - 1; index >= Math.max(0, events.length - 200) && tail.length < 4; index--) {
+                    const record = events[index];
+                    if (!record || !knownEvents.includes(record.event)) { continue; }
+                    const payload = record.payload;
+                    const summary = { event: record.event };
+                    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+                        for (const key of counters) {
+                            let value = payload[key];
+                            if (key === 'batchSequence') { value ??= payload.applyBatchSequence; }
+                            if (key === 'generation') { value ??= payload.batchGeneration ?? payload.activeTrackingGeneration; }
+                            if (key === 'selectorCount') { value ??= payload.queuedSelectorCount; }
+                            if (key === 'selectedSegmentCount' && record.event === 'trackedWords.visibleCandidates') {
+                                value ??= payload.candidateCount;
+                            }
+                            const number = boundedNumber(value, key === 'elapsedMs' ? 3600000 : 1000000, key !== 'elapsedMs');
+                            if (number !== null) { summary[key] = key === 'elapsedMs' ? rounded(number) : number; }
+                        }
+                    }
+                    tail.unshift(summary);
+                }
+            }
+            let activeBatchCount = null;
+            try { activeBatchCount = boundedNumber(window.top.__manabiTrackedWordsActiveCount, 1024); }
+            catch (_error) {}
+            const snapshot = { activeBatchCount, tail };
+            try {
+                const owner = window.manabi_trackingPresentationDiagnostics?.();
+                for (const key of ['processing', 'isEbook']) {
+                    if (typeof owner?.[key] === 'boolean') { snapshot[key] = owner[key]; }
+                }
+                for (const key of ['queuedSelectorCount', 'presentationWaiterCount']) {
+                    const value = boundedNumber(owner?.[key], 1000000);
+                    if (value !== null) { snapshot[key] = value; }
+                }
+            } catch (_error) {}
+            return snapshot;
+        }
         function currentState(reason) {
             const html = document.documentElement;
             const body = document.body;
@@ -86,6 +146,7 @@ struct ReaderDocStateUserScript {
                 readerFontOutcome: html?.dataset?.mnbFontOutcome ?? null,
                 readerFontTimings: window.manabiReaderFontLoad?.timings ?? null,
                 readerPositionRecall: positionRecall,
+                readerTrackingQueue: capturesVisibility ? trackingQueueSnapshot() : null,
                 readerRenderGeneration:
                     html?.dataset?.mnbReaderRenderGeneration
                     ?? body?.dataset?.mnbReaderRenderGeneration

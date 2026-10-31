@@ -120,6 +120,7 @@ public enum ReaderLoadTrace {
              "processor.initialArticleSettingsSnapshotAwait", "processor.initialArticleSettingsSnapshot", "processor.initialArticleSettingsApplication",
              "processor.sidecarAttachAwait", "processor.sidecarAttach", "processor.sidecarPrepareAwait", "processor.sidecarPrepare",
              "processor.exactFingerprintCheck", "processor.manualReadSectionSubjectProjections", "processor.runtimeStoreCommit", "processor.sourceReadingFinalPublication",
+             "processor.runtimeStorePreparation", "processor.runtimeStoreAdmission",
              "processor.trackingAccountSnapshot", "processor.trackingRealmOpen", "processor.trackingRealmRefresh",
              "processor.trackingReconcile", "processor.trackingReconcileRequested",
              "tracking.reconciliationAdmission", "tracking.reconciliationPass", "tracking.reconciliationAvailability", "tracking.reconciliationBaseline", "tracking.reconciliationPlan", "tracking.reconciliationCancelled", "tracking.pageStatusPreparation", "tracking.pageStatusSnapshot",
