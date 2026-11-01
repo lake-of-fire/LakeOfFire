@@ -13,9 +13,16 @@ public class ReaderLocationBarViewModel: ObservableObject {
     
     public init() { }
 
+    /// Appearance and focus callbacks can agree on the current state. Avoid
+    /// invalidating every toolbar observer when that state has not changed.
+    public func setEditing(_ isEditing: Bool) {
+        guard isLocationBarEditing != isEditing else { return }
+        isLocationBarEditing = isEditing
+    }
+
     public func requestDismissLocationBar() {
         locationBarShouldGainFocusOnAppearance = false
         dismissLocationBarRequestID &+= 1
-        isLocationBarEditing = false
+        setEditing(false)
     }
 }
