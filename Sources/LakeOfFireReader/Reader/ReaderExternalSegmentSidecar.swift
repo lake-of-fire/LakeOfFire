@@ -48,6 +48,7 @@ public struct EbookProcessedSectionPayload: Sendable {
             : nil
     }
 
+#if DEBUG
     @_spi(TestSupport)
     public static func readerProcessingFixture(
         sourceDocumentHTML: Data,
@@ -61,6 +62,7 @@ public struct EbookProcessedSectionPayload: Sendable {
             segmentSidecar: segmentSidecar
         )
     }
+#endif
 }
 
 @_spi(ReaderProcessing)
@@ -117,6 +119,7 @@ public final class EbookReaderProcessingCompletionProof: @unchecked Sendable {
         )
     }
 
+#if DEBUG
     @_spi(TestSupport)
     public static func forTesting(
         sourceHTML: String
@@ -124,6 +127,7 @@ public final class EbookReaderProcessingCompletionProof: @unchecked Sendable {
         let document = try! SwiftSoup.parse(sourceHTML)
         return EbookReaderProcessingCompletionProof(sourceDocument: document)!
     }
+#endif
 }
 
 extension EbookProcessedSectionPayload {
@@ -1158,6 +1162,7 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         return remainingCount <= diskCountLimit && totalDiskBytes <= diskByteLimit
     }
 
+#if DEBUG
     func memoryUsageForTesting() -> (byteCount: Int, count: Int) {
         lock.lock()
         defer { lock.unlock() }
@@ -1182,6 +1187,7 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         }
     }
 
+#endif
     private func touchDiskFile(_ fileURL: URL) {
         try? FileManager.default.setAttributes(
             [.modificationDate: Date()],

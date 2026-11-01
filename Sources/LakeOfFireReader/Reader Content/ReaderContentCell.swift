@@ -1289,9 +1289,11 @@ enum ReaderContentInitialImageRenderer {
         return image
     }
 
+#if DEBUG
     static func resetCacheForTesting() {
         imageCache.removeAllObjects()
     }
+#endif
 }
 
 private struct ReaderContentThumbnailTile: View {

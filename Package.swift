@@ -44,7 +44,6 @@ let package = Package(
         .package(path: "../FaviconFinder"),
         .package(url: "https://github.com/scinfu/SwiftSoup.git", branch: "master"),
         .package(url: "https://github.com/lake-of-fire/FilePicker.git", branch: "main"),
-        .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/SwiftCloudDrive.git", revision: "5f0d30e0e39fe9fd09e71b6ff1c01b444d8bdb9a"),
         .package(url: "https://github.com/dagronf/DSFStepperView.git", branch: "main"),
         .package(path: "../swift-readability"),
@@ -152,7 +151,6 @@ let package = Package(
                 .product(name: "OpenGraph", package: "OpenGraph"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
-                .product(name: "SwiftUIBackports", package: "SwiftUIBackports"),
                 .product(name: "SwiftUIDownloads", package: "SwiftUIDownloads"),
                 .product(name: "SwiftUtilities", package: "SwiftUtilities"),
             ]
@@ -183,7 +181,6 @@ let package = Package(
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
                 .product(name: "SwiftReadability", package: "swift-readability"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
-                .product(name: "SwiftUIBackports", package: "SwiftUIBackports"),
                 .product(name: "SwiftUIDownloads", package: "SwiftUIDownloads"),
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
                 .product(name: "SwiftUtilities", package: "SwiftUtilities"),

@@ -2534,10 +2534,12 @@ public class ReaderModeViewModel: ObservableObject {
         return unavailable
     }
 
+#if DEBUG
     @MainActor
     func readerModeRouteForTesting(readerContent: ReaderContent) async -> String {
         await resolveReaderModeRoute(readerContent: readerContent).rawValue
     }
+#endif
 
     @MainActor
     private func readerContentRenderSnapshot(readerContent: ReaderContent) async throws -> ReaderContentRenderSnapshot? {
