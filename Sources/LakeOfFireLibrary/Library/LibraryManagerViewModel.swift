@@ -61,7 +61,9 @@ struct OPMLExportShareItem: Transferable {
 struct LibraryManagerViewModelEnvironmentModifier: ViewModifier {
     @available(iOS 16, macOS 13, *)
     struct ActiveLibraryManagerViewModelEnvironmentModifier: ViewModifier {
-        @ObservedObject private var libraryViewModel = LibraryManagerViewModel.shared
+        // This wrapper only supplies identity. Library screens and the sheet
+        // presenter observe the model where its changing values are read.
+        private let libraryViewModel = LibraryManagerViewModel.shared
         
         func body(content: Content) -> some View {
             content
