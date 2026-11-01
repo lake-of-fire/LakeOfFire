@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 import SwiftUI
 import SwiftSoup
 import RealmSwift
@@ -83,6 +84,48 @@ private func makeReaderWebViewHandlerFixture() -> (
 
 @MainActor
 final class ReaderWebViewCallbackContractTests: XCTestCase {
+    func testLocationBarEditingPublishesOnlyTransitions() {
+        let model = ReaderLocationBarViewModel()
+        var values: [Bool] = []
+        var invalidations = 0
+        let valuesSubscription = model.$isLocationBarEditing.sink { values.append($0) }
+        let invalidationSubscription = model.objectWillChange.sink { invalidations += 1 }
+        defer {
+            valuesSubscription.cancel()
+            invalidationSubscription.cancel()
+        }
+
+        model.setEditing(false)
+        model.setEditing(true)
+        model.setEditing(true)
+        model.setEditing(false)
+        model.setEditing(false)
+
+        XCTAssertEqual(values, [false, true, false])
+        XCTAssertEqual(invalidations, 2)
+    }
+
+    func testLocationBarDismissalPreservesRepeatedRequestsWithoutRepublishingEditingState() {
+        let model = ReaderLocationBarViewModel()
+        var values: [Bool] = []
+        var requests: [Int] = []
+        let valuesSubscription = model.$isLocationBarEditing.sink { values.append($0) }
+        let requestSubscription = model.$dismissLocationBarRequestID.sink { requests.append($0) }
+        defer {
+            valuesSubscription.cancel()
+            requestSubscription.cancel()
+        }
+
+        model.locationBarShouldGainFocusOnAppearance = true
+        model.setEditing(true)
+        model.requestDismissLocationBar()
+        model.requestDismissLocationBar()
+
+        XCTAssertEqual(values, [false, true, false])
+        XCTAssertEqual(requests, [0, 1, 2])
+        XCTAssertFalse(model.locationBarShouldGainFocusOnAppearance)
+    }
+
     func testReaderFontSizeInitializationPreservesExistingStringAndFractionalValues() throws {
         let suite = "reader-font-existing-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
