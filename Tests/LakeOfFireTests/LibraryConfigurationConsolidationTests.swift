@@ -290,6 +290,154 @@ final class LibraryConfigurationConsolidationTests: XCTestCase {
         )
     }
 
+    func testNewConfigurationAdmitsActiveOrphansDeterministicallyAndRetainsArchivedObjects() async throws {
+        try await verifyNewConfigurationAdmitsActiveOrphansDeterministicallyAndRetainsArchivedObjects()
+    }
+
+    @RealmBackgroundActor
+    private func verifyNewConfigurationAdmitsActiveOrphansDeterministicallyAndRetainsArchivedObjects() async throws {
+        let (configuration, realm) = try await makeRealm()
+        let scripts = (1...3).map { index -> UserScript in
+            let script = UserScript()
+            script.id = UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", index))!
+            script.createdAt = Date(timeIntervalSinceReferenceDate: index == 3 ? 2_000 : 1_000)
+            return script
+        }
+        let categories = (1...3).map { index -> FeedCategory in
+            let category = FeedCategory()
+            category.id = scripts[index - 1].id
+            category.createdAt = scripts[index - 1].createdAt
+            return category
+        }
+        let archivedScript = UserScript()
+        archivedScript.isArchived = true
+        archivedScript.script = "Retain archived source"
+        let archivedCategory = FeedCategory()
+        archivedCategory.isArchived = true
+        let deletedScript = UserScript()
+        deletedScript.isDeleted = true
+        try realm.write {
+            // Reverse delivery order; creation must use the same admission keys
+            // as consolidation of an already-existing configuration.
+            realm.add(Array(scripts.reversed()))
+            realm.add(Array(categories.reversed()))
+            realm.add([archivedScript, deletedScript])
+            realm.add(archivedCategory)
+        }
+
+        let primary = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: configuration
+        )
+
+        XCTAssertEqual(Array(primary.userScriptIDs), scripts.map(\.id))
+        XCTAssertEqual(Array(primary.categoryIDs), categories.map(\.id))
+        XCTAssertEqual(realm.objects(LibraryConfiguration.self).count, 1)
+        XCTAssertNotNil(primary.realm)
+        let mutation = try XCTUnwrap(pendingMutation(for: primary, in: realm))
+        XCTAssertEqual(mutation.changedAt, primary.modifiedAt)
+        XCTAssertEqual(primary.explicitlyModifiedAt, primary.modifiedAt)
+        XCTAssertEqual(realm.object(ofType: UserScript.self, forPrimaryKey: archivedScript.id)?.script,
+                       "Retain archived source")
+        XCTAssertTrue(archivedScript.isArchived)
+        XCTAssertFalse(archivedScript.isDeleted)
+        XCTAssertTrue(archivedCategory.isArchived)
+        XCTAssertFalse(archivedCategory.isDeleted)
+        XCTAssertTrue(deletedScript.isDeleted)
+        XCTAssertNil(pendingMutation(for: archivedScript, in: realm))
+        XCTAssertNil(pendingMutation(for: archivedCategory, in: realm))
+    }
+
+    func testRepeatedConsolidationPreservesStableJournalAndMetadata() async throws {
+        try await verifyRepeatedConsolidationPreservesStableJournalAndMetadata()
+    }
+
+    @RealmBackgroundActor
+    private func verifyRepeatedConsolidationPreservesStableJournalAndMetadata() async throws {
+        let (configuration, realm) = try await makeRealm()
+        let script = UserScript()
+        let archived = UserScript()
+        archived.isArchived = true
+        let unresolvedID = UUID()
+        let primary = LibraryConfiguration()
+        primary.userScriptIDs.append(objectsIn: [unresolvedID, archived.id])
+        try realm.write {
+            realm.add([script, archived])
+            realm.add(primary)
+        }
+        _ = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+        let mutation = try XCTUnwrap(pendingMutation(for: primary, in: realm))
+        let generation = mutation.generation
+        let changedAt = mutation.changedAt
+        let modifiedAt = primary.modifiedAt
+        let explicitlyModifiedAt = primary.explicitlyModifiedAt
+
+        for _ in 0..<3 {
+            let result = try await LibraryConfiguration.getConsolidatedOrCreate(
+                realmConfiguration: configuration
+            )
+            XCTAssertEqual(result.id, primary.id)
+            XCTAssertEqual(Array(result.userScriptIDs), [unresolvedID, script.id])
+            XCTAssertEqual(result.modifiedAt, modifiedAt)
+            XCTAssertEqual(result.explicitlyModifiedAt, explicitlyModifiedAt)
+            XCTAssertEqual(pendingMutation(for: result, in: realm)?.generation, generation)
+            XCTAssertEqual(pendingMutation(for: result, in: realm)?.changedAt, changedAt)
+        }
+        XCTAssertTrue(archived.isArchived)
+        XCTAssertFalse(archived.isDeleted)
+        XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 1)
+    }
+
+    func testCreateEmptyScriptWithExistingConfigurationAdmitsOnceAndPreservesOrder() async throws {
+        try await verifyCreateEmptyScriptAdmitsOnce(preexistingConfiguration: true)
+    }
+
+    func testCreateEmptyScriptWithoutConfigurationAdmitsOnceAndJournalsCreation() async throws {
+        try await verifyCreateEmptyScriptAdmitsOnce(preexistingConfiguration: false)
+    }
+
+    @RealmBackgroundActor
+    private func verifyCreateEmptyScriptAdmitsOnce(preexistingConfiguration: Bool) async throws {
+        let (configuration, realm) = try await makeRealm()
+        let earlier = UserScript()
+        earlier.createdAt = Date(timeIntervalSinceReferenceDate: 1_000)
+        let later = UserScript()
+        later.createdAt = Date(timeIntervalSinceReferenceDate: 2_000)
+        let unresolvedID = UUID()
+        let existing = LibraryConfiguration()
+        existing.userScriptIDs.append(objectsIn: [later.id, unresolvedID, earlier.id])
+        try realm.write {
+            realm.add([later, earlier])
+            if preexistingConfiguration { realm.add(existing) }
+        }
+
+        let scriptID = try await LibraryDataManager.shared.createEmptyScript(
+            addToLibrary: true, realmConfiguration: configuration
+        )
+        let primary = try XCTUnwrap(realm.objects(LibraryConfiguration.self).where { !$0.isDeleted }.first)
+        let script = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: scriptID))
+        let expectedPrefix = preexistingConfiguration
+            ? [later.id, unresolvedID, earlier.id] : [earlier.id, later.id]
+        XCTAssertEqual(Array(primary.userScriptIDs), expectedPrefix + [scriptID])
+        XCTAssertEqual(primary.userScriptIDs.filter { $0 == scriptID }.count, 1)
+        if preexistingConfiguration { XCTAssertEqual(primary.id, existing.id) }
+        XCTAssertEqual(realm.objects(LibraryConfiguration.self).count, 1)
+        let libraryMutation = try XCTUnwrap(pendingMutation(for: primary, in: realm))
+        let scriptMutation = try XCTUnwrap(pendingMutation(for: script, in: realm))
+        XCTAssertEqual(libraryMutation.changedAt, primary.modifiedAt)
+        XCTAssertEqual(scriptMutation.changedAt, script.modifiedAt)
+        XCTAssertEqual(script.explicitlyModifiedAt, script.modifiedAt)
+        XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 2)
+        let libraryGeneration = libraryMutation.generation
+        let scriptGeneration = scriptMutation.generation
+        let modifiedAt = primary.modifiedAt
+
+        _ = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+        XCTAssertEqual(Array(primary.userScriptIDs), expectedPrefix + [scriptID])
+        XCTAssertEqual(primary.modifiedAt, modifiedAt)
+        XCTAssertEqual(pendingMutation(for: primary, in: realm)?.generation, libraryGeneration)
+        XCTAssertEqual(pendingMutation(for: script, in: realm)?.generation, scriptGeneration)
+    }
+
     func testOldestCreatedConfigurationSurvivesEvenAfterLaterModification() async throws {
         try await verifyOldestCreatedConfigurationSurvivesEvenAfterLaterModification()
     }

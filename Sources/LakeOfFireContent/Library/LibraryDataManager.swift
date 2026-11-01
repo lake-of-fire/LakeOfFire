@@ -242,53 +242,27 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
             for: realmConfiguration
         )
-        let configurationIDs = Array(
-            realm.objects(LibraryConfiguration.self).where { !$0.isDeleted }
-        ).sorted { lhs, rhs in
-            if lhs.createdAt != rhs.createdAt {
-                return lhs.createdAt < rhs.createdAt
-            }
-            return lhs.id.uuidString < rhs.id.uuidString
-        }.map(\.id)
+        var resolvedPrimaryID: UUID?
 
-        guard let primaryID = configurationIDs.first else {
-            let configuration = LibraryConfiguration()
-            let timestamp = Date()
-            try await realm.asyncWritePreservingOwnership {
-                if let concurrent = realm.objects(LibraryConfiguration.self)
-                    .where({ !$0.isDeleted })
-                    .sorted(by: \.createdAt, ascending: true)
-                    .first {
-                    return
-                }
-                realm.add(configuration)
-                configuration.refreshChangeMetadata(
-                    explicitlyModified: true,
-                    at: timestamp
-                )
-            }
-            return Array(realm.objects(LibraryConfiguration.self).where {
-                !$0.isDeleted
-            }).sorted { lhs, rhs in
+        try await realm.asyncWritePreservingOwnership {
+            // Choose the survivor after write admission so concurrent arrivals
+            // participate in the same normalization and orphan admission pass.
+            let configurations = Array(
+                realm.objects(LibraryConfiguration.self).where { !$0.isDeleted }
+            ).sorted { lhs, rhs in
                 if lhs.createdAt != rhs.createdAt {
                     return lhs.createdAt < rhs.createdAt
                 }
                 return lhs.id.uuidString < rhs.id.uuidString
-            }.first ?? configuration
-        }
-
-        let duplicateIDs = Array(configurationIDs.dropFirst())
-        let timestamp = Date()
-        var resolvedPrimaryID = primaryID
-
-        try await realm.asyncWritePreservingOwnership {
-            guard let primary = realm.object(
-                ofType: LibraryConfiguration.self,
-                forPrimaryKey: primaryID
-            ), !primary.isDeleted else {
-                return
+            }
+            let isNewPrimary = configurations.isEmpty
+            let primary = configurations.first ?? LibraryConfiguration()
+            if isNewPrimary {
+                realm.add(primary)
             }
             resolvedPrimaryID = primary.id
+            let duplicateIDs = configurations.dropFirst().map(\.id)
+            let timestamp = Date()
 
             func normalizedExistingCategories() -> [UUID] {
                 orderedUniqueIdentifiers(Array(primary.categoryIDs)).filter { id in
@@ -458,7 +432,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
 
             let currentCategoryIDs = Array(primary.categoryIDs)
             let currentScriptIDs = Array(primary.userScriptIDs)
-            var primaryChanged = false
+            var primaryChanged = isNewPrimary
             if finalCategoryIDs != currentCategoryIDs {
                 primary.categoryIDs.removeAll()
                 primary.categoryIDs.append(objectsIn: finalCategoryIDs)
@@ -491,7 +465,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
             }
         }
 
-        if let primary = realm.object(
+        if let resolvedPrimaryID, let primary = realm.object(
             ofType: LibraryConfiguration.self,
             forPrimaryKey: resolvedPrimaryID
         ), !primary.isDeleted {
@@ -630,22 +604,19 @@ public class LibraryDataManager: NSObject {
             guard realmConfiguration.fileURL != nil || realmConfiguration.inMemoryIdentifier != nil else { return }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             
-            realm.objects(LibraryConfiguration.self)
+            let configurationChanges = realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
                 .map { @Sendable _ in }
-                .debounceLeadingTrailing(for: .seconds(0.3), scheduler: libraryDataQueue)
-                .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
-                    Task { @RealmBackgroundActor [weak self] in
-                        guard let self = self else { return }
-                        try await refreshScripts(realmConfiguration: realmConfiguration)
-                    }
-                })
-                .store(in: &realmCancellables)
             
-            realm.objects(UserScript.self)
+            let scriptChanges = realm.objects(UserScript.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
+                .map { @Sendable _ in }
+
+            // Wait for both initial snapshots, then coalesce all full-state
+            // invalidations through one reconciliation path.
+            configurationChanges.combineLatest(scriptChanges)
                 .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.3), scheduler: libraryDataQueue)
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
@@ -674,27 +645,9 @@ public class LibraryDataManager: NSObject {
         else {
             return
         }
-        try await Realm.asyncWrite(
-            ThreadSafeReference(to: LibraryConfiguration.getConsolidatedOrCreate(
-                realmConfiguration: realmConfiguration
-            )),
-            configuration: realmConfiguration
-        ) { realm, configuration in
-            let scripts = Array(realm.objects(UserScript.self))
-            for script in scripts {
-                if script.isDeleted {
-                    for (idx, candidateID) in Array(configuration.userScriptIDs).enumerated() {
-                        if candidateID == script.id {
-                            configuration.userScriptIDs.remove(at: idx)
-                            configuration.refreshChangeMetadata(explicitlyModified: true)
-                        }
-                    }
-                } else if !configuration.userScriptIDs.contains(script.id) {
-                    configuration.userScriptIDs.append(script.id)
-                    configuration.refreshChangeMetadata(explicitlyModified: true)
-                }
-            }
-        }
+        _ = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: realmConfiguration
+        )
     }
     
     @RealmBackgroundActor
@@ -854,6 +807,7 @@ public class LibraryDataManager: NSObject {
             )
 //            await realm.asyncRefresh()
             try await realm.asyncWritePreservingOwnership {
+                guard !configuration.userScriptIDs.contains(script.id) else { return }
                 configuration.userScriptIDs.append(script.id)
                 configuration.refreshChangeMetadata(explicitlyModified: true)
             }

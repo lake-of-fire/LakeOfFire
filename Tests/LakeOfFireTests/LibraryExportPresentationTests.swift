@@ -516,6 +516,133 @@ final class LibraryExportPresentationTests: XCTestCase {
         XCTAssertFalse(result.6)
     }
 
+    func testDataManagerObservationRetainsArchivesAndSettlesJournalInCapturedRealm() async throws {
+        let previousConfiguration = LibraryDataManager.realmConfiguration
+        let observedConfiguration = makeLibraryRealmConfiguration()
+        let replacementConfiguration = makeLibraryRealmConfiguration()
+        defer { LibraryDataManager.realmConfiguration = previousConfiguration }
+        let realm = try await Realm.open(configuration: observedConfiguration)
+        let replacementRealm = try await Realm.open(configuration: replacementConfiguration)
+        let unresolvedID = UUID()
+        let archived = UserScript()
+        archived.isArchived = true
+        archived.script = "Previously archived source"
+        let initialOrphan = UserScript()
+        initialOrphan.script = "Source to archive later"
+        let primary = LibraryConfiguration()
+        primary.createdAt = Date(timeIntervalSinceReferenceDate: 1_000)
+        primary.userScriptIDs.append(objectsIn: [unresolvedID, archived.id])
+        try realm.write { realm.add([primary, archived, initialOrphan]) }
+        let replacementLibrary = LibraryConfiguration()
+        let replacementOrphan = UserScript()
+        try replacementRealm.write { replacementRealm.add([replacementLibrary, replacementOrphan]) }
+
+        LibraryDataManager.realmConfiguration = observedConfiguration
+        let dataManager = LibraryDataManager()
+        // init captures A before its subscription task suspends. Every initial
+        // and later callback must continue to resolve/write A after this swap.
+        LibraryDataManager.realmConfiguration = replacementConfiguration
+        addTeardownBlock {
+            await Task { @RealmBackgroundActor in
+                dataManager.realmCancellables.forEach { $0.cancel() }
+                dataManager.realmCancellables.removeAll()
+            }.value
+            await MainActor.run {
+                dataManager.cancellables.forEach { $0.cancel() }
+                dataManager.cancellables.removeAll()
+            }
+        }
+
+        let initiallyReconciled = await waitUntil {
+            Array(primary.userScriptIDs) == [unresolvedID, initialOrphan.id]
+        }
+        XCTAssertTrue(initiallyReconciled)
+        guard initiallyReconciled else { return }
+
+        let primaryID = primary.id
+        let initialScriptID = initialOrphan.id
+        let nextScriptID = try await Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: observedConfiguration)
+            let nextOrphan = UserScript()
+            try await realm.asyncWritePreservingOwnership {
+                realm.add(nextOrphan)
+                nextOrphan.refreshChangeMetadata(explicitlyModified: true)
+            }
+            return nextOrphan.id
+        }.value
+        let scriptUpdateReconciled = await waitUntil {
+            Array(primary.userScriptIDs) == [unresolvedID, initialScriptID, nextScriptID]
+        }
+        XCTAssertTrue(scriptUpdateReconciled)
+        guard scriptUpdateReconciled else { return }
+
+        // A later configuration delivery must also invalidate the same
+        // projection, retaining its unresolved UUID and journaling its tombstone.
+        let lateUnresolvedID = UUID()
+        let duplicateID = try await Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: observedConfiguration)
+            let library = try XCTUnwrap(realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: primaryID))
+            let script = try XCTUnwrap(realm.object(ofType: UserScript.self, forPrimaryKey: initialScriptID))
+            let duplicate = LibraryConfiguration()
+            duplicate.createdAt = Date(timeIntervalSinceReferenceDate: 2_000)
+            duplicate.userScriptIDs.append(lateUnresolvedID)
+            try await realm.asyncWritePreservingOwnership {
+                let timestamp = Date()
+                // Match the library's archive contract: remove the relationship
+                // and archive the retained script in one authoritative write.
+                library.userScriptIDs.remove(at: try XCTUnwrap(library.userScriptIDs.firstIndex(of: script.id)))
+                script.isArchived = true
+                library.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                script.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                realm.add(duplicate)
+            }
+            return duplicate.id
+        }.value
+        let configurationUpdateReconciled = await waitUntil {
+            realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: duplicateID)?.isDeleted == true &&
+                Array(primary.userScriptIDs) == [unresolvedID, nextScriptID, lateUnresolvedID]
+        }
+        XCTAssertTrue(configurationUpdateReconciled)
+        guard configurationUpdateReconciled else { return }
+
+        let journal = try XCTUnwrap(realm.object(
+            ofType: BigSyncPendingMutation.self, forPrimaryKey: "LibraryConfiguration.\(primaryID)"
+        ))
+        let stableGeneration = journal.generation
+        let stableModifiedAt = primary.modifiedAt
+        let duplicateJournal = try XCTUnwrap(realm.object(
+            ofType: BigSyncPendingMutation.self, forPrimaryKey: "LibraryConfiguration.\(duplicateID)"
+        ))
+        XCTAssertEqual(duplicateJournal.changedAt, journal.changedAt)
+        let noReconciliationChurn = expectation(description: "Settled reconciliation does not journal itself again")
+        noReconciliationChurn.isInverted = true
+        let observation = journal.observe { change in
+            switch change {
+            case .change:
+                if journal.generation != stableGeneration { noReconciliationChurn.fulfill() }
+            case .deleted, .error:
+                noReconciliationChurn.fulfill()
+            }
+        }
+        defer { observation.invalidate() }
+        // Verify silence beyond multiple debounce windows, without requiring an
+        // exact notification count or assuming a fixed reconciliation duration.
+        await fulfillment(of: [noReconciliationChurn], timeout: 1)
+
+        XCTAssertEqual(journal.generation, stableGeneration)
+        XCTAssertEqual(primary.modifiedAt, stableModifiedAt)
+        XCTAssertEqual(Array(primary.userScriptIDs), [unresolvedID, nextScriptID, lateUnresolvedID])
+        XCTAssertTrue(archived.isArchived)
+        XCTAssertFalse(archived.isDeleted)
+        XCTAssertEqual(archived.script, "Previously archived source")
+        XCTAssertTrue(initialOrphan.isArchived)
+        XCTAssertFalse(initialOrphan.isDeleted)
+        XCTAssertEqual(initialOrphan.script, "Source to archive later")
+        XCTAssertEqual(realm.objects(UserScript.self).count, 3)
+        XCTAssertTrue(replacementLibrary.userScriptIDs.isEmpty)
+        XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
     func testVisibleInvalidationRepreparesAfterFailedFileWrite() async throws {
         let manager = LibraryManagerViewModel(observesRealm: false)
         manager.exportUserOPML = {
