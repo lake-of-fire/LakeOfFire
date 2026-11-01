@@ -130,6 +130,7 @@ public enum ReaderLoadTrace {
              "bridge.readerInitializing", "bridge.readerInitialized", "bridge.trackingAccountAdmission", "bridge.settingsRefresh", "bridge.settingsSubscription", "bridge.settingsFont",
              "bridge.subscriptionQueueWait", "bridge.subscriptionApply",
              "bridge.initializeTracking", "bridge.trackingAcknowledgement", "bridge.refreshAfterTracking", "bridge.initialArticlePresentation",
+             "bridge.postTrackingContent", "bridge.postTrackingProgressSchedule", "bridge.postTrackingSettings", "bridge.postTrackingTranscript",
              "bridge.trackingInitializationFailed":
             return true
         default:
