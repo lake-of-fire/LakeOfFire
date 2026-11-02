@@ -248,6 +248,9 @@ func applyAdaptiveReaderWidth(
                 let changed = false;
                 if (style && style.getPropertyValue('--mnb-reader-max-width-override') !== value) {
                     style.setProperty('--mnb-reader-max-width-override', value);
+                    delete document.body.dataset.mnbMessageHandlerSettingsApplicationSignature;
+                    delete document.body.dataset.mnbReaderFontSizeSignature;
+                    delete globalThis.__manabiReaderFontSizeSyncSignature;
                     changed = true;
                 }
                 mark('finish', `reason=\(reason) maxWidth=\(maxWidthOverride) changed=${changed}`);
@@ -337,6 +340,7 @@ func applyReaderFontSize(
     readerFontSize: Double?,
     lightModeTheme: LightModeTheme,
     darkModeTheme: DarkModeTheme,
+    isEBook: Bool,
     reason: String,
     hasAsyncCaller: Bool,
     evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
@@ -360,6 +364,11 @@ func applyReaderFontSize(
                     if (!body) { return false; }
                     if (body.style.fontSize === fontSize) { return false; }
                     body.style.fontSize = fontSize;
+                    delete body.dataset.mnbMessageHandlerSettingsApplicationSignature;
+                    delete body.dataset.mnbReaderFontSizeSignature;
+                    if (doc.defaultView) {
+                        delete doc.defaultView.__manabiReaderFontSizeSyncSignature;
+                    }
                     return true;
                 };
                 globalThis.manabiReaderFontSizeCSS = fontSize;
@@ -399,8 +408,12 @@ func applyReaderFontSize(
             hasAsyncCaller: hasAsyncCaller,
             evaluateJavaScript: evaluateJavaScript
         )
-        await requestReaderTypographyPaginationRefresh(reason: reason, evaluateJavaScript: evaluateJavaScript)
-        await requestReaderTrackingSectionGeometryBake(reason: reason, evaluateJavaScript: evaluateJavaScript)
+        // Ordinary articles have no Foliate renderer. Select this work before
+        // submitting JavaScript, rather than paying for two no-op bridge calls.
+        if isEBook {
+            await requestReaderTypographyPaginationRefresh(reason: reason, evaluateJavaScript: evaluateJavaScript)
+            await requestReaderTrackingSectionGeometryBake(reason: reason, evaluateJavaScript: evaluateJavaScript)
+        }
     } catch {
         print("Font size update failed: \(error)")
     }
@@ -447,6 +460,9 @@ func applyReaderTheme(
                     if (body.style?.getPropertyValue?.('color-scheme') !== colorScheme) {
                         body.style?.setProperty?.('color-scheme', colorScheme);
                         changed = true;
+                    }
+                    if (changed) {
+                        delete body.dataset.mnbMessageHandlerSettingsApplicationSignature;
                     }
                     return changed;
                 };
@@ -503,7 +519,7 @@ func applyInitialReaderPresentationSettings(
     await applyAdaptiveReaderWidth(
         readerFontSize: readerFontSize,
         reason: "reader-width-initial",
-        requestGeometryBake: readerFontSize == nil,
+        requestGeometryBake: false,
         hasAsyncCaller: hasAsyncCaller,
         evaluateJavaScript: evaluateJavaScript
     )
@@ -521,6 +537,7 @@ func applyInitialReaderPresentationSettings(
             readerFontSize: readerFontSize,
             lightModeTheme: lightModeTheme,
             darkModeTheme: darkModeTheme,
+            isEBook: false,
             reason: "font-size-initial",
             hasAsyncCaller: hasAsyncCaller,
             evaluateJavaScript: evaluateJavaScript
@@ -639,28 +656,13 @@ fileprivate struct ThemeModifier: ViewModifier {
         readerFontSize ?? Double(defaultFontSize)
     }
 
-    private var initialReaderPresentationSettingsTaskID: String {
-        [
-            readerViewModel.state.pageURL.absoluteString,
-            String(readerViewModel.state.hasReaderRenderReady),
-            String(scriptCaller.hasAsyncCaller),
-            String(resolvedReaderFontSize),
-            colorScheme == .dark ? "dark" : "light",
-            lightModeTheme.rawValue,
-            darkModeTheme.rawValue,
-        ].joined(separator: "|")
-    }
-
-    private var isCurrentPageEBook: Bool {
-        readerViewModel.state.pageURL.scheme == "ebook"
-    }
-
-    private func applyFontSize(_ size: Double, reason: String) async {
+    private func applyFontSize(_ size: Double, isEBook: Bool, reason: String) async {
         await applyReaderFontSize(
             size,
             readerFontSize: size,
             lightModeTheme: lightModeTheme,
             darkModeTheme: darkModeTheme,
+            isEBook: isEBook,
             reason: reason,
             hasAsyncCaller: scriptCaller.hasAsyncCaller
         ) { js, duplicateInMultiTargetFrames in
@@ -688,58 +690,92 @@ fileprivate struct ThemeModifier: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        content
-            .onChange(of: lightModeTheme) { newValue in
-                Task { @MainActor in
-                    await applyReaderTheme(
-                        colorScheme: colorScheme,
-                        lightModeTheme: newValue,
-                        darkModeTheme: darkModeTheme,
-                        reason: "light-theme-change",
-                        hasAsyncCaller: scriptCaller.hasAsyncCaller
-                    ) { js, duplicateInMultiTargetFrames in
-                        _ = try await scriptCaller.evaluateJavaScript(
-                            js,
-                            duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
-                        )
-                    }
-                    await requestReaderTrackingSectionGeometryBake(reason: "light-theme-change") { js, duplicateInMultiTargetFrames in
-                        _ = try await scriptCaller.evaluateJavaScript(
-                            js,
-                            duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
-                        )
+        WithPerceptionTracking {
+            let pageURL = readerViewModel.state.pageURL
+            let isCurrentPageEBook = pageURL.isEBookURL
+            let initialReaderPresentationSettingsTaskID = [
+                pageURL.absoluteString,
+                String(readerViewModel.state.hasReaderRenderReady),
+                String(scriptCaller.hasAsyncCaller),
+                String(resolvedReaderFontSize),
+                colorScheme == .dark ? "dark" : "light",
+                lightModeTheme.rawValue,
+                darkModeTheme.rawValue,
+            ].joined(separator: "|")
+            content
+                .onChange(of: lightModeTheme) { newValue in
+                    Task { @MainActor in
+                        await applyReaderTheme(
+                            colorScheme: colorScheme,
+                            lightModeTheme: newValue,
+                            darkModeTheme: darkModeTheme,
+                            reason: "light-theme-change",
+                            hasAsyncCaller: scriptCaller.hasAsyncCaller
+                        ) { js, duplicateInMultiTargetFrames in
+                            _ = try await scriptCaller.evaluateJavaScript(
+                                js,
+                                duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+                            )
+                        }
+                        await requestReaderTrackingSectionGeometryBake(reason: "light-theme-change") { js, duplicateInMultiTargetFrames in
+                            _ = try await scriptCaller.evaluateJavaScript(
+                                js,
+                                duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+                            )
+                        }
                     }
                 }
-            }
-            .onChange(of: darkModeTheme) { newValue in
-                Task { @MainActor in
-                    await applyReaderTheme(
+                .onChange(of: darkModeTheme) { newValue in
+                    Task { @MainActor in
+                        await applyReaderTheme(
+                            colorScheme: colorScheme,
+                            lightModeTheme: lightModeTheme,
+                            darkModeTheme: newValue,
+                            reason: "dark-theme-change",
+                            hasAsyncCaller: scriptCaller.hasAsyncCaller
+                        ) { js, duplicateInMultiTargetFrames in
+                            _ = try await scriptCaller.evaluateJavaScript(
+                                js,
+                                duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+                            )
+                        }
+                        await requestReaderTrackingSectionGeometryBake(reason: "dark-theme-change") { js, duplicateInMultiTargetFrames in
+                            _ = try await scriptCaller.evaluateJavaScript(
+                                js,
+                                duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+                            )
+                        }
+                    }
+                }
+                .onChange(of: colorScheme) { newValue in
+                    Task { @MainActor in
+                        await applyReaderTheme(
+                            colorScheme: newValue,
+                            lightModeTheme: lightModeTheme,
+                            darkModeTheme: darkModeTheme,
+                            reason: "color-scheme-change",
+                            hasAsyncCaller: scriptCaller.hasAsyncCaller
+                        ) { js, duplicateInMultiTargetFrames in
+                            _ = try await scriptCaller.evaluateJavaScript(
+                                js,
+                                duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+                            )
+                        }
+                    }
+                }
+                .onChange(of: scenePhase) { scenePhase in
+                    guard scenePhase == .active else { return }
+                    Task { @MainActor in
+                        await applyTheme(reason: "scene-active")
+                    }
+                }
+                .task(id: initialReaderPresentationSettingsTaskID) { @MainActor in
+                    guard !isCurrentPageEBook else { return }
+                    await applyInitialReaderPresentationSettings(
+                        readerFontSize: resolvedReaderFontSize,
                         colorScheme: colorScheme,
                         lightModeTheme: lightModeTheme,
-                        darkModeTheme: newValue,
-                        reason: "dark-theme-change",
-                        hasAsyncCaller: scriptCaller.hasAsyncCaller
-                    ) { js, duplicateInMultiTargetFrames in
-                        _ = try await scriptCaller.evaluateJavaScript(
-                            js,
-                            duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
-                        )
-                    }
-                    await requestReaderTrackingSectionGeometryBake(reason: "dark-theme-change") { js, duplicateInMultiTargetFrames in
-                        _ = try await scriptCaller.evaluateJavaScript(
-                            js,
-                            duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
-                        )
-                    }
-                }
-            }
-            .onChange(of: colorScheme) { newValue in
-                Task { @MainActor in
-                    await applyReaderTheme(
-                        colorScheme: newValue,
-                        lightModeTheme: lightModeTheme,
                         darkModeTheme: darkModeTheme,
-                        reason: "color-scheme-change",
                         hasAsyncCaller: scriptCaller.hasAsyncCaller
                     ) { js, duplicateInMultiTargetFrames in
                         _ = try await scriptCaller.evaluateJavaScript(
@@ -748,45 +784,24 @@ fileprivate struct ThemeModifier: ViewModifier {
                         )
                     }
                 }
-            }
-            .onChange(of: scenePhase) { scenePhase in
-                guard scenePhase == .active else { return }
-                Task { @MainActor in
-                    await applyTheme(reason: "scene-active")
-                }
-            }
-            .task(id: initialReaderPresentationSettingsTaskID) { @MainActor in
-                guard !isCurrentPageEBook else { return }
-                await applyInitialReaderPresentationSettings(
-                    readerFontSize: resolvedReaderFontSize,
-                    colorScheme: colorScheme,
-                    lightModeTheme: lightModeTheme,
-                    darkModeTheme: darkModeTheme,
-                    hasAsyncCaller: scriptCaller.hasAsyncCaller
-                ) { js, duplicateInMultiTargetFrames in
-                    _ = try await scriptCaller.evaluateJavaScript(
-                        js,
-                        duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
-                    )
-                }
-            }
-            .onChange(of: readerFontSize) { newValue in
-                let newValue = newValue ?? resolvedReaderFontSize
-                Task { @MainActor in
-                    await applyAdaptiveReaderWidth(
-                        readerFontSize: newValue,
-                        reason: "reader-width-change",
-                        requestGeometryBake: false,
-                        hasAsyncCaller: scriptCaller.hasAsyncCaller
-                    ) { js, duplicateInMultiTargetFrames in
-                        _ = try await scriptCaller.evaluateJavaScript(
-                            js,
-                            duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
-                        )
+                .onChange(of: readerFontSize) { newValue in
+                    let newValue = newValue ?? resolvedReaderFontSize
+                    Task { @MainActor in
+                        await applyAdaptiveReaderWidth(
+                            readerFontSize: newValue,
+                            reason: "reader-width-change",
+                            requestGeometryBake: false,
+                            hasAsyncCaller: scriptCaller.hasAsyncCaller
+                        ) { js, duplicateInMultiTargetFrames in
+                            _ = try await scriptCaller.evaluateJavaScript(
+                                js,
+                                duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+                            )
+                        }
+                        await applyFontSize(newValue, isEBook: isCurrentPageEBook, reason: "font-size-change")
                     }
-                    await applyFontSize(newValue, reason: "font-size-change")
                 }
-            }
+        }
     }
 }
 
