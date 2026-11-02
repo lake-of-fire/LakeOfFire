@@ -90,6 +90,8 @@ public enum ReaderLoadTrace {
              "readerMode.resolveRoute", "readerMode.route", "readerMode.swiftProcessing", "readerMode.processAndSerialize",
              "readerMode.render", "readerMode.renderContentResolution", "readerMode.canonicalInterpretation",
              "readerMode.readabilityPreparation", "readerMode.readabilityExtraction", "readerMode.publicationDateFallback",
+             "readerMode.readabilitySourceParse", "readerMode.readabilityResourceNormalization",
+             "readerMode.readabilityEngine", "readerMode.readabilityCanonicalBuild", "readerMode.readabilityProfile",
              "readerMode.primaryMetadataWrite", "readerMode.headerImageResolution",
              "readerMode.nativeProcessingFinished", "readerMode.serialize", "readerMode.loadFinalHTML", "readerMode.navigationSubmission", "readerMode.navigationMainQueueTurn", "readerMode.fontPreparation", "readerMode.renderFailed", "readerMode.defaultsPropagation",
              "readerMode.renderReadyAccepted", "readerMode.loadCompleted", "readerMode.loadCancelled", "readerMode.loadFailed", "readerMode.restoreOwnedDocument",

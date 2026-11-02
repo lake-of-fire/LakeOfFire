@@ -6,7 +6,7 @@ import LakeOfFireContent
 import LakeOfFireCore
 import SwiftUIWebView
 import SwiftSoup
-import SwiftReadability
+@_spi(Bench) import SwiftReadability
 import RealmSwift
 import Combine
 import RealmSwiftGaps
@@ -3589,14 +3589,50 @@ public class ReaderModeViewModel: ObservableObject {
             charThreshold: max(meaningfulContentMinChars, 1),
             classesToPreserve: readabilityClassesToPreserve
         )
-        guard let sourceDocument = try? SwiftSoup.parse(normalizedHTML, url.absoluteString) else { return .failed }
+        let parsedSource: SwiftSoup.Document?
+        do {
+            let sourceTrace = ReaderLoadTrace.begin("readerMode.readabilitySourceParse")
+            defer { sourceTrace?.end() }
+            parsedSource = try? SwiftSoup.parse(normalizedHTML, url.absoluteString)
+        }
+        guard let sourceDocument = parsedSource else { return .failed }
         if url.isHTTP {
+            let resourceTrace = ReaderLoadTrace.begin("readerMode.readabilityResourceNormalization")
+            defer { resourceTrace?.end() }
             try? normalizeReaderDocumentResourceURLs(in: sourceDocument, sourceURL: url)
         }
         let sourceReferrerPolicy = try? readerDocumentReferrerPolicy(in: sourceDocument)
         let sourceImageGeometry = ReaderImageGeometry.metadata(in: sourceDocument, sourceURL: url)
         let parser = SwiftReadability.Readability(document: sourceDocument, options: options)
-        guard let result = try? parser.parse() else {
+        let parsedArticle: SwiftReadability.ReadabilityResult?
+        do {
+            let engineTrace = ReaderLoadTrace.begin("readerMode.readabilityEngine")
+            defer { engineTrace?.end() }
+            // Reuse the library's existing profiler only for explicit trace
+            // captures. Ordinary TestFlight logs retain the coarse spans;
+            // App Store execution retains the original parse path.
+            if ReaderLoadTrace.isEnabled {
+                if let profiled = try? parser.parseWithTimings() {
+                    let (article, timings) = profiled
+                    parsedArticle = article
+                    let stages = ["readerable", "metadata", "preprocess", "grabArticle",
+                                  "postprocess", "excerpt", "lang", "textContent", "serialize"]
+                    let detail = stages.compactMap { stage -> String? in
+                        guard let milliseconds = timings.milliseconds[stage],
+                              milliseconds.isFinite, milliseconds >= 0 else { return nil }
+                        return "\(stage)_ms=\(String(format: "%.3f", milliseconds))"
+                    }.joined(separator: " ")
+                    ReaderLoadTrace.event("readerMode.readabilityProfile",
+                        "outcome=\(article == nil ? "empty" : "extracted") \(detail)")
+                } else {
+                    parsedArticle = nil
+                    ReaderLoadTrace.event("readerMode.readabilityProfile", "outcome=failed")
+                }
+            } else {
+                parsedArticle = try? parser.parse()
+            }
+        }
+        guard let result = parsedArticle else {
             if url.isSnippetURL,
                let snippetHTML = buildSnippetCanonicalReadabilityHTML(
                     html: normalizedHTML,
@@ -3615,6 +3651,8 @@ public class ReaderModeViewModel: ObservableObject {
 
         let resolvedPublishedTime = trimmedNonEmptyReadabilityText(result.publishedTime)
             ?? trimmedNonEmptyReadabilityText(snippetPublishedTime)
+        let canonicalTrace = ReaderLoadTrace.begin("readerMode.readabilityCanonicalBuild")
+        defer { canonicalTrace?.end() }
         let outputHTML = buildCanonicalReadabilityHTML(
             title: stripTemplateTagsForReadability(result.title ?? ""),
             byline: stripTemplateTagsForReadability(result.byline ?? ""),
