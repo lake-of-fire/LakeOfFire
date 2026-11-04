@@ -111,9 +111,9 @@ const segmenterSearch = function* (strs, query, options = {}) {
 }
 
 // Collation keeps case-folding expansions out of DOM offsets. Segment the
-// joined text so a combining sequence split across inline nodes stays intact,
+// joined text so graphemes and words split across inline nodes stay intact,
 // then map the original UTF-16 offsets back to those nodes.
-const collatedGraphemeSearch = function* (strs, query, options) {
+const collatedSearch = function* (strs, query, options) {
     let startIndex = 0, startSum = 0
     for (const result of segmenterSearch([strs.join('')], query, options)) {
         const start = result.range.startOffset, end = result.range.endOffset
@@ -135,17 +135,15 @@ export const search = (strs, query, options) => {
     if (!Intl?.Segmenter || granularity === 'grapheme'
     && sensitivity === 'variant')
         return simpleSearch(strs, query, options)
-    return granularity === 'grapheme' && sensitivity === 'accent'
-        ? collatedGraphemeSearch(strs, query, options)
-        : segmenterSearch(strs, query, options)
+    return collatedSearch(strs, query, options)
 }
 
 export const searchMatcher = (textWalker, opts) => {
-    const { defalutLocale, matchCase, matchDiacritics, matchWholeWords } = opts
+    const { defaultLocale, matchCase, matchDiacritics, matchWholeWords } = opts
     return function* (doc, query) {
         const iter = textWalker(doc, function* (strs, makeRange) {
             for (const result of search(strs, query, {
-                locales: doc.body.lang || doc.documentElement.lang || defalutLocale || 'en',
+                locales: doc.body.lang || doc.documentElement.lang || defaultLocale || 'en',
                 granularity: matchWholeWords ? 'word' : 'grapheme',
                 sensitivity: matchDiacritics && matchCase ? 'variant'
                 : matchDiacritics && !matchCase ? 'accent'

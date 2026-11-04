@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
+import { element, xmlDocument } from './xml-fixture.mjs'
 
 globalThis.DOMParser = class {}
 const { EPUB } = await import('../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/epub.js')
@@ -14,40 +15,9 @@ const idpf = 'http://www.idpf.org/2008/embedding'
 const adobe = 'http://ns.adobe.com/pdf/enc#RC'
 const originalFont = Uint8Array.from({ length: 1300 }, (_, index) => index % 251)
 
-const element = (localName, namespaceURI, attributes = {}, children = [], textContent = '') => ({
-    localName, namespaceURI, children, childNodes: children, textContent, nodeType: 1,
-    id: attributes.id ?? '',
-    getAttribute: name => attributes[name] ?? null,
-    setAttribute: (name, value) => { attributes[name] = value },
-    hasAttribute: name => Object.hasOwn(attributes, name),
-    hasAttributeNS: () => false,
-    getElementsByTagNameNS: (namespace, name) => children.flatMap(descendants)
-        .filter(node => node.namespaceURI === namespace && node.localName === name),
-})
-const descendants = node => [node, ...node.children.flatMap(descendants)]
-const xmlDocument = root => {
-    const all = descendants(root)
-    const doc = {
-        documentElement: root, firstChild: null,
-        lookupNamespaceURI: () => root.namespaceURI,
-        lookupPrefix: () => null,
-        querySelector: () => null,
-        querySelectorAll: selector => selector === 'link[href]'
-            ? all.filter(node => node.localName === 'link') : [],
-        getElementsByTagName: name => all.filter(node => name === '*' || node.localName === name),
-        getElementsByTagNameNS: (namespace, name) => all.filter(node => node.namespaceURI === namespace && node.localName === name),
-        getElementById: id => all.find(node => node.id === id),
-    }
-    for (const node of all) {
-        node.ownerDocument = doc
-        for (const child of node.children) child.parentNode = node
-    }
-    return doc
-}
-
 const makeFixture = ({ algorithm = idpf, identifier = 'urn:uuid:12345678-abcd-4321-abcd-0123456789ab',
-    filename = 'My Font.otf', loadBlob = null } = {}) => {
-    const encodedFont = encodeURI(filename)
+    filename = 'My Font.otf', loadBlob = null, referenceURI = null } = {}) => {
+    const encodedFont = filename.split('/').map(encodeURIComponent).join('/')
     const literalPath = `OPS/fonts/${filename}`
     const link = element('link', ns.xhtml, { href: 'style.css' })
     const docs = new Map([
@@ -66,7 +36,7 @@ const makeFixture = ({ algorithm = idpf, identifier = 'urn:uuid:12345678-abcd-43
         ['encryption', xmlDocument(element('encryption', ns.enc, {}, [
             element('EncryptedData', ns.enc, {}, [
                 element('EncryptionMethod', ns.enc, { Algorithm: algorithm }),
-                element('CipherData', ns.enc, {}, [element('CipherReference', ns.enc, { URI: `OPS/fonts/${encodedFont}` })]),
+                element('CipherData', ns.enc, {}, [element('CipherReference', ns.enc, { URI: referenceURI ?? `OPS/fonts/${encodedFont}` })]),
             ]),
         ]))],
         ['chapter', xmlDocument(element('html', ns.xhtml, {}, [element('head', ns.xhtml, {}, [link]), element('body', ns.xhtml)]))],
@@ -109,7 +79,20 @@ const makeFixture = ({ algorithm = idpf, identifier = 'urn:uuid:12345678-abcd-43
     }
 }
 
-for (const filename of ['Font.otf', 'My Font.otf', '日本語.otf', 'literal%2F.otf']) {
+for (const referenceURI of ['OPS/fonts/bad%zz.otf', 'OPS/fonts/a%2Ffont.otf',
+    'OPS/fonts/a%5Cfont.otf', 'OPS/fonts/a%2F..%2Ffont.otf']) {
+    test(`invalid optional encryption reference leaves chapter loading available: ${referenceURI}`, async () => {
+        const fixture = makeFixture({ filename: 'Font.otf', referenceURI })
+        try {
+            await fixture.book.init()
+            const doc = await fixture.book.sections[0].createDocument()
+            assert.equal(doc.documentElement.localName, 'html')
+            assert.equal(fixture.book.sections[0].id, 'OPS/chapter.xhtml')
+        } finally { fixture.close() }
+    })
+}
+
+for (const filename of ['Font.otf', 'My Font.otf', '日本語.otf', 'literal%2F.otf', '100%.otf', 'Font#?.otf', '100%/Font#?.otf']) {
     test(`IDPF font decoding preserves the archive path ${filename}`, async () => {
         const fixture = makeFixture({ filename })
         try {
