@@ -138,6 +138,12 @@ for (const identifier of ['urn:uuid:12345678-abcd-4321-abcd-0123456789ab', 'urn:
 }
 
 test('retiring a book while an encrypted source read is held does not decode absent bytes', { timeout: 2000 }, async () => {
+    const createObjectURL = URL.createObjectURL
+    let publicationCount = 0
+    URL.createObjectURL = (...args) => {
+        publicationCount++
+        return createObjectURL.call(URL, ...args)
+    }
     let release
     let started
     const reading = new Promise(resolve => { started = resolve })
@@ -151,9 +157,11 @@ test('retiring a book while an encrypted source read is held does not decode abs
         await reading
         fixture.book.destroy()
         release(null)
-        assert.equal(await load, null)
+        assert.equal(Boolean(await load), false)
+        assert.equal(publicationCount, 0)
     } finally {
         release?.(null)
         fixture.close()
+        URL.createObjectURL = createObjectURL
     }
 })
