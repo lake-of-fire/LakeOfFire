@@ -39,7 +39,7 @@ def make_epub(chapter_factory=prepared_chapter, *, missing_spine_entry=False):
 
 def make_uri_epub(with_toc=True):
     directory = 'OPS/100%/draft#?'
-    names = ['100%.xhtml', 'literal%20.xhtml', 'literal .xhtml',
+    names = ['100%.xhtml', 'literal%20.xhtml', ' trailing.xhtml ', 'literal .xhtml',
              'chapter#draft.xhtml', 'chapter?draft.xhtml', 'literal%2F.xhtml', '日本語.xhtml', 'A.xhtml']
     output = BytesIO()
     with zipfile.ZipFile(output, 'w') as archive:
@@ -321,10 +321,10 @@ class BookEndcapShellTests(unittest.TestCase):
                     snapshot = page.evaluate('reader.buildGoToSheetSnapshot()')
                     self.assertEqual(snapshot['currentChapterHref'], canonical[i])
                 warm = page.evaluate('''(raw) => {
-                    manabi_syncLiveSettledSections({hrefs:raw.slice(0,2), firstLiveHref:raw[0]});
+                    manabi_syncLiveSettledSections({hrefs:raw.slice(0,3), firstLiveHref:raw[0]});
                     return {hrefs:[...__manabiLiveProcessedSectionHrefs], first:__manabiFirstLiveSectionHref};
                 }''', raw)
-                self.assertEqual(warm, {'hrefs': sorted(raw[:2]), 'first': raw[0]})
+                self.assertEqual(warm, {'hrefs': sorted(raw[:3]), 'first': raw[0]})
 
     def test_search_preserves_inline_words_blocks_locale_and_cfi_ranges(self):
         def chapter(name):

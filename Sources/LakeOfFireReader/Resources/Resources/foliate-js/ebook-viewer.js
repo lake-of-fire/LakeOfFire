@@ -1720,11 +1720,11 @@ const buildGoToSnapshotChapters = (book) => {
 // belongs to that identity; only navigation URI references contain fragments.
 const normalizeSpineStoragePath = (path) => {
     if (typeof path !== 'string') return null;
-    return path.trim() || null;
+    return path || null;
 };
 
 const normalizeSpineHref = (href) => {
-    const trimmed = normalizeSpineStoragePath(href);
+    const trimmed = normalizeSpineStoragePath(href)?.trim();
     if (!trimmed) return null;
     const hashIndex = trimmed.indexOf('#');
     return hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed;
