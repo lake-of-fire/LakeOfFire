@@ -99,3 +99,42 @@ test('stylesheet rewriting leaves unresolved URLs and other function names intac
         assert.equal(output, css)
     })
 })
+
+test('layout adaptation respects declaration and dimension token boundaries', async () => {
+    const css = `.page-break-before, .-epub-marker, .size10vw {
+  --label: page-break-before;
+  --size: size10vw;
+  --unit: 10vwx;
+  width: -10vw; height: +10vh; margin: 1e-1vw;
+  -epub-writing-mode: vertical-rl; page-break-inside: avoid;
+}`
+    await withStylesheet(css, [], output => {
+        assert.equal(output, css
+            .replace('width: -10vw; height: +10vh; margin: 1e-1vw;', 'width: -80px; height: 60px; margin: 0.8px;')
+            .replace('-epub-writing-mode:', 'writing-mode:')
+            .replace('page-break-inside:', '-webkit-column-break-inside:'))
+    })
+})
+
+test('CSS URL imports retain layer, supports and media conditions', async () => {
+    await withStylesheet('@import url("theme.css?edition=2#part") layer(book) supports(display: grid) print;', [
+        { href: 'OPS/theme.css', mediaType: 'text/css' },
+    ], async css => {
+        const match = css.match(/^@import url\("(blob:[^"]+#part)"\) layer\(book\) supports\(display: grid\) print;$/)
+        assert.ok(match, css)
+        assert.equal(await (await fetch(match[1])).text(), 'p { color: green; }')
+    })
+})
+
+test('CSS local fragments and unresolved query references preserve authored spelling', async () => {
+    const css = String.raw`p { filter: url(#shade); background: url("missing\(1\).png?v=2#part"); }`
+    await withStylesheet(css, [], output => assert.equal(output, css))
+})
+
+test('escaped newlines in strings and unterminated comments protect authored text', async () => {
+    const css = 'p::after { content: "10vw\\\n-epub-page-break-before"; } /* 10vw url("images/cover.png")'
+    await withStylesheet(css, [image('images/cover.png')], (output, loaded) => {
+        assert.equal(output, css)
+        assert.deepEqual(loaded, [])
+    })
+})

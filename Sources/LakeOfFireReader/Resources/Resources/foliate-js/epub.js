@@ -989,14 +989,15 @@ export class Loader {
         const w = window?.innerWidth ?? 800
         const h = window?.innerHeight ?? 600
         const adaptLayout = text => text
-            // unprefix as most of the props are (only) supported unprefixed
-            .replace(/-epub-/gi, '')
-            // replace vw and vh as they cause problems with layout
-            .replace(/(\d*\.?\d+)vw/gi, (_, d) => parseFloat(d) * w / 100 + 'px')
-            .replace(/(\d*\.?\d+)vh/gi, (_, d) => parseFloat(d) * h / 100 + 'px')
-            // `page-break-*` unsupported in columns; replace with `column-break-*`
-            .replace(/page-break-(after|before|inside)/gi, (_, x) =>
-                `-webkit-column-break-${x}`)
+            // Adapt declaration names, not similarly named selectors/values.
+            .replace(/(^|[;{])([\t\n\f\r ]*)-epub-([\w-]+)(?=[\t\n\f\r ]*:)/gi,
+                (_, prefix, space, property) => prefix + space + property)
+            // Match complete dimension tokens, including signed values.
+            .replace(/(?<![-\w\\\u0080-\uffff.])([+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?)v([wh])(?![-\w\\\u0080-\uffff])/gi,
+                (_, d, axis) => parseFloat(d) * (axis.toLowerCase() === 'w' ? w : h) / 100 + 'px')
+            // `page-break-*` unsupported in columns; replace declaration names.
+            .replace(/(^|[;{])([\t\n\f\r ]*)page-break-(after|before|inside)(?=[\t\n\f\r ]*:)/gi,
+                (_, prefix, space, property) => `${prefix}${space}-webkit-column-break-${property}`)
         let result = ''
         let cursor = 0
         for (const match of str.matchAll(cssTokens)) {
