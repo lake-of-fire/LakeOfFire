@@ -482,7 +482,7 @@ const makeReplaceText = ({
             });
             globalThis.__manabiInflightReplaceTextCount = (globalThis.__manabiInflightReplaceTextCount ?? 0) + 1;
             globalThis.__manabiInflightLiveReplaceTextCount = (globalThis.__manabiInflightLiveReplaceTextCount ?? 0) + 1;
-            const normalizedHref = normalizeSpineHref(href);
+            const normalizedHref = normalizeSpineStoragePath(href);
             if (normalizedHref && !firstLiveSectionHref()) {
                 globalThis.__manabiFirstLiveSectionHref = normalizedHref;
             }
@@ -1530,12 +1530,12 @@ const liveSettledSectionHrefSet = () => {
 };
 
 const firstLiveSectionHref = () => {
-    const normalizedHref = normalizeSpineHref(globalThis.__manabiFirstLiveSectionHref ?? null);
+    const normalizedHref = normalizeSpineStoragePath(globalThis.__manabiFirstLiveSectionHref ?? null);
     return normalizedHref || null;
 };
 
 window.manabi_recordLiveProcessedSection = (href) => {
-    const normalizedHref = normalizeSpineHref(href);
+    const normalizedHref = normalizeSpineStoragePath(href);
     if (!normalizedHref) return;
     const processedSet = liveProcessedSectionHrefSet();
     processedSet.add(normalizedHref);
@@ -1545,7 +1545,7 @@ window.manabi_recordLiveProcessedSection = (href) => {
 };
 
 window.manabi_recordLiveSettledSection = (href) => {
-    const normalizedHref = normalizeSpineHref(href);
+    const normalizedHref = normalizeSpineStoragePath(href);
     if (!normalizedHref) return;
     const settledSet = liveSettledSectionHrefSet();
     settledSet.add(normalizedHref);
@@ -1557,11 +1557,11 @@ window.manabi_syncLiveSettledSections = (payload = {}) => {
         || (Array.isArray(payload.settledSectionHrefs) && payload.settledSectionHrefs)
         || [];
     const nextSettledSectionHrefs = Array.from(new Set(
-        rawHrefs.map((href) => normalizeSpineHref(href)).filter(Boolean)
+        rawHrefs.map((href) => normalizeSpineStoragePath(href)).filter(Boolean)
     )).sort();
     globalThis.__manabiLiveProcessedSectionHrefs = new Set(nextSettledSectionHrefs);
     if (typeof payload.firstLiveHref === 'string' && payload.firstLiveHref.length > 0) {
-        globalThis.__manabiFirstLiveSectionHref = normalizeSpineHref(payload.firstLiveHref);
+        globalThis.__manabiFirstLiveSectionHref = normalizeSpineStoragePath(payload.firstLiveHref);
     }
 };
 
@@ -1628,17 +1628,20 @@ const buildLinearSectionEntries = (book) => {
     for (const entry of tocEntries) {
         const href = typeof entry?.href === 'string' ? entry.href : null;
         const title = typeof entry?.label === 'string' ? entry.label.trim() : '';
-        if (!href || !title || tocTitleByHref.has(href)) {
+        const sectionHref = normalizeSpineHref(href);
+        if (!sectionHref || !title || tocTitleByHref.has(sectionHref)) {
             continue;
         }
-        tocTitleByHref.set(href, title);
+        tocTitleByHref.set(sectionHref, title);
     }
     const sectionEntries = Array.isArray(book?.sections)
         ? book.sections
             .filter((section) => section && section.linear !== 'no')
             .map((section, index) => {
-                const href = typeof section?.id === 'string' ? section.id : null;
-                const title = href ? (tocTitleByHref.get(href) ?? fallbackSectionTitle(href, index)) : '';
+                const storagePath = typeof section?.id === 'string' ? section.id : null;
+                const href = typeof section?.href === 'string' ? section.href : storagePath;
+                const title = href ? (tocTitleByHref.get(normalizeSpineHref(href))
+                    ?? fallbackSectionTitle(storagePath ?? href, index)) : '';
                 return href && title
                     ? {
                         href,
@@ -1670,7 +1673,8 @@ const buildLinearSectionStartPercentByHref = (book) => {
     const startPercentByHref = new Map();
     let consumedSize = 0;
     for (const section of linearSections) {
-        const href = typeof section?.id === 'string' ? section.id : null;
+        const href = typeof section?.href === 'string' ? section.href
+            : (typeof section?.id === 'string' ? section.id : null);
         const normalizedHref = normalizeSpineHref(href);
         if (normalizedHref != null && !startPercentByHref.has(normalizedHref)) {
             const fraction = totalSize > 0 ? consumedSize / totalSize : 0;
@@ -1712,9 +1716,15 @@ const buildGoToSnapshotChapters = (book) => {
     return chapters;
 };
 
+// Native warming and processing report raw archive identities. A literal '#'
+// belongs to that identity; only navigation URI references contain fragments.
+const normalizeSpineStoragePath = (path) => {
+    if (typeof path !== 'string') return null;
+    return path || null;
+};
+
 const normalizeSpineHref = (href) => {
-    if (typeof href !== 'string') return null;
-    const trimmed = href.trim();
+    const trimmed = normalizeSpineStoragePath(href)?.trim();
     if (!trimmed) return null;
     const hashIndex = trimmed.indexOf('#');
     return hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed;
@@ -5815,9 +5825,9 @@ class Reader {
         const currentSection = currentSectionIndex != null
             ? this.view?.book?.sections?.[currentSectionIndex] ?? null
             : null;
-        const currentSectionHref = typeof currentSection?.id === 'string'
-            ? currentSection.id
-            : null;
+        const currentSectionHref = typeof currentSection?.href === 'string'
+            ? currentSection.href
+            : (typeof currentSection?.id === 'string' ? currentSection.id : null);
         const normalizedCurrentSectionHref = normalizeSpineHref(currentSectionHref);
         const currentSectionEntry = normalizedCurrentSectionHref
             ? linearSectionEntries.find(function(entry) { return normalizeSpineHref(entry.href) === normalizedCurrentSectionHref; }) ?? null

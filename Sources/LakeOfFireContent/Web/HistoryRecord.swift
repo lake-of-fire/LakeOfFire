@@ -248,7 +248,9 @@ public extension HistoryRecord {
         try validateAdmission()
         guard needsRefresh else { return }
         let bookmarkRealm = try await actor.cachedRealm(for: bookmarkRealmConfiguration, storageAdmission: bookmarkAdmission)
+#if DEBUG
         await ReaderContentLoader.contentWriteGateForTesting?(.demotion)
+#endif
         try await realm.asyncWritePreservingOwnership {
             try validateAdmission()
             let admittedBookmarks: Realm

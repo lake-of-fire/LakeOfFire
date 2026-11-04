@@ -4,9 +4,12 @@ No loading gate, CSP or renderer geometry is disabled to make this test pass.
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
+from html import escape
+from urllib.parse import quote
 from pathlib import Path
 from threading import Thread
 import os
+import re
 import sys
 import unittest
 import zipfile
@@ -33,6 +36,44 @@ def make_epub(chapter_factory=prepared_chapter, *, missing_spine_entry=False):
         for name in ['one', 'two']:
             archive.writestr('OPS/' + name + '.xhtml', chapter_factory(name))
     return output.getvalue()
+
+def make_uri_epub(with_toc=True):
+    directory = 'OPS/100%/draft#?'
+    names = ['100%.xhtml', 'literal%20.xhtml', ' trailing.xhtml ', 'literal .xhtml',
+             'chapter#draft.xhtml', 'chapter?draft.xhtml', 'literal%2F.xhtml', '日本語.xhtml', 'A.xhtml']
+    output = BytesIO()
+    with zipfile.ZipFile(output, 'w') as archive:
+        archive.writestr('mimetype', 'application/epub+zip')
+        archive.writestr('META-INF/container.xml',
+            '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+            f'<rootfile full-path="{escape(directory, quote=True)}/book.opf" media-type="application/oebps-package+xml"/>'
+            '</rootfiles></container>')
+        manifest = ''.join(f'<item id="c{i}" href="{quote(name, safe="")}" media-type="application/xhtml+xml"/>'
+                           for i, name in enumerate(names))
+        if with_toc:
+            manifest += '<item id="nav" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/>'
+        spine = ''.join(f'<itemref idref="c{i}"/>' for i in range(len(names)))
+        archive.writestr(directory + '/book.opf',
+            '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">'
+            '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="uid">uri-book</dc:identifier>'
+            '<dc:title>URI References</dc:title><dc:language>tr</dc:language></metadata>'
+            f'<manifest>{manifest}</manifest><spine>{spine}</spine></package>')
+        def navigation_ref(name):
+            encoded = '%41.xhtml' if name == 'A.xhtml' else quote(name, safe='')
+            return re.sub(r'%[0-9A-Fa-f]{2}', lambda value: value[0].lower(), encoded)
+        nav = ''.join(f'<li><a href="{navigation_ref(name)}#uri-fragment">Chapter {i}</a></li>'
+                      for i, name in enumerate(names))
+        archive.writestr(directory + '/nav.xhtml',
+            '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">'
+            f'<body><nav epub:type="toc"><ol>{nav}</ol></nav></body></html>')
+        for i, name in enumerate(names):
+            next_href = quote(names[(i + 1) % len(names)], safe='') + '#uri-fragment'
+            content = prepared_chapter(f'chapter-{i}').replace('</body>',
+                f'<p id="uri-fragment">target</p><p id="uri-language">I zzz</p>'
+                f'<a id="uri-next" href="{next_href}">next</a></body>')
+            archive.writestr(directory + '/' + name, content)
+    return output.getvalue(), directory, names
+
 
 class Handler(SimpleHTTPRequestHandler):
     def log_message(self, *args): pass
@@ -131,6 +172,313 @@ class BookEndcapShellTests(unittest.TestCase):
         # unittest runs class cleanups even if setup or an earlier cleanup fails.
         # Reverse registration closes the browser before its Playwright runtime.
         cls.addClassCleanup(cls.browser.close)
+
+    def test_epub_inline_css_comment_separated_declarations(self):
+        # Real browser DOM traversal, serialization and CSS application through
+        # shipping Loader callers; this Chromium case is not WebKit evidence.
+        page = self.browser.new_page(viewport={'width': 800, 'height': 600})
+        self.addCleanup(page.close)
+        page.route('**/epub-inline-css', lambda route: route.fulfill(
+            status=200, content_type='text/html', body='<!doctype html><title>CSS fixture</title>'))
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/epub-inline-css')
+        result = page.evaluate(r"""async () => {
+            const { Loader } = await import('/load/viewer-assets/foliate-js/epub.js')
+            const check = (condition, message) => { if (!condition) throw new Error(message) }
+            const baseSheet = `#from-style {
+                content: "keep; { 10vw";
+                /* lead */ page-break-before/**/: always;
+                -epub-writing-mode /* a */ \t/**/ : vertical-rl;
+                width: 1e1vw;
+                --label: "page-break-before/**/: 10vw";
+                --url: url("https://example.com/10vw");
+            }
+            ${String.raw`#exact { --mode\{: vertical-rl; -epub-writing-mode: var(--mode\{); }`}`
+            const baseAttribute = `content: 'keep; { 10vw'; /* lead */ -epub-writing-mode/**/: vertical-rl;
+                page-break-inside /* a */\t/**/: avoid; width: -1e-1vw;
+                --label: page-break-before/**/:value;`
+            const checked = []
+            for (const mediaType of ['text/html', 'application/xhtml+xml']) {
+                for (const [identifier, prefixed] of [
+                    [String.raw`--mode\{`, true], [String.raw`--mode\7b `, true],
+                    [String.raw`--mode\00007b`, true], [String.raw`--mode\\\{`, true],
+                    [String.raw`--mode\5c \{`, true], ['--mode', false],
+                ]) {
+                    const breakIdentifier = identifier.replace('--mode', '--break')
+                    let sheet = baseSheet.replace('#from-style {',
+                        `#from-style { ${identifier}: vertical-rl; ${breakIdentifier}: always;`)
+                    // Replace only the intended property value, preserving the
+                    // escaped variable's authored name and declaration bytes.
+                    sheet = sheet.replace('-epub-writing-mode /* a */ \t/**/ : vertical-rl;',
+                        `-epub-writing-mode /* a */ \t/**/ : var(${identifier});`)
+                        .replace('page-break-before/**/: always;',
+                            `page-break-before/**/: var(${breakIdentifier});`)
+                    let attribute = `${identifier}: vertical-rl; ` + baseAttribute
+                        .replace('-epub-writing-mode/**/: vertical-rl;',
+                            `-epub-writing-mode/**/: var(${identifier});`)
+                    if (!prefixed) {
+                        sheet = sheet.replace('-epub-writing-mode', 'writing-mode')
+                        attribute = attribute.replace('-epub-writing-mode', 'writing-mode')
+                    }
+                    const expectedSheet = sheet
+                        .replace('page-break-before/**/:', '-webkit-column-break-before/**/:')
+                        .replace('-epub-writing-mode /* a */', 'writing-mode /* a */')
+                        .replace('width: 1e1vw', 'width: 80px')
+                        .replace('-epub-writing-mode: var(', 'writing-mode: var(')
+                    const item = { href: 'OPS/chapter.xhtml', mediaType }
+                    const source = `<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head>
+                        <title>Inline CSS</title><style>${sheet}</style></head><body>
+                        <p id="from-style">Style element</p><p id="exact">Exact escaped-brace case</p>
+                        <p id="from-attribute" style="${attribute}">Style attribute</p>
+                        </body></html>`
+                    // XML normalizes attribute whitespace during the caller's
+                    // first parse; compare against that real DOM value.
+                    const originalAttribute = new DOMParser().parseFromString(source, mediaType)
+                        .querySelector('#from-attribute').getAttribute('style')
+                    const expectedAttribute = originalAttribute
+                        .replace('-epub-writing-mode/**/:', 'writing-mode/**/:')
+                        .replace('page-break-inside /* a */', '-webkit-column-break-inside /* a */')
+                        .replace('width: -1e-1vw', 'width: -0.8px')
+                    const loader = new Loader({ resources: { manifest: [item] },
+                        loadText: async () => source,
+                        loadBlob: async () => { throw new Error('unexpected raw resource') },
+                    })
+                    const frame = document.createElement('iframe')
+                    try {
+                        const url = await loader.loadItem(item)
+                        const output = await (await fetch(url)).text()
+                        const parsed = new DOMParser().parseFromString(output, mediaType)
+                        check(!parsed.querySelector('parsererror'), 'serialized chapter must parse')
+                        check(parsed.querySelector('style').textContent === expectedSheet, 'style element preserves protected text/comments')
+                        check(parsed.querySelector('#from-attribute').getAttribute('style') === expectedAttribute,
+                            'style attribute preserves protected text/comments')
+                        await new Promise((resolve, reject) => {
+                            frame.onload = resolve
+                            frame.onerror = () => reject(new Error('chapter frame failed'))
+                            frame.src = url
+                            document.body.append(frame)
+                        })
+                        const doc = frame.contentDocument
+                        const styleTarget = doc.querySelector('#from-style')
+                        const attributeTarget = doc.querySelector('#from-attribute')
+                        const style = frame.contentWindow.getComputedStyle(styleTarget)
+                        check(style.writingMode === 'vertical-rl', 'style element affects actual layout style')
+                        check(frame.contentWindow.getComputedStyle(doc.querySelector('#exact')).writingMode === 'vertical-rl',
+                            'exact escaped-brace case affects actual layout style')
+                        check(style.width === '80px', 'viewport exponent dimension is adapted')
+                        check(frame.contentWindow.getComputedStyle(attributeTarget).writingMode === 'vertical-rl',
+                            'style attribute affects actual layout style')
+                        // Prefixed inline aliases may serialize as empty even when
+                        // parsed. Assert the effective canonical fragmentation policy.
+                        check(frame.contentWindow.getComputedStyle(attributeTarget).getPropertyValue('break-inside') === 'avoid',
+                            'style attribute preserves effective break avoidance')
+                        check(style.getPropertyValue('break-before') === 'column',
+                            'style element preserves the effective forced column break')
+                    } finally {
+                        frame.remove()
+                        loader.destroy()
+                    }
+                }
+                checked.push(mediaType)
+            }
+            return checked
+        }""")
+        self.assertEqual(result, ['text/html', 'application/xhtml+xml'])
+
+    def test_uri_navigation_snapshot_and_raw_warm_identity(self):
+        for with_toc in (True, False):
+            with self.subTest(with_toc=with_toc):
+                archive, directory, names = make_uri_epub(with_toc)
+                self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+                path = f'/uri-navigation-{with_toc}.epub'
+                self.server.epub_fixtures[path] = archive
+                self.addCleanup(self.server.epub_fixtures.pop, path)
+                page = self.browser.new_page(viewport={'width': 390, 'height': 844})
+                self.addCleanup(page.close)
+                page.add_init_script(BRIDGE)
+                page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+                wait_for_reader(page, 'typeof window.loadEBook === "function"')
+                page.evaluate('(path) => loadEBook({url:location.origin+path,layoutMode:"paginated"})', path)
+                wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+                canonical = [quote(directory + '/' + name, safe='/') for name in names]
+                raw = [directory + '/' + name for name in names]
+                self.assertEqual(page.evaluate('reader.view.book.sections.map(s => s.id)'), raw)
+                self.assertEqual(page.evaluate('reader.view.book.sections.map(s => s.href)'), canonical)
+                first = page.evaluate('reader.buildGoToSheetSnapshot()')
+                self.assertEqual(first['currentChapterHref'], canonical[0])
+                self.assertEqual(first['currentChapterTitle'], 'Chapter 0' if with_toc else '100%')
+                self.assertTrue(all(item['percent'] is not None for item in first['chapters']))
+                locale = page.evaluate('''async () => {
+                    const matches = [];
+                    for await (const item of reader.view.search({query:'ı', index:0, matchDiacritics:true})) {
+                        if (item?.excerpt) matches.push(item.excerpt.match);
+                    }
+                    return matches;
+                }''')
+                self.assertEqual(locale, ['I'])
+                for i in range(1, len(names)):
+                    page.evaluate('''() => reader.view.renderer.getContents()[0].doc.getElementById('uri-next').click()''')
+                    wait_for_reader(page, f'reader.view.renderer.displayedIndex === {i} && reader.view.lastLocation?.index === {i}')
+                    snapshot = page.evaluate('reader.buildGoToSheetSnapshot()')
+                    self.assertEqual(snapshot['currentChapterHref'], canonical[i])
+                warm = page.evaluate('''(raw) => {
+                    manabi_syncLiveSettledSections({hrefs:raw.slice(0,3), firstLiveHref:raw[0]});
+                    return {hrefs:[...__manabiLiveProcessedSectionHrefs], first:__manabiFirstLiveSectionHref};
+                }''', raw)
+                self.assertEqual(warm, {'hrefs': sorted(raw[:3]), 'first': raw[0]})
+
+    def test_search_preserves_inline_words_blocks_locale_and_cfi_ranges(self):
+        def chapter(name):
+            examples = ('<p id="search-inline">read<span>ing</span></p>'
+                        '<p id="search-prefix">read</p><p id="search-suffix">ing</p>'
+                        '<div id="search-empty">read<div></div>ing</div>'
+                        '<p id="search-locale">I zzz</p>')
+            return prepared_chapter(name).replace('</body>', examples + '</body>')
+
+        self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+        path = '/search-boundaries.epub'
+        self.server.epub_fixtures[path] = make_epub(chapter)
+        self.addCleanup(self.server.epub_fixtures.pop, path)
+        page = self.browser.new_page(viewport={'width': 390, 'height': 844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/search-boundaries.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        results = page.evaluate('''async () => {
+            const view = reader.view;
+            const doc = await view.book.sections[0].createDocument();
+            const run = async (query, options = {}) => {
+                const matches = [];
+                for await (const result of view.search({query, index:0, matchWholeWords:true, ...options})) {
+                    if (!result?.excerpt) continue;
+                    const resolved = view.resolveCFI(result.cfi);
+                    const range = resolved.anchor(doc);
+                    matches.push({match:result.excerpt.match, index:resolved.index,
+                        start:range.startContainer.parentElement.closest('[id^="search-"]')?.id,
+                        end:range.endContainer.parentElement.closest('[id^="search-"]')?.id,
+                        startOffset:range.startOffset, endOffset:range.endOffset});
+                }
+                return matches;
+            };
+            return {joined:await run('reading'), partial:await run('read'),
+                separated:await run('read ing'),
+                locale:await run('ı', {matchWholeWords:false, matchDiacritics:true, defaultLocale:'tr'})};
+        }''')
+        def match(text, start, end, end_offset):
+            return {'match': text, 'index': 0, 'start': start, 'end': end,
+                    'startOffset': 0, 'endOffset': end_offset}
+        self.assertEqual(results['joined'], [match('reading', 'search-inline', 'search-inline', 3)])
+        self.assertEqual(results['partial'], [match('read', 'search-prefix', 'search-prefix', 4),
+                                               match('read', 'search-empty', 'search-empty', 4)])
+        self.assertEqual(results['separated'], [match('read\ning', 'search-prefix', 'search-suffix', 3),
+                                                 match('read\ning', 'search-empty', 'search-empty', 3)])
+        self.assertEqual(results['locale'], [match('I', 'search-locale', 'search-locale', 1)])
+
+    def test_search_normalization_and_unicode_ranges(self):
+        def chapter(name):
+            examples = ('<p id="normalized-space">cat  <span>dog</span></p>'
+                        '<p id="normalized-format">ca&#xAD;<span>t</span></p>'
+                        '<p id="normalized-sharp">Stra<span>ße</span></p>'
+                        '<p id="normalized-ligature">o<span>ﬃ</span>ce</p>'
+                        '<p id="normalized-oe">c<span>œ</span>ur</p>'
+                        '<p id="normalized-ae">c<span>æ</span>lum</p>')
+            return prepared_chapter(name).replace('</body>', examples + '</body>')
+
+        self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+        path = '/search-normalization.epub'
+        self.server.epub_fixtures[path] = make_epub(chapter)
+        self.addCleanup(self.server.epub_fixtures.pop, path)
+        page = self.browser.new_page(viewport={'width':390, 'height':844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/search-normalization.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        results = page.evaluate('''async () => {
+            const view = reader.view;
+            const doc = await view.book.sections[0].createDocument();
+            const run = async (query, options = {}) => {
+                const matches = [];
+                for await (const result of view.search({query,index:0,defaultLocale:'de',...options})) {
+                    if (!result?.excerpt) continue;
+                    const range = view.resolveCFI(result.cfi).anchor(doc);
+                    matches.push({match:result.excerpt.match, text:range.toString(),
+                        start:range.startContainer.parentElement.closest('p')?.id,
+                        end:range.endContainer.parentElement.closest('p')?.id,
+                        startOffset:range.startOffset, endOffset:range.endOffset});
+                }
+                return matches;
+            };
+            return {space:await run('cat  dog'), format:await run('ca\u00ADt'),
+                sharp:await run('strasse'), ligature:await run('office'),
+                oe:await run('coeur',{defaultLocale:'fr'}), ae:await run('caelum',{defaultLocale:'en'}),
+                strict:await run('strasse', {matchDiacritics:true})};
+        }''')
+        def match(text, element_id, end_offset):
+            return {'match':text, 'text':text, 'start':element_id, 'end':element_id,
+                    'startOffset':0, 'endOffset':end_offset}
+        self.assertEqual(results['space'], [match('cat  dog', 'normalized-space', 3)])
+        self.assertEqual(results['format'], [match('cat', 'normalized-space', 3),
+                                             match('ca\u00ADt', 'normalized-format', 1)])
+        self.assertEqual(results['sharp'], [match('Straße', 'normalized-sharp', 2)])
+        self.assertEqual(results['ligature'], [match('oﬃce', 'normalized-ligature', 2)])
+        self.assertEqual(results['oe'], [match('cœur', 'normalized-oe', 2)])
+        self.assertEqual(results['ae'], [match('cælum', 'normalized-ae', 3)])
+        self.assertEqual(results['strict'], [])
+
+    def test_xml_chapter_language_precedence_search_ranges_and_rendering(self):
+        cases = [
+            ('root', 'xml:lang="tr"', '', 'ı', None, 'ltr'),
+            ('body', 'lang="en"', 'xml:lang="tr"', 'ı', 'en', 'ltr'),
+            ('conflict', 'xml:lang="tr" lang="en"', '', 'ı', 'en', 'ltr'),
+            ('unknown-root', 'xml:lang=""', '', 'i', None, ''),
+            ('unknown-body', 'lang="tr"', 'xml:lang=""', 'i', 'tr', ''),
+            ('html-body', 'xml:lang="tr"', 'lang="en"', 'i', None, 'ltr'),
+            ('arabic', 'xml:lang="ar"', '', 'i', None, 'rtl'),
+        ]
+        for key, root_attrs, body_attrs, expected_query, root_lang, direction in cases:
+            with self.subTest(language=key):
+                def chapter(name):
+                    value = prepared_chapter(name).replace('<html ', '<html ' + root_attrs + ' ', 1)
+                    value = value.replace('<body ', '<body ' + body_attrs + ' ', 1)
+                    return value.replace('</body>', '<p id="xml-language">I</p></body>')
+                self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+                path = f'/xml-language-{key}.epub'
+                self.server.epub_fixtures[path] = make_epub(chapter)
+                self.addCleanup(self.server.epub_fixtures.pop, path)
+                page = self.browser.new_page(viewport={'width':390, 'height':844})
+                self.addCleanup(page.close)
+                page.add_init_script(BRIDGE)
+                page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+                wait_for_reader(page, 'typeof window.loadEBook === "function"')
+                page.evaluate('(path) => loadEBook({url:location.origin+path,layoutMode:"paginated"})', path)
+                wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+                results = page.evaluate('''async () => {
+                    const view = reader.view;
+                    const doc = await view.book.sections[0].createDocument();
+                    const run = async query => {
+                        const matches = [];
+                        for await (const result of view.search({query,index:0,matchDiacritics:true})) {
+                            if (!result?.excerpt) continue;
+                            const range = view.resolveCFI(result.cfi).anchor(doc);
+                            if (range.startContainer.parentElement.closest('p')?.id !== 'xml-language') continue;
+                            matches.push({match:result.excerpt.match,text:range.toString(),
+                                start:range.startOffset,end:range.endOffset});
+                        }
+                        return matches;
+                    };
+                    const root = view.renderer.getContents()[0].doc.documentElement;
+                    return {i:await run('i'), dotless:await run('ı'),
+                        rootLanguage:root.getAttribute('lang'),direction:root.dir};
+                }''')
+                expected = [{'match':'I','text':'I','start':0,'end':1}]
+                self.assertEqual(results['i'], expected if expected_query == 'i' else [])
+                self.assertEqual(results['dotless'], expected if expected_query == 'ı' else [])
+                self.assertEqual(results['rootLanguage'], root_lang)
+                self.assertEqual(results['direction'], direction)
+                page.close()
 
     def test_skipped_spine_entry_preserves_href_and_cfi_navigation(self):
         self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})

@@ -339,6 +339,88 @@ func applyReaderFontSize(
     }
 }
 
+/// Shared by Reader bootstrap and live settings. Document appearance is owned
+/// by generated Reader/ebook content; original pages retain publisher styling.
+public enum ReaderThemeJavaScript {
+    public static let source =
+        """
+        (function() {
+            const __reason = typeof themeSyncReason !== 'undefined' ? themeSyncReason : 'refresh';
+            const __requestedScheme = typeof colorScheme !== "undefined" ? colorScheme : arguments?.colorScheme;
+            const __currentScheme = document.body?.dataset?.mnbColorScheme;
+            const __colorScheme = __requestedScheme === 'auto'
+                ? (__currentScheme === 'dark' || __currentScheme === 'light' ? __currentScheme
+                    : (globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches ? 'dark' : 'light'))
+                : __requestedScheme;
+            const __lightModeTheme = typeof lightModeTheme !== "undefined" ? lightModeTheme : arguments?.lightModeTheme;
+            const __darkModeTheme = typeof darkModeTheme !== "undefined" ? darkModeTheme : arguments?.darkModeTheme;
+            const __applyTheme = (doc) => {
+                const body = doc?.body;
+                if (!body) { return false; }
+                // Keep publisher canvas, controls and authored color-scheme untouched.
+                // Theme datasets remain available to Manabi lookup UI on original pages.
+                const ownsDocumentAppearance = body.classList?.contains('readability-mode') === true
+                    || body.classList?.contains('ebook-viewer') === true
+                    || body.dataset.isEbook === 'true';
+                let changed = false;
+                if (body.dataset.mnbColorScheme !== __colorScheme) {
+                    body.dataset.mnbColorScheme = __colorScheme;
+                    changed = true;
+                }
+                if (body.dataset.mnbLightTheme !== __lightModeTheme) {
+                    body.dataset.mnbLightTheme = __lightModeTheme;
+                    changed = true;
+                }
+                if (body.dataset.mnbDarkTheme !== __darkModeTheme) {
+                    body.dataset.mnbDarkTheme = __darkModeTheme;
+                    changed = true;
+                }
+                if (ownsDocumentAppearance && doc.documentElement?.style?.getPropertyValue?.('color-scheme') !== __colorScheme) {
+                    doc.documentElement?.style?.setProperty?.('color-scheme', __colorScheme);
+                    changed = true;
+                }
+                if (ownsDocumentAppearance && body.style?.getPropertyValue?.('color-scheme') !== __colorScheme) {
+                    body.style?.setProperty?.('color-scheme', __colorScheme);
+                    changed = true;
+                }
+                return changed;
+            };
+            globalThis.manabiReaderColorScheme = __colorScheme;
+            globalThis.manabiReaderLightModeTheme = __lightModeTheme;
+            globalThis.manabiReaderDarkModeTheme = __darkModeTheme;
+            globalThis.manabiApplyReaderThemeToEbookDocuments = (reason = 'manual', explicitDoc = null) => {
+                let appliedCount = 0;
+                const docs = [];
+                if (explicitDoc) { docs.push(explicitDoc); }
+                try {
+                    const contents = globalThis.reader?.view?.renderer?.getContents?.() || [];
+                    for (const content of contents) {
+                        const doc = content?.doc ?? content?.document ?? null;
+                        if (doc && !docs.includes(doc)) { docs.push(doc); }
+                    }
+                } catch (_) {}
+                for (const doc of docs) {
+                    if (__applyTheme(doc)) {
+                        appliedCount += 1;
+                    }
+                }
+                return { reason, appliedCount, colorScheme: __colorScheme, lightModeTheme: __lightModeTheme, darkModeTheme: __darkModeTheme };
+            };
+            let appliedCount = __applyTheme(document) ? 1 : 0;
+            appliedCount += globalThis.manabiApplyReaderThemeToEbookDocuments(__reason)?.appliedCount ?? 0;
+            return {
+                colorScheme: __colorScheme,
+                lightModeTheme: __lightModeTheme,
+                darkModeTheme: __darkModeTheme,
+                appliedCount,
+                href: window.location?.href || null,
+            };
+        })();
+        //# sourceURL=reader-theme-sync.js
+
+        """
+}
+
 @MainActor
 func applyReaderTheme(
     colorScheme: ColorScheme,
@@ -351,60 +433,15 @@ func applyReaderTheme(
     guard hasAsyncCaller else { return }
     let colorSchemeValue = colorScheme == .dark ? "dark" : "light"
     do {
+        let reasonJSON = String(decoding: try JSONEncoder().encode(reason), as: UTF8.self)
         try await evaluateJavaScript(
             """
             (function() {
+                const themeSyncReason = \(reasonJSON);
                 const colorScheme = '\(colorSchemeValue)';
                 const lightModeTheme = '\(lightModeTheme.rawValue)';
                 const darkModeTheme = '\(darkModeTheme.rawValue)';
-                const applyTheme = (doc) => {
-                    const body = doc?.body;
-                    if (!body) { return false; }
-                    let changed = false;
-                    if (body.dataset.mnbColorScheme !== colorScheme) {
-                        body.dataset.mnbColorScheme = colorScheme;
-                        changed = true;
-                    }
-                    if (body.dataset.mnbLightTheme !== lightModeTheme) {
-                        body.dataset.mnbLightTheme = lightModeTheme;
-                        changed = true;
-                    }
-                    if (body.dataset.mnbDarkTheme !== darkModeTheme) {
-                        body.dataset.mnbDarkTheme = darkModeTheme;
-                        changed = true;
-                    }
-                    if (doc.documentElement?.style?.getPropertyValue?.('color-scheme') !== colorScheme) {
-                        doc.documentElement?.style?.setProperty?.('color-scheme', colorScheme);
-                        changed = true;
-                    }
-                    if (body.style?.getPropertyValue?.('color-scheme') !== colorScheme) {
-                        body.style?.setProperty?.('color-scheme', colorScheme);
-                        changed = true;
-                    }
-                    return changed;
-                };
-                globalThis.manabiReaderColorScheme = colorScheme;
-                globalThis.manabiReaderLightModeTheme = lightModeTheme;
-                globalThis.manabiReaderDarkModeTheme = darkModeTheme;
-                globalThis.manabiApplyReaderThemeToEbookDocuments = (reason = 'manual', explicitDoc = null) => {
-                    let appliedCount = 0;
-                    const docs = [];
-                    if (explicitDoc) { docs.push(explicitDoc); }
-                    try {
-                        const contents = globalThis.reader?.view?.renderer?.getContents?.() || [];
-                        for (const content of contents) {
-                            const doc = content?.doc ?? content?.document ?? null;
-                            if (doc && !docs.includes(doc)) { docs.push(doc); }
-                        }
-                    } catch (_) {}
-                    for (const doc of docs) {
-                        if (applyTheme(doc)) { appliedCount += 1; }
-                    }
-                    return { reason, appliedCount, colorScheme, lightModeTheme, darkModeTheme };
-                };
-                let appliedCount = applyTheme(document) ? 1 : 0;
-                appliedCount += globalThis.manabiApplyReaderThemeToEbookDocuments('\(reason)')?.appliedCount ?? 0;
-                return { appliedCount, colorScheme, lightModeTheme, darkModeTheme };
+                return \(ReaderThemeJavaScript.source)
             })();
             //# sourceURL=lake-reader-theme-sync.js
 

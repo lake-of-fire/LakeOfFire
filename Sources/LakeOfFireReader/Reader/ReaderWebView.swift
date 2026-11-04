@@ -284,16 +284,18 @@ final class ReaderWebViewHandler {
         disposition: WebViewNavigationFailureDisposition
     ) {
         let preservesCommittedDocument = disposition == .preservedCommittedDocument
-        if !preservesCommittedDocument { readerContent.withdrawSelectionIntent() }
+        if !preservesCommittedDocument {
+            readerContent.withdrawSelectionIntent()
+            // Settle the admitted failure before a later same-URL preparation
+            // can begin. Deferred public observers do not own render cleanup.
+            if readerContent.pageURL.matchesReaderURL(state.pageURL) {
+                readerContent.isRenderingReaderHTML = false
+            }
+            readerModeViewModel.onNavigationFailed(newState: state)
+        }
         navigationTaskManager.startOnNavigationFailed(
             preservingCommittedDocument: preservesCommittedDocument
         ) { @MainActor in
-            if !preservesCommittedDocument {
-                if self.readerContent.pageURL.matchesReaderURL(state.pageURL) {
-                    self.readerContent.isRenderingReaderHTML = false
-                }
-                self.readerModeViewModel.onNavigationFailed(newState: state)
-            }
             self.onNavigationFailed?(state)
         }
     }

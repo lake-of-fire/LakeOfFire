@@ -60,25 +60,66 @@ export const hydratePackageMedia = async ({
         return promise.then(objectURL => objectURL === null ? null : `${objectURL}${fragment}`);
     };
 
-    const mediaElements = new Set();
-    const results = await Promise.all(Array.from(doc.querySelectorAll(mediaSourceSelector), async element => {
+    const mediaOwner = element => element.matches?.('audio, video')
+        ? element : element.closest?.('audio, video');
+    const workItems = Array.from(doc.querySelectorAll(mediaSourceSelector), element => {
         const sourceURL = element.src;
-        if (!isPackageMediaURL(sourceURL)) return false;
-        const owningMedia = element.matches?.('audio, video')
-            ? element
-            : element.closest?.('audio, video');
-        const objectURL = await objectURLFor(sourceURL);
-        // A closed/replaced document or explicitly changed media source does
-        // not inherit a late response from its former package capability.
-        if (closed || objectURL === null || element.isConnected === false
-            || element.src !== sourceURL) return false;
-        element.src = objectURL;
-        if (owningMedia) mediaElements.add(owningMedia);
-        return true;
+        if (!isPackageMediaURL(sourceURL)) return { element, sourceURL };
+        const owningMedia = mediaOwner(element);
+        return { element, sourceURL, owningMedia };
+    });
+    const ownerGroups = new Map();
+    for (const item of workItems) {
+        if (!item.owningMedia) continue;
+        let group = ownerGroups.get(item.owningMedia);
+        if (!group) {
+            group = { remaining: 0, published: new Map(), expectedSource: item.owningMedia.src };
+            ownerGroups.set(item.owningMedia, group);
+        }
+        group.remaining++;
+        item.ownerGroup = group;
+    }
+
+    const outcomes = await Promise.allSettled(workItems.map(async item => {
+        try {
+            if (!isPackageMediaURL(item.sourceURL)) return false;
+            const objectURL = await objectURLFor(item.sourceURL);
+            // A closed/replaced document or explicitly changed media source does
+            // not inherit a late response from its former package capability.
+            if (closed || objectURL === null || item.element.isConnected === false
+                || item.element.src !== item.sourceURL
+                || mediaOwner(item.element) !== item.owningMedia
+                || (item.ownerGroup && (item.owningMedia.isConnected === false
+                    || item.owningMedia.src !== item.ownerGroup.expectedSource))) return false;
+            item.element.src = objectURL;
+            if (item.ownerGroup) {
+                item.ownerGroup.published.set(item.element, objectURL);
+                if (item.element === item.owningMedia) item.ownerGroup.expectedSource = objectURL;
+            }
+            return true;
+        } finally {
+            if (item.ownerGroup) {
+                item.ownerGroup.remaining--;
+                const group = item.ownerGroup;
+                // A settled sibling must not reload a replaced or detached owner,
+                // or media whose hydrated sources have since moved/changed.
+                if (group.remaining === 0 && !closed
+                    && item.owningMedia.isConnected !== false
+                    && item.owningMedia.src === group.expectedSource
+                    && Array.from(group.published).some(([element, url]) =>
+                        element.isConnected !== false && element.src === url
+                        && mediaOwner(element) === item.owningMedia)) {
+                    item.owningMedia.load?.();
+                }
+            }
+        }
     }));
 
-    if (!closed) for (const media of mediaElements) media.load?.();
-    return results;
+    const failures = outcomes.filter(outcome => outcome.status === 'rejected');
+    if (failures.length === 1) throw failures[0].reason;
+    if (failures.length > 1) throw new AggregateError(
+        failures.map(outcome => outcome.reason), 'Failed to hydrate ebook package media');
+    return outcomes.map(outcome => outcome.value);
 };
 
 export const installPackageMediaHydration = ({

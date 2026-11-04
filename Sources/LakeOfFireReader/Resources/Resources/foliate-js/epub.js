@@ -59,21 +59,42 @@ const childGetter = (doc, ns) => {
     }
 }
 
-const resolveURL = (url, relativeTo) => {
-    try {
-        if (relativeTo.includes(':')) return new URL(url, relativeTo)
-        // the base needs to be a valid URL, so set a base URL and then remove it
-        const root = 'https://invalid.invalid/'
-        const obj = new URL(url, root + relativeTo)
-        obj.search = ''
-        return decodeURI(obj.href.replace(root, ''))
-    } catch (e) {
-        console.warn(e)
-        return url
-    }
+const isExternal = uri => /^(?!blob)\w+:/i.test(uri)
+
+// Archive identities are raw names. URI references stay encoded until an
+// exact storage lookup; a literal "%20" must never become a space twice.
+const archivePathToURI = path => path.split('/').map(encodeURIComponent).join('/')
+const decodeArchivePath = path => path.split('/').map(component => {
+    const decoded = decodeURIComponent(component)
+    if (/[\\/]/.test(decoded)) throw new URIError('Encoded archive path separator')
+    return decoded
+}).join('/')
+const uriToArchivePath = href => {
+    const { resourceHref } = splitInternalResourceReference(href)
+    if (isExternal(resourceHref)) return resourceHref
+    return decodeArchivePath(resourceHref)
 }
 
-const isExternal = uri => /^(?!blob)\w+:/i.test(uri)
+// relativeTo is always a raw archive path, never an already encoded URI.
+const resolveURL = (url, relativeTo) => {
+    if (isExternal(url)) return url
+    // Check before URL dot-segment normalization can discard the component.
+    if (/%(?:2f|5c)/i.test(splitInternalResourceReference(url).resourceHref))
+        throw new URIError('Encoded archive path separator')
+    const root = 'https://invalid.invalid/'
+    let obj
+    try {
+        obj = new URL(url, root + archivePathToURI(relativeTo))
+    } catch (error) {
+        if (error instanceof TypeError)
+            throw new URIError('Invalid archive URI reference')
+        throw error
+    }
+    obj.search = ''
+    return obj.href.startsWith(root)
+        ? `${archivePathToURI(decodeArchivePath(obj.pathname.slice(1)))}${obj.hash}`
+        : obj.href
+}
 
 const manabiEpubReaderLoadLog = (stage, payload = {}) => {
     try {
@@ -114,6 +135,36 @@ const replaceSeries = async (str, regex, f) => {
 }
 
 const regexEscape = str => str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')
+
+// Keep strings, comments and complete URL tokens out of layout substitutions.
+// Quoted strings consume one escaped character at a time. Unquoted URLs also
+// consume the whitespace terminator of a hex escape as part of the URL.
+const cssEscapePattern = /\\(?:\r\n|[\s\S])/.source
+const cssUnquotedURLPattern = /(?:\\[0-9a-f]{1,6}(?:\r\n|[\t\n\f\r ])|\\[^\n\r\f]|[^"'()\\\s])*/.source
+const cssStringPattern = String.raw`"(?:${cssEscapePattern}|[^"\\\n\r\f])*"|'(?:${cssEscapePattern}|[^'\\\n\r\f])*'`
+const cssCommentPattern = /\/\*[\s\S]*?(?:\*\/|$)/.source
+const cssTokens = new RegExp([
+    cssCommentPattern,
+    String.raw`@import(?:[\t\n\f\r ]|${cssCommentPattern})*(${cssStringPattern})`,
+    String.raw`url\([\t\n\f\r ]*(${cssStringPattern}|${cssUnquotedURLPattern})[\t\n\f\r ]*\)`,
+    cssStringPattern,
+].join('|'), 'gi')
+
+const decodeCSSURL = token => {
+    const value = /^["']/.test(token) ? token.slice(1, -1) : token
+    return value.replace(/\\(?:([0-9a-f]{1,6})(?:\r\n|[\t\n\f\r ])?|(\r\n|[\n\r\f])|([\s\S]))/gi,
+        (_, hex, newline, character) => {
+            if (!hex) return newline ? '' : character
+            const codePoint = parseInt(hex, 16)
+            return !codePoint || codePoint > 0x10ffff
+                || (codePoint >= 0xd800 && codePoint <= 0xdfff)
+                ? '\ufffd' : String.fromCodePoint(codePoint)
+        })
+}
+
+const quoteCSSURL = url => '"' + url.replace(/["\\\n\r\f]/g, character => ({
+    '"': '\\"', '\\': '\\\\', '\n': '\\a ', '\r': '\\d ', '\f': '\\c ',
+})[character]) + '"'
 
 const LANGS = {
     attrs: ['dir', 'xml:lang']
@@ -268,13 +319,22 @@ const getMetadata = opf => {
     }
 }
 
+const resolveOptionalReference = (href, resolve) => {
+    if (!href) return null
+    try { return resolve(href) }
+    catch (error) {
+        if (error instanceof URIError) return null
+        throw error
+    }
+}
+
 const parseNav = (doc, resolve = f => f) => {
     const {
         $,
         $$,
         $$$
     } = childGetter(doc, NS.XHTML)
-    const resolveHref = href => href ? decodeURI(resolve(href)) : null
+    const resolveHref = href => resolveOptionalReference(href, resolve)
     const parseLI = getType => $li => {
         const $a = $($li, 'a') ?? $($li, 'span')
         const $ol = $($li, 'ol')
@@ -321,7 +381,7 @@ const parseNCX = (doc, resolve = f => f) => {
         $,
         $$
     } = childGetter(doc, NS.NCX)
-    const resolveHref = href => href ? decodeURI(resolve(href)) : null
+    const resolveHref = href => resolveOptionalReference(href, resolve)
     const parseItem = el => {
         const $label = $(el, 'navLabel')
         const $content = $(el, 'content')
@@ -366,8 +426,8 @@ const parseClock = str => {
         const [m, s] = parts
         return m * 60 + s
     }
-    const [x, unit] = str.split(/(?=[^\d.])/)
-    const n = parseFloat(x)
+    const unit = str.replace(/^[\d.]+/, '')
+    const n = parseFloat(str)
     const f = unit === 'h' ? 60 * 60 :
         unit === 'min' ? 60 :
         unit === 'ms' ? .001 :
@@ -380,9 +440,13 @@ const parseSMIL = (doc, resolve = f => f) => {
         $,
         $$$
     } = childGetter(doc, NS.SMIL)
-    const resolveHref = href => href ? decodeURI(resolve(href)) : null
+    const resolveHref = href => resolveOptionalReference(href, resolve)
     return $$$(doc, 'par').map($par => {
-        const id = $($par, 'text')?.getAttribute('src')?.split('#')?.[1]
+        const textSource = $($par, 'text')?.getAttribute('src') ?? ''
+        const { fragment } = splitInternalResourceReference(textSource)
+        let id
+        try { id = fragment ? decodeURIComponent(fragment.slice(1)) : undefined }
+        catch (error) { if (!(error instanceof URIError)) throw error }
         const $audio = $($par, 'audio')
         return $audio ? {
             id,
@@ -397,7 +461,7 @@ const parseSMIL = (doc, resolve = f => f) => {
     })
 }
 
-const isUUID = /([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})/
+const isUUID = /([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})/i
 
 const getUUID = opf => {
     for (const el of opf.getElementsByTagNameNS(NS.DC, 'identifier')) {
@@ -467,6 +531,15 @@ class Encryption {
                 uri
             }
             of data) {
+            if (typeof uri !== 'string' || !uri) continue
+            let path
+            try { path = uriToArchivePath(resolveURL(uri, '')) }
+            catch (error) {
+                // Optional obfuscation metadata cannot make otherwise readable
+                // chapters unavailable or turn an encoded separator into an alias.
+                if (error instanceof URIError) continue
+                throw error
+            }
             if (!this.#decoders.has(algorithm)) {
                 const algo = this.#algorithms[algorithm]
                 if (!algo) {
@@ -476,7 +549,7 @@ class Encryption {
                 const key = await algo.key(opf)
                 this.#decoders.set(algorithm, blob => algo.decode(key, blob))
             }
-            this.#uris.set(uri, algorithm)
+            this.#uris.set(path, algorithm)
         }
     }
     getDecoder(uri) {
@@ -503,7 +576,7 @@ class Resources {
         this.manifest = $$($manifest, 'item')
             .map(getAttributes('href', 'id', 'media-type', 'properties', 'media-overlay'))
             .map(item => {
-                item.href = resolveHref(item.href)
+                item.href = uriToArchivePath(resolveHref(item.href))
                 item.properties = item.properties?.split(/\s/)
                 return item
             })
@@ -536,8 +609,8 @@ class Resources {
             this.getItemByID($$$(opf, 'meta')
                 .find(filterAttribute('name', 'cover'))
                 ?.getAttribute('content')) ??
-            this.getItemByHref(this.guide
-                ?.find(ref => ref.type.includes('cover'))?.href)
+            this.getItemByHref(uriToArchivePath(this.guide
+                ?.find(ref => ref.type.includes('cover'))?.href ?? ''))
 
         this.cfis = CFI.fromElements($$itemref)
     }
@@ -830,7 +903,12 @@ export class Loader {
         if (typeof href !== 'string' || !href || isExternal(href)) return href
         const { resourceHref, fragment } = splitInternalResourceReference(href)
         if (!resourceHref) return href
-        const path = resolveURL(resourceHref, base)
+        let path
+        try { path = uriToArchivePath(resolveURL(resourceHref, base)) }
+        catch (error) {
+            if (error instanceof URIError) return href
+            throw error
+        }
         const item = this.manifest.find(item => item.href === path)
         if (!item) return href
         const url = await this.loadItem(item, parents.concat(base))
@@ -1000,26 +1078,64 @@ export class Loader {
         return this.createURL(href, result, mediaType, parent)
     }
     async replaceCSS(str, href, parents = []) {
-        const replacedUrls = await replaceSeries(str,
-            /url\(\s*["']?([^'"\n]*?)\s*["']?\s*\)/gi,
-            (_, url) => this.loadHref(url, href, parents)
-            .then(url => `url("${url}")`))
-        // apart from `url()`, strings can be used for `@import` (but why?!)
-        const replacedImports = await replaceSeries(replacedUrls,
-            /@import\s*["']([^"'\n]*?)["']/gi,
-            (_, url) => this.loadHref(url, href, parents)
-            .then(url => `@import "${url}"`))
         const w = window?.innerWidth ?? 800
         const h = window?.innerHeight ?? 600
-        return replacedImports
-            // unprefix as most of the props are (only) supported unprefixed
-            .replace(/-epub-/gi, '')
-            // replace vw and vh as they cause problems with layout
-            .replace(/(\d*\.?\d+)vw/gi, (_, d) => parseFloat(d) * w / 100 + 'px')
-            .replace(/(\d*\.?\d+)vh/gi, (_, d) => parseFloat(d) * h / 100 + 'px')
-            // `page-break-*` unsupported in columns; replace with `column-break-*`
-            .replace(/page-break-(after|before|inside)/gi, (_, x) =>
-                `-webkit-column-break-${x}`)
+        const tokens = Array.from(str.matchAll(cssTokens))
+        const edits = []
+        const layoutParts = []
+        let cursor = 0
+        for (const match of tokens) {
+            layoutParts.push(str.slice(cursor, match.index))
+            // Preserve offsets and syntax context across protected tokens.
+            // Comments are whitespace, but a string/URL/import must not create
+            // a fresh declaration boundary within an existing value.
+            layoutParts.push((match[0].startsWith('/*') ? ' ' : '\ufffc')
+                .repeat(match[0].length))
+            cursor = match.index + match[0].length
+        }
+        layoutParts.push(str.slice(cursor))
+        // Ordinary identifier escapes cannot supply structural delimiters.
+        // Consume each escape once: \\ masks only the backslash pair, while
+        // hex escapes also consume their optional whitespace terminator.
+        const layout = layoutParts.join('').replace(
+            /\\(?:[0-9a-f]{1,6}(?:\r\n|[\t\n\f\r ])?|[^\n\r\f])/gi,
+            escape => '\ufffc'.repeat(escape.length))
+        for (const match of layout.matchAll(/(^|[;{])([\t\n\f\r ]*)(-epub-[\w-]+|page-break-(?:after|before|inside))(?=[\t\n\f\r ]*:)/gi)) {
+            const start = match.index + match[1].length + match[2].length
+            // A colon in a selector prelude is not a declaration, including
+            // type selectors named like one of the adapted properties.
+            if (/^[^;{}]*\{/.test(layout.slice(start + match[3].length))) continue
+            const property = match[3].replace(/^-epub-/i, '')
+                .replace(/^page-break-(after|before|inside)$/i, '-webkit-column-break-$1')
+            edits.push({ start, end: start + match[3].length, text: property })
+        }
+        // Match complete dimension tokens, including signed/exponent values.
+        for (const match of layout.matchAll(/(?<![-\w\\\u0080-\uffff.])([+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?)v([wh])(?![-\w\\\u0080-\uffff])/gi)) {
+            edits.push({ start: match.index, end: match.index + match[0].length,
+                text: parseFloat(match[1]) * (match[2].toLowerCase() === 'w' ? w : h) / 100 + 'px' })
+        }
+        for (const match of tokens) {
+            const reference = match[1] ?? match[2]
+            // A function name ending in "url" is not the CSS url() function.
+            const continuesIdentifier = /[-\w\\\u0080-\uffff]/.test(str[match.index - 1] ?? '')
+            if (reference !== undefined && !continuesIdentifier) {
+                const originalURL = decodeCSSURL(reference)
+                const url = await this.loadHref(originalURL, href, parents)
+                if (url != null && url !== originalURL) {
+                    const text = match[1] !== undefined
+                        ? match[0].slice(0, -reference.length) + quoteCSSURL(url)
+                        : `url(${quoteCSSURL(url)})`
+                    edits.push({ start: match.index, end: match.index + match[0].length, text })
+                }
+            }
+        }
+        let result = ''
+        cursor = 0
+        for (const { start, end, text } of edits.sort((a, b) => a.start - b.start)) {
+            result += str.slice(cursor, start) + text
+            cursor = end
+        }
+        return result + str.slice(cursor)
     }
     // find & replace exact relative paths for all assets without parsing
     replaceString(str, href, parents = []) {
@@ -1031,11 +1147,14 @@ export class Loader {
             const relative = pathRelative(pathDirname(href), asset.href)
             const rootRelative = '/' + asset.href
             const urls = new Set([
-                relative,
-                encodeURI(relative),
-                rootRelative,
-                encodeURI(rootRelative),
+                archivePathToURI(relative),
+                archivePathToURI(rootRelative),
             ])
+            // Keep legacy unescaped names only when they cannot be confused
+            // with URI escapes, a query or a fragment belonging to another item.
+            for (const path of [relative, rootRelative]) {
+                if (!/[%#?]/.test(path)) urls.add(path)
+            }
             for (const url of urls) {
                 if (url && !assetMap.has(url)) assetMap.set(url, asset)
             }
@@ -1174,7 +1293,8 @@ ${doc.querySelector('parsererror').innerText}`)
         this.#loader = new Loader({
             loadText: this.loadText,
             loadBlob: uri => Promise.resolve(this.loadBlob(uri))
-                .then(this.#encryption.getDecoder(uri)),
+                .then(blob => blob == null || this.#destroyed
+                    ? null : this.#encryption.getDecoder(uri)(blob)),
             resources: this.resources,
             replaceText: this.replaceText,
             replaceURL: this.replaceURL,
@@ -1191,7 +1311,8 @@ ${doc.querySelector('parsererror').innerText}`)
                 return null
             }
             return {
-                id: this.resources.getItemByID(idref)?.href,
+                id: item.href,
+                href: archivePathToURI(item.href),
                 load: () => this.#loader.loadItem(item),
                 unload: () => this.#loader.unloadItem(item),
                 createDocument: () => this.loadDocument(item),
@@ -1330,8 +1451,8 @@ ${doc.querySelector('parsererror').innerText}`)
         return { ...resolved, index: this.#sectionIndexFromSpineIndex(resolved.index) }
     }
     resolveHref(href) {
-        const [path, hash] = href.split('#')
-        const item = this.resources.getItemByHref(decodeURI(path))
+        const [path, hash] = this.splitTOCHref(href)
+        const item = this.resources.getItemByHref(path)
         if (!item) return null
         const spineIndex = this.resources.spine.findIndex(({ idref }) => idref === item.id)
         const index = this.#sectionIndexFromSpineIndex(spineIndex)
@@ -1342,7 +1463,14 @@ ${doc.querySelector('parsererror').innerText}`)
         }
     }
     splitTOCHref(href) {
-        return href?.split('#') ?? []
+        if (typeof href !== 'string') return []
+        try {
+            const { fragment } = splitInternalResourceReference(href)
+            return [uriToArchivePath(href), fragment ? decodeURIComponent(fragment.slice(1)) : undefined]
+        } catch (error) {
+            if (error instanceof URIError) return []
+            throw error
+        }
     }
     getTOCFragment(doc, id) {
         return doc.getElementById(id) ??
@@ -1367,7 +1495,8 @@ ${doc.querySelector('parsererror').innerText}`)
         this.#assertActive()
         const magic = 'encoding=json+base64:'
         if (txt?.startsWith(magic)) {
-            const json = atob(txt.slice(magic.length))
+            const bytes = Uint8Array.from(atob(txt.slice(magic.length)), character => character.charCodeAt(0))
+            const json = new TextDecoder().decode(bytes)
             return JSON.parse(json)
         }
     }

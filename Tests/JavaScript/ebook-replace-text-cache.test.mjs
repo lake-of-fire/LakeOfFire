@@ -20,7 +20,7 @@ const declaration = (start, end) => {
 const declarations = [
     declaration('const REPLACE_TEXT_RESULT_CACHE_LIMIT =', 'const resolveEpubRelativePath ='),
     declaration('const firstLiveSectionHref =', 'window.manabi_recordLiveProcessedSection ='),
-    declaration('const normalizeSpineHref =', 'const setNativeHideNavigationState ='),
+    declaration('const normalizeSpineStoragePath =', 'const setNativeHideNavigationState ='),
 ].join('\n')
 
 const deferred = () => {
@@ -95,6 +95,19 @@ test('replaceText helper contract coalesces and retains explicit native-source G
     assert.equal(options.signal.aborted, false)
     assert.deepEqual(viewer.published, ['chapter.xhtml', 'chapter.xhtml', 'chapter.xhtml'])
     assertIdle(viewer)
+})
+
+test('replaceText keeps raw section whitespace and literal URI-looking names', async () => {
+    for (const href of [' leading.xhtml ', 'literal%20.xhtml']) {
+        const viewer = makeViewer()
+        const owner = viewer.makeOwner({ nativeSource })
+        const html = await owner(href, original, 'application/xhtml+xml')
+        assert.match(html, /<m-m>processed<\/m-m>/)
+        assert.equal(new URL(viewer.requests[0].url).searchParams.get('subpath'), href)
+        assert.deepEqual(viewer.published, [href])
+        assert.deepEqual(viewer.errors, [])
+        assertIdle(viewer)
+    }
 })
 
 test('ZIP-configured replaceText captures the reader source and retains authoritative results without a package session', async () => {
