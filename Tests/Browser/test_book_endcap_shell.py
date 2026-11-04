@@ -226,10 +226,12 @@ class BookEndcapShellTests(unittest.TestCase):
                         check(style.width === '80px', 'viewport exponent dimension is adapted')
                         check(frame.contentWindow.getComputedStyle(attributeTarget).writingMode === 'vertical-rl',
                             'style attribute affects actual layout style')
-                        check(attributeTarget.style.getPropertyValue('-webkit-column-break-inside') === 'avoid',
-                            'style attribute break declaration reaches CSSOM')
-                        check(style.getPropertyValue('-webkit-column-break-before') === 'always',
-                            'style element break declaration reaches CSSOM')
+                        // Prefixed inline aliases may serialize as empty even when
+                        // parsed. Assert the effective canonical fragmentation policy.
+                        check(frame.contentWindow.getComputedStyle(attributeTarget).getPropertyValue('break-inside') === 'avoid',
+                            'style attribute preserves effective break avoidance')
+                        check(style.getPropertyValue('break-before') === 'column',
+                            'style element preserves the effective forced column break')
                     } finally {
                         frame.remove()
                         loader.destroy()
