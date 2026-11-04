@@ -115,6 +115,36 @@ const replaceSeries = async (str, regex, f) => {
 
 const regexEscape = str => str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')
 
+// Keep strings, comments and complete URL tokens out of layout substitutions.
+// Quoted strings consume one escaped character at a time. Unquoted URLs also
+// consume the whitespace terminator of a hex escape as part of the URL.
+const cssEscapePattern = /\\(?:\r\n|[\s\S])/.source
+const cssUnquotedURLPattern = /(?:\\[0-9a-f]{1,6}(?:\r\n|[\t\n\f\r ])|\\[^\n\r\f]|[^"'()\\\s])*/.source
+const cssStringPattern = String.raw`"(?:${cssEscapePattern}|[^"\\\n\r\f])*"|'(?:${cssEscapePattern}|[^'\\\n\r\f])*'`
+const cssCommentPattern = /\/\*[\s\S]*?(?:\*\/|$)/.source
+const cssTokens = new RegExp([
+    cssCommentPattern,
+    String.raw`@import(?:[\t\n\f\r ]|${cssCommentPattern})*(${cssStringPattern})`,
+    String.raw`url\([\t\n\f\r ]*(${cssStringPattern}|${cssUnquotedURLPattern})[\t\n\f\r ]*\)`,
+    cssStringPattern,
+].join('|'), 'gi')
+
+const decodeCSSURL = token => {
+    const value = /^["']/.test(token) ? token.slice(1, -1) : token
+    return value.replace(/\\(?:([0-9a-f]{1,6})(?:\r\n|[\t\n\f\r ])?|(\r\n|[\n\r\f])|([\s\S]))/gi,
+        (_, hex, newline, character) => {
+            if (!hex) return newline ? '' : character
+            const codePoint = parseInt(hex, 16)
+            return !codePoint || codePoint > 0x10ffff
+                || (codePoint >= 0xd800 && codePoint <= 0xdfff)
+                ? '\ufffd' : String.fromCodePoint(codePoint)
+        })
+}
+
+const quoteCSSURL = url => '"' + url.replace(/["\\\n\r\f]/g, character => ({
+    '"': '\\"', '\\': '\\\\', '\n': '\\a ', '\r': '\\d ', '\f': '\\c ',
+})[character]) + '"'
+
 const LANGS = {
     attrs: ['dir', 'xml:lang']
 }
@@ -956,18 +986,9 @@ export class Loader {
         return this.createURL(href, result, mediaType, parent)
     }
     async replaceCSS(str, href, parents = []) {
-        const replacedUrls = await replaceSeries(str,
-            /url\(\s*["']?([^'"\n]*?)\s*["']?\s*\)/gi,
-            (_, url) => this.loadHref(url, href, parents)
-            .then(url => `url("${url}")`))
-        // apart from `url()`, strings can be used for `@import` (but why?!)
-        const replacedImports = await replaceSeries(replacedUrls,
-            /@import\s*["']([^"'\n]*?)["']/gi,
-            (_, url) => this.loadHref(url, href, parents)
-            .then(url => `@import "${url}"`))
         const w = window?.innerWidth ?? 800
         const h = window?.innerHeight ?? 600
-        return replacedImports
+        const adaptLayout = text => text
             // unprefix as most of the props are (only) supported unprefixed
             .replace(/-epub-/gi, '')
             // replace vw and vh as they cause problems with layout
@@ -976,6 +997,27 @@ export class Loader {
             // `page-break-*` unsupported in columns; replace with `column-break-*`
             .replace(/page-break-(after|before|inside)/gi, (_, x) =>
                 `-webkit-column-break-${x}`)
+        let result = ''
+        let cursor = 0
+        for (const match of str.matchAll(cssTokens)) {
+            result += adaptLayout(str.slice(cursor, match.index))
+            let token = match[0]
+            const reference = match[1] ?? match[2]
+            // A function name ending in "url" is not the CSS url() function.
+            const continuesIdentifier = /[-\w\\\u0080-\uffff]/.test(str[match.index - 1] ?? '')
+            if (reference !== undefined && !continuesIdentifier) {
+                const originalURL = decodeCSSURL(reference)
+                const url = await this.loadHref(originalURL, href, parents)
+                if (url != null && url !== originalURL) {
+                    token = match[1] !== undefined
+                        ? token.slice(0, -reference.length) + quoteCSSURL(url)
+                        : `url(${quoteCSSURL(url)})`
+                }
+            }
+            result += token
+            cursor = match.index + match[0].length
+        }
+        return result + adaptLayout(str.slice(cursor))
     }
     // find & replace exact relative paths for all assets without parsing
     replaceString(str, href, parents = []) {
