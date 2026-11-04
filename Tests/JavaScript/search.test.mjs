@@ -130,3 +130,69 @@ for (const sensitivity of ['base', 'case']) {
         }])
     })
 }
+
+
+for (const granularity of ['grapheme', 'word']) {
+    for (const [parts, query, expected] of [
+        [['cat  ', 'dog'], 'cat  dog', [0, 0, 1, 3]],
+        [['cat\t\n', 'dog'], 'cat dog', [0, 0, 1, 3]],
+        [['ca\u00AD', 't'], 'ca\u00ADt', [0, 0, 1, 1]],
+        [['ca\u00AD', 't'], 'cat', [0, 0, 1, 1]],
+        [['cat', '   '], 'cat ', [0, 0, 1, 3]],
+        [['  ', '\t\n'], ' ', [0, 0, 1, 2]],
+    ]) {
+        test(`${granularity} search normalizes both sides and preserves full spans: ${JSON.stringify(parts)} / ${query}`, () => {
+            const [startIndex, startOffset, endIndex, endOffset] = expected
+            assert.deepEqual(matches(parts, query, {granularity, sensitivity:'base'}).map(x => x.range),
+                [{startIndex, startOffset, endIndex, endOffset}])
+        })
+    }
+    test(`${granularity} search ignores an empty normalized query`, () => {
+        assert.deepEqual(matches(['a\u00ADb'], '\u00AD', {granularity}), [])
+    })
+}
+
+for (const [parts, query, locale, expected] of [
+    [['Stra', 'ße'], 'strasse', 'de', [0, 0, 1, 2]],
+    [['stras', 'se'], 'straße', 'de', [0, 0, 1, 2]],
+    [['STRA', 'ẞE'], 'strasse', 'de', [0, 0, 1, 2]],
+    [['o', 'ﬃ', 'ce'], 'office', 'en', [0, 0, 2, 2]],
+    [['off', 'ice'], 'oﬃce', 'en', [0, 0, 1, 3]],
+    [['xStra', 'ße!'], 'strasse', 'de', [0, 1, 1, 2]],
+    [['Stra', 'sse!'], 'straße', 'de', [0, 0, 1, 3]],
+]) {
+    test(`base search discovers length-changing Unicode spelling and preserves offsets: ${parts.join('')} / ${query}`, () => {
+        assert.equal(new Intl.Collator(locale, {sensitivity:'base'}).compare(parts.join('').slice(expected[1], expected[3] + parts.slice(0, expected[2]).join('').length), query), 0)
+        const [startIndex, startOffset, endIndex, endOffset] = expected
+        assert.deepEqual(matches(parts, query, {locales:locale, sensitivity:'base'}).map(x => x.range),
+            [{startIndex, startOffset, endIndex, endOffset}])
+    })
+}
+
+for (const [text, query] of [['ß','s'], ['ﬃ','f'], ['Straße','strase'], ['office','ofice']]) {
+    test(`Unicode candidate discovery rejects partial expansions and near misses: ${text} / ${query}`, () => {
+        assert.deepEqual(matches([text], query, {locales:'de', sensitivity:'base'}), [])
+    })
+}
+
+test('accent-sensitive search preserves its distinction for sharp S', () => {
+    assert.notEqual(new Intl.Collator('de', {sensitivity:'accent'}).compare('Straße', 'strasse'), 0)
+    assert.deepEqual(matches(['Straße'], 'strasse', {locales:'de', sensitivity:'accent'}), [])
+})
+
+test('case-sensitive search verifies the original spelling after candidate folding', () => {
+    assert.deepEqual(matches(['straße'], 'STRASSE', {locales:'de', sensitivity:'case'}), [])
+})
+
+test('whole-word boundaries reject a matching substring discovered by Unicode folding', () => {
+    assert.deepEqual(matches(['xStraße'], 'strasse', {locales:'de', granularity:'word'}), [])
+})
+
+
+test('merged search candidates stay ordered and unique around expansions', () => {
+    assert.deepEqual(matches(['ß', 'ssß'], 'ss', {locales:'de'}).map(x => x.range), [
+        {startIndex:0, startOffset:0, endIndex:0, endOffset:1},
+        {startIndex:1, startOffset:0, endIndex:1, endOffset:2},
+        {startIndex:1, startOffset:2, endIndex:1, endOffset:3},
+    ])
+})
