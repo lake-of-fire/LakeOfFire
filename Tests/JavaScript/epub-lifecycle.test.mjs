@@ -11,7 +11,7 @@ const makeSource = destroy => ({
     loadText: async () => null,
     loadBlob: async () => null,
     getSize: () => 0,
-    replaceText: value => value,
+    replaceText: (_href, text) => text,
     replaceURL: value => value,
     destroy,
 })
@@ -860,4 +860,91 @@ test('three concurrent CSS roots break transitive cycles and release every blob'
         loader.destroy()
         globalThis.__manabiBlobResourceMap = originalBlobMap
     }
+})
+
+
+test('detached EPUB documents use the same invalid-XHTML fallback as rendering', async () => {
+    const originalDOMParser = globalThis.DOMParser
+    const originalWarn = console.warn
+    const calls = []
+    const htmlDocument = {body:{textContent:'searchable & text'}}
+    globalThis.DOMParser = class {
+        parseFromString(source, mediaType) {
+            calls.push({source,mediaType})
+            return mediaType === 'application/xhtml+xml'
+                ? {querySelector:()=>({innerText:'unescaped ampersand'})}
+                : htmlDocument
+        }
+    }
+    console.warn = () => {}
+    const source = '<html><body>searchable & text</body></html>'
+    const item = {href:'OPS/unvisited.xhtml',mediaType:'application/xhtml+xml'}
+    const book = new EPUB({...makeSource(()=>{}),loadText:async href=>{
+        assert.equal(href,item.href)
+        return source
+    }})
+    try {
+        assert.equal(await book.loadDocument(item), htmlDocument)
+        assert.deepEqual(calls,[{source,mediaType:'application/xhtml+xml'},{source,mediaType:'text/html'}])
+        // Detached parsing must not change manifest publication metadata.
+        assert.equal(item.mediaType,'application/xhtml+xml')
+    } finally {
+        book.destroy()
+        globalThis.DOMParser = originalDOMParser
+        console.warn = originalWarn
+    }
+})
+
+for (const mediaType of ['application/xhtml+xml','image/svg+xml']) {
+    test(`detached EPUB documents preserve successful ${mediaType} parsing`, async () => {
+        const originalDOMParser = globalThis.DOMParser
+        const calls = []
+        const parsed = {querySelector:()=>null}
+        globalThis.DOMParser = class {parseFromString(source,type){calls.push(type);return parsed}}
+        const book = new EPUB({...makeSource(()=>{}),loadText:async()=>'<root/>'})
+        try {
+            assert.equal(await book.loadDocument({href:'OPS/source',mediaType}),parsed)
+            assert.deepEqual(calls,[mediaType])
+        } finally {
+            book.destroy()
+            globalThis.DOMParser = originalDOMParser
+        }
+    })
+}
+
+
+test('detached EPUB documents process chapter structure before assigning search CFIs', async () => {
+    const originalDOMParser = globalThis.DOMParser
+    const raw = '<html><body><p>猫犬</p></body></html>'
+    const prepared = '<html><body><p><m-s><m-m><m-t>猫犬</m-t></m-m></m-s></p></body></html>'
+    const document = {querySelector:()=>null}
+    const reads = [], replacements = [], parsed = []
+    globalThis.DOMParser = class {parseFromString(text,type){parsed.push({text,type});return document}}
+    const book = new EPUB({...makeSource(()=>{}), loadText:async href=>{reads.push(href);return raw},
+        replaceText:async (href,text,type,options)=>{replacements.push({href,text,type,options});return prepared}})
+    const item = {href:'OPS/chapter.xhtml',mediaType:'application/xhtml+xml'}
+    try {
+        assert.equal(await book.loadDocument(item),document)
+        assert.deepEqual(reads,[item.href])
+        assert.deepEqual(replacements,[{href:item.href,text:raw,type:item.mediaType,options:{forSearch:true}}])
+        assert.deepEqual(parsed,[{text:prepared,type:item.mediaType}])
+    } finally {book.destroy();globalThis.DOMParser=originalDOMParser}
+})
+
+test('destruction while chapter processing waits prevents detached parsing', async () => {
+    const originalDOMParser = globalThis.DOMParser
+    let release, entered
+    const started = new Promise(resolve=>{entered=resolve})
+    let parses=0
+    globalThis.DOMParser = class {parseFromString(){parses++;throw new Error('retired document parsed')}}
+    const book = new EPUB({...makeSource(()=>{}),loadText:async()=>'<html/>',
+        replaceText:()=>{entered();return new Promise(resolve=>{release=resolve})}})
+    try {
+        const load = book.loadDocument({href:'OPS/chapter.xhtml',mediaType:'application/xhtml+xml'})
+        await started
+        book.destroy()
+        release('<html/>')
+        await assert.rejects(load,error=>error?.name==='AbortError')
+        assert.equal(parses,0)
+    } finally {book.destroy();globalThis.DOMParser=originalDOMParser}
 })
