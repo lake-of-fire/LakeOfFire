@@ -1,4 +1,5 @@
 import * as CFI from './epubcfi.js'
+import { getDocumentLanguage } from './content-language.js'
 import { TOCProgress, SectionProgress } from './progress.js'
 import { Overlayer } from './overlayer.js'
 import {
@@ -474,10 +475,14 @@ export class View extends HTMLElement {
             this.#emit('relocate', this.lastLocation)
             }
     #onLoad({ doc, location, index }) {
-        // set language and dir if not already set
-        doc.documentElement.lang ||= this.language.canonical ?? ''
-        if (!this.language.isCJK)
-            doc.documentElement.dir ||= this.language.direction ?? ''
+        const declaredLanguage = getDocumentLanguage(doc)
+        const language = languageInfo(declaredLanguage ?? this.language?.canonical)
+        // A package fallback cannot overwrite a chapter declaration, including
+        // xml:lang or an explicit empty (unknown) language.
+        if (declaredLanguage == null && language.canonical)
+            doc.documentElement.lang = language.canonical
+        if (!language.isCJK && language.direction)
+            doc.documentElement.dir ||= language.direction
 
         this.#handleLinks(doc, index)
         this.#emit('load', { doc, location, index })

@@ -269,7 +269,9 @@ class BookEndcapShellTests(unittest.TestCase):
             examples = ('<p id="normalized-space">cat  <span>dog</span></p>'
                         '<p id="normalized-format">ca&#xAD;<span>t</span></p>'
                         '<p id="normalized-sharp">Stra<span>ße</span></p>'
-                        '<p id="normalized-ligature">o<span>ﬃ</span>ce</p>')
+                        '<p id="normalized-ligature">o<span>ﬃ</span>ce</p>'
+                        '<p id="normalized-oe">c<span>œ</span>ur</p>'
+                        '<p id="normalized-ae">c<span>æ</span>lum</p>')
             return prepared_chapter(name).replace('</body>', examples + '</body>')
 
         self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
@@ -300,6 +302,7 @@ class BookEndcapShellTests(unittest.TestCase):
             };
             return {space:await run('cat  dog'), format:await run('ca\u00ADt'),
                 sharp:await run('strasse'), ligature:await run('office'),
+                oe:await run('coeur',{defaultLocale:'fr'}), ae:await run('caelum',{defaultLocale:'en'}),
                 strict:await run('strasse', {matchDiacritics:true})};
         }''')
         def match(text, element_id, end_offset):
@@ -310,7 +313,61 @@ class BookEndcapShellTests(unittest.TestCase):
                                              match('ca\u00ADt', 'normalized-format', 1)])
         self.assertEqual(results['sharp'], [match('Straße', 'normalized-sharp', 2)])
         self.assertEqual(results['ligature'], [match('oﬃce', 'normalized-ligature', 2)])
+        self.assertEqual(results['oe'], [match('cœur', 'normalized-oe', 2)])
+        self.assertEqual(results['ae'], [match('cælum', 'normalized-ae', 3)])
         self.assertEqual(results['strict'], [])
+
+    def test_xml_chapter_language_precedence_search_ranges_and_rendering(self):
+        cases = [
+            ('root', 'xml:lang="tr"', '', 'ı', None, 'ltr'),
+            ('body', 'lang="en"', 'xml:lang="tr"', 'ı', 'en', 'ltr'),
+            ('conflict', 'xml:lang="tr" lang="en"', '', 'ı', 'en', 'ltr'),
+            ('unknown-root', 'xml:lang=""', '', 'i', None, ''),
+            ('unknown-body', 'lang="tr"', 'xml:lang=""', 'i', 'tr', ''),
+            ('html-body', 'xml:lang="tr"', 'lang="en"', 'i', None, 'ltr'),
+            ('arabic', 'xml:lang="ar"', '', 'i', None, 'rtl'),
+        ]
+        for key, root_attrs, body_attrs, expected_query, root_lang, direction in cases:
+            with self.subTest(language=key):
+                def chapter(name):
+                    value = prepared_chapter(name).replace('<html ', '<html ' + root_attrs + ' ', 1)
+                    value = value.replace('<body ', '<body ' + body_attrs + ' ', 1)
+                    return value.replace('</body>', '<p id="xml-language">I</p></body>')
+                self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+                path = f'/xml-language-{key}.epub'
+                self.server.epub_fixtures[path] = make_epub(chapter)
+                self.addCleanup(self.server.epub_fixtures.pop, path)
+                page = self.browser.new_page(viewport={'width':390, 'height':844})
+                self.addCleanup(page.close)
+                page.add_init_script(BRIDGE)
+                page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+                wait_for_reader(page, 'typeof window.loadEBook === "function"')
+                page.evaluate('(path) => loadEBook({url:location.origin+path,layoutMode:"paginated"})', path)
+                wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+                results = page.evaluate('''async () => {
+                    const view = reader.view;
+                    const doc = await view.book.sections[0].createDocument();
+                    const run = async query => {
+                        const matches = [];
+                        for await (const result of view.search({query,index:0,matchDiacritics:true})) {
+                            if (!result?.excerpt) continue;
+                            const range = view.resolveCFI(result.cfi).anchor(doc);
+                            if (range.startContainer.parentElement.closest('p')?.id !== 'xml-language') continue;
+                            matches.push({match:result.excerpt.match,text:range.toString(),
+                                start:range.startOffset,end:range.endOffset});
+                        }
+                        return matches;
+                    };
+                    const root = view.renderer.getContents()[0].doc.documentElement;
+                    return {i:await run('i'), dotless:await run('ı'),
+                        rootLanguage:root.getAttribute('lang'),direction:root.dir};
+                }''')
+                expected = [{'match':'I','text':'I','start':0,'end':1}]
+                self.assertEqual(results['i'], expected if expected_query == 'i' else [])
+                self.assertEqual(results['dotless'], expected if expected_query == 'ı' else [])
+                self.assertEqual(results['rootLanguage'], root_lang)
+                self.assertEqual(results['direction'], direction)
+                page.close()
 
     def test_skipped_spine_entry_preserves_href_and_cfi_navigation(self):
         self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})

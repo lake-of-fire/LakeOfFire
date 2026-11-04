@@ -1,3 +1,5 @@
+import { getDocumentLanguage } from './content-language.js'
+
 // length for context in excerpts
 const CONTEXT_LENGTH = 50
 
@@ -154,9 +156,16 @@ const collatedRanges = function* (text, query, options = {}) {
     const queryLength = Array.from(segmenter.segment(needle)).length
     const boundaries = granularity === 'grapheme' ? null
         : new Set([...segments.map(({ index }) => index), normalized.text.length])
-    const candidates = mergeCandidates(
+    let candidates = mergeCandidates(
         segmentedCandidates(normalized.text, needle, segments, queryLength, collator),
         foldedCandidates(normalized.text, needle, graphemes, collator, boundaries))
+    if (granularity === 'grapheme') {
+        // Substring mode must include every whole-word collation match, even
+        // when a language expansion (such as œ/oe) has no Unicode fold key.
+        const words = new Intl.Segmenter(segmenter.resolvedOptions().locale, {granularity:'word'})
+        candidates = mergeCandidates(candidates, segmentedCandidates(normalized.text, needle,
+            Array.from(words.segment(normalized.text)), Array.from(words.segment(needle)).length, collator))
+    }
     for (const { start, end } of candidates) {
         yield { startOffset: normalized.starts[start], endOffset: normalized.ends[end - 1] }
     }
@@ -194,7 +203,7 @@ export const searchMatcher = (textWalker, opts) => {
     return function* (doc, query) {
         const iter = textWalker(doc, function* (strs, makeRange) {
             for (const result of search(strs, query, {
-                locales: doc.body.lang || doc.documentElement.lang || defaultLocale || 'en',
+                locales: (getDocumentLanguage(doc) ?? defaultLocale) || 'en',
                 granularity: matchWholeWords ? 'word' : 'grapheme',
                 sensitivity: matchDiacritics && matchCase ? 'variant'
                 : matchDiacritics && !matchCase ? 'accent'

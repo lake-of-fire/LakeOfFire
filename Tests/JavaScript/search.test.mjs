@@ -196,3 +196,25 @@ test('merged search candidates stay ordered and unique around expansions', () =>
         {startIndex:1, startOffset:2, endIndex:1, endOffset:3},
     ])
 })
+
+
+for (const [parts, query, locale] of [
+    [['c','œ','ur'], 'coeur', 'fr'],
+    [['co','eu','r'], 'cœur', 'fr'],
+    [['c','æ','lum'], 'caelum', 'en'],
+    [['cae','lum'], 'cælum', 'en'],
+]) {
+    test(`substring search includes complete-word collation expansions: ${parts.join('')} / ${query}`, () => {
+        assert.equal(new Intl.Collator(locale, {sensitivity:'base'}).compare(parts.join(''), query), 0)
+        const options = {locales:locale,sensitivity:'base'}
+        const expected = [{startIndex:0,startOffset:0,endIndex:parts.length-1,endOffset:parts.at(-1).length}]
+        assert.deepEqual(matches(parts,query,{...options,granularity:'word'}).map(x => x.range), expected)
+        assert.deepEqual(matches(parts,query,options).map(x => x.range), expected)
+    })
+}
+
+test('complete-word expansion candidates retain accent sensitivity', () => {
+    const options = {locales:'fr',sensitivity:'accent'}
+    const equal = new Intl.Collator('fr',options).compare('cœur','coeur') === 0
+    assert.equal(matches(['cœur'],'coeur',options).length, equal ? 1 : 0)
+})
