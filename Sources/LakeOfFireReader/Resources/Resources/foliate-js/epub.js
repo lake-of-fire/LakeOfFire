@@ -988,21 +988,36 @@ export class Loader {
     async replaceCSS(str, href, parents = []) {
         const w = window?.innerWidth ?? 800
         const h = window?.innerHeight ?? 600
-        const adaptLayout = text => text
-            // Adapt declaration names, not similarly named selectors/values.
-            .replace(/(^|[;{])([\t\n\f\r ]*)-epub-([\w-]+)(?=[\t\n\f\r ]*:)/gi,
-                (_, prefix, space, property) => prefix + space + property)
-            // Match complete dimension tokens, including signed values.
-            .replace(/(?<![-\w\\\u0080-\uffff.])([+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?)v([wh])(?![-\w\\\u0080-\uffff])/gi,
-                (_, d, axis) => parseFloat(d) * (axis.toLowerCase() === 'w' ? w : h) / 100 + 'px')
-            // `page-break-*` unsupported in columns; replace declaration names.
-            .replace(/(^|[;{])([\t\n\f\r ]*)page-break-(after|before|inside)(?=[\t\n\f\r ]*:)/gi,
-                (_, prefix, space, property) => `${prefix}${space}-webkit-column-break-${property}`)
-        let result = ''
+        const tokens = Array.from(str.matchAll(cssTokens))
+        const edits = []
+        const layoutParts = []
         let cursor = 0
-        for (const match of str.matchAll(cssTokens)) {
-            result += adaptLayout(str.slice(cursor, match.index))
-            let token = match[0]
+        for (const match of tokens) {
+            layoutParts.push(str.slice(cursor, match.index))
+            // Preserve offsets and syntax context across protected tokens.
+            // Comments are whitespace, but a string/URL/import must not create
+            // a fresh declaration boundary within an existing value.
+            layoutParts.push((match[0].startsWith('/*') ? ' ' : '\ufffc')
+                .repeat(match[0].length))
+            cursor = match.index + match[0].length
+        }
+        layoutParts.push(str.slice(cursor))
+        const layout = layoutParts.join('')
+        for (const match of layout.matchAll(/(^|[;{])([\t\n\f\r ]*)(-epub-[\w-]+|page-break-(?:after|before|inside))(?=[\t\n\f\r ]*:)/gi)) {
+            const start = match.index + match[1].length + match[2].length
+            // A colon in a selector prelude is not a declaration, including
+            // type selectors named like one of the adapted properties.
+            if (/^[^;{}]*\{/.test(layout.slice(start + match[3].length))) continue
+            const property = match[3].replace(/^-epub-/i, '')
+                .replace(/^page-break-(after|before|inside)$/i, '-webkit-column-break-$1')
+            edits.push({ start, end: start + match[3].length, text: property })
+        }
+        // Match complete dimension tokens, including signed/exponent values.
+        for (const match of layout.matchAll(/(?<![-\w\\\u0080-\uffff.])([+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?)v([wh])(?![-\w\\\u0080-\uffff])/gi)) {
+            edits.push({ start: match.index, end: match.index + match[0].length,
+                text: parseFloat(match[1]) * (match[2].toLowerCase() === 'w' ? w : h) / 100 + 'px' })
+        }
+        for (const match of tokens) {
             const reference = match[1] ?? match[2]
             // A function name ending in "url" is not the CSS url() function.
             const continuesIdentifier = /[-\w\\\u0080-\uffff]/.test(str[match.index - 1] ?? '')
@@ -1010,15 +1025,20 @@ export class Loader {
                 const originalURL = decodeCSSURL(reference)
                 const url = await this.loadHref(originalURL, href, parents)
                 if (url != null && url !== originalURL) {
-                    token = match[1] !== undefined
-                        ? token.slice(0, -reference.length) + quoteCSSURL(url)
+                    const text = match[1] !== undefined
+                        ? match[0].slice(0, -reference.length) + quoteCSSURL(url)
                         : `url(${quoteCSSURL(url)})`
+                    edits.push({ start: match.index, end: match.index + match[0].length, text })
                 }
             }
-            result += token
-            cursor = match.index + match[0].length
         }
-        return result + adaptLayout(str.slice(cursor))
+        let result = ''
+        cursor = 0
+        for (const { start, end, text } of edits.sort((a, b) => a.start - b.start)) {
+            result += str.slice(cursor, start) + text
+            cursor = end
+        }
+        return result + str.slice(cursor)
     }
     // find & replace exact relative paths for all assets without parsing
     replaceString(str, href, parents = []) {

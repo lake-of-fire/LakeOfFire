@@ -138,3 +138,40 @@ test('escaped newlines in strings and unterminated comments protect authored tex
         assert.deepEqual(loaded, [])
     })
 })
+
+for (const gap of ['/**/', ' /* one */\t/**/\n /* two */ ']) {
+    test(`comment-separated declaration names adapt through the shipping Loader: ${JSON.stringify(gap)}`, async () => {
+        const css = `p { page-break-before${gap}: always; -epub-writing-mode${gap}: vertical-rl; -epub-page-break-inside${gap}: avoid; }`
+        await withStylesheet(css, [], output => {
+            assert.equal(output, `p { -webkit-column-break-before${gap}: always; writing-mode${gap}: vertical-rl; -webkit-column-break-inside${gap}: avoid; }`)
+        })
+    })
+}
+
+test('earlier protected tokens retain declaration context across comments', async () => {
+    const css = `@import /* keep */ "https://example.com/book.css" layer(book) screen;
+p { content: "keep; { 10vw" /* keep */ page-break-before/**/: sentinel;
+  --image: url("https://example.com/10vw") /* keep */ -epub-writing-mode/**/: sentinel;
+  /* lead */ page-break-after /* gap */ : always;
+  content: "-epub-writing-mode/**/: 10vw";
+  background: url("https://example.com/page-break-before/**/:10vw");
+  -epub-writing-mode/**/: vertical-rl; width: -1e1vw;
+}`
+    await withStylesheet(css, [], output => {
+        assert.equal(output, css
+            .replace('page-break-after /* gap */ :', '-webkit-column-break-after /* gap */ :')
+            .replace('-epub-writing-mode/**/: vertical-rl', 'writing-mode/**/: vertical-rl')
+            .replace('width: -1e1vw', 'width: -80px'))
+    })
+})
+
+test('comment-separated selector and value identifiers retain their spelling', async () => {
+    const css = `page-break-before/**/:hover, -epub-writing-mode/**/:focus {
+  --label: page-break-before/**/:value;
+  --another: -epub-writing-mode/**/:value;
+  page-break-inside/**/: avoid;
+}`
+    await withStylesheet(css, [], output => {
+        assert.equal(output, css.replace('page-break-inside/**/: avoid', '-webkit-column-break-inside/**/: avoid'))
+    })
+})

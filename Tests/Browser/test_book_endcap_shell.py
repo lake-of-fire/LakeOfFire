@@ -132,6 +132,89 @@ class BookEndcapShellTests(unittest.TestCase):
         # Reverse registration closes the browser before its Playwright runtime.
         cls.addClassCleanup(cls.browser.close)
 
+    def test_epub_inline_css_comment_separated_declarations(self):
+        # Real browser DOM traversal, serialization and CSS application through
+        # shipping Loader callers; this Chromium case is not WebKit evidence.
+        page = self.browser.new_page(viewport={'width': 800, 'height': 600})
+        self.addCleanup(page.close)
+        page.route('**/epub-inline-css', lambda route: route.fulfill(
+            status=200, content_type='text/html', body='<!doctype html><title>CSS fixture</title>'))
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/epub-inline-css')
+        result = page.evaluate(r"""async () => {
+            const { Loader } = await import('/load/viewer-assets/foliate-js/epub.js')
+            const check = (condition, message) => { if (!condition) throw new Error(message) }
+            const sheet = `#from-style {
+                content: "keep; { 10vw";
+                /* lead */ page-break-before/**/: always;
+                -epub-writing-mode /* a */ \t/**/ : vertical-rl;
+                width: 1e1vw;
+                --label: "page-break-before/**/: 10vw";
+                --url: url("https://example.com/10vw");
+            }`
+            const attribute = `content: 'keep; { 10vw'; /* lead */ -epub-writing-mode/**/: vertical-rl;
+                page-break-inside /* a */\t/**/: avoid; width: -1e-1vw;
+                --label: page-break-before/**/:value;`
+            const expectedSheet = sheet
+                .replace('page-break-before/**/: always', '-webkit-column-break-before/**/: always')
+                .replace('-epub-writing-mode /* a */', 'writing-mode /* a */')
+                .replace('width: 1e1vw', 'width: 80px')
+            const checked = []
+            for (const mediaType of ['text/html', 'application/xhtml+xml']) {
+                const item = { href: 'OPS/chapter.xhtml', mediaType }
+                const source = `<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head>
+                    <title>Inline CSS</title><style>${sheet}</style></head><body>
+                    <p id="from-style">Style element</p>
+                    <p id="from-attribute" style="${attribute}">Style attribute</p>
+                    </body></html>`
+                // XML normalizes attribute whitespace during the caller's
+                // first parse; compare against that real DOM value.
+                const originalAttribute = new DOMParser().parseFromString(source, mediaType)
+                    .querySelector('#from-attribute').getAttribute('style')
+                const expectedAttribute = originalAttribute
+                    .replace('-epub-writing-mode/**/: vertical-rl', 'writing-mode/**/: vertical-rl')
+                    .replace('page-break-inside /* a */', '-webkit-column-break-inside /* a */')
+                    .replace('width: -1e-1vw', 'width: -0.8px')
+                const loader = new Loader({ resources: { manifest: [item] },
+                    loadText: async () => source,
+                    loadBlob: async () => { throw new Error('unexpected raw resource') },
+                })
+                const frame = document.createElement('iframe')
+                try {
+                    const url = await loader.loadItem(item)
+                    const output = await (await fetch(url)).text()
+                    const parsed = new DOMParser().parseFromString(output, mediaType)
+                    check(!parsed.querySelector('parsererror'), 'serialized chapter must parse')
+                    check(parsed.querySelector('style').textContent === expectedSheet, 'style element preserves protected text/comments')
+                    check(parsed.querySelector('#from-attribute').getAttribute('style') === expectedAttribute,
+                        'style attribute preserves protected text/comments')
+                    await new Promise((resolve, reject) => {
+                        frame.onload = resolve
+                        frame.onerror = () => reject(new Error('chapter frame failed'))
+                        frame.src = url
+                        document.body.append(frame)
+                    })
+                    const doc = frame.contentDocument
+                    const styleTarget = doc.querySelector('#from-style')
+                    const attributeTarget = doc.querySelector('#from-attribute')
+                    const style = frame.contentWindow.getComputedStyle(styleTarget)
+                    check(style.writingMode === 'vertical-rl', 'style element affects actual layout style')
+                    check(style.width === '80px', 'viewport exponent dimension is adapted')
+                    check(frame.contentWindow.getComputedStyle(attributeTarget).writingMode === 'vertical-rl',
+                        'style attribute affects actual layout style')
+                    check(attributeTarget.style.getPropertyValue('-webkit-column-break-inside') === 'avoid',
+                        'style attribute break declaration reaches CSSOM')
+                    check(style.getPropertyValue('-webkit-column-break-before') === 'always',
+                        'style element break declaration reaches CSSOM')
+                    checked.push(mediaType)
+                } finally {
+                    frame.remove()
+                    loader.destroy()
+                }
+            }
+            return checked
+        }""")
+        self.assertEqual(result, ['text/html', 'application/xhtml+xml'])
+
     def test_skipped_spine_entry_preserves_href_and_cfi_navigation(self):
         self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
         self.server.epub_fixtures['/missing-spine-entry.epub'] = make_epub(missing_spine_entry=True)
