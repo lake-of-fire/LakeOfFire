@@ -95,9 +95,20 @@ const SEARCH_BLOCK_ELEMENTS = new Set([
     'h3', 'h4', 'h5', 'h6', 'header', 'li', 'main', 'nav', 'ol', 'p', 'pre',
     'section', 'summary', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul',
 ])
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
+const IGNORED_SVG_ELEMENTS = new Set(['title', 'desc', 'metadata', 'defs', 'symbol'])
+const isSearchBlock = element => {
+    const name = element.localName?.toLowerCase()
+    return SEARCH_BLOCK_ELEMENTS.has(name)
+        || (element.namespaceURI === SVG_NAMESPACE && name === 'text')
+}
 const searchBlockForNode = (node, root) => {
     for (let parent = node.parentElement; parent && parent !== root; parent = parent.parentElement) {
-        if (SEARCH_BLOCK_ELEMENTS.has(parent.localName?.toLowerCase())) return parent
+        const name = parent.localName?.toLowerCase()
+        if (name === 'script' || name === 'style' || name === 'rt' || name === 'rp' || name === 'rtc')
+            continue
+        if (parent.namespaceURI === SVG_NAMESPACE && IGNORED_SVG_ELEMENTS.has(name)) continue
+        if (isSearchBlock(parent)) return parent
     }
     return root
 }
@@ -106,14 +117,18 @@ const textWalker = function* (doc, func) {
     const filter = NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
     | NodeFilter.SHOW_CDATA_SECTION
     const { FILTER_ACCEPT, FILTER_REJECT, FILTER_SKIP } = NodeFilter
+    const root = doc.body ?? doc.documentElement
+    if (!root) return
     const acceptNode = node => {
         const name = node.localName?.toLowerCase()
-        if (name === 'script' || name === 'style') return FILTER_REJECT
-        if (name === 'br' || name === 'hr' || SEARCH_BLOCK_ELEMENTS.has(name)) return FILTER_ACCEPT
+        if (name === 'script' || name === 'style' || name === 'rt' || name === 'rp' || name === 'rtc')
+            return FILTER_REJECT
+        if (node.namespaceURI === SVG_NAMESPACE && IGNORED_SVG_ELEMENTS.has(name)) return FILTER_REJECT
+        if (name === 'br' || name === 'hr' || isSearchBlock(node)) return FILTER_ACCEPT
             if (node.nodeType === 1) return FILTER_SKIP
                 return FILTER_ACCEPT
                 }
-    const walker = doc.createTreeWalker(doc.body, filter, { acceptNode })
+    const walker = doc.createTreeWalker(root, filter, { acceptNode })
     const entries = []
     let previousNode, previousBlock, lineBreak = false
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -121,7 +136,7 @@ const textWalker = function* (doc, func) {
             lineBreak = true
             continue
         }
-        const block = searchBlockForNode(node, doc.body)
+        const block = searchBlockForNode(node, root)
         if (previousNode && (lineBreak || block !== previousBlock)) {
             entries.push({ before: previousNode, after: node })
         }
