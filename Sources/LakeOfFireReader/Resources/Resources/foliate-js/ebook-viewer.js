@@ -893,12 +893,12 @@ const makeReplaceText = ({
     });
     let destroyed = false;
     const isActive = () => !destroyed && isCurrent();
-    const replaceText = async (href, text, mediaType) => {
+    const replaceText = async (href, text, mediaType, { forSearch = false } = {}) => {
         if (!isActive()) return null;
         if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html' /* && mediaType !== 'application/xml'*/ ) {
             return text;
         }
-        if (!allowForegroundHTML) {
+        if (!allowForegroundHTML && !forSearch) {
             throw new Error(`Foreground native EPUB section must load through processed-section direct URL: ${href || 'nil'}`);
         }
         const cacheKey = makeReplaceTextCacheKey({
@@ -919,9 +919,9 @@ const makeReplaceText = ({
                 transport,
             });
             globalThis.__manabiInflightReplaceTextCount = (globalThis.__manabiInflightReplaceTextCount ?? 0) + 1;
-            globalThis.__manabiInflightLiveReplaceTextCount = (globalThis.__manabiInflightLiveReplaceTextCount ?? 0) + 1;
+            if (!forSearch) globalThis.__manabiInflightLiveReplaceTextCount = (globalThis.__manabiInflightLiveReplaceTextCount ?? 0) + 1;
             const normalizedHref = normalizeSpineStoragePath(href);
-            if (normalizedHref && !firstLiveSectionHref()) {
+            if (!forSearch && normalizedHref && !firstLiveSectionHref()) {
                 globalThis.__manabiFirstLiveSectionHref = normalizedHref;
             }
             const headers = {
@@ -991,7 +991,7 @@ const makeReplaceText = ({
                 };
             } finally {
                 globalThis.__manabiInflightReplaceTextCount = Math.max(0, (globalThis.__manabiInflightReplaceTextCount ?? 1) - 1);
-                globalThis.__manabiInflightLiveReplaceTextCount = Math.max(0, (globalThis.__manabiInflightLiveReplaceTextCount ?? 1) - 1);
+                if (!forSearch) globalThis.__manabiInflightLiveReplaceTextCount = Math.max(0, (globalThis.__manabiInflightLiveReplaceTextCount ?? 1) - 1);
             }
         };
 
@@ -1001,13 +1001,14 @@ const makeReplaceText = ({
             neutralHTML = processedResult?.html ?? null;
         } catch (error) {
             if (!isActive()) return null;
+            if (forSearch && nativeSource) throw error;
             console.error("Error replacing text:", error);
             neutralHTML = text;
         }
         if (!isActive() || neutralHTML == null) return null;
         const html = adaptReplaceTextHTMLForMode(neutralHTML, { href });
         if (!isActive()) return null;
-        window.manabi_recordLiveProcessedSection?.(href);
+        if (!forSearch) window.manabi_recordLiveProcessedSection?.(href);
         return html;
     };
     replaceText.destroy = () => {

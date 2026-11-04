@@ -99,3 +99,61 @@ test('stylesheet rewriting leaves unresolved URLs and other function names intac
         assert.equal(output, css)
     })
 })
+
+
+test('layout adaptation preserves selectors, custom properties and value identifiers', async () => {
+    const css = `.w10vw, #page-break-before, .has-epub-marker, #10vw {
+  --epub-size: 10vw; --page-break-before: spin10vw;
+  animation-name: spin10vw; font-family: page-break-before;
+  width: 1e2vw; height: +1E1vh; min-width: 1e-2vw;
+  -epub-writing-mode /* keep */: vertical-rl; page-break-before: always;
+}
+@media (min-width: 0px) { page-break-before:hover { width: 10vw; } }
+@keyframes spin10vw { from { opacity: 0; } to { opacity: 1; } }`
+    await withStylesheet(css, [], output => {
+        assert.equal(output, css
+            .replace('--epub-size: 10vw', '--epub-size: 80px')
+            .replace('width: 1e2vw', 'width: 800px')
+            .replace('height: +1E1vh', 'height: 60px')
+            .replace('min-width: 1e-2vw', 'min-width: 0.08px')
+            .replace('-epub-writing-mode /* keep */:', 'writing-mode /* keep */:')
+            .replace('page-break-before: always', '-webkit-column-break-before: always')
+            .replace('width: 10vw', 'width: 80px'))
+    })
+})
+
+test('inline declaration lists adapt only complete property and dimension tokens', async () => {
+    const loader = new Loader({resources:{manifest:[]}, loadText:async()=>null, loadBlob:async()=>null})
+    const source = '--epub-size: 1e1vw; -epub-writing-mode: vertical-rl; page-break-after: always; '
+        + 'animation-name: spin10vw; width: var(--epub-size); --page-break-before: value; --long: 10vwx; '
+        + '--escaped: foo\\31 0vw; --text: "10vw page-break-before"'
+    try {
+        assert.equal(await loader.replaceCSS(source, 'OPS/chapter.xhtml', [], true), source
+            .replace('1e1vw', '80px')
+            .replace('-epub-writing-mode:', 'writing-mode:')
+            .replace('page-break-after:', '-webkit-column-break-after:'))
+    } finally { loader.destroy() }
+})
+
+test('supports conditions adapt property names while preserving nested selector names', async () => {
+    const css = '@supports (-epub-writing-mode: vertical-rl) { .has-epub-marker { -epub-writing-mode: vertical-rl; } }'
+    await withStylesheet(css, [], output => {
+        assert.equal(output, '@supports (writing-mode: vertical-rl) { .has-epub-marker { writing-mode: vertical-rl; } }')
+    })
+})
+
+
+test('nested type selectors are not mistaken for prefixed property declarations', async () => {
+    const css = '.outer { page-break-before:hover { page-break-before: always; width: 1e1vw; } }'
+    await withStylesheet(css, [], output => {
+        assert.equal(output, '.outer { page-break-before:hover { -webkit-column-break-before: always; width: 80px; } }')
+    })
+})
+
+
+test('grouping rules retain an enclosing declaration context', async () => {
+    const css = '.outer { @media (min-width: 0px) { -epub-writing-mode: vertical-rl; width: 1e1vw; } }'
+    await withStylesheet(css, [], output => {
+        assert.equal(output, '.outer { @media (min-width: 0px) { writing-mode: vertical-rl; width: 80px; } }')
+    })
+})
