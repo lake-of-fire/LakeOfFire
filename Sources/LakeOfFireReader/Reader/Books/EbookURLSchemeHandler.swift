@@ -743,6 +743,12 @@ private enum EbookResolvedPackageSource: Sendable {
         case let .bound(lease): return try lease.readEntry(subpath: subpath)
         }
     }
+    func readNativeResource(subpath: String) throws -> Data {
+        switch self {
+        case let .legacy(source): return try source.readNativeResource(subpath: subpath)
+        case let .bound(lease): return try lease.readNativeResource(subpath: subpath)
+        }
+    }
     func mimeType(subpath: String, data: Data) throws -> ReaderPackageEntryResponseMetadata {
         switch self {
         case let .legacy(source): return try source.source.mimeType(subpath: subpath, data: data)
@@ -1163,7 +1169,14 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }) != false else {
                         throw ReaderPackageEntrySourceError.entryNotFound
                     }
-                    let data = try cachedSource.readEntry(subpath: entryRequest.subpath)
+                    // Path-backed native HTML/CSS bypasses Foliate Encryption.
+                    // Query-backed /entry remains raw for its JS decoder.
+                    let data: Data
+                    if pathBackedRequest != nil {
+                        data = try cachedSource.readNativeResource(subpath: entryRequest.subpath)
+                    } else {
+                        data = try cachedSource.readEntry(subpath: entryRequest.subpath)
+                    }
                     let metadata = try cachedSource.mimeType(
                         subpath: entryRequest.subpath,
                         data: data
